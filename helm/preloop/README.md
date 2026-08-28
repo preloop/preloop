@@ -24,6 +24,223 @@ helm install preloop ./helm/preloop
 
 The command deploys Preloop on the Kubernetes cluster in the default configuration. The [Parameters](#parameters) section lists the parameters that can be configured during installation.
 
+## Private cluster
+
+This section is the Kubernetes install path for a cluster with no public
+LoadBalancer and with model traffic leaving Preloop only to endpoints you
+already operate. **Docker Compose** (the OSS installer) and **this Helm
+chart** are the supported install surfaces. This repository does not ship
+Terraform modules.
+
+A copy-paste overlay lives in [`values-private-cluster.yaml`](values-private-cluster.yaml).
+Install with:
+
+```bash
+# Create secrets first (examples below). Then:
+helm install preloop ./helm/preloop -f ./helm/preloop/values-private-cluster.yaml
+```
+
+OpenTelemetry exporter settings will land with the OTLP exporter; this chart
+does not currently define `otlp` values.
+
+### Checklist
+
+1. **Service**: keep `service.type: ClusterIP`. Do not require a public
+   LoadBalancer. Reach the console and gateway through Ingress (or a mesh).
+2. **Images**: override `image.repository` / `console.repository` to your
+   registry and set `imagePullSecrets`.
+3. **TLS**: terminate TLS on Ingress (or the mesh). The chart renders a
+   console Ingress and a gateway Ingress (`/openai`, `/anthropic`, `/gemini`).
+4. **Postgres**: use an existing server (`database.external: true`) and put
+   `DATABASE_URL` in a Secret (`database.urlFromSecret`). In-cluster
+   CloudNativePG (`database.enabled: true`, `database.external: false`) is
+   for development.
+5. **NATS**: in-cluster (`nats.enabled: true`) or an existing server
+   (`nats.enabled: false` and `nats.url`). This chart does not deploy Redis.
+6. **App secrets**: `SECRET_KEY` (jwt-secret) via `existingSecret` or a
+   Secret the chart creates from values you pass at install time. Do not
+   commit real keys to git. Create the first admin user in the console; do
+   not put bootstrap passwords in values files.
+7. **Private CA**: mount the CA with `extraVolumes` / `extraVolumeMounts`
+   and set `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` in `extraEnv`.
+8. **Egress** still required: your container registry, DNS, and (optional)
+   public provider APIs if a model is not pointed at an internal upstream.
+   An OTLP collector is optional and is not configured by this chart yet.
+
+### ClusterIP and ingress
+
+```yaml
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: private-ca-issuer
+  hosts:
+    - host: preloop.internal
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: preloop-tls
+      hosts:
+        - preloop.internal
+```
+
+TLS can also terminate at a service mesh. In that case leave `ingress.tls`
+empty and configure the mesh separately; pods still listen on ClusterIP.
+
+### Private registry
+
+```bash
+kubectl create secret docker-registry registry-pull \
+  --docker-server=registry.internal \
+  --docker-username=acme \
+  --docker-password='<token>'
+```
+
+```yaml
+image:
+  repository: registry.internal/acme/preloop
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+console:
+  repository: registry.internal/acme/console
+  tag: "1.0.0"
+imagePullSecrets:
+  - name: registry-pull
+```
+
+### Existing Postgres
+
+Prefer a Secret for the connection string (including `sslmode=verify-full`
+and a password). The URL never belongs in git.
+
+```bash
+kubectl create secret generic preloop-db \
+  --from-literal=database-url='postgresql://preloop:<password>@postgres.internal:5432/preloop?sslmode=verify-full'
+```
+
+```yaml
+database:
+  enabled: true
+  external: true
+  urlFromSecret:
+    name: preloop-db
+    key: database-url
+  externalDatabase:
+    host: postgres.internal
+    port: 5432
+    database: preloop
+    sslMode: verify-full
+```
+
+`sslMode` is appended only when `urlFromSecret.name` is empty and the chart
+builds `DATABASE_URL` from `externalDatabase.*`. For development, keep
+`database.external: false` to deploy in-cluster CloudNativePG.
+
+### Application secrets
+
+```bash
+kubectl create secret generic preloop-app \
+  --from-literal=jwt-secret="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+```
+
+```yaml
+existingSecret: preloop-app
+environment:
+  jwtSecret: ""
+```
+
+When `existingSecret` is set, the chart does not create a Secret. The named
+Secret must contain `jwt-secret` (mapped to `SECRET_KEY`). Enable optional
+features only if that Secret also has the matching keys (`encryption-key`,
+`openai-api-key`, and so on).
+
+AI model API keys are **not** Helm values. Store them as Preloop AI-model
+secrets in the console (or the API) after install.
+
+### Private CA for upstream TLS
+
+Mount your CA and point Python TLS env vars at it. Completions and model
+discovery then trust that bundle.
+
+```bash
+kubectl create secret generic private-ca --from-file=ca.crt=./acme-ca.crt
+```
+
+```yaml
+extraVolumes:
+  - name: private-ca
+    secret:
+      secretName: private-ca
+extraVolumeMounts:
+  - name: private-ca
+    mountPath: /etc/ssl/private-ca
+    readOnly: true
+extraEnv:
+  - name: SSL_CERT_FILE
+    value: /etc/ssl/private-ca/ca.crt
+  - name: REQUESTS_CA_BUNDLE
+    value: /etc/ssl/private-ca/ca.crt
+  - name: CURL_CA_BUNDLE
+    value: /etc/ssl/private-ca/ca.crt
+```
+
+Those env vars are applied to API, gateway, workers, and jobs. As a last
+resort, `PRELOOP_SSL_VERIFY=false` skips TLS verification; prefer a mounted
+CA.
+
+### OpenAI-compatible upstream
+
+Agents still authenticate to Preloop. They call Preloop `/openai/v1`
+(and `/anthropic`, `/gemini`). Preloop then calls **your** OpenAI-compatible
+endpoint as the model provider. There is no bypass-the-gateway mode.
+
+In the console, open **AI models** and create a model:
+
+1. Provider: **OpenAI-compatible**.
+2. Endpoint (api base): `https://gateway.internal/v1`.
+3. Model identifier: the id your upstream lists (for example `llama-3`).
+4. API key: stored as a Preloop AI-model secret, not in Helm values.
+
+A test completion through Preloop:
+
+```bash
+curl -sS https://preloop.internal/openai/v1/chat/completions \
+  -H "Authorization: Bearer <preloop-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama-3","messages":[{"role":"user","content":"ping"}]}'
+```
+
+Preloop resolves that alias to the model record whose `api_endpoint` is
+`https://gateway.internal/v1` and sends the provider request there.
+
+### Resources (small production)
+
+Chart defaults are sized for a small production instance. Raise them under
+load with `--set` or a values overlay:
+
+| Component | Default request | Default limit |
+|-----------|-----------------|---------------|
+| API | `50m` CPU / `512Mi` | `2` CPU / `2Gi` |
+| Gateway | `100m` CPU / `256Mi` | `1` CPU / `1Gi` |
+| Worker | `50m` CPU / `512Mi` | `2` CPU / `2Gi` |
+| Console | `50m` CPU / `64Mi` | `200m` CPU / `256Mi` |
+
+```bash
+helm upgrade preloop ./helm/preloop \
+  --set api.resources.requests.cpu=500m \
+  --set api.resources.limits.memory=4Gi \
+  --set gateway.resources.requests.memory=512Mi
+```
+
+Gateway HPA is on by default (`gateway.autoscaling`). API HPA is off until
+you set `autoscaling.enabled: true`.
+
 ## Uninstalling the Chart
 
 To uninstall/delete the `preloop` deployment:
@@ -43,6 +260,11 @@ helm uninstall preloop
 | `image.tag`         | Preloop image tag                                                                               | `latest`        |
 | `image.pullPolicy`  | Preloop image pull policy                                                                       | `Always`  |
 | `imagePullSecrets`  | Secret names for pulling images                                                                    | `[]`            |
+| `existingSecret`    | Existing Secret name for `jwt-secret` (chart skips creating its Secret)                            | `""`            |
+| `extraEnv`          | Extra env vars on API, gateway, workers, and jobs                                                  | `[]`            |
+| `extraEnvFrom`      | Extra envFrom entries on those pods                                                                | `[]`            |
+| `extraVolumes`      | Extra volumes (for example a private CA Secret)                                                    | `[]`            |
+| `extraVolumeMounts` | Extra volume mounts on those pods                                                                  | `[]`            |
 | `nameOverride`      | String to partially override the name template                                                     | `""`            |
 | `fullnameOverride`  | String to fully override the name template                                                         | `""`            |
 
@@ -74,6 +296,9 @@ helm uninstall preloop
 | `database.externalDatabase.user`   | External PostgreSQL user                             | `""`        |
 | `database.externalDatabase.password` | External PostgreSQL password                       | `""`        |
 | `database.externalDatabase.database` | External PostgreSQL database                       | `""`        |
+| `database.externalDatabase.sslMode`  | Optional libpq sslmode on a chart-built URL        | `""`        |
+| `database.urlFromSecret.name`        | Secret containing DATABASE_URL                     | `""`        |
+| `database.urlFromSecret.key`         | Key inside that Secret                             | `database-url` |
 | `database.postgresql.auth.username` | PostgreSQL username                                 | `postgres`  |
 | `database.postgresql.auth.password` | PostgreSQL password                                 | `postgres`  |
 | `database.postgresql.auth.database` | PostgreSQL database                                 | `preloop` |
@@ -215,18 +440,22 @@ This chart deploys PostgreSQL with the PGVector extension by default, which is r
 
 ### Using an external PostgreSQL database
 
-To use an external PostgreSQL database, set `database.enabled=false` and configure the external database parameters:
+To use an external PostgreSQL database, set `database.external=true` and
+prefer `database.urlFromSecret` so the URL (password and sslmode) is not
+stored in values committed to git. See [Private cluster](#private-cluster).
 
 ```yaml
 database:
-  enabled: false
+  enabled: true
   external: true
+  urlFromSecret:
+    name: preloop-db
+    key: database-url
   externalDatabase:
-    host: my-postgresql.example.com
+    host: postgres.internal
     port: 5432
-    user: postgres
-    password: my-password
     database: preloop
+    sslMode: verify-full
 ```
 
 ### JWT Authentication

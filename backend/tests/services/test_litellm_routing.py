@@ -180,3 +180,38 @@ class TestPreloopClientIdentity:
         monkeypatch.setenv("LITELLM_USER_AGENT", "should-not-replace")
         ensure_preloop_client_identity()
         assert os.environ["LITELLM_USER_AGENT"] == "should-not-replace"
+
+
+class TestSslVerifyOnCompletions:
+    """Private CA env vars must reach LiteLLM as ssl_verify."""
+
+    def test_ssl_cert_file_sets_ssl_verify(self, monkeypatch, tmp_path):
+        ca = tmp_path / "ca.crt"
+        ca.write_text("dummy-ca")
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+        kwargs: dict = {}
+        apply_preloop_client_headers(
+            kwargs,
+            _model(
+                "openai-compatible",
+                "llama-3",
+                endpoint="https://gateway.internal/v1",
+            ),
+        )
+        assert kwargs["ssl_verify"] == str(ca)
+
+    def test_no_override_leaves_ssl_verify_unset(self, monkeypatch):
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+        monkeypatch.delenv("CURL_CA_BUNDLE", raising=False)
+        kwargs: dict = {}
+        apply_preloop_client_headers(kwargs, _model("openai", "gpt-5"))
+        assert "ssl_verify" not in kwargs
+
+    def test_explicit_ssl_verify_is_preserved(self, monkeypatch):
+        monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/private-ca/ca.crt")
+        kwargs = {"ssl_verify": True}
+        apply_preloop_client_headers(kwargs, _model("openai", "gpt-5"))
+        assert kwargs["ssl_verify"] is True

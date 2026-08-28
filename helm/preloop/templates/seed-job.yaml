@@ -16,14 +16,17 @@ spec:
         {{- include "preloop.selectorLabels" . | nindent 8 }}
     spec:
       restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: seed-runner
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy | default "Always" }}
           command: ["python", "/app/scripts/seed_test_user.py"]
           env:
-            - name: DATABASE_URL
-              value: {{ include "preloop.databaseUrl" . }}
+            {{- include "preloop.databaseUrlEnv" . | nindent 12 }}
             - name: TEST_USER_EMAIL
               value: {{ .Values.seed.email | quote }}
             - name: TEST_USER_USERNAME
@@ -32,4 +35,17 @@ spec:
               value: {{ .Values.seed.password | quote }}
             - name: TEST_USER_API_KEY
               value: {{ .Values.seed.apiKey | quote }}
+            {{- include "preloop.extraEnv" . | nindent 12 }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 {{- end }}

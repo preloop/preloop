@@ -46,6 +46,7 @@ from urllib.parse import urlsplit
 import litellm
 
 from preloop.models.models.ai_model import AIModel
+from preloop.services.tls_verify import ssl_verify_setting
 
 PROVIDER_PREFIX: Dict[str, str] = {
     "openai": "openai",
@@ -148,6 +149,13 @@ def apply_preloop_client_headers(
     if ai_model is not None and is_openrouter_model(ai_model):
         extra.update(openrouter_app_headers())
     kwargs["extra_headers"] = extra
+    # Honor SSL_CERT_FILE / REQUESTS_CA_BUNDLE / PRELOOP_SSL_VERIFY so a
+    # private CA mounted into the pod is used for OpenAI-compatible upstreams.
+    # LiteLLM and httpx ignore those env vars unless ssl_verify is set.
+    if "ssl_verify" not in kwargs:
+        verify = ssl_verify_setting()
+        if verify is not None:
+            kwargs["ssl_verify"] = verify
     return kwargs
 
 

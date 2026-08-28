@@ -18,6 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Private-cluster Helm install**: `helm/preloop/README.md` documents a
+  ClusterIP + ingress install with private registry pull secrets, existing
+  Postgres, Kubernetes Secrets (not values committed to git), and mounting a
+  private CA via `extraVolumes` / `extraEnv` (`SSL_CERT_FILE`). Example
+  overlay: `helm/preloop/values-private-cluster.yaml`. Compose and Helm are
+  the supported install surfaces; this repo does not ship Terraform.
+- **OpenAI-compatible upstream TLS**: LiteLLM completions and model
+  discovery honor `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE`
+  (and `PRELOOP_SSL_VERIFY=false` as a last resort) so a private
+  OpenAI-compatible base URL such as `https://gateway.internal/v1` works
+  with operator PKI.
+
 - **GitLab `issue_labeled`**: an Issue Hook whose `changes.labels` adds
   a label now normalizes to `issue_labeled` (remove-only is
   `issue_unlabeled`). Filter field `added_labels` is set on GitHub and
