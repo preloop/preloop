@@ -1,7 +1,11 @@
 """Evaluator tests for model.request and model.response policies."""
 
+import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from uuid import uuid4
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from preloop.services.model_content_detectors import (
     ModerationResult,
@@ -9,8 +13,12 @@ from preloop.services.model_content_detectors import (
     reset_moderation_backends,
 )
 from preloop.services.model_content_policy import (
+    ModelIODecision,
+    _approval_arguments,
+    _await_model_io_hold,
     evaluate_model_io,
     extract_stream_text,
+    hold_for_model_io_approval,
     wrap_stream_for_response_policy,
 )
 from preloop.services.policy.schema import ModelIORule, ToolCondition
@@ -152,13 +160,17 @@ def test_detector_timeout_denies_by_default():
         detectors={"pii": True},
         conditions=[ToolCondition(expression="pii.found == true", action="deny")],
     )
+    started = time.monotonic()
     with patch(
         "preloop.services.model_content_policy._run_detectors",
-        side_effect=lambda *_a, **_k: __import__("time").sleep(1),
+        side_effect=lambda *_a, **_k: time.sleep(2),
     ):
         decision = evaluate_model_io(rules=[rule], target="model.request", text="hello")
+    elapsed = time.monotonic() - started
     assert decision.action == "deny"
     assert decision.detector_summary.get("detector_timeout") is True
+    # Timeout must return without joining the hung worker (was ~2s).
+    assert elapsed < 0.5
 
 
 def test_detector_timeout_allow_skips_rule():
@@ -171,7 +183,7 @@ def test_detector_timeout_allow_skips_rule():
     )
     with patch(
         "preloop.services.model_content_policy._run_detectors",
-        side_effect=lambda *_a, **_k: __import__("time").sleep(1),
+        side_effect=lambda *_a, **_k: time.sleep(1),
     ):
         decision = evaluate_model_io(rules=[rule], target="model.request", text="hello")
     assert decision.action == "allow"
@@ -261,3 +273,137 @@ def test_wrap_stream_denies_without_replaying_payload():
     joined = "".join(out)
     assert "alice@example.com" not in joined
     assert "Blocked by content policy" in joined
+
+
+def test_extract_stream_text_from_responses_api_deltas():
+    delta = 'data: {"type":"response.output_text.delta","delta":"Hel"}\n\n'
+    delta2 = 'data: {"type":"response.output_text.delta","delta":"lo"}\n\n'
+    assert extract_stream_text(delta) + extract_stream_text(delta2) == "Hello"
+
+
+def test_extract_stream_text_from_responses_completed():
+    event = (
+        'data: {"type":"response.completed",'
+        '"response":{"output_text":"Hello from responses"}}\n\n'
+    )
+    assert extract_stream_text(event) == "Hello from responses"
+
+
+def test_extract_stream_text_anthropic_content_block_delta_not_doubled():
+    event = (
+        'data: {"type":"content_block_delta","index":0,'
+        '"delta":{"type":"text_delta","text":"Hello"}}\n\n'
+    )
+    assert extract_stream_text(event) == "Hello"
+
+
+def test_wrap_stream_responses_assembled_text_is_not_doubled():
+    gateway = SimpleNamespace(
+        db=MagicMock(),
+        auth_context=SimpleNamespace(user=SimpleNamespace(account_id="acct", id="u")),
+        _openai_stream_error_event=lambda exc, err: f"data: error {exc}\n\n",
+        _sse_done=lambda: "data: [DONE]\n\n",
+        _client_session_id=None,
+        _resolved_runtime_session_id=None,
+    )
+    rule = _rule(
+        id="deny-out",
+        target="model.response",
+        detectors={"pii": True},
+        conditions=[
+            ToolCondition(expression="pii.found == true", action="deny"),
+        ],
+    )
+    events = [
+        'data: {"type":"response.output_text.delta","delta":"Reach "}\n\n',
+        'data: {"type":"response.output_text.delta","delta":"alice@example.com"}\n\n',
+        (
+            'data: {"type":"response.completed",'
+            '"response":{"output_text":"Reach alice@example.com"}}\n\n'
+        ),
+        "data: [DONE]\n\n",
+    ]
+    with patch(
+        "preloop.services.model_content_policy.load_model_io_rules",
+        return_value=[rule],
+    ):
+        out = list(
+            wrap_stream_for_response_policy(
+                iter(events),
+                gateway=gateway,
+                payload={},
+                ai_model=None,
+                provider="openai",
+            )
+        )
+    joined = "".join(out)
+    assert "alice@example.com" not in joined
+    assert "Blocked by content policy" in joined
+
+
+def test_approval_and_audit_payloads_omit_raw_text():
+    secret = "alice@example.com is the PII"
+    rule = _rule(
+        id="deny-pii",
+        detectors={"pii": True},
+        conditions=[ToolCondition(expression="pii.found == true", action="deny")],
+    )
+    with patch(
+        "preloop.services.model_content_policy._log_policy_decision_async"
+    ) as audit:
+        decision = evaluate_model_io(
+            rules=[rule],
+            target="model.request",
+            text=secret,
+            account_id=uuid4(),
+            user_id=uuid4(),
+        )
+    args = _approval_arguments(decision, "model.request")
+    assert secret not in str(args)
+    assert "text_preview" not in args
+    assert args.get("text_sha256")
+    audit.assert_called_once()
+    tool_args = audit.call_args.kwargs.get("tool_args") or {}
+    assert "text_preview" not in tool_args
+    assert secret not in str(tool_args)
+
+
+@pytest.mark.asyncio
+async def test_hold_for_model_io_approval_awaits_require_approval():
+    decision = ModelIODecision(
+        action="require_approval",
+        rule_id="r1",
+        approval_workflow="high-risk",
+    )
+    with (
+        patch(
+            "preloop.services.model_content_policy._resolve_workflow_id",
+            return_value="wf-1",
+        ),
+        patch(
+            "preloop.services.approval_helper.require_approval",
+            new_callable=AsyncMock,
+            return_value=(True, ""),
+        ) as require,
+    ):
+        approved = await hold_for_model_io_approval(
+            db=MagicMock(),
+            account_id="acct",
+            target="model.request",
+            decision=decision,
+        )
+    assert approved is True
+    require.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_hold_driver_refuses_to_block_running_loop():
+    async def _coro() -> bool:
+        return True
+
+    coro = _coro()
+    try:
+        with pytest.raises(RuntimeError, match="running event loop"):
+            _await_model_io_hold(coro)
+    finally:
+        coro.close()

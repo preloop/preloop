@@ -8,7 +8,11 @@ Gateway callers invoke two functions:
 
 Streaming uses ``wrap_stream_for_response_policy``, which buffers SSE
 events until the assembled ``response.text`` can be evaluated. Denied
-payloads are never replayed to the client.
+payloads are never replayed to the client. Buffer-until-assembled is
+intentional: a ``model.response`` deny cannot retract tokens already
+sent, so a rolling window is unsafe for deny/require_approval. The
+cost is that time-to-first-token becomes time-to-last-token when
+response rules exist.
 
 Rules live on ``account.meta_data['model_io_rules']`` so the existing
 Policies YAML editor and the console form share one store. When no
@@ -55,7 +59,13 @@ logger = logging.getLogger(__name__)
 MODEL_IO_META_KEY = "model_io_rules"
 CONTENT_POLICY_ERROR_CODE = "content_policy_denied"
 CONTENT_POLICY_MESSAGE = "Blocked by content policy"
-TEXT_PREVIEW_CHARS = 80
+
+# Hung detectors are abandoned on timeout rather than joined. A small
+# dedicated pool keeps ``ThreadPoolExecutor.__exit__`` from blocking the
+# request on ``shutdown(wait=True)``.
+_DETECTOR_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="model-io-detector"
+)
 
 _DETECTOR_PREFIXES = {
     "pii": ("pii.", "pii["),
@@ -105,7 +115,6 @@ class ModelIODecision:
     approval_workflow: Optional[str] = None
     detector_summary: Dict[str, Any] = field(default_factory=dict)
     text_sha256: Optional[str] = None
-    text_preview: Optional[str] = None
     expression: Optional[str] = None
 
     def to_policy_decision(self) -> PolicyDecision:
@@ -224,13 +233,9 @@ def _content_to_text(content: Any) -> str:
     return str(content)
 
 
-def _text_privacy(text: str) -> tuple[str, str]:
-    """Return (sha256, truncated preview) for audit and approval tickets."""
-    digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
-    preview = text[:TEXT_PREVIEW_CHARS]
-    if len(text) > TEXT_PREVIEW_CHARS:
-        preview += "...[truncated]"
-    return digest, preview
+def _text_privacy(text: str) -> str:
+    """SHA-256 of scanned text. Never persist a raw preview (it may be PII)."""
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
 def _rule_enables_detector(rule: ModelIORule, name: str) -> bool:
@@ -280,19 +285,24 @@ def _run_detectors(rule: ModelIORule, text: str) -> DetectorSummary:
 
 
 def _run_detectors_with_timeout(rule: ModelIORule, text: str) -> DetectorSummary:
-    """Run detectors with the rule's hard timeout."""
+    """Run detectors with the rule's hard timeout.
+
+    The future is submitted on a process-level pool so this function can
+    return on timeout without ``shutdown(wait=True)`` joining a hung
+    detector. The abandoned worker is left to finish or be collected at
+    process exit.
+    """
     timeout_s = max(rule.detector_timeout_ms, 1) / 1000.0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(_run_detectors, rule, text)
-        try:
-            return future.result(timeout=timeout_s)
-        except concurrent.futures.TimeoutError:
-            logger.warning(
-                "Model I/O detector timeout rule_id=%s timeout_ms=%s",
-                rule.id,
-                rule.detector_timeout_ms,
-            )
-            return DetectorSummary(timed_out=True)
+    future = _DETECTOR_POOL.submit(_run_detectors, rule, text)
+    try:
+        return future.result(timeout=timeout_s)
+    except concurrent.futures.TimeoutError:
+        logger.warning(
+            "Model I/O detector timeout rule_id=%s timeout_ms=%s",
+            rule.id,
+            rule.detector_timeout_ms,
+        )
+        return DetectorSummary(timed_out=True)
 
 
 def _timeout_fail_mode(rule: ModelIORule) -> str:
@@ -357,13 +367,12 @@ def evaluate_model_io(
     First matching enabled rule condition wins. No matching rule: allow.
     Detector timeout follows ``on_detector_timeout`` (default deny).
     """
-    digest, preview = _text_privacy(text)
+    digest = _text_privacy(text)
     if not rules:
         return ModelIODecision(
             action="allow",
             rule_description="No model I/O rules defined",
             text_sha256=digest,
-            text_preview=preview,
         )
     matching = [rule for rule in rules if rule.enabled and str(rule.target) == target]
     if not matching:
@@ -371,7 +380,6 @@ def evaluate_model_io(
             action="allow",
             rule_description="No rules matched (default allow)",
             text_sha256=digest,
-            text_preview=preview,
         )
 
     for rule in matching:
@@ -385,7 +393,6 @@ def evaluate_model_io(
                     rule_description=f"Detector timeout on rule {rule.id}",
                     detector_summary=summary.as_dict(),
                     text_sha256=digest,
-                    text_preview=preview,
                 )
                 _audit_decision(account_id, user_id, target, decision, rule)
                 return decision
@@ -416,7 +423,6 @@ def evaluate_model_io(
                     rule_description=f"Rule evaluation error: {exc}",
                     detector_summary=summary.as_dict(),
                     text_sha256=digest,
-                    text_preview=preview,
                 )
                 _audit_decision(account_id, user_id, target, decision, rule)
                 return decision
@@ -434,7 +440,6 @@ def evaluate_model_io(
                 approval_workflow=rule.approval_workflow,
                 detector_summary=summary.as_dict(),
                 text_sha256=digest,
-                text_preview=preview,
                 expression=condition.expression,
             )
             _audit_decision(account_id, user_id, target, decision, rule)
@@ -444,7 +449,6 @@ def evaluate_model_io(
         action="allow",
         rule_description="No rules matched (default allow)",
         text_sha256=digest,
-        text_preview=preview,
     )
 
 
@@ -481,7 +485,6 @@ def _audit_decision(
         condition_matched=rule.id,
         tool_args={
             "text_sha256": decision.text_sha256,
-            "text_preview": decision.text_preview,
         },
         user_id=user_uuid,
         extra_details=extra,
@@ -500,13 +503,12 @@ def _gateway_error(provider: str, decision: ModelIODecision) -> ModelGatewayAPIE
 
 
 def _approval_arguments(decision: ModelIODecision, target: str) -> Dict[str, Any]:
-    """Approval ticket payload. Truncated evidence, not the full prompt."""
+    """Approval ticket payload. Hash and detector summary, never raw text."""
     return {
         "target": target,
         "rule_id": decision.rule_id,
         "detector_summary": decision.detector_summary,
         "text_sha256": decision.text_sha256,
-        "text_preview": decision.text_preview,
     }
 
 
@@ -524,7 +526,7 @@ def _resolve_workflow_id(
     return None
 
 
-def hold_for_model_io_approval(
+async def hold_for_model_io_approval(
     *,
     db: Session,
     account_id: Any,
@@ -532,6 +534,11 @@ def hold_for_model_io_approval(
     decision: ModelIODecision,
 ) -> bool:
     """Hold on the existing tool-approval workflow.
+
+    Awaits ``require_approval`` on the current event loop, the same way
+    tool gates wait. Sync gateway callers drive this via
+    ``_await_model_io_hold`` so a running loop is never blocked with
+    ``Future.result()``.
 
     Returns True when approved. False when declined, expired, or the
     workflow is missing (fail closed).
@@ -557,27 +564,38 @@ def hold_for_model_io_approval(
         detector_summary=decision.detector_summary,
     )
 
-    async def _run() -> tuple[bool, str]:
-        from preloop.services.approval_helper import require_approval
+    from preloop.services.approval_helper import require_approval
 
-        return await require_approval(
-            tool_name=target,
-            tool_source="builtin",
-            account_id=str(account_id),
-            arguments=_approval_arguments(decision, target),
-            workflow_id=workflow_id,
-            rule_context=rule_context,
-        )
+    approved, _message = await require_approval(
+        tool_name=target,
+        tool_source="builtin",
+        account_id=str(account_id),
+        arguments=_approval_arguments(decision, target),
+        workflow_id=workflow_id,
+        rule_context=rule_context,
+    )
+    return approved
 
+
+def _await_model_io_hold(awaitable: Any) -> bool:
+    """Drive ``hold_for_model_io_approval`` from sync gateway methods.
+
+    FastAPI ``def`` endpoints and Starlette ``iterate_in_threadpool`` run
+    the gateway off the event loop, so ``asyncio.run`` is safe there. If
+    a loop is already running, blocking ``Future.result()`` would freeze
+    the worker; callers in that context must ``await`` the coroutine.
+    Patched sync mocks (tests) are returned as-is.
+    """
+    if not asyncio.iscoroutine(awaitable):
+        return bool(awaitable)
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        approved, _message = asyncio.run(_run())
-        return approved
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        approved, _message = pool.submit(lambda: asyncio.run(_run())).result()
-    return approved
+        return bool(asyncio.run(awaitable))
+    raise RuntimeError(
+        "model I/O require_approval cannot block a running event loop; "
+        "await hold_for_model_io_approval from async callers"
+    )
 
 
 def _session_id_from_gateway(gateway: Any) -> Optional[str]:
@@ -597,11 +615,13 @@ def _apply_decision(
     if decision.action == "allow":
         return
     if decision.action == "require_approval":
-        approved = hold_for_model_io_approval(
-            db=gateway.db,
-            account_id=gateway.auth_context.user.account_id,
-            target=target,
-            decision=decision,
+        approved = _await_model_io_hold(
+            hold_for_model_io_approval(
+                db=gateway.db,
+                account_id=gateway.auth_context.user.account_id,
+                target=target,
+                decision=decision,
+            )
         )
         if approved:
             return
@@ -678,8 +698,25 @@ _SSE_DATA_RE = re.compile(r"^data:\s*(.*)$", re.MULTILINE)
 
 
 def extract_stream_text(event: str) -> str:
-    """Pull assistant text deltas from one SSE event."""
+    """Pull assistant text from one SSE event.
+
+    Parses chat/completions, OpenAI Responses, and Anthropic message
+    shapes explicitly so a fallback cannot double-count the same delta.
+    """
+    text, _is_snapshot = _extract_stream_fragment(event)
+    return text
+
+
+def _extract_stream_fragment(event: str) -> tuple[str, bool]:
+    """Return ``(text, is_full_snapshot)`` for one SSE event.
+
+    Snapshot events (Responses ``response.completed``) carry the full
+    assembled ``output_text``. Callers that also collected incremental
+    deltas must prefer the snapshot to avoid concatenating the full
+    text on top of the deltas.
+    """
     parts: List[str] = []
+    is_snapshot = False
     for match in _SSE_DATA_RE.finditer(event):
         raw = match.group(1).strip()
         if not raw or raw == "[DONE]":
@@ -690,28 +727,51 @@ def extract_stream_text(event: str) -> str:
             continue
         if not isinstance(payload, dict):
             continue
+        event_type = payload.get("type")
+
+        # OpenAI chat/completions (and LiteLLM OpenAI-shape streams).
         choices = payload.get("choices") or []
         if choices and isinstance(choices[0], dict):
             delta = choices[0].get("delta") or {}
-            content = delta.get("content")
-            if isinstance(content, str):
-                parts.append(content)
+            if isinstance(delta, dict):
+                content = delta.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
             message = choices[0].get("message") or {}
-            msg_content = message.get("content")
-            if isinstance(msg_content, str):
-                parts.append(msg_content)
-        output_text = payload.get("output_text")
-        if isinstance(output_text, str):
-            parts.append(output_text)
-        delta_text = payload.get("delta")
-        if isinstance(delta_text, dict) and isinstance(delta_text.get("text"), str):
-            parts.append(delta_text["text"])
-        content_blocks = payload.get("content_block") or payload.get("delta")
-        if isinstance(content_blocks, dict) and isinstance(
-            content_blocks.get("text"), str
+            if isinstance(message, dict):
+                msg_content = message.get("content")
+                if isinstance(msg_content, str):
+                    parts.append(msg_content)
+            continue
+
+        # OpenAI Responses API: incremental output_text.delta is a string.
+        # Completed events nest the full text under response.output_text.
+        if event_type == "response.completed":
+            resp = payload.get("response")
+            if isinstance(resp, dict) and isinstance(resp.get("output_text"), str):
+                parts.append(resp["output_text"])
+                is_snapshot = True
+            continue
+        if isinstance(payload.get("delta"), str):
+            parts.append(payload["delta"])
+            continue
+
+        # Anthropic messages: content_block_delta.delta.text, not the
+        # same object via a content_block fallback (that double-counted).
+        delta_obj = payload.get("delta")
+        if event_type == "content_block_delta" or (
+            isinstance(delta_obj, dict) and delta_obj.get("type") == "text_delta"
         ):
-            parts.append(content_blocks["text"])
-    return "".join(parts)
+            if isinstance(delta_obj, dict) and isinstance(delta_obj.get("text"), str):
+                parts.append(delta_obj["text"])
+            continue
+        content_block = payload.get("content_block")
+        if isinstance(content_block, dict) and isinstance(
+            content_block.get("text"), str
+        ):
+            # content_block_start often has empty text; appending "" is fine.
+            parts.append(content_block["text"])
+    return "".join(parts), is_snapshot
 
 
 def wrap_stream_for_response_policy(
@@ -728,6 +788,11 @@ def wrap_stream_for_response_policy(
     Otherwise the upstream stream is fully buffered, policy runs on the
     assembled text, and only an allowed stream is replayed. A deny yields
     an SSE error event and never the blocked payload.
+
+    Full buffering is required for deny/require_approval: tokens already
+    sent cannot be retracted, so a rolling window cannot enforce those
+    actions. Clients see time-to-first-token equal time-to-last-token
+    when any ``model.response`` rule is enabled.
     """
     account_id = gateway.auth_context.user.account_id
     rules = load_model_io_rules(gateway.db, account_id)
@@ -736,20 +801,26 @@ def wrap_stream_for_response_policy(
         return
 
     buffered: List[str] = []
-    assembled_parts: List[str] = []
+    delta_parts: List[str] = []
+    snapshot_text: Optional[str] = None
     try:
         for event in events:
             buffered.append(event)
-            assembled_parts.append(extract_stream_text(event))
+            fragment, is_snapshot = _extract_stream_fragment(event)
+            if is_snapshot:
+                snapshot_text = fragment
+            elif fragment:
+                delta_parts.append(fragment)
     except ModelGatewayAPIError:
         raise
 
+    assembled = snapshot_text if snapshot_text is not None else "".join(delta_parts)
     try:
         enforce_response_policy(
             gateway,
             payload=payload,
             ai_model=ai_model,
-            response_text="".join(assembled_parts),
+            response_text=assembled,
             provider=provider,
         )
     except ModelGatewayAPIError as exc:

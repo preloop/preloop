@@ -80,8 +80,9 @@ Each rule has `detector_timeout_ms` (default 500) and
 `on_detector_timeout: allow` to skip that rule on timeout.
 
 Application logs never include full prompts. Audit and approval tickets
-store the rule id, detector summary, a SHA-256 of the text, and an
-80-character preview.
+store the rule id, detector summary, and a SHA-256 of the scanned text.
+They do not store a raw preview (the preview can be the PII the rule
+blocked).
 
 ## Streaming
 
@@ -90,6 +91,14 @@ until `response.text` is complete, evaluates policy, then either replays
 the buffered events or returns a deny error. The blocked payload is
 never sent to the client. When no `model.response` rules exist, streams
 pass through without buffering.
+
+Buffering is required for `deny` and `require_approval`. Tokens already
+sent to the client cannot be retracted, so a rolling window cannot
+enforce those actions (it can miss PII from earlier chunks and cannot
+unsend them). The tradeoff: time-to-first-token becomes time-to-last-token
+when any `model.response` rule is enabled. Issue #313 allowed either
+buffer-until-assembled or a rolling window; this implementation keeps
+buffering for correctness of deny.
 
 ## Deny errors
 
@@ -104,8 +113,9 @@ OpenAI-compatible clients can surface that message.
 
 `require_approval` uses the existing tool-approval workflow
 (`require_approval` / `approval_service`). The hold appears in the
-existing approvals inbox. The ticket includes rule id and detector
-summary. It does not store the full prompt.
+existing approvals inbox. The ticket includes rule id, detector
+summary, and a SHA-256 of the scanned text. It does not store the full
+prompt or a raw preview.
 
 ## YAML example
 

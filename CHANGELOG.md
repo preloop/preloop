@@ -27,8 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a change edits the current policy with the account default model and
   shows a unified YAML diff that must be Saved. YAML import/export
   round-trips the new targets. Streaming buffers until the assembled
-  response can be evaluated. See
-  `docs/guide/model-content-policies.md`.
+  response can be evaluated (deny cannot retract tokens already sent).
+  See `docs/guide/model-content-policies.md`.
 
 - **GitLab `issue_labeled`**: an Issue Hook whose `changes.labels` adds
   a label now normalizes to `issue_labeled` (remove-only is
