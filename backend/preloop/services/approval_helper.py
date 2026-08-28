@@ -80,8 +80,8 @@ def _session_context_for_in_band() -> _InBandSessionContext:
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 
         user_context = get_current_user_context()
-    except Exception as e:  # pragma: no cover - context lookup is optional
-        logger.warning(f"Error getting current user context: {e}")
+    except Exception as e:
+        logger.warning("Error getting current user context: %s", e, exc_info=True)
         return empty
     if not user_context:
         return empty
