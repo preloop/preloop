@@ -15,6 +15,8 @@ from unittest.mock import patch
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from preloop.config import settings
 from preloop.models.crud import (
     crud_account,
@@ -1080,3 +1082,57 @@ def test_idle_closer_can_be_disabled(db_session, test_user):
 
     rows = _openai_usage_rows(db_session)
     assert len({r.runtime_session_id for r in rows}) == 1
+
+
+def test_chat_completion_emits_otel_span_with_conversation_id(db_session, test_user):
+    """A chat/completions request produces a GenAI span with session id."""
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from preloop.services.otel_export import (
+        ATTR_CONVERSATION_ID,
+        ATTR_ESTIMATED_COST,
+        ATTR_INPUT_TOKENS,
+        configure_for_tests,
+        shutdown_otel,
+    )
+
+    exporter = InMemorySpanExporter()
+    configure_for_tests(exporter)
+    try:
+        _create_gateway_model(db_session, test_user.account_id)
+        api_key = _runtime_key(db_session, test_user)
+        service = _service(
+            db_session, test_user, api_key, client_session_id="otel-run-1"
+        )
+        _run_chat(
+            service,
+            {
+                "model": "openai/gpt-5",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        usage = _latest_usage(db_session)
+        assert usage is not None
+        assert usage.runtime_session_id is not None
+        spans = exporter.get_finished_spans()
+        chat_spans = [
+            span
+            for span in spans
+            if span.attributes.get("gen_ai.operation.name") == "chat"
+        ]
+        assert chat_spans, f"expected a chat span, got {spans!r}"
+        span = chat_spans[0]
+        assert span.attributes[ATTR_CONVERSATION_ID] == str(usage.runtime_session_id)
+        assert span.attributes[ATTR_INPUT_TOKENS] == usage.prompt_tokens
+        assert span.attributes[ATTR_ESTIMATED_COST] == pytest.approx(
+            float(usage.estimated_cost or 0.0)
+        )
+        keys = set(span.attributes.keys())
+        assert "gen_ai.prompt" not in keys
+        assert "gen_ai.completion" not in keys
+        assert not any(key.startswith("gen_ai.input") for key in keys)
+        assert not any(key.startswith("gen_ai.output") for key in keys)
+    finally:
+        shutdown_otel()

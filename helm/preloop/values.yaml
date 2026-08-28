@@ -481,6 +481,23 @@ sentry:
   # The DSN for your Sentry project
   dsn: ""
 
+# OTLP export for gateway completions and MCP tool calls. Disabled by default.
+# Shared by the API and gateway deployments. Put ingest keys in headersSecret
+# (or otlp.headers, which is stored on the chart Secret).
+otlp:
+  enabled: false
+  endpoint: ""
+  protocol: http/protobuf
+  headers: ""
+  headersSecret:
+    name: ""
+    key: otlp-headers
+  resource:
+    serviceName: preloop
+    serviceNamespace: ""
+    deploymentEnvironment: ""
+  samplerRatio: 1.0
+
 # Performance profiling configuration
 profiling:
   enabled: false

@@ -150,6 +150,48 @@ class GitLabOAuthSettings(BaseModel):
     )
 
 
+class OtlpSettings(BaseModel):
+    """Optional OTLP export for gateway and MCP telemetry.
+
+    Disabled by default. When enabled, Preloop exports GenAI spans (and
+    duration metrics) to the configured collector or vendor OTLP endpoint.
+    """
+
+    enabled: bool = Field(False, description="Enable OTLP export")
+    endpoint: str = Field(
+        "",
+        description=(
+            "OTLP endpoint. HTTP protocols append /v1/traces (and /v1/metrics) "
+            "when those suffixes are missing. gRPC uses host:port."
+        ),
+    )
+    protocol: str = Field(
+        "http/protobuf",
+        description="OTLP protocol: http/protobuf or grpc",
+    )
+    headers: str = Field(
+        "",
+        description=(
+            "OTLP headers as key=value pairs separated by commas "
+            "(vendor ingest keys, for example Langfuse Basic auth or a "
+            "Datadog API key header)"
+        ),
+    )
+    service_name: str = Field("preloop", description="Resource service.name")
+    service_namespace: str = Field("", description="Resource service.namespace")
+    deployment_environment: str = Field(
+        "",
+        description="Resource deployment.environment (falls back to ENVIRONMENT)",
+    )
+    sampler_ratio: float = Field(
+        1.0,
+        description=(
+            "Parent-based TraceIdRatioBased sampler ratio in [0, 1]. "
+            "Use a lower ratio or collector-side sampling when volume is high."
+        ),
+    )
+
+
 class VaultKVV2Settings(BaseModel):
     """Vault/OpenBao-compatible KV v2 secret backend settings."""
 
@@ -228,6 +270,10 @@ class Settings(BaseSettings):
     vault_kv_v2: VaultKVV2Settings = Field(
         default_factory=VaultKVV2Settings,
         description="Optional Vault/OpenBao-compatible secret backend settings",
+    )
+    otlp: OtlpSettings = Field(
+        default_factory=OtlpSettings,
+        description="Optional OTLP export for gateway and MCP telemetry",
     )
     model_gateway_capture_content: bool = Field(
         True,
@@ -635,6 +681,26 @@ class Settings(BaseSettings):
             ca_cert_path=os.getenv("VAULT_KV_V2_CA_CERT_PATH", ""),
             timeout_seconds=int(os.getenv("VAULT_KV_V2_TIMEOUT_SECONDS", "5")),
         )
+        otlp_ratio_raw = os.getenv("OTLP_SAMPLER_RATIO", "1.0")
+        try:
+            otlp_sampler_ratio = float(otlp_ratio_raw)
+        except ValueError:
+            otlp_sampler_ratio = 1.0
+        otlp = OtlpSettings(
+            enabled=os.getenv("OTLP_ENABLED", "false").lower()
+            in ("true", "1", "t", "yes"),
+            endpoint=os.getenv("OTLP_ENDPOINT")
+            or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+            protocol=os.getenv("OTLP_PROTOCOL")
+            or os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"),
+            headers=os.getenv("OTLP_HEADERS")
+            or os.getenv("OTEL_EXPORTER_OTLP_HEADERS", ""),
+            service_name=os.getenv("OTLP_SERVICE_NAME")
+            or os.getenv("OTEL_SERVICE_NAME", "preloop"),
+            service_namespace=os.getenv("OTLP_SERVICE_NAMESPACE", ""),
+            deployment_environment=os.getenv("OTLP_DEPLOYMENT_ENVIRONMENT", ""),
+            sampler_ratio=otlp_sampler_ratio,
+        )
 
         return cls(
             app_name=os.getenv("APP_NAME", "Preloop"),
@@ -653,6 +719,7 @@ class Settings(BaseSettings):
             google_oauth=google_oauth,
             gitlab_oauth=gitlab_oauth,
             vault_kv_v2=vault_kv_v2,
+            otlp=otlp,
             model_gateway_capture_content=os.getenv(
                 "MODEL_GATEWAY_CAPTURE_CONTENT", "true"
             ).lower()

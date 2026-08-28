@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OTLP export for gateway and MCP telemetry**: optional OpenTelemetry
+  export (disabled by default) emits GenAI spans for governed model
+  calls and MCP tool calls, including `gen_ai.conversation.id` when a
+  runtime session id is present. Token and cost attributes match the
+  `ApiUsage` row for that request. Exporter errors are logged and never
+  fail the user-facing call. Helm `otlp.*` values and
+  `docs/guide/observability-otlp.md` cover a generic collector, Langfuse
+  OTLP ingest, and Datadog OTLP ingest.
+
 - **GitLab `issue_labeled`**: an Issue Hook whose `changes.labels` adds
   a label now normalizes to `issue_labeled` (remove-only is
   `issue_unlabeled`). Filter field `added_labels` is set on GitHub and
