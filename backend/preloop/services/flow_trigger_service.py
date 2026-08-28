@@ -767,11 +767,7 @@ class FlowTriggerService:
     # those downstream events ARE guarded, so recursion cannot happen.
     _LOOP_GUARD_EXEMPT_EVENT_TYPES: frozenset = frozenset(
         {
-            "pull_request.opened",
-            "pull_request.reopened",
-            "merge_request.opened",
-            "merge_request.reopened",
-            # Normalized variants used elsewhere in the codebase
+            # Canonical names from normalize_event_type (sync/tasks.py).
             "pull_request_opened",
             "pull_request_reopened",
             "merge_request_opened",

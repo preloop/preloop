@@ -1179,15 +1179,6 @@ class TestIsPreloopTriggeredEvent:
         loop vector.  This is the core fix for PRs #306 and #307."""
         event = {
             "source": "github",
-            "type": "pull_request.opened",
-            "payload": {"sender": {"login": "preloop[bot]"}},
-        }
-        assert flow_trigger_service._is_preloop_triggered_event(event) is False
-
-    def test_github_bot_pr_opened_normalized_passes(self, flow_trigger_service):
-        """Normalized event type variant also passes."""
-        event = {
-            "source": "github",
             "type": "pull_request_opened",
             "payload": {"sender": {"login": "preloop[bot]"}},
         }
@@ -1196,7 +1187,7 @@ class TestIsPreloopTriggeredEvent:
     def test_github_bot_pr_reopened_passes(self, flow_trigger_service):
         event = {
             "source": "github",
-            "type": "pull_request.reopened",
+            "type": "pull_request_reopened",
             "payload": {"sender": {"login": "preloop[bot]"}},
         }
         assert flow_trigger_service._is_preloop_triggered_event(event) is False
@@ -1204,10 +1195,26 @@ class TestIsPreloopTriggeredEvent:
     def test_gitlab_bot_mr_opened_passes(self, flow_trigger_service):
         event = {
             "source": "gitlab",
-            "type": "merge_request.opened",
+            "type": "merge_request_opened",
             "payload": {"user": {"username": "preloop"}},
         }
         assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_loop_guard_exempt_types_are_underscore_forms(self, flow_trigger_service):
+        """Dotted GitHub-style names never match; keep only normalized forms."""
+        exempt = flow_trigger_service._LOOP_GUARD_EXEMPT_EVENT_TYPES
+        assert "pull_request.opened" not in exempt
+        assert "pull_request.reopened" not in exempt
+        assert "merge_request.opened" not in exempt
+        assert "merge_request.reopened" not in exempt
+        assert exempt == frozenset(
+            {
+                "pull_request_opened",
+                "pull_request_reopened",
+                "merge_request_opened",
+                "merge_request_reopened",
+            }
+        )
 
     # -- Label hop events: MUST pass --
 
