@@ -129,11 +129,39 @@ export class ApprovalRuleContextBlock extends LitElement {
       : '/console/tools';
   }
 
+  private detectorHint(context: ApprovalRuleContext): string {
+    const summary = context.detector_summary;
+    if (!summary) {
+      return '';
+    }
+    const parts: string[] = [];
+    if (summary['pii.found']) {
+      parts.push('PII');
+    }
+    if (typeof summary['injection.score'] === 'number') {
+      parts.push(`injection ${summary['injection.score']}`);
+    }
+    if (summary['moderation.flagged']) {
+      parts.push('moderation');
+    }
+    return parts.join(', ');
+  }
+
   private renderCompact(context: ApprovalRuleContext) {
+    const detectorHint = this.detectorHint(context);
+    const title = [context.expression, detectorHint]
+      .filter(Boolean)
+      .join(' · ');
+    const showRuleId =
+      Boolean(context.rule_id) && context.rule_id !== context.rule_name;
     return html`
-      <span class="compact" title=${context.expression ?? ''}>
+      <span class="compact" title=${title}>
         <sl-icon name="funnel"></sl-icon>
-        <span>${context.rule_name}</span>
+        <span
+          >${context.rule_name}${
+            showRuleId ? ` (${context.rule_id})` : ''
+          }${detectorHint ? ` · ${detectorHint}` : ''}</span
+        >
       </span>
     `;
   }
@@ -160,10 +188,25 @@ export class ApprovalRuleContextBlock extends LitElement {
         </div>
 
         <div class="rule-name">${context.rule_name}</div>
-
+        ${
+          context.rule_id
+            ? html`<div class="rule-explanation">
+                Rule id: ${context.rule_id}
+              </div>`
+            : nothing
+        }
         ${
           context.explanation
             ? html`<div class="rule-explanation">${context.explanation}</div>`
+            : nothing
+        }
+        ${
+          context.detector_summary
+            ? html`<div class="rule-expression">
+                ${Object.entries(context.detector_summary)
+                  .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+                  .join(' ')}
+              </div>`
             : nothing
         }
         ${
@@ -204,11 +247,15 @@ export class ApprovalRuleContextBlock extends LitElement {
             : nothing
         }
         ${
-          context.tool_configuration_id
-            ? html`<a class="rule-link" href=${this.toolsHref}
-                >Review this rule in Tools</a
+          context.source === 'model_io_rule'
+            ? html`<a class="rule-link" href="/console/policies"
+                >Review this rule in Policies</a
               >`
-            : nothing
+            : context.tool_configuration_id
+              ? html`<a class="rule-link" href=${this.toolsHref}
+                  >Review this rule in Tools</a
+                >`
+              : nothing
         }
       </div>
     `;

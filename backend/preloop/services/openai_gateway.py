@@ -132,6 +132,11 @@ from preloop.services.model_runtime_resolver import (
     resolve_ai_model_runtime,
 )
 from preloop.services.gateway_usage_search import GatewayUsageSearchService
+from preloop.services.model_content_policy import (
+    enforce_request_policy,
+    enforce_response_policy,
+    wrap_stream_for_response_policy,
+)
 from preloop.services.secret_service import (
     ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
     CredentialRefreshError,
@@ -971,6 +976,13 @@ class OpenAIGatewayService:
                 request_payload=payload,
                 endpoint_kind="chat_completions",
             )
+            enforce_request_policy(
+                self,
+                payload=payload,
+                ai_model=model,
+                messages=messages,
+                provider="openai",
+            )
             if self._is_openai_codex_model(model):
                 # Codex bypasses _call_litellm, so capture tools_meta here too
                 # (T11 finding). Codex tools are not governance-stripped.
@@ -995,6 +1007,13 @@ class OpenAIGatewayService:
                 )
                 response_dict = self._response_to_dict(response)
             assistant_content = self._extract_assistant_text(response_dict)
+            enforce_response_policy(
+                self,
+                payload=payload,
+                ai_model=model,
+                response_text=assistant_content,
+                provider="openai",
+            )
             usage = self._normalize_usage(
                 response_dict.get("usage"),
                 prompt_key="prompt_tokens",
@@ -1096,6 +1115,13 @@ class OpenAIGatewayService:
                 request_payload=payload,
                 endpoint_kind="responses",
             )
+            enforce_request_policy(
+                self,
+                payload=payload,
+                ai_model=model,
+                messages=messages,
+                provider="openai",
+            )
             if self._is_openai_codex_model(model):
                 # Codex bypasses _call_litellm (T11 finding); attribute here.
                 self._capture_tools_meta(payload.get("tools"))
@@ -1115,6 +1141,13 @@ class OpenAIGatewayService:
                     or resolve_ai_model_runtime(model).model_gateway_model_alias
                 ),
                 response_dict=response_dict,
+            )
+            enforce_response_policy(
+                self,
+                payload=payload,
+                ai_model=model,
+                response_text=str(response_payload.get("output_text") or ""),
+                provider="openai",
             )
             self._record_gateway_request(
                 endpoint="/openai/v1/responses",
@@ -1201,6 +1234,13 @@ class OpenAIGatewayService:
                 request_payload=payload,
                 endpoint_kind="anthropic_messages",
             )
+            enforce_request_policy(
+                self,
+                payload=payload,
+                ai_model=model,
+                messages=messages,
+                provider="anthropic",
+            )
             oauth_token = self._anthropic_oauth_passthrough_token(model)
             if oauth_token is not None:
                 # Subscription-OAuth: forward the client's Anthropic-native
@@ -1253,6 +1293,24 @@ class OpenAIGatewayService:
                     ),
                     usage=usage,
                 )
+            anthropic_text = ""
+            if isinstance(response_payload, dict):
+                content_blocks = response_payload.get("content") or []
+                if isinstance(content_blocks, list):
+                    anthropic_text = "\n".join(
+                        str(block.get("text") or "")
+                        for block in content_blocks
+                        if isinstance(block, dict)
+                    )
+                if not anthropic_text:
+                    anthropic_text = self._extract_assistant_text(response_dict)
+            enforce_response_policy(
+                self,
+                payload=payload,
+                ai_model=model,
+                response_text=anthropic_text,
+                provider="anthropic",
+            )
             self._record_gateway_request(
                 endpoint="/anthropic/v1/messages",
                 method="POST",
@@ -1332,6 +1390,13 @@ class OpenAIGatewayService:
                 requested_model=payload.get("model"),
                 request_payload=payload,
                 endpoint_kind="anthropic_messages_stream",
+            )
+            enforce_request_policy(
+                self,
+                payload=payload,
+                ai_model=model,
+                messages=messages,
+                provider="anthropic",
             )
             oauth_token = self._anthropic_oauth_passthrough_token(model)
             if oauth_token is not None:
@@ -1708,7 +1773,13 @@ class OpenAIGatewayService:
                     )
 
         return self._observe_stream(
-            event_stream(),
+            wrap_stream_for_response_policy(
+                event_stream(),
+                gateway=self,
+                payload=payload,
+                ai_model=model,
+                provider="anthropic",
+            ),
             endpoint="/anthropic/v1/messages",
             endpoint_kind="anthropic_messages_stream",
             started_at=started_at,
@@ -1759,6 +1830,13 @@ class OpenAIGatewayService:
                 requested_model=payload.get("model"),
                 request_payload=payload,
                 endpoint_kind="chat_completions_stream",
+            )
+            enforce_request_policy(
+                self,
+                payload=payload,
+                ai_model=model,
+                messages=messages,
+                provider="openai",
             )
             if self._is_openai_codex_model(model):
                 # Codex bypasses _call_litellm (T11 finding); attribute here.
@@ -1987,7 +2065,13 @@ class OpenAIGatewayService:
                     )
 
         return self._observe_stream(
-            event_stream(),
+            wrap_stream_for_response_policy(
+                event_stream(),
+                gateway=self,
+                payload=payload,
+                ai_model=model,
+                provider="openai",
+            ),
             endpoint="/openai/v1/chat/completions",
             endpoint_kind="chat_completions_stream",
             started_at=started_at,
@@ -2031,6 +2115,13 @@ class OpenAIGatewayService:
                 requested_model=payload.get("model"),
                 request_payload=payload,
                 endpoint_kind="responses_stream",
+            )
+            enforce_request_policy(
+                self,
+                payload=payload,
+                ai_model=model,
+                messages=messages,
+                provider="openai",
             )
             if self._is_openai_codex_model(model):
                 # Codex bypasses _call_litellm (T11 finding); attribute here.
@@ -2465,7 +2556,13 @@ class OpenAIGatewayService:
                     )
 
         return self._observe_stream(
-            event_stream(),
+            wrap_stream_for_response_policy(
+                event_stream(),
+                gateway=self,
+                payload=payload,
+                ai_model=model,
+                provider="openai",
+            ),
             endpoint="/openai/v1/responses",
             endpoint_kind="responses_stream",
             started_at=started_at,
@@ -3748,7 +3845,13 @@ class OpenAIGatewayService:
                     )
 
         return self._observe_stream(
-            event_stream(),
+            wrap_stream_for_response_policy(
+                event_stream(),
+                gateway=self,
+                payload=payload,
+                ai_model=ai_model,
+                provider="openai",
+            ),
             endpoint="/openai/v1/responses",
             endpoint_kind="responses_stream",
             started_at=started_at,
@@ -3990,7 +4093,13 @@ class OpenAIGatewayService:
                     )
 
         return self._observe_stream(
-            event_stream(),
+            wrap_stream_for_response_policy(
+                event_stream(),
+                gateway=self,
+                payload=payload,
+                ai_model=ai_model,
+                provider="openai",
+            ),
             endpoint="/openai/v1/chat/completions",
             endpoint_kind="chat_completions_stream",
             started_at=started_at,
@@ -4652,7 +4761,13 @@ class OpenAIGatewayService:
         # The httpx client is process-level and must not be closed here.
         _ = upstream_client
         return self._observe_stream(
-            event_stream(),
+            wrap_stream_for_response_policy(
+                event_stream(),
+                gateway=self,
+                payload=payload,
+                ai_model=ai_model,
+                provider="anthropic",
+            ),
             endpoint="/anthropic/v1/messages",
             endpoint_kind="anthropic_messages_stream",
             started_at=started_at,

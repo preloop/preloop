@@ -15,6 +15,7 @@ import pytest
 from preloop.services.approval_rule_context import (
     KNOWN_SOURCES,
     SOURCE_AGENT_PERMISSION_HOOK,
+    SOURCE_MODEL_IO_RULE,
     SOURCE_RULE_EVALUATION_ERROR,
     SOURCE_TOOL_ACCESS_RULE,
     SOURCE_TOOL_DEFAULT_WORKFLOW,
@@ -65,6 +66,19 @@ def test_build_falls_back_to_expression_then_generic_label():
         decision="require_approval",
     )
     assert bare["rule_name"] == "Access rule"
+
+
+def test_build_model_io_rule_includes_detector_summary():
+    context = build_rule_context(
+        source=SOURCE_MODEL_IO_RULE,
+        decision="require_approval",
+        rule_id="deny-pii",
+        rule_name="PII on response",
+        detector_summary={"pii.found": True, "pii.types_found": ["email"]},
+    )
+    assert context["source"] == SOURCE_MODEL_IO_RULE
+    assert context["rule_id"] == "deny-pii"
+    assert context["detector_summary"]["pii.found"] is True
 
 
 def test_build_omits_absent_fields_entirely():
