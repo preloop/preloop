@@ -115,3 +115,69 @@ def test_openai_compatible_openrouter_base_url_gets_attribution_headers():
     _assert_user_agent_is_preloop(extra)
     assert extra["X-Title"] == "Preloop"
     assert extra["HTTP-Referer"] == "https://preloop.ai"
+
+
+def test_openai_compatible_private_upstream_sets_api_base_and_ssl_verify(
+    monkeypatch, tmp_path
+):
+    """A completion through Preloop targets the operator upstream and CA."""
+    ca = tmp_path / "private-ca.crt"
+    ca.write_text("dummy-ca")
+    monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    model = SimpleNamespace(
+        provider_name="openai-compatible",
+        model_identifier="llama-3",
+        api_endpoint="https://gateway.internal/v1",
+    )
+    kwargs = _build_kwargs(model)
+    assert kwargs["api_base"] == "https://gateway.internal/v1"
+    assert kwargs["model"] == "openai/llama-3"
+    assert kwargs["ssl_verify"] == str(ca)
+    assert kwargs["api_key"] == "sk-test"
+
+
+def test_openai_compatible_skip_verify_last_resort(monkeypatch):
+    monkeypatch.setenv("PRELOOP_SSL_VERIFY", "false")
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/private-ca/ca.crt")
+    model = SimpleNamespace(
+        provider_name="openai-compatible",
+        model_identifier="llama-3",
+        api_endpoint="https://gateway.internal/v1",
+    )
+    kwargs = _build_kwargs(model)
+    assert kwargs["ssl_verify"] is False
+    assert kwargs["api_base"] == "https://gateway.internal/v1"
+
+
+def test_openai_compatible_openrouter_completion_does_not_set_ssl_verify(
+    monkeypatch, tmp_path
+):
+    """openai-compatible + OpenRouter api_endpoint keeps the default trust store."""
+    ca = tmp_path / "private-ca.crt"
+    ca.write_text("dummy-ca")
+    monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    model = SimpleNamespace(
+        provider_name="openai-compatible",
+        model_identifier="anthropic/claude-opus-4.6",
+        api_endpoint="https://openrouter.ai/api/v1",
+    )
+    kwargs = _build_kwargs(model)
+    assert kwargs["api_base"] == "https://openrouter.ai/api/v1"
+    assert "ssl_verify" not in kwargs
+
+
+def test_public_openai_completion_does_not_set_ssl_verify(monkeypatch, tmp_path):
+    ca = tmp_path / "private-ca.crt"
+    ca.write_text("dummy-ca")
+    monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    model = SimpleNamespace(
+        provider_name="openai",
+        model_identifier="gpt-5",
+        api_endpoint=None,
+    )
+    kwargs = _build_kwargs(model)
+    assert "ssl_verify" not in kwargs
+    assert "api_base" not in kwargs

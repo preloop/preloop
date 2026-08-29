@@ -62,8 +62,7 @@ spec:
               value: {{ $.Values.environment.port | quote }}
             - name: DEBUG
               value: {{ $.Values.environment.debug | quote }}
-            - name: DATABASE_URL
-              value: {{ include "preloop.databaseUrl" $ }}
+            {{- include "preloop.databaseUrlEnv" $ | nindent 12 }}
             - name: DATABASE_POOL_SIZE
               value: {{ $.Values.database.pool.worker.size | quote }}
             - name: DATABASE_MAX_OVERFLOW
@@ -77,13 +76,13 @@ spec:
             - name: SECRET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: jwt-secret
             {{- if $.Values.security.encryptionKey }}
             - name: SECURITY__ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: encryption-key
             {{- end }}
             - name: JWT_ALGORITHM
@@ -98,14 +97,14 @@ spec:
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: openai-api-key
             {{- end }}
             {{- if $.Values.config.anthropic.apiKey }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: anthropic-api-key
             {{- end }}
             {{- if $.Values.config.smtp.host }}
@@ -138,7 +137,7 @@ spec:
             - name: SENTRY_DSN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: sentry-dsn
             {{- end }}
             {{- if $.Values.notifications.productTeamEmail }}
@@ -177,7 +176,7 @@ spec:
             - name: AWS_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: aws-secret-access-key
             {{- end }}
             {{- if $.Values.computeBackend.aws.defaultRegion }}
@@ -216,23 +215,36 @@ spec:
             - name: GITHUB_APP_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: github-app-client-secret
             - name: GITHUB_APP_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: github-app-private-key
             - name: GITHUB_APP_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: github-app-webhook-secret
             - name: GITHUB_APP_SLUG
               value: {{ $.Values.githubApp.slug | quote }}
             {{- end }}
+            {{- include "preloop.extraEnv" $ | nindent 12 }}
+          {{- with $.Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           resources:
             {{- toYaml $.Values.worker.resources | nindent 12 }}
+      {{- with $.Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with $.Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

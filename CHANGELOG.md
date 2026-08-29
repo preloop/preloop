@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Private-cluster Helm tests after OTLP merge**: default `values.yaml`
+  now includes the `otlp` block from main. The private-cluster suite no
+  longer asserts that block is absent, and the README no longer claims
+  the chart does not define `otlp` values.
+
 - **Bot-sender loop guard no longer swallows legitimate PR events**: the
   loop guard in `flow_trigger_service._is_preloop_triggered_event`
   dropped all webhook events whose sender started with "preloop",
@@ -41,6 +46,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   round-trips the new targets. Streaming buffers until the assembled
   response can be evaluated (deny cannot retract tokens already sent).
   See `docs/guide/model-content-policies.md`.
+- **Private-cluster Helm install**: `helm/preloop/README.md` documents a
+  ClusterIP + ingress install with private registry pull secrets, existing
+  Postgres, Kubernetes Secrets (not values committed to git), and mounting a
+  private CA via `extraVolumes` / `extraEnv` (`SSL_CERT_FILE`). Example
+  overlay: `helm/preloop/values-private-cluster.yaml`. Compose and Helm are
+  the supported install surfaces; this repo does not ship Terraform.
+- **OpenAI-compatible upstream TLS**: LiteLLM completions and model
+  discovery honor `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE`
+  (and `PRELOOP_SSL_VERIFY=false` as a last resort) so a private
+  OpenAI-compatible base URL such as `https://gateway.internal/v1` works
+  with operator PKI. Public OpenAI, Anthropic, and OpenRouter keep the
+  default trust store (including an `openai-compatible` model whose
+  endpoint is `https://openrouter.ai/api/v1`).
 - **OTLP export for gateway and MCP telemetry**: optional OpenTelemetry
   export (disabled by default) emits GenAI spans for governed model
   calls and MCP tool calls, including `gen_ai.conversation.id` when a

@@ -22,21 +22,23 @@
 {{- end }}
 
 2. Credentials:
-   - Default JWT Secret: {{ .Values.environment.jwtSecret }}
-     (You should change this for production deployments)
+   Application secrets are in the Kubernetes Secret named {{ include "preloop.secretName" . }}.
+   Do not store SECRET_KEY, database URLs, or API keys in values files committed to git.
+   Create the first admin user in the console after install (or with the CLI login flow).
 
 3. Database:
-{{- if .Values.database.enabled }}
+{{- if and .Values.database.urlFromSecret .Values.database.urlFromSecret.name }}
+   - DATABASE_URL is read from Secret {{ .Values.database.urlFromSecret.name }} (key {{ default "database-url" .Values.database.urlFromSecret.key }})
+{{- else if .Values.database.enabled }}
 {{- if .Values.database.external }}
    - Using external database at {{ .Values.database.externalDatabase.host }}:{{ .Values.database.externalDatabase.port }}
 {{- else }}
-   - Using internal CloudNativePG database
-   - Database: {{ .Values.database.cnpg.auth.database }}
-   - Username: {{ .Values.database.cnpg.auth.username }}
-   - Password: {{ .Values.database.cnpg.auth.password }}
+   - Using in-cluster CloudNativePG database {{ .Values.database.cnpg.auth.database }}
 {{- end }}
 {{- else }}
    - Using custom database configuration
 {{- end }}
+
+See helm/preloop/README.md (Private cluster) for ingress, private registry, extra CA, and OpenAI-compatible upstream setup.
 
 Thank you for installing {{ .Chart.Name }}!

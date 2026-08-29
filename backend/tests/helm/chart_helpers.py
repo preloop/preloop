@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Iterator, List
+from typing import Dict, Iterator, List, Optional
 
 import pytest
 import yaml
@@ -56,17 +56,57 @@ def offline_chart() -> Iterator[Path]:
         yield chart_copy
 
 
-def helm_template(template: str, overrides: List[str] | None = None) -> str:
-    """Render one chart template, skipping when helm is unavailable."""
+def _run_helm(
+    chart_dir: Path,
+    *,
+    template: Optional[str] = None,
+    overrides: List[str] | None = None,
+    values_files: List[str] | None = None,
+) -> str:
     helm = shutil.which("helm")
     if helm is None:  # pragma: no cover - depends on the local toolchain
         pytest.skip("helm binary not available")
 
-    with offline_chart() as chart_dir:
-        command = [helm, "template", "preloop", str(chart_dir), "--show-only", template]
-        for override in overrides or []:
-            command += ["--set", override]
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-
+    command = [helm, "template", "preloop", str(chart_dir)]
+    if template:
+        command += ["--show-only", template]
+    for values_file in values_files or []:
+        path = Path(values_file)
+        if not path.is_absolute():
+            path = chart_dir / path
+        command += ["-f", str(path)]
+    for override in overrides or []:
+        command += ["--set", override]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     return result.stdout
+
+
+def helm_template(
+    template: str,
+    overrides: List[str] | None = None,
+    *,
+    values_files: List[str] | None = None,
+) -> str:
+    """Render one chart template, skipping when helm is unavailable."""
+    with offline_chart() as chart_dir:
+        return _run_helm(
+            chart_dir,
+            template=template,
+            overrides=overrides,
+            values_files=values_files,
+        )
+
+
+def helm_template_all(
+    overrides: List[str] | None = None,
+    *,
+    values_files: List[str] | None = None,
+) -> str:
+    """Render the whole chart (no subcharts), skipping when helm is unavailable."""
+    with offline_chart() as chart_dir:
+        return _run_helm(
+            chart_dir,
+            overrides=overrides,
+            values_files=values_files,
+        )

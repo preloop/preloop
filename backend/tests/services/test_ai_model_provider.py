@@ -1458,6 +1458,58 @@ class TestOpenAICompatibleModels:
         assert result.source == "fallback"
         assert result.error == "sdk_missing"
 
+    @pytest.mark.asyncio
+    async def test_openai_compatible_passes_ca_bundle_to_http_client(
+        self, monkeypatch, tmp_path
+    ):
+        ca = tmp_path / "ca.crt"
+        ca.write_text("dummy-ca")
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+        response = self._models_response("llama-3")
+        with (
+            patch("httpx.AsyncClient") as mock_httpx,
+            patch("openai.AsyncOpenAI") as mock_client,
+        ):
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+            mock_httpx.return_value.aclose = AsyncMock()
+
+            result = await get_available_models_for_provider(
+                "openai-compatible",
+                "test_key",
+                api_endpoint="https://gateway.internal/v1",
+            )
+
+        assert result.models == ["llama-3"]
+        assert result.source == "live"
+        assert mock_httpx.call_args.kwargs["verify"] == str(ca)
+        assert mock_client.call_args.kwargs["http_client"] is mock_httpx.return_value
+        mock_httpx.return_value.aclose.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_openai_compatible_default_has_no_custom_http_client(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+        monkeypatch.delenv("CURL_CA_BUNDLE", raising=False)
+        response = self._models_response("llama-3")
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+
+            await get_available_models_for_provider(
+                "openai-compatible",
+                "test_key",
+                api_endpoint="https://gateway.internal/v1",
+            )
+
+        assert "http_client" not in mock_client.call_args.kwargs
+
 
 class TestCatalogProviderSdkMissing:
     """The shared OpenAI-compatible catalog path (Qwen, DeepSeek, Moonshot...).

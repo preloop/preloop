@@ -16,18 +16,34 @@ spec:
         {{- include "preloop.selectorLabels" . | nindent 8 }}
     spec:
       restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: webhook-cleanup
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy | default "Always" }}
           command: ["preloop-sync", "unregister-webhooks", "--cleanup-all"]
           env:
-            - name: DATABASE_URL
-              value: {{ include "preloop.databaseUrl" . }}
+            {{- include "preloop.databaseUrlEnv" . | nindent 12 }}
             - name: PRELOOP_URL
               value: {{ $.Values.environment.preloopUrl | quote }}
             - name: LOG_LEVEL
               value: "INFO"
+            {{- include "preloop.extraEnv" . | nindent 12 }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       # Set a reasonable timeout for the job
       activeDeadlineSeconds: 300
 {{- end }}

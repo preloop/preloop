@@ -180,3 +180,108 @@ class TestPreloopClientIdentity:
         monkeypatch.setenv("LITELLM_USER_AGENT", "should-not-replace")
         ensure_preloop_client_identity()
         assert os.environ["LITELLM_USER_AGENT"] == "should-not-replace"
+
+
+class TestSslVerifyOnCompletions:
+    """Private CA env vars must reach LiteLLM as ssl_verify."""
+
+    def test_ssl_cert_file_sets_ssl_verify(self, monkeypatch, tmp_path):
+        ca = tmp_path / "ca.crt"
+        ca.write_text("dummy-ca")
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+        kwargs: dict = {}
+        apply_preloop_client_headers(
+            kwargs,
+            _model(
+                "openai-compatible",
+                "llama-3",
+                endpoint="https://gateway.internal/v1",
+            ),
+        )
+        assert kwargs["ssl_verify"] == str(ca)
+
+    def test_no_override_leaves_ssl_verify_unset(self, monkeypatch):
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+        monkeypatch.delenv("CURL_CA_BUNDLE", raising=False)
+        kwargs: dict = {}
+        apply_preloop_client_headers(kwargs, _model("openai", "gpt-5"))
+        assert "ssl_verify" not in kwargs
+
+    def test_explicit_ssl_verify_is_preserved(self, monkeypatch):
+        monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/private-ca/ca.crt")
+        kwargs = {"ssl_verify": True}
+        apply_preloop_client_headers(kwargs, _model("openai", "gpt-5"))
+        assert kwargs["ssl_verify"] is True
+
+    def test_public_openai_does_not_inherit_private_ca(self, monkeypatch, tmp_path):
+        ca = tmp_path / "ca.crt"
+        ca.write_text("dummy-ca")
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+        kwargs: dict = {}
+        apply_preloop_client_headers(kwargs, _model("openai", "gpt-5"))
+        assert "ssl_verify" not in kwargs
+
+    def test_public_anthropic_does_not_inherit_private_ca(self, monkeypatch, tmp_path):
+        ca = tmp_path / "ca.crt"
+        ca.write_text("dummy-ca")
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+        kwargs: dict = {}
+        apply_preloop_client_headers(kwargs, _model("anthropic", "claude-opus-4"))
+        assert "ssl_verify" not in kwargs
+
+    def test_skip_verify_does_not_disable_public_openai(self, monkeypatch):
+        monkeypatch.setenv("PRELOOP_SSL_VERIFY", "false")
+        kwargs: dict = {}
+        apply_preloop_client_headers(kwargs, _model("openai", "gpt-5"))
+        assert "ssl_verify" not in kwargs
+
+    def test_api_base_kwargs_still_get_ssl_verify(self, monkeypatch, tmp_path):
+        ca = tmp_path / "ca.crt"
+        ca.write_text("dummy-ca")
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+        kwargs: dict = {"api_base": "https://gateway.internal/v1"}
+        apply_preloop_client_headers(kwargs)
+        assert kwargs["ssl_verify"] == str(ca)
+
+    def test_openai_compatible_openrouter_does_not_inherit_private_ca(
+        self, monkeypatch, tmp_path
+    ):
+        ca = tmp_path / "ca.crt"
+        ca.write_text("dummy-ca")
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+        kwargs: dict = {}
+        apply_preloop_client_headers(
+            kwargs,
+            _model(
+                "openai-compatible",
+                "openai/gpt-4o",
+                endpoint="https://openrouter.ai/api/v1",
+            ),
+        )
+        assert "ssl_verify" not in kwargs
+
+    def test_openrouter_api_base_kwargs_do_not_get_ssl_verify(
+        self, monkeypatch, tmp_path
+    ):
+        """Production sets api_base from the endpoint before ssl_verify."""
+        ca = tmp_path / "ca.crt"
+        ca.write_text("dummy-ca")
+        monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+        kwargs: dict = {"api_base": "https://openrouter.ai/api/v1"}
+        apply_preloop_client_headers(
+            kwargs,
+            _model(
+                "openai-compatible",
+                "openai/gpt-4o",
+                endpoint="https://openrouter.ai/api/v1",
+            ),
+        )
+        assert "ssl_verify" not in kwargs

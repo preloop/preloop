@@ -61,8 +61,7 @@ spec:
               value: {{ .Values.environment.debug | quote }}
             - name: MODEL_GATEWAY_CAPTURE_CONTENT
               value: {{ .Values.environment.modelGatewayCaptureContent | quote }}
-            - name: DATABASE_URL
-              value: {{ include "preloop.databaseUrl" . }}
+            {{- include "preloop.databaseUrlEnv" . | nindent 12 }}
             - name: DATABASE_POOL_SIZE
               value: {{ .Values.database.pool.gateway.size | quote }}
             - name: DATABASE_MAX_OVERFLOW
@@ -82,13 +81,13 @@ spec:
             - name: SECRET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: jwt-secret
             {{- if .Values.security.encryptionKey }}
             - name: SECURITY__ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: encryption-key
             {{- end }}
             - name: JWT_ALGORITHM
@@ -103,14 +102,14 @@ spec:
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: openai-api-key
             {{- end }}
             {{- if .Values.config.anthropic.apiKey }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: anthropic-api-key
             {{- end }}
             {{- if .Values.config.smtp.host }}
@@ -133,7 +132,7 @@ spec:
             - name: SENTRY_DSN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: sentry-dsn
             {{- end }}
             - name: PROFILING_ENABLED
@@ -150,7 +149,7 @@ spec:
             - name: APNS_AUTH_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: apns-auth-key
             - name: APNS_BUNDLE_ID
               value: {{ .Values.apns.bundleId | quote }}
@@ -173,7 +172,7 @@ spec:
             - name: FCM_CREDENTIALS_JSON
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: fcm-credentials-json
             {{- end }}
             {{- if .Values.githubApp.enabled }}
@@ -184,17 +183,17 @@ spec:
             - name: GITHUB_APP_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: github-app-client-secret
             - name: GITHUB_APP_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: github-app-private-key
             - name: GITHUB_APP_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: github-app-webhook-secret
             - name: GITHUB_APP_SLUG
               value: {{ .Values.githubApp.slug | quote }}
@@ -205,7 +204,7 @@ spec:
             - name: GOOGLE_OAUTH_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: google-oauth-client-secret
             {{- end }}
             {{- if .Values.gitlabOauth.enabled }}
@@ -214,14 +213,19 @@ spec:
             - name: GITLAB_OAUTH_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: gitlab-oauth-client-secret
             - name: GITLAB_OAUTH_BASE_URL
               value: {{ .Values.gitlabOauth.baseUrl | quote }}
             {{- end }}
+            {{- include "preloop.extraEnv" . | nindent 12 }}
             {{- with include "preloop.otlpEnv" . }}
             {{- . | nindent 12 }}
             {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: 8000
@@ -230,6 +234,9 @@ spec:
             {{- if .Values.profiling.enabled }}
             - name: profiling-storage
               mountPath: /tmp/profiling
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
           resources:
             {{- toYaml .Values.gateway.resources | nindent 12 }}
@@ -266,6 +273,9 @@ spec:
         - name: profiling-storage
           persistentVolumeClaim:
             claimName: {{ include "preloop.fullname" . }}-profiling
+      {{- end }}
+      {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
