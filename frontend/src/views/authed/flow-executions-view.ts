@@ -6,6 +6,7 @@ import { AuthedElement } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
+import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
@@ -178,9 +179,8 @@ export class FlowExecutionsView extends AuthedElement {
     return this.filteredExecutions;
   }
 
-  handleStatusFilterChange(event: Event) {
-    const select = event.target as any;
-    this.statusFilter = select.value;
+  setStatusFilter(status: string) {
+    this.statusFilter = status;
     this.currentPage = 1; // Reset to first page when filter changes
     void this.loadExecutions();
   }
@@ -262,20 +262,59 @@ export class FlowExecutionsView extends AuthedElement {
       <div class="column-layout wide">
         <div class="main-column">
           <div class="header-controls">
-            <div style="display: flex; gap: 12px; align-items: center;">
-              <sl-select
-                size="small"
-                value=${this.statusFilter}
-                @sl-change=${this.handleStatusFilterChange}
-                style="width: 150px;"
-              >
-                <sl-option value="all">All Status</sl-option>
-                <sl-option value="PENDING">Pending</sl-option>
-                <sl-option value="RUNNING">Running</sl-option>
-                <sl-option value="SUCCEEDED">Succeeded</sl-option>
-                <sl-option value="FAILED">Failed</sl-option>
-                <sl-option value="CANCELLED">Cancelled</sl-option>
-              </sl-select>
+            <div
+              style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;"
+            >
+              <sl-button-group>
+                <sl-button
+                  size="small"
+                  data-status="all"
+                  variant=${this.statusFilter === 'all' ? 'primary' : 'default'}
+                  @click=${() => this.setStatusFilter('all')}
+                >
+                  All
+                </sl-button>
+                <sl-button
+                  size="small"
+                  data-status="RUNNING"
+                  variant=${this.statusFilter === 'RUNNING' ? 'primary' : 'default'}
+                  @click=${() => this.setStatusFilter('RUNNING')}
+                >
+                  Running
+                </sl-button>
+                <sl-button
+                  size="small"
+                  data-status="PENDING"
+                  variant=${this.statusFilter === 'PENDING' ? 'neutral' : 'default'}
+                  @click=${() => this.setStatusFilter('PENDING')}
+                >
+                  Pending
+                </sl-button>
+                <sl-button
+                  size="small"
+                  data-status="SUCCEEDED"
+                  variant=${this.statusFilter === 'SUCCEEDED' ? 'success' : 'default'}
+                  @click=${() => this.setStatusFilter('SUCCEEDED')}
+                >
+                  Succeeded
+                </sl-button>
+                <sl-button
+                  size="small"
+                  data-status="FAILED"
+                  variant=${this.statusFilter === 'FAILED' ? 'danger' : 'default'}
+                  @click=${() => this.setStatusFilter('FAILED')}
+                >
+                  Failed
+                </sl-button>
+                <sl-button
+                  size="small"
+                  data-status="CANCELLED"
+                  variant=${this.statusFilter === 'CANCELLED' ? 'warning' : 'default'}
+                  @click=${() => this.setStatusFilter('CANCELLED')}
+                >
+                  Cancelled
+                </sl-button>
+              </sl-button-group>
               <sl-button size="small" @click=${this.loadExecutions}>
                 <sl-icon name="arrow-clockwise"></sl-icon>
                 Refresh

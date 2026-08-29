@@ -209,6 +209,12 @@ describe('ConsoleShell', () => {
 
     const toolsLink = el.shadowRoot?.querySelector('a[href="/console/tools"]');
     expect(toolsLink).to.exist;
+
+    const policiesLink = el.shadowRoot?.querySelector(
+      'a[href="/console/policies"]'
+    );
+    expect(policiesLink).to.exist;
+    expect(policiesLink?.textContent).to.contain('Policies');
   });
 
   it('nests Sessions and Approvals under Audit without All events when audit_logs is off', async () => {

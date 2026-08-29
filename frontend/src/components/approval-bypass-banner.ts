@@ -192,13 +192,21 @@ export class ApprovalBypassBanner extends LitElement {
             }
           </div>
         </div>
-        <button
-          @click=${this.handleRestore}
-          ?disabled=${this.revoking}
-          part="restore"
-        >
-          ${this.revoking ? 'Restoring…' : 'Restore approvals'}
-        </button>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <a
+            href="/console/tools"
+            style="color: inherit; text-decoration: underline; font-size: 13px; font-weight: 500; opacity: 0.9; padding: 6px 8px;"
+          >
+            Review policies
+          </a>
+          <button
+            @click=${this.handleRestore}
+            ?disabled=${this.revoking}
+            part="restore"
+          >
+            ${this.revoking ? 'Restoring…' : 'Restore approvals'}
+          </button>
+        </div>
       </div>
     `;
   }

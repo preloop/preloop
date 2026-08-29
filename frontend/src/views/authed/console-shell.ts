@@ -35,6 +35,7 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
   '/console/flows': ['view_flows'],
   '/console/settings/runners': ['view_flows'],
   '/console/tools': ['view_tools', 'view_policies'],
+  '/console/policies': ['view_policies'],
   '/console/trackers': ['view_trackers'],
   '/console/ai-models': ['view_ai_models'],
   '/console/runtime-sessions': ['view_runtime_sessions'],
@@ -595,6 +596,15 @@ export class ConsoleShell extends LitElement {
                   <sl-menu-item>
                     <sl-icon name="tools" slot="prefix"></sl-icon>
                     <span class="sidebar-label">Tools</span>
+                  </sl-menu-item>
+                `
+              )}
+              ${this._renderNavLink(
+                '/console/policies',
+                html`
+                  <sl-menu-item>
+                    <sl-icon name="shield-lock" slot="prefix"></sl-icon>
+                    <span class="sidebar-label">Policies</span>
                   </sl-menu-item>
                 `
               )}

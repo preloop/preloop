@@ -24,6 +24,7 @@ from preloop.services.policy.schema import (
     ConditionType,
     DefaultsDefinition,
     MCPServerDefinition,
+    ModelIORule,
     PolicyDiffItem,
     PolicyDiffResult,
     PolicyDocument,
@@ -133,6 +134,34 @@ def _validate_cel_expressions_in_policy(
     if cel_service is None:
         # CEL validation plugin not available, skip validation
         return errors
+
+    if policy.model_io:
+        for rule_idx, rule in enumerate(policy.model_io):
+            for cond_idx, condition in enumerate(rule.conditions or []):
+                condition_type = condition.condition_type
+                if isinstance(condition_type, str):
+                    is_cel = condition_type == "cel"
+                else:
+                    is_cel = condition_type.value == "cel"
+                if not is_cel:
+                    detected_type = _detect_condition_type(condition.expression)
+                    is_cel = detected_type == "cel"
+                if not is_cel:
+                    continue
+                is_valid, error_message = cel_service.validate_cel_expression(
+                    condition.expression
+                )
+                if not is_valid:
+                    errors.append(
+                        PolicyValidationError(
+                            path=(
+                                f"$.model_io[{rule_idx}].conditions"
+                                f"[{cond_idx}].expression"
+                            ),
+                            message=f"Invalid CEL expression: {error_message}",
+                            value=condition.expression,
+                        )
+                    )
 
     if not policy.tools:
         return errors
@@ -269,6 +298,21 @@ def load_policy_from_string(
                 warnings.append(
                     f"Tool '{tool.name}' has conditions but no approval_workflow set. "
                     "Conditions with 'require_approval' action will have no effect."
+                )
+
+    if policy.model_io:
+        for rule in policy.model_io:
+            has_require = any(
+                (
+                    condition.action == ConditionAction.REQUIRE_APPROVAL
+                    or condition.action == "require_approval"
+                )
+                for condition in (rule.conditions or [])
+            )
+            if has_require and not rule.approval_workflow:
+                warnings.append(
+                    f"model_io rule '{rule.id}' has require_approval but no "
+                    "approval_workflow set."
                 )
 
     # Add warnings for AI-driven policies with escalate behavior but no escalation_workflow
@@ -513,6 +557,43 @@ def compute_policy_diff(
     # Compare tools
     diff_named_lists("$.tools", current.tools, incoming.tools)
 
+    # Compare model I/O rules by id
+    def _model_io_name(item: Any) -> str:
+        return item.id
+
+    current_map = {_model_io_name(item): item for item in (current.model_io or [])}
+    incoming_map = {_model_io_name(item): item for item in (incoming.model_io or [])}
+    for name in set(current_map.keys()) - set(incoming_map.keys()):
+        changes.append(
+            PolicyDiffItem(
+                path=f"$.model_io[id={name}]",
+                operation="remove",
+                old_value=current_map[name].model_dump(exclude_none=True),
+                new_value=None,
+            )
+        )
+    for name in set(incoming_map.keys()) - set(current_map.keys()):
+        changes.append(
+            PolicyDiffItem(
+                path=f"$.model_io[id={name}]",
+                operation="add",
+                old_value=None,
+                new_value=incoming_map[name].model_dump(exclude_none=True),
+            )
+        )
+    for name in set(current_map.keys()) & set(incoming_map.keys()):
+        current_dict = current_map[name].model_dump(exclude_none=True)
+        incoming_dict = incoming_map[name].model_dump(exclude_none=True)
+        if current_dict != incoming_dict:
+            changes.append(
+                PolicyDiffItem(
+                    path=f"$.model_io[id={name}]",
+                    operation="modify",
+                    old_value=current_dict,
+                    new_value=incoming_dict,
+                )
+            )
+
     # Compare defaults
     current_defaults = (
         current.defaults.model_dump(exclude_none=True) if current.defaults else {}
@@ -690,6 +771,9 @@ class PolicyApplier:
             if policy.tools:
                 self._apply_tools(policy.tools, dry_run, skip_missing_servers)
 
+            if policy.model_io is not None:
+                self._apply_model_io(policy.model_io, dry_run)
+
             if policy.defaults and not self._apply_defaults(policy.defaults, dry_run):
                 return self._result
 
@@ -811,6 +895,19 @@ class PolicyApplier:
             # Missing policies are always errors (can't be skipped)
             for missing in missing_workflows:
                 errors.append(missing.to_message())
+
+        if policy.model_io:
+            for rule in policy.model_io:
+                if rule.approval_workflow:
+                    if rule.approval_workflow not in all_available_workflows:
+                        suggestion = self._get_workflow_suggestion(
+                            rule.approval_workflow, all_available_workflows
+                        )
+                        errors.append(
+                            f"model_io rule '{rule.id}' references approval "
+                            f"workflow '{rule.approval_workflow}' which is "
+                            f"not defined. {suggestion}"
+                        )
 
         # Validate defaults.default_approval_workflow
         if policy.defaults and policy.defaults.default_approval_workflow:
@@ -1375,6 +1472,21 @@ class PolicyApplier:
         )
         return True
 
+    def _apply_model_io(
+        self,
+        rules: List[ModelIORule],
+        dry_run: bool,
+    ) -> None:
+        """Persist model I/O rules onto account.meta_data."""
+        from preloop.services.model_content_policy import replace_model_io_rules
+
+        if dry_run:
+            self._result.model_io_rules_applied = len(rules)
+            return
+        replace_model_io_rules(self.db, self.account_id, rules)
+        self._result.model_io_rules_applied = len(rules)
+        logger.info("Applied %s model I/O content rules", len(rules))
+
 
 def export_current_policy(
     db: Session,
@@ -1403,6 +1515,7 @@ def export_current_policy(
     from datetime import datetime, timezone
 
     from preloop.models.crud import (
+        crud_account,
         crud_approval_workflow,
         crud_mcp_server,
         crud_tool_configuration,
@@ -1545,6 +1658,16 @@ def export_current_policy(
         )
         tool_defs.append(tool_def)
 
+    from preloop.services.model_content_policy import (
+        MODEL_IO_META_KEY,
+        parse_model_io_rules,
+    )
+
+    account = crud_account.get(db, id=account_id_str)
+    model_io_rules = parse_model_io_rules(
+        ((account.meta_data or {}) if account else {}).get(MODEL_IO_META_KEY)
+    )
+
     return PolicyDocument(
         version=PolicyVersion.V1_0,
         metadata=PolicyMetadata(
@@ -1555,5 +1678,6 @@ def export_current_policy(
         mcp_servers=server_defs if server_defs else None,
         approval_workflows=policy_defs if policy_defs else None,
         tools=tool_defs if tool_defs else None,
+        model_io=model_io_rules if model_io_rules else None,
         defaults=DefaultsDefinition(),  # Default settings
     )

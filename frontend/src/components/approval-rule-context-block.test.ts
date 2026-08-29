@@ -155,6 +155,29 @@ describe('ApprovalRuleContextBlock', () => {
     );
   });
 
+  it('shows model I/O rule id and detector summary in the inbox', async () => {
+    const element = await mount({
+      source: 'model_io_rule',
+      decision: 'require_approval',
+      rule_id: 'approve-flagged',
+      rule_name: 'approve-flagged',
+      expression: 'moderation.flagged == true',
+      expression_type: 'simple',
+      detector_summary: {
+        'pii.found': false,
+        'moderation.flagged': true,
+        'moderation.categories': ['violence'],
+      },
+    });
+
+    const text = element.shadowRoot?.textContent || '';
+    expect(text).to.contain('Rule id: approve-flagged');
+    expect(text).to.contain('moderation.flagged=true');
+    expect(text).to.contain('Review this rule in Policies');
+    const link = element.shadowRoot?.querySelector('.rule-link');
+    expect(link?.getAttribute('href')).to.equal('/console/policies');
+  });
+
   it('falls back to the Tools page when the tool is unknown', async () => {
     const element = await mount(boundaryRule);
 

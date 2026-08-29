@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exporter setup failure is stored on a runtime object that `is_enabled()`
   and `_ensure_provider()` both read, so a broken collector is not retried
   on every span and CodeQL no longer flags an unused global.
+- **OSS installer Compose `.env` `$` escaping**: passwords and other
+  secrets that start with (or contain) `$` are written as `$$` so Docker
+  Compose does not interpolate them or leak the rest of the value via
+  `variable is not set` warnings. Re-runs unescape on read so values
+  round-trip.
 
 - **Private-cluster Helm tests after OTLP merge**: default `values.yaml`
   now includes the `otlp` block from main. The private-cluster suite no
@@ -55,6 +60,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Model I/O content policies**: instance policies can `allow`, `deny`,
+  or `require_approval` on `model.request` and `model.response` using
+  the existing policy engine. Built-in detectors cover PII, prompt
+  injection heuristics, and a local moderation ruleset. The console
+  restores `/console/policies` (sidebar next to Tools;
+  `/console/governance` redirects there) as a rule-centric page. Describe
+  a change edits the current policy with the account default model and
+  shows a unified YAML diff that must be Saved. YAML import/export
+  round-trips the new targets. Streaming buffers until the assembled
+  response can be evaluated (deny cannot retract tokens already sent).
+  See `docs/guide/model-content-policies.md`.
 - **Private-cluster Helm install**: `helm/preloop/README.md` documents a
   ClusterIP + ingress install with private registry pull secrets, existing
   Postgres, Kubernetes Secrets (not values committed to git), and mounting a

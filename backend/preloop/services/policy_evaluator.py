@@ -940,6 +940,94 @@ def _coerce_number(value: Any) -> Optional[float]:
     return None
 
 
+def evaluate_condition_against_bindings(
+    expression: str,
+    condition_type: str,
+    bindings: Dict[str, Any],
+) -> bool:
+    """Evaluate a simple or CEL condition against a named binding dict.
+
+    Used by model I/O rules so CEL can write ``pii.found`` and
+    ``injection.score`` instead of wrapping everything under ``args``.
+    Tool evaluation still uses ``_evaluate_simple_condition`` /
+    ``_evaluate_cel_condition`` and is unchanged.
+
+    Args:
+        expression: Condition expression.
+        condition_type: ``simple`` or ``cel``.
+        bindings: Root attributes (model, session, request, pii, ...).
+
+    Returns:
+        True when the condition matches.
+
+    Raises:
+        ValueError: If the expression or condition type is invalid.
+    """
+    if not expression or not expression.strip():
+        return True
+    if condition_type == "simple":
+        return _evaluate_simple_condition_on_bindings(expression, bindings)
+    if condition_type == "cel":
+        return _evaluate_cel_condition_on_bindings(expression, bindings)
+    raise ValueError(f"Unknown condition type: {condition_type}")
+
+
+def _evaluate_simple_condition_on_bindings(
+    expression: str, bindings: Dict[str, Any]
+) -> bool:
+    """Evaluate a simple comparison against a root binding dict."""
+    expression = expression.strip()
+    lowered = expression.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+
+    contains_pattern = r"^(\w+(?:\.\w+)*)\.contains\s*\(\s*['\"](.+?)['\"]\s*\)$"
+    contains_match = re.match(contains_pattern, expression)
+    if contains_match:
+        field_path = contains_match.group(1)
+        substring = contains_match.group(2)
+        value = _get_nested_value(bindings, field_path)
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return substring in value
+        if isinstance(value, list):
+            return substring in value
+        return False
+
+    comparison_pattern = r"^(\w+(?:\.\w+)*)\s*(==|!=|>=|<=|>|<)\s*(.+)$"
+    comparison_match = re.match(comparison_pattern, expression)
+    if comparison_match:
+        field_path = comparison_match.group(1)
+        operator = comparison_match.group(2)
+        raw_value = comparison_match.group(3).strip()
+        rhs_value = _parse_value(raw_value)
+        lhs_value = _get_nested_value(bindings, field_path)
+        return _compare_values(lhs_value, operator, rhs_value)
+
+    raise ValueError(f"Unsupported simple expression format: {expression}")
+
+
+def _evaluate_cel_condition_on_bindings(
+    expression: str, bindings: Dict[str, Any]
+) -> bool:
+    """Evaluate a CEL expression against a root binding dict."""
+    try:
+        import celpy
+
+        env = celpy.Environment()
+        ast = env.compile(expression)
+        program = env.program(ast)
+        activation = celpy.json_to_cel(bindings)
+        result = program.evaluate(activation)
+        return bool(result)
+    except Exception as e:
+        logger.error(f"CEL evaluation error for expression '{expression}': {e}")
+        raise ValueError(f"CEL evaluation failed: {str(e)}")
+
+
 def _evaluate_cel_condition(
     expression: str,
     tool_args: Dict[str, Any],

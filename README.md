@@ -289,7 +289,7 @@ python3 scripts/measure_gateway_overhead.py --n 30 --json /tmp/gateway-overhead.
 
 The script is stdlib only. It prints p50/p95 time-to-first-SSE-byte and time-to-stream-close for the gateway path, and the delta when `DIRECT_*` is set.
 
-**Email is not optional in practice**: approval requests, invitations and password resets are delivered by email, so an instance without SMTP cannot notify approvers. Everything the installer writes lives in `~/.preloop-oss/.env` — edit it and run `docker compose up -d` to change any setting later.
+**Email is not optional in practice**: approval requests, invitations and password resets are delivered by email, so an instance without SMTP cannot notify approvers. Everything the installer writes lives in `~/.preloop-oss/.env` — edit it and run `docker compose up -d` to change any setting later. Compose interpolates `$` in that file, so a literal dollar (for example in `SMTP_PASSWORD`) must be written as `$$`; the installer escapes values this way automatically.
 
 **Passkeys (WebAuthn)**: passkey sign-in is enabled by default; set `PASSKEYS_ENABLED=false` to turn it off. Behind a proxy or on a non-standard domain setup, pin the relying party and origin explicitly with `WEBAUTHN_RP_ID` (the registrable domain, e.g. `preloop.example.com`) and `WEBAUTHN_ORIGIN` (e.g. `https://preloop.example.com`); by default both are derived from the request. `WEBAUTHN_CHALLENGE_RATE_LIMIT` (default `30`) caps challenge requests per IP per minute.
 

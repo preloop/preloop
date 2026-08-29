@@ -132,6 +132,40 @@ export class AIModelsView extends LitElement {
         text-decoration: none;
         cursor: pointer;
       }
+      .empty-state-wrapper {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        margin-top: var(--sl-spacing-medium);
+      }
+      .empty-card {
+        width: 100%;
+        max-width: 580px;
+        text-align: center;
+      }
+      .empty-card-body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: var(--sl-spacing-large);
+      }
+      .empty-card-icon {
+        font-size: 2.5rem;
+        color: var(--sl-color-primary-600);
+        margin-bottom: var(--sl-spacing-small);
+      }
+      .empty-card-title {
+        margin: 0 0 var(--sl-spacing-x-small);
+        font-size: var(--sl-font-size-large);
+        font-weight: var(--sl-font-weight-semibold);
+        color: var(--sl-color-neutral-900);
+      }
+      .empty-card-desc {
+        margin: 0 0 var(--sl-spacing-large);
+        max-width: 440px;
+        line-height: 1.5;
+        color: var(--sl-color-neutral-600);
+      }
       .model-link {
         color: var(--sl-color-primary-700);
         text-decoration: none;
@@ -437,16 +471,26 @@ export class AIModelsView extends LitElement {
         description="The AI models your agents reach through the gateway. Each model gets a gateway alias; every call through it is metered and attributed to an agent and session."
         width="narrow"
       >
-        <div slot="main-column">
-          <sl-button variant="primary" @click=${this.openAddModelModal}>
-            <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add Model
-          </sl-button>
-        </div>
+        ${
+          this.models.length > 0
+            ? html`
+                <div slot="main-column">
+                  <sl-button variant="primary" @click=${this.openAddModelModal}>
+                    <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add Model
+                  </sl-button>
+                </div>
+              `
+            : ''
+        }
       </view-header>
       <div class="column-layout narrow">
         <div class="main-column">
           <div class="page">
-            ${this.isLoading || this.error ? null : this.renderFleetOverview()}
+            ${
+              this.isLoading || this.error || this.models.length === 0
+                ? null
+                : this.renderFleetOverview()
+            }
             ${renderContent()}
           </div>
         </div>
@@ -465,23 +509,28 @@ export class AIModelsView extends LitElement {
 
   renderModelsList() {
     return html`
-      <sl-card class="table-card">
-        ${when(
-          this.models.length === 0,
-          () =>
-            html` <sl-alert variant="primary" open>
-              <sl-icon slot="icon" name="info-circle"></sl-icon>
-              No AI Models configured yet.
-              <a
-                href="#"
-                @click=${(e: Event) => {
-                  e.preventDefault();
-                  this.openAddModelModal();
-                }}
-                >Add a Model</a
-              >
-            </sl-alert>`,
-          () => html`
+      ${when(
+        this.models.length === 0,
+        () => html`
+          <div class="empty-state-wrapper">
+            <sl-card class="empty-card">
+              <div class="empty-card-body">
+                <sl-icon class="empty-card-icon" name="cpu"></sl-icon>
+                <h3 class="empty-card-title">No AI Models Configured</h3>
+                <p class="empty-card-desc">
+                  The AI models your agents reach through the gateway. Add your
+                  OpenAI, Anthropic, Gemini, or custom model endpoints.
+                </p>
+                <sl-button variant="primary" @click=${this.openAddModelModal}>
+                  <sl-icon slot="prefix" name="plus-lg"></sl-icon>
+                  Add Model
+                </sl-button>
+              </div>
+            </sl-card>
+          </div>
+        `,
+        () => html`
+          <sl-card class="table-card">
             <table class="styled-table">
               <thead>
                 <tr>
@@ -642,9 +691,9 @@ export class AIModelsView extends LitElement {
                 )}
               </tbody>
             </table>
-          `
-        )}
-      </sl-card>
+          </sl-card>
+        `
+      )}
     `;
   }
 

@@ -125,4 +125,66 @@ describe('ApiKeysView', () => {
     expect(content).to.contain('2 model');
     expect(content).to.contain('1 tool');
   });
+
+  it('renders Agent badge when managed_agent_id is present', async () => {
+    fetchStub.restore();
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (
+        url.includes('/api/v1/auth/api-keys') &&
+        !url.includes('/governance')
+      ) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 'managed-key-1',
+              name: 'OpenClaw Managed Key',
+              managed_agent_id: 'agent-123',
+              created_at: '2026-03-10T09:00:00Z',
+              last_used_at: '2026-03-10T09:45:00Z',
+              activity_status: 'recently_active',
+              expires_at: null,
+            },
+            {
+              id: 'user-key-1',
+              name: 'Personal Dev Key',
+              managed_agent_id: null,
+              created_at: '2026-03-10T09:00:00Z',
+              last_used_at: null,
+              activity_status: 'idle',
+              expires_at: null,
+            },
+          ]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.endsWith('/api/v1/features')) {
+        return new Response(JSON.stringify({ features: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'API keys view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const badges = Array.from(
+      element.shadowRoot?.querySelectorAll('sl-badge') || []
+    );
+    const badgeTexts = badges.map((b) => b.textContent?.trim());
+    expect(badgeTexts).to.include('Agent');
+  });
 });

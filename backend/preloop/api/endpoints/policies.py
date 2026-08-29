@@ -32,6 +32,7 @@ from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.user import User
 from preloop.services.policy import (
+    ModelIORule,
     PolicyApplier,
     PolicyDiffResult,
     PolicyDocument,
@@ -42,6 +43,13 @@ from preloop.services.policy import (
     export_policy_to_json,
     export_policy_to_yaml,
     load_policy_from_string,
+)
+from preloop.services.model_content_policy import (
+    delete_model_io_rule,
+    load_model_io_rules,
+    replace_model_io_rules,
+    serialize_model_io_rules,
+    upsert_model_io_rule,
 )
 from preloop.services.policy_version_service import PolicyVersionService
 from preloop.utils.permissions import require_permission
@@ -123,6 +131,18 @@ class PruneResponse(BaseModel):
     """Response from a prune operation."""
 
     deleted_count: int
+
+
+class ModelIORuleListResponse(BaseModel):
+    """List of model I/O content policy rules."""
+
+    rules: List[Dict[str, Any]]
+
+
+class ModelIORulePatchRequest(BaseModel):
+    """Partial update for enable/disable."""
+
+    enabled: Optional[bool] = None
 
 
 logger = logging.getLogger(__name__)
@@ -408,6 +428,117 @@ async def upload_policy(
 
 
 @router.get(
+    "/policies/model-io-rules",
+    response_model=ModelIORuleListResponse,
+    summary="List model I/O content policy rules",
+)
+@require_permission("view_policies")
+def list_model_io_rules(
+    account: Account = Depends(get_account_for_user),
+    db: Session = Depends(get_db_session),
+) -> ModelIORuleListResponse:
+    """Return model.request and model.response rules for the console."""
+    rules = load_model_io_rules(db, account.id)
+    return ModelIORuleListResponse(rules=serialize_model_io_rules(rules))
+
+
+@router.post(
+    "/policies/model-io-rules",
+    summary="Create or replace a model I/O content policy rule",
+)
+@require_permission("manage_policies")
+def create_model_io_rule(
+    rule: ModelIORule,
+    account: Account = Depends(get_account_for_user),
+    db: Session = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Save one model I/O rule from the Policies console form."""
+    saved = upsert_model_io_rule(db, account.id, rule)
+    db.commit()
+    return saved.model_dump(exclude_none=True, mode="json")
+
+
+@router.put(
+    "/policies/model-io-rules/{rule_id}",
+    summary="Replace a model I/O content policy rule",
+)
+@require_permission("manage_policies")
+def update_model_io_rule(
+    rule_id: str,
+    rule: ModelIORule,
+    account: Account = Depends(get_account_for_user),
+    db: Session = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Replace an existing model I/O rule. The path id wins."""
+    if rule.id != rule_id:
+        rule = rule.model_copy(update={"id": rule_id})
+    existing = {item.id: item for item in load_model_io_rules(db, account.id)}
+    if rule_id not in existing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"model_io rule '{rule_id}' not found",
+        )
+    saved = upsert_model_io_rule(db, account.id, rule)
+    db.commit()
+    return saved.model_dump(exclude_none=True, mode="json")
+
+
+@router.patch(
+    "/policies/model-io-rules/{rule_id}",
+    summary="Enable or disable a model I/O content policy rule",
+)
+@require_permission("manage_policies")
+def patch_model_io_rule(
+    rule_id: str,
+    patch: ModelIORulePatchRequest,
+    account: Account = Depends(get_account_for_user),
+    db: Session = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Toggle enabled without rewriting the rest of the rule."""
+    rules = load_model_io_rules(db, account.id)
+    updated: List[ModelIORule] = []
+    found = False
+    for item in rules:
+        if item.id == rule_id:
+            found = True
+            if patch.enabled is not None:
+                item = item.model_copy(update={"enabled": patch.enabled})
+            updated.append(item)
+        else:
+            updated.append(item)
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"model_io rule '{rule_id}' not found",
+        )
+    replace_model_io_rules(db, account.id, updated)
+    db.commit()
+    saved = next(item for item in updated if item.id == rule_id)
+    return saved.model_dump(exclude_none=True, mode="json")
+
+
+@router.delete(
+    "/policies/model-io-rules/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a model I/O content policy rule",
+)
+@require_permission("manage_policies")
+def remove_model_io_rule(
+    rule_id: str,
+    account: Account = Depends(get_account_for_user),
+    db: Session = Depends(get_db_session),
+) -> Response:
+    """Delete one model I/O rule."""
+    if not delete_model_io_rule(db, account.id, rule_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"model_io rule '{rule_id}' not found",
+        )
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
     "/policies/export",
     summary="Export current configuration as policy",
     description=(
@@ -595,7 +726,8 @@ async def get_policy_schema() -> dict:
     schema["title"] = "Preloop Policy Schema"
     schema["description"] = (
         "Schema for Preloop policy-as-code YAML/JSON files. "
-        "Define MCP servers, approval workflows, tool configurations, and defaults."
+        "Define MCP servers, approval workflows, tool configurations, "
+        "model I/O content rules, and defaults."
     )
 
     return schema
@@ -1108,10 +1240,18 @@ async def generate_policy(
         yaml_output = await asyncio.to_thread(
             service._call_llm, model, system_prompt, request.prompt
         )
+        if request.include_current_config:
+            yaml_output = service._merge_preserving_unrelated(
+                yaml_output, request.prompt
+            )
         warnings = service._validate_output(yaml_output)
         result = {"yaml": yaml_output, "warnings": warnings}
     except PolicyGenerationError as exc:
-        logger.warning("Policy generation failed for account %s: %s", account.id, exc)
+        logger.warning(
+            "Policy generation failed for account %s: %s",
+            account.id,
+            type(exc).__name__,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),

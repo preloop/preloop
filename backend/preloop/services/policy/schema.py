@@ -36,6 +36,16 @@ Example YAML:
           - expression: "args.command.contains('rm -rf')"
             action: "require_approval"
 
+    model_io:
+      - id: deny-pii-in-prompts
+        target: model.request
+        detectors:
+          pii:
+            types: [email, phone, credit_card]
+        conditions:
+          - expression: "pii.found == true"
+            action: deny
+
     defaults:
       unknown_tools: "deny"
       require_approval_for_new_tools: true
@@ -43,7 +53,7 @@ Example YAML:
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -388,6 +398,134 @@ class UnknownToolsPolicy(str, Enum):
     REQUIRE_APPROVAL = "require_approval"
 
 
+class ModelIOTarget(str, Enum):
+    """Stable rule targets for model request and response payloads."""
+
+    REQUEST = "model.request"
+    RESPONSE = "model.response"
+
+
+class DetectorTimeoutFailMode(str, Enum):
+    """Fail mode when a detector exceeds its hard timeout.
+
+    Default is ``deny`` (fail closed). Set ``allow`` to skip the timed-out
+    rule and continue evaluation.
+    """
+
+    ALLOW = "allow"
+    DENY = "deny"
+
+
+SUPPORTED_PII_TYPES = ("email", "phone", "credit_card")
+
+
+class PIIDetectorConfig(BaseModel):
+    """Deterministic PII detector configuration.
+
+    ``types`` selects which entity recognizers run. Unknown types are
+    rejected at schema validation. Third-party recognizers are out of
+    scope and must stay off by default.
+    """
+
+    types: List[str] = Field(
+        default_factory=lambda: list(SUPPORTED_PII_TYPES),
+        description="PII entity types to scan (email, phone, credit_card)",
+    )
+
+    @field_validator("types")
+    @classmethod
+    def validate_pii_types(cls, value: List[str]) -> List[str]:
+        """Reject unknown PII types so YAML cannot silently skip a scan."""
+        if not value:
+            raise ValueError("pii.types must not be empty")
+        unknown = [item for item in value if item not in SUPPORTED_PII_TYPES]
+        if unknown:
+            raise ValueError(
+                f"Unknown PII types: {unknown}. Supported: {list(SUPPORTED_PII_TYPES)}"
+            )
+        return list(dict.fromkeys(value))
+
+
+class ModerationDetectorConfig(BaseModel):
+    """Moderation detector configuration.
+
+    ``backend`` names a registered checker. The built-in ``local`` backend
+    is a keyword ruleset and works without a live provider. Tests register
+    a ``fake`` backend.
+    """
+
+    backend: str = Field(
+        "local",
+        description="Registered moderation backend name (default: local)",
+    )
+
+
+class ModelIODetectors(BaseModel):
+    """Detectors enabled for one model I/O rule.
+
+    A detector runs only when this block enables it or when a condition
+    expression references its attributes (pii., injection., moderation.).
+    """
+
+    pii: Optional[Union[bool, PIIDetectorConfig]] = Field(
+        None, description="Enable PII scan, optionally with entity types"
+    )
+    injection: Optional[bool] = Field(
+        None, description="Enable prompt-injection heuristics"
+    )
+    moderation: Optional[Union[bool, ModerationDetectorConfig]] = Field(
+        None, description="Enable moderation check"
+    )
+
+
+class ModelIORule(BaseModel):
+    """Content policy rule targeting model.request or model.response.
+
+    Conditions use the same simple/CEL style as tool rules. Documented
+    attributes include model.id, model.provider, model.name, session.id,
+    request.text, response.text, pii.found, pii.types_found,
+    injection.score, injection.matched_patterns, moderation.flagged,
+    and moderation.categories.
+    """
+
+    id: str = Field(..., min_length=1, description="Stable rule identifier")
+    target: ModelIOTarget = Field(..., description="model.request or model.response")
+    enabled: bool = Field(True, description="Whether this rule is evaluated")
+    description: Optional[str] = Field(None, description="Human-readable description")
+    approval_workflow: Optional[str] = Field(
+        None, description="Approval workflow name for require_approval"
+    )
+    detectors: Optional[ModelIODetectors] = Field(
+        None, description="Detectors to run for this rule"
+    )
+    detector_timeout_ms: int = Field(
+        500,
+        ge=50,
+        le=30000,
+        description="Hard timeout for detectors on this rule",
+    )
+    on_detector_timeout: DetectorTimeoutFailMode = Field(
+        DetectorTimeoutFailMode.DENY,
+        description="Fail mode when detectors time out (default deny)",
+    )
+    conditions: List[ToolCondition] = Field(
+        ...,
+        min_length=1,
+        description="First matching condition wins, same as tools",
+    )
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    @field_validator("id")
+    @classmethod
+    def validate_id_not_empty(cls, value: str) -> str:
+        """Rule ids are used in audit and approval tickets."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("model_io rule id cannot be empty")
+        return stripped
+
+
 class DefaultsDefinition(BaseModel):
     """Default behaviors for the policy.
 
@@ -426,6 +564,7 @@ class PolicyDocument(BaseModel):
         mcp_servers: List of MCP server definitions.
         approval_workflows: List of approval workflow definitions.
         tools: List of tool configuration definitions.
+        model_io: List of model request/response content policy rules.
         defaults: Default behavior settings.
     """
 
@@ -441,6 +580,9 @@ class PolicyDocument(BaseModel):
     )
     tools: Optional[List[ToolDefinition]] = Field(
         None, description="Tool configuration definitions"
+    )
+    model_io: Optional[List[ModelIORule]] = Field(
+        None, description="Model request and response content policy rules"
     )
     defaults: Optional[DefaultsDefinition] = Field(
         None, description="Default behavior settings"
@@ -490,6 +632,22 @@ class PolicyDocument(BaseModel):
                             f"Tool '{tool.name}' references unknown MCP server "
                             f"'{tool.source}'. Available servers: {mcp_server_names}"
                         )
+
+        if self.model_io:
+            model_io_ids: set[str] = set()
+            for rule in self.model_io:
+                if rule.id in model_io_ids:
+                    raise ValueError(f"Duplicate model_io rule id: '{rule.id}'")
+                model_io_ids.add(rule.id)
+                if (
+                    rule.approval_workflow
+                    and rule.approval_workflow not in policy_names
+                ):
+                    raise ValueError(
+                        f"model_io rule '{rule.id}' references unknown approval "
+                        f"workflow '{rule.approval_workflow}'. "
+                        f"Available policies: {policy_names}"
+                    )
 
         # Validate default approval workflow reference
         if self.defaults and self.defaults.default_approval_workflow:
@@ -574,6 +732,9 @@ class PolicyImportResult(BaseModel):
             "Number of tools skipped due to missing server references "
             "(when skip_missing_servers=true)"
         ),
+    )
+    model_io_rules_applied: int = Field(
+        0, description="Number of model I/O content rules applied"
     )
     warnings: List[str] = Field(default_factory=list, description="Non-fatal warnings")
     errors: List[str] = Field(default_factory=list, description="Errors that occurred")

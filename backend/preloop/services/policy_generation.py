@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import litellm
 import yaml
@@ -86,6 +87,8 @@ class PolicyGenerationService:
         system_prompt = self._build_system_prompt(schema_json, context_block)
 
         yaml_output = self._call_llm(model, system_prompt, prompt)
+        if include_current_config:
+            yaml_output = self._merge_preserving_unrelated(yaml_output, prompt)
         warnings = self._validate_output(yaml_output)
 
         return {"yaml": yaml_output, "warnings": warnings}
@@ -166,12 +169,111 @@ class PolicyGenerationService:
         if not all_models:
             raise PolicyGenerationError(
                 "No AI models configured on your account. "
-                "Add at least one model in Settings → AI Models before "
+                "Add a default model at /console/ai-models before "
                 "generating policies."
             )
 
         # Most recently created
         return sorted(all_models, key=lambda m: m.created_at, reverse=True)[0]
+
+    _REMOVAL_RE = re.compile(r"\b(remove|delete|drop|without)\b", re.IGNORECASE)
+
+    def _prompt_asks_to_drop(self, prompt: str, name: str) -> bool:
+        """True when the prompt names this item and asks to remove it."""
+        if not name:
+            return False
+        lowered = prompt.lower()
+        if name.lower() not in lowered:
+            return False
+        return bool(self._REMOVAL_RE.search(lowered))
+
+    def _merge_preserving_unrelated(self, generated_yaml: str, prompt: str) -> str:
+        """Restore current items the model omitted unless the prompt drops them.
+
+        The LLM is asked to emit a complete document. When it drops unrelated
+        tools, workflows, MCP servers, or model_io rules, put them back so an
+        edit cannot silently wipe the rest of the policy.
+        """
+        try:
+            generated_data = yaml.safe_load(generated_yaml)
+            if not isinstance(generated_data, dict):
+                return generated_yaml
+            generated = PolicyDocument(**generated_data)
+        except (yaml.YAMLError, Exception):
+            return generated_yaml
+
+        try:
+            current = export_current_policy(
+                self.db,
+                account_id=self.account_id,
+                policy_name="(current configuration)",
+            )
+        except Exception as exc:
+            logger.warning("Could not export current policy for merge: %s", exc)
+            return generated_yaml
+
+        restored = False
+
+        def _restore(
+            current_items: Optional[Sequence[Any]],
+            generated_items: Optional[List[Any]],
+            key_fn,
+        ) -> List[Any]:
+            nonlocal restored
+            merged = list(generated_items or [])
+            seen = {key_fn(item) for item in merged}
+            for item in current_items or []:
+                key = key_fn(item)
+                if key in seen:
+                    continue
+                label = key[-1] if isinstance(key, tuple) else key
+                if self._prompt_asks_to_drop(prompt, str(label)):
+                    continue
+                merged.append(item)
+                restored = True
+            return merged
+
+        generated.mcp_servers = (
+            _restore(
+                current.mcp_servers,
+                generated.mcp_servers,
+                lambda item: item.name,
+            )
+            or None
+        )
+        generated.approval_workflows = (
+            _restore(
+                current.approval_workflows,
+                generated.approval_workflows,
+                lambda item: item.name,
+            )
+            or None
+        )
+        generated.tools = (
+            _restore(
+                current.tools,
+                generated.tools,
+                lambda item: (item.source, item.name),
+            )
+            or None
+        )
+        generated.model_io = (
+            _restore(
+                current.model_io,
+                generated.model_io,
+                lambda item: item.id,
+            )
+            or None
+        )
+
+        if not restored:
+            return generated_yaml
+
+        return yaml.dump(
+            generated.model_dump(mode="json", exclude_none=True),
+            default_flow_style=False,
+            sort_keys=False,
+        )
 
     def _build_context_block(self) -> str:
         """Export the account's current policy config as YAML context.
@@ -187,7 +289,7 @@ class PolicyGenerationService:
                 policy_name="(current configuration)",
             )
             current_yaml = yaml.dump(
-                current.model_dump(exclude_none=True),
+                current.model_dump(mode="json", exclude_none=True),
                 default_flow_style=False,
                 sort_keys=False,
             )
@@ -196,21 +298,24 @@ class PolicyGenerationService:
             n_servers = len(current.mcp_servers or [])
             n_policies = len(current.approval_workflows or [])
             n_tools = len(current.tools or [])
+            n_model_io = len(current.model_io or [])
 
             header_lines = [
                 "\n\n--- CURRENT ACCOUNT CONFIGURATION ---",
                 (
                     f"The account currently has {n_servers} MCP server(s), "
-                    f"{n_policies} approval workflow/ies, and {n_tools} tool "
-                    f"configuration(s) with their access rules."
+                    f"{n_policies} approval workflow/ies, {n_tools} tool "
+                    f"configuration(s), and {n_model_io} model I/O rule(s)."
                 ),
                 "",
                 (
-                    "IMPORTANT: You MUST keep the items below unless the "
-                    "user's prompt explicitly contradicts them. Reference "
-                    "existing approval_workflows by name instead of creating "
-                    "duplicates. Carry forward existing tool conditions/rules "
-                    "that are compatible with the user's request."
+                    "IMPORTANT: This is an edit of the current policy. You MUST "
+                    "keep the items below unless the user's prompt explicitly "
+                    "asks to remove them. Reference existing "
+                    "approval_workflows by name instead of creating "
+                    "duplicates. Carry forward existing tool conditions, "
+                    "model_io rules, MCP servers, and workflows that are "
+                    "compatible with the user's request."
                 ),
                 "",
             ]
@@ -229,14 +334,14 @@ class PolicyGenerationService:
 You are an expert at generating Preloop access-policy YAML files.
 
 Given the JSON schema below and the user's description, produce a
-**complete, valid** policy YAML document.  Output ONLY the raw YAML —
-no markdown fences, no explanation.
+complete, valid policy YAML document. Output ONLY the raw YAML.
+No markdown fences, no explanation.
 
 ### RULES
 - The YAML MUST conform to the following JSON Schema.
 - Use `version: "1.0"`.
-- Every `approval_workflow` referenced by a tool MUST be defined in
-  `approval_workflows`.
+- Every `approval_workflow` referenced by a tool or model_io rule MUST
+  be defined in `approval_workflows`.
 - Prefer `condition_type: simple` unless the description clearly
   requires CEL capabilities (contains, startsWith, regex, etc.).
 - If the user mentions specific people or teams, include them in
@@ -246,22 +351,28 @@ no markdown fences, no explanation.
 - Fill in sensible `timeout_seconds` (default 300).
 - For `defaults`, set `unknown_tools` appropriately based on the user's
   security posture (allow / deny / require_approval).
+- Model input/output rules live under `model_io` with target
+  `model.request` or `model.response`. Actions are allow, deny, or
+  require_approval. Detector attributes include pii.found,
+  injection.score, and moderation.flagged.
 
 ### REUSE EXISTING CONFIGURATION
 If a "CURRENT ACCOUNT CONFIGURATION" block is provided below, you MUST
 follow these rules:
-1. **Preserve existing MCP servers** — include them unchanged in the
-   `mcp_servers` section unless the user says to remove or replace one.
-2. **Reuse existing approval workflows** — if the account already has
-   suitable approval workflows (e.g. for human review or AI triage),
-   reference them by name in tool configs instead of creating new ones.
-   Only create a new policy when no existing one satisfies the request.
-3. **Keep existing tool rules** — for tools already configured with
-   access rules or conditions, carry those rules forward unless they
+1. Preserve existing MCP servers. Include them unchanged in
+   `mcp_servers` unless the user says to remove or replace one.
+2. Reuse existing approval workflows. If the account already has
+   suitable approval workflows, reference them by name instead of
+   creating new ones. Only create a new workflow when no existing one
+   satisfies the request.
+3. Keep existing tool rules. For tools already configured with access
+   rules or conditions, carry those rules forward unless they
    directly conflict with the user's prompt.
-4. **Merge, don't replace** — add new tool entries or rules for tools
-   not yet covered, but do not drop existing tool configurations.
-5. **Preserve enabled/disabled state** — if an existing tool is
+4. Keep existing model_io rules. Add or edit only what the user asked
+   for. Do not drop unrelated model I/O rules.
+5. Merge, do not replace. Add new tool or model_io entries for items
+   not yet covered, but do not drop existing configurations.
+6. Preserve enabled/disabled state. If an existing tool or rule is
    disabled, keep it disabled unless the user asks otherwise.
 
 ### JSON SCHEMA
@@ -287,7 +398,7 @@ is to produce a policy that:
    maximum observed payment amount was $500, require approval for
    amounts > $500).
 
-Output ONLY the raw YAML — no fences, no explanation.
+Output ONLY the raw YAML. No fences, no explanation.
 
 ### RULES
 - The YAML MUST conform to the following JSON Schema.

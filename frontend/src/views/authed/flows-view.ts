@@ -225,6 +225,41 @@ export class FlowsView extends LitElement {
         background: var(--sl-color-neutral-50);
         border-radius: 4px;
       }
+      .empty-state-wrapper {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        margin-top: var(--sl-spacing-medium);
+        margin-bottom: var(--sl-spacing-large);
+      }
+      .empty-card {
+        width: 100%;
+        max-width: 580px;
+        text-align: center;
+      }
+      .empty-card-body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: var(--sl-spacing-large);
+      }
+      .empty-card-icon {
+        font-size: 2.5rem;
+        color: var(--sl-color-primary-600);
+        margin-bottom: var(--sl-spacing-small);
+      }
+      .empty-card-title {
+        margin: 0 0 var(--sl-spacing-x-small);
+        font-size: var(--sl-font-size-large);
+        font-weight: var(--sl-font-weight-semibold);
+        color: var(--sl-color-neutral-900);
+      }
+      .empty-card-desc {
+        margin: 0 0 var(--sl-spacing-large);
+        max-width: 440px;
+        line-height: 1.5;
+        color: var(--sl-color-neutral-600);
+      }
     `,
   ];
 
@@ -401,15 +436,21 @@ export class FlowsView extends LitElement {
         description="Event-driven agent runs. A flow starts an agent when something happens — a new issue, a webhook — and stops it when the run completes."
         width="extra-wide"
       >
-        <div slot="main-column">
-          <sl-button
-            variant="primary"
-            @click=${() => Router.go('/console/flows/new')}
-          >
-            <sl-icon slot="prefix" name="plus-lg"></sl-icon>
-            Create New Flow
-          </sl-button>
-        </div>
+        ${
+          this.flows.length > 0
+            ? html`
+                <div slot="main-column">
+                  <sl-button
+                    variant="primary"
+                    @click=${() => Router.go('/console/flows/new')}
+                  >
+                    <sl-icon slot="prefix" name="plus-lg"></sl-icon>
+                    Create New Flow
+                  </sl-button>
+                </div>
+              `
+            : ''
+        }
       </view-header>
       <div class="column-layout extra-wide">
         <div class="main-column">
@@ -446,15 +487,27 @@ export class FlowsView extends LitElement {
                   </div>
                 `
               : html`
-                  <div class="empty-state">
-                    <sl-icon
-                      name="inbox"
-                      style="font-size: 3rem; opacity: 0.3;"
-                    ></sl-icon>
-                    <p>
-                      No flows yet. Create your first flow or clone a preset
-                      below.
-                    </p>
+                  <div class="empty-state empty-state-wrapper">
+                    <sl-card class="empty-card">
+                      <div class="empty-card-body">
+                        <sl-icon
+                          class="empty-card-icon"
+                          name="diagram-3"
+                        ></sl-icon>
+                        <h3 class="empty-card-title">No flows yet</h3>
+                        <p class="empty-card-desc">
+                          No flows yet. Create your first custom flow or clone a
+                          starter preset below.
+                        </p>
+                        <sl-button
+                          variant="primary"
+                          @click=${() => Router.go('/console/flows/new')}
+                        >
+                          <sl-icon slot="prefix" name="plus-lg"></sl-icon>
+                          Create New Flow
+                        </sl-button>
+                      </div>
+                    </sl-card>
                   </div>
                 `
           }

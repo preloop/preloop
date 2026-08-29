@@ -613,6 +613,7 @@ The system is designed to be containerized using Docker, enabling easy deploymen
 *   **Dev compose:** `docker-compose.yml` healthchecks postgres and NATS and starts api/gateway/scheduler/worker only after both are healthy and `migrate` has completed. The Vite dev server honors `VITE_ALLOWED_HOSTS` when the console is reached by a public hostname.
 *   **Health monitoring:** The Helm chart ships an optional in-cluster health-monitor deployment (`healthMonitor.*`, enabled by default) that polls `/api/v1/health` and logs alert lines after consecutive failures.
 *   **Release verification:** `scripts/release_smoke_test.sh` boots the release compose file with tagged images and verifies HTTP health, first-user sign-up/login, and restart-loop-free stability; the release workflow runs it as the `verify-oss-install` gate before publishing a GitHub release.
+*   **OSS installer `.env`:** `scripts/install-oss.sh` writes Compose `.env` values with `$` escaped as `$$` so secrets are not interpolated (and partial secrets are not leaked via compose WARNs). Hand-edits of `~/.preloop-oss/.env` need the same escaping.
 
 ## Security Considerations
 

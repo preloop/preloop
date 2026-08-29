@@ -22,7 +22,11 @@ describe('PolicyGenerateDialog', () => {
   // Helpers
   // ---------------------------------------------------------------------------
 
-  function stubGenerate(yaml: string, warnings: string[] = []) {
+  function stubGenerate(
+    yaml: string,
+    warnings: string[] = [],
+    currentYaml = 'version: "1.0"\nmetadata:\n  name: current'
+  ) {
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/api/v1/policies/generate')) {
@@ -36,6 +40,24 @@ describe('PolicyGenerateDialog', () => {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
+      }
+      if (url.includes('/api/v1/policies/export')) {
+        return new Response(currentYaml, {
+          status: 200,
+          headers: { 'Content-Type': 'application/x-yaml' },
+        });
+      }
+      if (url.endsWith('/api/v1/policies/diff')) {
+        return new Response(
+          JSON.stringify({
+            summary: '1 added',
+            has_changes: yaml !== currentYaml,
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
       }
       return new Response(JSON.stringify({}), {
         status: 200,
@@ -67,7 +89,7 @@ describe('PolicyGenerateDialog', () => {
 
     const dialog = el.shadowRoot!.querySelector('sl-dialog');
     expect(dialog).to.exist;
-    expect(dialog!.getAttribute('label')).to.equal('Generate Policy with AI');
+    expect(dialog!.getAttribute('label')).to.equal('Describe a change');
   });
 
   it('has prompt and audit tabs', async () => {
@@ -130,10 +152,12 @@ describe('PolicyGenerateDialog', () => {
     expect((el as any)._generatedYaml).to.equal(yamlContent);
     expect((el as any)._warnings).to.deep.equal(['minor warning']);
 
-    // YAML preview should be visible
-    const preview = el.shadowRoot!.querySelector('.yaml-preview pre');
-    expect(preview).to.exist;
-    expect(preview!.textContent).to.equal(yamlContent);
+    const diff = el.shadowRoot!.querySelector('.yaml-diff pre');
+    expect(diff).to.exist;
+    expect(diff!.textContent).to.contain('--- a/policies.yaml');
+    expect(
+      el.shadowRoot!.querySelector('.yaml-preview pre')?.textContent
+    ).to.equal(yamlContent);
 
     // Verify fetch was called with correct body
     const generateCall = fetchStub
@@ -226,7 +250,7 @@ describe('PolicyGenerateDialog', () => {
   // Apply policy event
   // ---------------------------------------------------------------------------
 
-  it('dispatches policy-apply event when Apply Policy is clicked', async () => {
+  it('dispatches policy-apply event when Save is clicked', async () => {
     const yamlContent = 'version: "1.0"';
     stubGenerate(yamlContent);
 
@@ -248,7 +272,7 @@ describe('PolicyGenerateDialog', () => {
 
     const applyBtn = Array.from(
       el.shadowRoot!.querySelectorAll('sl-button')
-    ).find((b) => b.textContent?.trim()?.includes('Apply Policy'));
+    ).find((b) => b.textContent?.trim() === 'Save');
     expect(applyBtn).to.exist;
     applyBtn!.click();
 
@@ -284,5 +308,77 @@ describe('PolicyGenerateDialog', () => {
     expect((el as any)._error).to.equal('');
     expect((el as any)._warnings).to.deep.equal([]);
     expect(el.open).to.be.false;
+  });
+
+  it('shows a unified YAML diff before Save and does not apply on Discard', async () => {
+    const current = 'version: "1.0"\nmetadata:\n  name: current';
+    const yamlContent = 'version: "1.0"\nmetadata:\n  name: edited';
+    stubGenerate(yamlContent, [], current);
+
+    const el = (await fixture(
+      html`<policy-generate-dialog
+        .open=${true}
+        .currentYaml=${current}
+      ></policy-generate-dialog>`
+    )) as PolicyGenerateDialog;
+    await el.updateComplete;
+
+    let applied = false;
+    el.addEventListener('policy-apply', () => {
+      applied = true;
+    });
+
+    (el as any)._prompt = 'add a PII deny rule';
+    el.requestUpdate();
+    await el.updateComplete;
+    const generateBtn = Array.from(
+      el.shadowRoot!.querySelectorAll('sl-button')
+    ).find((b) => b.textContent?.trim()?.includes('Generate'));
+    generateBtn!.click();
+    await waitUntil(
+      () => (el as any)._unifiedDiff !== '',
+      'diff was not computed'
+    );
+    await el.updateComplete;
+
+    expect(
+      el.shadowRoot!.querySelector('.yaml-diff pre')?.textContent
+    ).to.contain('+  name: edited');
+    const saveBtn = Array.from(
+      el.shadowRoot!.querySelectorAll('sl-button')
+    ).find((b) => b.textContent?.trim() === 'Save');
+    expect(saveBtn).to.exist;
+
+    const discardBtn = Array.from(
+      el.shadowRoot!.querySelectorAll('sl-button')
+    ).find((b) => b.textContent?.trim() === 'Discard');
+    discardBtn!.click();
+    await el.updateComplete;
+
+    expect(applied).to.be.false;
+    expect((el as any)._generatedYaml).to.equal('');
+    expect(el.shadowRoot!.querySelector('.yaml-diff')).to.not.exist;
+  });
+
+  it('links to Models settings when no default model is configured', async () => {
+    stubGenerateError(
+      400,
+      'No AI models configured. Add a default model at /console/ai-models'
+    );
+    const el = (await fixture(
+      html`<policy-generate-dialog .open=${true}></policy-generate-dialog>`
+    )) as PolicyGenerateDialog;
+    await el.updateComplete;
+    (el as any)._prompt = 'deny pii';
+    el.requestUpdate();
+    await el.updateComplete;
+    const generateBtn = Array.from(
+      el.shadowRoot!.querySelectorAll('sl-button')
+    ).find((b) => b.textContent?.trim()?.includes('Generate'));
+    generateBtn!.click();
+    await waitUntil(() => (el as any)._error !== '', 'Error was not set');
+    await el.updateComplete;
+    const link = el.shadowRoot!.querySelector('a.models-link');
+    expect(link?.getAttribute('href')).to.equal('/console/ai-models');
   });
 });
