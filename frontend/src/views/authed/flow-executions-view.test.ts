@@ -71,7 +71,31 @@ describe('FlowExecutionsView', () => {
     expect(el.shadowRoot?.textContent).to.contain('Triage');
   });
 
-  it('reloads executions when the status filter changes', async () => {
+  it('renders filter buttons for all execution statuses', async () => {
+    fetchStub = stub(EXECUTIONS);
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const statuses = [
+      'all',
+      'RUNNING',
+      'PENDING',
+      'SUCCEEDED',
+      'FAILED',
+      'CANCELLED',
+    ];
+    for (const status of statuses) {
+      const btn = el.shadowRoot?.querySelector(
+        `sl-button[data-status="${status}"]`
+      );
+      expect(btn, `Button for status ${status} should exist`).to.exist;
+    }
+  });
+
+  it('reloads executions when a status filter button is clicked', async () => {
     fetchStub = stub(EXECUTIONS);
     const el = (await fixture(
       html`<flow-executions-view></flow-executions-view>`
@@ -79,9 +103,16 @@ describe('FlowExecutionsView', () => {
     await tick();
     await el.updateComplete;
     const callsBefore = fetchStub.callCount;
-    (el as any).handleStatusFilterChange({ target: { value: 'RUNNING' } });
+
+    const runningBtn = el.shadowRoot?.querySelector(
+      'sl-button[data-status="RUNNING"]'
+    ) as HTMLElement;
+    expect(runningBtn).to.exist;
+    runningBtn.click();
     await tick();
-    expect((el as any).statusFilter).to.equal('RUNNING');
+    await el.updateComplete;
+
+    expect(el.statusFilter).to.equal('RUNNING');
     expect(fetchStub.callCount).to.be.greaterThan(callsBefore);
     expect(
       fetchStub

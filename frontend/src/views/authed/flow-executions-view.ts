@@ -179,11 +179,15 @@ export class FlowExecutionsView extends AuthedElement {
     return this.filteredExecutions;
   }
 
-  handleStatusFilterChange(event: Event) {
-    const select = event.target as any;
-    this.statusFilter = select.value;
+  setStatusFilter(status: string) {
+    this.statusFilter = status;
     this.currentPage = 1; // Reset to first page when filter changes
     void this.loadExecutions();
+  }
+
+  handleStatusFilterChange(event: Event | { target: { value: string } }) {
+    const target = (event as any).target || event;
+    this.setStatusFilter(target.value);
   }
 
   nextPage() {
@@ -269,47 +273,51 @@ export class FlowExecutionsView extends AuthedElement {
               <sl-button-group>
                 <sl-button
                   size="small"
+                  data-status="all"
                   variant=${this.statusFilter === 'all' ? 'primary' : 'default'}
-                  @click=${() => {
-                    this.statusFilter = 'all';
-                    this.currentPage = 1;
-                    void this.loadExecutions();
-                  }}
+                  @click=${() => this.setStatusFilter('all')}
                 >
                   All
                 </sl-button>
                 <sl-button
                   size="small"
-                  variant=${this.statusFilter === 'FAILED' ? 'danger' : 'default'}
-                  @click=${() => {
-                    this.statusFilter = 'FAILED';
-                    this.currentPage = 1;
-                    void this.loadExecutions();
-                  }}
-                >
-                  Failed
-                </sl-button>
-                <sl-button
-                  size="small"
+                  data-status="RUNNING"
                   variant=${this.statusFilter === 'RUNNING' ? 'primary' : 'default'}
-                  @click=${() => {
-                    this.statusFilter = 'RUNNING';
-                    this.currentPage = 1;
-                    void this.loadExecutions();
-                  }}
+                  @click=${() => this.setStatusFilter('RUNNING')}
                 >
                   Running
                 </sl-button>
                 <sl-button
                   size="small"
+                  data-status="PENDING"
+                  variant=${this.statusFilter === 'PENDING' ? 'neutral' : 'default'}
+                  @click=${() => this.setStatusFilter('PENDING')}
+                >
+                  Pending
+                </sl-button>
+                <sl-button
+                  size="small"
+                  data-status="SUCCEEDED"
                   variant=${this.statusFilter === 'SUCCEEDED' ? 'success' : 'default'}
-                  @click=${() => {
-                    this.statusFilter = 'SUCCEEDED';
-                    this.currentPage = 1;
-                    void this.loadExecutions();
-                  }}
+                  @click=${() => this.setStatusFilter('SUCCEEDED')}
                 >
                   Succeeded
+                </sl-button>
+                <sl-button
+                  size="small"
+                  data-status="FAILED"
+                  variant=${this.statusFilter === 'FAILED' ? 'danger' : 'default'}
+                  @click=${() => this.setStatusFilter('FAILED')}
+                >
+                  Failed
+                </sl-button>
+                <sl-button
+                  size="small"
+                  data-status="CANCELLED"
+                  variant=${this.statusFilter === 'CANCELLED' ? 'warning' : 'default'}
+                  @click=${() => this.setStatusFilter('CANCELLED')}
+                >
+                  Cancelled
                 </sl-button>
               </sl-button-group>
               <sl-button size="small" @click=${this.loadExecutions}>
