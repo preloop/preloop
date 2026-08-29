@@ -7958,6 +7958,151 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/policies/model-io-rules:
+    get:
+      tags:
+      - Policies
+      summary: List model I/O content policy rules
+      description: Return model.request and model.response rules for the console.
+      operationId: list_model_io_rules_api_v1_policies_model_io_rules_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelIORuleListResponse'
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - Policies
+      summary: Create or replace a model I/O content policy rule
+      description: Save one model I/O rule from the Policies console form.
+      operationId: create_model_io_rule_api_v1_policies_model_io_rules_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelIORule'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Create Model Io Rule Api V1 Policies Model Io Rules
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/policies/model-io-rules/{rule_id}:
+    put:
+      tags:
+      - Policies
+      summary: Replace a model I/O content policy rule
+      description: Replace an existing model I/O rule. The path id wins.
+      operationId: update_model_io_rule_api_v1_policies_model_io_rules__rule_id__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: rule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Rule Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelIORule'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Update Model Io Rule Api V1 Policies Model Io Rules  Rule
+                  Id  Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      tags:
+      - Policies
+      summary: Enable or disable a model I/O content policy rule
+      description: Toggle enabled without rewriting the rest of the rule.
+      operationId: patch_model_io_rule_api_v1_policies_model_io_rules__rule_id__patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: rule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Rule Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelIORulePatchRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Patch Model Io Rule Api V1 Policies Model Io Rules  Rule
+                  Id  Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Policies
+      summary: Delete a model I/O content policy rule
+      description: Delete one model I/O rule.
+      operationId: remove_model_io_rule_api_v1_policies_model_io_rules__rule_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: rule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Rule Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/policies/export:
     get:
       tags:
@@ -11692,6 +11837,14 @@ components:
       - query
       title: CommentSearchResults
       description: Response model for comment search results.
+    ConditionAction:
+      type: string
+      enum:
+      - require_approval
+      - deny
+      - allow
+      title: ConditionAction
+      description: Actions to take when a condition matches.
     ConditionTestRequest:
       properties:
         expression:
@@ -11732,6 +11885,21 @@ components:
       - evaluation_context
       title: ConditionTestResponse
       description: Schema for condition test result.
+    ConditionType:
+      type: string
+      enum:
+      - simple
+      - cel
+      title: ConditionType
+      description: "Type of condition expression.\n\nThis enum supports the open core\
+        \ licensing model:\n\n- SIMPLE (open source): Basic comparisons using Python-like\
+        \ syntax.\n  Supports operators: ==, !=, >, <, >=, <=\n  Examples:\n    -\
+        \ \"args.amount > 500\"\n    - \"args.recipient == 'bob'\"\n    - \"args.priority\
+        \ != 'low'\"\n\n- CEL (enterprise): Full CEL (Common Expression Language)\
+        \ expressions\n  with advanced functions and capabilities.\n  Examples:\n\
+        \    - \"args.command.contains('rm -rf')\"\n    - \"args.path.startsWith('/etc/')\"\
+        \n    - \"args.tags.exists(t, t == 'production')\"\n    - \"args.amount >\
+        \ 1000 && args.approved == false\""
     CostAnalyticsSummaryResponse:
       properties:
         period_start:
@@ -11946,6 +12114,18 @@ components:
       type: object
       title: DashboardTelemetryResponse
       description: Aggregate high-level metrics for the global dashboard control plane.
+    DetectorTimeoutFailMode:
+      type: string
+      enum:
+      - allow
+      - deny
+      title: DetectorTimeoutFailMode
+      description: 'Fail mode when a detector exceeds its hard timeout.
+
+
+        Default is ``deny`` (fail closed). Set ``allow`` to skip the timed-out
+
+        rule and continue evaluation.'
     EmailVerificationRequest:
       properties:
         token:
@@ -15482,6 +15662,151 @@ components:
       - api_key_id
       title: MobileDeviceRegistrationResponse
       description: Schema for mobile device registration response with API key.
+    ModelIODetectors:
+      properties:
+        pii:
+          anyOf:
+          - type: boolean
+          - $ref: '#/components/schemas/PIIDetectorConfig'
+          - type: 'null'
+          title: Pii
+          description: Enable PII scan, optionally with entity types
+        injection:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Injection
+          description: Enable prompt-injection heuristics
+        moderation:
+          anyOf:
+          - type: boolean
+          - $ref: '#/components/schemas/ModerationDetectorConfig'
+          - type: 'null'
+          title: Moderation
+          description: Enable moderation check
+      type: object
+      title: ModelIODetectors
+      description: 'Detectors enabled for one model I/O rule.
+
+
+        A detector runs only when this block enables it or when a condition
+
+        expression references its attributes (pii., injection., moderation.).'
+    ModelIORule:
+      properties:
+        id:
+          type: string
+          minLength: 1
+          title: Id
+          description: Stable rule identifier
+        target:
+          $ref: '#/components/schemas/ModelIOTarget'
+          description: model.request or model.response
+        enabled:
+          type: boolean
+          title: Enabled
+          description: Whether this rule is evaluated
+          default: true
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+          description: Human-readable description
+        approval_workflow:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approval Workflow
+          description: Approval workflow name for require_approval
+        detectors:
+          anyOf:
+          - $ref: '#/components/schemas/ModelIODetectors'
+          - type: 'null'
+          description: Detectors to run for this rule
+        detector_timeout_ms:
+          type: integer
+          maximum: 30000.0
+          minimum: 50.0
+          title: Detector Timeout Ms
+          description: Hard timeout for detectors on this rule
+          default: 500
+        on_detector_timeout:
+          $ref: '#/components/schemas/DetectorTimeoutFailMode'
+          description: Fail mode when detectors time out (default deny)
+          default: deny
+        conditions:
+          items:
+            $ref: '#/components/schemas/ToolCondition'
+          type: array
+          minItems: 1
+          title: Conditions
+          description: First matching condition wins, same as tools
+      type: object
+      required:
+      - id
+      - target
+      - conditions
+      title: ModelIORule
+      description: 'Content policy rule targeting model.request or model.response.
+
+
+        Conditions use the same simple/CEL style as tool rules. Documented
+
+        attributes include model.id, model.provider, model.name, session.id,
+
+        request.text, response.text, pii.found, pii.types_found,
+
+        injection.score, injection.matched_patterns, moderation.flagged,
+
+        and moderation.categories.'
+    ModelIORuleListResponse:
+      properties:
+        rules:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Rules
+      type: object
+      required:
+      - rules
+      title: ModelIORuleListResponse
+      description: List of model I/O content policy rules.
+    ModelIORulePatchRequest:
+      properties:
+        enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enabled
+      type: object
+      title: ModelIORulePatchRequest
+      description: Partial update for enable/disable.
+    ModelIOTarget:
+      type: string
+      enum:
+      - model.request
+      - model.response
+      title: ModelIOTarget
+      description: Stable rule targets for model request and response payloads.
+    ModerationDetectorConfig:
+      properties:
+        backend:
+          type: string
+          title: Backend
+          description: 'Registered moderation backend name (default: local)'
+          default: local
+      type: object
+      title: ModerationDetectorConfig
+      description: 'Moderation detector configuration.
+
+
+        ``backend`` names a registered checker. The built-in ``local`` backend
+
+        is a keyword ruleset and works without a live provider. Tests register
+
+        a ``fake`` backend.'
     NotificationPreferencesResponse:
       properties:
         preferred_channel:
@@ -15731,6 +16056,24 @@ components:
       type: object
       title: OrganizationUpdate
       description: Model for updating an organization.
+    PIIDetectorConfig:
+      properties:
+        types:
+          items:
+            type: string
+          type: array
+          title: Types
+          description: PII entity types to scan (email, phone, credit_card)
+      type: object
+      title: PIIDetectorConfig
+      description: 'Deterministic PII detector configuration.
+
+
+        ``types`` selects which entity recognizers run. Unknown types are
+
+        rejected at schema validation. Third-party recognizers are out of
+
+        scope and must stay off by default.'
     PasskeySummary:
       properties:
         id:
@@ -15897,6 +16240,11 @@ components:
           title: Tools Skipped
           description: Number of tools skipped due to missing server references (when
             skip_missing_servers=true)
+          default: 0
+        model_io_rules_applied:
+          type: integer
+          title: Model Io Rules Applied
+          description: Number of model I/O content rules applied
           default: 0
         warnings:
           items:
@@ -18683,6 +19031,45 @@ components:
       - updated_at
       title: ToolApprovalConditionResponse
       description: Schema for tool approval condition response.
+    ToolCondition:
+      properties:
+        expression:
+          type: string
+          title: Expression
+          description: Expression to evaluate against tool args
+        action:
+          $ref: '#/components/schemas/ConditionAction'
+          description: Action when condition matches
+          default: require_approval
+        condition_type:
+          $ref: '#/components/schemas/ConditionType'
+          description: 'Expression type: ''simple'' (open source) or ''cel'' (enterprise)'
+          default: simple
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+          description: Human-readable description of this condition
+      type: object
+      required:
+      - expression
+      title: ToolCondition
+      description: "Condition for when to apply actions to tool invocations.\n\nSupports\
+        \ two types of conditions for the open core model:\n\nSimple conditions (open\
+        \ source):\n    Basic comparisons using Python-like syntax. These are evaluated\n\
+        \    using a lightweight parser that supports basic operators.\n\n    Supported\
+        \ operators: ==, !=, >, <, >=, <=\n\n    Examples:\n        - \"args.amount\
+        \ > 500\"\n        - \"args.recipient == 'bob'\"\n        - \"args.count <=\
+        \ 10\"\n\nCEL conditions (enterprise):\n    Full CEL (Common Expression Language)\
+        \ expressions with advanced\n    functions like contains(), startsWith(),\
+        \ endsWith(), exists(), etc.\n\n    Examples:\n        - \"args.command.contains('rm\
+        \ -rf')\"\n        - \"args.path.startsWith('/etc/')\"\n        - \"args.environment\
+        \ == 'production' && args.force == true\"\n        - \"args.tags.exists(t,\
+        \ t == 'sensitive')\"\n\nAttributes:\n    expression: Expression to evaluate\
+        \ against tool arguments.\n    action: Action to take when condition matches.\n\
+        \    condition_type: Type of expression - 'simple' (open source) or 'cel'\
+        \ (enterprise).\n    description: Optional human-readable description."
     ToolConfigurationCreate:
       properties:
         tool_name:

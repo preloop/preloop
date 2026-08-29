@@ -9,8 +9,16 @@ import {
   updateToolConfiguration,
   getFeatures,
   fetchWithAuth,
+  listModelIORules,
+  createModelIORule,
+  updateModelIORule,
+  patchModelIORule,
+  deleteModelIORule,
+  createAccessRule,
 } from '../../api';
+import type { ModelIORule } from '../../api';
 import type { Tool, ApprovalWorkflow } from '../../components/tool-card';
+import '../../components/policy-generate-dialog';
 import '../../components/view-header';
 import '../../components/approval-workflow-dialog';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -63,7 +71,7 @@ interface PolicyFileHistory {
 // Types for diff result
 interface DiffChange {
   type: 'added' | 'removed' | 'modified';
-  category: 'mcp_servers' | 'approval_workflows' | 'tools';
+  category: 'mcp_servers' | 'approval_workflows' | 'tools' | 'model_io';
   name: string;
   details?: string;
 }
@@ -120,7 +128,11 @@ interface PruneResponse {
 
 @customElement('policies-view')
 export class PoliciesView extends LitElement {
-  @state() private _activeTab = 'access';
+  @state() private _activeTab = 'rules';
+  @state() private _ruleFilter:
+    'all' | 'tools' | 'model.request' | 'model.response' = 'all';
+  @state() private _showGenerateDialog = false;
+  @state() private _currentExportYaml = '';
   @state() private _tools: Tool[] = [];
   @state() private _approvalPolicies: ApprovalWorkflow[] = [];
   @state() private _loading = false;
@@ -130,6 +142,26 @@ export class PoliciesView extends LitElement {
   // Access policies state
   @state() private _toolAccessRules: ToolAccessRule[] = [];
   @state() private _expandedTools: Set<string> = new Set();
+
+  // Model I/O content policies
+  @state() private _modelIORules: ModelIORule[] = [];
+  @state() private _showModelIODialog = false;
+  @state() private _editingModelIOId: string | null = null;
+  @state() private _savingModelIO = false;
+  @state() private _modelIOForm = {
+    id: '',
+    kind: 'model.request' as 'tool' | 'model.request' | 'model.response',
+    toolName: '',
+    target: 'model.request' as 'model.request' | 'model.response',
+    enabled: true,
+    action: 'deny' as 'allow' | 'deny' | 'require_approval',
+    expression: 'pii.found == true',
+    approvalWorkflow: '',
+    detectPii: true,
+    detectInjection: false,
+    detectModeration: false,
+    onDetectorTimeout: 'deny' as 'allow' | 'deny',
+  };
 
   // Approval workflows state
   @state() private _showPolicyDialog = false;
@@ -255,6 +287,68 @@ export class PoliciesView extends LitElement {
         padding: var(--sl-spacing-medium);
         border-top: 1px solid var(--sl-color-neutral-200);
         background: var(--sl-color-neutral-0);
+      }
+
+      .page-lead {
+        font-size: 14px;
+        color: var(--sl-color-neutral-600);
+        margin: 0 0 var(--sl-spacing-medium);
+      }
+
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small);
+        margin-bottom: var(--sl-spacing-medium);
+      }
+
+      .rule-filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-x-small);
+        margin-bottom: var(--sl-spacing-medium);
+      }
+
+      .action-allow {
+        --sl-color-success-600: #26d962;
+      }
+
+      .action-approval {
+        --sl-color-warning-600: #f2a93b;
+      }
+
+      .action-deny {
+        --sl-color-danger-600: #ff5d5d;
+      }
+
+      .model-io-hint {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-500);
+        margin: var(--sl-spacing-2x-small) 0 var(--sl-spacing-medium);
+        line-height: 1.5;
+      }
+
+      .model-io-hint code {
+        font-size: var(--sl-font-size-x-small);
+      }
+
+      .detector-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-medium);
+        margin-bottom: var(--sl-spacing-medium);
+      }
+
+      .form-group {
+        margin-bottom: var(--sl-spacing-medium);
+      }
+
+      .form-group label {
+        display: block;
+        font-size: var(--sl-font-size-small);
+        font-weight: var(--sl-font-weight-semibold);
+        color: var(--sl-color-neutral-700);
+        margin-bottom: var(--sl-spacing-x-small);
       }
 
       .rule-row {
@@ -653,15 +747,19 @@ export class PoliciesView extends LitElement {
     this._error = null;
 
     try {
-      const [tools, policies, featuresResponse] = await Promise.all([
-        getTools(),
-        getApprovalWorkflows(),
-        getFeatures(),
-      ]);
+      const [tools, policies, featuresResponse, modelIORules] =
+        await Promise.all([
+          getTools(),
+          getApprovalWorkflows(),
+          getFeatures(),
+          listModelIORules(),
+        ]);
 
       this._tools = tools;
       this._approvalPolicies = policies;
       this._features = featuresResponse.features || {};
+      this._modelIORules = modelIORules;
+      await this._refreshCurrentExport();
 
       // Build tool access rules from tools
       this._toolAccessRules = this._tools.map((tool) => ({
@@ -777,6 +875,209 @@ export class PoliciesView extends LitElement {
     } catch (err: any) {
       this._error = err.message || 'Failed to update tool access';
     }
+  }
+
+  private async _refreshCurrentExport() {
+    try {
+      const response = await fetchWithAuth(
+        '/api/v1/policies/export?format=yaml'
+      );
+      this._currentExportYaml = response.ok ? await response.text() : '';
+    } catch {
+      this._currentExportYaml = '';
+    }
+  }
+
+  private _emptyModelIOForm() {
+    return {
+      id: '',
+      kind: 'model.request' as 'tool' | 'model.request' | 'model.response',
+      toolName: '',
+      target: 'model.request' as 'model.request' | 'model.response',
+      enabled: true,
+      action: 'deny' as 'allow' | 'deny' | 'require_approval',
+      expression: 'pii.found == true',
+      approvalWorkflow: '',
+      detectPii: true,
+      detectInjection: false,
+      detectModeration: false,
+      onDetectorTimeout: 'deny' as 'allow' | 'deny',
+    };
+  }
+
+  private openModelIODialog(rule: ModelIORule | null = null) {
+    if (rule) {
+      const condition = rule.conditions?.[0];
+      const action = (condition?.action || 'deny') as
+        'allow' | 'deny' | 'require_approval';
+      this._editingModelIOId = rule.id;
+      this._modelIOForm = {
+        id: rule.id,
+        kind: rule.target,
+        toolName: '',
+        target: rule.target,
+        enabled: rule.enabled !== false,
+        action,
+        expression: condition?.expression || 'true',
+        approvalWorkflow: rule.approval_workflow || '',
+        detectPii: Boolean(rule.detectors?.pii),
+        detectInjection: Boolean(rule.detectors?.injection),
+        detectModeration: Boolean(rule.detectors?.moderation),
+        onDetectorTimeout: rule.on_detector_timeout || 'deny',
+      };
+    } else {
+      this._editingModelIOId = null;
+      this._modelIOForm = this._emptyModelIOForm();
+    }
+    this._showModelIODialog = true;
+  }
+
+  private closeModelIODialog() {
+    this._showModelIODialog = false;
+    this._editingModelIOId = null;
+  }
+
+  private buildModelIORuleFromForm(): ModelIORule {
+    const form = this._modelIOForm;
+    const detectors: ModelIORule['detectors'] = {};
+    if (form.detectPii) {
+      detectors.pii = { types: ['email', 'phone', 'credit_card'] };
+    }
+    if (form.detectInjection) {
+      detectors.injection = true;
+    }
+    if (form.detectModeration) {
+      detectors.moderation = true;
+    }
+    return {
+      id: form.id.trim(),
+      target: form.target,
+      enabled: form.enabled,
+      approval_workflow: form.approvalWorkflow || null,
+      detectors,
+      on_detector_timeout: form.onDetectorTimeout,
+      conditions: [
+        {
+          expression: form.expression.trim() || 'true',
+          action: form.action,
+        },
+      ],
+    };
+  }
+
+  private async saveModelIORule() {
+    const form = this._modelIOForm;
+    if (form.kind === 'tool') {
+      await this.saveToolRuleFromForm();
+      return;
+    }
+    const rule = this.buildModelIORuleFromForm();
+    if (!rule.id) {
+      this._error = 'Rule id is required';
+      return;
+    }
+    this._savingModelIO = true;
+    try {
+      if (this._editingModelIOId) {
+        await updateModelIORule(this._editingModelIOId, rule);
+      } else {
+        await createModelIORule(rule);
+      }
+      this.closeModelIODialog();
+      await this.loadData();
+    } catch (err: any) {
+      this._error = err.message || 'Failed to save model I/O rule';
+    } finally {
+      this._savingModelIO = false;
+    }
+  }
+
+  private async saveToolRuleFromForm() {
+    const form = this._modelIOForm;
+    const tool = this._tools.find((item) => item.name === form.toolName);
+    if (!tool) {
+      this._error = 'Choose a tool';
+      return;
+    }
+    this._savingModelIO = true;
+    try {
+      let configId = tool.config_id;
+      if (!configId) {
+        const created = await createToolConfiguration({
+          tool_name: tool.name,
+          tool_source: tool.source,
+          mcp_server_id: tool.source_id,
+          is_enabled: form.action !== 'deny',
+          approval_workflow_id:
+            form.action === 'require_approval'
+              ? this._approvalPolicies.find(
+                  (p) => p.name === form.approvalWorkflow
+                )?.id ||
+                this._approvalPolicies.find((p) => p.is_default)?.id ||
+                null
+              : null,
+          account_id: '',
+        });
+        configId = created.id;
+      }
+      await createAccessRule(configId, {
+        action: form.action,
+        condition_expression: form.expression.trim() || null,
+        condition_type: 'simple',
+        is_enabled: form.enabled,
+        approval_workflow_id:
+          form.action === 'require_approval'
+            ? this._approvalPolicies.find(
+                (p) => p.name === form.approvalWorkflow
+              )?.id || null
+            : null,
+      });
+      this.closeModelIODialog();
+      await this.loadData();
+    } catch (err: any) {
+      this._error = err.message || 'Failed to save tool rule';
+    } finally {
+      this._savingModelIO = false;
+    }
+  }
+
+  private async applyGeneratedYaml(event: CustomEvent) {
+    const yaml = event.detail?.yaml;
+    if (!yaml) {
+      return;
+    }
+    this._pendingFile = new File([yaml], 'generated.yaml', {
+      type: 'application/x-yaml',
+    });
+    await this.applyPolicyFile();
+    this._showGenerateDialog = false;
+  }
+
+  private async toggleModelIOEnabled(rule: ModelIORule) {
+    try {
+      await patchModelIORule(rule.id, { enabled: !(rule.enabled !== false) });
+      await this.loadData();
+    } catch (err: any) {
+      this._error = err.message || 'Failed to update model I/O rule';
+    }
+  }
+
+  private async removeModelIORule(rule: ModelIORule) {
+    if (
+      !confirm(`Delete model I/O rule "${rule.id}"? This cannot be undone.`)
+    ) {
+      return;
+    }
+    try {
+      await deleteModelIORule(rule.id);
+      await this.loadData();
+    } catch (err: any) {
+      this._error = err.message || 'Failed to delete model I/O rule';
+    }
+  }
+
+  private primaryModelIOAction(rule: ModelIORule): string {
+    return rule.conditions?.[0]?.action || 'allow';
   }
 
   private openPolicyDialog(policy: ApprovalWorkflow | null = null) {
@@ -1135,6 +1436,469 @@ export class PoliciesView extends LitElement {
       hour: '2-digit',
       minute: '2-digit',
     });
+  }
+
+  private unifiedRules() {
+    const toolRules = this._toolAccessRules
+      .filter(
+        (rule) =>
+          Boolean(rule.configId) ||
+          rule.action !== 'allow' ||
+          Boolean(rule.condition)
+      )
+      .map((rule) => ({
+        key: `tool:${rule.toolName}`,
+        kind: 'tools' as const,
+        target: `tool:${rule.toolName}`,
+        id: rule.toolName,
+        condition: rule.condition || 'true',
+        action: rule.action,
+        detectors: [] as string[],
+        enabled: rule.isEnabled,
+        toolRule: rule,
+        modelRule: null as ModelIORule | null,
+      }));
+    const modelRules = this._modelIORules.map((rule) => ({
+      key: `model:${rule.id}`,
+      kind: rule.target as 'model.request' | 'model.response',
+      target: rule.target,
+      id: rule.id,
+      condition: rule.conditions?.[0]?.expression || 'true',
+      action: this.primaryModelIOAction(rule),
+      detectors: [
+        rule.detectors?.pii ? 'PII' : '',
+        rule.detectors?.injection ? 'Injection' : '',
+        rule.detectors?.moderation ? 'Moderation' : '',
+      ].filter(Boolean),
+      enabled: rule.enabled !== false,
+      toolRule: null,
+      modelRule: rule,
+    }));
+    const all = [...toolRules, ...modelRules];
+    if (this._ruleFilter === 'all') {
+      return all;
+    }
+    if (this._ruleFilter === 'tools') {
+      return all.filter((rule) => rule.kind === 'tools');
+    }
+    return all.filter((rule) => rule.kind === this._ruleFilter);
+  }
+
+  private renderRulesTab() {
+    const rules = this.unifiedRules();
+    return html`
+      <div class="rule-filters">
+        ${(['all', 'tools', 'model.request', 'model.response'] as const).map(
+          (filter) => html`
+            <sl-button
+              size="small"
+              variant=${this._ruleFilter === filter ? 'primary' : 'default'}
+              @click=${() => (this._ruleFilter = filter)}
+            >
+              ${
+                filter === 'all'
+                  ? 'All'
+                  : filter === 'tools'
+                    ? 'Tools'
+                    : filter === 'model.request'
+                      ? 'Model input'
+                      : 'Model output'
+              }
+            </sl-button>
+          `
+        )}
+      </div>
+      <p class="model-io-hint">
+        Condition attributes:
+        <code>pii.found</code>, <code>pii.types_found</code>,
+        <code>injection.score</code>, <code>moderation.flagged</code>,
+        <code>model.id</code>, <code>session.id</code>.
+      </p>
+      ${
+        rules.length === 0
+          ? html`
+              <div class="empty-state">
+                <sl-icon name="shield-lock"></sl-icon>
+                <p>No rules yet.</p>
+                <p class="model-io-hint">
+                  Describe a change, add a rule, or import YAML. Traffic is
+                  allowed when no rule matches.
+                </p>
+              </div>
+            `
+          : html`
+              <div class="access-rules-list">
+                ${repeat(
+                  rules,
+                  (rule) => rule.key,
+                  (rule) => html`
+                    <div
+                      class="access-rule-card"
+                      data-rule-id=${rule.id}
+                      @click=${() =>
+                        rule.modelRule
+                          ? this.openModelIODialog(rule.modelRule)
+                          : this.openModelIODialog()}
+                    >
+                      <div class="access-rule-header">
+                        <div class="access-rule-info">
+                          <div class="access-rule-name">${rule.id}</div>
+                          <div class="access-rule-source">${rule.target}</div>
+                        </div>
+                        <div class="access-rule-actions">
+                          <sl-badge
+                            class=${
+                              rule.action === 'allow'
+                                ? 'action-allow'
+                                : rule.action === 'deny'
+                                  ? 'action-deny'
+                                  : 'action-approval'
+                            }
+                            variant=${
+                              rule.action === 'allow'
+                                ? 'success'
+                                : rule.action === 'deny'
+                                  ? 'danger'
+                                  : 'warning'
+                            }
+                          >
+                            ${rule.action}
+                          </sl-badge>
+                          ${rule.detectors.map(
+                            (chip) =>
+                              html`<sl-badge variant="neutral"
+                                >${chip}</sl-badge
+                              >`
+                          )}
+                          <sl-badge variant="neutral">
+                            ${rule.enabled ? 'Enabled' : 'Disabled'}
+                          </sl-badge>
+                          ${
+                            rule.modelRule
+                              ? html`
+                                  <sl-button
+                                    size="small"
+                                    @click=${(e: Event) => {
+                                      e.stopPropagation();
+                                      this.toggleModelIOEnabled(
+                                        rule.modelRule!
+                                      );
+                                    }}
+                                  >
+                                    ${rule.enabled ? 'Disable' : 'Enable'}
+                                  </sl-button>
+                                  <sl-button
+                                    size="small"
+                                    variant="danger"
+                                    outline
+                                    @click=${(e: Event) => {
+                                      e.stopPropagation();
+                                      this.removeModelIORule(rule.modelRule!);
+                                    }}
+                                  >
+                                    Delete
+                                  </sl-button>
+                                `
+                              : ''
+                          }
+                        </div>
+                      </div>
+                      <div class="access-rule-details">
+                        <div class="rule-row">
+                          <span class="rule-label">Condition:</span>
+                          <span class="rule-value"
+                            ><code>${rule.condition}</code></span
+                          >
+                        </div>
+                      </div>
+                    </div>
+                  `
+                )}
+              </div>
+            `
+      }
+      ${this.renderModelIODialog()}
+    `;
+  }
+
+  private renderModelIOTab() {
+    return html`
+      <div style="margin-bottom: var(--sl-spacing-large);">
+        <sl-button variant="primary" @click=${() => this.openModelIODialog()}>
+          <sl-icon slot="prefix" name="plus-lg"></sl-icon>
+          Add model I/O rule
+        </sl-button>
+      </div>
+      <p class="model-io-hint">
+        Inspect model prompts and completions with the same allow, deny, and
+        require_approval actions as tools. Attributes:
+        <code>pii.found</code>, <code>pii.types_found</code>,
+        <code>injection.score</code>, <code>moderation.flagged</code>,
+        <code>model.id</code>, <code>session.id</code>,
+        <code>request.text</code>, <code>response.text</code>.
+      </p>
+      ${
+        this._modelIORules.length === 0
+          ? html`
+              <div class="empty-state">
+                <sl-icon name="shield-lock"></sl-icon>
+                <p>No model I/O rules yet.</p>
+                <p class="model-io-hint">
+                  Add a rule here or import YAML. Traffic is allowed when no
+                  rule matches.
+                </p>
+              </div>
+            `
+          : html`
+              <div class="access-rules-list">
+                ${repeat(
+                  this._modelIORules,
+                  (rule) => rule.id,
+                  (rule) => this.renderModelIORuleCard(rule)
+                )}
+              </div>
+            `
+      }
+      ${this.renderModelIODialog()}
+    `;
+  }
+
+  private renderModelIORuleCard(rule: ModelIORule) {
+    const action = this.primaryModelIOAction(rule);
+    return html`
+      <div class="access-rule-card" data-model-io-id=${rule.id}>
+        <div class="access-rule-header">
+          <div class="access-rule-info">
+            <div>
+              <div class="access-rule-name">${rule.id}</div>
+              <div class="access-rule-source">${rule.target}</div>
+            </div>
+          </div>
+          <div class="access-rule-actions">
+            <sl-badge
+              variant=${
+                action === 'allow'
+                  ? 'success'
+                  : action === 'deny'
+                    ? 'danger'
+                    : 'warning'
+              }
+            >
+              ${action}
+            </sl-badge>
+            <sl-badge variant=${rule.enabled !== false ? 'neutral' : 'neutral'}>
+              ${rule.enabled !== false ? 'Enabled' : 'Disabled'}
+            </sl-badge>
+            <sl-button
+              size="small"
+              @click=${() => this.openModelIODialog(rule)}
+            >
+              Edit
+            </sl-button>
+            <sl-button
+              size="small"
+              @click=${() => this.toggleModelIOEnabled(rule)}
+            >
+              ${rule.enabled !== false ? 'Disable' : 'Enable'}
+            </sl-button>
+            <sl-button
+              size="small"
+              variant="danger"
+              outline
+              @click=${() => this.removeModelIORule(rule)}
+            >
+              Delete
+            </sl-button>
+          </div>
+        </div>
+        <div class="access-rule-details">
+          <div class="rule-row">
+            <span class="rule-label">Condition:</span>
+            <span class="rule-value">
+              <code>${rule.conditions?.[0]?.expression || 'true'}</code>
+            </span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderModelIODialog() {
+    const form = this._modelIOForm;
+    return html`
+      <sl-dialog
+        label=${this._editingModelIOId ? 'Edit rule' : 'Add rule'}
+        ?open=${this._showModelIODialog}
+        @sl-hide=${this.closeModelIODialog}
+      >
+        <div class="form-group">
+          <label>Rule id</label>
+          <sl-input
+            .value=${form.id}
+            ?disabled=${Boolean(this._editingModelIOId)}
+            @sl-input=${(e: any) =>
+              (this._modelIOForm = { ...form, id: e.target.value })}
+          ></sl-input>
+        </div>
+        <div class="form-group">
+          <label>Target</label>
+          <sl-select
+            .value=${form.kind}
+            @sl-change=${(e: any) => {
+              const kind = e.target.value;
+              this._modelIOForm = {
+                ...form,
+                kind,
+                target: kind === 'tool' ? form.target : kind,
+              };
+            }}
+          >
+            <sl-option value="tool">tool</sl-option>
+            <sl-option value="model.request">model.request</sl-option>
+            <sl-option value="model.response">model.response</sl-option>
+          </sl-select>
+        </div>
+        ${
+          form.kind === 'tool'
+            ? html`
+                <div class="form-group">
+                  <label>Tool</label>
+                  <sl-select
+                    .value=${form.toolName}
+                    @sl-change=${(e: any) =>
+                      (this._modelIOForm = {
+                        ...form,
+                        toolName: e.target.value,
+                      })}
+                  >
+                    ${this._tools.map(
+                      (tool) =>
+                        html`<sl-option value=${tool.name}
+                          >${tool.name}</sl-option
+                        >`
+                    )}
+                  </sl-select>
+                </div>
+              `
+            : ''
+        }
+        <div class="form-group">
+          <label>Action</label>
+          <sl-select
+            .value=${form.action}
+            @sl-change=${(e: any) =>
+              (this._modelIOForm = { ...form, action: e.target.value })}
+          >
+            <sl-option value="allow">Allow</sl-option>
+            <sl-option value="deny">Deny</sl-option>
+            <sl-option value="require_approval">Require approval</sl-option>
+          </sl-select>
+        </div>
+        ${
+          form.action === 'require_approval'
+            ? html`
+                <div class="form-group">
+                  <label>Approval workflow</label>
+                  <sl-select
+                    .value=${form.approvalWorkflow}
+                    @sl-change=${(e: any) =>
+                      (this._modelIOForm = {
+                        ...form,
+                        approvalWorkflow: e.target.value,
+                      })}
+                  >
+                    ${this._approvalPolicies.map(
+                      (policy) =>
+                        html`<sl-option value=${policy.name}
+                          >${policy.name}</sl-option
+                        >`
+                    )}
+                  </sl-select>
+                </div>
+              `
+            : ''
+        }
+        <div class="form-group">
+          <label>Condition</label>
+          <sl-textarea
+            rows="2"
+            .value=${form.expression}
+            @sl-input=${(e: any) =>
+              (this._modelIOForm = { ...form, expression: e.target.value })}
+          ></sl-textarea>
+          <p class="model-io-hint">
+            Examples: <code>pii.found == true</code>,
+            <code>injection.score &gt; 0.7</code>,
+            <code>moderation.flagged == true</code>,
+            <code>model.id == 'gpt-5'</code>,
+            <code>session.id != ''</code>
+          </p>
+        </div>
+        ${
+          form.kind !== 'tool'
+            ? html`
+                <div class="form-group">
+                  <label>Detectors</label>
+                  <div class="detector-row">
+                    <sl-switch
+                      ?checked=${form.detectPii}
+                      @sl-change=${(e: any) =>
+                        (this._modelIOForm = {
+                          ...form,
+                          detectPii: e.target.checked,
+                        })}
+                      >PII</sl-switch
+                    >
+                    <sl-switch
+                      ?checked=${form.detectInjection}
+                      @sl-change=${(e: any) =>
+                        (this._modelIOForm = {
+                          ...form,
+                          detectInjection: e.target.checked,
+                        })}
+                      >Injection</sl-switch
+                    >
+                    <sl-switch
+                      ?checked=${form.detectModeration}
+                      @sl-change=${(e: any) =>
+                        (this._modelIOForm = {
+                          ...form,
+                          detectModeration: e.target.checked,
+                        })}
+                      >Moderation</sl-switch
+                    >
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label>On detector timeout</label>
+                  <sl-select
+                    .value=${form.onDetectorTimeout}
+                    @sl-change=${(e: any) =>
+                      (this._modelIOForm = {
+                        ...form,
+                        onDetectorTimeout: e.target.value,
+                      })}
+                  >
+                    <sl-option value="deny">Deny (fail closed)</sl-option>
+                    <sl-option value="allow">Allow (skip this rule)</sl-option>
+                  </sl-select>
+                </div>
+              `
+            : ''
+        }
+        <sl-button
+          slot="footer"
+          variant="primary"
+          ?loading=${this._savingModelIO}
+          @click=${() => this.saveModelIORule()}
+        >
+          Save
+        </sl-button>
+        <sl-button slot="footer" @click=${this.closeModelIODialog}>
+          Cancel
+        </sl-button>
+      </sl-dialog>
+    `;
   }
 
   private renderAccessPoliciesTab() {
@@ -1501,6 +2265,16 @@ tools:
   - name: "file_write"
     action: require_approval
     policy: "Critical Operations"
+
+model_io:
+  - id: deny-pii-in-prompts
+    target: model.request
+    detectors:
+      pii:
+        types: [email, phone, credit_card]
+    conditions:
+      - expression: "pii.found == true"
+        action: deny
 
 defaults:
   require_approval: false
@@ -2247,10 +3021,13 @@ defaults:
 
   render() {
     return html`
-      <view-header headerText="Governance" width="extra-wide"></view-header>
+      <view-header headerText="Policies" width="extra-wide"></view-header>
 
       <div class="column-layout extra-wide">
         <div class="main-column">
+          <p class="page-lead">
+            Instance rules for tool calls and model input/output.
+          </p>
           ${
             this._error
               ? html`
@@ -2269,53 +3046,51 @@ defaults:
                   </div>
                 `
               : html`
+                  <div class="toolbar">
+                    <sl-button
+                      variant="primary"
+                      @click=${() => (this._showGenerateDialog = true)}
+                    >
+                      Describe a change
+                    </sl-button>
+                    <sl-button @click=${() => this.openModelIODialog()}>
+                      Add rule
+                    </sl-button>
+                    <sl-button @click=${() => this.exportPolicies()}>
+                      Export YAML
+                    </sl-button>
+                  </div>
                   <sl-tab-group
                     @sl-tab-show=${(e: any) => (this._activeTab = e.detail.name)}
                   >
                     <sl-tab
                       slot="nav"
-                      panel="access"
-                      ?active=${this._activeTab === 'access'}
+                      panel="rules"
+                      ?active=${this._activeTab === 'rules'}
                     >
-                      <sl-icon
-                        name="shield-lock"
-                        style="margin-right: var(--sl-spacing-x-small);"
-                      ></sl-icon>
-                      Access Rules
-                    </sl-tab>
-                    <sl-tab
-                      slot="nav"
-                      panel="approval"
-                      ?active=${this._activeTab === 'approval'}
-                    >
-                      <sl-icon
-                        name="person-check"
-                        style="margin-right: var(--sl-spacing-x-small);"
-                      ></sl-icon>
-                      Approval Workflows
+                      Rules
                     </sl-tab>
                     <sl-tab
                       slot="nav"
                       panel="files"
                       ?active=${this._activeTab === 'files'}
                     >
-                      <sl-icon
-                        name="file-earmark-code"
-                        style="margin-right: var(--sl-spacing-x-small);"
-                      ></sl-icon>
-                      Import / Export
+                      YAML
                     </sl-tab>
 
-                    <sl-tab-panel name="access">
-                      ${this.renderAccessPoliciesTab()}
-                    </sl-tab-panel>
-                    <sl-tab-panel name="approval">
-                      ${this.renderApprovalPoliciesTab()}
+                    <sl-tab-panel name="rules">
+                      ${this.renderRulesTab()}
                     </sl-tab-panel>
                     <sl-tab-panel name="files">
                       ${this.renderPolicyFilesTab()}
                     </sl-tab-panel>
                   </sl-tab-group>
+                  <policy-generate-dialog
+                    .open=${this._showGenerateDialog}
+                    .currentYaml=${this._currentExportYaml}
+                    @policy-apply=${this.applyGeneratedYaml}
+                    @closed=${() => (this._showGenerateDialog = false)}
+                  ></policy-generate-dialog>
                 `
           }
         </div>

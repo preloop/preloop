@@ -1463,7 +1463,8 @@ export type ApprovalRuleContextSource =
   | 'subject_scoped_rule'
   | 'tool_default_workflow'
   | 'rule_evaluation_error'
-  | 'agent_permission_hook';
+  | 'agent_permission_hook'
+  | 'model_io_rule';
 
 /**
  * Snapshot of the policy rule that required an approval.
@@ -1493,6 +1494,8 @@ export interface ApprovalRuleContext {
   tool_configuration_id?: string;
   /** Lower-priority rules that would also have matched. Informational. */
   also_matched_rule_ids?: string[];
+  /** Detector attributes for model I/O holds (never a full prompt). */
+  detector_summary?: Record<string, unknown>;
 }
 
 /** Mode of a time-boxed approval bypass. */

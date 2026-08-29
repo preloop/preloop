@@ -41,6 +41,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Model I/O content policies**: instance policies can `allow`, `deny`,
+  or `require_approval` on `model.request` and `model.response` using
+  the existing policy engine. Built-in detectors cover PII, prompt
+  injection heuristics, and a local moderation ruleset. The console
+  restores `/console/policies` (sidebar next to Tools;
+  `/console/governance` redirects there) as a rule-centric page. Describe
+  a change edits the current policy with the account default model and
+  shows a unified YAML diff that must be Saved. YAML import/export
+  round-trips the new targets. Streaming buffers until the assembled
+  response can be evaluated (deny cannot retract tokens already sent).
+  See `docs/guide/model-content-policies.md`.
 - **Private-cluster Helm install**: `helm/preloop/README.md` documents a
   ClusterIP + ingress install with private registry pull secrets, existing
   Postgres, Kubernetes Secrets (not values committed to git), and mounting a

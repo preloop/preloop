@@ -285,6 +285,105 @@ class TestGenerateFromPrompt:
             service.generate_from_prompt("test", include_current_config=False)
             mock_ctx.assert_not_called()
 
+    def test_no_model_message_points_at_console_ai_models(self, service):
+        with patch("preloop.services.policy_generation.crud_ai_model") as crud:
+            crud.get_default_active_model.return_value = None
+            crud.get_by_account.return_value = []
+            with pytest.raises(PolicyGenerationError, match="/console/ai-models"):
+                service._resolve_model()
+
+    def test_edit_preserves_unrelated_tool_rules(self, service, mock_ai_model):
+        from preloop.services.policy.schema import (
+            PolicyDocument,
+            PolicyMetadata,
+            PolicyVersion,
+            ToolDefinition,
+        )
+
+        current = PolicyDocument(
+            version=PolicyVersion.V1_0,
+            metadata=PolicyMetadata(name="current"),
+            tools=[
+                ToolDefinition(name="tool_a", source="builtin", enabled=True),
+                ToolDefinition(name="tool_b", source="builtin", enabled=True),
+            ],
+        )
+        dropped_tools_yaml = """\
+version: "1.0"
+metadata:
+  name: "Edited"
+model_io:
+  - id: deny-pii
+    target: model.request
+    detectors:
+      pii:
+        types: [email]
+    conditions:
+      - expression: "pii.found == true"
+        action: deny
+"""
+        with (
+            patch.object(service, "_resolve_model", return_value=mock_ai_model),
+            patch.object(service, "_call_llm", return_value=dropped_tools_yaml),
+            patch.object(service, "_build_context_block", return_value="ctx"),
+            patch(
+                "preloop.services.policy_generation.export_current_policy",
+                return_value=current,
+            ),
+        ):
+            result = service.generate_from_prompt(
+                "Deny model requests when PII is found"
+            )
+
+        document = PolicyDocument(**__import__("yaml").safe_load(result["yaml"]))
+        tool_names = {tool.name for tool in (document.tools or [])}
+        assert tool_names == {"tool_a", "tool_b"}
+        assert document.model_io
+        assert document.model_io[0].id == "deny-pii"
+        assert document.model_io[0].target == "model.request"
+
+    def test_generated_model_io_round_trips_schema(self, service, mock_ai_model):
+        from preloop.services.policy.schema import PolicyDocument
+
+        yaml_with_model_io = """\
+version: "1.0"
+metadata:
+  name: "Content"
+model_io:
+  - id: deny-injection
+    target: model.request
+    detectors:
+      injection: true
+    conditions:
+      - expression: "injection.score > 0.7"
+        action: deny
+"""
+        with (
+            patch.object(service, "_resolve_model", return_value=mock_ai_model),
+            patch.object(service, "_call_llm", return_value=yaml_with_model_io),
+            patch.object(service, "_build_context_block", return_value=""),
+            patch(
+                "preloop.services.policy_generation.export_current_policy",
+                side_effect=RuntimeError("empty account"),
+            ),
+        ):
+            result = service.generate_from_prompt(
+                "Deny prompts with injection.score > 0.7",
+                include_current_config=False,
+            )
+
+        document = PolicyDocument(**__import__("yaml").safe_load(result["yaml"]))
+        assert document.model_io[0].id == "deny-injection"
+
+    def test_invalid_llm_output_raises(self, service, mock_ai_model):
+        with (
+            patch.object(service, "_resolve_model", return_value=mock_ai_model),
+            patch.object(service, "_call_llm", return_value="not: [valid"),
+            patch.object(service, "_build_context_block", return_value=""),
+        ):
+            with pytest.raises(PolicyGenerationError, match="not valid YAML"):
+                service.generate_from_prompt("anything", include_current_config=False)
+
 
 # ---------------------------------------------------------------------------
 # PolicyGenerationService.generate_from_audit_logs
@@ -398,6 +497,9 @@ class TestGeneratePolicyEndpoint:
             instance._build_context_block.return_value = ""
             instance._build_system_prompt.return_value = "system"
             instance._call_llm.return_value = VALID_POLICY_YAML
+            instance._merge_preserving_unrelated.side_effect = (
+                lambda yaml_text, _prompt: yaml_text
+            )
             instance._validate_output.return_value = []
             result = await generate_policy(
                 request,

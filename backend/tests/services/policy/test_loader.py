@@ -56,6 +56,32 @@ tools:
         assert len(policy.approval_workflows) == 1
         assert len(policy.tools) == 1
 
+    def test_load_model_io_yaml(self):
+        """YAML model_io targets round-trip through the loader."""
+        yaml_content = """
+version: "1.0"
+metadata:
+  name: Content Policy
+approval_workflows:
+  - name: high-risk
+    timeout_seconds: 300
+model_io:
+  - id: deny-pii
+    target: model.request
+    detectors:
+      pii:
+        types: [email]
+    conditions:
+      - expression: "pii.found == true"
+        action: deny
+"""
+        policy, result = load_policy_from_string(yaml_content, format="yaml")
+        assert result.is_valid is True
+        assert policy is not None
+        assert policy.model_io is not None
+        assert policy.model_io[0].id == "deny-pii"
+        assert policy.model_io[0].target == "model.request"
+
     def test_load_valid_json(self):
         """Test loading valid JSON policy."""
         json_content = json.dumps(

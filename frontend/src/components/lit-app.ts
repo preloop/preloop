@@ -503,6 +503,7 @@ export class LitApp extends LitElement {
             ],
           },
           { path: 'tools', component: 'tools-view' },
+          { path: 'policies', component: 'policies-view' },
           {
             path: 'issues',
             children: [
@@ -578,8 +579,7 @@ export class LitApp extends LitElement {
           {
             path: 'governance',
             action: (_context, commands) => {
-              // Governance is now integrated into the Tools page
-              return commands.redirect('/console/tools');
+              return commands.redirect('/console/policies');
             },
           },
           { path: 'audit', component: 'audit-view' },

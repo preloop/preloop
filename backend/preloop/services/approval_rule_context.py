@@ -44,6 +44,9 @@ SOURCE_RULE_EVALUATION_ERROR = "rule_evaluation_error"
 #: not consulted on that path.
 SOURCE_AGENT_PERMISSION_HOOK = "agent_permission_hook"
 
+#: A model.request or model.response content policy required approval.
+SOURCE_MODEL_IO_RULE = "model_io_rule"
+
 #: Every ``source`` value a caller may persist.
 KNOWN_SOURCES = frozenset(
     {
@@ -52,6 +55,7 @@ KNOWN_SOURCES = frozenset(
         SOURCE_TOOL_DEFAULT_WORKFLOW,
         SOURCE_RULE_EVALUATION_ERROR,
         SOURCE_AGENT_PERMISSION_HOOK,
+        SOURCE_MODEL_IO_RULE,
     }
 )
 
@@ -70,6 +74,9 @@ _DEFAULT_EXPLANATIONS = {
         "The agent's own permission hook escalated this call for human "
         "approval. No Preloop access rule was evaluated for it."
     ),
+    SOURCE_MODEL_IO_RULE: (
+        "A model request or response content policy required approval."
+    ),
 }
 
 #: Label of last resort when a rule has neither description nor expression.
@@ -79,6 +86,7 @@ _GENERIC_LABELS = {
     SOURCE_TOOL_DEFAULT_WORKFLOW: "Tool default policy",
     SOURCE_RULE_EVALUATION_ERROR: "Rule evaluation error",
     SOURCE_AGENT_PERMISSION_HOOK: "Agent permission hook",
+    SOURCE_MODEL_IO_RULE: "Model content policy",
 }
 
 #: Identifiers referenced through ``args.`` in an expression, e.g. the
@@ -126,6 +134,7 @@ def build_rule_context(
     explanation: Optional[str] = None,
     also_matched_rule_ids: Optional[Iterable[Any]] = None,
     tool_configuration_id: Optional[Any] = None,
+    detector_summary: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build the JSON payload persisted on ``ApprovalRequest.rule_context``.
 
@@ -186,5 +195,7 @@ def build_rule_context(
     also = [str(rule) for rule in (also_matched_rule_ids or [])]
     if also:
         context["also_matched_rule_ids"] = also
+    if detector_summary:
+        context["detector_summary"] = detector_summary
 
     return context

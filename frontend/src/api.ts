@@ -3317,6 +3317,109 @@ export async function deleteAccessRule(ruleId: string): Promise<void> {
   }
 }
 
+export interface ModelIOCondition {
+  expression: string;
+  action: 'allow' | 'deny' | 'require_approval';
+  condition_type?: 'simple' | 'cel';
+  description?: string | null;
+}
+
+export interface ModelIODetectors {
+  pii?: boolean | { types?: string[] };
+  injection?: boolean;
+  moderation?: boolean | { backend?: string };
+}
+
+export interface ModelIORule {
+  id: string;
+  target: 'model.request' | 'model.response';
+  enabled?: boolean;
+  description?: string | null;
+  approval_workflow?: string | null;
+  detectors?: ModelIODetectors | null;
+  detector_timeout_ms?: number;
+  on_detector_timeout?: 'allow' | 'deny';
+  conditions: ModelIOCondition[];
+}
+
+export async function listModelIORules(): Promise<ModelIORule[]> {
+  const response = await fetchWithAuth('/api/v1/policies/model-io-rules');
+  if (!response.ok) {
+    throw new Error('Failed to fetch model I/O rules');
+  }
+  const data = await response.json();
+  return data.rules || [];
+}
+
+export async function createModelIORule(
+  rule: ModelIORule
+): Promise<ModelIORule> {
+  const response = await fetchWithAuth('/api/v1/policies/model-io-rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rule),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to save model I/O rule')
+    );
+  }
+  return response.json();
+}
+
+export async function updateModelIORule(
+  ruleId: string,
+  rule: ModelIORule
+): Promise<ModelIORule> {
+  const response = await fetchWithAuth(
+    `/api/v1/policies/model-io-rules/${encodeURIComponent(ruleId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rule),
+    }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to update model I/O rule')
+    );
+  }
+  return response.json();
+}
+
+export async function patchModelIORule(
+  ruleId: string,
+  patch: { enabled: boolean }
+): Promise<ModelIORule> {
+  const response = await fetchWithAuth(
+    `/api/v1/policies/model-io-rules/${encodeURIComponent(ruleId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to update model I/O rule')
+    );
+  }
+  return response.json();
+}
+
+export async function deleteModelIORule(ruleId: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/policies/model-io-rules/${encodeURIComponent(ruleId)}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to delete model I/O rule');
+  }
+}
+
 // Approval Workflows API
 export async function getApprovalWorkflows(): Promise<any[]> {
   const response = await fetchWithAuth('/api/v1/approval-workflows');
