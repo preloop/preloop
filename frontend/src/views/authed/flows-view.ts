@@ -225,6 +225,41 @@ export class FlowsView extends LitElement {
         background: var(--sl-color-neutral-50);
         border-radius: 4px;
       }
+      .empty-state-wrapper {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        margin-top: var(--sl-spacing-medium);
+        margin-bottom: var(--sl-spacing-large);
+      }
+      .empty-card {
+        width: 100%;
+        max-width: 580px;
+        text-align: center;
+      }
+      .empty-card-body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: var(--sl-spacing-large);
+      }
+      .empty-card-icon {
+        font-size: 2.5rem;
+        color: var(--sl-color-primary-600);
+        margin-bottom: var(--sl-spacing-small);
+      }
+      .empty-card-title {
+        margin: 0 0 var(--sl-spacing-x-small);
+        font-size: var(--sl-font-size-large);
+        font-weight: var(--sl-font-weight-semibold);
+        color: var(--sl-color-neutral-900);
+      }
+      .empty-card-desc {
+        margin: 0 0 var(--sl-spacing-large);
+        max-width: 440px;
+        line-height: 1.5;
+        color: var(--sl-color-neutral-600);
+      }
     `,
   ];
 
@@ -452,29 +487,15 @@ export class FlowsView extends LitElement {
                   </div>
                 `
               : html`
-                  <div
-                    class="empty-state"
-                    style="display: flex; justify-content: center; width: 100%; margin-top: var(--sl-spacing-medium); margin-bottom: var(--sl-spacing-large);"
-                  >
-                    <sl-card
-                      style="width: 100%; max-width: 580px; text-align: center;"
-                    >
-                      <div
-                        style="display: flex; flex-direction: column; align-items: center; padding: var(--sl-spacing-large);"
-                      >
+                  <div class="empty-state empty-state-wrapper">
+                    <sl-card class="empty-card">
+                      <div class="empty-card-body">
                         <sl-icon
+                          class="empty-card-icon"
                           name="diagram-3"
-                          style="font-size: 2.5rem; color: var(--sl-color-primary-600); margin-bottom: var(--sl-spacing-small);"
                         ></sl-icon>
-                        <h3
-                          style="margin: 0 0 var(--sl-spacing-x-small); font-size: var(--sl-font-size-large); font-weight: var(--sl-font-weight-semibold); color: var(--sl-color-neutral-900);"
-                        >
-                          No flows yet
-                        </h3>
-                        <p
-                          class="muted"
-                          style="margin: 0 0 var(--sl-spacing-large); max-width: 440px; line-height: 1.5; color: var(--sl-color-neutral-600);"
-                        >
+                        <h3 class="empty-card-title">No flows yet</h3>
+                        <p class="empty-card-desc">
                           No flows yet. Create your first custom flow or clone a
                           starter preset below.
                         </p>

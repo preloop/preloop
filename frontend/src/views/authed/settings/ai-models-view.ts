@@ -132,6 +132,40 @@ export class AIModelsView extends LitElement {
         text-decoration: none;
         cursor: pointer;
       }
+      .empty-state-wrapper {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        margin-top: var(--sl-spacing-medium);
+      }
+      .empty-card {
+        width: 100%;
+        max-width: 580px;
+        text-align: center;
+      }
+      .empty-card-body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: var(--sl-spacing-large);
+      }
+      .empty-card-icon {
+        font-size: 2.5rem;
+        color: var(--sl-color-primary-600);
+        margin-bottom: var(--sl-spacing-small);
+      }
+      .empty-card-title {
+        margin: 0 0 var(--sl-spacing-x-small);
+        font-size: var(--sl-font-size-large);
+        font-weight: var(--sl-font-weight-semibold);
+        color: var(--sl-color-neutral-900);
+      }
+      .empty-card-desc {
+        margin: 0 0 var(--sl-spacing-large);
+        max-width: 440px;
+        line-height: 1.5;
+        color: var(--sl-color-neutral-600);
+      }
       .model-link {
         color: var(--sl-color-primary-700);
         text-decoration: none;
@@ -478,26 +512,12 @@ export class AIModelsView extends LitElement {
       ${when(
         this.models.length === 0,
         () => html`
-          <div
-            style="display: flex; justify-content: center; width: 100%; margin-top: var(--sl-spacing-medium);"
-          >
-            <sl-card style="width: 100%; max-width: 580px; text-align: center;">
-              <div
-                style="display: flex; flex-direction: column; align-items: center; padding: var(--sl-spacing-large);"
-              >
-                <sl-icon
-                  name="cpu"
-                  style="font-size: 2.5rem; color: var(--sl-color-primary-600); margin-bottom: var(--sl-spacing-small);"
-                ></sl-icon>
-                <h3
-                  style="margin: 0 0 var(--sl-spacing-x-small); font-size: var(--sl-font-size-large); font-weight: var(--sl-font-weight-semibold); color: var(--sl-color-neutral-900);"
-                >
-                  No AI Models Configured
-                </h3>
-                <p
-                  class="muted"
-                  style="margin: 0 0 var(--sl-spacing-large); max-width: 440px; line-height: 1.5; color: var(--sl-color-neutral-600);"
-                >
+          <div class="empty-state-wrapper">
+            <sl-card class="empty-card">
+              <div class="empty-card-body">
+                <sl-icon class="empty-card-icon" name="cpu"></sl-icon>
+                <h3 class="empty-card-title">No AI Models Configured</h3>
+                <p class="empty-card-desc">
                   The AI models your agents reach through the gateway. Add your
                   OpenAI, Anthropic, Gemini, or custom model endpoints.
                 </p>
@@ -674,7 +694,6 @@ export class AIModelsView extends LitElement {
           </sl-card>
         `
       )}
-      </sl-card>
     `;
   }
 

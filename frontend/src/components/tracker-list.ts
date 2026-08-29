@@ -98,9 +98,44 @@ export class TrackerList extends LitElement {
       height: 100px;
     }
 
+    .empty-state-wrapper {
+      display: flex;
+      justify-content: center;
+      width: 100%;
+      margin-top: var(--sl-spacing-medium);
+    }
+
     .empty-card {
       width: 100%;
       max-width: 580px;
+    }
+
+    .empty-card-body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      padding: var(--sl-spacing-large);
+    }
+
+    .empty-card-icon {
+      font-size: 2.5rem;
+      color: var(--sl-color-primary-600);
+      margin-bottom: var(--sl-spacing-small);
+    }
+
+    .empty-card-title {
+      margin: 0 0 var(--sl-spacing-x-small);
+      font-size: var(--sl-font-size-large);
+      font-weight: var(--sl-font-weight-semibold);
+      color: var(--sl-color-neutral-900);
+    }
+
+    .empty-card-desc {
+      margin: 0 0 var(--sl-spacing-large);
+      max-width: 440px;
+      line-height: 1.5;
+      color: var(--sl-color-neutral-600);
     }
   `;
 
@@ -120,26 +155,12 @@ export class TrackerList extends LitElement {
 
     if (this.trackers.length === 0) {
       return html`
-        <div
-          style="display: flex; justify-content: center; width: 100%; margin-top: var(--sl-spacing-medium);"
-        >
+        <div class="empty-state-wrapper">
           <sl-card class="empty-state empty-card">
-            <div
-              style="display: flex; flex-direction: column; align-items: center; text-align: center; padding: var(--sl-spacing-large);"
-            >
-              <sl-icon
-                name="link-45deg"
-                style="font-size: 2.5rem; color: var(--sl-color-primary-600); margin-bottom: var(--sl-spacing-small);"
-              ></sl-icon>
-              <h3
-                style="margin: 0 0 var(--sl-spacing-x-small); font-size: var(--sl-font-size-large); font-weight: var(--sl-font-weight-semibold); color: var(--sl-color-neutral-900);"
-              >
-                No trackers connected.
-              </h3>
-              <p
-                class="muted"
-                style="margin: 0 0 var(--sl-spacing-large); max-width: 440px; line-height: 1.5; color: var(--sl-color-neutral-600);"
-              >
+            <div class="empty-card-body">
+              <sl-icon class="empty-card-icon" name="link-45deg"></sl-icon>
+              <h3 class="empty-card-title">No trackers connected.</h3>
+              <p class="empty-card-desc">
                 Connect GitHub, GitLab, or Jira to give flows their triggers and
                 agents their issue-tracking tools.
               </p>
