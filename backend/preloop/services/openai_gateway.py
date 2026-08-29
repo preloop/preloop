@@ -925,7 +925,20 @@ class OpenAIGatewayService:
         # deserializes this endpoint into a struct with a top-level `models`
         # array and errors ("missing field `models`") without it, so we mirror
         # the list under `models` too. Additive — standard clients read `data`.
-        return {"object": "list", "data": data, "models": data}
+        payload = {"object": "list", "data": data, "models": data}
+        try:
+            from preloop.services.otel_export import emit_list_models
+
+            emit_list_models(
+                account_id=(
+                    str(self.auth_context.user.account_id)
+                    if self.auth_context.user
+                    else None
+                )
+            )
+        except Exception:
+            logger.debug("OTLP list_models export failed", exc_info=True)
+        return payload
 
     def create_chat_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Handle OpenAI-compatible chat completions."""
@@ -6995,6 +7008,12 @@ class OpenAIGatewayService:
             total_tokens=total_tokens,
             estimated_cost=float(usage_row.estimated_cost or 0.0),
         )
+        try:
+            from preloop.services.otel_export import emit_gateway_usage
+
+            emit_gateway_usage(usage_row)
+        except Exception:
+            logger.debug("OTLP gateway export failed", exc_info=True)
         try:
             ModelGatewayEventEmitter(self.db).emit_for_usage(
                 usage=usage_row,

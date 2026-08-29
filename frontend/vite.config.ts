@@ -11,6 +11,9 @@ const brand = process.env.VITE_BRAND || 'preloop';
 const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8000';
 const adminProxyTarget = process.env.VITE_ADMIN_PROXY_TARGET || 'http://127.0.0.1:5175';
 const gatewayProxyTarget = process.env.VITE_GATEWAY_PROXY_TARGET || apiProxyTarget;
+const hmrClientPort = Number(process.env.VITE_HMR_CLIENT_PORT || 5173);
+const hmrHost = process.env.VITE_HMR_HOST;
+const hmrProtocol = process.env.VITE_HMR_PROTOCOL;
 
 /**
  * Default Vite configuration for Preloop Open Source / Self-Hosted edition
@@ -63,7 +66,12 @@ export default defineConfig({
   },
   server: {
     hmr: {
-      clientPort: 5173,
+      clientPort:
+        Number.isFinite(hmrClientPort) && hmrClientPort > 0 ? hmrClientPort : 5173,
+      ...(hmrHost ? { host: hmrHost } : {}),
+      ...(hmrProtocol === 'ws' || hmrProtocol === 'wss'
+        ? { protocol: hmrProtocol }
+        : {}),
     },
     proxy: {
       '/api': {

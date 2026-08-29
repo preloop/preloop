@@ -581,6 +581,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("Shutting down application...")
     logger.info("Shutting down API usage executor...")
+    try:
+        from preloop.services.otel_export import shutdown_otel
+
+        shutdown_otel()
+    except Exception:
+        logger.debug("OTLP shutdown failed", exc_info=True)
+
     _api_usage_executor.shutdown(wait=False, cancel_futures=True)
     # Restore the original jsonable_encoder
     import fastapi.encoders

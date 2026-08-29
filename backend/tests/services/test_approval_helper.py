@@ -1168,3 +1168,19 @@ class TestRequireApprovalProgressReporting:
         # Approval should still succeed
         assert approved is True
         assert error == ""
+
+
+async def test_in_band_context_lookup_failure_logs_traceback(caplog):
+    """Context lookup is best-effort; keep the exception traceback."""
+    from preloop.services.approval_helper import _session_context_for_in_band
+
+    with patch(
+        "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+        side_effect=RuntimeError("no request context"),
+    ):
+        ctx = _session_context_for_in_band()
+    assert ctx.runtime_session_id is None
+    assert ctx.managed_agent_id is None
+    assert ctx.user_id is None
+    assert "Error getting current user context" in caplog.text
+    assert "no request context" in caplog.text

@@ -1242,6 +1242,7 @@ async def {internal_name}({params_str}) -> str:
         # ── Translate and execute ───────────────────────────────────────
         # Translate tool name for proxied tools
         # Client calls "calculate_fibonacci", we translate to "account_123_calculate_fibonacci"
+        client_tool_name = name
         translation_token = None
         if name in self._proxied_tool_servers:
             safe_account_id = user_context.account_id.replace("-", "_")
@@ -1327,7 +1328,7 @@ async def {internal_name}({params_str}) -> str:
 
                     activity_status = "failed" if exec_status == "failed" else "success"
                     server_name = self._proxied_tool_server_names.get(
-                        name, "preloop-mcp"
+                        client_tool_name, "preloop-mcp"
                     )
                     db = next(get_db())
                     try:
@@ -1467,6 +1468,22 @@ async def {internal_name}({params_str}) -> str:
                 logger.debug(
                     f"Failed to persist runtime session activity: {activity_err}"
                 )
+
+            try:
+                from preloop.services.otel_export import emit_tool_call
+
+                emit_tool_call(
+                    tool_name=client_tool_name,
+                    runtime_session_id=user_context.runtime_session_id,
+                    account_id=user_context.account_id,
+                    status=exec_status,
+                    duration_ms=elapsed_ms,
+                    server_name=self._proxied_tool_server_names.get(
+                        client_tool_name, "preloop-mcp"
+                    ),
+                )
+            except Exception:
+                logger.debug("OTLP tool export failed", exc_info=True)
 
         return result
 
