@@ -98,8 +98,9 @@ def test_attributes_omit_conversation_id_when_session_missing() -> None:
 
 
 def test_disabled_exporter_is_noop(monkeypatch) -> None:
-    monkeypatch.setattr(otel_export, "_force_enabled", False)
-    monkeypatch.setattr(otel_export, "_provider", None)
+    monkeypatch.setattr(otel_export._state, "force_enabled", False)
+    monkeypatch.setattr(otel_export._state, "init_failed", False)
+    monkeypatch.setattr(otel_export._state, "provider", None)
     assert is_enabled() is False
     emit_gateway_usage(_usage())
     emit_tool_call(
@@ -228,3 +229,26 @@ def test_signal_endpoint_skips_metrics_on_traces_only_url() -> None:
         )
         == "http://collector:4318/v1/metrics"
     )
+
+
+def test_provider_init_failure_is_sticky(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed exporter setup must not be retried for every subsequent span."""
+    shutdown_otel()
+    otel_export._state.provider = None
+    otel_export._state.init_failed = False
+    otel_export._state.force_enabled = True
+    calls = {"n": 0}
+
+    def boom() -> None:
+        calls["n"] += 1
+        raise RuntimeError("collector unreachable")
+
+    monkeypatch.setattr(otel_export, "_build_provider", boom)
+    try:
+        assert otel_export._ensure_provider() is None
+        assert otel_export._ensure_provider() is None
+        assert calls["n"] == 1
+        assert otel_export._state.init_failed is True
+        assert otel_export.is_enabled() is False
+    finally:
+        shutdown_otel()

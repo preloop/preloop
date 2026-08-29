@@ -62,6 +62,54 @@ echo "" # Add a blank line for separation
 
 activate_virtualenv_if_present
 
+wait_for_database() {
+  echo "Waiting for the database to accept connections..."
+  python - <<'PY'
+import os
+import socket
+import sys
+import time
+from urllib.parse import urlparse
+
+raw = os.environ.get("DATABASE_URL", "")
+if not raw:
+    sys.exit(0)
+
+parsed = urlparse(raw)
+host = parsed.hostname or "localhost"
+port = parsed.port or 5432
+deadline = time.time() + 60
+last_error = None
+while time.time() < deadline:
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        connect_error = None
+        for family, socktype, proto, _canon, sockaddr in infos:
+            sock = socket.socket(family, socktype, proto)
+            try:
+                sock.settimeout(3)
+                sock.connect(sockaddr)
+                sock.close()
+                sys.exit(0)
+            except OSError as exc:
+                connect_error = exc
+            finally:
+                sock.close()
+        last_error = connect_error
+    except OSError as exc:
+        last_error = exc
+    time.sleep(1)
+
+print(
+    f"Database not reachable at {host}:{port}: {last_error}",
+    file=sys.stderr,
+)
+sys.exit(1)
+PY
+}
+
+wait_for_database
+
 # Initialize database tables, embedding model, and AI model using Alembic
 echo "Initializing database schema, embedding model, and AI model..."
 python scripts/init_db.py --force

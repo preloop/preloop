@@ -610,6 +610,7 @@ The system is designed to be containerized using Docker, enabling easy deploymen
 
 *   **Service roles:** `PRELOOP_SERVICE_ROLE` (`all` | `api` | `gateway`, default `all`) gates which subsystems boot in a given container — API-only deployments skip gateway-only surfaces and gateway-only deployments skip the MCP server, NATS WS consumer, execution monitor, plugins, and approval-repair passes. The release compose file runs separate `api` and `gateway` services from the same image.
 *   **Migrations:** `docker-compose.release.yaml` runs schema initialization in a dedicated one-shot `migrate` service that app services wait on (`service_completed_successfully`); Helm deployments run Alembic via their own lifecycle.
+*   **Dev compose:** `docker-compose.yml` healthchecks postgres and NATS and starts app services only after both are healthy. `start.sh` waits for `DATABASE_URL` to accept TCP before `init_db.py`. The Vite dev server honors `VITE_ALLOWED_HOSTS` when the console is reached by a public hostname.
 *   **Health monitoring:** The Helm chart ships an optional in-cluster health-monitor deployment (`healthMonitor.*`, enabled by default) that polls `/api/v1/health` and logs alert lines after consecutive failures.
 *   **Release verification:** `scripts/release_smoke_test.sh` boots the release compose file with tagged images and verifies HTTP health, first-user sign-up/login, and restart-loop-free stability; the release workflow runs it as the `verify-oss-install` gate before publishing a GitHub release.
 

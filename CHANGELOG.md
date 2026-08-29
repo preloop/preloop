@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Dev compose no longer races postgres/NATS**: `docker-compose.yml`
+  healthchecks postgres (`pg_isready`) and NATS (`/healthz`, with
+  `-m 8222`) and starts api/gateway/scheduler/worker only after both are
+  healthy, matching the release compose. `start.sh` waits for
+  `DATABASE_URL` to accept TCP before `init_db.py`.
+- **Vite blocked hosts behind a public hostname**: the console honors
+  `VITE_ALLOWED_HOSTS` / `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` (and
+  the hostname from `VITE_HMR_HOST` / `VITE_API_URL`) so Docker Compose
+  behind nginx does not fail with "host is not allowed".
+- **Approval poll logs approver lookup failures**: resolving a voter
+  user-id to email is still best-effort (raw id is kept), but the except
+  path now logs the traceback instead of a silent `pass`.
+- **OTLP init-failed flag is process state, not a write-only global**:
+  exporter setup failure is stored on a runtime object that `is_enabled()`
+  and `_ensure_provider()` both read, so a broken collector is not retried
+  on every span and CodeQL no longer flags an unused global.
+
 - **Private-cluster Helm tests after OTLP merge**: default `values.yaml`
   now includes the `otlp` block from main. The private-cluster suite no
   longer asserts that block is absent, and the README no longer claims
