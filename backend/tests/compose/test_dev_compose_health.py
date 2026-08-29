@@ -31,6 +31,23 @@ def test_app_services_wait_until_dependencies_are_healthy() -> None:
         depends = services[name]["depends_on"]
         assert depends["postgres"]["condition"] == "service_healthy"
         assert depends["nats"]["condition"] == "service_healthy"
+        assert depends["migrate"]["condition"] == "service_completed_successfully"
+
+
+def test_migrate_runs_init_db_once_before_app_services() -> None:
+    services = _load_compose()["services"]
+    migrate = services["migrate"]
+    assert migrate["restart"] == "no"
+    assert migrate["depends_on"]["postgres"]["condition"] == "service_healthy"
+    command = migrate["command"]
+    command_text = " ".join(command) if isinstance(command, list) else command
+    assert "scripts/init_db.py" in command_text
+    assert "--force" in command_text
+    for name in ("api", "gateway"):
+        command = services[name]["command"]
+        command_text = " ".join(command) if isinstance(command, list) else str(command)
+        assert "start.sh" not in command_text
+        assert "init_db.py" not in command_text
 
 
 def test_start_sh_waits_for_database_before_init() -> None:

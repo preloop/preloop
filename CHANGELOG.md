@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Dev compose no longer races postgres/NATS**: `docker-compose.yml`
-  healthchecks postgres (`pg_isready`) and NATS (`/healthz`, with
-  `-m 8222`) and starts api/gateway/scheduler/worker only after both are
-  healthy, matching the release compose. `start.sh` waits for
-  `DATABASE_URL` to accept TCP before `init_db.py`.
+- **Dev compose no longer races postgres/NATS or schema init**:
+  `docker-compose.yml` healthchecks postgres (`pg_isready`) and NATS
+  (`/healthz`, with `-m 8222`) and runs `init_db.py --force` in a
+  one-shot `migrate` service. api/gateway/scheduler/worker wait for
+  postgres, NATS, and `migrate` (`service_completed_successfully`) so
+  they no longer crash-loop on an empty schema or race two concurrent
+  inits. `start.sh` still waits for `DATABASE_URL` before `init_db.py`
+  for non-compose local runs.
 - **Vite blocked hosts behind a public hostname**: the console honors
   `VITE_ALLOWED_HOSTS` / `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` (and
   the hostname from `VITE_HMR_HOST` / `VITE_API_URL`) so Docker Compose
