@@ -80,5 +80,8 @@ describe('RunnersView', () => {
     );
     await element.updateComplete;
     expect(element.shadowRoot?.textContent).to.contain('No runners registered');
+    expect(element.shadowRoot?.textContent).to.contain(
+      'preloop runner fg --labels local'
+    );
   });
 });

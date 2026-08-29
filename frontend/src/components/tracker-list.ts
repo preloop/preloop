@@ -33,6 +33,13 @@ export class TrackerList extends LitElement {
         throw new Error('Failed to fetch trackers');
       }
       this.trackers = await response.json();
+      this.dispatchEvent(
+        new CustomEvent('trackers-changed', {
+          detail: { count: this.trackers.length },
+          bubbles: true,
+          composed: true,
+        })
+      );
     } catch (error) {
       this.error =
         error instanceof Error ? error.message : 'An unknown error occurred';
@@ -91,18 +98,44 @@ export class TrackerList extends LitElement {
       height: 100px;
     }
 
-    .empty-state {
+    .empty-state-wrapper {
+      display: flex;
+      justify-content: center;
+      width: 100%;
+      margin-top: var(--sl-spacing-medium);
+    }
+
+    .empty-card {
+      width: 100%;
+      max-width: 580px;
+    }
+
+    .empty-card-body {
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: var(--sl-spacing-medium);
-      padding: var(--sl-spacing-2x-large) var(--sl-spacing-large);
       text-align: center;
-      color: var(--sl-color-neutral-500);
+      padding: var(--sl-spacing-large);
     }
 
-    .empty-state sl-icon {
-      font-size: 2rem;
+    .empty-card-icon {
+      font-size: 2.5rem;
+      color: var(--sl-color-primary-600);
+      margin-bottom: var(--sl-spacing-small);
+    }
+
+    .empty-card-title {
+      margin: 0 0 var(--sl-spacing-x-small);
+      font-size: var(--sl-font-size-large);
+      font-weight: var(--sl-font-weight-semibold);
+      color: var(--sl-color-neutral-900);
+    }
+
+    .empty-card-desc {
+      margin: 0 0 var(--sl-spacing-large);
+      max-width: 440px;
+      line-height: 1.5;
+      color: var(--sl-color-neutral-600);
     }
   `;
 
@@ -122,16 +155,21 @@ export class TrackerList extends LitElement {
 
     if (this.trackers.length === 0) {
       return html`
-        <div class="empty-state">
-          <sl-icon name="link-45deg"></sl-icon>
-          <div>
-            No trackers connected. Connect GitHub, GitLab, or Jira to give flows
-            their triggers and agents their issue-tracking tools.
-          </div>
-          <sl-button variant="primary" @click=${this._handleAddTracker}>
-            <sl-icon slot="prefix" name="plus-lg"></sl-icon>
-            Add New Tracker
-          </sl-button>
+        <div class="empty-state-wrapper">
+          <sl-card class="empty-state empty-card">
+            <div class="empty-card-body">
+              <sl-icon class="empty-card-icon" name="link-45deg"></sl-icon>
+              <h3 class="empty-card-title">No trackers connected.</h3>
+              <p class="empty-card-desc">
+                Connect GitHub, GitLab, or Jira to give flows their triggers and
+                agents their issue-tracking tools.
+              </p>
+              <sl-button variant="primary" @click=${this._handleAddTracker}>
+                <sl-icon slot="prefix" name="plus-lg"></sl-icon>
+                Add New Tracker
+              </sl-button>
+            </div>
+          </sl-card>
         </div>
       `;
     }

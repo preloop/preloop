@@ -64,6 +64,17 @@ describe('TrackersView', () => {
 
     fetchStub = createFetchStub();
     element = await fixture(html`<trackers-view></trackers-view>`);
+    const trackerList = element.shadowRoot?.querySelector(
+      'tracker-list'
+    ) as any;
+    if (trackerList) {
+      await waitUntil(
+        () => !trackerList.isLoading,
+        'Tracker list did not finish loading'
+      );
+      await trackerList.updateComplete;
+    }
+    await element.updateComplete;
   });
 
   afterEach(() => {
@@ -83,12 +94,19 @@ describe('TrackersView', () => {
     expect(h1?.textContent?.trim()).to.equal('Trackers');
   });
 
+  function getAddButton() {
+    return (
+      element.shadowRoot?.querySelector('sl-button[variant="primary"]') ||
+      element.shadowRoot
+        ?.querySelector('tracker-list')
+        ?.shadowRoot?.querySelector('sl-button[variant="primary"]')
+    );
+  }
+
   it('renders Add New Tracker button', async () => {
     await element.updateComplete;
 
-    const addButton = element.shadowRoot?.querySelector(
-      'sl-button[variant="primary"]'
-    );
+    const addButton = getAddButton();
     expect(addButton).to.exist;
     expect(addButton?.textContent?.trim()).to.include('Add New Tracker');
   });
@@ -103,9 +121,7 @@ describe('TrackersView', () => {
   it('opens add tracker modal when Add New Tracker button is clicked', async () => {
     await element.updateComplete;
 
-    const addButton = element.shadowRoot?.querySelector(
-      'sl-button[variant="primary"]'
-    );
+    const addButton = getAddButton();
     expect(addButton).to.exist;
     addButton!.click();
     await element.updateComplete;
@@ -123,9 +139,7 @@ describe('TrackersView', () => {
 
   it('opens unlock review dialog when tracker-added has unlocked tools', async () => {
     await element.updateComplete;
-    const addButton = element.shadowRoot?.querySelector(
-      'sl-button[variant="primary"]'
-    );
+    const addButton = getAddButton();
     addButton!.click();
     await element.updateComplete;
 
@@ -163,7 +177,7 @@ describe('TrackersView', () => {
 
   it('does not open unlock review when unlocked_tool_names is empty', async () => {
     await element.updateComplete;
-    element.shadowRoot?.querySelector('sl-button[variant="primary"]')!.click();
+    getAddButton()!.click();
     await element.updateComplete;
 
     const addModal = element.shadowRoot?.querySelector('add-tracker-modal');
@@ -184,7 +198,7 @@ describe('TrackersView', () => {
 
   it('does not open unlock review when unlocked_tool_names is missing', async () => {
     await element.updateComplete;
-    element.shadowRoot?.querySelector('sl-button[variant="primary"]')!.click();
+    getAddButton()!.click();
     await element.updateComplete;
 
     const addModal = element.shadowRoot?.querySelector('add-tracker-modal');
@@ -205,7 +219,7 @@ describe('TrackersView', () => {
 
   it('queues unlock review until warnings modal is dismissed', async () => {
     await element.updateComplete;
-    element.shadowRoot?.querySelector('sl-button[variant="primary"]')!.click();
+    getAddButton()!.click();
     await element.updateComplete;
 
     const addModal = element.shadowRoot?.querySelector('add-tracker-modal');

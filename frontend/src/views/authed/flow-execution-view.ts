@@ -45,6 +45,7 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
+import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 
 interface FlowExecutionUpdate {
   execution_id: string;
@@ -938,6 +939,27 @@ export class FlowExecutionView extends LitElement {
         this.updateComplete.then(() => this.scrollToBottom());
       }
     }
+  }
+
+  private copyAllLogs() {
+    const text = this.logs
+      .map((l) =>
+        typeof l.payload === 'string'
+          ? l.payload
+          : l.payload?.content ||
+            l.payload?.message ||
+            l.payload?.line ||
+            JSON.stringify(l.payload)
+      )
+      .join('\n');
+    navigator.clipboard.writeText(text);
+    this.dispatchEvent(
+      new CustomEvent('show-toast', {
+        bubbles: true,
+        composed: true,
+        detail: { message: 'Logs copied to clipboard!' },
+      })
+    );
   }
 
   startAutoScrollChecker() {
@@ -2094,10 +2116,16 @@ ${JSON.stringify(this.execution.trigger_event_details, null, 2)}</pre>
                     style="margin-bottom: 16px;"
                   >
                     <sl-card>
-                      <pre
-                        style="white-space: pre-wrap; word-wrap: break-word; margin: 0; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 13px; line-height: 1.5; background: var(--sl-color-neutral-100); padding: 12px; border-radius: 4px;"
-                      >
+                      <div style="position: relative;">
+                        <sl-copy-button
+                          value=${this.execution.resolved_input_prompt}
+                          style="position: absolute; right: 8px; top: 8px; z-index: 1;"
+                        ></sl-copy-button>
+                        <pre
+                          style="white-space: pre-wrap; word-wrap: break-word; margin: 0; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 13px; line-height: 1.5; background: var(--sl-color-neutral-100); padding: 12px; border-radius: 4px;"
+                        >
 ${this.execution.resolved_input_prompt}</pre>
+                      </div>
                     </sl-card>
                   </sl-details>
                 `
@@ -2118,16 +2146,37 @@ ${this.execution.resolved_input_prompt}</pre>
                   <sl-card>
                     <div
                       slot="header"
-                      style="display: flex; justify-content: space-between; align-items: center;"
+                      style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;"
                     >
-                      <span>
+                      <span
+                        style="display: flex; align-items: center; gap: 6px;"
+                      >
                         <sl-icon name="terminal"></sl-icon>
                         Output
                       </span>
-                      ${
-                        isRunning
-                          ? html`
-                              <div class="controls">
+                      <div
+                        style="display: flex; gap: var(--sl-spacing-2x-small); align-items: center;"
+                      >
+                        ${
+                          this.logs.length > 0
+                            ? html`
+                                <sl-button
+                                  size="small"
+                                  variant="default"
+                                  @click=${this.copyAllLogs}
+                                >
+                                  <sl-icon
+                                    slot="prefix"
+                                    name="clipboard"
+                                  ></sl-icon>
+                                  Copy Logs
+                                </sl-button>
+                              `
+                            : ''
+                        }
+                        ${
+                          isRunning
+                            ? html`
                                 <sl-button-group>
                                   <sl-button
                                     size="small"
@@ -2149,10 +2198,10 @@ ${this.execution.resolved_input_prompt}</pre>
                                     Stop
                                   </sl-button>
                                 </sl-button-group>
-                              </div>
-                            `
-                          : ''
-                      }
+                              `
+                            : ''
+                        }
+                      </div>
                     </div>
 
                     <div class="log-container">

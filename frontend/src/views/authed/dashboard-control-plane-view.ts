@@ -3869,8 +3869,13 @@ export class DashboardView extends AuthedElement {
             class="server-details"
             style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
           >
+            <span
+              style="font-size: var(--sl-font-size-x-small); font-weight: 600; color: var(--sl-color-neutral-500); text-transform: uppercase;"
+              >Format:</span
+            >
             <select
-              style="background: transparent; border: none; font-size: inherit; font-family: inherit; color: var(--sl-color-primary-600); cursor: pointer; outline: none; margin-right: var(--sl-spacing-2x-small);"
+              aria-label="Gateway API Format"
+              style="background: transparent; border: 1px solid var(--sl-color-neutral-300); border-radius: var(--sl-border-radius-small); padding: 1px 6px; font-size: inherit; font-family: inherit; color: var(--sl-color-primary-600); cursor: pointer; outline: none; margin-right: var(--sl-spacing-2x-small);"
               @change=${(e: Event) => {
                 const target = e.target as HTMLSelectElement;
                 const endpointSpan = target.parentElement?.querySelector(
