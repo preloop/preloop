@@ -1184,3 +1184,29 @@ async def test_in_band_context_lookup_failure_logs_traceback(caplog):
     assert ctx.user_id is None
     assert "Error getting current user context" in caplog.text
     assert "no request context" in caplog.text
+
+
+async def test_resolve_responder_display_name_prefers_email() -> None:
+    from preloop.services.approval_helper import _resolve_responder_display_name
+
+    user_id = uuid4()
+    user = MagicMock()
+    user.email = "approver@example.com"
+    user.username = "approver"
+    db = AsyncMock()
+    db.get = AsyncMock(return_value=user)
+    assert await _resolve_responder_display_name(db, user_id) == "approver@example.com"
+
+
+async def test_resolve_responder_display_name_falls_back_on_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from preloop.services.approval_helper import _resolve_responder_display_name
+
+    user_id = uuid4()
+    db = AsyncMock()
+    db.get = AsyncMock(side_effect=RuntimeError("session closed"))
+    with caplog.at_level("DEBUG", logger="preloop.services.approval_helper"):
+        assert await _resolve_responder_display_name(db, user_id) == str(user_id)
+    assert "Could not resolve approver" in caplog.text
+    assert "session closed" in caplog.text

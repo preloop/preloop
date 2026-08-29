@@ -54,6 +54,32 @@ def consume_last_approval_meta() -> Optional[Dict[str, Any]]:
     return meta
 
 
+async def _resolve_responder_display_name(db: Any, responded_by_id: Any) -> str:
+    """Map an approver user id to email/username; keep the raw id on failure.
+
+    Lookup is best-effort for audit trailers. Invalid ids, missing rows, and
+    database errors must not fail the approval poll.
+    """
+    raw = str(responded_by_id)
+    try:
+        import uuid as uuid_module
+
+        from preloop.models.models.user import User
+
+        responded_user = await db.get(User, uuid_module.UUID(str(responded_by_id)))
+        if responded_user is None:
+            return raw
+        return responded_user.email or responded_user.username or raw
+    except Exception:
+        logger.debug(
+            "Could not resolve approver %s to email; using raw id in "
+            "approval audit metadata",
+            responded_by_id,
+            exc_info=True,
+        )
+        return raw
+
+
 #: Builtin tools whose approval request is a *question to the human* rather
 #: than a gate on a side-effecting tool. These get in-session delivery via
 #: Agent Control (issue #130) in addition to the remote approval channels.
@@ -739,23 +765,11 @@ async def require_approval(
                                 # audit evidence such as waiver registers,
                                 # where a raw user-id UUID helps nobody. Fall
                                 # back to the raw id when resolution fails.
-                                current_responded_by = str(responded_by_id)
-                                try:
-                                    import uuid as uuid_module
-
-                                    from preloop.models.models.user import User
-
-                                    responded_user = await poll_db.get(
-                                        User, uuid_module.UUID(str(responded_by_id))
+                                current_responded_by = (
+                                    await _resolve_responder_display_name(
+                                        poll_db, responded_by_id
                                     )
-                                    if responded_user:
-                                        current_responded_by = (
-                                            responded_user.email
-                                            or responded_user.username
-                                            or current_responded_by
-                                        )
-                                except Exception:
-                                    pass
+                                )
 
                     logger.info(
                         f"[Polling] Checked approval status: {current_status if current_status else 'NOT_FOUND'} "

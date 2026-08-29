@@ -65,11 +65,19 @@ _FORBIDDEN_ATTR_PREFIXES = (
     "gen_ai.output.",
 )
 
+
+class _OtelState:
+    """Process-wide OTLP runtime. Mutated in place; no `global` writes."""
+
+    def __init__(self) -> None:
+        self.provider: Optional[TracerProvider] = None
+        self.force_enabled = False
+        self.init_failed = False
+        self.session_span_context: dict[str, trace.SpanContext] = {}
+
+
 _lock = threading.Lock()
-_provider: Optional[TracerProvider] = None
-_force_enabled = False
-_init_failed = False
-_session_span_context: dict[str, trace.SpanContext] = {}
+_state = _OtelState()
 _SESSION_CONTEXT_MAX = 256
 
 _HTTP_PROTOCOLS = frozenset({"http", "http/protobuf", "http/proto", "http/json"})
@@ -93,7 +101,9 @@ def parse_otlp_headers(raw: str) -> dict[str, str]:
 
 def is_enabled() -> bool:
     """Return whether OTLP export should run for this process."""
-    if _force_enabled:
+    if _state.init_failed:
+        return False
+    if _state.force_enabled:
         return True
     otlp = getattr(settings, "otlp", None)
     if otlp is None or not otlp.enabled:
@@ -192,7 +202,11 @@ def emit_list_models(*, account_id: Optional[str] = None) -> None:
                 ATTR_ACCOUNT_ID: account_id,
             }
         )
-        tracer = _provider.get_tracer(TRACER_NAME) if _provider is not None else None
+        tracer = (
+            _state.provider.get_tracer(TRACER_NAME)
+            if _state.provider is not None
+            else None
+        )
         if tracer is None:
             return
         span = tracer.start_span("list_models", kind=SpanKind.SERVER, attributes=attrs)
@@ -232,13 +246,17 @@ def emit_tool_call(
         )
         links: Sequence[Link] = ()
         with _lock:
-            parent = _session_span_context.get(str(runtime_session_id))
+            parent = _state.session_span_context.get(str(runtime_session_id))
         if parent is not None and parent.is_valid:
             links = (Link(parent),)
         duration_ns = max(int(duration_ms) * 1_000_000, 0)
         end_ns = _now_ns()
         start_ns = end_ns - duration_ns
-        tracer = _provider.get_tracer(TRACER_NAME) if _provider is not None else None
+        tracer = (
+            _state.provider.get_tracer(TRACER_NAME)
+            if _state.provider is not None
+            else None
+        )
         if tracer is None:
             return
         span = tracer.start_span(
@@ -258,37 +276,34 @@ def emit_tool_call(
 
 def configure_for_tests(exporter: SpanExporter) -> None:
     """Install an in-memory (or fake) exporter for unit tests."""
-    global _provider, _force_enabled, _init_failed, _session_span_context
     with _lock:
         _shutdown_locked()
-        _force_enabled = True
-        _init_failed = False
-        _session_span_context = {}
+        _state.force_enabled = True
+        _state.init_failed = False
+        _state.session_span_context = {}
         resource = Resource.create({"service.name": "preloop-test"})
         provider = TracerProvider(
             resource=resource,
             sampler=ParentBased(TraceIdRatioBased(1.0)),
         )
         provider.add_span_processor(SimpleSpanProcessor(exporter))
-        _provider = provider
+        _state.provider = provider
 
 
 def shutdown_otel() -> None:
     """Flush and shut down the tracer (and meter) providers."""
-    global _force_enabled
     with _lock:
         _shutdown_locked()
-        _force_enabled = False
+        _state.force_enabled = False
 
 
 def _shutdown_locked() -> None:
-    global _provider, _init_failed, _session_span_context
-    if _provider is not None:
+    if _state.provider is not None:
         try:
-            _provider.shutdown()
+            _state.provider.shutdown()
         except Exception:
             logger.debug("OTLP tracer shutdown failed", exc_info=True)
-        _provider = None
+        _state.provider = None
     try:
         meter_provider = metrics.get_meter_provider()
         shutdown = getattr(meter_provider, "shutdown", None)
@@ -296,26 +311,25 @@ def _shutdown_locked() -> None:
             shutdown()
     except Exception:
         logger.debug("OTLP meter shutdown failed", exc_info=True)
-    _init_failed = False
-    _session_span_context = {}
+    _state.init_failed = False
+    _state.session_span_context = {}
 
 
 def _ensure_provider() -> Optional[TracerProvider]:
-    global _provider, _init_failed
-    if _provider is not None:
-        return _provider
-    if _init_failed:
+    if _state.provider is not None:
+        return _state.provider
+    if _state.init_failed:
         return None
     with _lock:
-        if _provider is not None:
-            return _provider
-        if _init_failed:
+        if _state.provider is not None:
+            return _state.provider
+        if _state.init_failed:
             return None
         try:
-            _provider = _build_provider()
-            return _provider
+            _state.provider = _build_provider()
+            return _state.provider
         except Exception:
-            _init_failed = True
+            _state.init_failed = True
             logger.warning(
                 "OTLP exporter setup failed; export disabled for this process",
                 exc_info=True,
@@ -549,6 +563,6 @@ def _remember_session_span(session_id: str, span: trace.Span) -> None:
     if ctx is None or not ctx.is_valid:
         return
     with _lock:
-        if len(_session_span_context) >= _SESSION_CONTEXT_MAX:
-            _session_span_context.pop(next(iter(_session_span_context)))
-        _session_span_context[session_id] = ctx
+        if len(_state.session_span_context) >= _SESSION_CONTEXT_MAX:
+            _state.session_span_context.pop(next(iter(_state.session_span_context)))
+        _state.session_span_context[session_id] = ctx

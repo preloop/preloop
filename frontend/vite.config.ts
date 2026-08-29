@@ -3,6 +3,7 @@ import { resolve } from 'path';
 import { fileURLToPath } from 'url';
 import cssInjectedByJsPlugin from 'vite-plugin-css-injected-by-js';
 import { brandPlugin } from './vite-plugin-brand';
+import { resolveAllowedHosts } from './src/vite-allowed-hosts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
@@ -14,6 +15,13 @@ const gatewayProxyTarget = process.env.VITE_GATEWAY_PROXY_TARGET || apiProxyTarg
 const hmrClientPort = Number(process.env.VITE_HMR_CLIENT_PORT || 5173);
 const hmrHost = process.env.VITE_HMR_HOST;
 const hmrProtocol = process.env.VITE_HMR_PROTOCOL;
+const allowedHosts = resolveAllowedHosts({
+  allowedHosts: process.env.VITE_ALLOWED_HOSTS,
+  additionalHosts: process.env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS,
+  hmrHost,
+  apiUrl: process.env.VITE_API_URL,
+  apiProxyTarget,
+});
 
 /**
  * Default Vite configuration for Preloop Open Source / Self-Hosted edition
@@ -65,6 +73,7 @@ export default defineConfig({
     include: ['lit', 'lit/decorators.js'],
   },
   server: {
+    ...(allowedHosts ? { allowedHosts } : {}),
     hmr: {
       clientPort:
         Number.isFinite(hmrClientPort) && hmrClientPort > 0 ? hmrClientPort : 5173,
