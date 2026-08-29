@@ -229,36 +229,61 @@ export class FlowsView extends LitElement {
         display: flex;
         justify-content: center;
         width: 100%;
-        margin-top: var(--sl-spacing-medium);
+        margin-top: var(--sl-spacing-large);
         margin-bottom: var(--sl-spacing-large);
       }
       .empty-card {
         width: 100%;
         max-width: 580px;
-        text-align: center;
+      }
+      .empty-card::part(base) {
+        border: 1px solid
+          color-mix(in srgb, var(--sl-color-primary-600) 35%, transparent);
+        box-shadow: var(--sl-shadow-large);
+        border-radius: var(--sl-border-radius-large);
+        overflow: hidden;
       }
       .empty-card-body {
         display: flex;
         flex-direction: column;
         align-items: center;
+        text-align: center;
         padding: var(--sl-spacing-large);
       }
-      .empty-card-icon {
-        font-size: 2.5rem;
+      .empty-icon-circle {
+        width: 72px;
+        height: 72px;
+        border-radius: 50%;
+        background: color-mix(
+          in srgb,
+          var(--sl-color-primary-600) 15%,
+          transparent
+        );
         color: var(--sl-color-primary-600);
-        margin-bottom: var(--sl-spacing-small);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: var(--sl-spacing-medium);
+      }
+      .empty-icon-circle sl-icon {
+        font-size: 2.5rem;
       }
       .empty-card-title {
-        margin: 0 0 var(--sl-spacing-x-small);
-        font-size: var(--sl-font-size-large);
-        font-weight: var(--sl-font-weight-semibold);
+        margin: 0 0 var(--sl-spacing-2x-small);
+        font-size: 1.25rem;
+        font-weight: 700;
         color: var(--sl-color-neutral-900);
       }
       .empty-card-desc {
         margin: 0 0 var(--sl-spacing-large);
         max-width: 440px;
-        line-height: 1.5;
+        font-size: 0.95rem;
+        line-height: 1.55;
         color: var(--sl-color-neutral-600);
+      }
+      .empty-cta-btn {
+        width: 100%;
+        max-width: 280px;
       }
     `,
   ];
@@ -490,16 +515,16 @@ export class FlowsView extends LitElement {
                   <div class="empty-state empty-state-wrapper">
                     <sl-card class="empty-card">
                       <div class="empty-card-body">
-                        <sl-icon
-                          class="empty-card-icon"
-                          name="diagram-3"
-                        ></sl-icon>
+                        <div class="empty-icon-circle">
+                          <sl-icon name="diagram-3"></sl-icon>
+                        </div>
                         <h3 class="empty-card-title">No flows yet</h3>
                         <p class="empty-card-desc">
                           No flows yet. Create your first custom flow or clone a
                           starter preset below.
                         </p>
                         <sl-button
+                          class="empty-cta-btn"
                           variant="primary"
                           @click=${() => Router.go('/console/flows/new')}
                         >

@@ -58,6 +58,75 @@ export class RunnersView extends LitElement {
       a {
         color: var(--sl-color-primary-600);
       }
+      .empty-wrap {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        margin-top: var(--sl-spacing-large);
+      }
+      .empty-card {
+        width: 100%;
+        max-width: 580px;
+      }
+      .empty-card::part(base) {
+        border: 1px solid
+          color-mix(in srgb, var(--sl-color-primary-600) 35%, transparent);
+        box-shadow: var(--sl-shadow-large);
+        border-radius: var(--sl-border-radius-large);
+        overflow: hidden;
+      }
+      .empty-body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        padding: var(--sl-spacing-large);
+      }
+      .empty-icon {
+        width: 72px;
+        height: 72px;
+        border-radius: 50%;
+        background: var(--sl-color-primary-100);
+        color: var(--sl-color-primary-600);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: var(--sl-spacing-medium);
+      }
+      .empty-icon sl-icon {
+        font-size: 2.5rem;
+      }
+      .empty-title {
+        margin: 0 0 var(--sl-spacing-2x-small);
+        font-size: 1.25rem;
+        font-weight: 700;
+        color: var(--sl-color-neutral-900);
+      }
+      .empty-copy {
+        margin: 0 0 var(--sl-spacing-large);
+        max-width: 440px;
+        font-size: 0.95rem;
+        line-height: 1.55;
+      }
+      .empty-command {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: var(--sl-color-neutral-100);
+        border: 1px solid var(--sl-color-neutral-300);
+        border-radius: var(--sl-border-radius-medium);
+        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+        font-family: var(--sl-font-mono);
+        font-size: 0.9rem;
+        margin-bottom: var(--sl-spacing-large);
+      }
+      .empty-command code {
+        color: var(--sl-color-primary-700);
+      }
+      .empty-docs {
+        width: 100%;
+      }
     `,
   ];
 
@@ -103,52 +172,39 @@ export class RunnersView extends LitElement {
             ? html`<p class="muted">${this.error}</p>`
             : this.runners.length === 0
               ? html`
-                  <sl-card
-                    style="width: 100%; max-width: 640px; margin-top: var(--sl-spacing-medium);"
-                  >
-                    <div
-                      style="display: flex; flex-direction: column; align-items: center; text-align: center; padding: var(--sl-spacing-medium);"
-                    >
-                      <sl-icon
-                        name="cpu"
-                        style="font-size: 2.5rem; color: var(--sl-color-primary-600); margin-bottom: var(--sl-spacing-small);"
-                      ></sl-icon>
-                      <h3
-                        style="margin: 0 0 var(--sl-spacing-x-small); font-size: var(--sl-font-size-large); font-weight: var(--sl-font-weight-semibold); color: var(--sl-color-neutral-900);"
-                      >
-                        No runners registered
-                      </h3>
-                      <p
-                        class="muted"
-                        style="margin: 0 0 var(--sl-spacing-large); max-width: 480px; line-height: 1.5;"
-                      >
-                        Self-hosted CLI runners execute flow jobs and automation
-                        tasks in your local environment or VPC with full network
-                        and credential access.
-                      </p>
+                  <div class="empty-wrap">
+                    <sl-card class="empty-card">
+                      <div class="empty-body">
+                        <div class="empty-icon">
+                          <sl-icon name="cpu"></sl-icon>
+                        </div>
+                        <h3 class="empty-title">No runners registered</h3>
+                        <p class="muted empty-copy">
+                          Self-hosted CLI runners execute flow jobs and
+                          automation tasks in your local environment with full
+                          network and credential access.
+                        </p>
 
-                      <div
-                        style="width: 100%; display: flex; align-items: center; justify-content: space-between; background: var(--sl-color-neutral-100); border: 1px solid var(--sl-color-neutral-300); border-radius: var(--sl-border-radius-medium); padding: var(--sl-spacing-small) var(--sl-spacing-medium); font-family: var(--sl-font-mono); font-size: var(--sl-font-size-small); margin-bottom: var(--sl-spacing-large);"
-                      >
-                        <code style="color: var(--sl-color-primary-700);"
-                          >preloop runner fg --labels local</code
+                        <div class="empty-command">
+                          <code>preloop runner fg --labels local</code>
+                          <sl-copy-button
+                            value="preloop runner fg --labels local"
+                          ></sl-copy-button>
+                        </div>
+
+                        <sl-button
+                          class="empty-docs"
+                          variant="primary"
+                          href="https://docs.preloop.ai/guide/runners"
+                          target="_blank"
+                          rel="noopener noreferrer"
                         >
-                        <sl-copy-button
-                          value="preloop runner fg --labels local"
-                        ></sl-copy-button>
+                          <sl-icon slot="prefix" name="book"></sl-icon>
+                          View Runner Documentation →
+                        </sl-button>
                       </div>
-
-                      <sl-button
-                        variant="default"
-                        size="small"
-                        href="https://docs.preloop.ai/guide/runners"
-                        target="_blank"
-                      >
-                        <sl-icon slot="prefix" name="book"></sl-icon>
-                        View Runner Documentation
-                      </sl-button>
-                    </div>
-                  </sl-card>
+                    </sl-card>
+                  </div>
                 `
               : html`
                   <table>
