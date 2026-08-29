@@ -185,6 +185,11 @@ export class FlowExecutionsView extends AuthedElement {
     void this.loadExecutions();
   }
 
+  handleStatusFilterChange(event: Event | { target: { value: string } }) {
+    const target = (event as any).target || event;
+    this.setStatusFilter(target.value);
+  }
+
   nextPage() {
     if (this.hasNextPage) {
       this.currentPage++;
