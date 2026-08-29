@@ -186,9 +186,7 @@ export class TrackerList extends LitElement {
               <div class="empty-icon-circle">
                 <sl-icon name="link-45deg"></sl-icon>
               </div>
-              <h3 class="empty-card-title">
-                No trackers connected.
-              </h3>
+              <h3 class="empty-card-title">No trackers connected.</h3>
               <p class="empty-card-desc">
                 Connect GitHub, GitLab, or Jira to give flows their triggers and
                 agents their issue-tracking tools.

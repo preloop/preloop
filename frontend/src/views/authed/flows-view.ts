@@ -516,9 +516,7 @@ export class FlowsView extends LitElement {
                         <div class="empty-icon-circle">
                           <sl-icon name="diagram-3"></sl-icon>
                         </div>
-                        <h3 class="empty-card-title">
-                          No flows yet
-                        </h3>
+                        <h3 class="empty-card-title">No flows yet</h3>
                         <p class="empty-card-desc">
                           No flows yet. Create your first custom flow or clone a
                           starter preset below.

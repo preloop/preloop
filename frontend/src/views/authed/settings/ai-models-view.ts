@@ -529,7 +529,6 @@ export class AIModelsView extends LitElement {
       ${this.renderDeleteConfirm()}
     `;
   }
-
   renderModelsList() {
     return html`
       ${when(
@@ -541,9 +540,7 @@ export class AIModelsView extends LitElement {
                 <div class="empty-icon-circle">
                   <sl-icon name="cpu"></sl-icon>
                 </div>
-                <h3 class="empty-card-title">
-                  No AI models configured
-                </h3>
+                <h3 class="empty-card-title">No AI models configured</h3>
                 <p class="empty-card-desc">
                   The AI models your agents reach through the gateway. Add your
                   OpenAI, Anthropic, Gemini, or custom model endpoints.
@@ -726,9 +723,12 @@ export class AIModelsView extends LitElement {
         `
       )}
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
       </sl-card>
 >>>>>>> 4835a2bc (feat(console): unify proposed dark glowing empty state cards and de-duplicate action buttons)
+=======
+>>>>>>> 3b10c929 (fix(console): extract empty state styles into static styles, remove orphaned sl-card and unused filter handler)
     `;
   }
 
