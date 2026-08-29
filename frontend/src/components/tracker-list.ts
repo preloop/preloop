@@ -108,9 +108,14 @@ export class TrackerList extends LitElement {
     .empty-card {
       width: 100%;
       max-width: 580px;
-      border: 1px solid rgba(139, 92, 246, 0.35);
-      box-shadow: 0 12px 40px rgba(139, 92, 246, 0.12);
+    }
+
+    .empty-card::part(base) {
+      border: 1px solid
+        color-mix(in srgb, var(--sl-color-primary-600) 35%, transparent);
+      box-shadow: var(--sl-shadow-large);
       border-radius: var(--sl-border-radius-large);
+      overflow: hidden;
     }
 
     .empty-card-body {
@@ -125,11 +130,12 @@ export class TrackerList extends LitElement {
       width: 72px;
       height: 72px;
       border-radius: 50%;
-      background: radial-gradient(
-        circle,
-        rgba(139, 92, 246, 0.2) 0%,
-        rgba(99, 102, 241, 0.05) 70%
+      background: color-mix(
+        in srgb,
+        var(--sl-color-primary-600) 15%,
+        transparent
       );
+      color: var(--sl-color-primary-600);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -138,7 +144,6 @@ export class TrackerList extends LitElement {
 
     .empty-icon-circle sl-icon {
       font-size: 2.5rem;
-      color: #8b5cf6;
     }
 
     .empty-card-title {
@@ -159,8 +164,6 @@ export class TrackerList extends LitElement {
     .empty-cta-btn {
       width: 100%;
       max-width: 280px;
-      --sl-color-primary-600: #6366f1;
-      --sl-color-primary-700: #4f46e5;
     }
   `;
 
