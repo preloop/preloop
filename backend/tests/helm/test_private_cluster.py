@@ -30,12 +30,12 @@ def _container_env(deployment: Dict) -> Dict[str, Dict]:
     return {item["name"]: item for item in env}
 
 
-def test_default_values_have_no_otlp_block() -> None:
-    """OTLP Helm values belong to a separate exporter issue, not this chart."""
-    values = load_values()
-    assert "otlp" not in values
-    raw = (CHART_DIR / "values.yaml").read_text()
-    assert "\notlp:" not in raw
+def test_private_overlay_leaves_otlp_disabled() -> None:
+    """Private-cluster overlay must not turn on OTLP; defaults stay off."""
+    overlay = yaml.safe_load((CHART_DIR / PRIVATE_VALUES).read_text())
+    otlp = overlay.get("otlp") or {}
+    assert otlp.get("enabled", False) is False
+    assert load_values()["otlp"]["enabled"] is False
 
 
 def test_default_extra_env_and_volumes_are_empty() -> None:

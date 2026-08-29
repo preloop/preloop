@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Private-cluster Helm tests after OTLP merge**: default `values.yaml`
+  now includes the `otlp` block from main. The private-cluster suite no
+  longer asserts that block is absent, and the README no longer claims
+  the chart does not define `otlp` values.
+
 - **Bot-sender loop guard no longer swallows legitimate PR events**: the
   loop guard in `flow_trigger_service._is_preloop_triggered_event`
   dropped all webhook events whose sender started with "preloop",

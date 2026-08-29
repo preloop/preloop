@@ -40,8 +40,8 @@ Install with:
 helm install preloop ./helm/preloop -f ./helm/preloop/values-private-cluster.yaml
 ```
 
-OpenTelemetry exporter settings will land with the OTLP exporter; this chart
-does not currently define `otlp` values.
+OTLP export is off by default (`otlp.enabled: false`). See
+[OTLP parameters](#otlp-parameters) and `docs/guide/observability-otlp.md`.
 
 ### Checklist
 
