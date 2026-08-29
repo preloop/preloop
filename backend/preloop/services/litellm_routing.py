@@ -152,7 +152,7 @@ def apply_preloop_client_headers(
     # Honor SSL_CERT_FILE / REQUESTS_CA_BUNDLE / PRELOOP_SSL_VERIFY only
     # for custom OpenAI-compatible upstreams. httpx treats a verify path
     # as the sole trust store, so applying a private-CA-only bundle to
-    # public OpenAI/Anthropic would break those completions.
+    # public OpenAI/Anthropic/OpenRouter would break those completions.
     if "ssl_verify" not in kwargs and _ssl_verify_applies_to_upstream(ai_model, kwargs):
         verify = ssl_verify_setting()
         if verify is not None:
@@ -161,10 +161,16 @@ def apply_preloop_client_headers(
 
 
 def _ssl_verify_applies_to_upstream(ai_model: Any, kwargs: Dict[str, Any]) -> bool:
-    """True when this completion targets a custom api_base / compatible provider."""
+    """True when this completion targets a custom api_base / compatible provider.
+
+    Known-public endpoints (OpenRouter) keep the default trust store even
+    when stored as ``openai-compatible`` or ``custom``.
+    """
+    if ai_model is not None and is_openrouter_model(ai_model):
+        return False
     api_base = kwargs.get("api_base")
     if isinstance(api_base, str) and api_base.strip():
-        return True
+        return not is_openrouter_endpoint(api_base)
     if ai_model is None:
         return False
     provider = (getattr(ai_model, "provider_name", None) or "").strip().lower()

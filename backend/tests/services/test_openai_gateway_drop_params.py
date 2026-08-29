@@ -150,6 +150,24 @@ def test_openai_compatible_skip_verify_last_resort(monkeypatch):
     assert kwargs["api_base"] == "https://gateway.internal/v1"
 
 
+def test_openai_compatible_openrouter_completion_does_not_set_ssl_verify(
+    monkeypatch, tmp_path
+):
+    """openai-compatible + OpenRouter api_endpoint keeps the default trust store."""
+    ca = tmp_path / "private-ca.crt"
+    ca.write_text("dummy-ca")
+    monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    model = SimpleNamespace(
+        provider_name="openai-compatible",
+        model_identifier="anthropic/claude-opus-4.6",
+        api_endpoint="https://openrouter.ai/api/v1",
+    )
+    kwargs = _build_kwargs(model)
+    assert kwargs["api_base"] == "https://openrouter.ai/api/v1"
+    assert "ssl_verify" not in kwargs
+
+
 def test_public_openai_completion_does_not_set_ssl_verify(monkeypatch, tmp_path):
     ca = tmp_path / "private-ca.crt"
     ca.write_text("dummy-ca")

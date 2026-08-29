@@ -167,11 +167,13 @@ secrets in the console (or the API) after install.
 
 Mount your CA and point Python TLS env vars at it. Completions and model
 discovery then trust that bundle **for OpenAI-compatible (custom
-`api_base`) upstreams**. Public OpenAI, Anthropic, and other cloud
-providers keep the default trust store (certifi / system roots). httpx
-treats a `verify` path as the sole CA bundle, so a file that contains
-only your internal CA would break those public APIs if it were applied
-globally.
+`api_base`) upstreams**. Public OpenAI, Anthropic, OpenRouter, and
+other cloud providers keep the default trust store (certifi / system
+roots). An `openai-compatible` or `custom` model whose endpoint is
+`https://openrouter.ai/api/v1` is treated as OpenRouter, not as a custom
+upstream. httpx treats a `verify` path as the sole CA bundle, so a file
+that contains only your internal CA would break those public APIs if it
+were applied globally.
 
 If a custom upstream and a public provider must share one file, the
 bundle has to include public roots as well as your CA. Prefer keeping
