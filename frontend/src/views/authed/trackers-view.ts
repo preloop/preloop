@@ -187,6 +187,13 @@ export class TrackersView extends LitElement {
     this.isAddingTracker = false;
   }
 
+  @state()
+  private trackerCount: number | null = null;
+
+  private _handleTrackersChanged(event: CustomEvent) {
+    this.trackerCount = event.detail.count ?? 0;
+  }
+
   private _dismissGitHubError() {
     this.githubError = null;
   }
@@ -198,12 +205,21 @@ export class TrackersView extends LitElement {
         description="Issue trackers connected to Preloop, like GitHub, GitLab, or Jira. Trackers give flows their triggers and agents their issue tools."
         width="narrow"
       >
-        <div slot="main-column">
-          <sl-button variant="primary" @click=${this._openAddTrackerForm}>
-            <sl-icon slot="prefix" name="plus-lg"></sl-icon>
-            Add New Tracker
-          </sl-button>
-        </div>
+        ${
+          this.trackerCount !== null && this.trackerCount > 0
+            ? html`
+                <div slot="main-column">
+                  <sl-button
+                    variant="primary"
+                    @click=${this._openAddTrackerForm}
+                  >
+                    <sl-icon slot="prefix" name="plus-lg"></sl-icon>
+                    Add New Tracker
+                  </sl-button>
+                </div>
+              `
+            : ''
+        }
       </view-header>
       <div class="column-layout narrow">
         <div class="main-column">
@@ -250,6 +266,7 @@ export class TrackersView extends LitElement {
           <tracker-list
             @tracker-edit=${this._handleTrackerEdit}
             @tracker-add-request=${this._openAddTrackerForm}
+            @trackers-changed=${this._handleTrackersChanged}
           ></tracker-list>
         </div>
       </div>
