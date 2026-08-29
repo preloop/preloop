@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bot-sender loop guard no longer swallows legitimate PR events**: the
+  loop guard in `flow_trigger_service._is_preloop_triggered_event`
+  dropped all webhook events whose sender started with "preloop",
+  including `pull_request.opened` from the Preloop GitHub App. PRs
+  created by the App on a human's behalf (e.g. #306, #307) never
+  reached trigger matching, so the reviewer flow did not run. The guard
+  now exempts PR/MR opened/reopened event types (intentional actions,
+  not loop vectors) and matches bot identities by exact name instead of
+  prefix, preventing false positives on usernames like "preloop-fan".
+
 ### Security
 
 - **Drop python-jose for PyJWT**: auth tokens, email/reset tokens, WebAuthn
