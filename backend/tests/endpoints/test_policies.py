@@ -1,5 +1,6 @@
 """Tests for policies API endpoints."""
 
+import inspect
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
@@ -1219,3 +1220,48 @@ class TestPrunePolicyVersions:
             keep_tagged=True,  # default
             keep_count=10,  # default
         )
+
+
+_MODEL_IO_RULE_HANDLERS = (
+    policies.list_model_io_rules,
+    policies.create_model_io_rule,
+    policies.update_model_io_rule,
+    policies.patch_model_io_rule,
+    policies.remove_model_io_rule,
+)
+
+
+class TestModelIORulesPermissionDeps:
+    """RBAC fail-closed requires current_user and db on these handlers."""
+
+    def test_handlers_declare_current_user_and_db(self):
+        for handler in _MODEL_IO_RULE_HANDLERS:
+            params = inspect.signature(handler).parameters
+            assert "current_user" in params, handler.__name__
+            assert "db" in params, handler.__name__
+
+    async def test_list_without_current_user_fails_closed_when_rbac_on(
+        self, mock_db, mock_account, mocker
+    ):
+        mocker.patch(
+            "preloop.utils.permissions._rbac_checks_enabled",
+            return_value=True,
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            policies.list_model_io_rules(account=mock_account, db=mock_db)
+        assert exc_info.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+        assert "current_user and db" in exc_info.value.detail
+
+    async def test_list_returns_rules_when_current_user_present(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
+        mocker.patch(
+            "preloop.api.endpoints.policies.load_model_io_rules",
+            return_value=[],
+        )
+        result = policies.list_model_io_rules(
+            account=mock_account,
+            current_user=mock_user,
+            db=mock_db,
+        )
+        assert result.rules == []

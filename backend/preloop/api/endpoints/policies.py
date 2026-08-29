@@ -435,6 +435,7 @@ async def upload_policy(
 @require_permission("view_policies")
 def list_model_io_rules(
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> ModelIORuleListResponse:
     """Return model.request and model.response rules for the console."""
@@ -450,6 +451,7 @@ def list_model_io_rules(
 def create_model_io_rule(
     rule: ModelIORule,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> Dict[str, Any]:
     """Save one model I/O rule from the Policies console form."""
@@ -467,6 +469,7 @@ def update_model_io_rule(
     rule_id: str,
     rule: ModelIORule,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> Dict[str, Any]:
     """Replace an existing model I/O rule. The path id wins."""
@@ -492,6 +495,7 @@ def patch_model_io_rule(
     rule_id: str,
     patch: ModelIORulePatchRequest,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> Dict[str, Any]:
     """Toggle enabled without rewriting the rest of the rule."""
@@ -526,6 +530,7 @@ def patch_model_io_rule(
 def remove_model_io_rule(
     rule_id: str,
     account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> Response:
     """Delete one model I/O rule."""
