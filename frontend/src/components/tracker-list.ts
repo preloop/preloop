@@ -102,12 +102,15 @@ export class TrackerList extends LitElement {
       display: flex;
       justify-content: center;
       width: 100%;
-      margin-top: var(--sl-spacing-medium);
+      margin-top: var(--sl-spacing-large);
     }
 
     .empty-card {
       width: 100%;
       max-width: 580px;
+      border: 1px solid rgba(139, 92, 246, 0.35);
+      box-shadow: 0 12px 40px rgba(139, 92, 246, 0.12);
+      border-radius: var(--sl-border-radius-large);
     }
 
     .empty-card-body {
@@ -118,24 +121,46 @@ export class TrackerList extends LitElement {
       padding: var(--sl-spacing-large);
     }
 
-    .empty-card-icon {
+    .empty-icon-circle {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: radial-gradient(
+        circle,
+        rgba(139, 92, 246, 0.2) 0%,
+        rgba(99, 102, 241, 0.05) 70%
+      );
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: var(--sl-spacing-medium);
+    }
+
+    .empty-icon-circle sl-icon {
       font-size: 2.5rem;
-      color: var(--sl-color-primary-600);
-      margin-bottom: var(--sl-spacing-small);
+      color: #8b5cf6;
     }
 
     .empty-card-title {
-      margin: 0 0 var(--sl-spacing-x-small);
-      font-size: var(--sl-font-size-large);
-      font-weight: var(--sl-font-weight-semibold);
+      margin: 0 0 var(--sl-spacing-2x-small);
+      font-size: 1.25rem;
+      font-weight: 700;
       color: var(--sl-color-neutral-900);
     }
 
     .empty-card-desc {
       margin: 0 0 var(--sl-spacing-large);
       max-width: 440px;
-      line-height: 1.5;
+      font-size: 0.95rem;
+      line-height: 1.55;
       color: var(--sl-color-neutral-600);
+    }
+
+    .empty-cta-btn {
+      width: 100%;
+      max-width: 280px;
+      --sl-color-primary-600: #6366f1;
+      --sl-color-primary-700: #4f46e5;
     }
   `;
 
@@ -158,13 +183,21 @@ export class TrackerList extends LitElement {
         <div class="empty-state-wrapper">
           <sl-card class="empty-state empty-card">
             <div class="empty-card-body">
-              <sl-icon class="empty-card-icon" name="link-45deg"></sl-icon>
-              <h3 class="empty-card-title">No trackers connected.</h3>
+              <div class="empty-icon-circle">
+                <sl-icon name="link-45deg"></sl-icon>
+              </div>
+              <h3 class="empty-card-title">
+                No trackers connected.
+              </h3>
               <p class="empty-card-desc">
                 Connect GitHub, GitLab, or Jira to give flows their triggers and
                 agents their issue-tracking tools.
               </p>
-              <sl-button variant="primary" @click=${this._handleAddTracker}>
+              <sl-button
+                class="empty-cta-btn"
+                variant="primary"
+                @click=${this._handleAddTracker}
+              >
                 <sl-icon slot="prefix" name="plus-lg"></sl-icon>
                 Add New Tracker
               </sl-button>
