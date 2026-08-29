@@ -83,5 +83,10 @@ describe('RunnersView', () => {
     expect(element.shadowRoot?.textContent).to.contain(
       'preloop runner fg --labels local'
     );
+    const docs = element.shadowRoot?.querySelector('sl-button.empty-docs');
+    expect(docs).to.exist;
+    expect(docs?.getAttribute('rel')).to.equal('noopener noreferrer');
+    expect(docs?.getAttribute('target')).to.equal('_blank');
+    expect(element.shadowRoot?.querySelector('.empty-command')).to.exist;
   });
 });
