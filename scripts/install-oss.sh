@@ -71,6 +71,23 @@ PRELOOP_BOOTSTRAP_TOKEN="${PRELOOP_BOOTSTRAP_TOKEN:-}"
 
 DEFAULT_URL="http://localhost:3000"
 
+# Compose interpolates `$VAR` in `.env` files. A literal dollar must be written
+# as `$$` so a password like `$UsErPassWoRd` is not treated as a variable (and
+# the rest of the secret leaked in a WARN). Hand-edits of `.env` need the same
+# escaping. https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/
+compose_env_escape() {
+  printf '%s' "$1" | sed 's/[$]/$$/g'
+}
+
+compose_env_unescape() {
+  printf '%s' "$1" | sed 's/[$][$]/$/g'
+}
+
+# Print a KEY=value line with `$` escaped for Compose.
+compose_env_assign() {
+  printf '%s=%s\n' "$1" "$(compose_env_escape "$2")"
+}
+
 # Replace (or append) a single KEY=value line in the install's .env.
 set_env_value() {
   key="$1"
@@ -82,7 +99,7 @@ set_env_value() {
   else
     : > "$tmp_file"
   fi
-  echo "${key}=${value}" >> "$tmp_file"
+  compose_env_assign "$key" "$value" >> "$tmp_file"
   mv "$tmp_file" "$env_file"
 }
 
@@ -206,8 +223,9 @@ load_existing_env() {
 }
 
 env_value() {
-  # last assignment wins, value may contain '='
-  sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -n 1
+  # last assignment wins, value may contain '='. Unescape `$$` so a re-run
+  # that reads secrets and writes them back does not double-escape.
+  compose_env_unescape "$(sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -n 1)"
 }
 
 # True only when a real terminal is attached. `curl ... | sh` leaves stdin as
@@ -922,27 +940,28 @@ main() {
 
   if [ ! -f "${INSTALL_DIR}/.env" ]; then
     cat > "${INSTALL_DIR}/.env" <<EOF
-PRELOOP_VERSION=${VERSION}
-SECRET_KEY=$(generate_secret)
-POSTGRES_PASSWORD=$(generate_secret)
-PRELOOP_URL=${PRELOOP_URL}
-ALLOWED_ORIGINS=${PRELOOP_URL}
+$(compose_env_assign PRELOOP_VERSION "$VERSION")
+$(compose_env_assign SECRET_KEY "$(generate_secret)")
+$(compose_env_assign POSTGRES_PASSWORD "$(generate_secret)")
+$(compose_env_assign PRELOOP_URL "$PRELOOP_URL")
+$(compose_env_assign ALLOWED_ORIGINS "$PRELOOP_URL")
 # Public signup. Turned off after the first user is created; set to true to
 # reopen registration, then run 'docker compose up -d api'.
 REGISTRATION_ENABLED=true
 # First-user setup token: while the instance has zero users, signing up
 # requires the setup link printed at the end of the install (which carries
 # this token). Ignored once any user exists.
-PRELOOP_BOOTSTRAP_TOKEN=${PRELOOP_BOOTSTRAP_TOKEN}
+$(compose_env_assign PRELOOP_BOOTSTRAP_TOKEN "$PRELOOP_BOOTSTRAP_TOKEN")
 # Email (approval requests, invitations, password resets). Leave SMTP_HOST
 # empty to run without email; re-run the installer or edit these values, then
-# run 'docker compose up -d' to apply.
-SMTP_HOST=${SMTP_HOST}
-SMTP_PORT=${SMTP_PORT}
-SMTP_USERNAME=${SMTP_USERNAME}
-SMTP_PASSWORD=${SMTP_PASSWORD}
-SMTP_FROM=${SMTP_FROM}
-SMTP_FROM_NAME=${SMTP_FROM_NAME}
+# run 'docker compose up -d' to apply. Compose interpolates \$ in .env: a
+# literal \$ must be written as \$\$ (the installer does this automatically).
+$(compose_env_assign SMTP_HOST "$SMTP_HOST")
+$(compose_env_assign SMTP_PORT "$SMTP_PORT")
+$(compose_env_assign SMTP_USERNAME "$SMTP_USERNAME")
+$(compose_env_assign SMTP_PASSWORD "$SMTP_PASSWORD")
+$(compose_env_assign SMTP_FROM "$SMTP_FROM")
+$(compose_env_assign SMTP_FROM_NAME "$SMTP_FROM_NAME")
 EOF
   else
     # Keep an existing install's secrets, but refresh the public URL.
@@ -950,9 +969,9 @@ EOF
     grep -v -e '^PRELOOP_VERSION=' -e '^PRELOOP_URL=' -e '^ALLOWED_ORIGINS=' \
       "${INSTALL_DIR}/.env" > "$tmp_env" || true
     {
-      echo "PRELOOP_VERSION=${VERSION}"
-      echo "PRELOOP_URL=${PRELOOP_URL}"
-      echo "ALLOWED_ORIGINS=${PRELOOP_URL}"
+      compose_env_assign PRELOOP_VERSION "$VERSION"
+      compose_env_assign PRELOOP_URL "$PRELOOP_URL"
+      compose_env_assign ALLOWED_ORIGINS "$PRELOOP_URL"
     } >> "$tmp_env"
     # Only rewrite SMTP when this run supplied it, so an existing configuration
     # is never silently wiped.
@@ -960,12 +979,12 @@ EOF
       grep -v -e '^SMTP_' "$tmp_env" > "${tmp_env}.2" || true
       mv "${tmp_env}.2" "$tmp_env"
       {
-        echo "SMTP_HOST=${SMTP_HOST}"
-        echo "SMTP_PORT=${SMTP_PORT}"
-        echo "SMTP_USERNAME=${SMTP_USERNAME}"
-        echo "SMTP_PASSWORD=${SMTP_PASSWORD}"
-        echo "SMTP_FROM=${SMTP_FROM}"
-        echo "SMTP_FROM_NAME=${SMTP_FROM_NAME}"
+        compose_env_assign SMTP_HOST "$SMTP_HOST"
+        compose_env_assign SMTP_PORT "$SMTP_PORT"
+        compose_env_assign SMTP_USERNAME "$SMTP_USERNAME"
+        compose_env_assign SMTP_PASSWORD "$SMTP_PASSWORD"
+        compose_env_assign SMTP_FROM "$SMTP_FROM"
+        compose_env_assign SMTP_FROM_NAME "$SMTP_FROM_NAME"
       } >> "$tmp_env"
     fi
     mv "$tmp_env" "${INSTALL_DIR}/.env"
@@ -995,7 +1014,7 @@ EOF
   # Record what this install is, so the next run reproduces the same topology.
   if [ "$WANT_TLS" -eq 1 ] || [ "$HTTP_PROXY_ONLY" -eq 1 ] || [ -n "$PRELOOP_TLS_ENABLED" ]; then
     grep -v '^PRELOOP_TLS_ENABLED=' "${INSTALL_DIR}/.env" > "${INSTALL_DIR}/.env.tls" || true
-    echo "PRELOOP_TLS_ENABLED=1" >> "${INSTALL_DIR}/.env.tls"
+    compose_env_assign PRELOOP_TLS_ENABLED 1 >> "${INSTALL_DIR}/.env.tls"
     mv "${INSTALL_DIR}/.env.tls" "${INSTALL_DIR}/.env"
   fi
 
