@@ -305,7 +305,7 @@ curl -fsSL https://preloop.ai/install/oss | sh
 
 The installer detects the existing install and keeps its configuration (public URL, TLS setup, SMTP credentials, `SECRET_KEY`, database password), pulls the new images, **dumps the database to `~/.preloop-oss/backups/` first**, applies schema migrations automatically (the `migrate` service runs `alembic upgrade head`), and removes containers for services a new version dropped. Setting an environment variable overrides that one setting; everything else is preserved.
 
-For Kubernetes/prod-like deployments, use the Helm chart in [`helm/preloop`](helm/preloop) and connect the CLI with `preloop login --url https://your-preloop.example.com`.
+For Kubernetes/prod-like deployments, use the Helm chart in [`helm/preloop`](helm/preloop) and connect the CLI with `preloop login --url https://your-preloop.example.com`. **Docker Compose** (the OSS installer above) and **Helm** are the supported install surfaces; this repository does not ship Terraform modules. Private-cluster / VPC-style Helm (ClusterIP + ingress, existing Postgres, private CA, OpenAI-compatible upstream) is documented in [`helm/preloop/README.md`](helm/preloop/README.md#private-cluster).
 
 ### Telemetry
 

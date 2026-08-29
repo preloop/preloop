@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlsplit
 
+from preloop.services.tls_verify import ssl_verify_setting
+
 logger = logging.getLogger(__name__)
 
 ModelKind = Literal["llm", "stt", "tts"]
@@ -260,6 +262,24 @@ async def get_available_models_for_provider(
         return _fallback([], ERROR_UNSUPPORTED)
 
 
+def _discovery_http_client() -> Optional[Any]:
+    """Return an httpx client that trusts a mounted private CA, if configured.
+
+    The OpenAI SDK uses certifi by default and ignores SSL_CERT_FILE.
+    Operators mount a CA via Helm extraVolumes and set SSL_CERT_FILE;
+    that path is passed as httpx ``verify``.
+    """
+    verify = ssl_verify_setting()
+    if verify is None:
+        return None
+    import httpx
+
+    return httpx.AsyncClient(
+        verify=verify,
+        timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
+    )
+
+
 def validate_discovery_endpoint(api_endpoint: str) -> str:
     """Validate a user-supplied model-discovery endpoint, or raise ValueError.
 
@@ -367,15 +387,20 @@ async def _get_openai_compatible_models(
         return _fallback([], ERROR_SDK_MISSING)
 
     base_url = validate_discovery_endpoint(api_endpoint).rstrip("/")
+    http_client = _discovery_http_client()
     try:
-        client = AsyncOpenAI(
-            api_key=api_key or "placeholder",
-            base_url=base_url,
-            max_retries=1,
-            timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
-        )
+        client_kwargs: Dict[str, Any] = {
+            "api_key": api_key or "placeholder",
+            "base_url": base_url,
+            "max_retries": 1,
+            "timeout": MODEL_DISCOVERY_TIMEOUT_SECONDS,
+        }
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
+        client = AsyncOpenAI(**client_kwargs)
         # The SDK's __aenter__ returns the client itself; the context manager
-        # closes the underlying HTTP connection pool on exit.
+        # closes the underlying HTTP connection pool on exit. A custom
+        # http_client is owned here and closed in finally.
         async with client:
             response = await client.models.list()
     except AuthenticationError as e:
@@ -390,6 +415,9 @@ async def _get_openai_compatible_models(
     except Exception as e:
         logger.warning("Failed to list models from %s: %s", base_url, type(e).__name__)
         return _fallback([], _classify_fetch_error(e))
+    finally:
+        if http_client is not None:
+            await http_client.aclose()
 
     return _live(_extract_model_ids(response))
 

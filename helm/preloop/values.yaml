@@ -93,6 +93,19 @@ analytics:
 # Image pull secrets
 imagePullSecrets: []
 
+# Name of an existing Secret that already contains jwt-secret (and any other
+# keys the enabled features need). When set, the chart does not create its
+# own Secret. Create it with kubectl; do not put real secrets in values files.
+existingSecret: ""
+
+# Extra env, envFrom, volumes, and volumeMounts applied to API, gateway,
+# worker, scheduler, monitor, and jobs. Use these to mount a private CA and
+# set SSL_CERT_FILE / REQUESTS_CA_BUNDLE (or DATABASE_URL from a Secret).
+extraEnv: []
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+
 # Service account configuration
 serviceAccount:
   # Set to true to create a ServiceAccount for agent execution RBAC
@@ -348,6 +361,11 @@ database:
   enabled: true
   # If external is true, uses an external PostgreSQL instance
   external: false
+  # When name is set, every pod reads DATABASE_URL from this Secret instead
+  # of building it from externalDatabase / cnpg values.
+  urlFromSecret:
+    name: ""
+    key: "database-url"
   # External database configuration (if external is true)
   externalDatabase:
     host: ""
@@ -355,6 +373,9 @@ database:
     user: ""
     password: ""
     database: ""
+    # Optional libpq sslmode (require, verify-ca, verify-full). Empty omits it.
+    # Prefer urlFromSecret for production so the URL is not stored in values.
+    sslMode: ""
   # CloudNativePG configuration (if enabled is true and external is false)
   cnpg:
     name: ""

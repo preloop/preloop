@@ -1,0 +1,108 @@
+# Example overlay for a private-cluster / VPC-style Helm install.
+# Copy and pass with: helm install preloop ./helm/preloop -f values-private-cluster.yaml
+#
+# Placeholders only. Create Kubernetes Secrets yourself; do not put real
+# keys, passwords, or tokens in this file or commit them to git.
+
+# Pull images from a private registry (create the docker-registry Secret first).
+image:
+  repository: registry.internal/acme/preloop
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+console:
+  repository: registry.internal/acme/console
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: registry-pull
+
+# ClusterIP plus ingress. No public LoadBalancer is required.
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: private-ca-issuer
+  hosts:
+    - host: preloop.internal
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: preloop-tls
+      hosts:
+        - preloop.internal
+
+# Read SECRET_KEY (jwt-secret) from an existing Secret. The chart will not
+# create its own Secret when this is set.
+existingSecret: preloop-app
+
+environment:
+  preloopUrl: "https://preloop.internal"
+  jwtSecret: ""
+  databaseUrl: ""
+
+# Existing Postgres. The connection string lives in a Secret, not here.
+database:
+  enabled: true
+  external: true
+  urlFromSecret:
+    name: preloop-db
+    key: database-url
+  externalDatabase:
+    host: postgres.internal
+    port: 5432
+    user: ""
+    password: ""
+    database: preloop
+    sslMode: verify-full
+
+# Existing NATS. Set nats.enabled=false when you do not want the bundled chart.
+nats:
+  enabled: false
+  url: "nats://nats.internal:4222"
+
+# Mount a private CA so the gateway/API trust an OpenAI-compatible upstream
+# (and Postgres) that uses your PKI.
+extraVolumes:
+  - name: private-ca
+    secret:
+      secretName: private-ca
+
+extraVolumeMounts:
+  - name: private-ca
+    mountPath: /etc/ssl/private-ca
+    readOnly: true
+
+extraEnv:
+  - name: SSL_CERT_FILE
+    value: /etc/ssl/private-ca/ca.crt
+  - name: REQUESTS_CA_BUNDLE
+    value: /etc/ssl/private-ca/ca.crt
+  - name: CURL_CA_BUNDLE
+    value: /etc/ssl/private-ca/ca.crt
+
+# Small production-shaped resources. Raise these under load.
+api:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+
+gateway:
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
