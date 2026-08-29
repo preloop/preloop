@@ -219,6 +219,9 @@ spec:
               value: {{ .Values.gitlabOauth.baseUrl | quote }}
             {{- end }}
             {{- include "preloop.extraEnv" . | nindent 12 }}
+            {{- with include "preloop.otlpEnv" . }}
+            {{- . | nindent 12 }}
+            {{- end }}
           {{- with .Values.extraEnvFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}

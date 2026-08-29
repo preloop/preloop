@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bot-sender loop guard no longer swallows legitimate PR events**: the
+  loop guard in `flow_trigger_service._is_preloop_triggered_event`
+  dropped all webhook events whose sender started with "preloop",
+  including `pull_request.opened` from the Preloop GitHub App. PRs
+  created by the App on a human's behalf (e.g. #306, #307) never
+  reached trigger matching, so the reviewer flow did not run. The guard
+  now exempts PR/MR opened/reopened event types (intentional actions,
+  not loop vectors) and matches bot identities by exact name instead of
+  prefix, preventing false positives on usernames like "preloop-fan".
+
 ### Security
 
 - **Drop python-jose for PyJWT**: auth tokens, email/reset tokens, WebAuthn
@@ -31,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with operator PKI. Public OpenAI, Anthropic, and OpenRouter keep the
   default trust store (including an `openai-compatible` model whose
   endpoint is `https://openrouter.ai/api/v1`).
+- **OTLP export for gateway and MCP telemetry**: optional OpenTelemetry
+  export (disabled by default) emits GenAI spans for governed model
+  calls and MCP tool calls, including `gen_ai.conversation.id` when a
+  runtime session id is present. Token and cost attributes match the
+  `ApiUsage` row for that request. Exporter errors are logged and never
+  fail the user-facing call. Helm `otlp.*` values and
+  `docs/guide/observability-otlp.md` cover a generic collector, Langfuse
+  OTLP ingest, and Datadog OTLP ingest.
 
 - **GitLab `issue_labeled`**: an Issue Hook whose `changes.labels` adds
   a label now normalizes to `issue_labeled` (remove-only is

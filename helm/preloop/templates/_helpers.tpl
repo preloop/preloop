@@ -117,3 +117,44 @@ Operator-supplied extra env vars (API, gateway, workers, jobs).
 {{- toYaml . -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Shared OTLP env for API and gateway (one values schema).
+*/}}
+{{- define "preloop.otlpEnv" -}}
+{{- if .Values.otlp.enabled }}
+- name: OTLP_ENABLED
+  value: "true"
+- name: OTLP_ENDPOINT
+  value: {{ .Values.otlp.endpoint | quote }}
+- name: OTLP_PROTOCOL
+  value: {{ .Values.otlp.protocol | quote }}
+- name: OTLP_SERVICE_NAME
+  value: {{ .Values.otlp.resource.serviceName | quote }}
+{{- if .Values.otlp.resource.serviceNamespace }}
+- name: OTLP_SERVICE_NAMESPACE
+  value: {{ .Values.otlp.resource.serviceNamespace | quote }}
+{{- end }}
+{{- if .Values.otlp.resource.deploymentEnvironment }}
+- name: OTLP_DEPLOYMENT_ENVIRONMENT
+  value: {{ .Values.otlp.resource.deploymentEnvironment | quote }}
+{{- end }}
+- name: OTLP_SAMPLER_RATIO
+  value: {{ .Values.otlp.samplerRatio | quote }}
+{{- $headersSecretName := .Values.otlp.headersSecret.name | default "" }}
+{{- $headersSecretKey := .Values.otlp.headersSecret.key | default "otlp-headers" }}
+{{- if $headersSecretName }}
+- name: OTLP_HEADERS
+  valueFrom:
+    secretKeyRef:
+      name: {{ $headersSecretName | quote }}
+      key: {{ $headersSecretKey | quote }}
+{{- else if .Values.otlp.headers }}
+- name: OTLP_HEADERS
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "preloop.fullname" . }}
+      key: otlp-headers
+{{- end }}
+{{- end }}
+{{- end }}

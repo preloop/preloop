@@ -345,6 +345,25 @@ helm uninstall preloop
 | `environment.logFormat`        | Log format                                            | `json`      |
 | `environment.skipExecutionRecovery` | Skip recovering orphaned executions on startup  | `false`     |
 
+### OTLP parameters
+
+Optional OpenTelemetry OTLP export for gateway completions and MCP tool calls.
+Disabled by default. The same values are injected into the API and gateway
+deployments. See `docs/guide/observability-otlp.md`.
+
+| Name | Description | Value |
+|------|-------------|-------|
+| `otlp.enabled` | Enable OTLP export | `false` |
+| `otlp.endpoint` | OTLP endpoint URL | `""` |
+| `otlp.protocol` | `http/protobuf` or `grpc` | `http/protobuf` |
+| `otlp.headers` | Header string `key=value,key2=value2` stored on the chart Secret | `""` |
+| `otlp.headersSecret.name` | Existing Secret name for ingest headers (wins over `otlp.headers`) | `""` |
+| `otlp.headersSecret.key` | Key inside that Secret | `otlp-headers` |
+| `otlp.resource.serviceName` | Resource `service.name` | `preloop` |
+| `otlp.resource.serviceNamespace` | Resource `service.namespace` | `""` |
+| `otlp.resource.deploymentEnvironment` | Resource `deployment.environment` | `""` |
+| `otlp.samplerRatio` | Parent-based TraceIdRatioBased sampler ratio in `[0, 1]` | `1.0` |
+
 ### Resource management parameters
 
 Resources are configured per-component to allow fine-grained control:
@@ -427,6 +446,25 @@ To enable Sentry, set the following values in your `values.yaml` file:
 sentry:
   enabled: true
   dsn: "YOUR_SENTRY_DSN"
+```
+
+#### OTLP export
+
+Gateway completions and MCP tool calls can be exported as OpenTelemetry
+traces (OTLP). Disabled by default. Copy-paste collector, Langfuse, and
+Datadog configs live in `docs/guide/observability-otlp.md`.
+
+```yaml
+otlp:
+  enabled: true
+  endpoint: "http://otel-collector:4318"
+  protocol: http/protobuf
+  headersSecret:
+    name: preloop-otlp-headers
+    key: otlp-headers
+  resource:
+    serviceName: preloop
+    deploymentEnvironment: production
 ```
 
 #### Web Analytics
