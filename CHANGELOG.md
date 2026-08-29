@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **OSS installer Compose `.env` `$` escaping**: passwords and other
+  secrets that start with (or contain) `$` are written as `$$` so Docker
+  Compose does not interpolate them or leak the rest of the value via
+  `variable is not set` warnings. Re-runs unescape on read so values
+  round-trip.
+
 - **Private-cluster Helm tests after OTLP merge**: default `values.yaml`
   now includes the `otlp` block from main. The private-cluster suite no
   longer asserts that block is absent, and the README no longer claims
