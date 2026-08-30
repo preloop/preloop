@@ -226,6 +226,31 @@ class TestPillowDependencyDeclared:
             "service is not silently unavailable on a clean install."
         )
 
+    @pytest.mark.parametrize(
+        "lock",
+        [
+            "requirements/runtime.txt",
+            ".github/requirements/app-dev.txt",
+            ".github/requirements/runtime-plugin-test.txt",
+        ],
+    )
+    def test_pillow_pinned_in_locks_compiled_from_pyproject(self, lock: str):
+        """Declaring the dependency is not enough; the locks are what get installed.
+
+        CI installs ``--require-hashes -r .github/requirements/app-dev.txt``
+        and the image installs ``requirements/runtime.txt``, so a lock that was
+        not recompiled after a pyproject change fails at import time with no
+        hint about the cause.
+        """
+        from pathlib import Path
+
+        # backend/tests/test_avatar.py -> repo root
+        text = (Path(__file__).resolve().parents[2] / lock).read_text(encoding="utf-8")
+        assert "\npillow==" in text, (
+            f"{lock} is compiled from pyproject.toml but has no pillow pin. "
+            "Recompile it with the uv command in its header comment."
+        )
+
 
 # ---------------------------------------------------------------------------
 # SSO claim mapping
