@@ -97,22 +97,39 @@ test("refreshGatewayModels returns empty on fetch failure", async () => {
 // register() wires model refresh to gateway_start
 // ---------------------------------------------------------------------------
 
-test("register calls refreshGatewayModels on gateway_start", async () => {
+test("register fetches the gateway model list on gateway_start", async () => {
   let gatewayStartHandler;
-  const hooks = {};
   const api = {
     pluginConfig: baseConfig,
     on: (name, handler) => {
-      hooks[name] = handler;
+      if (name === "gateway_start") {
+        gatewayStartHandler = handler;
+      }
     },
     logger: { info: () => {}, warn: () => {}, error: () => {} },
   };
 
-  // Use dynamic import to get the register function
-  const mod = await import("../dist/index.js");
-  mod.register(api);
+  const { register } = await import("../dist/index.js");
+  register(api);
+  assert.equal(typeof gatewayStartHandler, "function");
 
-  assert.ok(hooks.gateway_start, "gateway_start hook was registered");
-  // Calling gateway_start should not throw even without network.
-  hooks.gateway_start();
+  // register() builds its own plugin instance, so observe the refresh
+  // through global fetch rather than reaching into the instance.
+  const realFetch = globalThis.fetch;
+  const requested = [];
+  globalThis.fetch = (url) => {
+    requested.push(String(url));
+    return jsonResponse(200, { data: [{ id: "model-a", object: "model" }] });
+  };
+  try {
+    gatewayStartHandler();
+    // Let the best-effort refresh promise settle.
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(
+      requested.includes("https://example.preloop.ai/openai/v1/models"),
+      `expected a gateway models fetch, saw ${JSON.stringify(requested)}`,
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

@@ -14,8 +14,12 @@
  *   periodic timer is intentionally avoided to keep the plugin
  *   lightweight; reconnects already fire on network changes, and the
  *   operator can force a reconnect from the console.
- * - File write: the function merges into the existing config so it
- *   never clobbers unrelated keys (MCP, permissions, preloop.control).
+ * - File write: only the ``models`` map of a provider pointing at the
+ *   gateway is touched.  It is reconciled to the gateway list (added and
+ *   removed ids both apply); unrelated keys (MCP, permissions,
+ *   preloop.control) and providers on other origins are left alone.  The
+ *   file is replaced temp-file-then-rename so an interrupted write cannot
+ *   truncate the operator's config.
  */
 
 import fs from "node:fs";
@@ -96,9 +100,15 @@ export async function fetchGatewayModels(
 }
 
 /**
- * Read-modify-write the OpenCode config to reflect the current gateway
- * model list inside every provider whose ``baseURL`` points at the same
- * Preloop gateway origin.
+ * Read-modify-write the OpenCode config so that every provider whose
+ * ``baseURL`` points at the Preloop gateway origin lists exactly the
+ * models the gateway currently advertises.
+ *
+ * The matched provider blocks are reconciled, not merely extended: ids
+ * the gateway no longer advertises are removed so the picker cannot
+ * offer a model that the gateway will reject at request time. Providers
+ * on any other origin are left untouched, as are unrelated keys inside
+ * the matched provider (``npm``, ``options``, ...).
  *
  * Returns the number of provider sections that were updated, or -1 if
  * the config file could not be processed (missing, unparseable, etc.).
@@ -135,6 +145,7 @@ export function patchConfigModels(
   }
 
   let patched = 0;
+  let changed = false;
   for (const [, providerConfig] of Object.entries(providers)) {
     if (!providerConfig || typeof providerConfig !== "object") {
       continue;
@@ -158,22 +169,65 @@ export function patchConfigModels(
     } catch {
       continue;
     }
-    // Merge: keep any existing model entries the gateway no longer
-    // advertises (they may be soft-disabled rather than deleted) and add
-    // new ones.  The merge strategy is additive so the picker never
-    // shrinks unexpectedly.
+    // Reconcile to the gateway list: a model the gateway stopped
+    // advertising is no longer usable, so leaving it in the picker only
+    // defers the failure to request time.  Existing entries for ids the
+    // gateway still advertises keep their local shape.
     const existing = (providerConfig["models"] ?? {}) as Record<
       string,
       unknown
     >;
-    providerConfig["models"] = { ...existing, ...modelsMap };
+    const reconciled: Record<string, unknown> = {};
+    for (const id of Object.keys(modelsMap)) {
+      reconciled[id] = existing[id] ?? modelsMap[id];
+    }
+    if (!sameModelIds(existing, reconciled)) {
+      changed = true;
+    }
+    providerConfig["models"] = reconciled;
     patched += 1;
   }
 
-  if (patched > 0) {
-    fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + "\n", "utf8");
+  if (changed) {
+    writeConfigAtomically(configPath, JSON.stringify(raw, null, 2) + "\n");
   }
   return patched;
+}
+
+/** True when both model maps carry the same set of ids. */
+function sameModelIds(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): boolean {
+  const beforeIds = Object.keys(before);
+  const afterIds = Object.keys(after);
+  if (beforeIds.length !== afterIds.length) {
+    return false;
+  }
+  return beforeIds.every((id) => id in after);
+}
+
+/**
+ * Replace *configPath* without ever leaving a truncated file behind.
+ *
+ * This runs on every gateway connect and reconnect, so a plain
+ * ``writeFileSync`` would put the operator's ``opencode.json`` at risk on
+ * every crash or full disk.  The temp file is created in the same
+ * directory so the rename stays on one filesystem and is atomic.
+ */
+function writeConfigAtomically(configPath: string, contents: string): void {
+  const tempPath = `${configPath}.preloop-${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, contents, "utf8");
+    fs.renameSync(tempPath, configPath);
+  } catch (error) {
+    try {
+      fs.rmSync(tempPath, { force: true });
+    } catch {
+      // Best-effort cleanup only.
+    }
+    throw error;
+  }
 }
 
 /**

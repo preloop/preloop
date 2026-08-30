@@ -1,17 +1,20 @@
 /**
  * Gateway model-list refresh for the OpenClaw plugin.
  *
- * Derives the gateway ``GET /models`` URL from the Agent Control WS URL,
- * fetches the current model list, and patches the local OpenClaw config
- * file so the agent's model picker reflects console edits without a full
- * restart.
+ * Derives the gateway ``GET /models`` URL from the Agent Control WS URL
+ * and fetches the current model list using the token Agent Control
+ * already holds.
  *
- * Shared design with opencode-preloop/src/models.ts; the logic is
+ * Unlike the OpenCode plugin, this module does not write a config file:
+ * OpenClaw's plugin API exposes no runtime model-catalog mutation, so the
+ * fetched list is returned to the caller and cached on the plugin
+ * instance.  It is staged for the catalog-update hook OpenClaw does not
+ * offer yet; see ``PreloopOpenClawPlugin.lastGatewayModels``.
+ *
+ * Shared design with opencode-preloop/src/models.ts; the fetch helpers are
  * deliberately duplicated (no cross-plugin import) so each plugin is
  * independently publishable.
  */
-
-import fs from "node:fs";
 
 type FetchLike = (
   input: string,

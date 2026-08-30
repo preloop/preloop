@@ -129,6 +129,8 @@ test("patchConfigModels updates the matching provider models map", () => {
       "claude-sonnet-4": { name: "claude-sonnet-4" },
       "gpt-5": { name: "gpt-5" },
     });
+    // No temp file left behind by the atomic write.
+    assert.deepEqual(fs.readdirSync(dir), ["opencode.json"]);
     // Unrelated keys must be preserved.
     assert.equal(updated.model, "preloop/claude-sonnet-4");
     assert.equal(updated.provider.preloop.npm, "@ai-sdk/openai-compatible");
@@ -205,14 +207,14 @@ test("patchConfigModels does not wipe models on an empty gateway response", () =
   }
 });
 
-test("patchConfigModels merges additively with existing models", () => {
+test("patchConfigModels reconciles to the gateway list, dropping stale ids", () => {
   const { file, dir } = writeTempConfig({
     provider: {
       preloop: {
         options: { baseURL: "https://gw.preloop.ai/openai/v1" },
         models: {
           "old-model": { name: "old-model" },
-          "shared-model": { name: "shared-model" },
+          "shared-model": { name: "Shared (local label)" },
         },
       },
     },
@@ -224,13 +226,95 @@ test("patchConfigModels merges additively with existing models", () => {
     ];
     patchConfigModels(file, "https://gw.preloop.ai", models);
     const raw = JSON.parse(fs.readFileSync(file, "utf8"));
-    // old-model is preserved; shared-model and new-model from gateway.
+    // old-model is gone (the gateway would reject it); new-model added.
     assert.deepEqual(Object.keys(raw.provider.preloop.models).sort(), [
       "new-model",
-      "old-model",
       "shared-model",
     ]);
+    // A still-advertised model keeps its local entry as-is.
+    assert.deepEqual(raw.provider.preloop.models["shared-model"], {
+      name: "Shared (local label)",
+    });
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("patchConfigModels leaves providers on other origins untouched", () => {
+  const { file, dir } = writeTempConfig({
+    provider: {
+      preloop: {
+        options: { baseURL: "https://gw.preloop.ai/openai/v1" },
+        models: { "old-model": { name: "old-model" } },
+      },
+      ollama: {
+        options: { baseURL: "http://localhost:11434/v1" },
+        models: { "llama-3": { name: "llama-3" } },
+      },
+    },
+  });
+  try {
+    const patched = patchConfigModels(file, "https://gw.preloop.ai", [
+      { id: "new-model", object: "model" },
+    ]);
+    assert.equal(patched, 1);
+    const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.deepEqual(Object.keys(raw.provider.preloop.models), ["new-model"]);
+    assert.deepEqual(raw.provider.ollama.models, {
+      "llama-3": { name: "llama-3" },
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("patchConfigModels does not rewrite the file when the ids already match", () => {
+  const { file, dir } = writeTempConfig({
+    provider: {
+      preloop: {
+        options: { baseURL: "https://gw.preloop.ai/openai/v1" },
+        models: { "model-a": { name: "model-a" } },
+      },
+    },
+  });
+  try {
+    const before = fs.statSync(file).mtimeMs;
+    const patched = patchConfigModels(file, "https://gw.preloop.ai", [
+      { id: "model-a", object: "model" },
+    ]);
+    assert.equal(patched, 1);
+    assert.equal(fs.statSync(file).mtimeMs, before);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("patchConfigModels writes atomically via a temp file in the same dir", () => {
+  const { file, dir } = writeTempConfig({
+    provider: {
+      preloop: {
+        options: { baseURL: "https://gw.preloop.ai/openai/v1" },
+        models: {},
+      },
+    },
+  });
+  const realRename = fs.renameSync;
+  const renames = [];
+  fs.renameSync = (from, to) => {
+    renames.push({ from, to });
+    return realRename(from, to);
+  };
+  try {
+    patchConfigModels(file, "https://gw.preloop.ai", [
+      { id: "model-a", object: "model" },
+    ]);
+    assert.equal(renames.length, 1);
+    assert.equal(renames[0].to, file);
+    assert.equal(path.dirname(renames[0].from), path.dirname(file));
+    const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.ok("model-a" in raw.provider.preloop.models);
+  } finally {
+    fs.renameSync = realRename;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

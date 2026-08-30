@@ -4,12 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-import {
-  fetchGatewayModels,
-  gatewayModelsUrl,
-  refreshModels,
-  type GatewayModel,
-} from "./models.js";
+import { refreshModels, type GatewayModel } from "./models.js";
 
 type ControlConfig = {
   enabled?: boolean;
@@ -140,8 +135,13 @@ export class PreloopOpenClawPlugin {
   private logger?: (message: string) => void;
 
   /**
-   * Most recently fetched gateway model list, available for programmatic
-   * use.  Updated by {@link refreshGatewayModels}.
+   * Most recently fetched gateway model list, updated by
+   * {@link refreshGatewayModels}.
+   *
+   * Nothing inside the plugin reads this yet, and that is deliberate:
+   * OpenClaw's hook API has no runtime model-catalog mutation surface, so
+   * the list is staged here for the catalog-update hook to consume once it
+   * exists.  Callers embedding the plugin can read it today.
    */
   lastGatewayModels: GatewayModel[] = [];
 

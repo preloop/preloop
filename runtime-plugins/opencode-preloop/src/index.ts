@@ -7,8 +7,8 @@ import {
   DEFAULT_TURN_TIMEOUT_MS,
   PROTOCOL,
   RUNTIME,
-  defaultConfigPath,
   loadControlConfig,
+  resolveConfigPath,
   verifyConfig,
   type ControlConfig,
 } from "./config.js";
@@ -235,10 +235,11 @@ export class PreloopOpenCodePlugin {
       this.startHeartbeat(config);
       // Best-effort model-list refresh: fetch the current gateway models
       // and patch the local OpenCode config so the model picker reflects
-      // console edits without a full restart.
+      // console edits without a full restart.  This is the only refresh
+      // trigger: it covers plugin start as well as every reconnect.
       void refreshModels(
         config,
-        this.configPath ?? defaultConfigPath(),
+        resolveConfigPath(this.configPath),
         this.fetchImpl as Parameters<typeof refreshModels>[2],
         (message) => this.log(`model refresh: ${message}`),
       );
@@ -885,12 +886,10 @@ export const PreloopPlugin = async (ctx: {
   if (ctx.client) {
     instance.setOpenCodeClient(ctx.client);
   }
-  const config = loadControlConfig();
-  instance.configure(config);
-  // Refresh the model list at session start (before the WS connect also
-  // triggers one on open).  This path is synchronous enough that the
-  // model picker shows fresh data from the first interaction.
-  void refreshModels(config, defaultConfigPath());
+  instance.configure(loadControlConfig());
+  // The model-list refresh runs from the WebSocket `open` handler, which
+  // fires on this start as well as on every reconnect. Triggering it here
+  // too would only double the fetch and the read-modify-write.
   await instance.start(ctx.client);
   return {
     event: async ({ event }) => {

@@ -4,10 +4,12 @@ Derives the gateway ``GET /models`` URL from the Agent Control WS URL,
 fetches the current model list, and makes it available for programmatic
 use.
 
-Hermes's plugin API (``register_hook("pre_tool_call", ...)``) does not
-expose runtime model-list mutation, so this module is limited to
-fetching and returning the list.  A future Hermes hook that supports
-model-catalog updates could consume the result directly.
+NOT WIRED YET.  Nothing in ``preloop_hermes_plugin`` imports these
+helpers: Hermes's plugin API (``register_hook("pre_tool_call", ...)``)
+exposes no runtime model-list mutation, so there is no hook to call them
+from.  The module is kept as the ready-made fetch side of that future
+hook, and its behavior is pinned by ``tests/test_models.py``.  Wire
+``refresh_models`` into the hook once Hermes supports catalog updates.
 """
 
 from __future__ import annotations
