@@ -7,7 +7,15 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
@@ -3019,3 +3027,65 @@ async def get_dashboard_telemetry(
         daily_cost=cost,
         success_rate=success_rate,
     )
+
+
+# ---------------------------------------------------------------------------
+# User avatar endpoints
+# ---------------------------------------------------------------------------
+
+
+class AvatarResponse(BaseModel):
+    """Response after avatar upload or deletion."""
+
+    avatar_url: Optional[str] = None
+    avatar_source: Optional[str] = None
+
+
+@router.put("/users/me/avatar", response_model=AvatarResponse)
+async def upload_avatar(
+    file: UploadFile,
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AvatarResponse:
+    """Upload or replace the current user's profile avatar.
+
+    Accepts PNG, JPEG, WebP, or GIF images up to 5 MB. The image is
+    validated, EXIF-stripped, cropped to a center square, and re-encoded as a
+    bounded PNG stored as a base64 data URI. Manual uploads always take
+    precedence over SSO-provided avatars.
+    """
+    from preloop.services.avatar import AvatarValidationError, process_avatar
+
+    raw = await file.read()
+    content_type = file.content_type or "application/octet-stream"
+    try:
+        data_uri = process_avatar(raw, content_type)
+    except AvatarValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
+    current_user.avatar_url = data_uri
+    current_user.avatar_source = "manual"
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return AvatarResponse(
+        avatar_url=current_user.avatar_url,
+        avatar_source=current_user.avatar_source,
+    )
+
+
+@router.delete("/users/me/avatar", response_model=AvatarResponse)
+async def delete_avatar(
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AvatarResponse:
+    """Remove the current user's avatar, falling back to the default."""
+    current_user.avatar_url = None
+    current_user.avatar_source = None
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return AvatarResponse(avatar_url=None, avatar_source=None)

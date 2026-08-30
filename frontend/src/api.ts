@@ -2070,6 +2070,40 @@ export interface UserProfile {
   is_superuser?: boolean;
   /** null/undefined = RBAC inactive (OSS); array = allow-list */
   permissions?: string[] | null;
+  avatar_url?: string | null;
+  avatar_source?: string | null;
+}
+
+export interface AvatarResponse {
+  avatar_url: string | null;
+  avatar_source: string | null;
+}
+
+export async function uploadAvatar(file: File): Promise<AvatarResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await fetchWithAuth('/api/v1/users/me/avatar', {
+    method: 'PUT',
+    body: formData,
+  });
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(detail.detail || 'Failed to upload avatar');
+  }
+  // Profile changed -- drop cached /me so the next reader gets fresh data.
+  userProfileCache = null;
+  return response.json();
+}
+
+export async function deleteAvatar(): Promise<AvatarResponse> {
+  const response = await fetchWithAuth('/api/v1/users/me/avatar', {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error('Failed to delete avatar');
+  }
+  userProfileCache = null;
+  return response.json();
 }
 
 // Account

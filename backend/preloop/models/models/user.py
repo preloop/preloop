@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Boolean
@@ -114,6 +114,18 @@ class User(Base):
         nullable=True,
         index=True,
         comment="External system's user ID (for LDAP/AD/SAML)",
+    )
+
+    # Profile image
+    avatar_url: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Profile image URL or base64 data URI",
+    )
+    avatar_source: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        comment="Avatar provenance: 'sso' or 'manual'",
     )
 
     # Timestamps

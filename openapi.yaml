@@ -2413,6 +2413,58 @@ paths:
                 $ref: '#/components/schemas/DashboardTelemetryResponse'
       security:
       - bearerAuth: []
+  /api/v1/users/me/avatar:
+    put:
+      tags:
+      - Account
+      summary: Upload Avatar
+      description: 'Upload or replace the current user''s profile avatar.
+
+
+        Accepts PNG, JPEG, WebP, or GIF images up to 5 MB. The image is
+
+        validated, EXIF-stripped, cropped to a center square, and re-encoded as a
+
+        bounded PNG stored as a base64 data URI. Manual uploads always take
+
+        precedence over SSO-provided avatars.'
+      operationId: upload_avatar_api_v1_users_me_avatar_put
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_upload_avatar_api_v1_users_me_avatar_put'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+    delete:
+      tags:
+      - Account
+      summary: Delete Avatar
+      description: Remove the current user's avatar, falling back to the default.
+      operationId: delete_avatar_api_v1_users_me_avatar_delete
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarResponse'
+      security:
+      - bearerAuth: []
   /api/v1/account/deletion-request:
     post:
       tags:
@@ -11234,6 +11286,16 @@ components:
             type: array
           - type: 'null'
           title: Permissions
+        avatar_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Avatar Url
+        avatar_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Avatar Source
       type: object
       required:
       - username
@@ -11387,6 +11449,21 @@ components:
         attempt failed; it never carries raw exception text, which can embed
 
         endpoint URLs or key material.'
+    AvatarResponse:
+      properties:
+        avatar_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Avatar Url
+        avatar_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Avatar Source
+      type: object
+      title: AvatarResponse
+      description: Response after avatar upload or deletion.
     BatchExecutionListItem:
       properties:
         id:
@@ -11677,6 +11754,16 @@ components:
       required:
       - audio
       title: Body_transcribe_audio_api_v1_audio_transcriptions_post
+    Body_upload_avatar_api_v1_users_me_avatar_put:
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+      type: object
+      required:
+      - file
+      title: Body_upload_avatar_api_v1_users_me_avatar_put
     Body_upload_policy_api_v1_policies_upload_post:
       properties:
         file:

@@ -88,6 +88,8 @@ class AuthUserResponse(BaseModel):
     email_verified: bool
     is_superuser: bool = False
     permissions: Optional[List[str]] = None
+    avatar_url: Optional[str] = None
+    avatar_source: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
