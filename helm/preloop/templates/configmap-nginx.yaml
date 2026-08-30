@@ -287,7 +287,7 @@ data:
         # Falls back to /index.html rather than 404 because these pages are
         # brand-conditional: a self-hosted build does not prerender them, and
         # the SPA can still route them.
-        location ~ ^/(about|pricing|privacy|terms|whatis-mcp|ai-act-readiness)/?$ {
+        location ~ ^/(about|pricing|privacy|terms|whatis-mcp|ai-act-readiness|cra-readiness|dora|nis2)/?$ {
             try_files /$1.html /index.html;
         }
 

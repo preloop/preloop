@@ -138,6 +138,7 @@ export interface BrandLanding {
   hero: BrandHero;
   features: BrandFeature[];
   faqs: BrandFAQ[];
+  legal_disclaimer?: string;
   get_started: BrandGetStarted;
   pricing?: PricingConfig;
 }

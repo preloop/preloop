@@ -236,6 +236,18 @@ server {
         try_files /ai-act-readiness.html /index.html;
     }
 
+    location = /cra-readiness {
+        try_files /cra-readiness.html /index.html;
+    }
+
+    location = /dora {
+        try_files /dora.html /index.html;
+    }
+
+    location = /nis2 {
+        try_files /nis2.html /index.html;
+    }
+
     location = /robots.txt {
         try_files /robots.txt =404;
     }

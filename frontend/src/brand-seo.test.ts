@@ -107,7 +107,7 @@ describe('brand-seo', () => {
   });
 
   it('can exclude AI Act readiness from static routes when content is absent', () => {
-    const routes = get_static_routes_with_options(test_config, false);
+    const routes = get_static_routes_with_options(test_config, []);
 
     expect(routes).to.include('/pricing');
     expect(routes).to.include('/about');
@@ -128,9 +128,38 @@ describe('brand-seo', () => {
     expect(article?.headline).to.equal('EU AI Act readiness with Preloop');
     expect(article?.about).to.deep.equal([
       'EU AI Act',
-      'AI governance',
+      'Regulation (EU) 2024/1689',
       'AI agent approvals',
     ]);
+  });
+
+  it('maps CRA, DORA, and NIS2 html files to routes', () => {
+    expect(get_route_from_filename('/tmp/dist/cra-readiness.html')).to.equal(
+      '/cra-readiness'
+    );
+    expect(get_route_from_filename('/tmp/dist/dora.html')).to.equal('/dora');
+    expect(get_route_from_filename('/tmp/dist/nis2.html')).to.equal('/nis2');
+  });
+
+  it('includes named-instrument routes when those slugs are supplied', () => {
+    const routes = get_static_routes_with_options(test_config, [
+      'ai-act-readiness',
+      'cra-readiness',
+      'dora',
+      'nis2',
+    ]);
+    expect(routes).to.include('/ai-act-readiness');
+    expect(routes).to.include('/cra-readiness');
+    expect(routes).to.include('/dora');
+    expect(routes).to.include('/nis2');
+  });
+
+  it('returns CRA metadata that names the instrument and date', () => {
+    const meta = get_meta_for_route('/cra-readiness', test_config);
+    expect(meta.title).to.include('Cyber Resilience Act');
+    expect(meta.description).to.include('2024/2847');
+    expect(meta.description).to.include('11 Sep 2026');
+    expect(meta.keywords).to.include('CRA Art. 14');
   });
 
   it('includes FAQ structured data on the homepage', () => {

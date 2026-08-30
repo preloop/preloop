@@ -128,6 +128,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Frontend test/auth conventions that were only in
   `frontend/CLAUDE.md` now live in `frontend/README.md`; the stale
   file is not restored.
+- **Named-instrument EU pages**: SaaS landing can ship `/cra-readiness`,
+  `/dora`, and `/nis2` next to `/ai-act-readiness` when those markdown
+  files exist. Each page names the regulation and article or date.
+  Homepage FAQ can repeat the not-a-law-firm disclaimer. Evidence packs
+  stay Apache presets, not an edition gate.
 
 - **Overview Top Models shows a preview per model**: each model lists its
   top four agents/flows/sessions by spend or usage, with a See N more

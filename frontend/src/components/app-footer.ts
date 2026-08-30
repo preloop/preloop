@@ -169,7 +169,11 @@ export class AppFooter extends LitElement {
                 isSaaS()
                   ? html` <li><a href="/pricing">Pricing</a></li>
                       <li><a href="/blog">Blog</a></li>
-                      <li><a href="/about">About</a></li>`
+                      <li><a href="/about">About</a></li>
+                      <li><a href="/ai-act-readiness">EU AI Act</a></li>
+                      <li><a href="/cra-readiness">Cyber Resilience Act</a></li>
+                      <li><a href="/dora">DORA</a></li>
+                      <li><a href="/nis2">NIS2</a></li>`
                   : ''
               }
             </ul>

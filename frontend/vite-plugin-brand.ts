@@ -10,6 +10,7 @@ import {
   get_static_routes_with_options,
   get_structured_data_for_route,
   VS_PAGE_META,
+  REGULATION_PAGE_META,
 } from './src/brand-seo';
 import {
   BLOG_BASE_PATH,
@@ -44,6 +45,24 @@ function discover_vs_slugs(
     .filter((name) => name.endsWith('.md'))
     .map((name) => name.replace(/\.md$/, ''))
     .filter((slug) => Boolean(VS_PAGE_META[slug]))
+    .sort();
+}
+
+/**
+ * Named-instrument regulation pages that have both a markdown file and a
+ * `REGULATION_PAGE_META` registration. Same discovery rule as `/vs/` slugs
+ * so sitemap, llms.txt, and pre-render stay in lockstep.
+ */
+function discover_regulation_slugs(
+  contentBasePath: string,
+  brandKey: string
+): string[] {
+  return Object.keys(REGULATION_PAGE_META)
+    .filter((slug) =>
+      fs.existsSync(
+        path.resolve(contentBasePath, brandKey, `${slug}.md`)
+      )
+    )
     .sort();
 }
 
@@ -277,16 +296,18 @@ export function brandPlugin(
         features_layout: brandConfig.landing.features_layout || 'grid',
         features: brandConfig.landing.features || [],
         faqs: brandConfig.landing.faqs || [],
+        legal_disclaimer:
+          (brandConfig.landing as { legal_disclaimer?: string })
+            .legal_disclaimer || '',
         get_started: brandConfig.landing.get_started || {},
         product_hunt: (brandConfig.landing as any).product_hunt || null,
         featured_video: (brandConfig.landing as any).featured_video || null,
         pricing: brandConfig.landing.pricing || null,
       };
-      const aiActReadinessMdPath = path.resolve(
+      const regulationSlugs = discover_regulation_slugs(
         contentBasePath,
-        `${brandKey}/ai-act-readiness.md`
+        brandKey
       );
-      const hasAiActReadinessPage = fs.existsSync(aiActReadinessMdPath);
       // Competitor comparison pages (/vs/<slug>) are SaaS-only.
       const vsSlugsForRouting =
         (brandConfig as any).edition === 'saas' || !(brandConfig as any).edition
@@ -308,7 +329,7 @@ export function brandPlugin(
         fileName: 'sitemap.xml',
         source: generateSitemapXml(
           brandConfig,
-          hasAiActReadinessPage,
+          regulationSlugs,
           vsSlugsForRouting,
           blogPosts
         ),
@@ -325,7 +346,7 @@ export function brandPlugin(
         fileName: 'llms.txt',
         source: generateLlmsTxt(
           brandConfig,
-          hasAiActReadinessPage,
+          regulationSlugs,
           vsSlugsForRouting,
           blogPosts
         ),
@@ -394,7 +415,7 @@ export function brandPlugin(
         'privacy.md',
         'terms.md',
         'whatis-mcp.md',
-        'ai-act-readiness.md',
+        ...Object.keys(REGULATION_PAGE_META).map((slug) => `${slug}.md`),
       ];
 
       for (const file of contentFiles) {
@@ -462,19 +483,11 @@ export function brandPlugin(
         brandKey,
         'whatis-mcp'
       );
-      const edition = (brandConfig as any).edition || 'saas';
-      const aiActReadinessMdPath = path.resolve(
+      const edition = (brandConfig as { edition?: string }).edition || 'saas';
+      const regulationSlugsClose = discover_regulation_slugs(
         contentBasePath,
-        `${brandKey}/ai-act-readiness.md`
+        brandKey
       );
-      const hasAiActReadinessPage = fs.existsSync(aiActReadinessMdPath);
-      const aiActReadinessHTML = hasAiActReadinessPage
-        ? await loadMarkdownContent(
-            contentBasePath,
-            brandKey,
-            'ai-act-readiness'
-          )
-        : '';
 
       // Generate privacy.html with proper meta tags and content
       const privacyPage = generateFullHtmlPage(
@@ -506,24 +519,36 @@ export function brandPlugin(
         whatisMcpPage
       );
 
-      if (edition === 'saas' && hasAiActReadinessPage) {
-        // Generate ai-act-readiness.html
-        const aiActReadinessPage = generateFullHtmlPage(
-          indexHtml,
-          '/ai-act-readiness',
-          brandConfig,
-          aiActReadinessHTML
-        );
-        fs.writeFileSync(
-          path.resolve(outDirPath, 'ai-act-readiness.html'),
-          aiActReadinessPage
-        );
+      if (edition === 'saas' && regulationSlugsClose.length > 0) {
+        const contentDir = path.resolve(outDirPath, 'content');
+        if (!fs.existsSync(contentDir)) {
+          fs.mkdirSync(contentDir, { recursive: true });
+        }
+        for (const slug of regulationSlugsClose) {
+          const pageHTML = await loadMarkdownContent(
+            contentBasePath,
+            brandKey,
+            slug
+          );
+          const page = generateFullHtmlPage(
+            indexHtml,
+            `/${slug}`,
+            brandConfig,
+            pageHTML
+          );
+          fs.writeFileSync(
+            path.resolve(outDirPath, `${slug}.html`),
+            page
+          );
+        }
       }
 
       // Generate additional pages for SaaS editions
       const generatedPages = ['privacy.html', 'terms.html', 'whatis-mcp.html'];
-      if (edition === 'saas' && hasAiActReadinessPage) {
-        generatedPages.push('ai-act-readiness.html');
+      if (edition === 'saas') {
+        for (const slug of regulationSlugsClose) {
+          generatedPages.push(`${slug}.html`);
+        }
       }
 
       if (
@@ -570,12 +595,19 @@ export function brandPlugin(
           }
         }
 
-        if (hasAiActReadinessPage) {
-          const contentDir = path.resolve(outDirPath, 'content');
-          fs.copyFileSync(
-            aiActReadinessMdPath,
-            path.resolve(contentDir, 'ai-act-readiness.md')
+        for (const slug of regulationSlugsClose) {
+          const mdPath = path.resolve(
+            contentBasePath,
+            brandKey,
+            `${slug}.md`
           );
+          const contentDir = path.resolve(outDirPath, 'content');
+          if (!fs.existsSync(contentDir)) {
+            fs.mkdirSync(contentDir, { recursive: true });
+          }
+          if (fs.existsSync(mdPath)) {
+            fs.copyFileSync(mdPath, path.resolve(contentDir, `${slug}.md`));
+          }
         }
 
         // Generate long-form resource pages (pillar articles). These live at
@@ -869,7 +901,9 @@ export function brandPlugin(
           );
         } else if (
           route === '/privacy' ||
-          route === '/ai-act-readiness' ||
+          Boolean(
+            REGULATION_PAGE_META[route.startsWith('/') ? route.slice(1) : route]
+          ) ||
           route === '/resources/ai-agent-control-plane-2026' ||
           route === BLOG_BASE_PATH ||
           get_blog_slug_from_route(route) !== null ||
@@ -957,6 +991,15 @@ async function generateSlottedContentForRoute(
       )
       .join('\n')}
 
+    ${
+      (config.landing as { legal_disclaimer?: string }).legal_disclaimer
+        ? `<p slot="legal-disclaimer">${escapeHtml(
+            (config.landing as { legal_disclaimer?: string }).legal_disclaimer ||
+              ''
+          )}</p>`
+        : ''
+    }
+
     <!-- Get Started section slots -->
     <span slot="get-started-title">${getStarted.title || ''}</span>
     <span slot="get-started-link-text">${getStarted.link_text || ''}</span>
@@ -1032,10 +1075,13 @@ async function generateSlottedContentForRoute(
       return generatePricingSlottedContent(config);
 
     case '/ai-act-readiness':
+    case '/cra-readiness':
+    case '/dora':
+    case '/nis2':
       return await loadMarkdownContent(
         contentBasePath,
         brandKey,
-        'ai-act-readiness'
+        route.slice(1)
       );
 
     case '/resources/ai-agent-control-plane-2026':
@@ -1243,13 +1289,13 @@ function upsertStructuredDataTag(
 
 function generateSitemapXml(
   config: BrandConfig,
-  includeAiActReadiness: boolean,
+  regulationSlugs: string[] = [],
   vsSlugs: string[] = [],
   blogPosts: BlogPost[] = []
 ): string {
   const routes = get_static_routes_with_options(
     config,
-    includeAiActReadiness,
+    regulationSlugs,
     vsSlugs,
     blogPosts
   );
@@ -1296,7 +1342,7 @@ function resolveCtaUrl(
 
 function generateLlmsTxt(
   config: BrandConfig,
-  includeAiActReadiness: boolean,
+  regulationSlugs: string[] = [],
   vsSlugs: string[] = [],
   blogPosts: BlogPost[] = []
 ): string {
@@ -1304,7 +1350,7 @@ function generateLlmsTxt(
   const hero = config.landing?.hero || {};
   const routes = get_static_routes_with_options(
     config,
-    includeAiActReadiness,
+    regulationSlugs,
     vsSlugs,
     blogPosts
   );

@@ -124,9 +124,65 @@ export function get_vs_slugs(): string[] {
   return Object.keys(VS_PAGE_META);
 }
 
+/**
+ * SaaS-only named-instrument pages (EU AI Act, CRA, DORA, NIS2). Adding a
+ * page is: drop `<brand>/<slug>.md`, add metadata here, and the vite plugin
+ * will pre-render it when the file exists.
+ */
+export type RegulationPageMeta = {
+  title: string;
+  description: string;
+  keywords: string;
+  about: string[];
+  og_title?: string;
+  og_description?: string;
+};
+
+export const REGULATION_PAGE_META: Record<string, RegulationPageMeta> = {
+  'ai-act-readiness': {
+    title: 'EU AI Act readiness with Preloop',
+    description:
+      'Preloop helps teams implement approvals, runtime visibility, policy enforcement, and audit trails that can support AI governance programs under Regulation (EU) 2024/1689. Not legal advice.',
+    keywords:
+      'EU AI Act, Regulation (EU) 2024/1689, AI Act Art. 14, AI Act Art. 12, AI Act readiness, AI governance, AI approvals, AI audit trail, EUR-Lex',
+    about: ['EU AI Act', 'Regulation (EU) 2024/1689', 'AI agent approvals'],
+  },
+  'cra-readiness': {
+    title: 'Cyber Resilience Act evidence with Preloop',
+    description:
+      'Apache SBOM-verify and exploit-check presets write result.json for CRA-style reviews under Regulation (EU) 2024/2847. Art. 14 reporting from 11 Sep 2026. Not a conformity assessment.',
+    keywords:
+      'Cyber Resilience Act, CRA, Regulation (EU) 2024/2847, CRA Art. 14, SBOM verify, SBOM, CE marking, product security, EUR-Lex',
+    about: ['Cyber Resilience Act', 'Regulation (EU) 2024/2847', 'SBOM'],
+  },
+  dora: {
+    title: 'DORA evidence with Preloop',
+    description:
+      'Operational evidence for ICT-using AI agents under Regulation (EU) 2022/2554 (DORA, applying since 17 January 2025). Not a DORA register of information. Not legal advice.',
+    keywords:
+      'DORA, Digital Operational Resilience Act, Regulation (EU) 2022/2554, ICT third-party risk, financial entities, AI agent audit trail, EUR-Lex',
+    about: ['DORA', 'Regulation (EU) 2022/2554', 'ICT third-party risk'],
+  },
+  nis2: {
+    title: 'NIS2 evidence with Preloop',
+    description:
+      'Supply-chain and vulnerability-handling evidence for AI agent runtimes under Directive (EU) 2022/2555 Art. 21(2). Not entity classification. Not legal advice.',
+    keywords:
+      'NIS2, Directive (EU) 2022/2555, NIS2 Art. 21, supply-chain security, vulnerability handling, AI agent governance, EUR-Lex',
+    about: ['NIS2', 'Directive (EU) 2022/2555', 'supply-chain security'],
+  },
+};
+
+export function get_regulation_slugs(): string[] {
+  return Object.keys(REGULATION_PAGE_META);
+}
+
 export function get_route_from_filename(filename: string): string {
-  if (filename.includes('ai-act-readiness.html')) {
-    return '/ai-act-readiness';
+  const regulationMatch = filename.match(
+    /(ai-act-readiness|cra-readiness|dora|nis2)\.html$/
+  );
+  if (regulationMatch) {
+    return `/${regulationMatch[1]}`;
   }
 
   if (filename.includes('about.html')) {
@@ -249,15 +305,6 @@ export function get_meta_for_route(
         og_title: `About - ${config.name}`,
         og_description: `Learn about ${config.name} and our mission to make AI automation governable, observable, and human-centered.`,
       };
-    case '/ai-act-readiness':
-      return {
-        title: `EU AI Act readiness with ${config.name}`,
-        description: `${config.name} helps teams implement approvals, runtime visibility, policy enforcement, and audit trails that can support AI governance programs and EU AI Act readiness work.`,
-        keywords: `${config.name}, EU AI Act, AI Act readiness, AI governance, AI approvals, AI audit trail, operational AI governance`,
-        og_image: default_og_image,
-        og_title: `EU AI Act readiness with ${config.name}`,
-        og_description: `${config.name} supports AI governance programs with approvals, policy enforcement, runtime visibility, and audit trails for AI Act readiness work.`,
-      };
     case '/resources/ai-agent-control-plane-2026':
       return {
         title: `The AI Agent Control Plane in 2026 — MCP Gateways, Model Gateways, and Human Approvals | ${config.name}`,
@@ -270,6 +317,25 @@ export function get_meta_for_route(
     case BLOG_BASE_PATH:
       return get_blog_index_meta(config);
     default: {
+      const regulation_slug = route.startsWith('/') ? route.slice(1) : route;
+      if (
+        REGULATION_PAGE_META[regulation_slug] &&
+        !route.slice(1).includes('/')
+      ) {
+        const page = REGULATION_PAGE_META[regulation_slug];
+        const merged_keywords = [page.keywords, default_keywords]
+          .filter((value) => value && value.trim().length > 0)
+          .join(', ');
+        return {
+          title: page.title,
+          description: page.description,
+          keywords: merged_keywords,
+          og_image: default_og_image,
+          og_title: page.og_title || page.title,
+          og_description: page.og_description || page.description,
+        };
+      }
+
       // Blog posts at `/blog/<slug>`. Metadata comes from the post's own
       // frontmatter, so an unknown slug falls through to the site defaults
       // rather than inventing a title.
@@ -312,12 +378,12 @@ export function get_meta_for_route(
 }
 
 export function get_static_routes(config: BrandConfig): string[] {
-  return get_static_routes_with_options(config, true);
+  return get_static_routes_with_options(config, ['ai-act-readiness']);
 }
 
 export function get_static_routes_with_options(
   config: BrandConfig,
-  include_ai_act_readiness: boolean,
+  regulation_slugs: string[] = [],
   vs_slugs: string[] = [],
   posts: BlogPost[] = []
 ): string[] {
@@ -325,8 +391,10 @@ export function get_static_routes_with_options(
 
   if ((config.edition || 'saas') === 'saas') {
     routes.push('/pricing', '/about');
-    if (include_ai_act_readiness) {
-      routes.push('/ai-act-readiness');
+    for (const slug of regulation_slugs) {
+      if (REGULATION_PAGE_META[slug]) {
+        routes.push(`/${slug}`);
+      }
     }
     // Include one /vs/<slug> entry per comparison page that has both a
     // metadata registration and a markdown file on disk. The list is
@@ -866,13 +934,15 @@ export function get_structured_data_for_route(
     ];
   }
 
-  if (route === '/ai-act-readiness') {
+  const regulation_slug = route.startsWith('/') ? route.slice(1) : route;
+  if (REGULATION_PAGE_META[regulation_slug] && !route.slice(1).includes('/')) {
+    const page = REGULATION_PAGE_META[regulation_slug];
     const meta = get_meta_for_route(route, config);
     return [
       organization,
       website,
       buildArticleSchema(config, route, meta.title, meta.description, {
-        about: ['EU AI Act', 'AI governance', 'AI agent approvals'],
+        about: page.about,
       }),
     ];
   }

@@ -292,6 +292,61 @@ export class LitApp extends LitElement {
         },
       },
       {
+        path: '/cra-readiness',
+        action: (context, commands) => {
+          const outlet = this.renderRoot.querySelector('main');
+          const existingWrapper = outlet?.querySelector('static-view-wrapper');
+          const ssrRoute = this.getAttribute('data-ssr-route');
+
+          if (
+            existingWrapper &&
+            ssrRoute === '/cra-readiness' &&
+            !this.hasNavigated
+          ) {
+            this.hasNavigated = true;
+            return existingWrapper;
+          }
+
+          const view = commands.component('static-view') as any;
+          view.src = '/content/cra-readiness.md';
+          return view;
+        },
+      },
+      {
+        path: '/dora',
+        action: (context, commands) => {
+          const outlet = this.renderRoot.querySelector('main');
+          const existingWrapper = outlet?.querySelector('static-view-wrapper');
+          const ssrRoute = this.getAttribute('data-ssr-route');
+
+          if (existingWrapper && ssrRoute === '/dora' && !this.hasNavigated) {
+            this.hasNavigated = true;
+            return existingWrapper;
+          }
+
+          const view = commands.component('static-view') as any;
+          view.src = '/content/dora.md';
+          return view;
+        },
+      },
+      {
+        path: '/nis2',
+        action: (context, commands) => {
+          const outlet = this.renderRoot.querySelector('main');
+          const existingWrapper = outlet?.querySelector('static-view-wrapper');
+          const ssrRoute = this.getAttribute('data-ssr-route');
+
+          if (existingWrapper && ssrRoute === '/nis2' && !this.hasNavigated) {
+            this.hasNavigated = true;
+            return existingWrapper;
+          }
+
+          const view = commands.component('static-view') as any;
+          view.src = '/content/nis2.md';
+          return view;
+        },
+      },
+      {
         // Competitor comparison landing pages at /vs/<slug>. One dynamic
         // route handles every slug. Each slug is pre-rendered at build time
         // (dist/vs/<slug>.html); this action reuses the SSR'd content on
