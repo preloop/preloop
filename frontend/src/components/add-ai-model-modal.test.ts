@@ -262,6 +262,51 @@ describe('AddAIModelModal model discovery', () => {
     expect(discoveryCalls()).to.have.lengthOf(1);
     expect(String(discoveryCalls()[0].args[0])).to.not.contain('sk-ant-secret');
   });
+
+  it('edit refresh sends the stored model id, not an empty api_key', async () => {
+    const model = {
+      id: 'b3af897d-3841-4d2a-8097-1e63d8367bc1',
+      name: 'Z.ai GLM',
+      provider_name: 'zai',
+      model_identifier: 'glm-5.3',
+      model_kind: 'llm',
+      has_api_key: true,
+    };
+    const el: AddAIModelModal = await fixture(
+      html`<add-ai-model-modal
+        .model=${model as any}
+        ?open=${true}
+      ></add-ai-model-modal>`
+    );
+    await el.updateComplete;
+
+    fetchStub.callsFake(async (url: any) => {
+      if (String(url).includes('available-models')) {
+        return new Response(
+          JSON.stringify({
+            models: ['glm-5.3', 'glm-5.3-flash'],
+            source: 'live',
+          })
+        );
+      }
+      return new Response(JSON.stringify([]));
+    });
+
+    await (el as any)._fetchModelsForCurrentProvider();
+
+    const [, init] = fetchStub
+      .getCalls()
+      .filter((call) =>
+        String(call.args[0]).includes('available-models')
+      )[0].args;
+    const body = JSON.parse(String(init.body));
+    expect(body.ai_model_id).to.equal(model.id);
+    expect(body.api_key).to.be.undefined;
+    expect((el as any)._modelSuggestions).to.deep.equal([
+      'glm-5.3',
+      'glm-5.3-flash',
+    ]);
+  });
 });
 
 /**
@@ -523,9 +568,9 @@ describe('AddAIModelModal model list provenance', () => {
       if (String(url).includes('available-models')) {
         return new Response(
           JSON.stringify({
-            models: ['kimi-k3', 'kimi-k2.6'],
+            models: [],
             source: 'fallback',
-            error: null,
+            error: 'missing_key',
           })
         );
       }
@@ -537,13 +582,9 @@ describe('AddAIModelModal model list provenance', () => {
     const text = noticeText();
     expect(text).to.not.contain('Could not fetch');
     expect(text).to.not.contain('provider unavailable');
-    expect(text).to.contain('Showing known models');
     expect(text).to.contain('API key');
-    // The list stays usable either way.
-    expect((element as any)._modelSuggestions).to.deep.equal([
-      'kimi-k3',
-      'kimi-k2.6',
-    ]);
+    expect(text).to.contain('stored key');
+    expect((element as any)._modelSuggestions).to.deep.equal([]);
   });
 
   it('shows no fallback notice for a live listing', async () => {

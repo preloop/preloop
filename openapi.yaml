@@ -5996,20 +5996,27 @@ paths:
       description: 'Fetch available models from the specified AI provider, with provenance.
 
 
-        Every provider attempts a live listing when a key (and endpoint where
+        Every provider lists live when a key (and endpoint where applicable) is
 
-        applicable) is present; the response reports ``source`` ("live" or
+        present; the response reports ``source`` ("live" or "fallback") and a
 
-        "fallback") and a short safe ``error`` reason when a live attempt failed.
+        short safe ``error`` reason when a live attempt failed or credentials
 
-        The reason comes from a fixed vocabulary and never contains raw provider
+        were missing. The reason comes from a fixed vocabulary and never contains
 
-        error text, endpoint URLs, or key material.
+        raw provider error text, endpoint URLs, or key material.
 
 
         The provider API key travels in the request BODY, never the query string:
 
-        as a query parameter it was written to access logs in plaintext.'
+        as a query parameter it was written to access logs in plaintext.
+
+
+        Edit-mode refresh should send ``ai_model_id`` instead of the stored key.
+
+        The server decrypts the stored secret via CRUD. A typed ``api_key`` in
+
+        the body always wins. Stored secrets are never returned to the client.'
       operationId: list_provider_available_models_api_v1_ai_models_providers__provider__available_models_post
       security:
       - bearerAuth: []
@@ -11289,7 +11296,18 @@ components:
           - type: 'null'
           title: Api Key
           description: Provider API key used to list models. Never logged and never
-            persisted by this endpoint.
+            persisted by this endpoint. When omitted, pass ai_model_id so the server
+            can decrypt the stored key; the stored key is never returned to the client.
+            A typed key always wins over the stored one.
+        ai_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Ai Model Id
+          description: Existing AI model id. When no typed api_key is sent, the server
+            decrypts the stored credentials via CRUD and lists live. The plaintext
+            key is never returned in the response.
         api_endpoint:
           anyOf:
           - type: string
@@ -11360,33 +11378,34 @@ components:
           - fallback
           title: Source
           description: '''live'' when the provider''s listing endpoint answered; ''fallback''
-            when a bundled catalog (or empty list) was returned instead'
+            when an empty list was returned instead of a live catalog'
           default: fallback
         error:
           anyOf:
           - type: string
           - type: 'null'
           title: Error
-          description: Short safe reason for a fallback after a failed live attempt
-            (fixed vocabulary, never raw provider error text). None for a clean result.
+          description: Short safe reason for a fallback after a failed or impossible
+            live attempt (fixed vocabulary, never raw provider error text). None for
+            a clean live result.
       type: object
       title: AvailableModelsResponse
-      description: 'A provider''s model catalog plus the provenance of the listing.
+      description: 'A provider''s model listing plus the provenance of the result.
 
 
         ``source`` reports whether the ids came from the provider''s live listing
 
-        endpoint ("live") or from Preloop''s bundled fallback catalog
+        endpoint ("live") or an empty fallback ("fallback"). There is no bundled
 
-        ("fallback"). ``error`` is a short machine-readable reason drawn from a
+        picker catalog. ``error`` is a short machine-readable reason drawn from a
 
         fixed vocabulary (e.g. "timeout", "network", "empty_response",
 
-        "unsupported", "missing_endpoint", "sdk_missing", "unknown") when a live
+        "unsupported", "missing_endpoint", "sdk_missing", "missing_key", "auth",
 
-        attempt failed; it never carries raw exception text, which can embed
+        "unknown") when a live attempt failed or was impossible; it never carries
 
-        endpoint URLs or key material.'
+        raw exception text, which can embed endpoint URLs or key material.'
     BatchExecutionListItem:
       properties:
         id:
