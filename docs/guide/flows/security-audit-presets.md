@@ -2,10 +2,11 @@
 
 These Apache presets turn a CI-emitted SBOM and optional build evidence
 into a versioned `result.json` plus a human-readable evidence pack. They
-shipped in 0.15.0 as `backend/presets/004` through `007`. Clone a
-preset into a flow, attach a webhook (or a schedule), and retain the
-pack. The YAML prompts are the contract; this page describes that
-contract.
+shipped as `backend/presets/004` through `006` in 0.15.0; `007`
+(Component Due Diligence) and the gap register / evidence storage /
+waiver fields landed in a later release. Clone a preset into a flow,
+attach a webhook (or a schedule), and retain the pack. The YAML prompts
+are the contract; this page describes that contract.
 
 ## What this is not
 
