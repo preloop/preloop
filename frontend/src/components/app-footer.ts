@@ -134,6 +134,9 @@ export class AppFooter extends LitElement {
     // without the markdown file gets no link, because nginx would serve the
     // homepage for that route with a 200 and the SPA fetch would then 404.
     const regulationPages = config.regulation_pages ?? [];
+    const hasAboutPage = (config.static_markdown_pages ?? []).some(
+      (page) => page.path === '/about'
+    );
 
     return html`
       <div class="footer-container">
@@ -173,7 +176,11 @@ export class AppFooter extends LitElement {
                 isSaaS()
                   ? html` <li><a href="/pricing">Pricing</a></li>
                       <li><a href="/blog">Blog</a></li>
-                      <li><a href="/about">About</a></li>
+                      ${
+                        hasAboutPage
+                          ? html`<li><a href="/about">About</a></li>`
+                          : ''
+                      }
                       ${regulationPages.map(
                         (page) =>
                           html`<li>

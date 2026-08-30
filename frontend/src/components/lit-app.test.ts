@@ -68,4 +68,25 @@ describe('LitApp routing', () => {
     expect(window.location.pathname).to.equal('/console/agents');
     expect(document.querySelector('onboarding-view')).to.equal(null);
   });
+
+  it('registers markdown pages from BRAND_CONFIG.static_markdown_pages', async () => {
+    (window as any).BRAND_CONFIG.static_markdown_pages = [
+      { path: '/dora', src: '/content/dora.md' },
+    ];
+    const el = (await fixture(html`<lit-app></lit-app>`)) as HTMLElement;
+
+    Router.go('/dora');
+
+    await waitUntil(
+      () => Boolean(el.shadowRoot?.querySelector('static-view')),
+      'Expected /dora to render static-view from the injected page list',
+      { timeout: 5000 }
+    );
+
+    const view = el.shadowRoot?.querySelector('static-view') as HTMLElement & {
+      src?: string;
+    };
+    expect(view).to.exist;
+    expect(view.src).to.equal('/content/dora.md');
+  });
 });

@@ -12,7 +12,6 @@ import {
   get_static_routes_with_options,
   get_structured_data_for_route,
   VS_PAGE_META,
-  REGULATION_PAGE_META,
 } from './src/brand-seo';
 import {
   BLOG_BASE_PATH,
@@ -27,6 +26,12 @@ import {
   render_blog_post_html,
   type BlogPost,
 } from './src/blog-seo';
+import {
+  allowStaticMarkdownSlug,
+  isStaticMarkdownSlug,
+  markdownRelFromSrc,
+  staticMarkdownPageForSlug,
+} from './src/static-markdown-pages';
 
 /**
  * Enumerate competitor comparison slugs that have both a markdown file on
@@ -61,11 +66,57 @@ function discover_regulation_slugs(
 ): string[] {
   return get_regulation_slugs()
     .filter((slug) =>
-      fs.existsSync(
-        path.resolve(contentBasePath, brandKey, `${slug}.md`)
-      )
+      fs.existsSync(path.resolve(contentBasePath, brandKey, `${slug}.md`))
     )
     .sort();
+}
+
+/**
+ * Top-level and resources markdown that should become SPA routes.
+ * EE overrides OSS by shipping extra files in its content tree; the
+ * SPA never hardcodes those slugs.
+ */
+export function discover_static_markdown_pages(
+  contentBasePath: string,
+  brandKey: string,
+  edition: string | undefined
+): Array<{ path: string; src: string }> {
+  const brandDir = path.resolve(contentBasePath, brandKey);
+  const pages: Array<{ path: string; src: string }> = [];
+  if (!fs.existsSync(brandDir)) {
+    return pages;
+  }
+
+  const isSaas = edition === 'saas' || !edition;
+
+  for (const filename of fs.readdirSync(brandDir)) {
+    if (!filename.endsWith('.md')) {
+      continue;
+    }
+    const slug = filename.replace(/\.md$/, '');
+    if (!isStaticMarkdownSlug(slug) || !allowStaticMarkdownSlug(slug, edition)) {
+      continue;
+    }
+    pages.push(staticMarkdownPageForSlug(slug));
+  }
+
+  if (isSaas) {
+    const resourcesDir = path.join(brandDir, 'resources');
+    if (fs.existsSync(resourcesDir)) {
+      for (const filename of fs.readdirSync(resourcesDir)) {
+        if (!filename.endsWith('.md')) {
+          continue;
+        }
+        const slug = filename.replace(/\.md$/, '');
+        if (!isStaticMarkdownSlug(slug)) {
+          continue;
+        }
+        pages.push(staticMarkdownPageForSlug(slug, 'resources'));
+      }
+    }
+  }
+
+  return pages.sort((a, b) => a.path.localeCompare(b.path));
 }
 
 /**
@@ -245,6 +296,19 @@ export function brandPlugin(
     return regulationSlugsCache;
   };
 
+  let staticMarkdownPagesCache: Array<{ path: string; src: string }> | null =
+    null;
+  const loadStaticMarkdownPages = (): Array<{ path: string; src: string }> => {
+    if (!staticMarkdownPagesCache) {
+      staticMarkdownPagesCache = discover_static_markdown_pages(
+        contentBasePath,
+        brandKey,
+        (brandConfig as { edition?: string } | undefined)?.edition
+      );
+    }
+    return staticMarkdownPagesCache;
+  };
+
   // Resolve paths - use options or defaults
   const configPath =
     options.configPath || path.resolve(__dirname, 'brands.yaml');
@@ -344,7 +408,8 @@ export function brandPlugin(
           brandConfig,
           regulationSlugs,
           vsSlugsForRouting,
-          blogPosts
+          blogPosts,
+          loadStaticMarkdownPages().map((page) => page.path)
         ),
       });
 
@@ -361,7 +426,8 @@ export function brandPlugin(
           brandConfig,
           regulationSlugs,
           vsSlugsForRouting,
-          blogPosts
+          blogPosts,
+          loadStaticMarkdownPages().map((page) => page.path)
         ),
       });
 
@@ -422,13 +488,17 @@ export function brandPlugin(
         });
       }
 
-      // Copy brand-specific markdown files to dist/content/ for dynamic loading
-      // Use the brand key (e.g., 'preloop') to find content folder
+      // Copy brand-specific markdown files to dist/content/ for dynamic loading.
+      // Discovery, not an allowlist: EE extra files appear here automatically.
       const contentFiles = [
-        'privacy.md',
-        'terms.md',
-        'whatis-mcp.md',
-        ...get_regulation_slugs().map((slug) => `${slug}.md`),
+        ...new Set([
+          'privacy.md',
+          'terms.md',
+          'whatis-mcp.md',
+          ...loadStaticMarkdownPages().map(
+            (page) => `${markdownRelFromSrc(page.src)}.md`
+          ),
+        ]),
       ];
 
       for (const file of contentFiles) {
@@ -497,7 +567,6 @@ export function brandPlugin(
         'whatis-mcp'
       );
       const edition = (brandConfig as { edition?: string }).edition || 'saas';
-      const regulationSlugsClose = loadRegulationSlugs();
 
       // Generate privacy.html with proper meta tags and content
       const privacyPage = generateFullHtmlPage(
@@ -529,36 +598,44 @@ export function brandPlugin(
         whatisMcpPage
       );
 
-      if (edition === 'saas' && regulationSlugsClose.length > 0) {
-        const contentDir = path.resolve(outDirPath, 'content');
-        if (!fs.existsSync(contentDir)) {
-          fs.mkdirSync(contentDir, { recursive: true });
+      const generatedPages = ['privacy.html', 'terms.html', 'whatis-mcp.html'];
+      const coreMarkdownRoutes = new Set([
+        '/privacy',
+        '/terms',
+        '/whatis-mcp',
+      ]);
+
+      for (const page of loadStaticMarkdownPages()) {
+        const rel = markdownRelFromSrc(page.src);
+        const mdPath = path.resolve(contentBasePath, brandKey, `${rel}.md`);
+        if (!fs.existsSync(mdPath)) {
+          continue;
         }
-        for (const slug of regulationSlugsClose) {
+        if (!coreMarkdownRoutes.has(page.path)) {
           const pageHTML = await loadMarkdownContent(
             contentBasePath,
             brandKey,
-            slug
+            rel
           );
-          const page = generateFullHtmlPage(
-            indexHtml,
-            `/${slug}`,
-            brandConfig,
-            pageHTML
-          );
-          fs.writeFileSync(
-            path.resolve(outDirPath, `${slug}.html`),
-            page
-          );
+          if (pageHTML) {
+            const fullPage = generateFullHtmlPage(
+              indexHtml,
+              page.path,
+              brandConfig,
+              pageHTML
+            );
+            const destHtml = path.resolve(
+              outDirPath,
+              `${page.path.replace(/^\//, '')}.html`
+            );
+            fs.mkdirSync(path.dirname(destHtml), { recursive: true });
+            fs.writeFileSync(destHtml, fullPage);
+            generatedPages.push(`${page.path.replace(/^\//, '')}.html`);
+          }
         }
-      }
-
-      // Generate additional pages for SaaS editions
-      const generatedPages = ['privacy.html', 'terms.html', 'whatis-mcp.html'];
-      if (edition === 'saas') {
-        for (const slug of regulationSlugsClose) {
-          generatedPages.push(`${slug}.html`);
-        }
+        const contentDest = path.resolve(outDirPath, 'content', `${rel}.md`);
+        fs.mkdirSync(path.dirname(contentDest), { recursive: true });
+        fs.copyFileSync(mdPath, contentDest);
       }
 
       if (
@@ -576,105 +653,6 @@ export function brandPlugin(
         );
         fs.writeFileSync(path.resolve(outDirPath, 'pricing.html'), pricingPage);
         generatedPages.push('pricing.html');
-
-        // Generate about.html
-        const aboutHTML = await loadMarkdownContent(
-          contentBasePath,
-          brandKey,
-          'about'
-        );
-        if (aboutHTML) {
-          const aboutPage = generateFullHtmlPage(
-            indexHtml,
-            '/about',
-            brandConfig,
-            aboutHTML
-          );
-          fs.writeFileSync(path.resolve(outDirPath, 'about.html'), aboutPage);
-          generatedPages.push('about.html');
-
-          // Also copy about.md to content folder for client-side navigation
-          const aboutMdPath = path.resolve(
-            contentBasePath,
-            brandKey,
-            'about.md'
-          );
-          if (fs.existsSync(aboutMdPath)) {
-            const contentDir = path.resolve(outDirPath, 'content');
-            fs.copyFileSync(aboutMdPath, path.resolve(contentDir, 'about.md'));
-          }
-        }
-
-        for (const slug of regulationSlugsClose) {
-          const mdPath = path.resolve(
-            contentBasePath,
-            brandKey,
-            `${slug}.md`
-          );
-          const contentDir = path.resolve(outDirPath, 'content');
-          if (!fs.existsSync(contentDir)) {
-            fs.mkdirSync(contentDir, { recursive: true });
-          }
-          if (fs.existsSync(mdPath)) {
-            fs.copyFileSync(mdPath, path.resolve(contentDir, `${slug}.md`));
-          }
-        }
-
-        // Generate long-form resource pages (pillar articles). These live at
-        // /resources/<slug> and are sourced from content/<brand>/resources/.
-        const resourcePages = [
-          {
-            slug: 'ai-agent-control-plane-2026',
-            route: '/resources/ai-agent-control-plane-2026',
-          },
-        ];
-
-        for (const resource of resourcePages) {
-          const resourceMdPath = path.resolve(
-            contentBasePath,
-            brandKey,
-            `resources/${resource.slug}.md`
-          );
-          if (!fs.existsSync(resourceMdPath)) {
-            continue;
-          }
-
-          const resourceHTML = await loadMarkdownContent(
-            contentBasePath,
-            brandKey,
-            `resources/${resource.slug}`
-          );
-          const resourcePage = generateFullHtmlPage(
-            indexHtml,
-            resource.route,
-            brandConfig,
-            resourceHTML
-          );
-
-          const resourcesDir = path.resolve(outDirPath, 'resources');
-          if (!fs.existsSync(resourcesDir)) {
-            fs.mkdirSync(resourcesDir, { recursive: true });
-          }
-          fs.writeFileSync(
-            path.resolve(resourcesDir, `${resource.slug}.html`),
-            resourcePage
-          );
-          generatedPages.push(`resources/${resource.slug}.html`);
-
-          // Copy markdown to content/resources for client-side navigation
-          const contentResourcesDir = path.resolve(
-            outDirPath,
-            'content',
-            'resources'
-          );
-          if (!fs.existsSync(contentResourcesDir)) {
-            fs.mkdirSync(contentResourcesDir, { recursive: true });
-          }
-          fs.copyFileSync(
-            resourceMdPath,
-            path.resolve(contentResourcesDir, `${resource.slug}.md`)
-          );
-        }
 
         // Generate competitor comparison landing pages at /vs/<slug>. Sources
         // are markdown files under content/<brand>/vs/ that have a matching
@@ -887,6 +865,7 @@ export function brandPlugin(
           !(brandConfig as any).edition
             ? get_regulation_nav_links(loadRegulationSlugs())
             : [],
+        static_markdown_pages: loadStaticMarkdownPages(),
       };
 
       const brandScript = `
@@ -917,17 +896,7 @@ export function brandPlugin(
             '<lit-app></lit-app>',
             `<lit-app data-ssr-route="${route}"><public-pricing-view>${slottedContent}</public-pricing-view></lit-app>`
           );
-        } else if (
-          route === '/privacy' ||
-          Boolean(
-            REGULATION_PAGE_META[route.startsWith('/') ? route.slice(1) : route]
-          ) ||
-          route === '/resources/ai-agent-control-plane-2026' ||
-          route === BLOG_BASE_PATH ||
-          get_blog_slug_from_route(route) !== null ||
-          route.startsWith('/vs/')
-        ) {
-          // Static pages: inject static-view-wrapper with content
+        } else {
           html = html.replace(
             '<lit-app></lit-app>',
             `<lit-app data-ssr-route="${route}"><static-view-wrapper>${slottedContent}</static-view-wrapper></lit-app>`
@@ -1083,31 +1052,10 @@ async function generateSlottedContentForRoute(
     })()}
   `;
 
-    case '/privacy':
-      // Privacy page - will load markdown content
-      return await loadMarkdownContent(contentBasePath, brandKey, 'privacy');
-
     case '/pricing':
       // Pricing page - emit slotted light-DOM content that
       // <public-pricing-view> can project for SEO and no-JS users.
       return generatePricingSlottedContent(config);
-
-    case '/ai-act-readiness':
-    case '/cra-readiness':
-    case '/dora':
-    case '/nis2':
-      return await loadMarkdownContent(
-        contentBasePath,
-        brandKey,
-        route.slice(1)
-      );
-
-    case '/resources/ai-agent-control-plane-2026':
-      return await loadMarkdownContent(
-        contentBasePath,
-        brandKey,
-        'resources/ai-agent-control-plane-2026'
-      );
 
     case BLOG_BASE_PATH:
       return blogPosts.length > 0
@@ -1144,6 +1092,19 @@ async function generateSlottedContentForRoute(
               `vs/${slug}`
             );
           }
+        }
+      }
+
+      // Any discovered markdown page (terms, about, dora, resources/..., ...).
+      const rel = route.replace(/^\//, '');
+      if (
+        rel &&
+        !rel.includes('..') &&
+        /^[a-z0-9][a-z0-9-]*(?:\/[a-z0-9][a-z0-9-]*)*$/.test(rel)
+      ) {
+        const mdPath = path.resolve(contentBasePath, brandKey, `${rel}.md`);
+        if (fs.existsSync(mdPath)) {
+          return await loadMarkdownContent(contentBasePath, brandKey, rel);
         }
       }
       return '';
@@ -1309,13 +1270,15 @@ function generateSitemapXml(
   config: BrandConfig,
   regulationSlugs: string[] = [],
   vsSlugs: string[] = [],
-  blogPosts: BlogPost[] = []
+  blogPosts: BlogPost[] = [],
+  markdownPaths: string[] = []
 ): string {
   const routes = get_static_routes_with_options(
     config,
     regulationSlugs,
     vsSlugs,
-    blogPosts
+    blogPosts,
+    markdownPaths
   );
   const urls = routes
     .map((route) => {
@@ -1362,7 +1325,8 @@ function generateLlmsTxt(
   config: BrandConfig,
   regulationSlugs: string[] = [],
   vsSlugs: string[] = [],
-  blogPosts: BlogPost[] = []
+  blogPosts: BlogPost[] = [],
+  markdownPaths: string[] = []
 ): string {
   const meta = config.landing?.meta || {};
   const hero = config.landing?.hero || {};
@@ -1370,7 +1334,8 @@ function generateLlmsTxt(
     config,
     regulationSlugs,
     vsSlugs,
-    blogPosts
+    blogPosts,
+    markdownPaths
   );
 
   return [

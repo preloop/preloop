@@ -41,6 +41,10 @@ HELM_CONFIGMAP = REPO_ROOT / "helm" / "preloop" / "templates" / "configmap-nginx
 # Extensionless on purpose: these are the ones the catch-all silently swallows.
 # Files with extensions (/robots.txt, /sitemap.xml, /llms.txt) are served by
 # `try_files $uri` in both configs and are not a drift risk.
+#
+# Top-level slugs are served by a generic ``/<slug>`` location, not an
+# allowlist. ``/dora`` and ``/pandora`` are examples; adding a page in EE
+# must not require editing nginx.
 PRERENDERED_URLS = (
     "/about",
     "/pricing",
@@ -51,6 +55,7 @@ PRERENDERED_URLS = (
     "/cra-readiness",
     "/dora",
     "/nis2",
+    "/pandora",
     "/blog",
     "/blog/govern-your-qm-fleet",
     "/vs/litellm",

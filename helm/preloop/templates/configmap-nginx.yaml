@@ -273,21 +273,10 @@ data:
             try_files /blog/$1.html /index.html;
         }
 
-        # Top-level marketing pages: same prerender-first serving as /vs and
-        # /resources above. Without these they fell through to the SPA
-        # catch-all, so every one of them returned byte-identical home
-        # index.html — including its canonical pointing at "/", which told
-        # crawlers these pages *are* the homepage. Browsers were fine (the
-        # router renders client-side); crawlers and answer engines, which
-        # mostly do not execute JS, saw only the landing page.
-        #
-        # The equivalent rules already existed in the OSS docker nginx
-        # template; this config had drifted from it.
-        #
-        # Falls back to /index.html rather than 404 because these pages are
-        # brand-conditional: a self-hosted build does not prerender them, and
-        # the SPA can still route them.
-        location ~ ^/(about|pricing|privacy|terms|whatis-mcp|ai-act-readiness|cra-readiness|dora|nis2)/?$ {
+        # Prerendered top-level pages. Serve the .html the build emitted;
+        # otherwise the SPA. Not an allowlist: EE adds a page by dropping
+        # markdown, which Vite prerenders to /<slug>.html.
+        location ~ ^/([a-z0-9][a-z0-9-]*)$ {
             try_files /$1.html /index.html;
         }
 
@@ -305,7 +294,7 @@ data:
 
         # Health check endpoint. `default_type` (not `add_header Content-Type`,
         # which is dead code after `return`) sets the response MIME type.
-        location /health {
+        location = /health {
             access_log off;
             default_type text/plain;
             return 200 "healthy\n";

@@ -177,6 +177,12 @@ export interface BrandRuntimeConfig {
    * optional and render nothing when it is missing.
    */
   regulation_pages?: RegulationNavLink[];
+  /**
+   * Public markdown pages discovered at build time from
+   * `content/<brand>/*.md` and `content/<brand>/resources/*.md`. EE adds
+   * routes by dropping files; OSS never lists pages it does not ship.
+   */
+  static_markdown_pages?: Array<{ path: string; src: string }>;
 }
 
 // Full config - used at build time only (includes landing content)

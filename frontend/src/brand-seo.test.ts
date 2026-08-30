@@ -112,8 +112,9 @@ describe('brand-seo', () => {
     const routes = get_static_routes_with_options(test_config, []);
 
     expect(routes).to.include('/pricing');
-    expect(routes).to.include('/about');
+    expect(routes).to.not.include('/about');
     expect(routes).to.not.include('/ai-act-readiness');
+    expect(routes).to.not.include('/resources/ai-agent-control-plane-2026');
   });
 
   it('includes article structured data for the AI Act readiness page', () => {
@@ -141,6 +142,10 @@ describe('brand-seo', () => {
     );
     expect(get_route_from_filename('/tmp/dist/dora.html')).to.equal('/dora');
     expect(get_route_from_filename('/tmp/dist/nis2.html')).to.equal('/nis2');
+    expect(get_route_from_filename('/tmp/dist/pandora.html')).to.equal(
+      '/pandora'
+    );
+    expect(get_route_from_filename('dora.html')).to.equal('/dora');
   });
 
   it('includes named-instrument routes when those slugs are supplied', () => {
@@ -154,6 +159,19 @@ describe('brand-seo', () => {
     expect(routes).to.include('/cra-readiness');
     expect(routes).to.include('/dora');
     expect(routes).to.include('/nis2');
+  });
+
+  it('includes discovered markdown paths without a hardcoded about/resources list', () => {
+    const routes = get_static_routes_with_options(
+      test_config,
+      [],
+      [],
+      [],
+      ['/about', '/dora', '/resources/ai-agent-control-plane-2026']
+    );
+    expect(routes).to.include('/about');
+    expect(routes).to.include('/dora');
+    expect(routes).to.include('/resources/ai-agent-control-plane-2026');
   });
 
   it('returns CRA metadata that names the instrument and date', () => {

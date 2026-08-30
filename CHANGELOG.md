@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Public markdown routes come from discovered content files**: `lit-app`
+  registers `/terms`, `/dora`, and other static pages from
+  `BRAND_CONFIG.static_markdown_pages` (Vite scans `content/<brand>/*.md`
+  and `resources/*.md`). Nginx serves any `/<slug>.html` the build emitted
+  instead of an allowlist. OSS does not hardcode EU instrument paths; EE
+  adds a page by dropping a markdown file.
+
 ### Fixed
+
+- **`get_route_from_filename` maps `pandora.html` to `/pandora`, not `/dora`**:
+  top-level HTML files use the basename as the route, with no substring
+  match against `dora`.
 
 - **Edit-mode model refresh lists live models**: refreshing the picker
   while editing a saved AI model (for example a Z.ai key that now serves
