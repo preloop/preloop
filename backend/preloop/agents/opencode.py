@@ -577,6 +577,45 @@ exit $OPENCODE_EXIT_CODE
 """
         return script
 
+    def _build_provider_models_map(
+        self,
+        primary_local_id: str,
+        primary_model: str,
+        effective_provider: str,
+        execution_context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Build the provider ``models`` map for opencode.json.
+
+        When the execution context carries ``authorized_gateway_models``
+        (populated by the flow orchestrator from the account's full
+        gateway-enabled inventory), every authorized model is registered so
+        OpenCode's ``/models`` picker shows them all.  The primary model is
+        always included even if the list is absent or empty.
+
+        Args:
+            primary_local_id: Provider-local id of the primary model.
+            primary_model: Original (possibly qualified) primary model name.
+            effective_provider: The provider id used in the config.
+            execution_context: Execution context (may carry
+                ``authorized_gateway_models``).
+
+        Returns:
+            ``{local_id: {"name": display_name}, ...}`` dict.
+        """
+        models: Dict[str, Any] = {primary_local_id: {"name": primary_model}}
+
+        authorized: list[dict] = execution_context.get("authorized_gateway_models", [])
+        for entry in authorized:
+            alias = entry.get("alias", "")
+            if not alias:
+                continue
+            local_id = _opencode_provider_local_model_id(alias, effective_provider)
+            if not local_id or local_id in models:
+                continue
+            models[local_id] = {"name": entry.get("display_name") or alias}
+
+        return models
+
     def _build_opencode_config(
         self,
         model: str,
@@ -662,11 +701,19 @@ exit $OPENCODE_EXIT_CODE
             "mcp": mcp,
         }
 
+        # Build the full provider models map.  When authorized_gateway_models
+        # is present in the execution context all authorized models are
+        # registered so OpenCode's model picker shows them.  The primary
+        # model is always included regardless.
+        provider_models = self._build_provider_models_map(
+            model_local_id, model, effective_model_provider, execution_context
+        )
+
         # Add provider configuration for custom/non-builtin endpoints.
         # OpenCode schema requires:
-        #   npm   – AI SDK adapter package (e.g. "@ai-sdk/openai-compatible")
-        #   options.baseURL – API endpoint
-        #   models – map of model-id → {name}
+        #   npm   -- AI SDK adapter package (e.g. "@ai-sdk/openai-compatible")
+        #   options.baseURL -- API endpoint
+        #   models -- map of model-id -> {name}
         # ``timeout`` is OpenCode's whole-request LLM abort (see
         # _opencode_llm_timeout_ms); ``chunkTimeout`` is the SSE inter-chunk
         # inactivity abort in opencode >= 1.18 (ignored by older builds) and
@@ -684,9 +731,7 @@ exit $OPENCODE_EXIT_CODE
                             "timeout": llm_timeout_ms,
                             "chunkTimeout": llm_timeout_ms,
                         },
-                        "models": {
-                            model_local_id: {"name": model},
-                        },
+                        "models": provider_models,
                     }
                 }
             elif not gateway_enabled and model_provider in ("google", "gemini"):
@@ -699,9 +744,7 @@ exit $OPENCODE_EXIT_CODE
                             "timeout": llm_timeout_ms,
                             "chunkTimeout": llm_timeout_ms,
                         },
-                        "models": {
-                            model_local_id: {"name": model},
-                        },
+                        "models": provider_models,
                     }
                 }
             else:
@@ -714,9 +757,7 @@ exit $OPENCODE_EXIT_CODE
                             "timeout": llm_timeout_ms,
                             "chunkTimeout": llm_timeout_ms,
                         },
-                        "models": {
-                            model_local_id: {"name": model},
-                        },
+                        "models": provider_models,
                     }
                 }
 
