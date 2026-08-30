@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Avatar upload rejects oversized files before buffering the body**:
+  `PUT /users/me/avatar` reads the multipart in 1 MiB chunks and returns
+  413 once the 5 MB cap is crossed, matching the audio upload helper.
+  `process_avatar` still validates size after a complete read; this closes
+  the same memory-exhaustion class as the decompression-bomb fix, on the
+  upload-read path.
+
 - **Edit-mode model refresh lists live models**: refreshing the picker
   while editing a saved AI model (for example a Z.ai key that now serves
   `glm-5.3-flash`) sends the model id so the server decrypts the stored

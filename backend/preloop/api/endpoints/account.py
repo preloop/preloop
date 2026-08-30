@@ -3041,6 +3041,28 @@ class AvatarResponse(BaseModel):
     avatar_source: Optional[str] = None
 
 
+async def _read_upload_with_limit(upload: UploadFile, max_bytes: int) -> bytes:
+    """Read an upload in chunks and reject payloads larger than max_bytes.
+
+    ``UploadFile.read()`` of the whole body would buffer a multi-GB multipart
+    in memory before ``process_avatar`` could enforce ``MAX_UPLOAD_BYTES``.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await upload.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"Image too large. Maximum: {max_bytes} bytes",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.put("/users/me/avatar", response_model=AvatarResponse)
 async def upload_avatar(
     file: UploadFile,
@@ -3054,9 +3076,13 @@ async def upload_avatar(
     bounded PNG stored as a base64 data URI. Manual uploads always take
     precedence over SSO-provided avatars.
     """
-    from preloop.services.avatar import AvatarValidationError, process_avatar
+    from preloop.services.avatar import (
+        MAX_UPLOAD_BYTES,
+        AvatarValidationError,
+        process_avatar,
+    )
 
-    raw = await file.read()
+    raw = await _read_upload_with_limit(file, MAX_UPLOAD_BYTES)
     content_type = file.content_type or "application/octet-stream"
     try:
         data_uri = process_avatar(raw, content_type)

@@ -205,6 +205,36 @@ class TestDecompressionBomb:
         assert result.startswith("data:image/png;base64,")
 
 
+class TestAvatarUploadReadLimit:
+    """The upload endpoint must not buffer an oversized body before rejecting."""
+
+    def test_chunked_read_rejects_over_max(self):
+        import asyncio
+
+        from fastapi import HTTPException
+
+        from preloop.api.endpoints.account import _read_upload_with_limit
+
+        class FakeUpload:
+            def __init__(self, total: int) -> None:
+                self.sent = 0
+                self.total = total
+
+            async def read(self, n: int = -1) -> bytes:
+                if self.sent >= self.total:
+                    return b""
+                take = min(n if n > 0 else self.total, self.total - self.sent)
+                self.sent += take
+                return b"x" * take
+
+        fake = FakeUpload(MAX_UPLOAD_BYTES + 1)
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(_read_upload_with_limit(fake, MAX_UPLOAD_BYTES))
+        assert exc_info.value.status_code == 413
+        assert fake.sent <= MAX_UPLOAD_BYTES + 1024 * 1024
+
+
 class TestPillowDependencyDeclared:
     """Pillow is a declared runtime dependency, not a best-effort import."""
 
