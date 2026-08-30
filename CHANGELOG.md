@@ -111,6 +111,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **README is the product intro, not the operator manual**: ~390 lines
+  down to ~200. Locked category line and lead, install + evidence first,
+  ops (TLS, SMTP, Agent Control internals, QM proxy, smoke tests) moved
+  to docs.preloop.ai and in-repo docs. Agents get a repo map
+  (ARCHITECTURE.md by section, AGENTS.md, CONTRIBUTING.md). Capability
+  pass after inventory: Flows and Talk named; Audit/AI Act pack is
+  Cloud/Enterprise (`audit_logs`); `preloop policy apply` next to the
+  YAML sample; trackers as flow triggers; imported usage in Cost.
+- **ARCHITECTURE.md is an index of per-subsystem chapters**: subsystem
+  docs moved to `docs/architecture/*.md`. The index is the map; read
+  the chapter for the subsystem you are changing. Flows architecture
+  lives at `docs/architecture/flows.md`.
+
 - **Overview Top Models shows a preview per model**: each model lists its
   top four agents/flows/sessions by spend or usage, with a See N more
   control when there are more. Expanded groups cap nested sessions the
