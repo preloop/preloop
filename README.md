@@ -8,7 +8,9 @@
 
 **The open-source AI agent control plane.** See them, govern them, cut their cost.
 
-Preloop is a single self-hostable platform: an **MCP firewall** for tool access, an **AI model gateway** for cost, safety and attribution, **policy-as-code** with **human approvals**, and **runtime session observability**. Durable **audit** packs (All events / AI Act evidence) ship on Preloop Cloud and Preloop Enterprise.
+Preloop is a single self-hostable platform: an **MCP firewall** for tool access, an **AI model gateway** for cost, safety and attribution, **policy-as-code** with **human approvals**, and **runtime session observability**.
+
+Flow presets can collect machine evidence for CRA- and EU AI Act-style reviews (SBOM verify, exploit check); Runtime Observability keeps the session timeline next to it. That is not a conformity assessment, certification, or legal advice. Presets: [security audit presets](docs/guide/flows/security-audit-presets.md).
 
 Onboard existing agents with one command. Talk to long-running ones from the console, phone, or watch. Deploy event-driven automations when GitHub, GitLab, Jira, or a webhook fires. Works with OpenClaw, Claude Code, Codex CLI, Cursor, Gemini CLI, Hermes, OpenCode, Windsurf, and any MCP-compatible agent.
 
@@ -59,7 +61,7 @@ Jobs teams otherwise buy from several vendors, in one Apache 2.0 stack:
 | **Cost & Budgets** | Spend by model, agent, session, API key, flow, and user, including usage you import when the model never hits the gateway. | FinOps dashboards, vendor billing exports |
 | **Human Approvals** | Mobile, watch, Slack, Mattermost, email, webhook, or `preloop approvals`. Native `Bash`/`Edit`. Agents can `ask_user`. | Custom Slack bots, Peta Desk |
 | **Runtime Observability** | One session timeline: tool calls, model calls, policy, approvals, spend, outcomes. | AgentOps, Langfuse, LangSmith |
-| **Audit & AI Act evidence** | Durable All-events log and AI Act pack. Preloop Cloud / Preloop Enterprise (`audit_logs`). Sessions timeline above is OSS. | Credo AI, IBM watsonx.governance |
+| **Evidence packs** | Apache flow presets write `result.json` plus an evidence directory for CRA / AI Act-style work. Not a certification. | Custom GRC folders |
 
 ```text
 AI Agent → Preloop → [Policy]  → Allow / Deny / Require Approval → Execute
@@ -162,17 +164,15 @@ Also compare: [LiteLLM](https://preloop.ai/vs/litellm), [Portkey](https://preloo
 
 ## Editions
 
-Same core. Unqualified **Preloop** is this repository (Apache 2.0, self-hosted). **Preloop Cloud** is the hosted service at [preloop.ai](https://preloop.ai). **Preloop Enterprise** is the commercial self-hosted edition.
+Unqualified **Preloop** is this repository (Apache 2.0, self-hosted). **Preloop Cloud** is the hosted service at [preloop.ai](https://preloop.ai). **Preloop Enterprise** is the commercial self-hosted edition.
+
+Cloud is managed hosting. Cloud and Enterprise include support plans.
 
 | Feature | Open Source | Cloud / Enterprise |
 |---|:---:|:---:|
-| Approvals, issue trackers, agentic flows | Yes | Yes |
-| Cost overview, usage drill-downs, budget-health | Yes | Yes |
-| Durable All-events audit / AI Act pack | No | Yes |
-| Budget policy configuration and enforcement | No | Yes |
-| RBAC, teams, admin dashboard | No | Yes |
-| CEL / AI-driven / quorum approvals | No | Yes |
-| Billing reconciliation, chargeback, forecasting | No | Yes |
+| Users, teams, and RBAC on one account | No | Yes |
+
+A self-hosted OSS instance is one operator per account. Public signup, if left on, creates a separate account, not a teammate. Invitations, users, teams, and permission roles ship with Cloud and Enterprise.
 
 Enterprise licensing: sales@preloop.ai.
 
