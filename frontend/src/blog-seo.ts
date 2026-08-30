@@ -656,7 +656,7 @@ export function render_blog_post_html(
   const hero_html = post.og_image
     ? `<figure class="blog-hero"><img src="${escape_html(
         post.og_image
-      )}" alt="${escape_html(post.title)}"></figure>`
+      )}" alt=""></figure>`
     : '';
   const body_html = strip_duplicate_title_heading(
     post.body_html || '',

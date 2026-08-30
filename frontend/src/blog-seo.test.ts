@@ -298,6 +298,8 @@ describe('blog-seo', () => {
       );
       expect(html).to.contain('class="blog-hero"');
       expect(html).to.contain('src="/assets/blog/ship.png"');
+      expect(html).to.contain('alt=""');
+      expect(html).to.not.match(/alt="A Post"/);
     });
 
     it('renders the index newest-first with links to each post', () => {
