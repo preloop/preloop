@@ -56,6 +56,13 @@ import type {
 } from '../../types';
 import { parseUTCDate } from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
+import {
+  TOP_MODEL_GROUP_PREVIEW_LIMIT,
+  TOP_MODEL_SESSION_PREVIEW_LIMIT,
+  compareByUsageMetric,
+  mergeGatewaySummaryPreservingBreakdown,
+  previewWindow,
+} from '../../utils/top-models-overview';
 import { getAgentControlState } from '../../utils/agent-control';
 import {
   pickDefaultModel,
@@ -121,6 +128,15 @@ interface UsageSessionSubject {
   kind: 'agent' | 'flow' | 'session';
   name: string;
   href: string;
+}
+
+interface TopModelSubjectGroup {
+  groupId: string;
+  kind: 'agent' | 'flow' | 'other';
+  subject: UsageSessionSubject;
+  sessions: GatewayUsageBySession[];
+  totalCost: number;
+  totalRequests: number;
 }
 
 interface DashboardMetric {
@@ -195,6 +211,7 @@ export class DashboardView extends AuthedElement {
   @state() private fetchingActiveAgents = false;
   @state() private topModelsSortMetric: 'spend' | 'usage' = 'spend';
   @state() private expandedOverviewGroups = new Set<string>();
+  @state() private expandedPreviewKeys = new Set<string>();
   @state() private showSetupDialog = false;
   @state() private showBudgetDialog = false;
   @state() private welcomeCardDismissed = false;
@@ -421,6 +438,10 @@ export class DashboardView extends AuthedElement {
         flex-direction: column;
         gap: var(--sl-spacing-2x-small);
         margin-top: var(--sl-spacing-2x-small);
+      }
+      .overview-see-more {
+        align-self: flex-start;
+        margin-top: 2px;
       }
       .expandable-subheader-metric {
         color: var(--sl-color-neutral-500);
@@ -1382,15 +1403,14 @@ export class DashboardView extends AuthedElement {
     }
     this.refreshInFlight = true;
 
-    this.fetchingGatewaySummary = true;
-    this.fetchingRecentExecutions = true;
-    this.fetchingApprovals = true;
-    this.fetchingActiveAgents = true;
-    this.fetchingBudget = true;
-    this.fetchingAudit = true;
-    this.fetchingMCPAndTools = true;
-
     if (!options.preserveLoadingState) {
+      this.fetchingGatewaySummary = true;
+      this.fetchingRecentExecutions = true;
+      this.fetchingApprovals = true;
+      this.fetchingActiveAgents = true;
+      this.fetchingBudget = true;
+      this.fetchingAudit = true;
+      this.fetchingMCPAndTools = true;
       this.loading = true;
     }
     this.error = null;
@@ -1457,7 +1477,10 @@ export class DashboardView extends AuthedElement {
       ]);
       await adminPromise;
 
-      this.gatewaySummary = gatewaySummary;
+      this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
+        this.gatewaySummary,
+        gatewaySummary
+      );
       this.gatewayInteractions = gatewayInteractions.items || [];
       this.fetchingGatewaySummary = false;
 
@@ -1501,8 +1524,16 @@ export class DashboardView extends AuthedElement {
       this.loading = false;
       this.saveDashboardCache();
 
-      // Wave 2: audit / tools / trackers / models — does not block first paint
-      void this.fetchSecondaryDashboardData(startDateStr);
+      // Wave 2 is slow (full session breakdown + audit/tools). On a live
+      // websocket refresh only upgrade the top-models breakdown so the card
+      // does not flash empty while the rest of the dashboard stays put.
+      if (options.preserveLoadingState) {
+        void this.refreshTopModelsBreakdown(startDateStr).then(() =>
+          this.saveDashboardCache()
+        );
+      } else {
+        void this.fetchSecondaryDashboardData(startDateStr);
+      }
     } catch (error) {
       console.error(
         'Failed to complete background loading of overview dashboard',
@@ -1618,39 +1649,42 @@ export class DashboardView extends AuthedElement {
       }
     })();
 
-    // Top models need breakdown; upgrade the light summary once without
-    // blocking above-the-fold metrics/budget.
-    const pTopModels = (async () => {
-      try {
-        const detailed = await this.catchWith403Handling(
-          getAccountGatewayUsageSummary({
-            startDate: gatewayStartDate,
-            includeBreakdown: true,
-          }),
-          null
-        );
-        if (detailed) {
-          this.gatewaySummary = detailed;
-          if (
-            this.gatewayTimeRange === this.budgetTimeRange &&
-            this.budgetSummary
-          ) {
-            this.budgetSummary = {
-              ...this.budgetSummary,
-              usage_by_model: detailed.usage_by_model,
-              usage_by_flow: detailed.usage_by_flow,
-              usage_by_session: detailed.usage_by_session,
-              requests_by_day: detailed.requests_by_day,
-            };
-          }
-        }
-      } catch (error) {
-        console.error('Failed to load gateway breakdown for top models', error);
-      }
-    })();
-
-    await Promise.all([pAudit, pTools, pTopModels]);
+    await Promise.all([
+      pAudit,
+      pTools,
+      this.refreshTopModelsBreakdown(gatewayStartDate),
+    ]);
     this.saveDashboardCache();
+  }
+
+  private async refreshTopModelsBreakdown(gatewayStartDate: string) {
+    try {
+      const detailed = await this.catchWith403Handling(
+        getAccountGatewayUsageSummary({
+          startDate: gatewayStartDate,
+          includeBreakdown: true,
+        }),
+        null
+      );
+      if (!detailed) {
+        return;
+      }
+      this.gatewaySummary = detailed;
+      if (
+        this.gatewayTimeRange === this.budgetTimeRange &&
+        this.budgetSummary
+      ) {
+        this.budgetSummary = {
+          ...this.budgetSummary,
+          usage_by_model: detailed.usage_by_model,
+          usage_by_flow: detailed.usage_by_flow,
+          usage_by_session: detailed.usage_by_session,
+          requests_by_day: detailed.requests_by_day,
+        };
+      }
+    } catch (error) {
+      console.error('Failed to load gateway breakdown for top models', error);
+    }
   }
 
   private async fetchAuditExceptions(): Promise<GroupedAuditResponse> {
@@ -1898,6 +1932,91 @@ export class DashboardView extends AuthedElement {
     return this.expandedOverviewGroups.has(groupId);
   }
 
+  private togglePreviewKey(key: string) {
+    const next = new Set(this.expandedPreviewKeys);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    this.expandedPreviewKeys = next;
+  }
+
+  private isPreviewExpanded(key: string): boolean {
+    return this.expandedPreviewKeys.has(key);
+  }
+
+  private renderSeeMoreControl(key: string, overflow: number) {
+    if (overflow <= 0) {
+      return nothing;
+    }
+    const expanded = this.isPreviewExpanded(key);
+    return html`
+      <sl-button
+        class="overview-see-more"
+        size="small"
+        variant="text"
+        @click=${(event: Event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.togglePreviewKey(key);
+        }}
+      >
+        ${expanded ? 'Show less' : `See ${overflow} more`}
+        <sl-icon
+          slot="suffix"
+          name=${expanded ? 'chevron-up' : 'chevron-down'}
+        ></sl-icon>
+      </sl-button>
+    `;
+  }
+
+  private nestedSessionRepeatKey(
+    session: GatewayUsageBySession | RuntimeSessionSummary
+  ): string {
+    if ('total_requests' in session) {
+      return session.id;
+    }
+    return (
+      session.runtime_session_id ||
+      session.flow_execution_id ||
+      session.session_source_id ||
+      `${session.model_alias}-${session.last_request_at}`
+    );
+  }
+
+  private renderCappedNestedSessions(
+    sessions: Array<GatewayUsageBySession | RuntimeSessionSummary>,
+    previewKey: string
+  ) {
+    const sorted = [...sessions].sort((left, right) =>
+      compareByUsageMetric(left, right, this.topModelsSortMetric)
+    );
+    const { visible, overflow } = previewWindow(
+      sorted,
+      TOP_MODEL_SESSION_PREVIEW_LIMIT,
+      this.isPreviewExpanded(previewKey)
+    );
+    return html`
+      <div class="nested-session-list">
+        ${repeat(
+          visible,
+          (session) => this.nestedSessionRepeatKey(session),
+          (session) =>
+            this.renderNestedSessionRow(
+              session,
+              `${this.formatNumber(
+                'total_requests' in session
+                  ? session.total_requests
+                  : session.request_count
+              )} req`
+            )
+        )}
+        ${this.renderSeeMoreControl(previewKey, overflow)}
+      </div>
+    `;
+  }
+
   private renderExpandIcon(groupId: string) {
     return html`
       <sl-icon
@@ -1969,6 +2088,7 @@ export class DashboardView extends AuthedElement {
     options: {
       showTalkComposer?: boolean;
       onAgentControlSent?: () => void;
+      nestedPreviewKey?: string;
     } = {}
   ) {
     const expanded = this.isOverviewGroupExpanded(groupId);
@@ -2030,20 +2150,25 @@ export class DashboardView extends AuthedElement {
                 <div class="expandable-content">
                   ${
                     sessions.length > 0
-                      ? html`
-                          <div class="nested-session-list">
-                            ${sessions.map((session) =>
-                              this.renderNestedSessionRow(
-                                session,
-                                `${this.formatNumber(
-                                  'total_requests' in session
-                                    ? session.total_requests
-                                    : session.request_count
-                                )} req`
-                              )
-                            )}
-                          </div>
-                        `
+                      ? options.nestedPreviewKey
+                        ? this.renderCappedNestedSessions(
+                            sessions,
+                            options.nestedPreviewKey
+                          )
+                        : html`
+                            <div class="nested-session-list">
+                              ${sessions.map((session) =>
+                                this.renderNestedSessionRow(
+                                  session,
+                                  `${this.formatNumber(
+                                    'total_requests' in session
+                                      ? session.total_requests
+                                      : session.request_count
+                                  )} req`
+                                )
+                              )}
+                            </div>
+                          `
                       : html`<div class="nested-session-metric">
                           No recent sessions
                         </div>`
@@ -2945,6 +3070,138 @@ export class DashboardView extends AuthedElement {
     `;
   }
 
+  private collectTopModelSubjectGroups(
+    modelKey: string,
+    modelSessions: GatewayUsageBySession[]
+  ): TopModelSubjectGroup[] {
+    const agentGroups = new Map<
+      string,
+      { subject: UsageSessionSubject; sessions: GatewayUsageBySession[] }
+    >();
+    const flowGroups = new Map<
+      string,
+      { subject: UsageSessionSubject; sessions: GatewayUsageBySession[] }
+    >();
+    const otherSessions: GatewayUsageBySession[] = [];
+
+    modelSessions.forEach((session) => {
+      const subject = this.getUsageSessionSubject(session);
+      if (subject.kind === 'agent') {
+        const agent = this.getManagedAgentForUsageSession(session);
+        const key =
+          agent?.id ||
+          session.agent_id ||
+          session.runtime_session_id ||
+          session.session_source_id ||
+          session.runtime_principal_id ||
+          subject.href;
+        if (!agentGroups.has(key)) {
+          agentGroups.set(key, { subject, sessions: [] });
+        }
+        agentGroups.get(key)!.sessions.push(session);
+      } else if (subject.kind === 'flow') {
+        const key = session.flow_id || session.flow_name || subject.href;
+        if (!flowGroups.has(key)) {
+          flowGroups.set(key, { subject, sessions: [] });
+        }
+        flowGroups.get(key)!.sessions.push(session);
+      } else {
+        otherSessions.push(session);
+      }
+    });
+
+    const groups: TopModelSubjectGroup[] = [];
+    const pushGroup = (
+      kind: TopModelSubjectGroup['kind'],
+      groupId: string,
+      subject: UsageSessionSubject,
+      sessions: GatewayUsageBySession[]
+    ) => {
+      groups.push({
+        groupId,
+        kind,
+        subject,
+        sessions,
+        totalCost: sessions.reduce((acc, row) => acc + row.estimated_cost, 0),
+        totalRequests: sessions.reduce(
+          (acc, row) => acc + row.request_count,
+          0
+        ),
+      });
+    };
+
+    agentGroups.forEach(({ subject, sessions }, groupKey) => {
+      pushGroup(
+        'agent',
+        `top-model:${modelKey}:agent:${groupKey}`,
+        subject,
+        sessions
+      );
+    });
+    flowGroups.forEach(({ subject, sessions }, groupKey) => {
+      pushGroup(
+        'flow',
+        `top-model:${modelKey}:flow:${groupKey}`,
+        subject,
+        sessions
+      );
+    });
+    if (otherSessions.length > 0) {
+      pushGroup(
+        'other',
+        `top-model:${modelKey}:other`,
+        { kind: 'session', name: 'Other', href: '/console/runtime-sessions' },
+        otherSessions
+      );
+    }
+
+    groups.sort((left, right) =>
+      compareByUsageMetric(
+        {
+          estimated_cost: left.totalCost,
+          request_count: left.totalRequests,
+        },
+        {
+          estimated_cost: right.totalCost,
+          request_count: right.totalRequests,
+        },
+        this.topModelsSortMetric
+      )
+    );
+    return groups;
+  }
+
+  private renderTopModelSubjectGroup(group: TopModelSubjectGroup) {
+    const trailingMetric = `${this.formatCurrency(group.totalCost)} (${this.formatNumber(group.totalRequests)} req)`;
+    const nestedPreviewKey = `${group.groupId}:sessions`;
+    const nested = this.renderCappedNestedSessions(
+      group.sessions,
+      nestedPreviewKey
+    );
+
+    if (group.kind === 'agent') {
+      const agent = this.getManagedAgentForUsageSession(group.sessions[0]);
+      if (agent) {
+        return this.renderAgentExpandableGroup(
+          group.groupId,
+          agent,
+          group.sessions,
+          trailingMetric,
+          { nestedPreviewKey }
+        );
+      }
+    }
+
+    return this.renderCollapsibleGroup(
+      group.groupId,
+      group.subject.name,
+      group.kind === 'other' ? null : group.subject.href,
+      trailingMetric,
+      nested,
+      group.kind === 'flow' ? this.renderFlowIcon() : null
+    );
+  }
+
   private renderTopModelsCard() {
     const rawModels = this.gatewaySummary?.usage_by_model || [];
     if (rawModels.length === 0) {
@@ -2971,13 +3228,7 @@ export class DashboardView extends AuthedElement {
     });
 
     const models = Array.from(aggregatedModels.values());
-    models.sort((a, b) => {
-      if (this.topModelsSortMetric === 'usage') {
-        return b.request_count - a.request_count;
-      } else {
-        return b.estimated_cost - a.estimated_cost;
-      }
-    });
+    models.sort((a, b) => compareByUsageMetric(a, b, this.topModelsSortMetric));
 
     const allSessions = this.gatewaySummary?.usage_by_session || [];
 
@@ -3023,48 +3274,16 @@ export class DashboardView extends AuthedElement {
                       !item.provider_name ||
                       s.provider_name === item.provider_name))
               );
-
-              const agentGroups = new Map<
-                string,
-                {
-                  subject: UsageSessionSubject;
-                  sessions: typeof modelSessions;
-                }
-              >();
-              const flowGroups = new Map<
-                string,
-                {
-                  subject: UsageSessionSubject;
-                  sessions: typeof modelSessions;
-                }
-              >();
-              const otherSessions: typeof modelSessions = [];
-
-              modelSessions.forEach((s) => {
-                const subject = this.getUsageSessionSubject(s);
-                if (subject.kind === 'agent') {
-                  const agent = this.getManagedAgentForUsageSession(s);
-                  const key =
-                    agent?.id ||
-                    s.agent_id ||
-                    s.runtime_session_id ||
-                    s.session_source_id ||
-                    s.runtime_principal_id ||
-                    subject.href;
-                  if (!agentGroups.has(key)) {
-                    agentGroups.set(key, { subject, sessions: [] });
-                  }
-                  agentGroups.get(key)!.sessions.push(s);
-                } else if (subject.kind === 'flow') {
-                  const key = s.flow_id || s.flow_name || subject.href;
-                  if (!flowGroups.has(key)) {
-                    flowGroups.set(key, { subject, sessions: [] });
-                  }
-                  flowGroups.get(key)!.sessions.push(s);
-                } else {
-                  otherSessions.push(s);
-                }
-              });
+              const groups = this.collectTopModelSubjectGroups(
+                modelKey,
+                modelSessions
+              );
+              const groupsPreviewKey = `top-model-groups:${modelKey}`;
+              const { visible, overflow } = previewWindow(
+                groups,
+                TOP_MODEL_GROUP_PREVIEW_LIMIT,
+                this.isPreviewExpanded(groupsPreviewKey)
+              );
 
               return html`
                 <div
@@ -3120,112 +3339,18 @@ export class DashboardView extends AuthedElement {
                   </div>
 
                   ${
-                    agentGroups.size > 0 ||
-                    flowGroups.size > 0 ||
-                    otherSessions.length > 0
+                    groups.length > 0
                       ? html`
                           <div class="overview-nested-groups">
-                            ${Array.from(agentGroups.entries()).map(
-                              ([groupKey, { subject, sessions }]) => {
-                                const totalAgentCost = sessions.reduce(
-                                  (acc, s) => acc + s.estimated_cost,
-                                  0
-                                );
-                                const totalAgentReqs = sessions.reduce(
-                                  (acc, s) => acc + s.request_count,
-                                  0
-                                );
-                                const agent =
-                                  this.getManagedAgentForUsageSession(
-                                    sessions[0]
-                                  );
-                                const groupId = `top-model:${modelKey}:agent:${groupKey}`;
-                                const trailingMetric = `${this.formatCurrency(totalAgentCost)} (${this.formatNumber(totalAgentReqs)} req)`;
-                                if (agent) {
-                                  return this.renderAgentExpandableGroup(
-                                    groupId,
-                                    agent,
-                                    sessions,
-                                    trailingMetric
-                                  );
-                                }
-                                return this.renderCollapsibleGroup(
-                                  groupId,
-                                  subject.name,
-                                  subject.href,
-                                  trailingMetric,
-                                  html`
-                                    <div class="nested-session-list">
-                                      ${sessions.map((s) =>
-                                        this.renderNestedSessionRow(
-                                          s,
-                                          `${this.formatNumber(s.request_count)} req`
-                                        )
-                                      )}
-                                    </div>
-                                  `
-                                );
-                              }
+                            ${repeat(
+                              visible,
+                              (group) => group.groupId,
+                              (group) => this.renderTopModelSubjectGroup(group)
                             )}
-                            ${Array.from(flowGroups.entries()).map(
-                              ([groupKey, { subject, sessions }]) => {
-                                const totalFlowCost = sessions.reduce(
-                                  (acc, s) => acc + s.estimated_cost,
-                                  0
-                                );
-                                const totalFlowReqs = sessions.reduce(
-                                  (acc, s) => acc + s.request_count,
-                                  0
-                                );
-                                return this.renderCollapsibleGroup(
-                                  `top-model:${modelKey}:flow:${groupKey}`,
-                                  subject.name,
-                                  subject.href,
-                                  `${this.formatCurrency(totalFlowCost)} (${this.formatNumber(totalFlowReqs)} req)`,
-                                  html`
-                                    <div class="nested-session-list">
-                                      ${sessions.map((s) =>
-                                        this.renderNestedSessionRow(
-                                          s,
-                                          `${this.formatNumber(s.request_count)} req`
-                                        )
-                                      )}
-                                    </div>
-                                  `,
-                                  this.renderFlowIcon()
-                                );
-                              }
+                            ${this.renderSeeMoreControl(
+                              groupsPreviewKey,
+                              overflow
                             )}
-                            ${
-                              otherSessions.length > 0
-                                ? this.renderCollapsibleGroup(
-                                    `top-model:${modelKey}:other`,
-                                    'Other',
-                                    null,
-                                    `${this.formatCurrency(
-                                      otherSessions.reduce(
-                                        (acc, s) => acc + s.estimated_cost,
-                                        0
-                                      )
-                                    )} (${this.formatNumber(
-                                      otherSessions.reduce(
-                                        (acc, s) => acc + s.request_count,
-                                        0
-                                      )
-                                    )} req)`,
-                                    html`
-                                      <div class="nested-session-list">
-                                        ${otherSessions.map((s) =>
-                                          this.renderNestedSessionRow(
-                                            s,
-                                            `${this.formatNumber(s.request_count)} req`
-                                          )
-                                        )}
-                                      </div>
-                                    `
-                                  )
-                                : ''
-                            }
                           </div>
                         `
                       : ''

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Model I/O policy API 500 under RBAC**: `/api/v1/policies/model-io-rules`
+  list/create/update/patch/delete used `@require_permission` without a
+  `current_user` FastAPI dependency. Nested `get_account_for_user` does
+  not put `current_user` in the handler kwargs, so the fail-closed
+  permission check returned 500
+  `Permission check requires current_user and db dependencies`.
 - **Dev compose no longer races postgres/NATS or schema init**:
   `docker-compose.yml` healthchecks postgres (`pg_isready`) and NATS
   (`/healthz`, with `-m 8222`) and runs `init_db.py --force` in a
@@ -33,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Compose does not interpolate them or leak the rest of the value via
   `variable is not set` warnings. Re-runs unescape on read so values
   round-trip.
+- **Overview Top Models card no longer flashes on live refresh**: websocket
+  reloads fetched a lightweight gateway summary that cleared
+  `usage_by_session`, then a second request filled the nested list back in.
+  The card now keeps the breakdown until the detailed summary arrives and
+  does not flip loading flags on background refresh.
 
 - **Private-cluster Helm tests after OTLP merge**: default `values.yaml`
   now includes the `otlp` block from main. The private-cluster suite no
@@ -99,6 +110,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitLab.
 
 ### Changed
+
+- **Overview Top Models shows a preview per model**: each model lists its
+  top four agents/flows/sessions by spend or usage, with a See N more
+  control when there are more. Expanded groups cap nested sessions the
+  same way so a busy model cannot dominate the card.
 
 - **GitHub CI backend tests run in parallel**: the backend unit suite is
   sharded across four GitHub Actions jobs with pytest-split, each with
