@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applies YAML that validates. Version history stays below the editor and
   the format example moved into a collapsed section.
 
+- **YAML editor Save shows a diff first**: editor Save now uses the same
+  `previewPolicyFile` flow as Import YAML, so applying a full policy cannot
+  silently drop rules, MCP servers, or workflows. Validate-before-save,
+  inline schema errors, Revert, and version history are unchanged.
+
 ### Fixed
 
 - **Describe a change no longer opens against a stale policy**: the button
@@ -46,6 +51,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when a condition reads a detector that is switched off, and refuses to
   save a deny or require_approval rule with an empty condition rather than
   defaulting it to match everything.
+
+- **Switching back to a policy preset re-applies it**: choosing
+  "Start from a preset" after writing a custom expression restores that
+  preset's detectors and condition, instead of keeping the custom values
+  while the preset card still looks selected.
 
 - **Edit-mode model refresh lists live models**: refreshing the picker
   while editing a saved AI model (for example a Z.ai key that now serves

@@ -483,7 +483,7 @@ describe('PoliciesView', () => {
     function createYamlStub(
       opts: { valid?: boolean; exportOk?: boolean } = {}
     ) {
-      const calls = { uploaded: false, validated: 0 };
+      const calls = { uploaded: false, validated: 0, previewed: 0 };
       const stub = sinon
         .stub(window, 'fetch')
         .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -524,6 +524,18 @@ describe('PoliciesView', () => {
               });
             }
             return json({ is_valid: true, errors: [], warnings: [] });
+          }
+          if (url.endsWith('/api/v1/policies/diff') && method === 'POST') {
+            calls.previewed += 1;
+            return json({
+              summary: '1 change',
+              has_changes: true,
+              changes: {
+                added: [],
+                removed: [],
+                modified: [{ type: 'modified', category: 'tools', name: 'x' }],
+              },
+            });
           }
           if (url.endsWith('/api/v1/policies/upload') && method === 'POST') {
             calls.uploaded = true;
@@ -567,13 +579,14 @@ describe('PoliciesView', () => {
       await element.updateComplete;
 
       expect(calls.validated).to.equal(1);
+      expect(calls.previewed).to.equal(0);
       expect(calls.uploaded).to.be.false;
       expect((element as any)._yamlErrors).to.have.length(1);
       expect((element as any)._yamlErrors[0].message).to.contain('banish');
       expect(element.shadowRoot?.textContent).to.contain('was not applied');
     });
 
-    it('validates then applies a valid draft', async () => {
+    it('validates then previews a valid draft instead of applying immediately', async () => {
       const { stub, calls } = createYamlStub();
       fetchStub = stub;
       const element = (await fixture(
@@ -589,8 +602,19 @@ describe('PoliciesView', () => {
       await element.updateComplete;
 
       expect(calls.validated).to.equal(1);
-      expect(calls.uploaded).to.be.true;
+      expect(calls.previewed).to.equal(1);
+      expect(calls.uploaded).to.be.false;
       expect((element as any)._yamlErrors).to.have.length(0);
+      expect((element as any)._showDiffDialog).to.be.true;
+      expect((element as any)._yamlDirty).to.be.true;
+
+      await (element as any).applyPolicyFile();
+      await element.updateComplete;
+
+      expect(calls.uploaded).to.be.true;
+      expect((element as any)._showDiffDialog).to.be.false;
+      expect((element as any)._yamlDirty).to.be.false;
+      expect((element as any)._yamlNotice).to.contain('saved and applied');
     });
 
     it('refuses to save an empty draft without calling the API', async () => {
@@ -605,8 +629,33 @@ describe('PoliciesView', () => {
       await (element as any)._saveYamlDraft();
 
       expect(calls.validated).to.equal(0);
+      expect(calls.previewed).to.equal(0);
       expect(calls.uploaded).to.be.false;
       expect((element as any)._yamlErrors[0].message).to.contain('empty');
+    });
+
+    it('does not upload when the save diff is cancelled', async () => {
+      const { stub, calls } = createYamlStub();
+      fetchStub = stub;
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any)._onYamlDraftInput(
+        'version: "1.0"\nmetadata:\n  name: x\n'
+      );
+      await (element as any)._saveYamlDraft();
+      await element.updateComplete;
+
+      expect((element as any)._showDiffDialog).to.be.true;
+      (element as any)._cancelDiffPreview();
+      await element.updateComplete;
+
+      expect(calls.previewed).to.equal(1);
+      expect(calls.uploaded).to.be.false;
+      expect((element as any)._showDiffDialog).to.be.false;
+      expect((element as any)._yamlDirty).to.be.true;
     });
 
     it('opens Describe a change with a freshly refetched export', async () => {
@@ -775,6 +824,38 @@ describe('PoliciesView', () => {
         'moderation.flagged == true'
       );
       expect(responseRule.conditions[0].action).to.equal('deny');
+    });
+
+    it('re-applies the selected preset when switching back from a custom expression', async () => {
+      const element = await mountWithDialog();
+
+      (element as any)._applyPreset('flag-injection');
+      await element.updateComplete;
+      (element as any)._patchModelIOForm({
+        conditionMode: 'custom',
+        expression: 'injection.score > 0.99',
+        detectPii: true,
+        detectInjection: false,
+      });
+      await element.updateComplete;
+
+      expect((element as any)._modelIOForm.presetId).to.equal('flag-injection');
+      expect((element as any)._modelIOForm.expression).to.equal(
+        'injection.score > 0.99'
+      );
+
+      (element as any)._setConditionMode('preset');
+      await element.updateComplete;
+
+      const form = (element as any)._modelIOForm;
+      expect(form.conditionMode).to.equal('preset');
+      expect(form.presetId).to.equal('flag-injection');
+      expect(form.expression).to.equal('injection.score > 0.7');
+      expect(form.action).to.equal('require_approval');
+      expect(form.target).to.equal('model.request');
+      expect(form.detectInjection).to.be.true;
+      expect(form.detectPii).to.be.false;
+      expect(form.detectModeration).to.be.false;
     });
 
     it('refuses to save a deny rule with no condition', async () => {

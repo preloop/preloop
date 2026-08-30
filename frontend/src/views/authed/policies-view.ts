@@ -253,6 +253,8 @@ export class PoliciesView extends LitElement {
   @state() private _yamlErrors: PolicyValidationError[] = [];
   @state() private _yamlWarnings: string[] = [];
   @state() private _yamlNotice = '';
+  /** True while an editor Save is waiting on the shared import diff dialog. */
+  private _pendingYamlSave = false;
 
   // Version management state
   @state() private _versions: PolicyVersion[] = [];
@@ -1186,6 +1188,19 @@ export class PoliciesView extends LitElement {
   }
 
   /**
+   * Switching back to "Start from a preset" must re-apply that preset.
+   * Otherwise a custom expression can linger while the highlighted card
+   * still looks selected, and Save would persist a mismatch.
+   */
+  private _setConditionMode(mode: 'preset' | 'custom') {
+    if (mode === 'preset' && this._modelIOForm.presetId) {
+      this._applyPreset(this._modelIOForm.presetId);
+      return;
+    }
+    this._patchModelIOForm({ conditionMode: mode });
+  }
+
+  /**
    * Detectors only produce facts; the condition decides when a rule fires.
    * Warn about the two ways those halves can disagree.
    */
@@ -1432,10 +1447,18 @@ export class PoliciesView extends LitElement {
       this._showDiffDialog = true;
     } catch (err: any) {
       this._error = err.message || 'Failed to preview policy file';
+      this._pendingYamlSave = false;
     } finally {
       this._isUploading = false;
     }
   }
+
+  private _cancelDiffPreview = () => {
+    this._showDiffDialog = false;
+    this._pendingFile = null;
+    this._diffResult = null;
+    this._pendingYamlSave = false;
+  };
 
   private async applyPolicyFile() {
     if (!this._pendingFile) return;
@@ -1456,13 +1479,25 @@ export class PoliciesView extends LitElement {
         throw new Error(error.detail?.message || 'Failed to apply policy');
       }
 
+      const fromYamlEditor = this._pendingYamlSave;
+      this._pendingYamlSave = false;
       this._showDiffDialog = false;
       this._pendingFile = null;
       this._diffResult = null;
+      if (fromYamlEditor) {
+        // Resync the editor from the applied export after loadData.
+        this._yamlDirty = false;
+      }
 
       await this.loadData();
+      if (fromYamlEditor) {
+        this._yamlNotice = 'Policy saved and applied.';
+      }
     } catch (err: any) {
       this._error = err.message || 'Failed to apply policy file';
+      if (this._pendingYamlSave) {
+        this._yamlNotice = '';
+      }
     } finally {
       this._isUploading = false;
     }
@@ -1589,7 +1624,11 @@ export class PoliciesView extends LitElement {
     void this._validateYamlDraft();
   };
 
-  /** Validate first, then apply through the normal upload path. */
+  /**
+   * Validate first, then show the same diff dialog Import uses. Applying a
+   * full policy can drop rules, MCP servers, and workflows, so Save must
+   * not upload until the user confirms.
+   */
   private _saveYamlDraft = async () => {
     this._error = null;
     if (!this._yamlDraft.trim()) {
@@ -1604,18 +1643,12 @@ export class PoliciesView extends LitElement {
       return;
     }
 
-    this._pendingFile = new File([this._yamlDraft], 'policies.yaml', {
-      type: 'application/x-yaml',
-    });
-    this._yamlDirty = false;
-    await this.applyPolicyFile();
-    if (this._error) {
-      // Apply failed, so the draft is still the user's unsaved work.
-      this._yamlDirty = true;
-      this._yamlNotice = '';
-      return;
-    }
-    this._yamlNotice = 'Policy saved and applied.';
+    this._pendingYamlSave = true;
+    await this.previewPolicyFile(
+      new File([this._yamlDraft], 'policies.yaml', {
+        type: 'application/x-yaml',
+      })
+    );
   };
 
   // ============================================================================
@@ -2356,8 +2389,7 @@ export class PoliciesView extends LitElement {
         <sl-radio-group
           data-testid="condition-mode"
           .value=${form.conditionMode}
-          @sl-change=${(e: any) =>
-            this._patchModelIOForm({ conditionMode: e.target.value })}
+          @sl-change=${(e: any) => this._setConditionMode(e.target.value)}
         >
           <sl-radio value="preset">Start from a preset</sl-radio>
           <sl-radio value="custom">Write my own condition</sl-radio>
@@ -2762,7 +2794,7 @@ export class PoliciesView extends LitElement {
             <h3 class="yaml-editor-title">Active policy</h3>
             <p class="model-io-hint">
               This is the policy running right now. Edit it, validate it, then
-              save. Invalid YAML is never applied.
+              save. Saving shows a diff before anything is applied.
             </p>
           </div>
           <div class="yaml-editor-actions">
@@ -3605,15 +3637,7 @@ defaults:
         }
 
         <div slot="footer" class="dialog-footer">
-          <sl-button
-            @click=${() => {
-              this._showDiffDialog = false;
-              this._pendingFile = null;
-              this._diffResult = null;
-            }}
-          >
-            Cancel
-          </sl-button>
+          <sl-button @click=${this._cancelDiffPreview}> Cancel </sl-button>
           <sl-button
             variant="primary"
             @click=${this.applyPolicyFile}
