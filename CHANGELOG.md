@@ -135,6 +135,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evaluation, AI Act pack, chargeback/forecasting as edition gates).
   CEL, AI-driven approvals, and quorum evaluation are OSS.
 
+- **CRA / AI Act evidence named as an OSS use case**: README intro and
+  What-you-get name the security-audit presets (`result.json`) as machine
+  evidence, not a conformity assessment. Editions table still lists only
+  users, teams, and RBAC.
+
 - **Overview Top Models shows a preview per model**: each model lists its
   top four agents/flows/sessions by spend or usage, with a See N more
   control when there are more. Expanded groups cap nested sessions the
