@@ -120,6 +120,21 @@ export class ConsoleHeader extends LitElement {
     .theme-switcher-container {
       padding: 0.5rem 1rem;
     }
+    .user-menu-trigger {
+      display: inline-flex;
+      align-items: center;
+      padding: 0;
+      border: none;
+      border-radius: 50%;
+      background: none;
+      cursor: pointer;
+      color: inherit;
+      font: inherit;
+    }
+    .user-menu-trigger:focus-visible {
+      outline: var(--sl-focus-ring);
+      outline-offset: var(--sl-focus-ring-offset);
+    }
     .user-info {
       padding: 0.5rem 1rem;
       line-height: 1.4;
@@ -1027,14 +1042,19 @@ export class ConsoleHeader extends LitElement {
 
           <!-- User Menu -->
           <sl-dropdown distance="8">
-            <user-avatar
+            <button
               slot="trigger"
-              style="cursor: pointer"
-              .image=${this._user?.avatar_url || ''}
-              .label=${this._user?.full_name || this._user?.username || ''}
-              .seed=${this._user?.username || ''}
-              .size=${32}
-            ></user-avatar>
+              class="user-menu-trigger"
+              type="button"
+              aria-label="User Menu"
+            >
+              <user-avatar
+                .image=${this._user?.avatar_url || ''}
+                .label=${this._user?.full_name || this._user?.username || ''}
+                .seed=${this._user?.username || ''}
+                .size=${32}
+              ></user-avatar>
+            </button>
             <sl-menu>
               <div class="theme-switcher-container">
                 <theme-switcher></theme-switcher>

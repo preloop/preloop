@@ -6,7 +6,7 @@ import '@shoelace-style/shoelace/dist/components/avatar/avatar.js';
  * Deterministic color from a string (user id or username).
  * Returns a CSS hsl() value.
  */
-function deterministicColor(seed: string): string {
+export function deterministicColor(seed: string): string {
   let hash = 0;
   for (let i = 0; i < seed.length; i++) {
     hash = seed.charCodeAt(i) + ((hash << 5) - hash);
@@ -18,7 +18,7 @@ function deterministicColor(seed: string): string {
 /**
  * Extract up to two initials from a display name or username.
  */
-function getInitials(name: string): string {
+export function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
   if (parts.length >= 2) {
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();

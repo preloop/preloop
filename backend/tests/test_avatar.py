@@ -13,6 +13,7 @@ from preloop.services.avatar import (
     process_avatar,
     validate_content_type,
     validate_size,
+    MAX_PIXELS,
     MAX_UPLOAD_BYTES,
     SSO_AVATAR_CLAIMS,
 )
@@ -129,6 +130,103 @@ class TestProcessAvatar:
         assert img.height <= 256
 
 
+class TestDecompressionBomb:
+    """The decoded pixel count is bounded before any full decode happens."""
+
+    def _png_header(self, width: int, height: int) -> bytes:
+        """A tiny PNG whose header declares ``width`` x ``height``.
+
+        ``Image.open`` only parses the header, so a payload of a few hundred
+        bytes is enough to exercise the pixel-count guard. If the guard ever
+        regresses to checking dimensions after ``convert()``, these tests would
+        try to allocate the full buffer instead of raising.
+        """
+        import struct
+        import zlib
+
+        def chunk(kind: bytes, payload: bytes) -> bytes:
+            crc = zlib.crc32(kind + payload) & 0xFFFFFFFF
+            return (
+                struct.pack(">I", len(payload))
+                + kind
+                + payload
+                + struct.pack(">I", crc)
+            )
+
+        ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+        return (
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(b"\x00" * 16))
+            + chunk(b"IEND", b"")
+        )
+
+    def test_payload_stays_tiny(self):
+        """Guard the premise: the bomb payload is orders of magnitude smaller."""
+        bomb = self._png_header(5000, 5000)
+        assert len(bomb) < 1024
+        assert 5000 * 5000 > MAX_PIXELS
+
+    def test_rejects_bomb_above_pixel_limit(self):
+        """25M declared pixels is rejected by the explicit pre-decode check.
+
+        This size sits above ``MAX_PIXELS`` but below the 2x threshold where
+        Pillow raises on its own, so it covers our own guard specifically.
+        """
+        bomb = self._png_header(5000, 5000)
+        with pytest.raises(AvatarValidationError, match="too large"):
+            process_avatar(bomb, "image/png")
+
+    def test_rejects_extreme_bomb(self):
+        """Pillow's own DecompressionBombError surfaces as a validation error."""
+        bomb = self._png_header(30000, 30000)
+        with pytest.raises(AvatarValidationError, match="too large"):
+            process_avatar(bomb, "image/png")
+
+    def test_pillow_pixel_limit_is_lowered(self):
+        """Pillow's global bomb threshold is tightened to our own bound."""
+        from PIL import Image
+
+        img = Image.new("RGBA", (32, 32), (0, 128, 0, 255))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        process_avatar(buf.getvalue(), "image/png")
+
+        assert Image.MAX_IMAGE_PIXELS == MAX_PIXELS
+
+    def test_image_under_limit_still_processes(self):
+        """The guard does not reject ordinary avatars."""
+        from PIL import Image
+
+        img = Image.new("RGBA", (512, 512), (0, 0, 255, 255))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        result = process_avatar(buf.getvalue(), "image/png")
+        assert result.startswith("data:image/png;base64,")
+
+
+class TestPillowDependencyDeclared:
+    """Pillow is a declared runtime dependency, not a best-effort import."""
+
+    def test_pillow_importable(self):
+        from PIL import Image  # noqa: F401
+
+    def test_pillow_declared_in_pyproject(self):
+        """A clean ``pip install -e ".[dev]"`` must provide PIL."""
+        import tomllib
+        from pathlib import Path
+
+        # backend/tests/test_avatar.py -> repo root
+        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        dependencies = data["project"]["dependencies"]
+
+        assert any(dep.lower().startswith("pillow") for dep in dependencies), (
+            "Pillow must be declared in [project].dependencies so the avatar "
+            "service is not silently unavailable on a clean install."
+        )
+
+
 # ---------------------------------------------------------------------------
 # SSO claim mapping
 # ---------------------------------------------------------------------------
@@ -165,6 +263,20 @@ class TestExtractSsoAvatarUrl:
 
     def test_non_http_value_returns_none(self):
         url = extract_sso_avatar_url("google", {"picture": "not-a-url"})
+        assert url is None
+
+    def test_plaintext_http_returns_none(self):
+        """A plaintext avatar URL is MITM-able, so it is not accepted."""
+        url = extract_sso_avatar_url("google", {"picture": "http://example.com/p.jpg"})
+        assert url is None
+
+    def test_scheme_lookalike_returns_none(self):
+        """`startswith("http")` used to accept this; an explicit scheme does not."""
+        for value in ("httpfoo", "httpfoo://example.com/p.jpg", "https:/example.com"):
+            assert extract_sso_avatar_url("google", {"picture": value}) is None
+
+    def test_non_string_claim_returns_none(self):
+        url = extract_sso_avatar_url("google", {"picture": {"url": "https://x/y"}})
         assert url is None
 
     def test_claim_keys_documented(self):
