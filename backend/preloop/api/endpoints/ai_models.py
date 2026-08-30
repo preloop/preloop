@@ -390,6 +390,7 @@ async def list_provider_available_models(
     the body always wins. Stored secrets are never returned to the client.
     """
     api_key, api_endpoint, aws_auth, model_kind = _resolve_listing_inputs(
+        provider=provider,
         request_in=request_in,
         db=db,
         current_user=current_user,
@@ -491,6 +492,7 @@ def _aws_auth_from_stored_bedrock_secret(
 
 def _resolve_listing_inputs(
     *,
+    provider: str,
     request_in: Optional[AvailableModelsRequest],
     db: Optional[Session],
     current_user: Optional[User],
@@ -504,6 +506,13 @@ def _resolve_listing_inputs(
 
     The stored plaintext is used only for the live list call and is never
     copied into the response.
+
+    A stored secret is only ever used for the provider it was stored for. The
+    edit form leaves the provider dropdown enabled, so without that check a
+    caller could pair one model's ``ai_model_id`` with a different ``provider``
+    plus an attacker-chosen ``api_endpoint`` and have the server forward the
+    decrypted key there. ``validate_discovery_endpoint`` blocks private hosts
+    but not public ones, so the mismatch is rejected before decryption.
     """
     typed_key = (request_in.api_key or "").strip() if request_in else ""
     typed_endpoint = (request_in.api_endpoint or "").strip() if request_in else ""
@@ -533,9 +542,22 @@ def _resolve_listing_inputs(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="AI Model not found"
             )
+        if (db_model.provider_name or "").strip().lower() != (
+            provider or ""
+        ).strip().lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Stored model provider does not match the requested provider",
+            )
         try:
             stored_key = crud_ai_model.resolve_listing_secret(db_model)
-        except Exception:
+        except ValueError:
+            # Every expected failure below resolve_listing_secret normalizes to
+            # ValueError: decrypt_value re-raises InvalidToken, the vault
+            # backend re-raises transport/lookup errors, credential payload
+            # parsing raises on bad JSON, and CredentialRefreshError subclasses
+            # ValueError. Anything else is a real bug and must stay loud rather
+            # than degrade to "missing_key".
             logger.warning(
                 "Failed to decrypt stored listing credentials for model %s",
                 model_id,

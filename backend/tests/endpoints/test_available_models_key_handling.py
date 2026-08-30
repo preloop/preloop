@@ -293,3 +293,152 @@ async def test_post_unknown_stored_model_is_404(mocker):
         )
 
     assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_post_provider_mismatch_never_decrypts_the_stored_key(mocker):
+    """A stored key is only usable for the provider it was stored for.
+
+    The edit form leaves the provider dropdown enabled, so a caller can pair
+    a Z.ai model id with ``provider=custom`` and an attacker-controlled
+    ``api_endpoint``. ``validate_discovery_endpoint`` blocks private hosts but
+    not public ones, so without this check the decrypted Z.ai key would be
+    forwarded to that URL.
+    """
+    user = MagicMock()
+    user.account_id = uuid.uuid4()
+    stored = MagicMock()
+    stored.provider_name = "zai"
+    stored.api_endpoint = None
+    stored.meta_data = {}
+    mocker.patch.object(ai_models.crud_ai_model, "get_for_account", return_value=stored)
+    resolve = mocker.patch.object(
+        ai_models.crud_ai_model,
+        "resolve_listing_secret",
+        return_value="stored-zai-key",
+    )
+    fetch = mocker.patch.object(
+        ai_models,
+        "get_available_models_for_provider",
+        new=AsyncMock(
+            return_value=ModelDiscoveryResult(models=["a-model"], source="live")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await ai_models.list_provider_available_models(
+            provider="custom",
+            request_in=AvailableModelsRequest(
+                ai_model_id=uuid.uuid4(),
+                api_endpoint="https://attacker.example/v1",
+            ),
+            db=MagicMock(),
+            current_user=user,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == (
+        "Stored model provider does not match the requested provider"
+    )
+    resolve.assert_not_called()
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_provider_match_is_case_insensitive(mocker):
+    """Provider casing from the path must not break a legitimate refresh."""
+    user = MagicMock()
+    user.account_id = uuid.uuid4()
+    stored = MagicMock()
+    stored.provider_name = "ZAI"
+    stored.api_endpoint = None
+    stored.meta_data = {}
+    mocker.patch.object(ai_models.crud_ai_model, "get_for_account", return_value=stored)
+    mocker.patch.object(
+        ai_models.crud_ai_model,
+        "resolve_listing_secret",
+        return_value="stored-zai-key",
+    )
+    fetch = mocker.patch.object(
+        ai_models,
+        "get_available_models_for_provider",
+        new=AsyncMock(
+            return_value=ModelDiscoveryResult(models=["glm-5.3"], source="live")
+        ),
+    )
+
+    result = await ai_models.list_provider_available_models(
+        provider="zai",
+        request_in=AvailableModelsRequest(ai_model_id=uuid.uuid4()),
+        db=MagicMock(),
+        current_user=user,
+    )
+
+    assert result.models == ["glm-5.3"]
+    fetch.assert_awaited_once_with("zai", "stored-zai-key", "llm", None, aws_auth=None)
+
+
+@pytest.mark.asyncio
+async def test_post_unexpected_secret_error_is_not_swallowed(mocker):
+    """Only expected decryption failures degrade to an unauthenticated list.
+
+    Expected failures all normalize to ValueError. A programming bug (say an
+    AttributeError after a schema change) must surface instead of quietly
+    turning into a "missing_key" fallback.
+    """
+    user = MagicMock()
+    user.account_id = uuid.uuid4()
+    stored = MagicMock()
+    stored.provider_name = "zai"
+    stored.api_endpoint = None
+    stored.meta_data = {}
+    mocker.patch.object(ai_models.crud_ai_model, "get_for_account", return_value=stored)
+    mocker.patch.object(
+        ai_models.crud_ai_model,
+        "resolve_listing_secret",
+        side_effect=AttributeError("credentials_secret vanished"),
+    )
+
+    with pytest.raises(AttributeError):
+        await ai_models.list_provider_available_models(
+            provider="zai",
+            request_in=AvailableModelsRequest(ai_model_id=uuid.uuid4()),
+            db=MagicMock(),
+            current_user=user,
+        )
+
+
+@pytest.mark.asyncio
+async def test_post_undecryptable_secret_still_falls_back(mocker):
+    """An unreadable stored secret still degrades gracefully."""
+    user = MagicMock()
+    user.account_id = uuid.uuid4()
+    stored = MagicMock()
+    stored.provider_name = "zai"
+    stored.api_endpoint = None
+    stored.meta_data = {}
+    mocker.patch.object(ai_models.crud_ai_model, "get_for_account", return_value=stored)
+    mocker.patch.object(
+        ai_models.crud_ai_model,
+        "resolve_listing_secret",
+        side_effect=ValueError("Unable to decrypt value"),
+    )
+    fetch = mocker.patch.object(
+        ai_models,
+        "get_available_models_for_provider",
+        new=AsyncMock(
+            return_value=ModelDiscoveryResult(
+                models=[], source="fallback", error="missing_key"
+            )
+        ),
+    )
+
+    result = await ai_models.list_provider_available_models(
+        provider="zai",
+        request_in=AvailableModelsRequest(ai_model_id=uuid.uuid4()),
+        db=MagicMock(),
+        current_user=user,
+    )
+
+    assert result.error == "missing_key"
+    fetch.assert_awaited_once_with("zai", None, "llm", None, aws_auth=None)

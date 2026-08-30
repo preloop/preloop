@@ -233,7 +233,9 @@ async def get_available_models_for_provider(
             return _fallback([], ERROR_MISSING_ENDPOINT)
         if provider == "openrouter" and not (api_key or "").strip():
             return _fallback([], ERROR_MISSING_KEY)
-        return await _get_openai_compatible_models(endpoint, api_key)
+        return await _get_openai_compatible_models(
+            endpoint, api_key, model_kind=normalized_model_kind
+        )
     else:
         # Unknown provider with no endpoint convention to follow.
         return _fallback([], ERROR_UNSUPPORTED)
@@ -344,7 +346,9 @@ def validate_qwen_endpoint(api_endpoint: str) -> str:
 
 
 async def _get_openai_compatible_models(
-    api_endpoint: str, api_key: Optional[str] = None
+    api_endpoint: str,
+    api_key: Optional[str] = None,
+    model_kind: ModelKind = "llm",
 ) -> ModelDiscoveryResult:
     """List models from an OpenAI-compatible endpoint's ``GET /models``.
 
@@ -353,6 +357,12 @@ async def _get_openai_compatible_models(
     Some servers (OpenRouter included) return a bare list, which is accepted
     too. There is no bundled catalog for arbitrary endpoints, so a failed
     fetch yields an empty fallback with a reason rather than a stale guess.
+
+    ``stt``/``tts`` narrow the live ids by the same name markers OpenAI ids
+    use, which needs no catalog. The ``llm`` kind keeps the full live list:
+    the LLM filter is an exclusion list tuned to OpenAI's naming, and markers
+    like ``instruct`` are ordinary chat models on a self-hosted endpoint
+    (``Llama-3-8B-Instruct``), so applying it here would hide real models.
     """
     try:
         from openai import AsyncOpenAI, AuthenticationError
@@ -396,7 +406,12 @@ async def _get_openai_compatible_models(
         if http_client is not None:
             await http_client.aclose()
 
-    return _live(_extract_model_ids(response))
+    model_ids = _extract_model_ids(response)
+    if model_kind in ("stt", "tts"):
+        model_ids = _openai_ids_for_kind(model_ids, model_kind)
+        if not model_ids:
+            return _fallback([], ERROR_EMPTY_RESPONSE)
+    return _live(model_ids)
 
 
 def _extract_model_ids(response: object) -> List[str]:

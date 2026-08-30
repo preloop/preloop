@@ -1378,6 +1378,93 @@ class TestOpenAICompatibleModels:
         assert result.models == ["a-model", "b-model"]
 
     @pytest.mark.asyncio
+    async def test_stt_kind_narrows_the_live_list(self):
+        """Selecting "Speech to text" must not show the endpoint's chat ids."""
+        response = self._models_response(
+            "k3", "k3-turbo", "whisper-large-v3", "gpt-4o-transcribe"
+        )
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider(
+                "custom",
+                "test_key",
+                model_kind="stt",
+                api_endpoint="https://api.kimi.example/v1",
+            )
+
+        assert result.models == ["gpt-4o-transcribe", "whisper-large-v3"]
+        assert result.source == "live"
+
+    @pytest.mark.asyncio
+    async def test_tts_kind_narrows_the_live_list(self):
+        response = self._models_response("k3", "tts-1", "tts-1-hd")
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider(
+                "openai-compatible",
+                "test_key",
+                model_kind="tts",
+                api_endpoint="https://gateway.example.com/v1",
+            )
+
+        assert result.models == ["tts-1", "tts-1-hd"]
+        assert result.source == "live"
+
+    @pytest.mark.asyncio
+    async def test_audio_kind_with_no_matching_ids_is_an_empty_fallback(self):
+        """An endpoint serving only chat ids offers no stt suggestions."""
+        response = self._models_response("k3", "k3-turbo")
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider(
+                "custom",
+                "test_key",
+                model_kind="stt",
+                api_endpoint="https://api.kimi.example/v1",
+            )
+
+        assert result.models == []
+        assert result.source == "fallback"
+        assert result.error == "empty_response"
+
+    @pytest.mark.asyncio
+    async def test_llm_kind_keeps_the_full_live_list(self):
+        """The OpenAI chat exclusion list must not run against a custom endpoint.
+
+        Markers like "instruct" name ordinary chat models on a self-hosted
+        server, so excluding them here would hide real models. Curation of
+        chat ids is an OpenAI-specific concern.
+        """
+        response = self._models_response(
+            "Llama-3-8B-Instruct", "k3", "text-embedding-ada-002"
+        )
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider(
+                "custom",
+                "test_key",
+                api_endpoint="https://api.kimi.example/v1",
+            )
+
+        assert result.models == [
+            "Llama-3-8B-Instruct",
+            "k3",
+            "text-embedding-ada-002",
+        ]
+
+    @pytest.mark.asyncio
     async def test_openai_compatible_without_endpoint_returns_empty(self):
         # Nothing to query, but this must not raise: the picker just shows no
         # suggestions until an endpoint is entered.
