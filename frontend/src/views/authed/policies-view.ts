@@ -126,6 +126,75 @@ interface PruneResponse {
   remaining_count: number;
 }
 
+interface PolicyValidationError {
+  path: string;
+  message: string;
+}
+
+/**
+ * Ready-made model rules. Picking one sets everything that has to agree:
+ * which side of the call to match, the detectors that produce the facts, the
+ * condition that reads those facts, and a suggested action.
+ */
+export const MODEL_IO_PRESETS = [
+  {
+    id: 'block-pii-prompts',
+    label: 'Block PII in prompts',
+    summary: 'Scan prompts for personal data and refuse the request.',
+    target: 'model.request' as const,
+    action: 'deny' as const,
+    expression: 'pii.found == true',
+    detectPii: true,
+    detectInjection: false,
+    detectModeration: false,
+  },
+  {
+    id: 'flag-injection',
+    label: 'Flag prompt injection',
+    summary: 'Send likely injection attempts to a human instead of the model.',
+    target: 'model.request' as const,
+    action: 'require_approval' as const,
+    expression: 'injection.score > 0.7',
+    detectPii: false,
+    detectInjection: true,
+    detectModeration: false,
+  },
+  {
+    id: 'block-flagged-completions',
+    label: 'Block flagged completions',
+    summary: 'Scan what the model returns and refuse moderated content.',
+    target: 'model.response' as const,
+    action: 'deny' as const,
+    expression: 'moderation.flagged == true',
+    detectPii: false,
+    detectInjection: false,
+    detectModeration: true,
+  },
+];
+
+/** What each detector adds to the attributes a condition can read. */
+const DETECTOR_FACTS: Array<{
+  key: 'pii' | 'injection' | 'moderation';
+  label: string;
+  facts: string[];
+}> = [
+  {
+    key: 'pii',
+    label: 'PII',
+    facts: ['pii.found', 'pii.types_found'],
+  },
+  {
+    key: 'injection',
+    label: 'Injection',
+    facts: ['injection.score', 'injection.matched_patterns'],
+  },
+  {
+    key: 'moderation',
+    label: 'Moderation',
+    facts: ['moderation.flagged', 'moderation.categories'],
+  },
+];
+
 @customElement('policies-view')
 export class PoliciesView extends LitElement {
   @state() private _activeTab = 'rules';
@@ -150,7 +219,7 @@ export class PoliciesView extends LitElement {
   @state() private _savingModelIO = false;
   @state() private _modelIOForm = {
     id: '',
-    kind: 'model.request' as 'tool' | 'model.request' | 'model.response',
+    ruleType: 'model' as 'tool' | 'model',
     toolName: '',
     target: 'model.request' as 'model.request' | 'model.response',
     enabled: true,
@@ -161,6 +230,8 @@ export class PoliciesView extends LitElement {
     detectInjection: false,
     detectModeration: false,
     onDetectorTimeout: 'deny' as 'allow' | 'deny',
+    conditionMode: 'preset' as 'preset' | 'custom',
+    presetId: MODEL_IO_PRESETS[0].id,
   };
 
   // Approval workflows state
@@ -174,6 +245,14 @@ export class PoliciesView extends LitElement {
   @state() private _pendingFile: File | null = null;
   @state() private _isUploading = false;
   @state() private _isExporting = false;
+
+  // YAML tab: live editor over the active policy export.
+  @state() private _yamlDraft = '';
+  @state() private _yamlDirty = false;
+  @state() private _yamlValidating = false;
+  @state() private _yamlErrors: PolicyValidationError[] = [];
+  @state() private _yamlWarnings: string[] = [];
+  @state() private _yamlNotice = '';
 
   // Version management state
   @state() private _versions: PolicyVersion[] = [];
@@ -289,19 +368,6 @@ export class PoliciesView extends LitElement {
         background: var(--sl-color-neutral-0);
       }
 
-      .page-lead {
-        font-size: 14px;
-        color: var(--sl-color-neutral-600);
-        margin: 0 0 var(--sl-spacing-medium);
-      }
-
-      .toolbar {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-small);
-        margin-bottom: var(--sl-spacing-medium);
-      }
-
       .rule-filters {
         display: flex;
         flex-wrap: wrap;
@@ -326,6 +392,121 @@ export class PoliciesView extends LitElement {
         color: var(--sl-color-neutral-500);
         margin: var(--sl-spacing-2x-small) 0 var(--sl-spacing-medium);
         line-height: 1.5;
+      }
+
+      /* YAML tab: live editor over the active policy */
+      .yaml-editor-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--sl-spacing-medium);
+        margin-bottom: var(--sl-spacing-small);
+      }
+
+      .yaml-editor-intro {
+        min-width: 260px;
+        flex: 1;
+      }
+
+      .yaml-editor-intro .model-io-hint {
+        margin-bottom: 0;
+      }
+
+      .yaml-editor-title {
+        font-size: var(--sl-font-size-medium);
+        font-weight: var(--sl-font-weight-semibold);
+        color: var(--sl-color-neutral-900);
+        margin: 0 0 var(--sl-spacing-2x-small);
+      }
+
+      .yaml-editor-actions {
+        display: flex;
+        gap: var(--sl-spacing-x-small);
+        flex-shrink: 0;
+      }
+
+      .yaml-editor::part(textarea) {
+        font-family: var(--sl-font-mono);
+        font-size: var(--sl-font-size-x-small);
+        line-height: 1.6;
+      }
+
+      .yaml-feedback {
+        margin-top: var(--sl-spacing-small);
+      }
+
+      .yaml-error-list {
+        margin: var(--sl-spacing-2x-small) 0 0;
+        padding-left: var(--sl-spacing-large);
+        font-size: var(--sl-font-size-small);
+        line-height: 1.5;
+      }
+
+      /* Add rule dialog */
+      .rule-dialog::part(panel) {
+        max-width: 620px;
+      }
+
+      .rule-dialog sl-radio-group::part(form-control-input) {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-2x-small);
+      }
+
+      .preset-list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-x-small);
+        margin-bottom: var(--sl-spacing-small);
+      }
+
+      .preset-card {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        text-align: left;
+        padding: var(--sl-spacing-small);
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        background: var(--sl-color-neutral-0);
+        color: inherit;
+        cursor: pointer;
+        font: inherit;
+        transition: border-color 0.15s ease-out;
+      }
+
+      .preset-card:hover {
+        border-color: var(--sl-color-primary-400);
+      }
+
+      .preset-card.selected {
+        border-color: var(--sl-color-primary-600);
+        background: var(--sl-color-primary-50);
+      }
+
+      .preset-label {
+        font-size: var(--sl-font-size-small);
+        font-weight: var(--sl-font-weight-semibold);
+        color: var(--sl-color-neutral-900);
+      }
+
+      .preset-summary {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-600);
+      }
+
+      .preset-meta {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-500);
+      }
+
+      .detector-facts {
+        margin: var(--sl-spacing-x-small) 0 0;
+        padding-left: var(--sl-spacing-large);
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-500);
+        line-height: 1.7;
       }
 
       .model-io-hint code {
@@ -428,12 +609,6 @@ export class PoliciesView extends LitElement {
         display: flex;
         flex-direction: column;
         gap: var(--sl-spacing-large);
-      }
-
-      .policy-files-actions {
-        display: flex;
-        gap: var(--sl-spacing-medium);
-        flex-wrap: wrap;
       }
 
       .upload-area {
@@ -877,31 +1052,64 @@ export class PoliciesView extends LitElement {
     }
   }
 
-  private async _refreshCurrentExport() {
+  /**
+   * Pull the active policy YAML. Returns false when the export failed so
+   * callers can surface the problem instead of opening an empty editor.
+   */
+  private async _refreshCurrentExport(): Promise<boolean> {
     try {
       const response = await fetchWithAuth(
         '/api/v1/policies/export?format=yaml'
       );
-      this._currentExportYaml = response.ok ? await response.text() : '';
+      if (!response.ok) {
+        this._currentExportYaml = '';
+        return false;
+      }
+      this._currentExportYaml = await response.text();
+      // An edited draft is the user's work: only resync when it is untouched.
+      if (!this._yamlDirty) {
+        this._yamlDraft = this._currentExportYaml;
+      }
+      return true;
     } catch {
       this._currentExportYaml = '';
+      return false;
     }
   }
 
+  /**
+   * Describe a change always works against the policy that is live right now,
+   * so the model diffs against reality rather than a stale export.
+   */
+  private _openGenerateDialog = async () => {
+    this._error = null;
+    const loaded = await this._refreshCurrentExport();
+    if (!loaded) {
+      this._error =
+        'Could not load the current policy YAML, so there is nothing to ' +
+        'describe a change against. Try again in a moment.';
+      return;
+    }
+    this._showGenerateDialog = true;
+  };
+
   private _emptyModelIOForm() {
+    const preset = MODEL_IO_PRESETS[0];
     return {
       id: '',
-      kind: 'model.request' as 'tool' | 'model.request' | 'model.response',
+      ruleType: 'model' as 'tool' | 'model',
       toolName: '',
-      target: 'model.request' as 'model.request' | 'model.response',
+      target: preset.target as 'model.request' | 'model.response',
       enabled: true,
-      action: 'deny' as 'allow' | 'deny' | 'require_approval',
-      expression: 'pii.found == true',
+      action: preset.action as 'allow' | 'deny' | 'require_approval',
+      expression: preset.expression,
       approvalWorkflow: '',
-      detectPii: true,
-      detectInjection: false,
-      detectModeration: false,
+      detectPii: preset.detectPii,
+      detectInjection: preset.detectInjection,
+      detectModeration: preset.detectModeration,
       onDetectorTimeout: 'deny' as 'allow' | 'deny',
+      conditionMode: 'preset' as 'preset' | 'custom',
+      presetId: preset.id,
     };
   }
 
@@ -913,17 +1121,20 @@ export class PoliciesView extends LitElement {
       this._editingModelIOId = rule.id;
       this._modelIOForm = {
         id: rule.id,
-        kind: rule.target,
+        ruleType: 'model',
         toolName: '',
         target: rule.target,
         enabled: rule.enabled !== false,
         action,
-        expression: condition?.expression || 'true',
+        expression: condition?.expression || '',
         approvalWorkflow: rule.approval_workflow || '',
         detectPii: Boolean(rule.detectors?.pii),
         detectInjection: Boolean(rule.detectors?.injection),
         detectModeration: Boolean(rule.detectors?.moderation),
         onDetectorTimeout: rule.on_detector_timeout || 'deny',
+        // An existing rule is shown as it is stored, not as a preset.
+        conditionMode: 'custom',
+        presetId: '',
       };
     } else {
       this._editingModelIOId = null;
@@ -935,6 +1146,78 @@ export class PoliciesView extends LitElement {
   private closeModelIODialog() {
     this._showModelIODialog = false;
     this._editingModelIOId = null;
+  }
+
+  /**
+   * Only Cancel, the close button, or Escape may dismiss the rule dialog.
+   * Overlay clicks are too easy to trigger while filling a long form, and
+   * inner controls must never be able to close it at all.
+   */
+  private _handleModelIORequestClose = (event: CustomEvent) => {
+    if ((event.detail as { source?: string })?.source === 'overlay') {
+      event.preventDefault();
+      return;
+    }
+    this.closeModelIODialog();
+  };
+
+  private _patchModelIOForm(patch: Partial<typeof this._modelIOForm>) {
+    this._modelIOForm = { ...this._modelIOForm, ...patch };
+  }
+
+  /** A preset fills in target, detectors, condition, and suggested action. */
+  private _applyPreset(presetId: string) {
+    const preset = MODEL_IO_PRESETS.find((item) => item.id === presetId);
+    if (!preset) {
+      return;
+    }
+    this._patchModelIOForm({
+      presetId,
+      conditionMode: 'preset',
+      ruleType: 'model',
+      target: preset.target,
+      action: preset.action,
+      expression: preset.expression,
+      detectPii: preset.detectPii,
+      detectInjection: preset.detectInjection,
+      detectModeration: preset.detectModeration,
+      id: this._modelIOForm.id.trim() || preset.id,
+    });
+  }
+
+  /**
+   * Detectors only produce facts; the condition decides when a rule fires.
+   * Warn about the two ways those halves can disagree.
+   */
+  private _modelIOFormWarnings(): string[] {
+    const form = this._modelIOForm;
+    if (form.ruleType !== 'model') {
+      return [];
+    }
+    const warnings: string[] = [];
+    const enabled: Record<string, boolean> = {
+      pii: form.detectPii,
+      injection: form.detectInjection,
+      moderation: form.detectModeration,
+    };
+    for (const detector of DETECTOR_FACTS) {
+      if (
+        form.expression.includes(`${detector.key}.`) &&
+        !enabled[detector.key]
+      ) {
+        warnings.push(
+          `The condition reads ${detector.key}.* but the ${detector.label} ` +
+            'detector is off, so that fact is never produced and the rule ' +
+            'never fires.'
+        );
+      }
+    }
+    if (!form.expression.trim() && form.action !== 'allow') {
+      warnings.push(
+        'Add a condition. An empty condition matches every scanned request.'
+      );
+    }
+    return warnings;
   }
 
   private buildModelIORuleFromForm(): ModelIORule {
@@ -958,6 +1241,8 @@ export class PoliciesView extends LitElement {
       on_detector_timeout: form.onDetectorTimeout,
       conditions: [
         {
+          // Only an allow rule may fall back to "always": defaulting a deny
+          // rule to true would block every scanned request.
           expression: form.expression.trim() || 'true',
           action: form.action,
         },
@@ -967,8 +1252,14 @@ export class PoliciesView extends LitElement {
 
   private async saveModelIORule() {
     const form = this._modelIOForm;
-    if (form.kind === 'tool') {
+    if (form.ruleType === 'tool') {
       await this.saveToolRuleFromForm();
+      return;
+    }
+    if (!form.expression.trim() && form.action !== 'allow') {
+      this._error =
+        `A ${form.action} rule needs a condition. An empty condition would ` +
+        'match every scanned request.';
       return;
     }
     const rule = this.buildModelIORuleFromForm();
@@ -1049,6 +1340,8 @@ export class PoliciesView extends LitElement {
     this._pendingFile = new File([yaml], 'generated.yaml', {
       type: 'application/x-yaml',
     });
+    // The generated policy becomes the new truth, so the editor resyncs.
+    this._yamlDirty = false;
     await this.applyPolicyFile();
     this._showGenerateDialog = false;
   }
@@ -1203,6 +1496,127 @@ export class PoliciesView extends LitElement {
       this._isExporting = false;
     }
   }
+
+  // ============================================================================
+  // YAML editor (active policy)
+  // ============================================================================
+
+  private _triggerImport = () => {
+    this.shadowRoot
+      ?.querySelector<HTMLInputElement>('#policy-file-input')
+      ?.click();
+  };
+
+  private _onYamlDraftInput(value: string) {
+    this._yamlDraft = value;
+    this._yamlDirty = true;
+    this._yamlErrors = [];
+    this._yamlWarnings = [];
+    this._yamlNotice = '';
+  }
+
+  private _revertYamlDraft = () => {
+    this._yamlDraft = this._currentExportYaml;
+    this._yamlDirty = false;
+    this._yamlErrors = [];
+    this._yamlWarnings = [];
+    this._yamlNotice = '';
+  };
+
+  /**
+   * Schema-check the draft without touching the account. Errors are surfaced
+   * inline; nothing is applied here.
+   */
+  private async _validateYamlDraft(): Promise<boolean> {
+    this._yamlValidating = true;
+    this._yamlNotice = '';
+    this._yamlErrors = [];
+    this._yamlWarnings = [];
+
+    try {
+      const formData = new FormData();
+      formData.append(
+        'file',
+        new File([this._yamlDraft], 'policies.yaml', {
+          type: 'application/x-yaml',
+        })
+      );
+      const response = await fetchWithAuth('/api/v1/policies/validate', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        const detail = body?.detail;
+        this._yamlErrors = Array.isArray(detail?.errors)
+          ? detail.errors.map((item: any) => ({
+              path: item.path || '',
+              message: item.message || String(item),
+            }))
+          : [
+              {
+                path: '',
+                message:
+                  detail?.message || detail || 'Could not validate this YAML',
+              },
+            ];
+        return false;
+      }
+
+      const result = await response.json();
+      this._yamlErrors = (result.errors || []).map((item: any) => ({
+        path: item.path || '',
+        message: item.message || String(item),
+      }));
+      this._yamlWarnings = result.warnings || [];
+      const valid = result.is_valid === true && this._yamlErrors.length === 0;
+      if (valid) {
+        this._yamlNotice = 'This YAML is valid.';
+      }
+      return valid;
+    } catch (err: any) {
+      this._yamlErrors = [
+        { path: '', message: err.message || 'Could not validate this YAML' },
+      ];
+      return false;
+    } finally {
+      this._yamlValidating = false;
+    }
+  }
+
+  private _handleValidateClick = () => {
+    void this._validateYamlDraft();
+  };
+
+  /** Validate first, then apply through the normal upload path. */
+  private _saveYamlDraft = async () => {
+    this._error = null;
+    if (!this._yamlDraft.trim()) {
+      this._yamlErrors = [
+        { path: '', message: 'The policy YAML is empty. Nothing to save.' },
+      ];
+      return;
+    }
+
+    const valid = await this._validateYamlDraft();
+    if (!valid) {
+      return;
+    }
+
+    this._pendingFile = new File([this._yamlDraft], 'policies.yaml', {
+      type: 'application/x-yaml',
+    });
+    this._yamlDirty = false;
+    await this.applyPolicyFile();
+    if (this._error) {
+      // Apply failed, so the draft is still the user's unsaved work.
+      this._yamlDirty = true;
+      this._yamlNotice = '';
+      return;
+    }
+    this._yamlNotice = 'Policy saved and applied.';
+  };
 
   // ============================================================================
   // Version Management API Methods
@@ -1617,7 +2031,6 @@ export class PoliciesView extends LitElement {
               </div>
             `
       }
-      ${this.renderModelIODialog()}
     `;
   }
 
@@ -1725,51 +2138,45 @@ export class PoliciesView extends LitElement {
 
   private renderModelIODialog() {
     const form = this._modelIOForm;
+    const isTool = form.ruleType === 'tool';
+    const warnings = this._modelIOFormWarnings();
     return html`
       <sl-dialog
+        class="rule-dialog"
         label=${this._editingModelIOId ? 'Edit rule' : 'Add rule'}
+        data-testid="rule-dialog"
         ?open=${this._showModelIODialog}
-        @sl-hide=${this.closeModelIODialog}
+        @sl-request-close=${this._handleModelIORequestClose}
       >
         <div class="form-group">
-          <label>Rule id</label>
-          <sl-input
-            .value=${form.id}
-            ?disabled=${Boolean(this._editingModelIOId)}
-            @sl-input=${(e: any) =>
-              (this._modelIOForm = { ...form, id: e.target.value })}
-          ></sl-input>
-        </div>
-        <div class="form-group">
-          <label>Target</label>
-          <sl-select
-            .value=${form.kind}
-            @sl-change=${(e: any) => {
-              const kind = e.target.value;
-              this._modelIOForm = {
-                ...form,
-                kind,
-                target: kind === 'tool' ? form.target : kind,
-              };
-            }}
+          <label>What does this rule govern?</label>
+          <sl-radio-group
+            data-testid="rule-type"
+            .value=${form.ruleType}
+            @sl-change=${(e: any) =>
+              this._patchModelIOForm({ ruleType: e.target.value })}
           >
-            <sl-option value="tool">tool</sl-option>
-            <sl-option value="model.request">model.request</sl-option>
-            <sl-option value="model.response">model.response</sl-option>
-          </sl-select>
+            <sl-radio value="tool">A tool call</sl-radio>
+            <sl-radio value="model">Model text</sl-radio>
+          </sl-radio-group>
+          <p class="model-io-hint">
+            ${
+              isTool
+                ? 'Runs when an agent calls a tool through the firewall.'
+                : 'Runs on text going to or coming back from a model.'
+            }
+          </p>
         </div>
+
         ${
-          form.kind === 'tool'
+          isTool
             ? html`
                 <div class="form-group">
                   <label>Tool</label>
                   <sl-select
                     .value=${form.toolName}
                     @sl-change=${(e: any) =>
-                      (this._modelIOForm = {
-                        ...form,
-                        toolName: e.target.value,
-                      })}
+                      this._patchModelIOForm({ toolName: e.target.value })}
                   >
                     ${this._tools.map(
                       (tool) =>
@@ -1780,20 +2187,50 @@ export class PoliciesView extends LitElement {
                   </sl-select>
                 </div>
               `
-            : ''
+            : html`
+                <div class="form-group">
+                  <label>Which side of the call?</label>
+                  <sl-radio-group
+                    data-testid="rule-target"
+                    .value=${form.target}
+                    @sl-change=${(e: any) =>
+                      this._patchModelIOForm({ target: e.target.value })}
+                  >
+                    <sl-radio value="model.request">
+                      Request: the prompt, before it reaches the provider
+                    </sl-radio>
+                    <sl-radio value="model.response">
+                      Response: the completion, after the provider replies
+                    </sl-radio>
+                  </sl-radio-group>
+                </div>
+
+                <div class="form-group">
+                  <label>Rule id</label>
+                  <sl-input
+                    .value=${form.id}
+                    placeholder="deny-pii-in-prompts"
+                    ?disabled=${Boolean(this._editingModelIOId)}
+                    @sl-input=${(e: any) =>
+                      this._patchModelIOForm({ id: e.target.value })}
+                  ></sl-input>
+                </div>
+              `
         }
+
         <div class="form-group">
           <label>Action</label>
           <sl-select
             .value=${form.action}
             @sl-change=${(e: any) =>
-              (this._modelIOForm = { ...form, action: e.target.value })}
+              this._patchModelIOForm({ action: e.target.value })}
           >
             <sl-option value="allow">Allow</sl-option>
             <sl-option value="deny">Deny</sl-option>
             <sl-option value="require_approval">Require approval</sl-option>
           </sl-select>
         </div>
+
         ${
           form.action === 'require_approval'
             ? html`
@@ -1802,8 +2239,7 @@ export class PoliciesView extends LitElement {
                   <sl-select
                     .value=${form.approvalWorkflow}
                     @sl-change=${(e: any) =>
-                      (this._modelIOForm = {
-                        ...form,
+                      this._patchModelIOForm({
                         approvalWorkflow: e.target.value,
                       })}
                   >
@@ -1818,74 +2254,46 @@ export class PoliciesView extends LitElement {
               `
             : ''
         }
-        <div class="form-group">
-          <label>Condition</label>
-          <sl-textarea
-            rows="2"
-            .value=${form.expression}
-            @sl-input=${(e: any) =>
-              (this._modelIOForm = { ...form, expression: e.target.value })}
-          ></sl-textarea>
-          <p class="model-io-hint">
-            Examples: <code>pii.found == true</code>,
-            <code>injection.score &gt; 0.7</code>,
-            <code>moderation.flagged == true</code>,
-            <code>model.id == 'gpt-5'</code>,
-            <code>session.id != ''</code>
-          </p>
-        </div>
+        ${isTool ? this._renderToolCondition() : this._renderModelCondition()}
         ${
-          form.kind !== 'tool'
-            ? html`
+          isTool
+            ? ''
+            : html`
                 <div class="form-group">
-                  <label>Detectors</label>
-                  <div class="detector-row">
-                    <sl-switch
-                      ?checked=${form.detectPii}
-                      @sl-change=${(e: any) =>
-                        (this._modelIOForm = {
-                          ...form,
-                          detectPii: e.target.checked,
-                        })}
-                      >PII</sl-switch
-                    >
-                    <sl-switch
-                      ?checked=${form.detectInjection}
-                      @sl-change=${(e: any) =>
-                        (this._modelIOForm = {
-                          ...form,
-                          detectInjection: e.target.checked,
-                        })}
-                      >Injection</sl-switch
-                    >
-                    <sl-switch
-                      ?checked=${form.detectModeration}
-                      @sl-change=${(e: any) =>
-                        (this._modelIOForm = {
-                          ...form,
-                          detectModeration: e.target.checked,
-                        })}
-                      >Moderation</sl-switch
-                    >
-                  </div>
-                </div>
-                <div class="form-group">
-                  <label>On detector timeout</label>
+                  <label>If a detector times out</label>
                   <sl-select
                     .value=${form.onDetectorTimeout}
                     @sl-change=${(e: any) =>
-                      (this._modelIOForm = {
-                        ...form,
+                      this._patchModelIOForm({
                         onDetectorTimeout: e.target.value,
                       })}
                   >
-                    <sl-option value="deny">Deny (fail closed)</sl-option>
-                    <sl-option value="allow">Allow (skip this rule)</sl-option>
+                    <sl-option value="deny">
+                      Deny the call (fail closed)
+                    </sl-option>
+                    <sl-option value="allow">
+                      Skip this rule and continue
+                    </sl-option>
                   </sl-select>
                 </div>
               `
+        }
+        ${
+          warnings.length > 0
+            ? html`
+                <sl-alert variant="warning" open data-testid="rule-warnings">
+                  <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                  <ul class="yaml-error-list">
+                    ${warnings.map((warning) => html`<li>${warning}</li>`)}
+                  </ul>
+                </sl-alert>
+              `
             : ''
         }
+
+        <sl-button slot="footer" @click=${this.closeModelIODialog}>
+          Cancel
+        </sl-button>
         <sl-button
           slot="footer"
           variant="primary"
@@ -1894,10 +2302,155 @@ export class PoliciesView extends LitElement {
         >
           Save
         </sl-button>
-        <sl-button slot="footer" @click=${this.closeModelIODialog}>
-          Cancel
-        </sl-button>
       </sl-dialog>
+    `;
+  }
+
+  private _renderToolCondition() {
+    const form = this._modelIOForm;
+    return html`
+      <div class="form-group">
+        <label>When should it fire?</label>
+        <sl-textarea
+          rows="2"
+          placeholder="Leave empty to apply to every call to this tool"
+          .value=${form.expression}
+          @sl-input=${(e: any) =>
+            this._patchModelIOForm({ expression: e.target.value })}
+        ></sl-textarea>
+        <p class="model-io-hint">
+          Reads the call itself, for example
+          <code>args.command.contains("rm")</code> or
+          <code>session.id != ''</code>. An empty condition applies to every
+          call to this tool.
+        </p>
+      </div>
+    `;
+  }
+
+  /**
+   * Model rules have two halves that people routinely conflate: detectors
+   * (scanners that produce facts) and the condition (when the rule fires).
+   * The form names both and shows how a preset wires them together.
+   */
+  private _renderModelCondition() {
+    const form = this._modelIOForm;
+    const usePreset = form.conditionMode === 'preset';
+    const detectorState: Record<string, boolean> = {
+      pii: form.detectPii,
+      injection: form.detectInjection,
+      moderation: form.detectModeration,
+    };
+    const detectorPatch: Record<
+      string,
+      'detectPii' | 'detectInjection' | 'detectModeration'
+    > = {
+      pii: 'detectPii',
+      injection: 'detectInjection',
+      moderation: 'detectModeration',
+    };
+
+    return html`
+      <div class="form-group">
+        <label>When should it fire?</label>
+        <sl-radio-group
+          data-testid="condition-mode"
+          .value=${form.conditionMode}
+          @sl-change=${(e: any) =>
+            this._patchModelIOForm({ conditionMode: e.target.value })}
+        >
+          <sl-radio value="preset">Start from a preset</sl-radio>
+          <sl-radio value="custom">Write my own condition</sl-radio>
+        </sl-radio-group>
+      </div>
+
+      ${
+        usePreset
+          ? html`
+              <div class="preset-list" data-testid="rule-presets">
+                ${MODEL_IO_PRESETS.map(
+                  (preset) => html`
+                    <button
+                      type="button"
+                      class="preset-card ${
+                        form.presetId === preset.id ? 'selected' : ''
+                      }"
+                      data-preset=${preset.id}
+                      @click=${() => this._applyPreset(preset.id)}
+                    >
+                      <span class="preset-label">${preset.label}</span>
+                      <span class="preset-summary">${preset.summary}</span>
+                      <span class="preset-meta">
+                        ${preset.target} &middot; ${preset.action} &middot;
+                        <code>${preset.expression}</code>
+                      </span>
+                    </button>
+                  `
+                )}
+              </div>
+              <p class="model-io-hint">
+                The preset sets the detectors and the condition below. Switch to
+                "Write my own condition" to change the expression.
+              </p>
+            `
+          : html`
+              <div class="form-group">
+                <sl-textarea
+                  rows="2"
+                  data-testid="condition-expression"
+                  placeholder="pii.found == true"
+                  .value=${form.expression}
+                  @sl-input=${(e: any) =>
+                    this._patchModelIOForm({ expression: e.target.value })}
+                ></sl-textarea>
+                <p class="model-io-hint">
+                  Reads detector facts and request attributes, for example
+                  <code>injection.score &gt; 0.7</code>,
+                  <code>moderation.flagged == true</code>,
+                  <code>model.id == 'gpt-5'</code>, or
+                  <code>session.id != ''</code>.
+                </p>
+              </div>
+            `
+      }
+
+      <div class="form-group">
+        <label>Detectors</label>
+        <p class="model-io-hint">
+          Detectors scan the text and produce facts. They never block anything
+          on their own: the condition above decides when the rule fires. Turning
+          a detector on without referencing it in the condition only costs a
+          scan.
+        </p>
+        <div class="detector-row">
+          ${DETECTOR_FACTS.map(
+            (detector) => html`
+              <sl-switch
+                data-detector=${detector.key}
+                ?checked=${detectorState[detector.key]}
+                @sl-change=${(e: any) =>
+                  this._patchModelIOForm({
+                    [detectorPatch[detector.key]]: e.target.checked,
+                  } as any)}
+                >${detector.label}</sl-switch
+              >
+            `
+          )}
+        </div>
+        <ul class="detector-facts">
+          ${DETECTOR_FACTS.map(
+            (detector) => html`
+              <li>
+                <strong>${detector.label}</strong> produces
+                ${detector.facts.map(
+                  (fact, index) =>
+                    html`${index > 0 ? ', ' : ''}<code>${fact}</code>`
+                )}
+              </li>
+            `
+          )}
+        </ul>
+      </div>
     `;
   }
 
@@ -2204,47 +2757,103 @@ export class PoliciesView extends LitElement {
 
     return html`
       <div class="policy-files-container">
-        <div class="policy-files-actions">
-          <sl-button
-            variant="primary"
-            @click=${() =>
-              this.shadowRoot
-                ?.querySelector<HTMLInputElement>('#policy-file-input')
-                ?.click()}
-            ?loading=${this._isUploading}
-          >
-            <sl-icon slot="prefix" name="upload"></sl-icon>
-            Import YAML
-          </sl-button>
-          <sl-button
-            @click=${this.exportPolicies}
-            ?loading=${this._isExporting}
-          >
-            <sl-icon slot="prefix" name="download"></sl-icon>
-            Export YAML
-          </sl-button>
-          <input
-            type="file"
-            id="policy-file-input"
-            accept=".yaml,.yml,.json"
-            @change=${this.handleFileUpload}
-            style="display: none"
-          />
+        <div class="yaml-editor-header">
+          <div class="yaml-editor-intro">
+            <h3 class="yaml-editor-title">Active policy</h3>
+            <p class="model-io-hint">
+              This is the policy running right now. Edit it, validate it, then
+              save. Invalid YAML is never applied.
+            </p>
+          </div>
+          <div class="yaml-editor-actions">
+            <sl-button
+              size="small"
+              ?disabled=${!this._yamlDirty}
+              @click=${this._revertYamlDraft}
+            >
+              Revert
+            </sl-button>
+            <sl-button
+              size="small"
+              ?loading=${this._yamlValidating}
+              @click=${this._handleValidateClick}
+            >
+              Validate
+            </sl-button>
+            <sl-button
+              size="small"
+              variant="primary"
+              ?loading=${this._isUploading}
+              @click=${this._saveYamlDraft}
+            >
+              Save
+            </sl-button>
+          </div>
         </div>
 
-        <sl-card>
-          <div slot="header">Policy File Format</div>
-          <p
-            style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600); margin: 0 0 var(--sl-spacing-medium) 0;"
-          >
-            Preloop supports declarative policy-as-code using YAML files. Define
-            MCP servers, approval workflows, and tool configurations in a single
-            file.
+        <sl-textarea
+          class="yaml-editor"
+          data-testid="policy-yaml-editor"
+          label="Policy YAML"
+          rows="22"
+          resize="vertical"
+          spellcheck="false"
+          .value=${this._yamlDraft}
+          @sl-input=${(e: any) => this._onYamlDraftInput(e.target.value)}
+        ></sl-textarea>
+
+        ${
+          this._yamlErrors.length > 0
+            ? html`
+                <sl-alert variant="danger" open class="yaml-feedback">
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  <strong>This YAML was not applied.</strong>
+                  <ul class="yaml-error-list">
+                    ${this._yamlErrors.map(
+                      (item) => html`
+                        <li>
+                          ${
+                            item.path ? html`<code>${item.path}</code>: ` : ''
+                          }${item.message}
+                        </li>
+                      `
+                    )}
+                  </ul>
+                </sl-alert>
+              `
+            : ''
+        }
+        ${
+          this._yamlWarnings.length > 0
+            ? html`
+                <sl-alert variant="warning" open class="yaml-feedback">
+                  <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                  <ul class="yaml-error-list">
+                    ${this._yamlWarnings.map((item) => html`<li>${item}</li>`)}
+                  </ul>
+                </sl-alert>
+              `
+            : ''
+        }
+        ${
+          this._yamlNotice
+            ? html`
+                <sl-alert variant="success" open class="yaml-feedback">
+                  <sl-icon slot="icon" name="check-circle"></sl-icon>
+                  ${this._yamlNotice}
+                </sl-alert>
+              `
+            : ''
+        }
+
+        <sl-details summary="Policy file format and example">
+          <p class="model-io-hint">
+            Preloop supports declarative policy-as-code. One file defines MCP
+            servers, approval workflows, tool rules, and model I/O rules.
           </p>
-          <sl-details summary="Example Policy File">
-            <pre
-              style="background: var(--sl-color-neutral-100); padding: var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); font-size: var(--sl-font-size-small); overflow-x: auto;"
-            ><code>version: "1.0"
+          <pre
+            style="background: var(--sl-color-neutral-100); padding: var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); font-size: var(--sl-font-size-small); overflow-x: auto;"
+          ><code>version: "1.0"
 metadata:
   name: "Production Safeguards"
   description: "Safety policies for production environment"
@@ -2279,8 +2888,7 @@ model_io:
 defaults:
   require_approval: false
   enabled: true</code></pre>
-          </sl-details>
-        </sl-card>
+        </sl-details>
 
         ${
           this._policyFileHistory.length > 0
@@ -3019,15 +3627,71 @@ defaults:
     `;
   }
 
+  /** Keep the YAML editor honest: reload the export when the tab opens. */
+  private _handleTabShow = (event: CustomEvent) => {
+    const name = (event.detail as { name?: string })?.name;
+    if (!name) {
+      return;
+    }
+    this._activeTab = name;
+    if (name === 'files' && !this._yamlDirty) {
+      void this._refreshCurrentExport();
+    }
+  };
+
   render() {
     return html`
-      <view-header headerText="Policies" width="extra-wide"></view-header>
+      <view-header
+        headerText="Policies"
+        description="Instance rules for tool calls and model input and output. Traffic is allowed when no rule matches."
+        width="extra-wide"
+      >
+        <div slot="main-column">
+          <sl-button
+            size="small"
+            variant="primary"
+            @click=${this._openGenerateDialog}
+          >
+            <sl-icon slot="prefix" name="magic"></sl-icon>
+            Describe a change
+          </sl-button>
+          <sl-button size="small" @click=${() => this.openModelIODialog()}>
+            <sl-icon slot="prefix" name="plus-lg"></sl-icon>
+            Add rule
+          </sl-button>
+          <sl-tooltip content="Apply a policy YAML file, with a diff first">
+            <sl-button
+              size="small"
+              ?loading=${this._isUploading}
+              @click=${this._triggerImport}
+            >
+              <sl-icon slot="prefix" name="upload"></sl-icon>
+              Import YAML
+            </sl-button>
+          </sl-tooltip>
+          <sl-tooltip content="Download the active policy as YAML">
+            <sl-button
+              size="small"
+              ?loading=${this._isExporting}
+              @click=${this.exportPolicies}
+            >
+              <sl-icon slot="prefix" name="download"></sl-icon>
+              Export YAML
+            </sl-button>
+          </sl-tooltip>
+        </div>
+      </view-header>
+
+      <input
+        type="file"
+        id="policy-file-input"
+        accept=".yaml,.yml,.json"
+        @change=${this.handleFileUpload}
+        style="display: none"
+      />
 
       <div class="column-layout extra-wide">
         <div class="main-column">
-          <p class="page-lead">
-            Instance rules for tool calls and model input/output.
-          </p>
           ${
             this._error
               ? html`
@@ -3046,23 +3710,7 @@ defaults:
                   </div>
                 `
               : html`
-                  <div class="toolbar">
-                    <sl-button
-                      variant="primary"
-                      @click=${() => (this._showGenerateDialog = true)}
-                    >
-                      Describe a change
-                    </sl-button>
-                    <sl-button @click=${() => this.openModelIODialog()}>
-                      Add rule
-                    </sl-button>
-                    <sl-button @click=${() => this.exportPolicies()}>
-                      Export YAML
-                    </sl-button>
-                  </div>
-                  <sl-tab-group
-                    @sl-tab-show=${(e: any) => (this._activeTab = e.detail.name)}
-                  >
+                  <sl-tab-group @sl-tab-show=${this._handleTabShow}>
                     <sl-tab
                       slot="nav"
                       panel="rules"
@@ -3085,6 +3733,7 @@ defaults:
                       ${this.renderPolicyFilesTab()}
                     </sl-tab-panel>
                   </sl-tab-group>
+                  ${this.renderModelIODialog()}
                   <policy-generate-dialog
                     .open=${this._showGenerateDialog}
                     .currentYaml=${this._currentExportYaml}
