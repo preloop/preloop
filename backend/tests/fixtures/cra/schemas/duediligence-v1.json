@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "preloop.cra.duediligence/v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "flow",
+    "run_at",
+    "git",
+    "tool_versions",
+    "inputs_declared",
+    "runner",
+    "regime_profile",
+    "component",
+    "product",
+    "usage_context",
+    "evidence",
+    "decision",
+    "record",
+    "status",
+    "verdict",
+    "checks",
+    "assessments",
+    "artifacts",
+    "disclaimer"
+  ],
+  "properties": {
+    "schema": {
+      "const": "preloop.cra.duediligence/v1"
+    },
+    "flow": {
+      "const": "component-due-diligence"
+    },
+    "run_at": {},
+    "git": {},
+    "tool_versions": {},
+    "inputs_declared": {},
+    "runner": {},
+    "regime_profile": {
+      "const": "cra"
+    },
+    "component": {},
+    "product": {},
+    "usage_context": {},
+    "evidence": {},
+    "decision": {},
+    "record": {},
+    "status": {
+      "enum": [
+        "success",
+        "error"
+      ]
+    },
+    "verdict": {
+      "enum": [
+        "recorded",
+        "error"
+      ]
+    },
+    "checks": {},
+    "assessments": {},
+    "artifacts": {},
+    "disclaimer": {
+      "const": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+    }
+  }
+}

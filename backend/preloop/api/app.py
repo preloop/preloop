@@ -12,12 +12,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Any
+from urllib.parse import quote
+from uuid import UUID
 from fastapi import Depends, FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pyinstrument import Profiler
 from pyinstrument.renderers import SpeedscopeRenderer
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -1076,9 +1078,27 @@ def create_app() -> FastAPI:
         )
 
         # --- Public Approval Page ---
-        @app.get("/approval/{request_id}", include_in_schema=False)
-        async def serve_approval_page(request_id: str) -> FileResponse:
-            """Serve the public approval page."""
+        @app.get("/approval/{request_id}", include_in_schema=False, response_model=None)
+        async def serve_approval_page(
+            request: Request, request_id: str
+        ) -> FileResponse | RedirectResponse:
+            """Serve the tokenized public page, or send bare links to console.
+
+            Email/Slack links include ``?token=`` and must keep working
+            without a login. MCP and in-session notices are token-free and
+            used to hit this path; without a token the HTML page always
+            404s on ``/data``. Redirect those to the authed SPA route.
+            """
+            token = (request.query_params.get("token") or "").strip()
+            if not token:
+                try:
+                    approval_id = str(UUID(request_id))
+                except ValueError:
+                    raise HTTPException(status_code=404, detail="Not found") from None
+                return RedirectResponse(
+                    url=f"/console/approval/{quote(approval_id, safe='')}",
+                    status_code=302,
+                )
             approval_html_path = base_dir / "preloop" / "templates" / "approval.html"
             return FileResponse(str(approval_html_path), media_type="text/html")
 

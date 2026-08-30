@@ -21,7 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`get_route_from_filename` maps `pandora.html` to `/pandora`, not `/dora`**:
   top-level HTML files use the basename as the route, with no substring
   match against `dora`.
-
+- **Token-free approval links open the console**: MCP and in-session
+  notices now emit `/console/approval/<id>` (the registered SPA route)
+  instead of `/approval/<id>`, which is the public token page and 404s
+  without `?token=`. Bare `/approval/<id>` 404s unless `id` is a UUID,
+  then 302s to `/console/approval/<id>`; email/Slack links with
+  `?token=` are unchanged.
 - **Edit-mode model refresh lists live models**: refreshing the picker
   while editing a saved AI model (for example a Z.ai key that now serves
   `glm-5.3-flash`) sends the model id so the server decrypts the stored
@@ -91,6 +96,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CRA result.json contract**: the four security-audit presets pin
+  `/workspace/result.json` as a versioned contract (`preloop.cra.sbomaudit/v1`,
+  `vulnscan/v1`, `releaseaudit/v1`, `duediligence/v1`). Tests parse each YAML
+  Required shape, require the honesty line, validate example artifacts against
+  those keys, and reject banned claims (`compliant: true`, `ce_mark: true`,
+  "Article 14 filed").
 - **CRA / AI Act evidence runbook**: rewrite of
   `docs/guide/flows/security-audit-presets.md` as a manufacturer-facing
   runbook for the shipped Apache presets (SBOM Verify, SBOM Exploit

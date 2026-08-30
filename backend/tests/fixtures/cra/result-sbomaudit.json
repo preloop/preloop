@@ -1,0 +1,64 @@
+{
+  "schema": "preloop.cra.sbomaudit/v1",
+  "flow": "sbom-verify",
+  "run_at": "2026-08-20T12:00:00Z",
+  "git": null,
+  "tool_versions": {
+    "spdx-tools": "0.8.2"
+  },
+  "inputs_declared": {
+    "sbom": "sbom/image.spdx.json (workspace seed)"
+  },
+  "runner": {
+    "kind": null,
+    "id": null
+  },
+  "regime_profile": "cra",
+  "source": {
+    "format": "spdx",
+    "spec_version": "SPDX-2.3",
+    "generator_tool": "example-build-toolchain-1.0",
+    "build_ref": "v1.2.3"
+  },
+  "valid": true,
+  "minimum_elements": {
+    "passed": true,
+    "missing": []
+  },
+  "coverage": {
+    "components": 3,
+    "pct_with_version": 100.0,
+    "pct_with_license": 66.7,
+    "pct_with_identifier": 66.7,
+    "unmatched_vs_build": null
+  },
+  "license_flags": [
+    {
+      "component": "example-blob",
+      "license": null,
+      "flag": "missing"
+    }
+  ],
+  "delta": null,
+  "verdict": "pass_with_findings",
+  "checks": [
+    {
+      "name": "format_validity",
+      "passed": true,
+      "skipped": false,
+      "details": "SPDX-2.3 parsed; referential integrity ok"
+    }
+  ],
+  "assessments": [
+    {
+      "topic": "coverage",
+      "judgment": "Agent judgment: missing identifier is a finding, not a fail."
+    }
+  ],
+  "artifacts": {
+    "audit_report": "evidence/audit-report.md",
+    "findings": "evidence/findings.json"
+  },
+  "note": "synthetic fixture",
+  "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+}

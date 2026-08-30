@@ -217,3 +217,60 @@ class TestPublicApprovalDecide:
                 data = response.json()
                 assert data["status"] == "approved"
                 assert data["id"] == str(approval_request.id)
+
+
+class TestPublicApprovalPage:
+    """GET /approval/{id} is the public HTML page, only with a token."""
+
+    def test_bare_path_redirects_to_console(self, client: TestClient):
+        request_id = uuid.uuid4()
+        response = client.get(f"/approval/{request_id}", follow_redirects=False)
+        assert response.status_code == 302
+        assert response.headers["location"] == f"/console/approval/{request_id}"
+
+    def test_empty_token_redirects_to_console(self, client: TestClient):
+        request_id = uuid.uuid4()
+        response = client.get(
+            f"/approval/{request_id}",
+            params={"token": "  "},
+            follow_redirects=False,
+        )
+        assert response.status_code == 302
+        assert response.headers["location"] == f"/console/approval/{request_id}"
+
+    def test_token_query_serves_public_html(self, client: TestClient):
+        request_id = uuid.uuid4()
+        response = client.get(
+            f"/approval/{request_id}",
+            params={"token": "email-token"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 200
+        assert "text/html" in response.headers.get("content-type", "")
+        assert b"token" in response.content or b"Approval" in response.content
+
+    def test_token_query_still_serves_html_for_non_uuid(self, client: TestClient):
+        """Email/Slack `?token=` must keep serving the public page."""
+        response = client.get(
+            "/approval/not-a-uuid",
+            params={"token": "email-token"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 200
+        assert "text/html" in response.headers.get("content-type", "")
+
+    def test_non_uuid_request_id_does_not_redirect(self, client: TestClient):
+        """Reject unvalidated path segments so Location cannot be attacker-controlled."""
+        response = client.get("/approval/not-a-uuid", follow_redirects=False)
+        assert response.status_code == 404
+        assert "location" not in response.headers
+
+    def test_open_redirect_payload_does_not_302(self, client: TestClient):
+        response = client.get(
+            "/approval/https:%2F%2Fevil.example",
+            follow_redirects=False,
+        )
+        assert response.status_code == 404
+        location = response.headers.get("location", "")
+        assert location == ""
+        assert "evil.example" not in location
