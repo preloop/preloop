@@ -1,13 +1,12 @@
 """Service for fetching available models from AI providers.
 
-Every provider ATTEMPTS a live fetch when a key (and endpoint where
-applicable) is present. Hardcoded catalogs still exist, but only as named
-fallback constants, and every result carries provenance: ``source`` is
-``live`` when the provider's own listing endpoint answered, ``fallback``
-when a bundled catalog (or an empty list) was returned instead, with a
-short machine-readable ``error`` reason. The reason is drawn from a fixed
-vocabulary and never contains raw exception text, which can carry endpoint
-URLs and key material (2026-08-04 key-leak incident).
+Every provider lists live when credentials (and an endpoint where required)
+are present. There is no bundled picker catalog: a failed or impossible live
+attempt returns an empty list with provenance. ``source`` is ``live`` when
+the provider's own listing endpoint answered, ``fallback`` when the list is
+empty, with a short machine-readable ``error`` reason. The reason is drawn
+from a fixed vocabulary and never contains raw exception text, which can
+carry endpoint URLs and key material (2026-08-04 key-leak incident).
 """
 
 import asyncio
@@ -76,6 +75,8 @@ ERROR_EMPTY_RESPONSE = "empty_response"
 ERROR_UNSUPPORTED = "unsupported"
 ERROR_MISSING_ENDPOINT = "missing_endpoint"
 ERROR_SDK_MISSING = "sdk_missing"
+ERROR_MISSING_KEY = "missing_key"
+ERROR_AUTH = "auth"
 ERROR_UNKNOWN = "unknown"
 
 FALLBACK_ERROR_REASONS = frozenset(
@@ -86,6 +87,8 @@ FALLBACK_ERROR_REASONS = frozenset(
         ERROR_UNSUPPORTED,
         ERROR_MISSING_ENDPOINT,
         ERROR_SDK_MISSING,
+        ERROR_MISSING_KEY,
+        ERROR_AUTH,
         ERROR_UNKNOWN,
     }
 )
@@ -98,10 +101,10 @@ class ModelDiscoveryResult:
     Attributes:
         models: Model identifiers to offer in the picker.
         source: ``live`` when the provider's listing endpoint answered,
-            ``fallback`` when a bundled catalog (or empty list) was used.
+            ``fallback`` when the list is empty because live listing failed
+            or was impossible.
         error: Short safe reason from FALLBACK_ERROR_REASONS when a live
-            attempt failed or was impossible; None for a clean result (a
-            keyless bundled catalog is a clean fallback, not an error).
+            attempt failed or was impossible; None for a clean live result.
     """
 
     models: List[str] = field(default_factory=list)
@@ -135,29 +138,6 @@ def _classify_fetch_error(exc: Exception) -> str:
         return ERROR_NETWORK
     return ERROR_UNKNOWN
 
-
-# ---------------------------------------------------------------------------
-# Curated audio catalogs (no provider ships a discovery endpoint for these)
-# ---------------------------------------------------------------------------
-
-OPENAI_STT_MODELS = [
-    "gpt-4o-transcribe",
-    "gpt-4o-mini-transcribe",
-    "whisper-1",
-]
-
-OPENAI_TTS_MODELS = [
-    "gpt-4o-mini-tts",
-    "tts-1",
-    "tts-1-hd",
-]
-
-GOOGLE_STT_MODELS = [
-    "latest_short",
-    "latest_long",
-    "command_and_search",
-    "default",
-]
 
 SUPPORTED_AUDIO_PROVIDER_KINDS: dict[str, set[ModelKind]] = {
     "openai": {"llm", "stt", "tts"},
@@ -197,18 +177,18 @@ async def get_available_models_for_provider(
         aws_auth: Optional AWS credential mapping for the bedrock provider,
             with any of the keys ``aws_access_key_id``,
             ``aws_secret_access_key``, ``aws_session_token`` and
-            ``aws_region_name``. When omitted, boto3's default credential
-            chain (instance profile, env, ...) is used.
+            ``aws_region_name``. Typed or stored credentials are required;
+            ambient instance-profile listing is not used for the picker.
 
     Returns:
         ModelDiscoveryResult with the model identifiers, whether they came
-        from a live listing or a bundled fallback, and a short safe error
-        reason when a live attempt failed.
+        from a live listing, and a short safe error reason when a live
+        attempt failed or credentials were missing.
 
     Raises:
         ValueError: On an invalid model_kind, an invalid discovery endpoint,
             or when the provider rejected the API key (so the user learns the
-            key is bad instead of silently seeing a stale catalog).
+            key is bad instead of silently seeing an empty picker).
     """
     provider = provider.lower()
     normalized_model_kind = model_kind.lower()
@@ -219,18 +199,13 @@ async def get_available_models_for_provider(
     if normalized_model_kind not in supported_kinds:
         return _fallback([], ERROR_UNSUPPORTED)
 
-    # STT/TTS catalogs are curated: no provider exposes a listing endpoint
-    # for them, so they are honest fallbacks rather than live results.
-    if normalized_model_kind == "stt":
-        return _fallback(_get_stt_models(provider))
-    if normalized_model_kind == "tts":
-        return _fallback(_get_tts_models(provider))
-
     if provider == "openai":
-        return await _get_openai_models(api_key)
+        return await _get_openai_models(api_key, model_kind=normalized_model_kind)
     elif provider == "anthropic":
         return await _get_anthropic_models(api_key)
     elif provider == "google":
+        if normalized_model_kind == "stt":
+            return _get_google_stt_models(api_key)
         return await _get_google_models(api_key)
     elif provider == "qwen":
         return await _get_qwen_models(api_key, api_endpoint)
@@ -256,7 +231,11 @@ async def get_available_models_for_provider(
                 provider,
             )
             return _fallback([], ERROR_MISSING_ENDPOINT)
-        return await _get_openai_compatible_models(endpoint, api_key)
+        if provider == "openrouter" and not (api_key or "").strip():
+            return _fallback([], ERROR_MISSING_KEY)
+        return await _get_openai_compatible_models(
+            endpoint, api_key, model_kind=normalized_model_kind
+        )
     else:
         # Unknown provider with no endpoint convention to follow.
         return _fallback([], ERROR_UNSUPPORTED)
@@ -367,7 +346,9 @@ def validate_qwen_endpoint(api_endpoint: str) -> str:
 
 
 async def _get_openai_compatible_models(
-    api_endpoint: str, api_key: Optional[str] = None
+    api_endpoint: str,
+    api_key: Optional[str] = None,
+    model_kind: ModelKind = "llm",
 ) -> ModelDiscoveryResult:
     """List models from an OpenAI-compatible endpoint's ``GET /models``.
 
@@ -376,6 +357,12 @@ async def _get_openai_compatible_models(
     Some servers (OpenRouter included) return a bare list, which is accepted
     too. There is no bundled catalog for arbitrary endpoints, so a failed
     fetch yields an empty fallback with a reason rather than a stale guess.
+
+    ``stt``/``tts`` narrow the live ids by the same name markers OpenAI ids
+    use, which needs no catalog. The ``llm`` kind keeps the full live list:
+    the LLM filter is an exclusion list tuned to OpenAI's naming, and markers
+    like ``instruct`` are ordinary chat models on a self-hosted endpoint
+    (``Llama-3-8B-Instruct``), so applying it here would hide real models.
     """
     try:
         from openai import AsyncOpenAI, AuthenticationError
@@ -419,7 +406,12 @@ async def _get_openai_compatible_models(
         if http_client is not None:
             await http_client.aclose()
 
-    return _live(_extract_model_ids(response))
+    model_ids = _extract_model_ids(response)
+    if model_kind in ("stt", "tts"):
+        model_ids = _openai_ids_for_kind(model_ids, model_kind)
+        if not model_ids:
+            return _fallback([], ERROR_EMPTY_RESPONSE)
+    return _live(model_ids)
 
 
 def _extract_model_ids(response: object) -> List[str]:
@@ -445,31 +437,19 @@ def _extract_model_ids(response: object) -> List[str]:
     return sorted(set(model_ids))[:MAX_DISCOVERED_MODELS]
 
 
-def _get_stt_models(provider: str) -> List[str]:
-    """Return known speech-to-text model identifiers for supported providers."""
-    if provider in {"openai", "custom", "openai-compatible"}:
-        return OPENAI_STT_MODELS
-    if provider == "google":
-        return GOOGLE_STT_MODELS
-    return []
+def _get_google_stt_models(api_key: Optional[str] = None) -> ModelDiscoveryResult:
+    """Google Cloud Speech-to-Text has no API-key list-models resource.
 
+    Recognition uses POST https://speech.googleapis.com/v1/speech:recognize
+    (see ``audio_model.GOOGLE_SPEECH_RECOGNIZE_URL``). The v2 models list
+    (https://cloud.google.com/speech-to-text/docs/reference/rest/v2/projects.locations.models/list)
+    requires ``projects/{project}/locations/{location}``, which the API-key
+    flow does not have. Return empty rather than a stale guess.
+    """
+    if not (api_key or "").strip():
+        return _fallback([], ERROR_MISSING_KEY)
+    return _fallback([], ERROR_MISSING_ENDPOINT)
 
-def _get_tts_models(provider: str) -> List[str]:
-    """Return known text-to-speech model identifiers for supported providers."""
-    if provider in {"openai", "custom", "openai-compatible"}:
-        return OPENAI_TTS_MODELS
-    return []
-
-
-# Fallback catalog used when the OpenAI listing endpoint cannot be reached.
-# Provenance: hand-curated from OpenAI's model documentation; every id also
-# resolves in litellm's price map. Surfaced with source="fallback".
-OPENAI_FALLBACK_MODELS = [
-    "gpt-4.1",
-    "gpt-4.1-mini",
-    "gpt-4o",
-    "gpt-4o-mini",
-]
 
 # Model-id substrings that mark an OpenAI model as NOT a chat completion
 # model (embeddings, audio, image, moderation, legacy completions). This is
@@ -499,13 +479,43 @@ _OPENAI_NON_CHAT_MARKERS = (
 )
 
 
-async def _get_openai_models(api_key: Optional[str] = None) -> ModelDiscoveryResult:
-    """Fetch available models from the OpenAI API.
+_OPENAI_STT_MARKERS = ("transcribe", "whisper")
+_OPENAI_TTS_MARKERS = ("tts",)
 
-    Returns the full chat-capable listing (no arbitrary cap), excluding known
-    non-chat families rather than allow-listing "gpt-*" only, so o-series and
-    future chat model families stay visible.
+
+def _openai_ids_for_kind(model_ids: List[str], model_kind: ModelKind) -> List[str]:
+    """Keep OpenAI ids that match the requested service kind."""
+    if model_kind == "stt":
+        return [
+            model_id
+            for model_id in model_ids
+            if any(marker in model_id.lower() for marker in _OPENAI_STT_MARKERS)
+        ]
+    if model_kind == "tts":
+        return [
+            model_id
+            for model_id in model_ids
+            if any(marker in model_id.lower() for marker in _OPENAI_TTS_MARKERS)
+        ]
+    return [
+        model_id
+        for model_id in model_ids
+        if not any(marker in model_id for marker in _OPENAI_NON_CHAT_MARKERS)
+    ]
+
+
+async def _get_openai_models(
+    api_key: Optional[str] = None,
+    model_kind: ModelKind = "llm",
+) -> ModelDiscoveryResult:
+    """Fetch available models from OpenAI ``GET https://api.openai.com/v1/models``.
+
+    LLM ids exclude known non-chat families. STT/TTS ids are the same live
+    list filtered to transcribe/whisper and tts families.
     """
+    if not (api_key or "").strip():
+        return _fallback([], ERROR_MISSING_KEY)
+
     try:
         from openai import AsyncOpenAI, AuthenticationError
     except ImportError:
@@ -514,64 +524,37 @@ async def _get_openai_models(api_key: Optional[str] = None) -> ModelDiscoveryRes
         # ``except AuthenticationError`` against an unbound name and raise
         # NameError instead of returning a fallback.
         logger.warning("OpenAI package not installed, cannot list models")
-        return _fallback(OPENAI_FALLBACK_MODELS, ERROR_SDK_MISSING)
+        return _fallback([], ERROR_SDK_MISSING)
 
     try:
-        # Use provided API key or fall back to environment variable. Timeout
-        # and single retry match every other provider in this file: without
-        # them a hung connection blocks the listing request indefinitely.
-        client = (
-            AsyncOpenAI(
-                api_key=api_key,
-                max_retries=1,
-                timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
-            )
-            if api_key
-            else AsyncOpenAI(
-                max_retries=1,
-                timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
-            )
+        client = AsyncOpenAI(
+            api_key=api_key,
+            max_retries=1,
+            timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
         )
         async with client:
             models_response = await client.models.list()
         models = models_response.data
 
-        chat_models = [
-            model.id
-            for model in models
-            if not any(marker in model.id for marker in _OPENAI_NON_CHAT_MARKERS)
-        ]
-
-        # Sort with newer models first
-        chat_models.sort(reverse=True)
-
-        return _live(chat_models)
-    except AuthenticationError as e:
-        logger.warning("OpenAI authentication failed: %s", type(e).__name__)
+        model_ids = [model.id for model in models if getattr(model, "id", None)]
+        filtered = _openai_ids_for_kind(model_ids, model_kind)
+        filtered.sort(reverse=True)
+        if not filtered:
+            return _fallback([], ERROR_EMPTY_RESPONSE)
+        return _live(filtered)
+    except AuthenticationError:
+        logger.warning("OpenAI authentication failed: %s", "AuthenticationError")
         # Re-raise authentication errors so the user knows their API key is invalid
         raise ProviderAuthError(
             "Invalid OpenAI API key. Please check your API key and try again."
         )
     except Exception as e:
         logger.warning("Failed to fetch OpenAI models: %s", type(e).__name__)
-        # Return fallback list for other errors (network issues, etc.)
-        return _fallback(OPENAI_FALLBACK_MODELS, _classify_fetch_error(e))
-
-
-# Fallback catalog used when the Anthropic listing endpoint cannot be
-# reached or no key is available. Provenance: hand-curated current ids;
-# every id must resolve in services/data/model_prices.json (pinned by
-# tests/services/test_ai_model_provider.py).
-ANTHROPIC_FALLBACK_MODELS = [
-    "claude-opus-4-8",
-    "claude-sonnet-5",
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5",
-]
+        return _fallback([], _classify_fetch_error(e))
 
 
 async def _get_anthropic_models(api_key: Optional[str] = None) -> ModelDiscoveryResult:
-    """List Anthropic models live via ``GET /v1/models`` when a key is given.
+    """List Anthropic models live via ``GET https://api.anthropic.com/v1/models``.
 
     Replaces the previous paid ``messages.create`` validation ping: the
     models listing both validates the key (401 on a bad key) and returns the
@@ -580,13 +563,13 @@ async def _get_anthropic_models(api_key: Optional[str] = None) -> ModelDiscovery
     pagination is not followed.
     """
     if not api_key:
-        return _fallback(ANTHROPIC_FALLBACK_MODELS)
+        return _fallback([], ERROR_MISSING_KEY)
 
     try:
         from anthropic import AsyncAnthropic
     except ImportError:
         logger.warning("Anthropic package not installed, cannot list models")
-        return _fallback(ANTHROPIC_FALLBACK_MODELS, ERROR_SDK_MISSING)
+        return _fallback([], ERROR_SDK_MISSING)
 
     try:
         client = AsyncAnthropic(api_key=api_key)
@@ -616,15 +599,15 @@ async def _get_anthropic_models(api_key: Optional[str] = None) -> ModelDiscovery
                 "Invalid Anthropic API key. Please check your API key and try again."
             )
         logger.warning(
-            "Failed to list Anthropic models, using bundled fallback: %s",
+            "Failed to list Anthropic models: %s",
             type(e).__name__,
         )
-        return _fallback(ANTHROPIC_FALLBACK_MODELS, _classify_fetch_error(e))
+        return _fallback([], _classify_fetch_error(e))
 
     model_ids = _extract_model_ids(page)
     if not model_ids:
-        logger.info("Anthropic returned no models, using bundled fallback")
-        return _fallback(ANTHROPIC_FALLBACK_MODELS, ERROR_EMPTY_RESPONSE)
+        logger.info("Anthropic returned no models")
+        return _fallback([], ERROR_EMPTY_RESPONSE)
 
     logger.info("Listed %d Anthropic models", len(model_ids))
     return _live(model_ids)
@@ -664,37 +647,29 @@ def _build_scoped_google_client(api_key: str) -> Optional[object]:
         return None
 
 
-GOOGLE_FALLBACK_MODELS = [
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
-]
-
-
 async def _get_google_models(api_key: Optional[str] = None) -> ModelDiscoveryResult:
-    """List Google Gemini models live via ``genai.list_models`` when keyed.
+    """List Google Gemini models live via ``genai.list_models``.
 
-    ``list_models`` itself fails on a bad key, so no separate paid
-    ``generate_content`` validation ping is made (it previously ran when the
-    listing produced nothing, burning tokens to validate a key the listing
-    had already exercised).
+    Listing API: Google AI Generative Language ``models.list``
+    (https://generativelanguage.googleapis.com/v1beta/models). ``list_models``
+    itself fails on a bad key, so no separate paid ``generate_content``
+    validation ping is made.
     """
     if not api_key:
-        return _fallback(GOOGLE_FALLBACK_MODELS)
+        return _fallback([], ERROR_MISSING_KEY)
 
     try:
         import google.generativeai as genai
     except ImportError:
         logger.warning("Google GenerativeAI package not installed, cannot list models")
-        return _fallback(GOOGLE_FALLBACK_MODELS, ERROR_SDK_MISSING)
+        return _fallback([], ERROR_SDK_MISSING)
 
     try:
         fetched_models = []
         list_models = getattr(genai, "list_models", None)
         if not callable(list_models):
-            logger.warning("genai.list_models unavailable, using bundled fallback")
-            return _fallback(GOOGLE_FALLBACK_MODELS, ERROR_SDK_MISSING)
+            logger.warning("genai.list_models unavailable")
+            return _fallback([], ERROR_SDK_MISSING)
 
         scoped_client = _build_scoped_google_client(api_key)
         if scoped_client is not None:
@@ -748,14 +723,14 @@ async def _get_google_models(api_key: Optional[str] = None) -> ModelDiscoveryRes
                 "Invalid Google API key. Please check your API key and try again."
             )
         logger.warning(
-            "Failed to list Google models, using bundled fallback: %s",
+            "Failed to list Google models: %s",
             type(e).__name__,
         )
-        return _fallback(GOOGLE_FALLBACK_MODELS, _classify_fetch_error(e))
+        return _fallback([], _classify_fetch_error(e))
 
     if not fetched_models:
-        logger.info("Google returned no models, using bundled fallback")
-        return _fallback(GOOGLE_FALLBACK_MODELS, ERROR_EMPTY_RESPONSE)
+        logger.info("Google returned no models")
+        return _fallback([], ERROR_EMPTY_RESPONSE)
 
     logger.info("Listed %d Google models", len(fetched_models))
     return _live(sorted(set(fetched_models), reverse=True))
@@ -765,23 +740,17 @@ async def _get_catalog_provider_models(
     *,
     provider_label: str,
     base_url: str,
-    known_models: List[str],
     api_key: Optional[str] = None,
 ) -> ModelDiscoveryResult:
-    """List models for a provider that ships an OpenAI-compatible ``/models``.
+    """List models from an OpenAI-compatible ``GET {base_url}/models``.
 
-    Without a key there is nothing to query, so the bundled catalog is
-    returned. With a key we return what the provider actually serves: these
-    catalogs go stale the moment the vendor ships a model (DeepSeek v4 was
-    hidden from the picker for exactly this reason) while litellm already
-    prices the new ids.
-
-    An authentication failure still raises, since the user needs to know the
-    key is bad. Any other failure (network, SDK, unexpected payload) falls
-    back to the bundled catalog rather than showing an empty picker.
+    Without a key there is nothing to query. With a key we return what the
+    provider actually serves. Authentication failures still raise so the
+    user knows the key is bad. Any other failure returns an empty list with
+    a safe reason rather than a stale guess.
     """
     if not api_key:
-        return _fallback(known_models)
+        return _fallback([], ERROR_MISSING_KEY)
 
     try:
         from openai import AsyncOpenAI, AuthenticationError
@@ -789,7 +758,7 @@ async def _get_catalog_provider_models(
         logger.warning(
             "OpenAI package not installed, cannot list %s models", provider_label
         )
-        return _fallback(known_models, ERROR_SDK_MISSING)
+        return _fallback([], ERROR_SDK_MISSING)
 
     try:
         client = AsyncOpenAI(
@@ -810,18 +779,16 @@ async def _get_catalog_provider_models(
         ) from e
     except Exception as e:
         logger.warning(
-            "Failed to list %s models, using bundled catalog: %s",
+            "Failed to list %s models: %s",
             provider_label,
             type(e).__name__,
         )
-        return _fallback(known_models, _classify_fetch_error(e))
+        return _fallback([], _classify_fetch_error(e))
 
     live_models = _extract_model_ids(response)
     if not live_models:
-        # A valid key that lists nothing is more likely a proxy quirk than an
-        # empty account; an empty picker is the worse outcome either way.
-        logger.info("%s returned no models, using bundled catalog", provider_label)
-        return _fallback(known_models, ERROR_EMPTY_RESPONSE)
+        logger.info("%s returned no models", provider_label)
+        return _fallback([], ERROR_EMPTY_RESPONSE)
 
     logger.info("Listed %d %s models", len(live_models), provider_label)
     return _live(live_models)
@@ -833,76 +800,6 @@ async def _get_catalog_provider_models(
 QWEN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 QWEN_INTL_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 QWEN_US_BASE_URL = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
-
-# Fallback catalog used when no Qwen / Model Studio key is available.
-# Provenance: Alibaba Cloud Model Studio text-generation list and the
-# qwen3.8-max product page (fetched 2026-08-17). Chat/completions only:
-# image, video, TTS, NSFW, Happy Horse, and Z-Image are excluded.
-# ORDER MATTERS: qwen3.8-max first (the headline model as of 2026-08-03).
-# Every id here is priced in services/data/model_prices.json under
-# dashscope/<id> (pinned by tests/services/test_model_pricing.py).
-QWEN_KNOWN_MODELS = [
-    "qwen3.8-max",
-    "qwen3.7-max",
-    "qwen3.7-plus",
-    "qwen3.6-flash",
-    "qwen3.5-plus",
-    "qwen3-max",
-    "qwen3-coder-plus",
-    "qwen-plus",
-    "qwen-flash",
-]
-
-# Fallback catalog used when no DeepSeek key is available to list the live set.
-# Keep in step with the deepseek entries in services/data/model_prices.json:
-# a model missing here is invisible in the picker even though it can be priced.
-DEEPSEEK_KNOWN_MODELS = [
-    "deepseek-chat",
-    "deepseek-reasoner",
-    "deepseek-v4-flash",
-    "deepseek-v4-pro",
-]
-
-# Fallback catalog used when no Moonshot key is available to list the live
-# set. Provenance: https://platform.kimi.ai/docs/models.md (fetched
-# 2026-08-05). ORDER MATTERS: kimi-k3 first (the headline model). The sunset
-# moonshot-v1 series and deprecated kimi-k2 previews are deliberately absent.
-# Every id here is priced in services/data/model_prices.json under
-# moonshot/<id> (pinned by tests/services/test_model_pricing.py).
-MOONSHOT_KNOWN_MODELS = [
-    "kimi-k3",
-    "kimi-k2.7-code",
-    "kimi-k2.7-code-highspeed",
-    "kimi-k2.6",
-]
-
-# Fallback catalog used when no Z.ai key is available to list the live set.
-# Provenance: live GET https://api.z.ai/api/paas/v4/models (2026-08-22)
-# plus the zai/* entries in the pinned litellm price map. glm-5.3 is on
-# the live list and on docs.z.ai/guides/overview/pricing; litellm's map
-# does not carry it yet. Priced under zai/<id> in model_prices.json
-# (pinned by tests/services/test_model_pricing.py).
-ZAI_KNOWN_MODELS = [
-    "glm-5.3",
-    "glm-5.1",
-    "glm-5",
-    "glm-4.7",
-    "glm-4.7-flash",
-]
-
-# Fallback catalog used when no Mistral key is available to list the live
-# set. Provenance: current chat models from the mistral/* entries in the
-# pinned litellm price map; embeddings (*-embed) and OCR (ocr-*) ids are
-# excluded on purpose. The *-latest aliases track Mistral's own rolling
-# pointers so this list ages more slowly than dated ids would.
-MISTRAL_KNOWN_MODELS = [
-    "mistral-large-latest",
-    "mistral-medium-latest",
-    "mistral-small-latest",
-    "codestral-latest",
-    "devstral-latest",
-    "ministral-8b-latest",
-]
 
 
 def _is_qwen_chat_model(model_id: str) -> bool:
@@ -955,7 +852,8 @@ async def _get_qwen_models(
     api_key: Optional[str] = None,
     api_endpoint: Optional[str] = None,
 ) -> ModelDiscoveryResult:
-    """Return Qwen / Model Studio models, live when a key is supplied.
+    """Return Qwen / Model Studio models via DashScope compatible-mode
+    ``GET {base}/models``.
 
     Default base URL is the China (Beijing) DashScope compatible-mode host so
     existing keys keep working. A caller-supplied endpoint (Singapore intl,
@@ -972,7 +870,6 @@ async def _get_qwen_models(
     result = await _get_catalog_provider_models(
         provider_label="Qwen",
         base_url=base_url,
-        known_models=QWEN_KNOWN_MODELS,
         api_key=api_key,
     )
     if result.source != "live":
@@ -980,66 +877,46 @@ async def _get_qwen_models(
 
     filtered = [model_id for model_id in result.models if _is_qwen_chat_model(model_id)]
     if not filtered:
-        logger.info(
-            "Qwen live list had no chat models after media/NSFW filter, "
-            "using bundled catalog"
-        )
-        return _fallback(QWEN_KNOWN_MODELS, ERROR_EMPTY_RESPONSE)
+        logger.info("Qwen live list had no chat models after media/NSFW filter")
+        return _fallback([], ERROR_EMPTY_RESPONSE)
     return _live(filtered)
 
 
 async def _get_deepseek_models(api_key: Optional[str] = None) -> ModelDiscoveryResult:
-    """Return DeepSeek models, live from the API when a key is supplied."""
+    """Return DeepSeek models via ``GET https://api.deepseek.com/v1/models``."""
     return await _get_catalog_provider_models(
         provider_label="DeepSeek",
         base_url="https://api.deepseek.com/v1",
-        known_models=DEEPSEEK_KNOWN_MODELS,
         api_key=api_key,
     )
 
 
 async def _get_moonshot_models(api_key: Optional[str] = None) -> ModelDiscoveryResult:
-    """Return Moonshot (Kimi) models, live from the API when a key is supplied."""
+    """Return Moonshot (Kimi) models via ``GET https://api.moonshot.ai/v1/models``."""
     return await _get_catalog_provider_models(
         provider_label="Moonshot (Kimi)",
         base_url="https://api.moonshot.ai/v1",
-        known_models=MOONSHOT_KNOWN_MODELS,
         api_key=api_key,
     )
 
 
 async def _get_zai_models(api_key: Optional[str] = None) -> ModelDiscoveryResult:
-    """Return Z.ai (GLM) models, live from the API when a key is supplied."""
+    """Return Z.ai (GLM) models via ``GET https://api.z.ai/api/paas/v4/models``."""
     return await _get_catalog_provider_models(
         provider_label="Z.ai (GLM)",
         base_url="https://api.z.ai/api/paas/v4",
-        known_models=ZAI_KNOWN_MODELS,
         api_key=api_key,
     )
 
 
 async def _get_mistral_models(api_key: Optional[str] = None) -> ModelDiscoveryResult:
-    """Return Mistral models, live from the API when a key is supplied."""
+    """Return Mistral models via ``GET https://api.mistral.ai/v1/models``."""
     return await _get_catalog_provider_models(
         provider_label="Mistral",
         base_url="https://api.mistral.ai/v1",
-        known_models=MISTRAL_KNOWN_MODELS,
         api_key=api_key,
     )
 
-
-# Fallback catalog used when the Bedrock listing call cannot be made.
-# Provenance: current on-demand chat model ids from AWS Bedrock documentation;
-# every id also resolves in litellm's price map under bedrock/<id>. Live
-# listing via the Bedrock control plane is always attempted first, so this
-# only surfaces when boto3 is missing or the control plane is unreachable.
-BEDROCK_FALLBACK_MODELS = [
-    "anthropic.claude-opus-4-5",
-    "anthropic.claude-sonnet-4-5",
-    "anthropic.claude-haiku-4-5",
-    "amazon.nova-pro-v1:0",
-    "amazon.nova-lite-v1:0",
-]
 
 # ClientError codes (and HTTP statuses) that mean the AWS credentials were
 # rejected or are missing permissions, mapped to ProviderAuthError so the
@@ -1096,20 +973,19 @@ def _is_bedrock_chat_model(summary: Any) -> bool:
 async def _get_bedrock_models(
     aws_auth: Optional[Dict[str, Any]] = None,
 ) -> ModelDiscoveryResult:
-    """List AWS Bedrock foundation models live via the Bedrock control plane.
+    """List AWS Bedrock foundation models via ``list_foundation_models``.
 
-    Uses boto3's ``bedrock`` client ``list_foundation_models``, which answers
-    from IAM-authenticated credentials instead of a static key, so both
-    explicit access keys and ambient credentials (instance profile, env,
-    SSO) work. The listing validates the credentials for free — a bad key
-    fails the call with an auth error, which raises ProviderAuthError so the
-    user knows their credentials are wrong.
+    Control-plane API:
+    https://docs.aws.amazon.com/bedrock/latest/APIReference/API_ListFoundationModels.html
+    Uses boto3's ``bedrock`` client. Explicit access keys (typed or stored)
+    are required for the picker; ambient instance-profile listing is not
+    used. A bad key fails the call with an auth error, which raises
+    ProviderAuthError.
 
     Args:
-        aws_auth: Optional mapping with ``aws_access_key_id``,
-            ``aws_secret_access_key``, ``aws_session_token`` and
-            ``aws_region_name``. Missing keys fall back to boto3's default
-            credential/region chain.
+        aws_auth: Mapping with ``aws_access_key_id``,
+            ``aws_secret_access_key``, optional ``aws_session_token`` and
+            ``aws_region_name``.
 
     Returns:
         ModelDiscoveryResult with sorted text-output foundation model ids.
@@ -1118,14 +994,17 @@ async def _get_bedrock_models(
         ProviderValidationError: When no region can be resolved.
         ProviderAuthError: When AWS rejects the credentials.
     """
+    auth = {key: str(value).strip() for key, value in (aws_auth or {}).items() if value}
+    if not auth.get("aws_access_key_id") or not auth.get("aws_secret_access_key"):
+        return _fallback([], ERROR_MISSING_KEY)
+
     try:
         import boto3  # type: ignore[import-untyped]
         from botocore.config import Config  # type: ignore[import-untyped]
     except ImportError:
         logger.warning("boto3 package not installed, cannot list Bedrock models")
-        return _fallback(BEDROCK_FALLBACK_MODELS, ERROR_SDK_MISSING)
+        return _fallback([], ERROR_SDK_MISSING)
 
-    auth = {key: str(value).strip() for key, value in (aws_auth or {}).items() if value}
     session_kwargs = {
         key: auth[key]
         for key in ("aws_access_key_id", "aws_secret_access_key", "aws_session_token")
@@ -1166,10 +1045,10 @@ async def _get_bedrock_models(
                 "and region, then try again."
             ) from e
         logger.warning(
-            "Failed to list Bedrock models, using bundled fallback: %s",
+            "Failed to list Bedrock models: %s",
             type(e).__name__,
         )
-        return _fallback(BEDROCK_FALLBACK_MODELS, _classify_fetch_error(e))
+        return _fallback([], _classify_fetch_error(e))
 
     summaries = getattr(response, "modelSummaries", None) or []
     model_ids = []
@@ -1180,8 +1059,8 @@ async def _get_bedrock_models(
 
     model_ids = sorted(set(model_ids))[:MAX_DISCOVERED_MODELS]
     if not model_ids:
-        logger.info("Bedrock returned no chat models, using bundled fallback")
-        return _fallback(BEDROCK_FALLBACK_MODELS, ERROR_EMPTY_RESPONSE)
+        logger.info("Bedrock returned no chat models")
+        return _fallback([], ERROR_EMPTY_RESPONSE)
 
     logger.info("Listed %d Bedrock models", len(model_ids))
     return _live(model_ids)

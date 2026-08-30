@@ -403,6 +403,45 @@ class CRUDAIModel(CRUDBase[AIModel]):
         """Get all AIModels for a specific account."""
         return db.query(self.model).filter(self.model.account_id == account_id).all()
 
+    def get_for_account(
+        self,
+        db: Session,
+        *,
+        id: uuid.UUID,
+        account_id: uuid.UUID,
+    ) -> Optional[AIModel]:
+        """Load one account-owned AI model with its credential secret eager-loaded.
+
+        Used by live model listing so stored keys can be decrypted without a
+        second query. Returns None when the id is missing or belongs to
+        another account.
+        """
+        return (
+            db.query(self.model)
+            .options(joinedload(self.model.credentials_secret))
+            .filter(self.model.id == id, self.model.account_id == account_id)
+            .first()
+        )
+
+    def resolve_listing_secret(self, ai_model: AIModel) -> Optional[str]:
+        """Decrypt stored provider credentials for server-side listing only.
+
+        The plaintext must never be returned to API clients. Callers use it
+        only to authenticate a live list-models request.
+
+        Args:
+            ai_model: Row previously loaded by :meth:`get_for_account`.
+
+        Returns:
+            The decrypted secret string, or None when the model has no
+            resolvable credential.
+        """
+        resolved = get_secret_service().resolve_ai_model_credentials(ai_model)
+        if resolved is None:
+            return None
+        value = (resolved.value or "").strip()
+        return value or None
+
     def get_for_managed_agent_enrichment(
         self,
         db: Session,

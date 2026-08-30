@@ -7,19 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from preloop.services.ai_model_provider import (
     get_available_models_for_provider,
-    ANTHROPIC_FALLBACK_MODELS,
-    BEDROCK_FALLBACK_MODELS,
-    DEEPSEEK_KNOWN_MODELS,
-    GOOGLE_FALLBACK_MODELS,
-    MISTRAL_KNOWN_MODELS,
-    MOONSHOT_KNOWN_MODELS,
-    OPENAI_FALLBACK_MODELS,
     QWEN_DEFAULT_BASE_URL,
     QWEN_INTL_BASE_URL,
-    QWEN_KNOWN_MODELS,
     QWEN_US_BASE_URL,
-    ZAI_KNOWN_MODELS,
     _is_qwen_chat_model,
+    ERROR_EMPTY_RESPONSE,
+    ERROR_MISSING_KEY,
     ERROR_SDK_MISSING,
     ERROR_UNKNOWN,
     FALLBACK_ERROR_REASONS,
@@ -79,49 +72,59 @@ class TestGetAvailableModelsForProvider:
             result = await get_available_models_for_provider("openai", "test_key")
             assert result.models == ["gpt-5.4", "gpt-5.4-mini"]
             assert result.source == "live"
-            mock_get.assert_called_once_with("test_key")
+            mock_get.assert_called_once_with("test_key", model_kind="llm")
 
     @pytest.mark.asyncio
     async def test_get_openai_stt_models(self):
-        """OpenAI speech-to-text catalog is curated, so provenance is fallback."""
-        result = await get_available_models_for_provider(
-            "openai", "test_key", model_kind="stt"
-        )
-        assert result.models == [
-            "gpt-4o-transcribe",
-            "gpt-4o-mini-transcribe",
-            "whisper-1",
-        ]
-        assert result.source == "fallback"
-        assert result.error is None
+        """OpenAI STT ids come from the live GET /v1/models list, filtered."""
+        with patch("preloop.services.ai_model_provider._get_openai_models") as mock_get:
+            mock_get.return_value = ModelDiscoveryResult(
+                models=["gpt-4o-transcribe", "whisper-1"], source="live"
+            )
+            result = await get_available_models_for_provider(
+                "openai", "test_key", model_kind="stt"
+            )
+            assert result.models == ["gpt-4o-transcribe", "whisper-1"]
+            assert result.source == "live"
+            mock_get.assert_called_once_with("test_key", model_kind="stt")
 
     @pytest.mark.asyncio
     async def test_get_openai_tts_models(self):
-        """Test OpenAI text-to-speech model catalog."""
-        result = await get_available_models_for_provider(
-            "openai", "test_key", model_kind="tts"
-        )
-        assert result.models == ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"]
-        assert result.source == "fallback"
+        """OpenAI TTS ids come from the live GET /v1/models list, filtered."""
+        with patch("preloop.services.ai_model_provider._get_openai_models") as mock_get:
+            mock_get.return_value = ModelDiscoveryResult(
+                models=["gpt-4o-mini-tts", "tts-1"], source="live"
+            )
+            result = await get_available_models_for_provider(
+                "openai", "test_key", model_kind="tts"
+            )
+            assert result.models == ["gpt-4o-mini-tts", "tts-1"]
+            assert result.source == "live"
+            mock_get.assert_called_once_with("test_key", model_kind="tts")
 
     @pytest.mark.asyncio
     async def test_audio_models_only_for_supported_providers(self):
-        """Non-audio providers should not offer STT/TTS choices."""
+        """Unsupported audio kinds return empty with unsupported, not a catalog."""
         stt = await get_available_models_for_provider(
             "google", "test_key", model_kind="stt"
         )
-        assert stt.models == [
-            "latest_short",
-            "latest_long",
-            "command_and_search",
-            "default",
-        ]
+        assert stt.models == []
+        assert stt.source == "fallback"
+        assert stt.error == "missing_endpoint"
         tts = await get_available_models_for_provider(
             "google", "test_key", model_kind="tts"
         )
         assert tts.models == []
         assert tts.source == "fallback"
         assert tts.error == "unsupported"
+
+    @pytest.mark.asyncio
+    async def test_no_key_returns_empty_missing_key_not_a_catalog(self):
+        """Edit without id and without a typed key must not guess a catalog."""
+        result = await get_available_models_for_provider("zai")
+        assert result.models == []
+        assert result.source == "fallback"
+        assert result.error == ERROR_MISSING_KEY
 
     @pytest.mark.asyncio
     async def test_get_anthropic_models(self):
@@ -308,6 +311,41 @@ class TestGetOpenAIModels:
             assert "dall-e-3" not in result.models
 
     @pytest.mark.asyncio
+    async def test_get_openai_stt_models_lists_live_audio_ids(self):
+        """STT uses GET https://api.openai.com/v1/models, filtered to audio."""
+        mock_response = _models_response(
+            "gpt-5.4",
+            "whisper-1",
+            "gpt-4o-transcribe",
+            "tts-1",
+        )
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=mock_response)
+            mock_client.return_value = mock_instance
+
+            result = await _get_openai_models("test_key", model_kind="stt")
+
+        assert result.source == "live"
+        assert "whisper-1" in result.models
+        assert "gpt-4o-transcribe" in result.models
+        assert "gpt-5.4" not in result.models
+        assert "tts-1" not in result.models
+
+    @pytest.mark.asyncio
+    async def test_get_openai_tts_models_lists_live_audio_ids(self):
+        mock_response = _models_response("gpt-5.4", "whisper-1", "tts-1", "tts-1-hd")
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=mock_response)
+            mock_client.return_value = mock_instance
+
+            result = await _get_openai_models("test_key", model_kind="tts")
+
+        assert result.source == "live"
+        assert set(result.models) == {"tts-1", "tts-1-hd"}
+
+    @pytest.mark.asyncio
     async def test_get_openai_models_authentication_error(self):
         """Test handling of authentication errors."""
         from openai import AuthenticationError
@@ -338,7 +376,7 @@ class TestGetOpenAIModels:
 
             result = await _get_openai_models("test_key")
 
-            assert result.models == OPENAI_FALLBACK_MODELS
+            assert result.models == []
             assert result.source == "fallback"
             assert result.error in FALLBACK_ERROR_REASONS
 
@@ -354,15 +392,13 @@ class TestGetOpenAIModels:
 
             result = await _get_openai_models(None)
 
-            # Should call AsyncOpenAI without api_key parameter so the SDK
-            # picks the key up from the environment.
-            mock_client.assert_called_once()
-            assert "api_key" not in mock_client.call_args.kwargs
-            assert mock_client.call_args.args == ()
-            assert "gpt-5.4" in result.models
+            mock_client.assert_not_called()
+            assert result.models == []
+            assert result.source == "fallback"
+            assert result.error == ERROR_MISSING_KEY
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("api_key", ["test_key", None])
+    @pytest.mark.parametrize("api_key", ["test_key"])
     async def test_get_openai_models_client_is_bounded(self, api_key):
         """The client must carry the shared discovery timeout and one retry.
 
@@ -388,7 +424,7 @@ class TestGetOpenAIModels:
         with patch.dict(sys.modules, {"openai": None}):
             result = await _get_openai_models("test_key")
 
-        assert result.models == OPENAI_FALLBACK_MODELS
+        assert result.models == []
         assert result.source == "fallback"
         assert result.error == "sdk_missing"
 
@@ -398,11 +434,11 @@ class TestGetAnthropicModels:
 
     @pytest.mark.asyncio
     async def test_get_anthropic_models_without_key(self):
-        """No key: the named fallback with clean fallback provenance."""
+        """No key: empty list with missing_key, not a catalog."""
         result = await _get_anthropic_models(None)
-        assert result.models == ANTHROPIC_FALLBACK_MODELS
+        assert result.models == []
         assert result.source == "fallback"
-        assert result.error is None
+        assert result.error == ERROR_MISSING_KEY
 
     @pytest.mark.asyncio
     async def test_valid_key_lists_models_live(self):
@@ -486,7 +522,7 @@ class TestGetAnthropicModels:
 
             with patch("builtins.__import__", side_effect=mock_import):
                 result = await _get_anthropic_models("test_key")
-                assert result.models == ANTHROPIC_FALLBACK_MODELS
+                assert result.models == []
                 assert result.source == "fallback"
                 assert result.error == "sdk_missing"
         finally:
@@ -504,7 +540,7 @@ class TestGetAnthropicModels:
             mock_client.return_value = mock_instance
 
             result = await _get_anthropic_models("test_key")
-            assert result.models == ANTHROPIC_FALLBACK_MODELS
+            assert result.models == []
             assert result.source == "fallback"
             assert result.error in FALLBACK_ERROR_REASONS
 
@@ -517,17 +553,22 @@ class TestGetAnthropicModels:
             mock_client.return_value = mock_instance
 
             result = await _get_anthropic_models("valid_key")
-            assert result.models == ANTHROPIC_FALLBACK_MODELS
+            assert result.models == []
             assert result.error == "empty_response"
 
     def test_fallback_ids_are_priced_in_the_bundled_table(self):
-        """Every fallback id must resolve in the vendored price snapshot."""
+        """Pricing coverage lives in test_model_pricing, not a picker catalog."""
         import json
 
         from preloop.services.model_price_catalog import CATALOG_PATH
 
         prices = json.loads(CATALOG_PATH.read_text())
-        for model_id in ANTHROPIC_FALLBACK_MODELS:
+        for model_id in (
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+        ):
             assert model_id in prices, f"{model_id} missing from model_prices.json"
 
 
@@ -536,11 +577,11 @@ class TestGetGoogleModels:
 
     @pytest.mark.asyncio
     async def test_get_google_models_without_key(self):
-        """No key: the named fallback with clean fallback provenance."""
+        """No key: empty list with missing_key, not a catalog."""
         result = await _get_google_models(None)
-        assert result.models == GOOGLE_FALLBACK_MODELS
+        assert result.models == []
         assert result.source == "fallback"
-        assert result.error is None
+        assert result.error == ERROR_MISSING_KEY
 
     @pytest.mark.asyncio
     async def test_get_google_models_with_valid_key_lists_live(self):
@@ -587,7 +628,7 @@ class TestGetGoogleModels:
         ):
             result = await _get_google_models("valid_key")
 
-            assert result.models == GOOGLE_FALLBACK_MODELS
+            assert result.models == []
             assert result.source == "fallback"
             assert result.error == "empty_response"
             # And no paid generate_content ping was fired to "validate".
@@ -648,7 +689,7 @@ class TestGetGoogleModels:
 
             with patch("builtins.__import__", side_effect=mock_import):
                 result = await _get_google_models("test_key")
-                assert result.models == GOOGLE_FALLBACK_MODELS
+                assert result.models == []
                 assert result.error == "sdk_missing"
         finally:
             if genai_module is not None:
@@ -662,7 +703,7 @@ class TestGetGoogleModels:
 
         with patch.dict(sys.modules, {"google.generativeai": mock_genai}):
             result = await _get_google_models("test_key")
-            assert result.models == GOOGLE_FALLBACK_MODELS
+            assert result.models == []
             assert result.source == "fallback"
             assert result.error in FALLBACK_ERROR_REASONS
 
@@ -792,11 +833,11 @@ class TestGetQwenModels:
 
     @pytest.mark.asyncio
     async def test_get_qwen_models_without_key(self):
-        """Test getting Qwen models without API key."""
+        """No key: empty list with missing_key, not a catalog."""
         result = await _get_qwen_models(None)
-        assert result.models == QWEN_KNOWN_MODELS
+        assert result.models == []
         assert result.source == "fallback"
-        assert result.error is None
+        assert result.error == ERROR_MISSING_KEY
 
     @pytest.mark.asyncio
     async def test_get_qwen_models_with_valid_key_returns_live_list(self):
@@ -829,7 +870,7 @@ class TestGetQwenModels:
 
             result = await _get_qwen_models("valid_key")
 
-            assert "qwen3.8-max" in result.models
+            assert result.models == []
             assert result.source == "fallback"
             assert result.error == "empty_response"
 
@@ -863,9 +904,9 @@ class TestGetQwenModels:
             mock_client.return_value = mock_instance
 
             result = await _get_qwen_models("test_key")
-            # Should return known models even on network error
-            assert "qwen3.8-max" in result.models
+            assert result.models == []
             assert result.source == "fallback"
+            assert result.error in FALLBACK_ERROR_REASONS
 
     @pytest.mark.asyncio
     async def test_get_qwen_models_uses_supplied_intl_endpoint(self):
@@ -937,12 +978,8 @@ class TestGetQwenModels:
                 "qwen3.8-max",
             ]
 
-    def test_qwen_fallback_catalog_is_current_chat_models(self):
-        """Keyless picker shows 2026-08 chat models, not the stale 2025 set."""
-        assert QWEN_KNOWN_MODELS[0] == "qwen3.8-max"
-        assert "qwen3.7-max" in QWEN_KNOWN_MODELS
-        assert "qwq-32b-preview" not in QWEN_KNOWN_MODELS
-        assert "qwen-turbo" not in QWEN_KNOWN_MODELS
+    def test_qwen_chat_filter_keeps_completions_and_drops_media(self):
+        """Live Qwen ids are filtered; there is no keyless catalog."""
         assert _is_qwen_chat_model("qwen3.8-max")
         assert _is_qwen_chat_model("deepseek-v4-pro")
         assert _is_qwen_chat_model("glm-5.2")
@@ -962,32 +999,11 @@ class TestGetDeepSeekModels:
 
     @pytest.mark.asyncio
     async def test_get_deepseek_models_without_key(self):
-        """Test getting DeepSeek models without API key."""
+        """No key: empty list with missing_key, not a catalog."""
         result = await _get_deepseek_models(None)
-        assert "deepseek-chat" in result.models
-        assert "deepseek-reasoner" in result.models
+        assert result.models == []
         assert result.source == "fallback"
-
-    @pytest.mark.asyncio
-    async def test_keyless_catalog_includes_v4_models(self):
-        """The bundled catalog must not hide models litellm already prices."""
-        result = await _get_deepseek_models(None)
-        assert "deepseek-v4-flash" in result.models
-        assert "deepseek-v4-pro" in result.models
-
-    @pytest.mark.asyncio
-    async def test_keyless_catalog_entries_are_priced(self):
-        """Every fallback id should resolve in the bundled price table.
-
-        This is what keeps the hardcoded list honest as DeepSeek ships models.
-        """
-        import json
-
-        from preloop.services.model_price_catalog import CATALOG_PATH
-
-        prices = json.loads(CATALOG_PATH.read_text())
-        for model_id in DEEPSEEK_KNOWN_MODELS:
-            assert model_id in prices, f"{model_id} missing from model_prices.json"
+        assert result.error == ERROR_MISSING_KEY
 
     @pytest.mark.asyncio
     async def test_get_deepseek_models_with_valid_key_returns_live_list(self):
@@ -1025,8 +1041,9 @@ class TestGetDeepSeekModels:
 
             result = await _get_deepseek_models("valid_key")
 
-            assert "deepseek-chat" in result.models
+            assert result.models == []
             assert result.source == "fallback"
+            assert result.error == ERROR_EMPTY_RESPONSE
 
     @pytest.mark.asyncio
     async def test_get_deepseek_models_authentication_error(self):
@@ -1058,30 +1075,21 @@ class TestGetDeepSeekModels:
             mock_client.return_value = mock_instance
 
             result = await _get_deepseek_models("test_key")
-            # Should return known models even on network error
-            assert "deepseek-chat" in result.models
+            assert result.models == []
+            assert result.source == "fallback"
+            assert result.error in FALLBACK_ERROR_REASONS
 
 
 class TestGetMoonshotModels:
     """Moonshot (Kimi): live discovery plus a kimi-k3-first fallback."""
 
     @pytest.mark.asyncio
-    async def test_without_key_returns_fallback_with_kimi_k3_first(self):
-        """kimi-k3 is the headline model and must lead the fallback list."""
+    async def test_without_key_returns_missing_key(self):
+        """No key: empty list with missing_key, not a catalog."""
         result = await _get_moonshot_models(None)
-        assert result.models == MOONSHOT_KNOWN_MODELS
-        assert result.models[0] == "kimi-k3"
+        assert result.models == []
         assert result.source == "fallback"
-        assert result.error is None
-
-    def test_fallback_excludes_sunset_and_deprecated_ids(self):
-        """No sunset moonshot-v1 series, no deprecated kimi-k2 previews."""
-        for model_id in MOONSHOT_KNOWN_MODELS:
-            assert not model_id.startswith("moonshot-v1")
-            assert "preview" not in model_id
-            assert "thinking" not in model_id
-            assert model_id != "kimi-latest"
-            assert model_id != "kimi-k2.5"  # sunset Aug 31
+        assert result.error == ERROR_MISSING_KEY
 
     @pytest.mark.asyncio
     async def test_with_valid_key_lists_live_from_moonshot_base_url(self):
@@ -1109,7 +1117,7 @@ class TestGetMoonshotModels:
 
             result = await _get_moonshot_models("valid_key")
 
-            assert result.models == MOONSHOT_KNOWN_MODELS
+            assert result.models == []
             assert result.source == "fallback"
             assert result.error == "empty_response"
 
@@ -1137,7 +1145,7 @@ class TestGetMoonshotModels:
             mock_client.return_value = mock_instance
 
             result = await _get_moonshot_models("test_key")
-            assert result.models == MOONSHOT_KNOWN_MODELS
+            assert result.models == []
             assert result.source == "fallback"
             assert result.error in FALLBACK_ERROR_REASONS
 
@@ -1146,27 +1154,25 @@ class TestGetZaiModels:
     """Z.ai (GLM): live discovery plus a litellm-priced fallback."""
 
     @pytest.mark.asyncio
-    async def test_without_key_returns_fallback(self):
+    async def test_without_key_returns_missing_key(self):
         result = await _get_zai_models(None)
-        assert result.models == ZAI_KNOWN_MODELS
-        assert "glm-5.3" in result.models
-        assert "glm-5" in result.models
-        assert "glm-4.7" in result.models
+        assert result.models == []
         assert result.source == "fallback"
+        assert result.error == ERROR_MISSING_KEY
 
     @pytest.mark.asyncio
     async def test_with_valid_key_lists_live_from_zai_base_url(self):
         with patch("openai.AsyncOpenAI") as mock_client:
             mock_instance = MagicMock()
             mock_instance.models.list = AsyncMock(
-                return_value=_models_response("glm-5.2", "glm-5")
+                return_value=_models_response("glm-5.2", "glm-5", "glm-5.3-flash")
             )
             mock_client.return_value = mock_instance
 
             result = await _get_zai_models("valid_key")
 
             assert result.source == "live"
-            assert result.models == ["glm-5", "glm-5.2"]
+            assert result.models == ["glm-5", "glm-5.2", "glm-5.3-flash"]
             call_kwargs = mock_client.call_args[1]
             assert call_kwargs["base_url"] == "https://api.z.ai/api/paas/v4"
 
@@ -1180,7 +1186,7 @@ class TestGetZaiModels:
 
             result = await _get_zai_models("valid_key")
 
-            assert result.models == ZAI_KNOWN_MODELS
+            assert result.models == []
             assert result.source == "fallback"
             assert result.error == "empty_response"
 
@@ -1208,7 +1214,7 @@ class TestGetZaiModels:
             mock_client.return_value = mock_instance
 
             result = await _get_zai_models("test_key")
-            assert result.models == ZAI_KNOWN_MODELS
+            assert result.models == []
             assert result.source == "fallback"
 
 
@@ -1216,15 +1222,11 @@ class TestGetMistralModels:
     """Mistral: live discovery plus a chat-only fallback."""
 
     @pytest.mark.asyncio
-    async def test_without_key_returns_fallback(self):
+    async def test_without_key_returns_missing_key(self):
         result = await _get_mistral_models(None)
-        assert result.models == MISTRAL_KNOWN_MODELS
+        assert result.models == []
         assert result.source == "fallback"
-
-    def test_fallback_excludes_embeddings_and_ocr(self):
-        for model_id in MISTRAL_KNOWN_MODELS:
-            assert "embed" not in model_id
-            assert "ocr" not in model_id
+        assert result.error == ERROR_MISSING_KEY
 
     @pytest.mark.asyncio
     async def test_with_valid_key_lists_live_from_mistral_base_url(self):
@@ -1252,7 +1254,7 @@ class TestGetMistralModels:
 
             result = await _get_mistral_models("valid_key")
 
-            assert result.models == MISTRAL_KNOWN_MODELS
+            assert result.models == []
             assert result.source == "fallback"
             assert result.error == "empty_response"
 
@@ -1280,7 +1282,7 @@ class TestGetMistralModels:
             mock_client.return_value = mock_instance
 
             result = await _get_mistral_models("test_key")
-            assert result.models == MISTRAL_KNOWN_MODELS
+            assert result.models == []
             assert result.source == "fallback"
 
 
@@ -1374,6 +1376,93 @@ class TestOpenAICompatibleModels:
             )
 
         assert result.models == ["a-model", "b-model"]
+
+    @pytest.mark.asyncio
+    async def test_stt_kind_narrows_the_live_list(self):
+        """Selecting "Speech to text" must not show the endpoint's chat ids."""
+        response = self._models_response(
+            "k3", "k3-turbo", "whisper-large-v3", "gpt-4o-transcribe"
+        )
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider(
+                "custom",
+                "test_key",
+                model_kind="stt",
+                api_endpoint="https://api.kimi.example/v1",
+            )
+
+        assert result.models == ["gpt-4o-transcribe", "whisper-large-v3"]
+        assert result.source == "live"
+
+    @pytest.mark.asyncio
+    async def test_tts_kind_narrows_the_live_list(self):
+        response = self._models_response("k3", "tts-1", "tts-1-hd")
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider(
+                "openai-compatible",
+                "test_key",
+                model_kind="tts",
+                api_endpoint="https://gateway.example.com/v1",
+            )
+
+        assert result.models == ["tts-1", "tts-1-hd"]
+        assert result.source == "live"
+
+    @pytest.mark.asyncio
+    async def test_audio_kind_with_no_matching_ids_is_an_empty_fallback(self):
+        """An endpoint serving only chat ids offers no stt suggestions."""
+        response = self._models_response("k3", "k3-turbo")
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider(
+                "custom",
+                "test_key",
+                model_kind="stt",
+                api_endpoint="https://api.kimi.example/v1",
+            )
+
+        assert result.models == []
+        assert result.source == "fallback"
+        assert result.error == "empty_response"
+
+    @pytest.mark.asyncio
+    async def test_llm_kind_keeps_the_full_live_list(self):
+        """The OpenAI chat exclusion list must not run against a custom endpoint.
+
+        Markers like "instruct" name ordinary chat models on a self-hosted
+        server, so excluding them here would hide real models. Curation of
+        chat ids is an OpenAI-specific concern.
+        """
+        response = self._models_response(
+            "Llama-3-8B-Instruct", "k3", "text-embedding-ada-002"
+        )
+        with patch("openai.AsyncOpenAI") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.models.list = AsyncMock(return_value=response)
+            mock_client.return_value = mock_instance
+
+            result = await get_available_models_for_provider(
+                "custom",
+                "test_key",
+                api_endpoint="https://api.kimi.example/v1",
+            )
+
+        assert result.models == [
+            "Llama-3-8B-Instruct",
+            "k3",
+            "text-embedding-ada-002",
+        ]
 
     @pytest.mark.asyncio
     async def test_openai_compatible_without_endpoint_returns_empty(self):
@@ -1512,28 +1601,28 @@ class TestOpenAICompatibleModels:
 
 
 class TestCatalogProviderSdkMissing:
-    """The shared OpenAI-compatible catalog path (Qwen, DeepSeek, Moonshot...).
+    """The shared OpenAI-compatible listing path (Qwen, DeepSeek, Moonshot...).
 
     _get_catalog_provider_models imported the SDK outside a guard too, so a
-    missing package raised instead of falling back to the bundled catalog.
+    missing package raised instead of returning a named empty fallback.
     """
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "fetch,expected",
+        "fetch",
         [
-            (_get_qwen_models, QWEN_KNOWN_MODELS),
-            (_get_deepseek_models, DEEPSEEK_KNOWN_MODELS),
-            (_get_moonshot_models, MOONSHOT_KNOWN_MODELS),
-            (_get_zai_models, ZAI_KNOWN_MODELS),
-            (_get_mistral_models, MISTRAL_KNOWN_MODELS),
+            _get_qwen_models,
+            _get_deepseek_models,
+            _get_moonshot_models,
+            _get_zai_models,
+            _get_mistral_models,
         ],
     )
-    async def test_missing_sdk_returns_bundled_catalog(self, fetch, expected):
+    async def test_missing_sdk_returns_empty_with_sdk_missing(self, fetch):
         with patch.dict(sys.modules, {"openai": None}):
             result = await fetch("test_key")
 
-        assert result.models == expected
+        assert result.models == []
         assert result.source == "fallback"
         assert result.error == "sdk_missing"
 
@@ -1825,22 +1914,13 @@ class TestBedrockModels:
             )
 
     @pytest.mark.asyncio
-    async def test_missing_credentials_raise_auth_error(self):
-        from botocore.exceptions import NoCredentialsError
-
-        client = MagicMock()
-        client.list_foundation_models.side_effect = NoCredentialsError()
-        session = MagicMock()
-        session.region_name = None
-        session.client.return_value = client
-
-        with (
-            patch("boto3.Session", return_value=session),
-            pytest.raises(ProviderAuthError),
-        ):
-            await get_available_models_for_provider(
-                "bedrock", aws_auth={"aws_region_name": "us-east-1"}
-            )
+    async def test_missing_credentials_return_missing_key(self):
+        result = await get_available_models_for_provider(
+            "bedrock", aws_auth={"aws_region_name": "us-east-1"}
+        )
+        assert result.models == []
+        assert result.source == "fallback"
+        assert result.error == ERROR_MISSING_KEY
 
     @pytest.mark.asyncio
     async def test_control_plane_failure_returns_fallback_catalog(self):
@@ -1862,7 +1942,7 @@ class TestBedrockModels:
 
         assert result.source == "fallback"
         assert result.error == ERROR_UNKNOWN
-        assert result.models == BEDROCK_FALLBACK_MODELS
+        assert result.models == []
 
     @pytest.mark.asyncio
     async def test_missing_region_is_a_validation_error(self):
@@ -1882,13 +1962,20 @@ class TestBedrockModels:
             )
 
     @pytest.mark.asyncio
-    async def test_sdk_missing_returns_fallback_catalog(self):
+    async def test_sdk_missing_returns_empty_with_sdk_missing(self):
         monkeypatch = pytest.MonkeyPatch()
         monkeypatch.setitem(sys.modules, "boto3", None)
         try:
-            result = await get_available_models_for_provider("bedrock")
+            result = await get_available_models_for_provider(
+                "bedrock",
+                aws_auth={
+                    "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                    "aws_secret_access_key": "secret",
+                    "aws_region_name": "us-east-1",
+                },
+            )
         finally:
             monkeypatch.undo()
         assert result.source == "fallback"
         assert result.error == ERROR_SDK_MISSING
-        assert result.models == BEDROCK_FALLBACK_MODELS
+        assert result.models == []
