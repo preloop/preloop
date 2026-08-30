@@ -1,7 +1,61 @@
+export interface GitCloneRepository {
+  tracker_id: string;
+  repository_url?: string;
+  clone_path: string;
+  branch?: string;
+}
+
+export interface GitCloneConfig {
+  enabled: boolean;
+  repositories?: GitCloneRepository[];
+  git_user_name?: string;
+  git_user_email?: string;
+  source_branch?: string;
+  target_branch?: string;
+  create_pull_request?: boolean;
+  pull_request_title?: string;
+  pull_request_description?: string;
+}
+
+export interface FlowCustomCommands {
+  enabled: boolean;
+  commands?: string[];
+}
+
+export interface FlowWebhookConfig {
+  webhook_secret: string;
+}
+
+/** Server-computed schedule state; read-only for the console. */
+export interface FlowScheduleState {
+  active: boolean;
+  type: string;
+  description: string;
+  timezone: string;
+  next_run_at: string | null;
+  cron?: string;
+}
+
+export interface FlowExecutionStats {
+  total_execs?: number;
+  running_execs?: number;
+  last_seen_at?: string | null;
+  estimated_cost?: number;
+}
+
+/**
+ * Canonical console-side shape of a flow. Views must import this rather than
+ * redeclaring a local copy, so filter and trigger fields cannot drift.
+ *
+ * `trigger_config` holds the tracker event filters. `null` means "clear the
+ * saved filters" on update; absent means "leave them untouched".
+ */
 export interface Flow {
   id?: string;
   name?: string;
   description?: string;
+  icon?: string;
+  account_id?: string;
   prompt_template?: string;
   agent_type?: string;
   agent_config?: Record<string, unknown>;
@@ -10,15 +64,19 @@ export interface Flow {
   trigger_event_types?: string[];
   trigger_organization_id?: string;
   trigger_project_ids?: string[];
-  trigger_config?: Record<string, unknown>;
+  trigger_config?: Record<string, unknown> | null;
   schedule_config?: Record<string, unknown> | null;
-  webhook_config?: Record<string, unknown>;
+  schedule_state?: FlowScheduleState | null;
+  webhook_config?: FlowWebhookConfig;
   allowed_mcp_servers?: string[];
   allowed_mcp_tools?: Array<{ server_name: string; tool_name: string }>;
-  git_clone_config?: Record<string, unknown>;
+  git_clone_config?: GitCloneConfig;
+  custom_commands?: FlowCustomCommands;
   max_iterations?: number | null;
   max_budget?: number | null;
+  is_preset?: boolean;
   is_enabled?: boolean;
+  execution_stats?: FlowExecutionStats;
   [key: string]: unknown;
 }
 

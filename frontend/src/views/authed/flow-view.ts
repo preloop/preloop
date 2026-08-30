@@ -38,72 +38,7 @@ import '../../components/resource-actions.ts';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { getTrackerEventOptions } from '../../constants/tracker-event-types';
-
-interface GitCloneRepository {
-  tracker_id: string;
-  repository_url?: string;
-  clone_path: string;
-  branch?: string;
-}
-
-interface GitCloneConfig {
-  enabled: boolean;
-  repositories?: GitCloneRepository[];
-  git_user_name?: string;
-  git_user_email?: string;
-  source_branch?: string;
-  target_branch?: string;
-  create_pull_request?: boolean;
-  pull_request_title?: string;
-  pull_request_description?: string;
-}
-
-interface CustomCommands {
-  enabled: boolean;
-  commands?: string[];
-}
-
-interface WebhookConfig {
-  webhook_secret: string;
-}
-
-interface ScheduleState {
-  active: boolean;
-  type: string;
-  description: string;
-  timezone: string;
-  next_run_at: string | null;
-  cron?: string;
-}
-
-interface Flow {
-  id?: string;
-  name: string;
-  description?: string;
-  icon?: string;
-  trigger_event_source?: string;
-  // Event types that trigger this flow (e.g., ['pull_request_created', 'pull_request_updated'])
-  trigger_event_types?: string[];
-  trigger_organization_id?: string;
-  // Project IDs that can trigger this flow (empty = all projects in org)
-  trigger_project_ids?: string[];
-  trigger_config?: any;
-  webhook_config?: WebhookConfig;
-  schedule_config?: any;
-  schedule_state?: ScheduleState | null;
-  ai_model_id?: string;
-  prompt_template?: string;
-  allowed_mcp_servers?: string[];
-  allowed_mcp_tools?: { server_name: string; tool_name: string }[];
-  git_clone_config?: GitCloneConfig;
-  custom_commands?: CustomCommands;
-  max_iterations?: number;
-  max_budget?: number;
-  is_preset?: boolean;
-  is_enabled?: boolean;
-  agent_type?: string;
-  agent_config?: any;
-}
+import type { Flow } from '../../types';
 
 @customElement('flow-view')
 export class FlowView extends LitElement {
@@ -2184,7 +2119,11 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
                   <sl-input
                     label="Labels (comma-separated)"
                     placeholder="e.g., bug, critical, backend"
-                    .value=${this.flow.trigger_config?.labels?.join(', ') || ''}
+                    .value=${
+                      (
+                        this.flow.trigger_config?.labels as string[] | undefined
+                      )?.join(', ') || ''
+                    }
                     @sl-input=${(e: any) => {
                       if (!this.flow.trigger_config)
                         this.flow.trigger_config = {};
