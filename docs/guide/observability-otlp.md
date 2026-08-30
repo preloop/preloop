@@ -7,7 +7,7 @@ Export is **disabled by default**. Turning it on does not replace the
 
 Spans follow [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
 where they apply. Runtime session identity is emitted as
-`gen_ai.conversation.id` (see `ARCHITECTURE.md`, Runtime Session Identity).
+`gen_ai.conversation.id` (see [Runtime Session Identity](../architecture/gateway.md)).
 
 ## Privacy
 
