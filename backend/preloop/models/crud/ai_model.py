@@ -514,7 +514,24 @@ class CRUDAIModel(CRUDBase[AIModel]):
                     else {}
                 )
                 configured_alias = old_gw.get("model_alias")
-                if not (isinstance(configured_alias, str) and configured_alias.strip()):
+                incoming_meta = (
+                    obj_data.get("meta_data")
+                    if isinstance(obj_data.get("meta_data"), dict)
+                    else {}
+                )
+                incoming_gw = (
+                    incoming_meta.get("gateway")
+                    if isinstance(incoming_meta.get("gateway"), dict)
+                    else {}
+                )
+                incoming_alias = incoming_gw.get("model_alias")
+                # An alias the admin sets in this same update wins over the
+                # pin: they chose the new address deliberately.
+                has_explicit_alias = any(
+                    isinstance(alias, str) and alias.strip()
+                    for alias in (configured_alias, incoming_alias)
+                )
+                if not has_explicit_alias:
                     # No explicit alias -- pin the current default so the
                     # address in-flight agents know stays stable.
                     merged_meta_for_pin = dict(
