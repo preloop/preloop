@@ -1684,7 +1684,7 @@ class TestCreateAndNotify:
         """Tool args with sensitive keys must be stored raw for execution after approval.
 
         Redaction is applied only for logging/notifications, not for storage.
-        See ARCHITECTURE.md Redaction Policy.
+        See docs/architecture/security.md Redaction Policy.
         """
         tool_args_with_secret = {
             "command": "deploy to production",

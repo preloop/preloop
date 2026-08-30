@@ -1741,7 +1741,7 @@ class ApprovalService:
             Created approval request (may be already resolved if AI-driven)
         """
         # Store raw tool_args for execution; redact only for logging/notifications
-        # (see ARCHITECTURE.md Redaction Policy)
+        # (see docs/architecture/security.md Redaction Policy)
         # Create approval request first
         approval_request = await self.create_approval_request(
             account_id=account_id,

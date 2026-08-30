@@ -122,7 +122,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ARCHITECTURE.md is an index of per-subsystem chapters**: subsystem
   docs moved to `docs/architecture/*.md`. The index is the map; read
   the chapter for the subsystem you are changing. Flows architecture
-  lives at `docs/architecture/flows.md`.
+  lives at `docs/architecture/flows.md`. Empty leftover headers in
+  `docs/architecture/overview.md` were removed. Redaction comments
+  in `approval_service` point at `docs/architecture/security.md`.
+  Frontend test/auth conventions that were only in
+  `frontend/CLAUDE.md` now live in `frontend/README.md`; the stale
+  file is not restored.
 
 - **Overview Top Models shows a preview per model**: each model lists its
   top four agents/flows/sessions by spend or usage, with a See N more

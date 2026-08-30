@@ -66,8 +66,6 @@ graph LR
     Gateway model-call events can be emitted into the same execution update channel used by flow runtime updates, and the same pattern should later support non-flow runtime sessions.
 *   **External Systems:** Issue trackers and MCP clients interacting with the Preloop ecosystem.
 
-## Core Components
-
 ## Preloop API Server (Main Repository)
 *   **Framework:** FastAPI-based RESTful API server.
 *   **Authentication:** JWT authentication and authorization.
@@ -76,8 +74,6 @@ graph LR
 *   **Documentation:** Automatic API documentation with Swagger/ReDoc.
 *   **Features:** Rate limiting, error handling, monitoring integration.
 *   **Interaction:** Communicates with `preloop.models` for database operations, directly with Issue Tracker APIs for certain actions (e.g., creating/updating issues in real-time), and with LiteLLM/provider APIs through the model gateway path.
-
-## Data Flow
 
 ## REST API Flow (e.g., Searching Issues)
 1.  **Client Request:** An HTTP client sends a `GET /api/v1/issues/search` request to the Preloop API server.
