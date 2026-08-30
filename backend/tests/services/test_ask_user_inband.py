@@ -31,7 +31,7 @@ class TestDeepLinks:
     def test_console_url_is_token_free(self):
         request_id = uuid.uuid4()
         url = approval_console_url("https://preloop.example/", request_id)
-        assert url == f"https://preloop.example/approval/{request_id}"
+        assert url == f"https://preloop.example/console/approval/{request_id}"
         assert "token" not in url
 
     def test_mobile_deep_link_matches_registered_scheme(self):
@@ -52,14 +52,14 @@ class TestFormatQuestionNotice:
                 "options": ["yes", "no"],
                 "context": "Release window closes at 5pm",
             },
-            console_url=f"https://x.example/approval/{request_id}",
+            console_url=f"https://x.example/console/approval/{request_id}",
             mobile_link=f"preloop://approve/{request_id}",
             request_id=request_id,
         )
         assert "Ship v2 today?" in text
         assert "yes | no" in text
         assert "Release window closes at 5pm" in text
-        assert f"https://x.example/approval/{request_id}" in text
+        assert f"https://x.example/console/approval/{request_id}" in text
         assert f"preloop://approve/{request_id}" in text
         # The agent must be told not to answer on the human's behalf.
         assert "do NOT answer this yourself" in text
@@ -69,7 +69,7 @@ class TestFormatQuestionNotice:
         text = format_question_notice(
             tool_name="request_approval",
             arguments={"operation": "delete prod database"},
-            console_url="https://x.example/approval/abc",
+            console_url="https://x.example/console/approval/abc",
             mobile_link="preloop://approve/abc",
             request_id=request_id,
         )
@@ -231,7 +231,7 @@ class TestPendingResponseDeepLinks:
         request_id = uuid.uuid4()
         console_url = approval_console_url("https://p.example", request_id)
         mobile_link = approval_mobile_deep_link(request_id)
-        assert console_url.endswith(f"/approval/{request_id}")
+        assert console_url.endswith(f"/console/approval/{request_id}")
         assert mobile_link == f"preloop://approve/{request_id}"
 
 
@@ -278,7 +278,7 @@ class TestAskUserToolBehaviour:
         fn = await self._ask_user_fn()
         pending = (
             '{"status": "pending_approval", "request_id": "abc", '
-            '"approval_console_url": "https://p.example/approval/abc", '
+            '"approval_console_url": "https://p.example/console/approval/abc", '
             '"approval_mobile_link": "preloop://approve/abc"}'
         )
         p1, p2, p3 = self._workflow_patches()
