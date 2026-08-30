@@ -2,7 +2,11 @@ import { LitElement, html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { router } from '../router';
 import { Router } from '@vaadin/router';
-import { isSaaS } from '../brand-config';
+import { getBrandConfig, isSaaS } from '../brand-config';
+import {
+  pagesFromRuntimeConfig,
+  type StaticMarkdownPage,
+} from '../static-markdown-pages';
 import { getFeatures } from '../api';
 import '../views/public/landing-view';
 import './static-view-wrapper';
@@ -150,145 +154,24 @@ export class LitApp extends LitElement {
       { path: '/request-demo', component: 'request-demo-view' },
       { path: '/delete-account', component: 'delete-account-view' },
       {
-        path: '/about',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (existingWrapper && ssrRoute === '/about' && !this.hasNavigated) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
-          }
-
-          // Load markdown dynamically
-          const view = commands.component('static-view') as any;
-          view.src = '/content/about.md';
-          return view;
-        },
-      },
-      {
-        path: '/whatis-mcp',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (
-            existingWrapper &&
-            ssrRoute === '/whatis-mcp' &&
-            !this.hasNavigated
-          ) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
-          }
-
-          // Load markdown dynamically
-          const view = commands.component('static-view') as any;
-          view.src = '/content/whatis-mcp.md';
-          return view;
-        },
-      },
-      {
         path: '/docs',
-        action: (context, commands) => {
-          const view = commands.component('static-view') as any;
+        action: (_context, commands) => {
+          const view = commands.component('static-view') as HTMLElement & {
+            src: string;
+          };
           view.src = '/content/docs.md';
           return view;
         },
       },
-      {
-        path: '/terms',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (existingWrapper && ssrRoute === '/terms' && !this.hasNavigated) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
-          }
-
-          // Load markdown dynamically
-          const view = commands.component('static-view') as any;
-          view.src = '/content/terms.md';
-          return view;
-        },
-      },
-      {
-        path: '/privacy',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (
-            existingWrapper &&
-            ssrRoute === '/privacy' &&
-            !this.hasNavigated
-          ) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
-          }
-
-          // Load markdown dynamically
-          const view = commands.component('static-view') as any;
-          view.src = '/content/privacy.md';
-          return view;
-        },
-      },
+      ...this.contentMarkdownRoutes(),
       {
         path: '/pricing',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (
-            existingWrapper &&
-            ssrRoute === '/pricing' &&
-            !this.hasNavigated
-          ) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
+        action: (_context, commands) => {
+          const existing = this.reuseSsrStaticWrapper('/pricing');
+          if (existing) {
+            return existing;
           }
-
-          // Load pricing view dynamically
           return commands.component('public-pricing-view');
-        },
-      },
-      {
-        path: '/ai-act-readiness',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (
-            existingWrapper &&
-            ssrRoute === '/ai-act-readiness' &&
-            !this.hasNavigated
-          ) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
-          }
-
-          // Load markdown dynamically
-          const view = commands.component('static-view') as any;
-          view.src = '/content/ai-act-readiness.md';
-          return view;
         },
       },
       {
@@ -299,9 +182,6 @@ export class LitApp extends LitElement {
         // client-side navigation.
         path: '/vs/:slug',
         action: (context, commands) => {
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
           const slug = (context.params?.slug as string) || '';
 
           // Reject obviously unsafe slug input (route params are strings but
@@ -311,16 +191,14 @@ export class LitApp extends LitElement {
             return commands.redirect('/');
           }
 
-          if (
-            existingWrapper &&
-            ssrRoute === `/vs/${slug}` &&
-            !this.hasNavigated
-          ) {
-            this.hasNavigated = true;
-            return existingWrapper;
+          const existing = this.reuseSsrStaticWrapper(`/vs/${slug}`);
+          if (existing) {
+            return existing;
           }
 
-          const view = commands.component('static-view') as any;
+          const view = commands.component('static-view') as HTMLElement & {
+            src: string;
+          };
           view.src = `/content/vs/${slug}.md`;
           return view;
         },
@@ -339,16 +217,14 @@ export class LitApp extends LitElement {
           if (!isSaaS()) {
             return commands.redirect('/');
           }
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (existingWrapper && ssrRoute === '/blog' && !this.hasNavigated) {
-            this.hasNavigated = true;
-            return existingWrapper;
+          const existing = this.reuseSsrStaticWrapper('/blog');
+          if (existing) {
+            return existing;
           }
 
-          const view = commands.component('static-view') as any;
+          const view = commands.component('static-view') as HTMLElement & {
+            src: string;
+          };
           view.src = '/content/blog/index.html';
           return view;
         },
@@ -359,9 +235,6 @@ export class LitApp extends LitElement {
           if (!isSaaS()) {
             return commands.redirect('/');
           }
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
           const slug = (context.params?.slug as string) || '';
 
           // Route params are unconstrained strings; accept slug characters
@@ -370,41 +243,15 @@ export class LitApp extends LitElement {
             return commands.redirect('/blog');
           }
 
-          if (
-            existingWrapper &&
-            ssrRoute === `/blog/${slug}` &&
-            !this.hasNavigated
-          ) {
-            this.hasNavigated = true;
-            return existingWrapper;
+          const existing = this.reuseSsrStaticWrapper(`/blog/${slug}`);
+          if (existing) {
+            return existing;
           }
 
-          const view = commands.component('static-view') as any;
+          const view = commands.component('static-view') as HTMLElement & {
+            src: string;
+          };
           view.src = `/content/blog/${slug}.html`;
-          return view;
-        },
-      },
-      {
-        path: '/resources/ai-agent-control-plane-2026',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (
-            existingWrapper &&
-            ssrRoute === '/resources/ai-agent-control-plane-2026' &&
-            !this.hasNavigated
-          ) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
-          }
-
-          // Load markdown dynamically
-          const view = commands.component('static-view') as any;
-          view.src = '/content/resources/ai-agent-control-plane-2026.md';
           return view;
         },
       },
@@ -586,6 +433,53 @@ export class LitApp extends LitElement {
         ],
       },
     ]);
+  }
+
+  /**
+   * Reuse SSR-slotted static markup on the first load of this exact path.
+   * Client-side navigations always build a fresh <static-view>.
+   */
+  private reuseSsrStaticWrapper(path: string): Element | undefined {
+    const outlet = this.renderRoot.querySelector('main');
+    const existingWrapper = outlet?.querySelector('static-view-wrapper');
+    const ssrRoute = this.getAttribute('data-ssr-route');
+    if (existingWrapper && ssrRoute === path && !this.hasNavigated) {
+      this.hasNavigated = true;
+      return existingWrapper;
+    }
+    return undefined;
+  }
+
+  /**
+   * Markdown pages come from BRAND_CONFIG.static_markdown_pages, which the
+   * Vite plugin fills from files on disk. EE adds a page by dropping
+   * markdown under frontend/content/<brand>/; OSS never registers routes
+   * for files it does not ship.
+   */
+  private contentMarkdownRoutes() {
+    let pages: StaticMarkdownPage[] = [];
+    try {
+      pages = pagesFromRuntimeConfig(getBrandConfig());
+    } catch {
+      pages = [];
+    }
+    return pages.map(({ path, src }) => ({
+      path,
+      action: (
+        _context: unknown,
+        commands: { component: (name: string) => HTMLElement }
+      ) => {
+        const existing = this.reuseSsrStaticWrapper(path);
+        if (existing) {
+          return existing;
+        }
+        const view = commands.component('static-view') as HTMLElement & {
+          src: string;
+        };
+        view.src = src;
+        return view;
+      },
+    }));
   }
 
   /**
