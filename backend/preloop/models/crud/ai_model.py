@@ -403,6 +403,45 @@ class CRUDAIModel(CRUDBase[AIModel]):
         """Get all AIModels for a specific account."""
         return db.query(self.model).filter(self.model.account_id == account_id).all()
 
+    def get_for_account(
+        self,
+        db: Session,
+        *,
+        id: uuid.UUID,
+        account_id: uuid.UUID,
+    ) -> Optional[AIModel]:
+        """Load one account-owned AI model with its credential secret eager-loaded.
+
+        Used by live model listing so stored keys can be decrypted without a
+        second query. Returns None when the id is missing or belongs to
+        another account.
+        """
+        return (
+            db.query(self.model)
+            .options(joinedload(self.model.credentials_secret))
+            .filter(self.model.id == id, self.model.account_id == account_id)
+            .first()
+        )
+
+    def resolve_listing_secret(self, ai_model: AIModel) -> Optional[str]:
+        """Decrypt stored provider credentials for server-side listing only.
+
+        The plaintext must never be returned to API clients. Callers use it
+        only to authenticate a live list-models request.
+
+        Args:
+            ai_model: Row previously loaded by :meth:`get_for_account`.
+
+        Returns:
+            The decrypted secret string, or None when the model has no
+            resolvable credential.
+        """
+        resolved = get_secret_service().resolve_ai_model_credentials(ai_model)
+        if resolved is None:
+            return None
+        value = (resolved.value or "").strip()
+        return value or None
+
     def get_for_managed_agent_enrichment(
         self,
         db: Session,
@@ -494,11 +533,59 @@ class CRUDAIModel(CRUDBase[AIModel]):
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
         self._validate_qwen_api_endpoint(obj_data, existing=db_obj)
 
+        # Preserve the gateway alias when provider_name changes so that
+        # in-flight agents configured with the old alias can still resolve
+        # the model. Only applies to gateway-enabled models using the
+        # computed default alias (no explicit model_alias configured).
+        from preloop.services.model_runtime_resolver import effective_gateway_alias
+
+        old_alias = effective_gateway_alias(db_obj)
+        if old_alias and "provider_name" in obj_data:
+            old_provider = (db_obj.provider_name or "").strip().lower()
+            new_provider = (obj_data["provider_name"] or "").strip().lower()
+            if old_provider != new_provider:
+                old_meta = (
+                    db_obj.meta_data if isinstance(db_obj.meta_data, dict) else {}
+                )
+                old_gw = (
+                    old_meta.get("gateway")
+                    if isinstance(old_meta.get("gateway"), dict)
+                    else {}
+                )
+                configured_alias = old_gw.get("model_alias")
+                incoming_meta = (
+                    obj_data.get("meta_data")
+                    if isinstance(obj_data.get("meta_data"), dict)
+                    else {}
+                )
+                incoming_gw = (
+                    incoming_meta.get("gateway")
+                    if isinstance(incoming_meta.get("gateway"), dict)
+                    else {}
+                )
+                incoming_alias = incoming_gw.get("model_alias")
+                # An alias the admin sets in this same update wins over the
+                # pin: they chose the new address deliberately.
+                has_explicit_alias = any(
+                    isinstance(alias, str) and alias.strip()
+                    for alias in (configured_alias, incoming_alias)
+                )
+                if not has_explicit_alias:
+                    # No explicit alias -- pin the current default so the
+                    # address in-flight agents know stays stable.
+                    merged_meta_for_pin = dict(
+                        obj_data["meta_data"]
+                        if "meta_data" in obj_data
+                        else (old_meta or {})
+                    )
+                    gw_block = dict(merged_meta_for_pin.get("gateway") or {})
+                    gw_block["model_alias"] = old_alias
+                    merged_meta_for_pin["gateway"] = gw_block
+                    obj_data["meta_data"] = merged_meta_for_pin
+
         # Enforce alias uniqueness only when this update changes the effective
         # gateway alias; pre-existing rows (including legacy collisions being
         # cleaned up) must remain updatable for unrelated fields.
-        from preloop.services.model_runtime_resolver import effective_gateway_alias
-
         merged_provider = obj_data.get("provider_name", db_obj.provider_name)
         merged_identifier = obj_data.get("model_identifier", db_obj.model_identifier)
         merged_meta = (

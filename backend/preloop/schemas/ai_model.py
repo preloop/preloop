@@ -256,7 +256,18 @@ class AvailableModelsRequest(BaseModel):
         None,
         description=(
             "Provider API key used to list models. Never logged and never "
-            "persisted by this endpoint."
+            "persisted by this endpoint. When omitted, pass ai_model_id so "
+            "the server can decrypt the stored key; the stored key is never "
+            "returned to the client. A typed key always wins over the stored "
+            "one."
+        ),
+    )
+    ai_model_id: Optional[uuid.UUID] = Field(
+        None,
+        description=(
+            "Existing AI model id. When no typed api_key is sent, the server "
+            "decrypts the stored credentials via CRUD and lists live. The "
+            "plaintext key is never returned in the response."
         ),
     )
     api_endpoint: Optional[str] = Field(
@@ -312,15 +323,15 @@ class AvailableModelsRequest(BaseModel):
 
 
 class AvailableModelsResponse(BaseModel):
-    """A provider's model catalog plus the provenance of the listing.
+    """A provider's model listing plus the provenance of the result.
 
     ``source`` reports whether the ids came from the provider's live listing
-    endpoint ("live") or from Preloop's bundled fallback catalog
-    ("fallback"). ``error`` is a short machine-readable reason drawn from a
+    endpoint ("live") or an empty fallback ("fallback"). There is no bundled
+    picker catalog. ``error`` is a short machine-readable reason drawn from a
     fixed vocabulary (e.g. "timeout", "network", "empty_response",
-    "unsupported", "missing_endpoint", "sdk_missing", "unknown") when a live
-    attempt failed; it never carries raw exception text, which can embed
-    endpoint URLs or key material.
+    "unsupported", "missing_endpoint", "sdk_missing", "missing_key", "auth",
+    "unknown") when a live attempt failed or was impossible; it never carries
+    raw exception text, which can embed endpoint URLs or key material.
     """
 
     models: List[str] = Field(
@@ -330,15 +341,15 @@ class AvailableModelsResponse(BaseModel):
         "fallback",
         description=(
             "'live' when the provider's listing endpoint answered; 'fallback' "
-            "when a bundled catalog (or empty list) was returned instead"
+            "when an empty list was returned instead of a live catalog"
         ),
     )
     error: Optional[str] = Field(
         None,
         description=(
-            "Short safe reason for a fallback after a failed live attempt "
-            "(fixed vocabulary, never raw provider error text). None for a "
-            "clean result."
+            "Short safe reason for a fallback after a failed or impossible "
+            "live attempt (fixed vocabulary, never raw provider error text). "
+            "None for a clean live result."
         ),
     )
 

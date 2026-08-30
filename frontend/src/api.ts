@@ -2360,8 +2360,9 @@ export async function deleteAIModel(modelId: string) {
  * This vocabulary mirrors the server's fixed set (see
  * `preloop.services.ai_model_provider`). Raw exception text is deliberately
  * never sent, because it can embed endpoint URLs or key material. An
- * authentication failure is NOT in this list: bad keys raise a 401 instead of
- * returning a fallback list.
+ * authentication failure that the provider rejected as a bad key still
+ * raises a 401 instead of returning a fallback list; `auth` is reserved
+ * for provenance-only auth failures.
  */
 export type AvailableModelsFallbackReason =
   | 'timeout'
@@ -2370,6 +2371,8 @@ export type AvailableModelsFallbackReason =
   | 'unsupported'
   | 'missing_endpoint'
   | 'sdk_missing'
+  | 'missing_key'
+  | 'auth'
   | 'unknown';
 
 export interface AvailableModelsResult {
@@ -2399,8 +2402,11 @@ export interface AwsDiscoveryAuth {
  * which have no fixed catalog and are listed from the endpoint's own
  * OpenAI-compatible GET /models.
  *
- * `awsAuth` carries explicit AWS credentials for the bedrock provider; when
- * omitted the backend falls back to its ambient credential chain.
+ * `aiModelId` is the existing model row when editing. The server decrypts
+ * the stored key and lists live; the stored key is never returned. A typed
+ * `apiKey` still wins.
+ *
+ * `awsAuth` carries explicit AWS credentials for the bedrock provider.
  *
  * Tolerates the old bare string[] response (pre-provenance servers) by
  * mapping it to { models, source: 'live' }.
@@ -2410,7 +2416,8 @@ export async function getAvailableModelsForProvider(
   apiKey?: string,
   modelKind: 'llm' | 'stt' | 'tts' = 'llm',
   apiEndpoint?: string,
-  awsAuth?: AwsDiscoveryAuth
+  awsAuth?: AwsDiscoveryAuth,
+  aiModelId?: string
 ): Promise<AvailableModelsResult> {
   const url = `/api/v1/ai-models/providers/${provider}/available-models`;
   const response = await fetchWithAuth(url, {
@@ -2420,6 +2427,7 @@ export async function getAvailableModelsForProvider(
       model_kind: modelKind,
       ...(apiKey ? { api_key: apiKey } : {}),
       ...(apiEndpoint ? { api_endpoint: apiEndpoint } : {}),
+      ...(aiModelId ? { ai_model_id: aiModelId } : {}),
       ...(awsAuth?.accessKeyId
         ? { aws_access_key_id: awsAuth.accessKeyId }
         : {}),

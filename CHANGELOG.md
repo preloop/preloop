@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Edit-mode model refresh lists live models**: refreshing the picker
+  while editing a saved AI model (for example a Z.ai key that now serves
+  `glm-5.3-flash`) sends the model id so the server decrypts the stored
+  key and lists live. Create-with-a-typed-key already did this; edit
+  previously sent an empty key and fell back to a stale bundled catalog.
+  Stored secrets are never returned to the browser. Typed keys still win.
+
 - **Model I/O policy API 500 under RBAC**: `/api/v1/policies/model-io-rules`
   list/create/update/patch/delete used `@require_permission` without a
   `current_user` FastAPI dependency. Nested `get_account_for_user` does
@@ -71,6 +78,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CRA / AI Act evidence runbook**: rewrite of
+  `docs/guide/flows/security-audit-presets.md` as a manufacturer-facing
+  runbook for the shipped Apache presets (SBOM Verify, SBOM Exploit
+  Check, Release Security Audit, Component Due Diligence). Opens with
+  what the pack is not (Regulation (EU) 2024/2847; Art. 14 reporting
+  from 11 Sep 2026; full CRA 11 Dec 2027; Preloop does not file Article
+  14 reports), then the `result.json` contract aligned to the YAML
+  prompts, a copy-paste CI hook (`workspace_files` plus poll `/result`
+  and retain `/evidence`), and honest limits. Not a conformity
+  assessment, CE marking, or certification.
 - **Model I/O content policies**: instance policies can `allow`, `deny`,
   or `require_approval` on `model.request` and `model.response` using
   the existing policy engine. Built-in detectors cover PII, prompt
@@ -111,6 +128,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Provider model pickers are live-only**: bundled fallback catalogs
+  are gone. A failed or keyless listing returns an empty picker with a
+  safe `source`/`error` reason (timeout, network, empty_response,
+  missing_endpoint, sdk_missing, missing_key, auth) instead of a stale
+  guess. OpenAI STT/TTS ids are filtered from the same live
+  `GET /v1/models` list. The pricing table is unchanged.
+
 - **README is the product intro, not the operator manual**: ~390 lines
   down to ~200. Locked category line and lead, install + evidence first,
   ops (TLS, SMTP, Agent Control internals, QM proxy, smoke tests) moved
@@ -135,6 +159,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stay Apache presets, not an edition gate. Page titles and descriptions
   are brand-parameterized, and the footer links only the regulation pages
   a build actually pre-rendered.
+
+- **Editions table lists differences only**: OSS is one operator per
+  account. Users, teams, and RBAC are Cloud / Enterprise. Cloud is
+  managed hosting; Cloud and Enterprise include support plans. Dropped
+  Yes/Yes capability-tour rows and overclaims (CEL, AI-driven/quorum
+  evaluation, AI Act pack, chargeback/forecasting as edition gates).
+  CEL, AI-driven approvals, and quorum evaluation are OSS. Chargeback
+  and forecasting stay Cloud / Enterprise cost features; they were
+  dropped from the table because they are not users/teams/RBAC
+  edition gates, not because they went away.
+
+- **CRA / AI Act evidence named as an OSS use case**: README intro and
+  What-you-get name the security-audit presets (`result.json`) as machine
+  evidence, not a conformity assessment. Editions table still lists only
+  users, teams, and RBAC.
 
 - **Overview Top Models shows a preview per model**: each model lists its
   top four agents/flows/sessions by spend or usage, with a See N more

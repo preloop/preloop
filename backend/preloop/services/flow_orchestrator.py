@@ -1812,6 +1812,49 @@ class FlowExecutionOrchestrator:
                     else None
                 )
             )
+
+            # Populate the authorized gateway model list so agent config
+            # generators (e.g. OpenCode) can include every model the
+            # principal is allowed to use, not just the primary one.  The
+            # list must be scoped to the execution credential: this flow
+            # principal is not authorized for subscription-OAuth models
+            # bound to a managed agent, and offering them would only
+            # produce a 400 at the gateway.
+            if resolved_model_runtime.model_gateway_enabled:
+                try:
+                    from preloop.services.agent_model_list import (
+                        list_authorized_gateway_models,
+                    )
+                    from preloop.services.model_gateway_auth import (
+                        build_runtime_key_auth_context,
+                    )
+
+                    auth_context = (
+                        build_runtime_key_auth_context(
+                            self.db,
+                            token=account_api_token,
+                            api_key_id=str(self.temporary_api_key_id),
+                        )
+                        if account_api_token and self.temporary_api_key_id
+                        else None
+                    )
+                    authorized = list_authorized_gateway_models(
+                        self.db,
+                        str(self.flow.account_id),
+                        auth_context=auth_context,
+                    )
+                    execution_context["authorized_gateway_models"] = [
+                        {"alias": m.alias, "display_name": m.display_name}
+                        for m in authorized
+                    ]
+                except Exception:
+                    logger.warning(
+                        "Could not resolve authorized gateway models for flow "
+                        "%s; the agent config falls back to the primary model "
+                        "only",
+                        self.flow.id,
+                        exc_info=True,
+                    )
         else:
             logger.warning(
                 f"No AI model configured for flow {self.flow.id}, "
