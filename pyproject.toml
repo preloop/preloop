@@ -57,6 +57,7 @@ dependencies = [
     "passlib[bcrypt]>=1.7.4",
     "bcrypt<4.1.0",
     "python-multipart>=0.0.6",
+    "Pillow>=10.0.0",  # Avatar decode/resize/re-encode (preloop.services.avatar)
     "httpx[http2]>=0.24.1",  # http2 extra required for APNs push notifications
     "tenacity>=8.2.3",
     "python-json-logger>=2.0.0",
