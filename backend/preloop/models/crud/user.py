@@ -238,6 +238,40 @@ class CRUDUser(CRUDBase[User]):
         """
         return db.query(User.id).first() is not None
 
+    def set_avatar_from_sso(
+        self,
+        db: Session,
+        *,
+        user: User,
+        avatar_url: str,
+        commit: bool = True,
+    ) -> User:
+        """Set the avatar from an SSO provider, respecting precedence.
+
+        Manual uploads take precedence: if the user's current avatar_source
+        is ``"manual"``, the SSO URL is silently ignored.
+
+        Args:
+            db: Database session.
+            user: User ORM instance to update.
+            avatar_url: Provider-supplied avatar URL.
+            commit: Commit the transaction when True.
+
+        Returns:
+            The (possibly updated) user.
+        """
+        if user.avatar_source == "manual":
+            return user
+        user.avatar_url = avatar_url
+        user.avatar_source = "sso"
+        db.add(user)
+        if commit:
+            db.commit()
+            db.refresh(user)
+        else:
+            db.flush()
+        return user
+
 
 # Create instance
 crud_user = CRUDUser(User)

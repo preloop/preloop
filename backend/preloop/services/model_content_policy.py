@@ -234,7 +234,13 @@ def _content_to_text(content: Any) -> str:
 
 
 def _text_privacy(text: str) -> str:
-    """SHA-256 of scanned text. Never persist a raw preview (it may be PII)."""
+    """SHA-256 fingerprint of scanned text. Never persist a raw preview.
+
+    Prompts can contain secrets, so audit rows keep only this digest.
+    This is not password storage: a KDF would change existing
+    ``text_sha256`` values and would run on every model call.
+    """
+    # codeql[py/weak-sensitive-data-hashing] Prompt fingerprint for audit, not password hashing
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 

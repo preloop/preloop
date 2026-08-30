@@ -13,6 +13,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rendered as a figure under the tags, and a missing `og_image` logs a
   build warning.
 
+- **Policies console hidden behind `policies_console` (off by default)**:
+  the page is still being reworked, so `/api/v1/features` now advertises
+  `policies_console: false` unless an operator sets
+  `PRELOOP_POLICIES_CONSOLE=true`. Instance admins (`is_superuser`) still
+  see the sidebar link and the page. A direct `/console/policies` URL
+  without access renders the usual permission-denied surface instead of an
+  empty shell, and `/console/governance` still redirects there. Backend
+  policy APIs are untouched, and per-tool policy on the Tools page is
+  unaffected.
+- **Policies page reworked into a working editor**: primary actions
+  (Describe a change, Add rule, Import YAML, Export YAML) now live once in
+  the view header, matching Tools, so Export is no longer duplicated and
+  Import no longer hides inside the YAML tab. The YAML tab is a live editor
+  over the active policy: it loads the current export, validates through
+  `POST /api/v1/policies/validate` and shows schema errors inline, and only
+  applies YAML that validates. Version history stays below the editor and
+  the format example moved into a collapsed section.
+- **YAML editor Save shows a diff first**: editor Save now uses the same
+  `previewPolicyFile` flow as Import YAML, so applying a full policy cannot
+  silently drop rules, MCP servers, or workflows. Validate-before-save,
+  inline schema errors, Revert, and version history are unchanged.
 - **Public markdown routes come from discovered content files**: `lit-app`
   registers `/terms`, `/dora`, and other static pages from
   `BRAND_CONFIG.static_markdown_pages` (Vite scans `content/<brand>/*.md`
@@ -27,6 +48,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the matching `<h1>` in the rendered body) is stripped so
   `/blog/preloop-0-15-0` does not show the headline twice.
 
+- **Avatar upload rejects oversized files before buffering the body**:
+  `PUT /users/me/avatar` reads the multipart in 1 MiB chunks and returns
+  413 once the 5 MB cap is crossed, matching the audio upload helper.
+  `process_avatar` still validates size after a complete read; this closes
+  the same memory-exhaustion class as the decompression-bomb fix, on the
+  upload-read path.
+- **Describe a change no longer opens against a stale policy**: the button
+  refetches the current export first and reports an error instead of
+  silently opening an empty dialog when the export fails.
+- **Add rule dialog no longer closes on every choice**: the dialog listened
+  for `sl-hide`, which every inner `sl-select` emits when its dropdown
+  closes, so picking a target or action dismissed the form. It now listens
+  for `sl-request-close` and only Cancel, the close button, or Escape can
+  dismiss it. The form also asks for the rule type first (tool call versus
+  model text, then request versus response in plain words), offers presets
+  that wire detector, condition, and action together, explains that
+  detectors only produce facts (`pii.found`, `injection.score`,
+  `moderation.flagged`) while the condition decides when a rule fires, warns
+  when a condition reads a detector that is switched off, and refuses to
+  save a deny or require_approval rule with an empty condition rather than
+  defaulting it to match everything.
+- **Switching back to a policy preset re-applies it**: choosing
+  "Start from a preset" after writing a custom expression restores that
+  preset's detectors and condition, instead of keeping the custom values
+  while the preset card still looks selected.
+- **Dismissing the policy diff dialog clears a pending YAML save**: Escape
+  or the dialog close control now resets `_pendingYamlSave`, so a later
+  Import apply cannot be treated as an editor save.
 - **`get_route_from_filename` maps `pandora.html` to `/pandora`, not `/dora`**:
   top-level HTML files use the basename as the route, with no substring
   match against `dora`.
@@ -42,7 +91,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key and lists live. Create-with-a-typed-key already did this; edit
   previously sent an empty key and fell back to a stale bundled catalog.
   Stored secrets are never returned to the browser. Typed keys still win.
-
 - **Model I/O policy API 500 under RBAC**: `/api/v1/policies/model-io-rules`
   list/create/update/patch/delete used `@require_permission` without a
   `current_user` FastAPI dependency. Nested `get_account_for_user` does
@@ -78,12 +126,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `usage_by_session`, then a second request filled the nested list back in.
   The card now keeps the breakdown until the detailed summary arrives and
   does not flip loading flags on background refresh.
-
 - **Private-cluster Helm tests after OTLP merge**: default `values.yaml`
   now includes the `otlp` block from main. The private-cluster suite no
   longer asserts that block is absent, and the README no longer claims
   the chart does not define `otlp` values.
-
 - **Bot-sender loop guard no longer swallows legitimate PR events**: the
   loop guard in `flow_trigger_service._is_preloop_triggered_event`
   dropped all webhook events whose sender started with "preloop",
@@ -95,6 +141,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prefix, preventing false positives on usernames like "preloop-fan".
 
 ### Security
+
+- **Model I/O ``text_sha256`` stays a SHA-256 prompt fingerprint**:
+  CodeQL flagged the digest as password hashing because scanned prompts
+  can contain secrets. It is an audit fingerprint (never the raw text),
+  the same pattern as API-key lookup hashes. The algorithm is unchanged,
+  so existing ``text_sha256`` rows keep matching.
 
 - **Drop python-jose for PyJWT**: auth tokens, email/reset tokens, WebAuthn
   challenge state, MCP OAuth authorize codes, and APNs ES256 client
@@ -153,7 +205,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fail the user-facing call. Helm `otlp.*` values and
   `docs/guide/observability-otlp.md` cover a generic collector, Langfuse
   OTLP ingest, and Datadog OTLP ingest.
-
 - **GitLab `issue_labeled`**: an Issue Hook whose `changes.labels` adds
   a label now normalizes to `issue_labeled` (remove-only is
   `issue_unlabeled`). Filter field `added_labels` is set on GitHub and
@@ -167,7 +218,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing_endpoint, sdk_missing, missing_key, auth) instead of a stale
   guess. OpenAI STT/TTS ids are filtered from the same live
   `GET /v1/models` list. The pricing table is unchanged.
-
 - **README is the product intro, not the operator manual**: ~390 lines
   down to ~200. Locked category line and lead, install + evidence first,
   ops (TLS, SMTP, Agent Control internals, QM proxy, smoke tests) moved
@@ -192,7 +242,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stay Apache presets, not an edition gate. Page titles and descriptions
   are brand-parameterized, and the footer links only the regulation pages
   a build actually pre-rendered.
-
 - **Editions table lists differences only**: OSS is one operator per
   account. Users, teams, and RBAC are Cloud / Enterprise. Cloud is
   managed hosting; Cloud and Enterprise include support plans. Dropped
@@ -202,23 +251,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and forecasting stay Cloud / Enterprise cost features; they were
   dropped from the table because they are not users/teams/RBAC
   edition gates, not because they went away.
-
 - **CRA / AI Act evidence named as an OSS use case**: README intro and
   What-you-get name the security-audit presets (`result.json`) as machine
   evidence, not a conformity assessment. Editions table still lists only
   users, teams, and RBAC.
-
 - **Overview Top Models shows a preview per model**: each model lists its
   top four agents/flows/sessions by spend or usage, with a See N more
   control when there are more. Expanded groups cap nested sessions the
   same way so a busy model cannot dominate the card.
-
 - **GitHub CI backend tests run in parallel**: the backend unit suite is
   sharded across four GitHub Actions jobs with pytest-split, each with
   its own Postgres, so PRs are no longer gated on a single ~12-minute
   pytest process. Coverage from the shards is combined before the 60%
   floor is applied.
-
 - **Codex onboarding is config-only**: `preloop agents onboard` no longer
   installs a `~/.local/bin/codex` PATH wrapper. Codex only requires a
   process environment variable when `env_key` or `bearer_token_env_var` is
@@ -240,7 +285,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   close code 4000 as a non-retryable eviction and stop reconnecting to
   avoid an eviction ping-pong loop. A warning-level log on the server
   names both connection identities.
-
 - **Empty upstream streams no longer complete "successfully"**: an
   OpenAI-Responses stream whose upstream produced zero output items
   (or reported an in-band `error` chunk) used to be folded into a

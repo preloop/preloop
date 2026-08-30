@@ -209,12 +209,114 @@ describe('ConsoleShell', () => {
 
     const toolsLink = el.shadowRoot?.querySelector('a[href="/console/tools"]');
     expect(toolsLink).to.exist;
+  });
 
-    const policiesLink = el.shadowRoot?.querySelector(
-      'a[href="/console/policies"]'
-    );
-    expect(policiesLink).to.exist;
-    expect(policiesLink?.textContent).to.contain('Policies');
+  describe('Policies preview gate', () => {
+    /** Re-stub fetch with a chosen policies_console flag and superuser bit. */
+    function stubShell(
+      opts: { policiesConsole?: boolean; isSuperuser?: boolean } = {}
+    ) {
+      invalidateApiCaches();
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/api/v1/features')) {
+          return new Response(
+            JSON.stringify({
+              plugins: [],
+              features: {
+                audit_logs: false,
+                policies_console: opts.policiesConsole === true,
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.endsWith('/api/v1/auth/users/me')) {
+          return new Response(
+            JSON.stringify({
+              username: 'test',
+              email: 'test@example.com',
+              email_verified: true,
+              is_superuser: opts.isSuperuser === true,
+              permissions: null,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    }
+
+    async function mountShell() {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      // The nav renders before /features resolves, so wait for the load to
+      // finish rather than for a link that is always present.
+      await waitUntil(
+        () =>
+          (el as unknown as { _featuresLoaded: boolean })._featuresLoaded &&
+          (el as unknown as { _permissionsLoaded: boolean })._permissionsLoaded,
+        'Features and permissions did not load'
+      );
+      await el.updateComplete;
+      return el;
+    }
+
+    it('hides the Policies link when the flag is off', async () => {
+      stubShell();
+      const el = await mountShell();
+
+      expect(el.shadowRoot?.querySelector('a[href="/console/policies"]')).to.not
+        .exist;
+    });
+
+    it('shows the Policies link when policies_console is on', async () => {
+      stubShell({ policiesConsole: true });
+      const el = await mountShell();
+
+      const policiesLink = el.shadowRoot?.querySelector(
+        'a[href="/console/policies"]'
+      );
+      expect(policiesLink).to.exist;
+      expect(policiesLink?.textContent).to.contain('Policies');
+    });
+
+    it('shows the Policies link to an instance admin with the flag off', async () => {
+      stubShell({ isSuperuser: true });
+      const el = await mountShell();
+
+      expect(el.shadowRoot?.querySelector('a[href="/console/policies"]')).to
+        .exist;
+    });
+
+    it('renders permission-denied on a direct /console/policies URL when hidden', async () => {
+      const originalPath = window.location.pathname;
+      window.history.replaceState({}, '', '/console/policies');
+      stubShell();
+
+      const el = await mountShell();
+
+      expect(el.shadowRoot?.querySelector('permission-denied')).to.exist;
+      expect(el.shadowRoot?.querySelector('.main-content slot')).to.not.exist;
+
+      window.history.replaceState({}, '', originalPath);
+    });
+
+    it('renders the page on a direct URL when the flag is on', async () => {
+      const originalPath = window.location.pathname;
+      window.history.replaceState({}, '', '/console/policies');
+      stubShell({ policiesConsole: true });
+
+      const el = await mountShell();
+
+      expect(el.shadowRoot?.querySelector('permission-denied')).to.not.exist;
+
+      window.history.replaceState({}, '', originalPath);
+    });
   });
 
   it('nests Sessions and Approvals under Audit without All events when audit_logs is off', async () => {

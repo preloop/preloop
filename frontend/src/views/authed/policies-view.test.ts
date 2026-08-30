@@ -302,7 +302,7 @@ describe('PoliciesView', () => {
     (element as any)._modelIOForm = {
       ...(element as any)._modelIOForm,
       id: 'deny-pii',
-      kind: 'model.request',
+      ruleType: 'model',
       target: 'model.request',
       action: 'deny',
       expression: 'pii.found == true',
@@ -473,5 +473,444 @@ describe('PoliciesView', () => {
     dialog._applyPolicy();
     await waitUntil(() => uploaded, 'Save did not apply');
     expect(uploaded).to.be.true;
+  });
+
+  describe('YAML tab', () => {
+    /**
+     * Minimal stub focused on the YAML editor: the export is the seed, and
+     * /validate decides whether /upload is ever reached.
+     */
+    function createYamlStub(
+      opts: { valid?: boolean; exportOk?: boolean } = {}
+    ) {
+      const calls = { uploaded: false, validated: 0, previewed: 0 };
+      const stub = sinon
+        .stub(window, 'fetch')
+        .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          const method = (init?.method || 'GET').toUpperCase();
+          if (url.endsWith('/api/v1/tools') && method === 'GET') {
+            return json([]);
+          }
+          if (url.endsWith('/api/v1/approval-workflows') && method === 'GET') {
+            return json([]);
+          }
+          if (url.includes('/api/v1/features')) {
+            return json({ plugins: [], features: {} });
+          }
+          if (url.includes('/api/v1/policies/model-io-rules')) {
+            return json({ rules: [] });
+          }
+          if (url.includes('/api/v1/policies/versions')) {
+            return json([]);
+          }
+          if (url.includes('/api/v1/policies/export')) {
+            if (opts.exportOk === false) {
+              return json({ detail: 'export unavailable' }, 500);
+            }
+            return new Response('version: "1.0"\nmetadata:\n  name: live\n', {
+              status: 200,
+            });
+          }
+          if (url.endsWith('/api/v1/policies/validate') && method === 'POST') {
+            calls.validated += 1;
+            if (opts.valid === false) {
+              return json({
+                is_valid: false,
+                errors: [
+                  { path: '$.tools[0]', message: 'Unknown action "banish"' },
+                ],
+                warnings: [],
+              });
+            }
+            return json({ is_valid: true, errors: [], warnings: [] });
+          }
+          if (url.endsWith('/api/v1/policies/diff') && method === 'POST') {
+            calls.previewed += 1;
+            return json({
+              summary: '1 change',
+              has_changes: true,
+              changes: {
+                added: [],
+                removed: [],
+                modified: [{ type: 'modified', category: 'tools', name: 'x' }],
+              },
+            });
+          }
+          if (url.endsWith('/api/v1/policies/upload') && method === 'POST') {
+            calls.uploaded = true;
+            return json({ success: true, policy_name: 'live' });
+          }
+          return json({ detail: `Unhandled: ${method} ${url}` }, 500);
+        });
+      return { stub, calls };
+    }
+
+    it('seeds the editor with the exported policy YAML', async () => {
+      const { stub } = createYamlStub();
+      fetchStub = stub;
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any)._activeTab = 'files';
+      await element.updateComplete;
+
+      expect((element as any)._yamlDraft).to.contain('metadata:');
+      const editor = element.shadowRoot?.querySelector(
+        '[data-testid="policy-yaml-editor"]'
+      );
+      expect(editor).to.exist;
+      expect((editor as any).value).to.contain('name: live');
+    });
+
+    it('blocks the save when validation fails and never uploads', async () => {
+      const { stub, calls } = createYamlStub({ valid: false });
+      fetchStub = stub;
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any)._activeTab = 'files';
+      (element as any)._onYamlDraftInput('version: "1.0"\ntools: banish\n');
+      await (element as any)._saveYamlDraft();
+      await element.updateComplete;
+
+      expect(calls.validated).to.equal(1);
+      expect(calls.previewed).to.equal(0);
+      expect(calls.uploaded).to.be.false;
+      expect((element as any)._yamlErrors).to.have.length(1);
+      expect((element as any)._yamlErrors[0].message).to.contain('banish');
+      expect(element.shadowRoot?.textContent).to.contain('was not applied');
+    });
+
+    it('validates then previews a valid draft instead of applying immediately', async () => {
+      const { stub, calls } = createYamlStub();
+      fetchStub = stub;
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any)._activeTab = 'files';
+      (element as any)._onYamlDraftInput(
+        'version: "1.0"\nmetadata:\n  name: x\n'
+      );
+      await (element as any)._saveYamlDraft();
+      await element.updateComplete;
+
+      expect(calls.validated).to.equal(1);
+      expect(calls.previewed).to.equal(1);
+      expect(calls.uploaded).to.be.false;
+      expect((element as any)._yamlErrors).to.have.length(0);
+      expect((element as any)._showDiffDialog).to.be.true;
+      expect((element as any)._yamlDirty).to.be.true;
+
+      await (element as any).applyPolicyFile();
+      await element.updateComplete;
+
+      expect(calls.uploaded).to.be.true;
+      expect((element as any)._showDiffDialog).to.be.false;
+      expect((element as any)._yamlDirty).to.be.false;
+      expect((element as any)._yamlNotice).to.contain('saved and applied');
+    });
+
+    it('refuses to save an empty draft without calling the API', async () => {
+      const { stub, calls } = createYamlStub();
+      fetchStub = stub;
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any)._onYamlDraftInput('   ');
+      await (element as any)._saveYamlDraft();
+
+      expect(calls.validated).to.equal(0);
+      expect(calls.previewed).to.equal(0);
+      expect(calls.uploaded).to.be.false;
+      expect((element as any)._yamlErrors[0].message).to.contain('empty');
+    });
+
+    it('does not upload when the save diff is cancelled', async () => {
+      const { stub, calls } = createYamlStub();
+      fetchStub = stub;
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any)._onYamlDraftInput(
+        'version: "1.0"\nmetadata:\n  name: x\n'
+      );
+      await (element as any)._saveYamlDraft();
+      await element.updateComplete;
+
+      expect((element as any)._showDiffDialog).to.be.true;
+      (element as any)._cancelDiffPreview();
+      await element.updateComplete;
+
+      expect(calls.previewed).to.equal(1);
+      expect(calls.uploaded).to.be.false;
+      expect((element as any)._showDiffDialog).to.be.false;
+      expect((element as any)._yamlDirty).to.be.true;
+    });
+
+    it('clears the yaml-save flag when the diff dialog is dismissed', async () => {
+      const { stub, calls } = createYamlStub();
+      fetchStub = stub;
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any)._onYamlDraftInput(
+        'version: "1.0"\nmetadata:\n  name: x\n'
+      );
+      await (element as any)._saveYamlDraft();
+      await element.updateComplete;
+
+      expect((element as any)._pendingYamlSave).to.equal(true);
+      expect((element as any)._showDiffDialog).to.be.true;
+
+      const dialog = element.shadowRoot?.querySelector(
+        'sl-dialog[label="Preview Policy Changes"]'
+      ) as HTMLElement;
+      dialog.dispatchEvent(
+        new CustomEvent('sl-request-close', {
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await element.updateComplete;
+
+      expect((element as any)._pendingYamlSave).to.equal(false);
+      expect((element as any)._showDiffDialog).to.be.false;
+      expect(calls.uploaded).to.be.false;
+    });
+
+    it('opens Describe a change with a freshly refetched export', async () => {
+      const { stub } = createYamlStub();
+      fetchStub = stub;
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      const before = stub
+        .getCalls()
+        .filter((c) => String(c.args[0]).includes('/policies/export')).length;
+
+      await (element as any)._openGenerateDialog();
+      await element.updateComplete;
+
+      const after = stub
+        .getCalls()
+        .filter((c) => String(c.args[0]).includes('/policies/export')).length;
+      expect(after).to.be.greaterThan(before);
+      expect((element as any)._showGenerateDialog).to.be.true;
+
+      const dialog = element.shadowRoot?.querySelector(
+        'policy-generate-dialog'
+      ) as any;
+      expect(dialog.currentYaml).to.contain('name: live');
+    });
+
+    it('surfaces an error instead of opening the dialog when the export fails', async () => {
+      const { stub } = createYamlStub({ exportOk: false });
+      fetchStub = stub;
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      await (element as any)._openGenerateDialog();
+      await element.updateComplete;
+
+      expect((element as any)._showGenerateDialog).to.be.false;
+      expect((element as any)._error).to.contain('Could not load');
+    });
+  });
+
+  describe('Add rule dialog', () => {
+    async function mountWithDialog() {
+      fetchStub = createFetchStub({ tools: [sampleTool] });
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+      (element as any).openModelIODialog();
+      await element.updateComplete;
+      return element;
+    }
+
+    it('stays open when an inner select hides', async () => {
+      const element = await mountWithDialog();
+
+      const dialog = element.shadowRoot?.querySelector(
+        '[data-testid="rule-dialog"]'
+      ) as HTMLElement;
+      expect(dialog).to.exist;
+      expect((element as any)._showModelIODialog).to.be.true;
+
+      // Regression: the dialog used to listen for sl-hide, which every inner
+      // sl-select emits when its dropdown closes.
+      const select = element.shadowRoot?.querySelector('sl-select');
+      expect(select).to.exist;
+      select?.dispatchEvent(
+        new CustomEvent('sl-hide', { bubbles: true, composed: true })
+      );
+      await element.updateComplete;
+
+      expect((element as any)._showModelIODialog).to.be.true;
+    });
+
+    it('ignores an overlay dismissal but honours Cancel', async () => {
+      const element = await mountWithDialog();
+
+      const overlayClose = new CustomEvent('sl-request-close', {
+        detail: { source: 'overlay' },
+        cancelable: true,
+      });
+      (element as any)._handleModelIORequestClose(overlayClose);
+      expect(overlayClose.defaultPrevented).to.be.true;
+      expect((element as any)._showModelIODialog).to.be.true;
+
+      (element as any)._handleModelIORequestClose(
+        new CustomEvent('sl-request-close', {
+          detail: { source: 'close-button' },
+          cancelable: true,
+        })
+      );
+      expect((element as any)._showModelIODialog).to.be.false;
+    });
+
+    it('offers tool and model rule types with request and response sides', async () => {
+      const element = await mountWithDialog();
+
+      const ruleType = element.shadowRoot?.querySelector(
+        '[data-testid="rule-type"]'
+      );
+      expect(ruleType?.textContent).to.contain('A tool call');
+      expect(ruleType?.textContent).to.contain('Model text');
+
+      const target = element.shadowRoot?.querySelector(
+        '[data-testid="rule-target"]'
+      );
+      expect(target?.textContent).to.contain('the prompt, before it reaches');
+      expect(target?.textContent).to.contain('the completion, after the');
+
+      (element as any)._patchModelIOForm({ ruleType: 'tool' });
+      await element.updateComplete;
+      expect(element.shadowRoot?.querySelector('[data-testid="rule-target"]'))
+        .to.not.exist;
+    });
+
+    it('explains what each detector produces', async () => {
+      const element = await mountWithDialog();
+
+      const text = element.shadowRoot?.textContent ?? '';
+      expect(text).to.contain('Detectors scan the text and produce facts');
+      expect(text).to.contain('pii.types_found');
+      expect(text).to.contain('injection.matched_patterns');
+      expect(text).to.contain('moderation.categories');
+    });
+
+    it('warns when the condition reads a detector that is switched off', async () => {
+      const element = await mountWithDialog();
+
+      (element as any)._patchModelIOForm({
+        conditionMode: 'custom',
+        expression: 'injection.score > 0.7',
+        detectInjection: false,
+      });
+      await element.updateComplete;
+
+      const warnings = element.shadowRoot?.querySelector(
+        '[data-testid="rule-warnings"]'
+      );
+      expect(warnings?.textContent).to.contain('injection.*');
+    });
+
+    it('maps a preset to its detector, condition, and action', async () => {
+      const element = await mountWithDialog();
+
+      (element as any)._applyPreset('flag-injection');
+      await element.updateComplete;
+
+      const rule = (element as any).buildModelIORuleFromForm();
+      expect(rule.id).to.equal('flag-injection');
+      expect(rule.target).to.equal('model.request');
+      expect(rule.detectors.injection).to.equal(true);
+      expect(rule.detectors.pii).to.be.undefined;
+      expect(rule.conditions[0].expression).to.equal('injection.score > 0.7');
+      expect(rule.conditions[0].action).to.equal('require_approval');
+
+      (element as any)._applyPreset('block-flagged-completions');
+      await element.updateComplete;
+      const responseRule = (element as any).buildModelIORuleFromForm();
+      expect(responseRule.target).to.equal('model.response');
+      expect(responseRule.detectors.moderation).to.equal(true);
+      expect(responseRule.conditions[0].expression).to.equal(
+        'moderation.flagged == true'
+      );
+      expect(responseRule.conditions[0].action).to.equal('deny');
+    });
+
+    it('re-applies the selected preset when switching back from a custom expression', async () => {
+      const element = await mountWithDialog();
+
+      (element as any)._applyPreset('flag-injection');
+      await element.updateComplete;
+      (element as any)._patchModelIOForm({
+        conditionMode: 'custom',
+        expression: 'injection.score > 0.99',
+        detectPii: true,
+        detectInjection: false,
+      });
+      await element.updateComplete;
+
+      expect((element as any)._modelIOForm.presetId).to.equal('flag-injection');
+      expect((element as any)._modelIOForm.expression).to.equal(
+        'injection.score > 0.99'
+      );
+
+      (element as any)._setConditionMode('preset');
+      await element.updateComplete;
+
+      const form = (element as any)._modelIOForm;
+      expect(form.conditionMode).to.equal('preset');
+      expect(form.presetId).to.equal('flag-injection');
+      expect(form.expression).to.equal('injection.score > 0.7');
+      expect(form.action).to.equal('require_approval');
+      expect(form.target).to.equal('model.request');
+      expect(form.detectInjection).to.be.true;
+      expect(form.detectPii).to.be.false;
+      expect(form.detectModeration).to.be.false;
+    });
+
+    it('refuses to save a deny rule with no condition', async () => {
+      const element = await mountWithDialog();
+
+      (element as any)._patchModelIOForm({
+        id: 'deny-everything',
+        action: 'deny',
+        expression: '   ',
+      });
+      await (element as any).saveModelIORule();
+
+      expect((element as any)._error).to.contain('needs a condition');
+      expect((element as any)._showModelIODialog).to.be.true;
+      const posted = fetchStub
+        .getCalls()
+        .filter(
+          (c) =>
+            String(c.args[0]).endsWith('/api/v1/policies/model-io-rules') &&
+            (c.args[1] as RequestInit | undefined)?.method === 'POST'
+        );
+      expect(posted).to.have.length(0);
+    });
   });
 });

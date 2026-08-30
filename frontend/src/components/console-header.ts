@@ -10,6 +10,7 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import './theme-switcher.ts';
+import './user-avatar.ts';
 import * as api from '../api';
 import { Router } from '@vaadin/router';
 import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
@@ -24,6 +25,7 @@ interface UserDetails {
   username: string;
   email: string;
   full_name: string;
+  avatar_url?: string | null;
 }
 
 interface FlowExecution {
@@ -117,6 +119,21 @@ export class ConsoleHeader extends LitElement {
     }
     .theme-switcher-container {
       padding: 0.5rem 1rem;
+    }
+    .user-menu-trigger {
+      display: inline-flex;
+      align-items: center;
+      padding: 0;
+      border: none;
+      border-radius: 50%;
+      background: none;
+      cursor: pointer;
+      color: inherit;
+      font: inherit;
+    }
+    .user-menu-trigger:focus-visible {
+      outline: var(--sl-focus-ring);
+      outline-offset: var(--sl-focus-ring-offset);
     }
     .user-info {
       padding: 0.5rem 1rem;
@@ -1025,11 +1042,19 @@ export class ConsoleHeader extends LitElement {
 
           <!-- User Menu -->
           <sl-dropdown distance="8">
-            <sl-icon-button
-              name="person-circle"
+            <button
               slot="trigger"
-              label="User Menu"
-            ></sl-icon-button>
+              class="user-menu-trigger"
+              type="button"
+              aria-label="User Menu"
+            >
+              <user-avatar
+                .image=${this._user?.avatar_url || ''}
+                .label=${this._user?.full_name || this._user?.username || ''}
+                .seed=${this._user?.username || ''}
+                .size=${32}
+              ></user-avatar>
+            </button>
             <sl-menu>
               <div class="theme-switcher-container">
                 <theme-switcher></theme-switcher>
@@ -1037,6 +1062,13 @@ export class ConsoleHeader extends LitElement {
               <sl-divider></sl-divider>
 
               <div class="user-info">
+                <user-avatar
+                  .image=${this._user?.avatar_url || ''}
+                  .label=${this._user?.full_name || this._user?.username || ''}
+                  .seed=${this._user?.username || ''}
+                  .size=${40}
+                  style="margin-right: 0.5rem"
+                ></user-avatar>
                 <div class="user-name">
                   ${this._user?.full_name || this._user?.username}
                 </div>

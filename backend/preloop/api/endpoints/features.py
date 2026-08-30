@@ -1,5 +1,6 @@
 """System features and plugin detection endpoints."""
 
+import os
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends
@@ -12,9 +13,32 @@ from preloop.api.auth.bootstrap import (
 from preloop.models.db.session import get_db_session
 from preloop.plugins.base import get_plugin_manager
 
-__all__ = ["router", "get_features", "reset_users_exist_cache"]
+__all__ = [
+    "router",
+    "get_features",
+    "reset_users_exist_cache",
+    "policies_console_enabled",
+]
 
 router = APIRouter()
+
+
+def policies_console_enabled() -> bool:
+    """Whether the Policies console page is exposed (default off).
+
+    The page is still under construction, so it ships hidden. Operators opt in
+    with ``PRELOOP_POLICIES_CONSOLE=true|1|yes|on``. Instance admins see the
+    page regardless: that check lives in the console, not here.
+
+    Returns:
+        True when the environment opts the page in.
+    """
+    return os.getenv("PRELOOP_POLICIES_CONSOLE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 @router.get("/features")
@@ -56,6 +80,11 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
     # the optimization_gating authorizer (402), never by hiding the UI.
     # setdefault so a plugin that already set the flag keeps its value.
     result["features"].setdefault("session_optimization", True)
+
+    # Policies console: off by default while the page is being reworked. The
+    # backend policy APIs stay open; only the console page is gated. Instance
+    # admins bypass the flag in the console shell.
+    result["features"].setdefault("policies_console", policies_console_enabled())
 
     # Passkey (WebAuthn) support: PASSKEYS_ENABLED env, default true. The
     # login page uses this to decide whether to render "Sign in with passkey".

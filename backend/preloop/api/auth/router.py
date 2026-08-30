@@ -950,6 +950,8 @@ def read_users_me(
         email_verified=current_user.email_verified,
         is_superuser=bool(current_user.is_superuser),
         permissions=_resolve_user_permissions(current_user, db),
+        avatar_url=current_user.avatar_url,
+        avatar_source=current_user.avatar_source,
     )
 
 
