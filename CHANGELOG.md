@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Edit-mode model refresh lists live models**: refreshing the picker
+  while editing a saved AI model (for example a Z.ai key that now serves
+  `glm-5.3-flash`) sends the model id so the server decrypts the stored
+  key and lists live. Create-with-a-typed-key already did this; edit
+  previously sent an empty key and fell back to a stale bundled catalog.
+  Stored secrets are never returned to the browser. Typed keys still win.
+
 - **Model I/O policy API 500 under RBAC**: `/api/v1/policies/model-io-rules`
   list/create/update/patch/delete used `@require_permission` without a
   `current_user` FastAPI dependency. Nested `get_account_for_user` does
@@ -110,6 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitLab.
 
 ### Changed
+
+- **Provider model pickers are live-only**: bundled fallback catalogs
+  are gone. A failed or keyless listing returns an empty picker with a
+  safe `source`/`error` reason (timeout, network, empty_response,
+  missing_endpoint, sdk_missing, missing_key, auth) instead of a stale
+  guess. OpenAI STT/TTS ids are filtered from the same live
+  `GET /v1/models` list. The pricing table is unchanged.
 
 - **README is the product intro, not the operator manual**: ~390 lines
   down to ~200. Locked category line and lead, install + evidence first,

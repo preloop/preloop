@@ -123,6 +123,8 @@ const FALLBACK_REASON_LABELS: Record<string, string> = {
   unsupported: 'live listing not supported',
   missing_endpoint: 'no API endpoint configured',
   sdk_missing: 'provider SDK not installed',
+  missing_key: 'no API key',
+  auth: 'authentication failed',
   unknown: 'provider unavailable',
 };
 
@@ -494,14 +496,16 @@ export class AddAIModelModal extends LitElement {
     provider: string,
     apiKey?: string,
     apiEndpoint?: string,
-    awsAuth?: AwsDiscoveryAuth
+    awsAuth?: AwsDiscoveryAuth,
+    aiModelId?: string
   ): Promise<AvailableModelsResult> {
     return await getAvailableModelsForProvider(
       provider,
       apiKey,
       this._selectedServiceKind,
       apiEndpoint,
-      awsAuth
+      awsAuth,
+      aiModelId
     );
   }
 
@@ -512,20 +516,24 @@ export class AddAIModelModal extends LitElement {
     }
 
     const provider = this._currentModel.provider_name;
+    const storedModelId =
+      this._isEditing && this.model?.id ? String(this.model.id) : undefined;
+    const hasStoredKey = Boolean(this._isEditing && this.model?.has_api_key);
     // Bedrock authenticates with AWS credential fields, not a key/endpoint.
     let awsAuth: AwsDiscoveryAuth | undefined;
     if (provider === 'bedrock') {
-      if (!this._bedrockCredsComplete) {
+      if (this._bedrockCredsComplete) {
+        awsAuth = {
+          accessKeyId: this._bedrockAccessKeyId.trim(),
+          secretAccessKey: this._bedrockSecretAccessKey.trim(),
+          sessionToken: this._bedrockSessionToken.trim() || undefined,
+          region: this._bedrockRegion.trim(),
+        };
+      } else if (!hasStoredKey) {
         this._modelsFetchError =
           'Enter the AWS access key, secret key and region first, then fetch models';
         return;
       }
-      awsAuth = {
-        accessKeyId: this._bedrockAccessKeyId.trim(),
-        secretAccessKey: this._bedrockSecretAccessKey.trim(),
-        sessionToken: this._bedrockSessionToken.trim() || undefined,
-        region: this._bedrockRegion.trim(),
-      };
     }
     // A provider with a known base URL can be listed even if the field was
     // cleared: the default stands in, matching the server-side default.
@@ -547,20 +555,25 @@ export class AddAIModelModal extends LitElement {
     this._modelsFallbackReason = null;
 
     try {
+      const typedKey = (this._currentModel.api_key || '').trim();
       const result = await this._fetchModelSuggestionsForProvider(
         provider,
         // Bedrock credentials travel via the dedicated aws_* body fields;
         // sending the stored JSON blob as api_key would be redundant.
-        this._isBedrock ? undefined : this._currentModel.api_key,
+        this._isBedrock ? undefined : typedKey || undefined,
         apiEndpoint,
-        awsAuth
+        awsAuth,
+        storedModelId
       );
       this._modelSuggestions = result.models;
       this._modelsSource = result.source;
       this._modelsFallbackReason =
         result.source === 'fallback' ? result.error || null : null;
       if (this._modelSuggestions.length === 0) {
-        this._modelsFetchError = `No ${this._selectedServiceKind.toUpperCase()} models available for this provider`;
+        this._modelsFetchError =
+          result.error === 'missing_key'
+            ? null
+            : `No ${this._selectedServiceKind.toUpperCase()} models available for this provider`;
       }
     } catch (error) {
       console.error('Failed to fetch models:', error);
@@ -754,36 +767,33 @@ export class AddAIModelModal extends LitElement {
   /**
    * Non-blocking provenance notice for the model list. Fallback listings say
    * so, with a short safe reason; live listings get a subtle count. Never
-   * renders raw upstream text.
-   *
-   * A fallback WITHOUT a reason is not a failure: the server sends that when
-   * no live attempt was possible, which for these providers means no API key
-   * was entered yet. Saying "could not fetch" there would blame the provider
-   * for the user not having typed a key.
+   * renders raw upstream text. There is no bundled catalog, so a fallback
+   * means the picker is empty until the user retries or types an id.
    */
   private _renderModelsProvenanceNotice() {
     if (this._modelsSource === 'fallback') {
-      if (!this._modelsFallbackReason) {
+      if (this._modelsFallbackReason === 'missing_key') {
         return html`
           <div
             class="models-provenance-notice"
             style="color: var(--sl-color-neutral-600); font-size: 0.875rem; margin-top: 0.5rem;"
           >
-            Showing known models. Enter an API key and fetch again for this
-            provider's live list. You can also enter any model id via Other...
+            Enter an API key and fetch again for this provider's live list. When
+            editing, refresh uses the stored key. You can also enter any model
+            id via Other...
           </div>
         `;
       }
       const reason =
-        FALLBACK_REASON_LABELS[this._modelsFallbackReason] ||
+        FALLBACK_REASON_LABELS[this._modelsFallbackReason || ''] ||
         'provider unavailable';
       return html`
         <div
           class="models-provenance-notice"
           style="color: var(--sl-color-warning-700); font-size: 0.875rem; margin-top: 0.5rem;"
         >
-          Could not fetch the live model list (${reason}). Showing known models,
-          which may be incomplete. You can still enter any model id via Other...
+          Could not fetch the live model list (${reason}). You can still enter
+          any model id via Other...
         </div>
       `;
     }

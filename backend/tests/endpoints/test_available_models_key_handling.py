@@ -11,9 +11,12 @@ query parameter is gone rather than merely deprecated.
 """
 
 import pytest
+import uuid
 import yaml
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
+
+from fastapi import HTTPException
 
 from preloop.api.endpoints import ai_models
 from preloop.schemas.ai_model import AvailableModelsRequest
@@ -192,3 +195,101 @@ async def test_post_response_never_carries_key_or_endpoint_material(mocker):
     assert "sk-or-v1-secret-value" not in dumped
     assert "secret-gateway.internal.example" not in dumped
     assert result.error == "network"
+
+
+def test_ai_model_id_is_a_body_field_on_the_post_route():
+    assert "ai_model_id" in AvailableModelsRequest.model_fields
+
+
+@pytest.mark.asyncio
+async def test_post_edit_refresh_decrypts_stored_key(mocker):
+    """Edit-mode refresh sends the model id; the server decrypts the key."""
+    model_id = uuid.uuid4()
+    user = MagicMock()
+    user.account_id = uuid.uuid4()
+    stored = MagicMock()
+    stored.provider_name = "zai"
+    stored.api_endpoint = None
+    stored.meta_data = {}
+    mocker.patch.object(ai_models.crud_ai_model, "get_for_account", return_value=stored)
+    mocker.patch.object(
+        ai_models.crud_ai_model,
+        "resolve_listing_secret",
+        return_value="stored-zai-key",
+    )
+    fetch = mocker.patch.object(
+        ai_models,
+        "get_available_models_for_provider",
+        new=AsyncMock(
+            return_value=ModelDiscoveryResult(
+                models=["glm-5.3", "glm-5.3-flash"], source="live"
+            )
+        ),
+    )
+
+    result = await ai_models.list_provider_available_models(
+        provider="zai",
+        request_in=AvailableModelsRequest(ai_model_id=model_id),
+        db=MagicMock(),
+        current_user=user,
+    )
+
+    assert result.models == ["glm-5.3", "glm-5.3-flash"]
+    assert result.source == "live"
+    assert "stored-zai-key" not in result.model_dump_json()
+    fetch.assert_awaited_once_with("zai", "stored-zai-key", "llm", None, aws_auth=None)
+
+
+@pytest.mark.asyncio
+async def test_post_typed_key_wins_over_stored_key(mocker):
+    model_id = uuid.uuid4()
+    user = MagicMock()
+    user.account_id = uuid.uuid4()
+    stored = MagicMock()
+    stored.provider_name = "zai"
+    stored.api_endpoint = None
+    stored.meta_data = {}
+    mocker.patch.object(ai_models.crud_ai_model, "get_for_account", return_value=stored)
+    mocker.patch.object(
+        ai_models.crud_ai_model,
+        "resolve_listing_secret",
+        return_value="stored-zai-key",
+    )
+    fetch = mocker.patch.object(
+        ai_models,
+        "get_available_models_for_provider",
+        new=AsyncMock(
+            return_value=ModelDiscoveryResult(models=["glm-5.3-flash"], source="live")
+        ),
+    )
+
+    result = await ai_models.list_provider_available_models(
+        provider="zai",
+        request_in=AvailableModelsRequest(
+            ai_model_id=model_id, api_key="typed-zai-key"
+        ),
+        db=MagicMock(),
+        current_user=user,
+    )
+
+    assert result.models == ["glm-5.3-flash"]
+    fetch.assert_awaited_once_with("zai", "typed-zai-key", "llm", None, aws_auth=None)
+    assert "stored-zai-key" not in result.model_dump_json()
+    assert "typed-zai-key" not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_post_unknown_stored_model_is_404(mocker):
+    user = MagicMock()
+    user.account_id = uuid.uuid4()
+    mocker.patch.object(ai_models.crud_ai_model, "get_for_account", return_value=None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await ai_models.list_provider_available_models(
+            provider="zai",
+            request_in=AvailableModelsRequest(ai_model_id=uuid.uuid4()),
+            db=MagicMock(),
+            current_user=user,
+        )
+
+    assert exc_info.value.status_code == 404
