@@ -133,7 +133,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   managed hosting; Cloud and Enterprise include support plans. Dropped
   Yes/Yes capability-tour rows and overclaims (CEL, AI-driven/quorum
   evaluation, AI Act pack, chargeback/forecasting as edition gates).
-  CEL, AI-driven approvals, and quorum evaluation are OSS.
+  CEL, AI-driven approvals, and quorum evaluation are OSS. Chargeback
+  and forecasting stay Cloud / Enterprise cost features; they were
+  dropped from the table because they are not users/teams/RBAC
+  edition gates, not because they went away.
 
 - **CRA / AI Act evidence named as an OSS use case**: README intro and
   What-you-get name the security-audit presets (`result.json`) as machine
