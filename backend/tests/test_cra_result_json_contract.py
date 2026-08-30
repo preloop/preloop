@@ -20,8 +20,10 @@ import yaml
 from jsonschema import Draft202012Validator
 
 PRESETS_DIR = Path(__file__).resolve().parents[1] / "presets"
-FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "cra"
-EVIDENCE_FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "evidence"
+FIXTURES_ROOT = Path(__file__).resolve().parent / "fixtures"
+FIXTURES_DIR = FIXTURES_ROOT / "cra"
+EVIDENCE_FIXTURES_DIR = FIXTURES_ROOT / "evidence"
+DUE_DILIGENCE_RECORD = "evidence/due-diligence-record.json"
 
 HONESTY_LINE = (
     "Machine-generated evidence for conformity assessment support. "
@@ -29,33 +31,35 @@ HONESTY_LINE = (
 )
 
 # YAML Required shape is the spec. Schema JSON files must not invent keys.
+# ``example`` is relative to FIXTURES_ROOT so a preset can reuse an existing
+# evidence fixture instead of shipping a second copy of the same record.
 CONTRACTS = (
     {
         "name": "SBOM Verify",
         "file": "004-sbom-verify.yaml",
         "schema_id": "preloop.cra.sbomaudit/v1",
-        "example": "result-sbomaudit.json",
+        "example": "cra/result-sbomaudit.json",
         "jsonschema": "schemas/sbomaudit-v1.json",
     },
     {
         "name": "SBOM Exploit Check",
         "file": "005-sbom-exploit-check.yaml",
         "schema_id": "preloop.cra.vulnscan/v1",
-        "example": "result-vulnscan.json",
+        "example": "cra/result-vulnscan.json",
         "jsonschema": "schemas/vulnscan-v1.json",
     },
     {
         "name": "Release Security Audit",
         "file": "006-release-security-audit.yaml",
         "schema_id": "preloop.cra.releaseaudit/v1",
-        "example": "result-releaseaudit.json",
+        "example": "cra/result-releaseaudit.json",
         "jsonschema": "schemas/releaseaudit-v1.json",
     },
     {
         "name": "Component Due Diligence Record",
         "file": "007-component-due-diligence.yaml",
         "schema_id": "preloop.cra.duediligence/v1",
-        "example": "result-duediligence.json",
+        "example": DUE_DILIGENCE_RECORD,
         "jsonschema": "schemas/duediligence-v1.json",
     },
 )
@@ -75,6 +79,12 @@ def _load_preset(filename: str) -> dict:
     data = yaml.safe_load(path.read_text())
     assert isinstance(data, dict)
     return data
+
+
+def _example_path(contract: dict) -> Path:
+    path = FIXTURES_ROOT / contract["example"]
+    assert path.exists(), f"Missing example artifact: {path}"
+    return path
 
 
 def _required_shape_block(prompt: str, schema_id: str) -> str:
@@ -210,7 +220,7 @@ class TestExampleResultJson:
     def test_example_has_every_required_key(self, contract):
         prompt = _load_preset(contract["file"])["prompt_template"]
         required = _top_level_keys(_required_shape_block(prompt, contract["schema_id"]))
-        example = json.loads((FIXTURES_DIR / contract["example"]).read_text())
+        example = json.loads(_example_path(contract).read_text())
         missing = [key for key in required if key not in example]
         assert missing == [], f"{contract['example']} missing required keys: {missing}"
         assert example["schema"] == contract["schema_id"]
@@ -218,7 +228,7 @@ class TestExampleResultJson:
 
     def test_example_validates_against_json_schema(self, contract):
         schema = json.loads((FIXTURES_DIR / contract["jsonschema"]).read_text())
-        example = json.loads((FIXTURES_DIR / contract["example"]).read_text())
+        example = json.loads(_example_path(contract).read_text())
         Draft202012Validator.check_schema(schema)
         Draft202012Validator(schema).validate(example)
 
@@ -235,7 +245,7 @@ class TestExampleResultJson:
         assert extra == set(), f"schema invents fields YAML does not name: {extra}"
 
     def test_example_is_synthetic(self, contract):
-        text = (FIXTURES_DIR / contract["example"]).read_text()
+        text = _example_path(contract).read_text()
         assert "synthetic fixture" in text
         assert "example" in text.lower()
 
@@ -253,7 +263,7 @@ class TestBannedClaims:
         _assert_no_banned_claims(data, contract["file"])
 
     def test_example_result_has_no_banned_claims(self, contract):
-        example = json.loads((FIXTURES_DIR / contract["example"]).read_text())
+        example = json.loads(_example_path(contract).read_text())
         _assert_no_banned_claims(example, contract["example"])
         dumped = json.dumps(example).lower()
         assert '"compliant": true' not in dumped
@@ -277,17 +287,18 @@ class TestBannedClaims:
 
 
 class TestDueDiligenceRecordFixtureStatus:
-    """The older due-diligence fixture must carry the YAML status key."""
+    """The due-diligence record is the shared fixture for that preset.
 
-    def test_legacy_fixture_includes_required_status(self):
-        record = json.loads(
-            (EVIDENCE_FIXTURES_DIR / "due-diligence-record.json").read_text()
-        )
+    ``TestExampleResultJson`` already checks it has every YAML-required key
+    (CONTRACTS points the duediligence example at it). This adds the value
+    domain for ``status``, which key presence alone does not cover.
+    """
+
+    def test_shared_fixture_status_is_in_the_yaml_domain(self):
+        record = json.loads((FIXTURES_ROOT / DUE_DILIGENCE_RECORD).read_text())
         prompt = _load_preset("007-component-due-diligence.yaml")["prompt_template"]
         required = _top_level_keys(
             _required_shape_block(prompt, "preloop.cra.duediligence/v1")
         )
         assert "status" in required
         assert record["status"] in {"success", "error"}
-        missing = [key for key in required if key not in record]
-        assert missing == [], f"legacy fixture missing required keys: {missing}"
