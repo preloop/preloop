@@ -10,6 +10,8 @@ import {
   buildSoftwareApplicationSchema,
   buildWebSiteSchema,
   get_meta_for_route,
+  get_regulation_nav_links,
+  get_regulation_slugs,
   get_route_from_filename,
   get_static_routes_with_options,
   get_structured_data_for_route,
@@ -107,11 +109,12 @@ describe('brand-seo', () => {
   });
 
   it('can exclude AI Act readiness from static routes when content is absent', () => {
-    const routes = get_static_routes_with_options(test_config, false);
+    const routes = get_static_routes_with_options(test_config, []);
 
     expect(routes).to.include('/pricing');
-    expect(routes).to.include('/about');
+    expect(routes).to.not.include('/about');
     expect(routes).to.not.include('/ai-act-readiness');
+    expect(routes).to.not.include('/resources/ai-agent-control-plane-2026');
   });
 
   it('includes article structured data for the AI Act readiness page', () => {
@@ -128,8 +131,97 @@ describe('brand-seo', () => {
     expect(article?.headline).to.equal('EU AI Act readiness with Preloop');
     expect(article?.about).to.deep.equal([
       'EU AI Act',
-      'AI governance',
+      'Regulation (EU) 2024/1689',
       'AI agent approvals',
+    ]);
+  });
+
+  it('maps CRA, DORA, and NIS2 html files to routes', () => {
+    expect(get_route_from_filename('/tmp/dist/cra-readiness.html')).to.equal(
+      '/cra-readiness'
+    );
+    expect(get_route_from_filename('/tmp/dist/dora.html')).to.equal('/dora');
+    expect(get_route_from_filename('/tmp/dist/nis2.html')).to.equal('/nis2');
+    expect(get_route_from_filename('/tmp/dist/pandora.html')).to.equal(
+      '/pandora'
+    );
+    expect(get_route_from_filename('dora.html')).to.equal('/dora');
+  });
+
+  it('includes named-instrument routes when those slugs are supplied', () => {
+    const routes = get_static_routes_with_options(test_config, [
+      'ai-act-readiness',
+      'cra-readiness',
+      'dora',
+      'nis2',
+    ]);
+    expect(routes).to.include('/ai-act-readiness');
+    expect(routes).to.include('/cra-readiness');
+    expect(routes).to.include('/dora');
+    expect(routes).to.include('/nis2');
+  });
+
+  it('includes discovered markdown paths without a hardcoded about/resources list', () => {
+    const routes = get_static_routes_with_options(
+      test_config,
+      [],
+      [],
+      [],
+      ['/about', '/dora', '/resources/ai-agent-control-plane-2026']
+    );
+    expect(routes).to.include('/about');
+    expect(routes).to.include('/dora');
+    expect(routes).to.include('/resources/ai-agent-control-plane-2026');
+  });
+
+  it('returns CRA metadata that names the instrument and date', () => {
+    const meta = get_meta_for_route('/cra-readiness', test_config);
+    expect(meta.title).to.include('Cyber Resilience Act');
+    expect(meta.description).to.include('2024/2847');
+    expect(meta.description).to.include('11 Sep 2026');
+    expect(meta.keywords).to.include('CRA Art. 14');
+  });
+
+  it('names the brand, not Preloop, on white-label regulation pages', () => {
+    const white_label: BrandConfig = {
+      ...test_config,
+      name: 'Acme Control',
+      domain: 'acme.example',
+    };
+
+    for (const slug of get_regulation_slugs()) {
+      const meta = get_meta_for_route(`/${slug}`, white_label);
+      expect(meta.title, `${slug} title`).to.not.include('Preloop');
+      expect(meta.og_title, `${slug} og:title`).to.not.include('Preloop');
+      expect(meta.title, `${slug} title`).to.include('Acme Control');
+    }
+
+    const ai_act = get_meta_for_route('/ai-act-readiness', white_label);
+    expect(ai_act.title).to.equal('EU AI Act readiness with Acme Control');
+    expect(ai_act.description).to.include('Acme Control helps teams');
+    expect(ai_act.description).to.not.include('Preloop');
+    expect(ai_act.og_description).to.not.include('Preloop');
+
+    const structured_data = get_structured_data_for_route(
+      '/ai-act-readiness',
+      white_label
+    );
+    const article = structured_data.find(
+      (entry: any) => entry['@type'] === 'Article'
+    ) as any;
+    expect(article?.headline).to.equal('EU AI Act readiness with Acme Control');
+  });
+
+  it('builds footer links only for regulation pages that shipped', () => {
+    expect(get_regulation_nav_links([])).to.deep.equal([]);
+    expect(
+      get_regulation_nav_links(['dora', 'not-a-regulation'])
+    ).to.deep.equal([{ href: '/dora', label: 'DORA' }]);
+    expect(
+      get_regulation_nav_links(['ai-act-readiness', 'nis2'])
+    ).to.deep.equal([
+      { href: '/ai-act-readiness', label: 'EU AI Act' },
+      { href: '/nis2', label: 'NIS2' },
     ]);
   });
 
