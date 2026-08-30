@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Policies console hidden behind `policies_console` (off by default)**:
+  the page is still being reworked, so `/api/v1/features` now advertises
+  `policies_console: false` unless an operator sets
+  `PRELOOP_POLICIES_CONSOLE=true`. Instance admins (`is_superuser`) still
+  see the sidebar link and the page. A direct `/console/policies` URL
+  without access renders the usual permission-denied surface instead of an
+  empty shell, and `/console/governance` still redirects there. Backend
+  policy APIs are untouched, and per-tool policy on the Tools page is
+  unaffected.
+
+- **Policies page reworked into a working editor**: primary actions
+  (Describe a change, Add rule, Import YAML, Export YAML) now live once in
+  the view header, matching Tools, so Export is no longer duplicated and
+  Import no longer hides inside the YAML tab. The YAML tab is a live editor
+  over the active policy: it loads the current export, validates through
+  `POST /api/v1/policies/validate` and shows schema errors inline, and only
+  applies YAML that validates. Version history stays below the editor and
+  the format example moved into a collapsed section.
+
+- **YAML editor Save shows a diff first**: editor Save now uses the same
+  `previewPolicyFile` flow as Import YAML, so applying a full policy cannot
+  silently drop rules, MCP servers, or workflows. Validate-before-save,
+  inline schema errors, Revert, and version history are unchanged.
+
 - **Public markdown routes come from discovered content files**: `lit-app`
   registers `/terms`, `/dora`, and other static pages from
   `BRAND_CONFIG.static_markdown_pages` (Vite scans `content/<brand>/*.md`
@@ -17,6 +41,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds a page by dropping a markdown file.
 
 ### Fixed
+
+- **Describe a change no longer opens against a stale policy**: the button
+  refetches the current export first and reports an error instead of
+  silently opening an empty dialog when the export fails.
+
+- **Add rule dialog no longer closes on every choice**: the dialog listened
+  for `sl-hide`, which every inner `sl-select` emits when its dropdown
+  closes, so picking a target or action dismissed the form. It now listens
+  for `sl-request-close` and only Cancel, the close button, or Escape can
+  dismiss it. The form also asks for the rule type first (tool call versus
+  model text, then request versus response in plain words), offers presets
+  that wire detector, condition, and action together, explains that
+  detectors only produce facts (`pii.found`, `injection.score`,
+  `moderation.flagged`) while the condition decides when a rule fires, warns
+  when a condition reads a detector that is switched off, and refuses to
+  save a deny or require_approval rule with an empty condition rather than
+  defaulting it to match everything.
+
+- **Switching back to a policy preset re-applies it**: choosing
+  "Start from a preset" after writing a custom expression restores that
+  preset's detectors and condition, instead of keeping the custom values
+  while the preset card still looks selected.
+
+- **Dismissing the policy diff dialog clears a pending YAML save**: Escape
+  or the dialog close control now resets `_pendingYamlSave`, so a later
+  Import apply cannot be treated as an editor save.
 
 - **`get_route_from_filename` maps `pandora.html` to `/pandora`, not `/dora`**:
   top-level HTML files use the basename as the route, with no substring

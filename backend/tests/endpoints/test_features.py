@@ -1,5 +1,6 @@
 """Tests for features endpoint."""
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -44,6 +45,7 @@ class TestGetFeatures:
                 "first_account_pending": False,
                 "registration_bootstrap_pending": False,
                 "session_optimization": True,
+                "policies_console": False,
                 "passkeys": True,
             },
         }
@@ -73,6 +75,7 @@ class TestGetFeatures:
                 "first_account_pending": False,
                 "registration_bootstrap_pending": False,
                 "session_optimization": True,
+                "policies_console": False,
                 "passkeys": True,
             },
         }
@@ -104,7 +107,7 @@ class TestGetFeatures:
         assert "plugins" in result
         assert "features" in result
         assert len(result["plugins"]) == 3
-        assert len(result["features"]) == 9
+        assert len(result["features"]) == 10
         assert result["features"]["session_optimization"] is True
 
     @patch("preloop.api.auth.bootstrap.crud_user")
@@ -131,6 +134,72 @@ class TestGetFeatures:
             "features": {"session_optimization": False},
         }
         assert get_features(db=MagicMock())["features"]["session_optimization"] is False
+
+    @patch("preloop.api.auth.bootstrap.crud_user")
+    @patch("preloop.api.endpoints.features.get_plugin_manager")
+    def test_policies_console_off_by_default(
+        self, mock_get_plugin_manager, mock_crud_user
+    ):
+        """The Policies console page is hidden unless an operator opts in."""
+        from preloop.api.endpoints.features import get_features
+
+        mock_plugin_manager = MagicMock()
+        mock_plugin_manager.get_enabled_features.return_value = {
+            "plugins": [],
+            "features": {},
+        }
+        mock_get_plugin_manager.return_value = mock_plugin_manager
+        mock_crud_user.has_any_users.return_value = True
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PRELOOP_POLICIES_CONSOLE", None)
+            result = get_features(db=MagicMock())
+
+        assert result["features"]["policies_console"] is False
+
+    @pytest.mark.parametrize("value", ["true", "1", "yes", "on", "TRUE", " Yes "])
+    @patch("preloop.api.auth.bootstrap.crud_user")
+    @patch("preloop.api.endpoints.features.get_plugin_manager")
+    def test_policies_console_env_override_enables(
+        self, mock_get_plugin_manager, mock_crud_user, value
+    ):
+        """PRELOOP_POLICIES_CONSOLE opts the page in, case and space tolerant."""
+        from preloop.api.endpoints.features import get_features
+
+        mock_plugin_manager = MagicMock()
+        mock_plugin_manager.get_enabled_features.return_value = {
+            "plugins": [],
+            "features": {},
+        }
+        mock_get_plugin_manager.return_value = mock_plugin_manager
+        mock_crud_user.has_any_users.return_value = True
+
+        with patch.dict(os.environ, {"PRELOOP_POLICIES_CONSOLE": value}):
+            result = get_features(db=MagicMock())
+
+        assert result["features"]["policies_console"] is True
+
+    @patch("preloop.api.auth.bootstrap.crud_user")
+    @patch("preloop.api.endpoints.features.get_plugin_manager")
+    def test_policies_console_respects_plugin_value(
+        self, mock_get_plugin_manager, mock_crud_user
+    ):
+        """setdefault semantics: a plugin that already set the flag wins."""
+        from preloop.api.endpoints.features import get_features
+
+        mock_plugin_manager = MagicMock()
+        mock_plugin_manager.get_enabled_features.return_value = {
+            "plugins": [],
+            "features": {"policies_console": True},
+        }
+        mock_get_plugin_manager.return_value = mock_plugin_manager
+        mock_crud_user.has_any_users.return_value = True
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PRELOOP_POLICIES_CONSOLE", None)
+            result = get_features(db=MagicMock())
+
+        assert result["features"]["policies_console"] is True
 
     @patch("preloop.api.auth.bootstrap.crud_user")
     @patch("preloop.api.endpoints.features.get_plugin_manager")

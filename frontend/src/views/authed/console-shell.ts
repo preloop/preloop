@@ -86,6 +86,9 @@ export class ConsoleShell extends LitElement {
   private _permissionsLoaded = false;
 
   @state()
+  private _isSuperuser = false;
+
+  @state()
   private _sidebarOpen = false;
 
   @state()
@@ -365,11 +368,13 @@ export class ConsoleShell extends LitElement {
       ]);
       this.features = featuresResponse.features;
       this._permissions = profile?.permissions ?? null;
+      this._isSuperuser = profile?.is_superuser === true;
     } catch (error) {
       console.error('Failed to fetch features:', error);
       // Default to empty features if fetch fails
       this.features = {};
       this._permissions = null;
+      this._isSuperuser = false;
     } finally {
       this._featuresLoaded = true;
       this._permissionsLoaded = true;
@@ -384,8 +389,32 @@ export class ConsoleShell extends LitElement {
     return hasAnyPermission(this._permissions, required);
   }
 
+  /**
+   * The Policies page ships as a preview: hidden unless the instance opts in
+   * through the `policies_console` feature flag, or the viewer is an instance
+   * admin. Normal `view_policies` permission still applies on top of that.
+   */
+  private _canShowPolicies(): boolean {
+    if (!this._featuresLoaded || !this._permissionsLoaded) {
+      return false;
+    }
+    return (
+      (this.features['policies_console'] === true || this._isSuperuser) &&
+      this._canAccess('/console/policies')
+    );
+  }
+
   private _deniedPermissionForPath(path: string): string | null {
     const normalized = this._normalizePath(path);
+    // Flag-hidden Policies page: same permission-denied surface as an RBAC
+    // block, so a direct URL never renders an empty shell.
+    if (
+      (normalized === '/console/policies' ||
+        normalized.startsWith('/console/policies/')) &&
+      !this._canShowPolicies()
+    ) {
+      return 'view_policies';
+    }
     for (const [href, required] of Object.entries(NAV_PERMISSIONS)) {
       if (
         normalized === href ||
@@ -599,15 +628,19 @@ export class ConsoleShell extends LitElement {
                   </sl-menu-item>
                 `
               )}
-              ${this._renderNavLink(
-                '/console/policies',
-                html`
-                  <sl-menu-item>
-                    <sl-icon name="shield-lock" slot="prefix"></sl-icon>
-                    <span class="sidebar-label">Policies</span>
-                  </sl-menu-item>
-                `
-              )}
+              ${
+                this._canShowPolicies()
+                  ? this._renderNavLink(
+                      '/console/policies',
+                      html`
+                        <sl-menu-item>
+                          <sl-icon name="shield-lock" slot="prefix"></sl-icon>
+                          <span class="sidebar-label">Policies</span>
+                        </sl-menu-item>
+                      `
+                    )
+                  : nothing
+              }
               ${this._renderNavLink(
                 '/console/trackers',
                 html`
