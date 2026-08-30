@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Token-free approval links open the console**: MCP and in-session
   notices now emit `/console/approval/<id>` (the registered SPA route)
   instead of `/approval/<id>`, which is the public token page and 404s
-  without `?token=`. Bare `/approval/<id>` redirects there; email/Slack
-  links with `?token=` are unchanged.
+  without `?token=`. Bare `/approval/<id>` 404s unless `id` is a UUID,
+  then 302s to `/console/approval/<id>`; email/Slack links with
+  `?token=` are unchanged.
 - **Edit-mode model refresh lists live models**: refreshing the picker
   while editing a saved AI model (for example a Z.ai key that now serves
   `glm-5.3-flash`) sends the model id so the server decrypts the stored
