@@ -494,11 +494,42 @@ class CRUDAIModel(CRUDBase[AIModel]):
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
         self._validate_qwen_api_endpoint(obj_data, existing=db_obj)
 
+        # Preserve the gateway alias when provider_name changes so that
+        # in-flight agents configured with the old alias can still resolve
+        # the model. Only applies to gateway-enabled models using the
+        # computed default alias (no explicit model_alias configured).
+        from preloop.services.model_runtime_resolver import effective_gateway_alias
+
+        old_alias = effective_gateway_alias(db_obj)
+        if old_alias and "provider_name" in obj_data:
+            old_provider = (db_obj.provider_name or "").strip().lower()
+            new_provider = (obj_data["provider_name"] or "").strip().lower()
+            if old_provider != new_provider:
+                old_meta = (
+                    db_obj.meta_data if isinstance(db_obj.meta_data, dict) else {}
+                )
+                old_gw = (
+                    old_meta.get("gateway")
+                    if isinstance(old_meta.get("gateway"), dict)
+                    else {}
+                )
+                configured_alias = old_gw.get("model_alias")
+                if not (isinstance(configured_alias, str) and configured_alias.strip()):
+                    # No explicit alias -- pin the current default so the
+                    # address in-flight agents know stays stable.
+                    merged_meta_for_pin = dict(
+                        obj_data["meta_data"]
+                        if "meta_data" in obj_data
+                        else (old_meta or {})
+                    )
+                    gw_block = dict(merged_meta_for_pin.get("gateway") or {})
+                    gw_block["model_alias"] = old_alias
+                    merged_meta_for_pin["gateway"] = gw_block
+                    obj_data["meta_data"] = merged_meta_for_pin
+
         # Enforce alias uniqueness only when this update changes the effective
         # gateway alias; pre-existing rows (including legacy collisions being
         # cleaned up) must remain updatable for unrelated fields.
-        from preloop.services.model_runtime_resolver import effective_gateway_alias
-
         merged_provider = obj_data.get("provider_name", db_obj.provider_name)
         merged_identifier = obj_data.get("model_identifier", db_obj.model_identifier)
         merged_meta = (
