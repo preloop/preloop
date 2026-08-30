@@ -433,7 +433,25 @@ export class PreloopFlowForm extends LitElement {
     this.requestUpdate();
   }
 
+  /**
+   * Drop event filters that no longer apply to the selected trigger.
+   *
+   * Filter keys are tracker- and event-type specific and the filters UI only
+   * renders for tracker triggers, so a key left behind by a trigger or tracker
+   * change would keep being enforced (webhook submits fail with 422, tracker
+   * events are skipped) with no way for the user to see or clear it. Explicit
+   * null rather than undefined so the backend's exclude_unset update path
+   * clears a previously-saved trigger_config instead of keeping it.
+   */
+  private clearEventFilters() {
+    this.flow.trigger_config = null;
+    this.filtersExpanded = false;
+  }
+
   private handleTriggerTypeChange(newType: 'webhook' | 'tracker' | 'schedule') {
+    if (newType !== this.triggerType) {
+      this.clearEventFilters();
+    }
     this.triggerType = newType;
     if (newType === 'webhook') {
       this.flow.trigger_event_source = 'webhook';
@@ -457,6 +475,9 @@ export class PreloopFlowForm extends LitElement {
 
   private async handleTrackerChange(e: any) {
     const trackerId = e.target.value;
+    if (trackerId !== this.flow.trigger_event_source) {
+      this.clearEventFilters();
+    }
     this.flow.trigger_event_source = trackerId;
     this.flow.trigger_event_types = undefined;
     this.flow.trigger_organization_id = undefined;
@@ -607,6 +628,8 @@ export class PreloopFlowForm extends LitElement {
         max_iterations: this.flow.max_iterations || undefined,
         max_budget: this.flow.max_budget || undefined,
         is_enabled: this.flow.is_enabled ?? true,
+        // Sent only once filters exist on the form. An explicit null (set by
+        // clearEventFilters) is forwarded so the backend clears saved filters.
         ...(this.flow.trigger_config !== undefined
           ? { trigger_config: this.flow.trigger_config }
           : {}),
@@ -859,19 +882,15 @@ export class PreloopFlowForm extends LitElement {
   }
 
   private renderEventFilters() {
-    if (!this.flow.trigger_config) {
-      this.flow.trigger_config = {};
-    }
-
     const tracker = this.trackers.find(
       (t: any) => t.id === this.flow.trigger_event_source
     );
     if (!tracker) return nothing;
 
-    // Check if any filters are defined
-    const hasFilters =
-      this.flow.trigger_config &&
-      Object.keys(this.flow.trigger_config).length > 0;
+    // Check if any filters are defined. trigger_config stays absent until a
+    // filter is actually set: the input handlers below create it lazily, so
+    // render never mutates it.
+    const hasFilters = Object.keys(this.flow.trigger_config ?? {}).length > 0;
 
     // Show filters if expanded or if any filter is already defined
     const showFilters = this.filtersExpanded || hasFilters;
