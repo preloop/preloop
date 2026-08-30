@@ -71,6 +71,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CRA / AI Act evidence runbook**: rewrite of
+  `docs/guide/flows/security-audit-presets.md` as a manufacturer-facing
+  runbook for the shipped Apache presets (SBOM Verify, SBOM Exploit
+  Check, Release Security Audit, Component Due Diligence). Opens with
+  what the pack is not (Regulation (EU) 2024/2847; Art. 14 reporting
+  from 11 Sep 2026; full CRA 11 Dec 2027; Preloop does not file Article
+  14 reports), then the `result.json` contract aligned to the YAML
+  prompts, a copy-paste CI hook (`workspace_files` plus poll `/result`
+  and retain `/evidence`), and honest limits. Not a conformity
+  assessment, CE marking, or certification.
 - **Model I/O content policies**: instance policies can `allow`, `deny`,
   or `require_approval` on `model.request` and `model.response` using
   the existing policy engine. Built-in detectors cover PII, prompt
