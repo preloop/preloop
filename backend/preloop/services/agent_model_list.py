@@ -41,18 +41,18 @@ def list_authorized_gateway_models(
 ) -> List[AuthorizedGatewayModel]:
     """Return every gateway-enabled model the principal is authorized for.
 
-    When *auth_context* is ``None`` (e.g. during flow-execution context
-    building where no gateway request is in-flight) the function skips the
-    per-principal authorization filter and returns all gateway-enabled models
-    in the account.  This matches the behavior for user-token callers whose
-    ``compute_authorized_model_ids`` returns the full inventory.
+    When *auth_context* is ``None`` the per-principal predicate cannot run,
+    so this function fails closed and drops subscription-OAuth models
+    (``is_principal_bound_oauth``): only the managed agent holding an active
+    binding may use those, and the gateway rejects every other credential
+    with a 400.  Callers that hold a credential should always build a
+    context so managed-agent bindings are honored.
 
     Args:
         db: Active database session.
         account_id: Account whose model inventory to scan.
         auth_context: Gateway auth context for per-principal filtering.
-            Pass ``None`` when running outside an authenticated gateway
-            request to return the full account inventory.
+            ``None`` selects the fail-closed subset described above.
 
     Returns:
         Deduplicated list of authorized, gateway-enabled models sorted by
@@ -69,7 +69,16 @@ def list_authorized_gateway_models(
     if auth_context is not None:
         authorized_ids = compute_authorized_model_ids(db, auth_context, account_models)
     else:
-        authorized_ids = frozenset(str(m.id) for m in account_models)
+        authorized_ids = frozenset(
+            str(m.id)
+            for m in account_models
+            if not bool(getattr(m, "is_principal_bound_oauth", False))
+        )
+        logger.debug(
+            "Listing gateway models for account %s without an auth context; "
+            "principal-bound OAuth models are excluded",
+            account_id,
+        )
 
     result: list[AuthorizedGatewayModel] = []
     seen_aliases: set[str] = set()
@@ -84,7 +93,7 @@ def list_authorized_gateway_models(
         if not alias or alias in seen_aliases:
             continue
         seen_aliases.add(alias)
-        display_name = ai_model.display_name or ai_model.model_identifier or alias
+        display_name = ai_model.name or ai_model.model_identifier or alias
         result.append(AuthorizedGatewayModel(alias=alias, display_name=display_name))
 
     result.sort(key=lambda m: m.alias)
