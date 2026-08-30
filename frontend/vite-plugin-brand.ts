@@ -6,6 +6,8 @@ import { BrandConfig } from './src/brand-config';
 import {
   get_canonical_url,
   get_meta_for_route,
+  get_regulation_nav_links,
+  get_regulation_slugs,
   get_route_from_filename,
   get_static_routes_with_options,
   get_structured_data_for_route,
@@ -51,13 +53,13 @@ function discover_vs_slugs(
 /**
  * Named-instrument regulation pages that have both a markdown file and a
  * `REGULATION_PAGE_META` registration. Same discovery rule as `/vs/` slugs
- * so sitemap, llms.txt, and pre-render stay in lockstep.
+ * so sitemap, llms.txt, footer links, and pre-render stay in lockstep.
  */
 function discover_regulation_slugs(
   contentBasePath: string,
   brandKey: string
 ): string[] {
-  return Object.keys(REGULATION_PAGE_META)
+  return get_regulation_slugs()
     .filter((slug) =>
       fs.existsSync(
         path.resolve(contentBasePath, brandKey, `${slug}.md`)
@@ -229,6 +231,20 @@ export function brandPlugin(
     return blogPostsPromise;
   };
 
+  // Discovered once per build for the same reason as `blogPostsPromise`: the
+  // sitemap, llms.txt, pre-rendered pages, and the footer links injected into
+  // window.BRAND_CONFIG must agree on which regulation pages shipped.
+  let regulationSlugsCache: string[] | null = null;
+  const loadRegulationSlugs = (): string[] => {
+    if (!regulationSlugsCache) {
+      regulationSlugsCache = discover_regulation_slugs(
+        contentBasePath,
+        brandKey
+      );
+    }
+    return regulationSlugsCache;
+  };
+
   // Resolve paths - use options or defaults
   const configPath =
     options.configPath || path.resolve(__dirname, 'brands.yaml');
@@ -304,10 +320,7 @@ export function brandPlugin(
         featured_video: (brandConfig.landing as any).featured_video || null,
         pricing: brandConfig.landing.pricing || null,
       };
-      const regulationSlugs = discover_regulation_slugs(
-        contentBasePath,
-        brandKey
-      );
+      const regulationSlugs = loadRegulationSlugs();
       // Competitor comparison pages (/vs/<slug>) are SaaS-only.
       const vsSlugsForRouting =
         (brandConfig as any).edition === 'saas' || !(brandConfig as any).edition
@@ -415,7 +428,7 @@ export function brandPlugin(
         'privacy.md',
         'terms.md',
         'whatis-mcp.md',
-        ...Object.keys(REGULATION_PAGE_META).map((slug) => `${slug}.md`),
+        ...get_regulation_slugs().map((slug) => `${slug}.md`),
       ];
 
       for (const file of contentFiles) {
@@ -484,10 +497,7 @@ export function brandPlugin(
         'whatis-mcp'
       );
       const edition = (brandConfig as { edition?: string }).edition || 'saas';
-      const regulationSlugsClose = discover_regulation_slugs(
-        contentBasePath,
-        brandKey
-      );
+      const regulationSlugsClose = loadRegulationSlugs();
 
       // Generate privacy.html with proper meta tags and content
       const privacyPage = generateFullHtmlPage(
@@ -869,6 +879,14 @@ export function brandPlugin(
         branding: brandConfig.branding,
         social: brandConfig.social,
         company: brandConfig.company,
+        // Only the regulation pages that shipped, so the footer cannot link a
+        // route nginx would silently serve as the homepage. SaaS-only, same
+        // gate as the /vs/ comparison pages.
+        regulation_pages:
+          (brandConfig as any).edition === 'saas' ||
+          !(brandConfig as any).edition
+            ? get_regulation_nav_links(loadRegulationSlugs())
+            : [],
       };
 
       const brandScript = `

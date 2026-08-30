@@ -157,6 +157,12 @@ export interface BrandLanding {
  */
 export type BrandEdition = 'saas' | 'selfhosted';
 
+/** A named-instrument regulation page that shipped for this brand. */
+export interface RegulationNavLink {
+  href: string;
+  label: string;
+}
+
 // Runtime config - minimal metadata injected into window.BRAND_CONFIG
 export interface BrandRuntimeConfig {
   name: string;
@@ -165,6 +171,12 @@ export interface BrandRuntimeConfig {
   company: BrandCompany;
   branding: BrandBranding;
   social: BrandSocial;
+  /**
+   * Regulation pages discovered at build time (markdown file present plus a
+   * REGULATION_PAGE_META entry). Absent on older builds, so treat it as
+   * optional and render nothing when it is missing.
+   */
+  regulation_pages?: RegulationNavLink[];
 }
 
 // Full config - used at build time only (includes landing content)

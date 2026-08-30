@@ -132,7 +132,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/dora`, and `/nis2` next to `/ai-act-readiness` when those markdown
   files exist. Each page names the regulation and article or date.
   Homepage FAQ can repeat the not-a-law-firm disclaimer. Evidence packs
-  stay Apache presets, not an edition gate.
+  stay Apache presets, not an edition gate. Page titles and descriptions
+  are brand-parameterized, and the footer links only the regulation pages
+  a build actually pre-rendered.
 
 - **Overview Top Models shows a preview per model**: each model lists its
   top four agents/flows/sessions by spend or usage, with a See N more

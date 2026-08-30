@@ -1,4 +1,8 @@
-import type { BrandConfig, PricingPlan } from './brand-config';
+import type {
+  BrandConfig,
+  PricingPlan,
+  RegulationNavLink,
+} from './brand-config';
 import {
   BLOG_BASE_PATH,
   buildBlogBreadcrumbSchema,
@@ -125,12 +129,24 @@ export function get_vs_slugs(): string[] {
 }
 
 /**
+ * Placeholder replaced with `config.name` when regulation metadata is
+ * rendered. The registry below is shared by every brand, so brand names are
+ * never baked into the strings: a white-label SaaS build must not ship
+ * "Preloop" in its own titles or og tags.
+ */
+export const BRAND_NAME_TOKEN = '{brand}';
+
+/**
  * SaaS-only named-instrument pages (EU AI Act, CRA, DORA, NIS2). Adding a
  * page is: drop `<brand>/<slug>.md`, add metadata here, and the vite plugin
  * will pre-render it when the file exists.
  */
 export type RegulationPageMeta = {
+  /** Short label used for footer and nav links. */
+  nav_label: string;
+  /** Page `<title>`. May contain `BRAND_NAME_TOKEN`. */
   title: string;
+  /** Meta description. May contain `BRAND_NAME_TOKEN`. */
   description: string;
   keywords: string;
   about: string[];
@@ -140,15 +156,16 @@ export type RegulationPageMeta = {
 
 export const REGULATION_PAGE_META: Record<string, RegulationPageMeta> = {
   'ai-act-readiness': {
-    title: 'EU AI Act readiness with Preloop',
-    description:
-      'Preloop helps teams implement approvals, runtime visibility, policy enforcement, and audit trails that can support AI governance programs under Regulation (EU) 2024/1689. Not legal advice.',
+    nav_label: 'EU AI Act',
+    title: `EU AI Act readiness with ${BRAND_NAME_TOKEN}`,
+    description: `${BRAND_NAME_TOKEN} helps teams implement approvals, runtime visibility, policy enforcement, and audit trails that can support AI governance programs under Regulation (EU) 2024/1689. Not legal advice.`,
     keywords:
       'EU AI Act, Regulation (EU) 2024/1689, AI Act Art. 14, AI Act Art. 12, AI Act readiness, AI governance, AI approvals, AI audit trail, EUR-Lex',
     about: ['EU AI Act', 'Regulation (EU) 2024/1689', 'AI agent approvals'],
   },
   'cra-readiness': {
-    title: 'Cyber Resilience Act evidence with Preloop',
+    nav_label: 'Cyber Resilience Act',
+    title: `Cyber Resilience Act evidence with ${BRAND_NAME_TOKEN}`,
     description:
       'Apache SBOM-verify and exploit-check presets write result.json for CRA-style reviews under Regulation (EU) 2024/2847. Art. 14 reporting from 11 Sep 2026. Not a conformity assessment.',
     keywords:
@@ -156,7 +173,8 @@ export const REGULATION_PAGE_META: Record<string, RegulationPageMeta> = {
     about: ['Cyber Resilience Act', 'Regulation (EU) 2024/2847', 'SBOM'],
   },
   dora: {
-    title: 'DORA evidence with Preloop',
+    nav_label: 'DORA',
+    title: `DORA evidence with ${BRAND_NAME_TOKEN}`,
     description:
       'Operational evidence for ICT-using AI agents under Regulation (EU) 2022/2554 (DORA, applying since 17 January 2025). Not a DORA register of information. Not legal advice.',
     keywords:
@@ -164,7 +182,8 @@ export const REGULATION_PAGE_META: Record<string, RegulationPageMeta> = {
     about: ['DORA', 'Regulation (EU) 2022/2554', 'ICT third-party risk'],
   },
   nis2: {
-    title: 'NIS2 evidence with Preloop',
+    nav_label: 'NIS2',
+    title: `NIS2 evidence with ${BRAND_NAME_TOKEN}`,
     description:
       'Supply-chain and vulnerability-handling evidence for AI agent runtimes under Directive (EU) 2022/2555 Art. 21(2). Not entity classification. Not legal advice.',
     keywords:
@@ -175,6 +194,30 @@ export const REGULATION_PAGE_META: Record<string, RegulationPageMeta> = {
 
 export function get_regulation_slugs(): string[] {
   return Object.keys(REGULATION_PAGE_META);
+}
+
+/** Substitute the brand-name placeholder in a regulation metadata string. */
+export function apply_brand_name(text: string, config: BrandConfig): string {
+  if (!text.includes(BRAND_NAME_TOKEN)) {
+    return text;
+  }
+  return text.split(BRAND_NAME_TOKEN).join(config.name || 'Preloop');
+}
+
+/**
+ * Footer/nav links for the regulation pages that actually shipped.
+ *
+ * `slugs` comes from build-time discovery (a page only exists when its
+ * markdown file does), so a brand missing `dora.md` never gets a `/dora`
+ * link that would silently fall back to the homepage.
+ */
+export function get_regulation_nav_links(slugs: string[]): RegulationNavLink[] {
+  return slugs
+    .filter((slug) => Boolean(REGULATION_PAGE_META[slug]))
+    .map((slug) => ({
+      href: `/${slug}`,
+      label: REGULATION_PAGE_META[slug].nav_label,
+    }));
 }
 
 export function get_route_from_filename(filename: string): string {
@@ -326,13 +369,19 @@ export function get_meta_for_route(
         const merged_keywords = [page.keywords, default_keywords]
           .filter((value) => value && value.trim().length > 0)
           .join(', ');
+        const title = apply_brand_name(page.title, config);
+        const description = apply_brand_name(page.description, config);
         return {
-          title: page.title,
-          description: page.description,
+          title,
+          description,
           keywords: merged_keywords,
           og_image: default_og_image,
-          og_title: page.og_title || page.title,
-          og_description: page.og_description || page.description,
+          og_title: page.og_title
+            ? apply_brand_name(page.og_title, config)
+            : title,
+          og_description: page.og_description
+            ? apply_brand_name(page.og_description, config)
+            : description,
         };
       }
 
@@ -375,10 +424,6 @@ export function get_meta_for_route(
       };
     }
   }
-}
-
-export function get_static_routes(config: BrandConfig): string[] {
-  return get_static_routes_with_options(config, ['ai-act-readiness']);
 }
 
 export function get_static_routes_with_options(

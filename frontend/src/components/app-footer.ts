@@ -130,6 +130,10 @@ export class AppFooter extends LitElement {
     const company = config.company;
     const social = config.social;
     const hasCompanyInfo = company?.legal_name || company?.address;
+    // Injected by the brand plugin from build-time markdown discovery. A brand
+    // without the markdown file gets no link, because nginx would serve the
+    // homepage for that route with a 200 and the SPA fetch would then 404.
+    const regulationPages = config.regulation_pages ?? [];
 
     return html`
       <div class="footer-container">
@@ -170,10 +174,12 @@ export class AppFooter extends LitElement {
                   ? html` <li><a href="/pricing">Pricing</a></li>
                       <li><a href="/blog">Blog</a></li>
                       <li><a href="/about">About</a></li>
-                      <li><a href="/ai-act-readiness">EU AI Act</a></li>
-                      <li><a href="/cra-readiness">Cyber Resilience Act</a></li>
-                      <li><a href="/dora">DORA</a></li>
-                      <li><a href="/nis2">NIS2</a></li>`
+                      ${regulationPages.map(
+                        (page) =>
+                          html`<li>
+                            <a href="${page.href}">${page.label}</a>
+                          </li>`
+                      )}`
                   : ''
               }
             </ul>
