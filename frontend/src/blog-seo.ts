@@ -576,6 +576,9 @@ export function get_internal_link_label(route: string): string {
   if (route === '/about') return 'About';
   if (route === '/whatis-mcp') return 'What is MCP?';
   if (route === '/ai-act-readiness') return 'EU AI Act readiness';
+  if (route === '/cra-readiness') return 'Cyber Resilience Act';
+  if (route === '/dora') return 'DORA';
+  if (route === '/nis2') return 'NIS2';
   if (route.startsWith('/vs/')) {
     const slug = route.slice('/vs/'.length);
     const name = slug

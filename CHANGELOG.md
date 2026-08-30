@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rendered as a figure under the tags, and a missing `og_image` logs a
   build warning.
 
+- **Public markdown routes come from discovered content files**: `lit-app`
+  registers `/terms`, `/dora`, and other static pages from
+  `BRAND_CONFIG.static_markdown_pages` (Vite scans `content/<brand>/*.md`
+  and `resources/*.md`). Nginx serves any `/<slug>.html` the build emitted
+  instead of an allowlist. OSS does not hardcode EU instrument paths; EE
+  adds a page by dropping a markdown file.
+
 ### Fixed
 
 - **Blog posts no longer repeat the title**: the article template already
@@ -20,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the matching `<h1>` in the rendered body) is stripped so
   `/blog/preloop-0-15-0` does not show the headline twice.
 
+- **`get_route_from_filename` maps `pandora.html` to `/pandora`, not `/dora`**:
+  top-level HTML files use the basename as the route, with no substring
+  match against `dora`.
+- **Token-free approval links open the console**: MCP and in-session
+  notices now emit `/console/approval/<id>` (the registered SPA route)
+  instead of `/approval/<id>`, which is the public token page and 404s
+  without `?token=`. Bare `/approval/<id>` 404s unless `id` is a UUID,
+  then 302s to `/console/approval/<id>`; email/Slack links with
+  `?token=` are unchanged.
 - **Edit-mode model refresh lists live models**: refreshing the picker
   while editing a saved AI model (for example a Z.ai key that now serves
   `glm-5.3-flash`) sends the model id so the server decrypts the stored
@@ -169,6 +185,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Frontend test/auth conventions that were only in
   `frontend/CLAUDE.md` now live in `frontend/README.md`; the stale
   file is not restored.
+- **Named-instrument EU pages**: SaaS landing can ship `/cra-readiness`,
+  `/dora`, and `/nis2` next to `/ai-act-readiness` when those markdown
+  files exist. Each page names the regulation and article or date.
+  Homepage FAQ can repeat the not-a-law-firm disclaimer. Evidence packs
+  stay Apache presets, not an edition gate. Page titles and descriptions
+  are brand-parameterized, and the footer links only the regulation pages
+  a build actually pre-rendered.
+
 - **Editions table lists differences only**: OSS is one operator per
   account. Users, teams, and RBAC are Cloud / Enterprise. Cloud is
   managed hosting; Cloud and Enterprise include support plans. Dropped

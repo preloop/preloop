@@ -209,31 +209,11 @@ server {
         try_files $uri =404;
     }
 
-    location = /about {
-        try_files /about.html =404;
-    }
-
-    location = /pricing {
-        try_files /pricing.html =404;
-    }
-
-    location = /privacy {
-        try_files /privacy.html =404;
-    }
-
-    location = /terms {
-        try_files /terms.html =404;
-    }
-
-    location = /whatis-mcp {
-        try_files /whatis-mcp.html =404;
-    }
-
-    # EU AI Act readiness page. Prerendered only for brands that ship the
-    # content, so fall back to the SPA (as the Helm config does) instead of
-    # 404ing self-hosted builds that do not emit the file.
-    location = /ai-act-readiness {
-        try_files /ai-act-readiness.html /index.html;
+    # Prerendered top-level pages. Serve the .html the build emitted; otherwise
+    # the SPA. This is not an allowlist: EE adds a page by dropping markdown
+    # under frontend/content/<brand>/, which Vite prerenders to /<slug>.html.
+    location ~ ^/([a-z0-9][a-z0-9-]*)$ {
+        try_files /$1.html /index.html;
     }
 
     location = /robots.txt {
@@ -298,7 +278,7 @@ server {
 
     # Health check endpoint. `default_type` (not `add_header Content-Type`,
     # which is dead code after `return`) sets the response MIME type.
-    location /health {
+    location = /health {
         access_log off;
         default_type text/plain;
         return 200 "healthy\n";
