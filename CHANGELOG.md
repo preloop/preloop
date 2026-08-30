@@ -137,6 +137,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Model I/O ``text_sha256`` stays a SHA-256 prompt fingerprint**:
+  CodeQL flagged the digest as password hashing because scanned prompts
+  can contain secrets. It is an audit fingerprint (never the raw text),
+  the same pattern as API-key lookup hashes. The algorithm is unchanged,
+  so existing ``text_sha256`` rows keep matching.
+
 - **Drop python-jose for PyJWT**: auth tokens, email/reset tokens, WebAuthn
   challenge state, MCP OAuth authorize codes, and APNs ES256 client
   assertions now use PyJWT. python-jose pulled unmaintained
