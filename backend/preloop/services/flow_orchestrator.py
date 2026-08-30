@@ -1812,6 +1812,28 @@ class FlowExecutionOrchestrator:
                     else None
                 )
             )
+
+            # Populate the full authorized gateway model list so agent
+            # config generators (e.g. OpenCode) can include every model the
+            # principal is allowed to use, not just the primary one.
+            if resolved_model_runtime.model_gateway_enabled:
+                try:
+                    from preloop.services.agent_model_list import (
+                        list_authorized_gateway_models,
+                    )
+
+                    authorized = list_authorized_gateway_models(
+                        self.db, str(self.flow.account_id)
+                    )
+                    execution_context["authorized_gateway_models"] = [
+                        {"alias": m.alias, "display_name": m.display_name}
+                        for m in authorized
+                    ]
+                except Exception:
+                    logger.debug(
+                        "Could not resolve authorized gateway models",
+                        exc_info=True,
+                    )
         else:
             logger.warning(
                 f"No AI model configured for flow {self.flow.id}, "
