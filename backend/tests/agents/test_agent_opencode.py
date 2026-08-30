@@ -589,3 +589,116 @@ class TestOpenCodeStderrCapture:
         agent = OpenCodeAgent({})
         script = agent._build_opencode_script(self._context())
         assert "2>&1 | node /tmp/opencode-json-log-filter.js" in script
+
+
+class TestOpenCodeMultiModelConfig:
+    """Test that OpenCode config includes all authorized models."""
+
+    def test_single_model_when_no_authorized_list(self):
+        """Without authorized_gateway_models the config has only the primary."""
+        agent = OpenCodeAgent({})
+        context = {"model_endpoint": "https://gw.example/v1"}
+        config = agent._build_opencode_config("model-a", "custom", context, 600000)
+        models = config["provider"]["custom"]["models"]
+        assert models == {"model-a": {"name": "model-a"}}
+
+    def test_multi_model_from_authorized_list(self):
+        """authorized_gateway_models populates the full models map."""
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example/v1",
+            "model_gateway_enabled": True,
+            "model_gateway_provider": "preloop",
+            "model_gateway_url": "https://gw.example/openai/v1",
+            "authorized_gateway_models": [
+                {
+                    "alias": "anthropic/claude-sonnet-4",
+                    "display_name": "Claude Sonnet 4",
+                },
+                {"alias": "openai/gpt-5", "display_name": "GPT 5"},
+                {"alias": "deepseek/deepseek-v4", "display_name": "DeepSeek V4"},
+            ],
+        }
+        config = agent._build_opencode_config(
+            "anthropic/claude-sonnet-4", "anthropic", context, 600000
+        )
+        models = config["provider"]["preloop"]["models"]
+        # Primary model is always present
+        assert "anthropic/claude-sonnet-4" in models
+        # All authorized models are present
+        assert "openai/gpt-5" in models
+        assert "deepseek/deepseek-v4" in models
+        assert len(models) == 3
+
+    def test_primary_model_always_present(self):
+        """Primary model is in the map even if not in the authorized list."""
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example/v1",
+            "model_gateway_enabled": True,
+            "model_gateway_provider": "preloop",
+            "model_gateway_url": "https://gw.example/openai/v1",
+            "authorized_gateway_models": [
+                {"alias": "openai/gpt-5", "display_name": "GPT 5"},
+            ],
+        }
+        config = agent._build_opencode_config(
+            "anthropic/claude-sonnet-4", "anthropic", context, 600000
+        )
+        models = config["provider"]["preloop"]["models"]
+        assert "anthropic/claude-sonnet-4" in models
+        assert "openai/gpt-5" in models
+
+    def test_primary_remains_default_model(self):
+        """model and small_model stay set to the primary, not an authorized one."""
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example/v1",
+            "model_gateway_enabled": True,
+            "model_gateway_provider": "preloop",
+            "model_gateway_url": "https://gw.example/openai/v1",
+            "authorized_gateway_models": [
+                {"alias": "openai/gpt-5", "display_name": "GPT 5"},
+            ],
+        }
+        config = agent._build_opencode_config(
+            "anthropic/claude-sonnet-4", "anthropic", context, 600000
+        )
+        assert config["model"] == "preloop/anthropic/claude-sonnet-4"
+        assert config["small_model"] == "preloop/anthropic/claude-sonnet-4"
+
+    def test_duplicate_alias_not_duplicated(self):
+        """If the primary alias appears in authorized_gateway_models it is not doubled."""
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example/v1",
+            "model_gateway_enabled": True,
+            "model_gateway_provider": "preloop",
+            "model_gateway_url": "https://gw.example/openai/v1",
+            "authorized_gateway_models": [
+                {
+                    "alias": "anthropic/claude-sonnet-4",
+                    "display_name": "Claude Sonnet 4",
+                },
+                {"alias": "openai/gpt-5", "display_name": "GPT 5"},
+            ],
+        }
+        config = agent._build_opencode_config(
+            "anthropic/claude-sonnet-4", "anthropic", context, 600000
+        )
+        models = config["provider"]["preloop"]["models"]
+        assert len(models) == 2
+        # Primary is keyed by local id which strips provider prefix
+        assert "anthropic/claude-sonnet-4" in models
+        assert "openai/gpt-5" in models
+
+    def test_empty_authorized_list_keeps_primary(self):
+        """An empty authorized_gateway_models list still keeps the primary."""
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example/v1",
+            "authorized_gateway_models": [],
+        }
+        config = agent._build_opencode_config("model-a", "custom", context, 600000)
+        models = config["provider"]["custom"]["models"]
+        assert models == {"model-a": {"name": "model-a"}}

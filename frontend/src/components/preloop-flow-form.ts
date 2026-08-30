@@ -184,6 +184,9 @@ export class PreloopFlowForm extends LitElement {
   private isAddingTracker = false;
 
   @state()
+  private filtersExpanded = false;
+
+  @state()
   private isAddingAIModel = false;
 
   private orgPollingInterval?: number;
@@ -430,7 +433,25 @@ export class PreloopFlowForm extends LitElement {
     this.requestUpdate();
   }
 
+  /**
+   * Drop event filters that no longer apply to the selected trigger.
+   *
+   * Filter keys are tracker- and event-type specific and the filters UI only
+   * renders for tracker triggers, so a key left behind by a trigger or tracker
+   * change would keep being enforced (webhook submits fail with 422, tracker
+   * events are skipped) with no way for the user to see or clear it. Explicit
+   * null rather than undefined so the backend's exclude_unset update path
+   * clears a previously-saved trigger_config instead of keeping it.
+   */
+  private clearEventFilters() {
+    this.flow.trigger_config = null;
+    this.filtersExpanded = false;
+  }
+
   private handleTriggerTypeChange(newType: 'webhook' | 'tracker' | 'schedule') {
+    if (newType !== this.triggerType) {
+      this.clearEventFilters();
+    }
     this.triggerType = newType;
     if (newType === 'webhook') {
       this.flow.trigger_event_source = 'webhook';
@@ -454,6 +475,9 @@ export class PreloopFlowForm extends LitElement {
 
   private async handleTrackerChange(e: any) {
     const trackerId = e.target.value;
+    if (trackerId !== this.flow.trigger_event_source) {
+      this.clearEventFilters();
+    }
     this.flow.trigger_event_source = trackerId;
     this.flow.trigger_event_types = undefined;
     this.flow.trigger_organization_id = undefined;
@@ -604,6 +628,11 @@ export class PreloopFlowForm extends LitElement {
         max_iterations: this.flow.max_iterations || undefined,
         max_budget: this.flow.max_budget || undefined,
         is_enabled: this.flow.is_enabled ?? true,
+        // Sent only once filters exist on the form. An explicit null (set by
+        // clearEventFilters) is forwarded so the backend clears saved filters.
+        ...(this.flow.trigger_config !== undefined
+          ? { trigger_config: this.flow.trigger_config }
+          : {}),
       };
 
       if (!this.flow.id && this.sourcePresetId) {
@@ -852,6 +881,402 @@ export class PreloopFlowForm extends LitElement {
     `;
   }
 
+  private renderEventFilters() {
+    const tracker = this.trackers.find(
+      (t: any) => t.id === this.flow.trigger_event_source
+    );
+    if (!tracker) return nothing;
+
+    // Check if any filters are defined. trigger_config stays absent until a
+    // filter is actually set: the input handlers below create it lazily, so
+    // render never mutates it.
+    const hasFilters = Object.keys(this.flow.trigger_config ?? {}).length > 0;
+
+    // Show filters if expanded or if any filter is already defined
+    const showFilters = this.filtersExpanded || hasFilters;
+
+    // Determine if this is a PR/MR event
+    const eventTypes: string[] = this.flow.trigger_event_types || [];
+    const isMREvent = eventTypes.some(
+      (et: string) =>
+        et?.includes('merge_request') || et?.includes('pull_request')
+    );
+
+    return html`
+      <div style="margin-top: 1.5rem;">
+        <div
+          style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;"
+        >
+          <label style="font-weight: 500;">
+            Event Filters (Optional)
+            <span style="font-weight: 400; color: var(--sl-color-neutral-600);">
+              - Only trigger when conditions match
+            </span>
+          </label>
+          ${
+            !showFilters
+              ? html`
+                  <sl-button
+                    size="small"
+                    @click=${() => (this.filtersExpanded = true)}
+                  >
+                    <sl-icon slot="prefix" name="plus-circle"></sl-icon>
+                    Add Filters
+                  </sl-button>
+                `
+              : html`
+                  <sl-button
+                    size="small"
+                    variant="text"
+                    @click=${() => (this.filtersExpanded = false)}
+                  >
+                    <sl-icon slot="prefix" name="dash-circle"></sl-icon>
+                    Hide Filters
+                  </sl-button>
+                `
+          }
+        </div>
+
+        ${
+          showFilters
+            ? html`
+                <div class="form-grid">
+                  <!-- Author/Creator filter -->
+                  <sl-input
+                    label="Created By (username)"
+                    placeholder="e.g., octocat, admin@example.com"
+                    .value=${this.flow.trigger_config?.author || ''}
+                    @sl-input=${(e: any) => {
+                      if (!this.flow.trigger_config)
+                        this.flow.trigger_config = {};
+                      const value = e.target.value.trim();
+                      if (value) {
+                        this.flow.trigger_config.author = value;
+                      } else {
+                        delete this.flow.trigger_config.author;
+                      }
+                      this.requestUpdate();
+                    }}
+                    help-text="Filter by who created the issue/PR"
+                  ></sl-input>
+
+                  <!-- Assignee filter -->
+                  <sl-input
+                    label="Assigned To (username)"
+                    placeholder="e.g., john_doe"
+                    .value=${this.flow.trigger_config?.assignee || ''}
+                    @sl-input=${(e: any) => {
+                      if (!this.flow.trigger_config)
+                        this.flow.trigger_config = {};
+                      const value = e.target.value.trim();
+                      if (value) {
+                        this.flow.trigger_config.assignee = value;
+                      } else {
+                        delete this.flow.trigger_config.assignee;
+                      }
+                      this.requestUpdate();
+                    }}
+                    help-text="Filter by assignee (matches if any assignee matches)"
+                  ></sl-input>
+
+                  <!-- Reviewer filter (PR/MR only) -->
+                  ${
+                    isMREvent
+                      ? html`
+                          <sl-input
+                            label="${
+                              tracker.tracker_type === 'gitlab'
+                                ? 'Reviewer (username)'
+                                : 'Requested Reviewer (username)'
+                            }"
+                            placeholder="e.g., jane_smith"
+                            .value=${this.flow.trigger_config?.reviewer || ''}
+                            @sl-input=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              const value = e.target.value.trim();
+                              if (value) {
+                                this.flow.trigger_config.reviewer = value;
+                              } else {
+                                delete this.flow.trigger_config.reviewer;
+                              }
+                              this.requestUpdate();
+                            }}
+                            help-text="Filter by reviewer (matches if any reviewer matches)"
+                          ></sl-input>
+                        `
+                      : nothing
+                  }
+
+                  <!-- Labels filter -->
+                  <sl-input
+                    label="Labels (comma-separated)"
+                    placeholder="e.g., bug, critical, backend"
+                    .value=${(this.flow.trigger_config?.labels as string[])?.join(', ') || ''}
+                    @sl-input=${(e: any) => {
+                      if (!this.flow.trigger_config)
+                        this.flow.trigger_config = {};
+                      const value = e.target.value.trim();
+                      if (value) {
+                        this.flow.trigger_config.labels = value
+                          .split(',')
+                          .map((l: string) => l.trim())
+                          .filter((l: string) => l.length > 0);
+                      } else {
+                        delete this.flow.trigger_config.labels;
+                      }
+                      this.requestUpdate();
+                    }}
+                    help-text="Filter by labels (triggers if ANY label matches)"
+                  ></sl-input>
+
+                  <!-- Milestone filter (GitHub/GitLab only) -->
+                  ${
+                    tracker.tracker_type !== 'jira'
+                      ? html`
+                          <sl-input
+                            label="Milestone"
+                            placeholder="e.g., v1.0, Sprint 10"
+                            .value=${this.flow.trigger_config?.milestone || ''}
+                            @sl-input=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              const value = e.target.value.trim();
+                              if (value) {
+                                this.flow.trigger_config.milestone = value;
+                              } else {
+                                delete this.flow.trigger_config.milestone;
+                              }
+                              this.requestUpdate();
+                            }}
+                            help-text="Filter by milestone name"
+                          ></sl-input>
+                        `
+                      : nothing
+                  }
+
+                  <!-- Priority filter (Jira only) -->
+                  ${
+                    tracker.tracker_type === 'jira'
+                      ? html`
+                          <sl-select
+                            label="Priority"
+                            .value=${this.flow.trigger_config?.priority || ''}
+                            @sl-change=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              const value = e.target.value;
+                              if (value) {
+                                this.flow.trigger_config.priority = value;
+                              } else {
+                                delete this.flow.trigger_config.priority;
+                              }
+                              this.requestUpdate();
+                            }}
+                            clearable
+                          >
+                            <sl-option value="">Any Priority</sl-option>
+                            <sl-option value="Highest">Highest</sl-option>
+                            <sl-option value="High">High</sl-option>
+                            <sl-option value="Medium">Medium</sl-option>
+                            <sl-option value="Low">Low</sl-option>
+                            <sl-option value="Lowest">Lowest</sl-option>
+                          </sl-select>
+
+                          <sl-input
+                            label="Issue Type"
+                            placeholder="e.g., Task, Bug, Story"
+                            .value=${this.flow.trigger_config?.issue_type || ''}
+                            @sl-input=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              const value = e.target.value.trim();
+                              if (value) {
+                                this.flow.trigger_config.issue_type = value;
+                              } else {
+                                delete this.flow.trigger_config.issue_type;
+                              }
+                              this.requestUpdate();
+                            }}
+                            help-text="Filter by Jira issue type"
+                          ></sl-input>
+                        `
+                      : nothing
+                  }
+
+                  <!-- Merge Request / Pull Request State Filters -->
+                  ${
+                    isMREvent && tracker.tracker_type !== 'jira'
+                      ? html`
+                          <sl-checkbox
+                            ?checked=${this.flow.trigger_config?.merged === true}
+                            @sl-change=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              if (e.target.checked) {
+                                this.flow.trigger_config.merged = true;
+                              } else {
+                                delete this.flow.trigger_config.merged;
+                              }
+                              this.requestUpdate();
+                            }}
+                          >
+                            Only when
+                            ${
+                              tracker.tracker_type === 'gitlab'
+                                ? 'Merge Request'
+                                : 'Pull Request'
+                            }
+                            is merged
+                          </sl-checkbox>
+
+                          <sl-checkbox
+                            ?checked=${this.flow.trigger_config?.draft === false}
+                            @sl-change=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              if (e.target.checked) {
+                                this.flow.trigger_config.draft = false;
+                              } else {
+                                delete this.flow.trigger_config.draft;
+                              }
+                              this.requestUpdate();
+                            }}
+                          >
+                            Only when marked as ready (not draft)
+                          </sl-checkbox>
+
+                          ${
+                            tracker.tracker_type === 'gitlab'
+                              ? html`
+                                  <sl-checkbox
+                                    ?checked=${
+                                      this.flow.trigger_config
+                                        ?.detailed_merge_status === 'approved'
+                                    }
+                                    @sl-change=${(e: any) => {
+                                      if (!this.flow.trigger_config)
+                                        this.flow.trigger_config = {};
+                                      if (e.target.checked) {
+                                        this.flow.trigger_config.detailed_merge_status =
+                                          'approved';
+                                      } else {
+                                        delete this.flow.trigger_config
+                                          .detailed_merge_status;
+                                      }
+                                      this.requestUpdate();
+                                    }}
+                                  >
+                                    Only when approved
+                                  </sl-checkbox>
+
+                                  <sl-select
+                                    label="Merge Status"
+                                    .value=${this.flow.trigger_config?.state || ''}
+                                    @sl-change=${(e: any) => {
+                                      if (!this.flow.trigger_config)
+                                        this.flow.trigger_config = {};
+                                      const value = e.target.value;
+                                      if (value) {
+                                        this.flow.trigger_config.state = value;
+                                      } else {
+                                        delete this.flow.trigger_config.state;
+                                      }
+                                      this.requestUpdate();
+                                    }}
+                                    clearable
+                                    help-text="Filter by merge request state"
+                                  >
+                                    <sl-option value="">Any State</sl-option>
+                                    <sl-option value="opened">Opened</sl-option>
+                                    <sl-option value="closed">Closed</sl-option>
+                                    <sl-option value="merged">Merged</sl-option>
+                                  </sl-select>
+                                `
+                              : tracker.tracker_type === 'github'
+                                ? html`
+                                    <sl-select
+                                      label="Pull Request State"
+                                      .value=${this.flow.trigger_config?.state || ''}
+                                      @sl-change=${(e: any) => {
+                                        if (!this.flow.trigger_config)
+                                          this.flow.trigger_config = {};
+                                        const value = e.target.value;
+                                        if (value) {
+                                          this.flow.trigger_config.state =
+                                            value;
+                                        } else {
+                                          delete this.flow.trigger_config.state;
+                                        }
+                                        this.requestUpdate();
+                                      }}
+                                      clearable
+                                      help-text="Filter by pull request state"
+                                    >
+                                      <sl-option value="">Any State</sl-option>
+                                      <sl-option value="open">Open</sl-option>
+                                      <sl-option value="closed"
+                                        >Closed</sl-option
+                                      >
+                                    </sl-select>
+
+                                    <sl-select
+                                      label="Mergeable State"
+                                      .value=${
+                                        this.flow.trigger_config
+                                          ?.mergeable_state || ''
+                                      }
+                                      @sl-change=${(e: any) => {
+                                        if (!this.flow.trigger_config)
+                                          this.flow.trigger_config = {};
+                                        const value = e.target.value;
+                                        if (value) {
+                                          this.flow.trigger_config.mergeable_state =
+                                            value;
+                                        } else {
+                                          delete this.flow.trigger_config
+                                            .mergeable_state;
+                                        }
+                                        this.requestUpdate();
+                                      }}
+                                      clearable
+                                      help-text="Filter by whether PR can be merged"
+                                    >
+                                      <sl-option value="">Any</sl-option>
+                                      <sl-option value="clean"
+                                        >Clean (can merge)</sl-option
+                                      >
+                                      <sl-option value="unstable"
+                                        >Unstable (tests failing)</sl-option
+                                      >
+                                      <sl-option value="dirty"
+                                        >Dirty (merge conflict)</sl-option
+                                      >
+                                      <sl-option value="blocked"
+                                        >Blocked</sl-option
+                                      >
+                                    </sl-select>
+                                  `
+                                : nothing
+                          }
+                        `
+                      : nothing
+                  }
+                </div>
+
+                <sl-alert variant="primary" open style="margin-top: 1rem;">
+                  <sl-icon slot="icon" name="info-circle"></sl-icon>
+                  <strong>How filters work:</strong> Leave empty to match all
+                  events. When multiple filters are set, ALL conditions must
+                  match for the flow to trigger.
+                </sl-alert>
+              `
+            : nothing
+        }
+      </div>
+    `;
+  }
+
   render() {
     if (this._loadingReferenceData) {
       return html`
@@ -1070,6 +1495,7 @@ export class PreloopFlowForm extends LitElement {
                         )}
                       </sl-select>
                     </div>
+                    ${this.flow.trigger_event_source ? this.renderEventFilters() : nothing}
                   `
           }
         </sl-card>

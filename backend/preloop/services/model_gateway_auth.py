@@ -118,6 +118,41 @@ async def authenticate_bearer_token(
     )
 
 
+def build_runtime_key_auth_context(
+    db: Session, *, token: str, api_key_id: str
+) -> Optional[ModelGatewayAuthContext]:
+    """Build a gateway auth context for an already-minted runtime API key.
+
+    Non-request callers (e.g. the flow orchestrator building an execution
+    context) mint a short-lived runtime credential and then need to answer
+    "which models may this principal use?" with the same rules the gateway
+    applies to a live request.  Resolving the key row and its owning user
+    here avoids re-authenticating the plaintext token.
+
+    Args:
+        db: Active database session.
+        token: Plaintext runtime token minted for the principal.
+        api_key_id: Id of the ``ApiKey`` row backing *token*.
+
+    Returns:
+        Context carrying the key and its owning user, or ``None`` when the
+        key or user cannot be resolved or is not usable.  Callers must treat
+        ``None`` as "no principal" and fail closed.
+    """
+    if not token or not api_key_id:
+        return None
+
+    api_key = crud_api_key.get(db, id=api_key_id)
+    if api_key is None or not api_key.is_active or api_key.is_expired:
+        return None
+
+    user = crud_user.get(db, id=str(api_key.user_id))
+    if user is None or not user.is_active:
+        return None
+
+    return ModelGatewayAuthContext(token=token, user=user, api_key=api_key)
+
+
 def resolve_managed_agent_id_for_context(
     db: Session, auth_context: ModelGatewayAuthContext
 ) -> Optional[str]:

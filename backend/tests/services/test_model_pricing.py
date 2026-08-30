@@ -301,10 +301,13 @@ class TestNewProviderPricing:
         assert "mistral/mistral-large-latest" in candidates
 
     def test_bundled_table_prices_every_moonshot_fallback_id(self) -> None:
-        from preloop.services.ai_model_provider import MOONSHOT_KNOWN_MODELS
-
         prices = json.loads(CATALOG_PATH.read_text())
-        for model_id in MOONSHOT_KNOWN_MODELS:
+        for model_id in (
+            "kimi-k3",
+            "kimi-k2.7-code",
+            "kimi-k2.7-code-highspeed",
+            "kimi-k2.6",
+        ):
             key = f"moonshot/{model_id}"
             assert key in prices, f"{key} missing from model_prices.json"
             entry = prices[key]
@@ -353,11 +356,15 @@ class TestNewProviderPricing:
         assert estimate.cost is not None and estimate.cost > 0
 
     def test_zai_fallback_ids_resolve_via_litellm_map(self) -> None:
-        from preloop.services.ai_model_provider import ZAI_KNOWN_MODELS
-
         # glm-5.3 is in the vendored snapshot, not litellm's published map.
         load_catalog(force=True)
-        for model_id in ZAI_KNOWN_MODELS:
+        for model_id in (
+            "glm-5.3",
+            "glm-5.1",
+            "glm-5",
+            "glm-4.7",
+            "glm-4.7-flash",
+        ):
             ai_model = AIModel(provider_name="zai", model_identifier=model_id)
             estimate = estimate_ai_model_usage_cost_detailed(
                 ai_model,
@@ -371,9 +378,14 @@ class TestNewProviderPricing:
             assert estimate.cost is not None, f"{model_id} has no cost"
 
     def test_mistral_fallback_ids_resolve_via_litellm_map(self) -> None:
-        from preloop.services.ai_model_provider import MISTRAL_KNOWN_MODELS
-
-        for model_id in MISTRAL_KNOWN_MODELS:
+        for model_id in (
+            "mistral-large-latest",
+            "mistral-medium-latest",
+            "mistral-small-latest",
+            "codestral-latest",
+            "devstral-latest",
+            "ministral-8b-latest",
+        ):
             ai_model = AIModel(provider_name="mistral", model_identifier=model_id)
             estimate = estimate_ai_model_usage_cost_detailed(
                 ai_model,
@@ -417,10 +429,18 @@ class TestQwenProviderPricing:
         assert "dashscope/qwen3.8-max" in candidates
 
     def test_bundled_table_prices_every_qwen_fallback_id(self) -> None:
-        from preloop.services.ai_model_provider import QWEN_KNOWN_MODELS
-
         prices = json.loads(CATALOG_PATH.read_text())
-        for model_id in QWEN_KNOWN_MODELS:
+        for model_id in (
+            "qwen3.8-max",
+            "qwen3.7-max",
+            "qwen3.7-plus",
+            "qwen3.6-flash",
+            "qwen3.5-plus",
+            "qwen3-max",
+            "qwen3-coder-plus",
+            "qwen-plus",
+            "qwen-flash",
+        ):
             key = f"dashscope/{model_id}"
             assert key in prices, f"{key} missing from model_prices.json"
             entry = prices[key]

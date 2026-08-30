@@ -15,7 +15,12 @@ Resolution order:
    dispatches via litellm's generic OpenAI-compatible adapter, with the
    stored identifier forwarded verbatim.
 3. An identifier that already carries a routable prefix (``azure/gpt-5.4``)
-   passes through untouched.
+   passes through untouched when the prefix agrees with the model's
+   ``provider_name``, or when the provider is generic (``openai``,
+   ``openai-compatible``, ``custom``).  When a SPECIFIC provider like
+   ``moonshot`` disagrees with the embedded prefix (e.g. a stale
+   ``nvidia_nim/`` left over from a provider edit), the prefix is stripped
+   and the provider-based rules below take over.
 4. The local prefix map translates Preloop provider names to litellm ones
    (``google`` -> ``gemini``, ``qwen`` -> ``openai``).
 5. Providers litellm routes natively (``mistral``, ``groq``, ...) pass
@@ -278,7 +283,25 @@ def to_litellm_model(ai_model: AIModel) -> str:
     if "/" in identifier:
         head = identifier.split("/", 1)[0].strip().lower()
         if head in known_litellm_providers() or head in set(PROVIDER_PREFIX.values()):
-            return identifier
+            # Honour the embedded prefix when it agrees with the model's
+            # provider_name, or when the provider is generic/default
+            # (``openai``, ``openai-compatible``, ``custom``).  Generic
+            # providers mean "route however the identifier/endpoint says",
+            # so the embedded prefix IS the routing instruction.
+            #
+            # When a SPECIFIC provider (e.g. ``moonshot``) disagrees with
+            # the embedded prefix (e.g. ``nvidia_nim/kimi-k3``), the admin
+            # edited the provider and the prefix is stale -- strip it and
+            # fall through to the provider-based rules below.
+            mapped = PROVIDER_PREFIX.get(provider, provider)
+            if head == provider or head == mapped:
+                return identifier
+            # Generic / default providers: the identifier prefix is the
+            # routing truth, not a stale leftover.
+            if provider in OPENAI_COMPATIBLE_PROVIDERS or provider == "openai":
+                return identifier
+            # Specific provider disagrees with embedded prefix -- strip it.
+            identifier = identifier.split("/", 1)[1].strip()
 
     prefix = PROVIDER_PREFIX.get(provider)
     if prefix is None:

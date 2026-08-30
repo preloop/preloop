@@ -1,7 +1,8 @@
+import json
 import logging
 import uuid
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Tuple
 
 from fastapi import (
     APIRouter,
@@ -369,25 +370,37 @@ def export_ai_model_credentials(
 async def list_provider_available_models(
     provider: str,
     request_in: Optional[AvailableModelsRequest] = None,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
 ) -> AvailableModelsResponse:
     """
     Fetch available models from the specified AI provider, with provenance.
 
-    Every provider attempts a live listing when a key (and endpoint where
-    applicable) is present; the response reports ``source`` ("live" or
-    "fallback") and a short safe ``error`` reason when a live attempt failed.
-    The reason comes from a fixed vocabulary and never contains raw provider
-    error text, endpoint URLs, or key material.
+    Every provider lists live when a key (and endpoint where applicable) is
+    present; the response reports ``source`` ("live" or "fallback") and a
+    short safe ``error`` reason when a live attempt failed or credentials
+    were missing. The reason comes from a fixed vocabulary and never contains
+    raw provider error text, endpoint URLs, or key material.
 
     The provider API key travels in the request BODY, never the query string:
     as a query parameter it was written to access logs in plaintext.
+
+    Edit-mode refresh should send ``ai_model_id`` instead of the stored key.
+    The server decrypts the stored secret via CRUD. A typed ``api_key`` in
+    the body always wins. Stored secrets are never returned to the client.
     """
+    api_key, api_endpoint, aws_auth, model_kind = _resolve_listing_inputs(
+        provider=provider,
+        request_in=request_in,
+        db=db,
+        current_user=current_user,
+    )
     return await _fetch_provider_models(
         provider=provider,
-        api_key=request_in.api_key if request_in else None,
-        model_kind=request_in.model_kind if request_in else "llm",
-        api_endpoint=request_in.api_endpoint if request_in else None,
-        aws_auth=_aws_auth_from_request(request_in),
+        api_key=api_key,
+        model_kind=model_kind,
+        api_endpoint=api_endpoint,
+        aws_auth=aws_auth,
     )
 
 
@@ -438,6 +451,127 @@ async def get_provider_available_models(
         api_endpoint=api_endpoint,
     )
     return result.models
+
+
+def _aws_auth_from_stored_bedrock_secret(
+    secret_value: str,
+    ai_model: AIModel,
+) -> Optional[Dict[str, str]]:
+    """Parse a stored Bedrock JSON blob plus routing region into aws_auth.
+
+    The stored secret is the same JSON shape the add-model modal writes
+    (``aws_access_key_id``, ``aws_secret_access_key``, optional session
+    token). Region lives on ``meta_data.provider_runtime.region``.
+    """
+    try:
+        payload = json.loads(secret_value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    auth: Dict[str, str] = {}
+    for key in (
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_session_token",
+        "aws_region_name",
+    ):
+        value = payload.get(key)
+        if value:
+            auth[key] = str(value).strip()
+    meta = ai_model.meta_data if isinstance(ai_model.meta_data, dict) else {}
+    runtime_raw = meta.get("provider_runtime")
+    runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
+    region = runtime.get("region") if isinstance(runtime, dict) else None
+    if isinstance(region, str) and region.strip() and "aws_region_name" not in auth:
+        auth["aws_region_name"] = region.strip()
+    if not auth.get("aws_access_key_id") or not auth.get("aws_secret_access_key"):
+        return None
+    return auth
+
+
+def _resolve_listing_inputs(
+    *,
+    provider: str,
+    request_in: Optional[AvailableModelsRequest],
+    db: Optional[Session],
+    current_user: Optional[User],
+) -> Tuple[
+    Optional[str],
+    Optional[str],
+    Optional[dict],
+    Literal["llm", "stt", "tts"],
+]:
+    """Typed credentials win; otherwise decrypt the stored model secret.
+
+    The stored plaintext is used only for the live list call and is never
+    copied into the response.
+
+    A stored secret is only ever used for the provider it was stored for. The
+    edit form leaves the provider dropdown enabled, so without that check a
+    caller could pair one model's ``ai_model_id`` with a different ``provider``
+    plus an attacker-chosen ``api_endpoint`` and have the server forward the
+    decrypted key there. ``validate_discovery_endpoint`` blocks private hosts
+    but not public ones, so the mismatch is rejected before decryption.
+    """
+    typed_key = (request_in.api_key or "").strip() if request_in else ""
+    typed_endpoint = (request_in.api_endpoint or "").strip() if request_in else ""
+    typed_aws = _aws_auth_from_request(request_in)
+    model_kind: Literal["llm", "stt", "tts"] = (
+        request_in.model_kind if request_in else "llm"
+    )
+
+    stored_key: Optional[str] = None
+    stored_endpoint: Optional[str] = None
+    stored_aws: Optional[Dict[str, str]] = None
+    model_id = request_in.ai_model_id if request_in else None
+    if model_id is not None:
+        if (
+            db is None
+            or current_user is None
+            or not getattr(current_user, "account_id", None)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to list with a stored model",
+            )
+        db_model = crud_ai_model.get_for_account(
+            db, id=model_id, account_id=current_user.account_id
+        )
+        if db_model is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="AI Model not found"
+            )
+        if (db_model.provider_name or "").strip().lower() != (
+            provider or ""
+        ).strip().lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Stored model provider does not match the requested provider",
+            )
+        try:
+            stored_key = crud_ai_model.resolve_listing_secret(db_model)
+        except ValueError:
+            # Every expected failure below resolve_listing_secret normalizes to
+            # ValueError: decrypt_value re-raises InvalidToken, the vault
+            # backend re-raises transport/lookup errors, credential payload
+            # parsing raises on bad JSON, and CredentialRefreshError subclasses
+            # ValueError. Anything else is a real bug and must stay loud rather
+            # than degrade to "missing_key".
+            logger.warning(
+                "Failed to decrypt stored listing credentials for model %s",
+                model_id,
+            )
+            stored_key = None
+        stored_endpoint = (db_model.api_endpoint or "").strip() or None
+        if (db_model.provider_name or "").lower() == "bedrock" and stored_key:
+            stored_aws = _aws_auth_from_stored_bedrock_secret(stored_key, db_model)
+            stored_key = None
+
+    api_key = typed_key or stored_key
+    api_endpoint = typed_endpoint or stored_endpoint
+    aws_auth = typed_aws or stored_aws
+    return api_key, api_endpoint, aws_auth, model_kind
 
 
 def _aws_auth_from_request(

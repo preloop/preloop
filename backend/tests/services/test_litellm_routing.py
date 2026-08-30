@@ -285,3 +285,83 @@ class TestSslVerifyOnCompletions:
             ),
         )
         assert "ssl_verify" not in kwargs
+
+
+class TestProviderSwitchStalePrefix:
+    """Editing a model's provider must change litellm routing even when the
+    model_identifier carries a stale vendor prefix from the old provider."""
+
+    def test_stale_nvidia_nim_prefix_uses_new_provider(self):
+        # Admin switched from nvidia_nim to moonshot but model_identifier
+        # still carries the nvidia_nim/ prefix from the import.
+        model = _model("moonshot", "nvidia_nim/kimi-k3")
+        result = to_litellm_model(model)
+        assert result == "moonshot/kimi-k3", (
+            "Stale nvidia_nim prefix in identifier must not override "
+            "the admin-set moonshot provider"
+        )
+
+    def test_stale_deepseek_prefix_uses_new_provider(self):
+        model = _model("moonshot", "deepseek/deepseek-coder")
+        result = to_litellm_model(model)
+        assert result == "moonshot/deepseek-coder"
+
+    def test_matching_prefix_still_passes_through(self):
+        # When the identifier prefix matches the provider, passthrough is fine.
+        model = _model("moonshot", "moonshot/kimi-k3")
+        assert to_litellm_model(model) == "moonshot/kimi-k3"
+
+    def test_matching_mapped_prefix_still_passes_through(self):
+        # google maps to gemini in PROVIDER_PREFIX.
+        model = _model("google", "gemini/gemini-2.0-flash")
+        assert to_litellm_model(model) == "gemini/gemini-2.0-flash"
+
+    def test_stale_prefix_with_endpoint_routes_via_openai(self):
+        # Unknown new provider with endpoint falls back to openai/ adapter.
+        model = _model(
+            "custom-provider",
+            "nvidia_nim/kimi-k3",
+            endpoint="https://custom.example.com/v1",
+        )
+        result = to_litellm_model(model)
+        assert result == "openai/kimi-k3"
+
+    def test_no_prefix_provider_switch_still_works(self):
+        # Bare identifier (no /) is unaffected by this fix.
+        model = _model("moonshot", "kimi-k3")
+        assert to_litellm_model(model) == "moonshot/kimi-k3"
+
+
+class TestRuleThreePrefixOverride:
+    """Rule 3: an embedded prefix is a routing instruction only when it agrees
+    with provider_name, or when the provider is generic.
+
+    A deliberate prefix override therefore lives on a generic provider
+    (``openai-compatible``, ``custom``, ``openai``). On a specific provider a
+    disagreeing prefix is treated as stale and stripped, because that is what
+    a provider edit leaves behind.
+    """
+
+    def test_generic_openai_compatible_keeps_deliberate_override(self):
+        model = _model("openai-compatible", "azure/gpt-5.4")
+        assert to_litellm_model(model) == "azure/gpt-5.4"
+
+    def test_generic_custom_keeps_deliberate_override(self):
+        model = _model("custom", "bedrock/anthropic.claude-3")
+        assert to_litellm_model(model) == "bedrock/anthropic.claude-3"
+
+    def test_generic_openai_keeps_deliberate_override(self):
+        model = _model("openai", "azure/gpt-5.4")
+        assert to_litellm_model(model) == "azure/gpt-5.4"
+
+    def test_specific_provider_disagreeing_prefix_is_stripped(self):
+        # The stale-provider bug: a specific provider_name must win over a
+        # prefix left behind by an earlier provider.
+        model = _model("anthropic", "bedrock/anthropic.claude-3")
+        assert to_litellm_model(model) == "anthropic/anthropic.claude-3"
+
+    def test_unknown_prefix_is_not_treated_as_routing_instruction(self):
+        # Heads that are not routable prefixes never entered rule 3, before
+        # or after this change (issue #172).
+        model = _model("moonshot", "some-org/kimi-k3")
+        assert to_litellm_model(model) == "moonshot/some-org/kimi-k3"
