@@ -1,5 +1,6 @@
 """Evaluator tests for model.request and model.response policies."""
 
+import hashlib
 import time
 from types import SimpleNamespace
 from uuid import uuid4
@@ -16,6 +17,7 @@ from preloop.services.model_content_policy import (
     ModelIODecision,
     _approval_arguments,
     _await_model_io_hold,
+    _text_privacy,
     evaluate_model_io,
     extract_stream_text,
     hold_for_model_io_approval,
@@ -42,6 +44,19 @@ def test_no_rules_allows_matching_tool_default():
     )
     assert decision.action == "allow"
     assert decision.rule_description == "No model I/O rules defined"
+
+
+def test_text_privacy_fingerprint_stays_sha256():
+    """Audit rows store SHA-256 of the scanned text, not a password KDF."""
+    text = "hello"
+    expected = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    assert _text_privacy(text) == expected
+    decision = evaluate_model_io(
+        rules=[],
+        target="model.request",
+        text=text,
+    )
+    assert decision.text_sha256 == expected
 
 
 def test_no_matching_rule_allows():
