@@ -3516,11 +3516,7 @@ defaults:
       <sl-dialog
         label="Preview Policy Changes"
         ?open=${this._showDiffDialog}
-        @sl-request-close=${() => {
-          this._showDiffDialog = false;
-          this._pendingFile = null;
-          this._diffResult = null;
-        }}
+        @sl-request-close=${this._cancelDiffPreview}
         style="--width: 700px;"
       >
         ${

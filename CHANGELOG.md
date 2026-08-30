@@ -57,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preset's detectors and condition, instead of keeping the custom values
   while the preset card still looks selected.
 
+- **Dismissing the policy diff dialog clears a pending YAML save**: Escape
+  or the dialog close control now resets `_pendingYamlSave`, so a later
+  Import apply cannot be treated as an editor save.
+
 - **Edit-mode model refresh lists live models**: refreshing the picker
   while editing a saved AI model (for example a Z.ai key that now serves
   `glm-5.3-flash`) sends the model id so the server decrypts the stored

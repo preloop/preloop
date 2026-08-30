@@ -658,6 +658,39 @@ describe('PoliciesView', () => {
       expect((element as any)._yamlDirty).to.be.true;
     });
 
+    it('clears the yaml-save flag when the diff dialog is dismissed', async () => {
+      const { stub, calls } = createYamlStub();
+      fetchStub = stub;
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any)._onYamlDraftInput(
+        'version: "1.0"\nmetadata:\n  name: x\n'
+      );
+      await (element as any)._saveYamlDraft();
+      await element.updateComplete;
+
+      expect((element as any)._pendingYamlSave).to.equal(true);
+      expect((element as any)._showDiffDialog).to.be.true;
+
+      const dialog = element.shadowRoot?.querySelector(
+        'sl-dialog[label="Preview Policy Changes"]'
+      ) as HTMLElement;
+      dialog.dispatchEvent(
+        new CustomEvent('sl-request-close', {
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await element.updateComplete;
+
+      expect((element as any)._pendingYamlSave).to.equal(false);
+      expect((element as any)._showDiffDialog).to.be.false;
+      expect(calls.uploaded).to.be.false;
+    });
+
     it('opens Describe a change with a freshly refetched export', async () => {
       const { stub } = createYamlStub();
       fetchStub = stub;
