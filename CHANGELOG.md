@@ -128,6 +128,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Frontend test/auth conventions that were only in
   `frontend/CLAUDE.md` now live in `frontend/README.md`; the stale
   file is not restored.
+- **Editions table lists differences only**: OSS is one operator per
+  account. Users, teams, and RBAC are Cloud / Enterprise. Cloud is
+  managed hosting; Cloud and Enterprise include support plans. Dropped
+  Yes/Yes capability-tour rows and overclaims (CEL, AI-driven/quorum
+  evaluation, AI Act pack, chargeback/forecasting as edition gates).
+  CEL, AI-driven approvals, and quorum evaluation are OSS.
 
 - **Overview Top Models shows a preview per model**: each model lists its
   top four agents/flows/sessions by spend or usage, with a See N more
