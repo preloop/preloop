@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Blog posts can show a hero image**: `og_image` in frontmatter is
+  rendered as a figure under the tags, and a missing `og_image` logs a
+  build warning.
+
 - **Policies console hidden behind `policies_console` (off by default)**:
   the page is still being reworked, so `/api/v1/features` now advertises
   `policies_console: false` unless an operator sets
@@ -38,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds a page by dropping a markdown file.
 
 ### Fixed
+
+- **Blog posts no longer repeat the title**: the article template already
+  emits `<h1>` from frontmatter. A leading `# Title` in the markdown (or
+  the matching `<h1>` in the rendered body) is stripped so
+  `/blog/preloop-0-15-0` does not show the headline twice.
 
 - **Avatar upload rejects oversized files before buffering the body**:
   `PUT /users/me/avatar` reads the multipart in 1 MiB chunks and returns
