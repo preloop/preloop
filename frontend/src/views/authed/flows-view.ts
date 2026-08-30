@@ -18,32 +18,10 @@ import {
 import { formatLocalDateTime } from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import type { Flow } from '../../types';
 
-interface ScheduleState {
-  active: boolean;
-  type: string;
-  description: string;
-  timezone: string;
-  next_run_at: string | null;
-  cron?: string;
-}
-
-interface Flow {
-  id: string;
-  name: string;
-  description?: string;
-  icon?: string;
-  account_id?: string;
-  trigger_event_source?: string;
-  is_enabled?: boolean;
-  schedule_state?: ScheduleState | null;
-  execution_stats?: {
-    total_execs?: number;
-    running_execs?: number;
-    last_seen_at?: string | null;
-    estimated_cost?: number;
-  };
-}
+/** A flow row from the list endpoints, where id and name are always present. */
+type FlowListItem = Flow & { id: string; name: string };
 
 interface FlowExecution {
   id: string;
@@ -289,10 +267,10 @@ export class FlowsView extends LitElement {
   ];
 
   @state()
-  private flows: Flow[] = [];
+  private flows: FlowListItem[] = [];
 
   @state()
-  private presets: Flow[] = [];
+  private presets: FlowListItem[] = [];
 
   @state()
   private presetsLoading = false;
@@ -594,7 +572,7 @@ export class FlowsView extends LitElement {
     `;
   }
 
-  renderFlowCard(flow: Flow) {
+  renderFlowCard(flow: FlowListItem) {
     const activeCount = flow.execution_stats?.running_execs || 0;
     const totalCount = flow.execution_stats?.total_execs || 0;
 
@@ -664,7 +642,7 @@ export class FlowsView extends LitElement {
     `;
   }
 
-  renderPresetCard(preset: Flow) {
+  renderPresetCard(preset: FlowListItem) {
     return html`
       <sl-card class="flow-card">
         <div slot="header" class="flow-header">
@@ -734,7 +712,7 @@ export class FlowsView extends LitElement {
    * Paused flows (schedule suspended) get a warning badge; active
    * schedules show the next run time in local time.
    */
-  renderScheduleStat(flow: Flow) {
+  renderScheduleStat(flow: FlowListItem) {
     const schedule = flow.schedule_state;
     if (flow.trigger_event_source !== 'schedule' || !schedule) {
       return '';
@@ -845,7 +823,7 @@ export class FlowsView extends LitElement {
     return `${preview}...`;
   }
 
-  private renderFlowDescription(flow: Flow) {
+  private renderFlowDescription(flow: FlowListItem) {
     const description = flow.description?.trim();
     const shouldShowFull = (description?.length ?? 0) > 140;
     const preview = description ? this.truncateDescription(description) : '';
@@ -885,7 +863,7 @@ export class FlowsView extends LitElement {
     `;
   }
 
-  private sortPresets(presets: Flow[]): Flow[] {
+  private sortPresets(presets: FlowListItem[]): FlowListItem[] {
     return [...presets].sort((a, b) => {
       const aIsPR = a.name?.toLowerCase().includes('pull request reviewer')
         ? 0
