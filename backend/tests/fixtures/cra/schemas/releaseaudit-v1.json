@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "preloop.cra.releaseaudit/v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "flow",
+    "run_at",
+    "git",
+    "tool_versions",
+    "inputs_declared",
+    "runner",
+    "regime_profile",
+    "sbom_audit",
+    "vuln_scan",
+    "drift",
+    "verdict",
+    "gap_register",
+    "evidence_storage",
+    "checks",
+    "assessments",
+    "artifacts",
+    "disclaimer"
+  ],
+  "properties": {
+    "schema": {
+      "const": "preloop.cra.releaseaudit/v1"
+    },
+    "flow": {
+      "const": "release-security-audit"
+    },
+    "run_at": {},
+    "git": {},
+    "tool_versions": {},
+    "inputs_declared": {},
+    "runner": {},
+    "regime_profile": {
+      "const": "cra"
+    },
+    "sbom_audit": {},
+    "vuln_scan": {},
+    "drift": {},
+    "verdict": {
+      "enum": [
+        "pass",
+        "pass_with_findings",
+        "fail"
+      ]
+    },
+    "gap_register": {},
+    "evidence_storage": {},
+    "checks": {},
+    "assessments": {},
+    "artifacts": {},
+    "disclaimer": {
+      "const": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+    }
+  }
+}

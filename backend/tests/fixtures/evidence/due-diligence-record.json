@@ -86,6 +86,7 @@
     "path": "products/example-product/components/libexample/2026-08-20T120000Z-due-diligence.json",
     "committed": true
   },
+  "status": "success",
   "verdict": "recorded",
   "checks": [
     {

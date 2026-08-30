@@ -134,6 +134,7 @@ dev = [
     "pytest-playwright>=0.4.0",
     "mcp>=1.0.0,<2",  # MCP client for integration tests; v2 dropped streamablehttp_client
     "PyYAML>=6.0",  # test_nginx_route_parity imports yaml
+    "jsonschema>=4.0",  # test_cra_result_json_contract validates fixtures
 ]
 ai-providers = [
     "anthropic>=0.39.0",  # For Anthropic Claude API key validation

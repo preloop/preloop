@@ -78,6 +78,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CRA result.json contract**: the four security-audit presets pin
+  `/workspace/result.json` as a versioned contract (`preloop.cra.sbomaudit/v1`,
+  `vulnscan/v1`, `releaseaudit/v1`, `duediligence/v1`). Tests parse each YAML
+  Required shape, require the honesty line, validate example artifacts against
+  those keys, and reject banned claims (`compliant: true`, `ce_mark: true`,
+  "Article 14 filed").
 - **CRA / AI Act evidence runbook**: rewrite of
   `docs/guide/flows/security-audit-presets.md` as a manufacturer-facing
   runbook for the shipped Apache presets (SBOM Verify, SBOM Exploit
