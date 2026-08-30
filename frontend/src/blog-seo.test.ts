@@ -390,6 +390,15 @@ describe('blog-seo', () => {
         strip_duplicate_title_heading('<h1>A Post</h1>\n<p>Hi</p>', 'A Post')
       ).to.equal('<p>Hi</p>');
     });
+
+    it('treats nested markup in an h1 as the same title', () => {
+      expect(
+        strip_duplicate_title_heading(
+          '<h1>A <em>Post</em></h1>\n<p>Hi</p>',
+          'A Post'
+        )
+      ).to.equal('<p>Hi</p>');
+    });
   });
 
   describe('constants', () => {

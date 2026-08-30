@@ -184,12 +184,28 @@ export function estimate_reading_minutes(markdown_body: string): number {
   return Math.max(1, Math.round(words.length / 200));
 }
 
+/**
+ * Compare headings without markup. Walks the string so an unclosed `<`
+ * cannot leave a residual `<script` the way a single `/<[^>]+>/` replace
+ * would. The result is only compared, never written back into HTML.
+ */
 function normalize_heading_text(value: string): string {
-  return value
-    .replace(/<[^>]+>/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
+  let out = '';
+  let in_tag = false;
+  for (const ch of value) {
+    if (ch === '<') {
+      in_tag = true;
+      continue;
+    }
+    if (ch === '>') {
+      in_tag = false;
+      continue;
+    }
+    if (!in_tag) {
+      out += ch;
+    }
+  }
+  return out.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 /**
