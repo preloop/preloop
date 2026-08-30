@@ -4,6 +4,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+import {
+  fetchGatewayModels,
+  gatewayModelsUrl,
+  refreshModels,
+  type GatewayModel,
+} from "./models.js";
+
 type ControlConfig = {
   enabled?: boolean;
   protocol?: string;
@@ -131,6 +138,12 @@ export class PreloopOpenClawPlugin {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private logger?: (message: string) => void;
+
+  /**
+   * Most recently fetched gateway model list, available for programmatic
+   * use.  Updated by {@link refreshGatewayModels}.
+   */
+  lastGatewayModels: GatewayModel[] = [];
 
   constructor(
     private readonly configPath?: string,
@@ -385,6 +398,25 @@ export class PreloopOpenClawPlugin {
   }
 
   /**
+   * Fetch the current model list from the Preloop gateway and store it
+   * on {@link lastGatewayModels}.  Best-effort; swallows errors.
+   *
+   * OpenClaw's plugin hook API does not expose a runtime model-catalog
+   * mutation method, so this helper fetches and caches the list. A
+   * future OpenClaw hook that supports runtime catalog updates could
+   * consume ``lastGatewayModels`` directly.
+   */
+  async refreshGatewayModels(): Promise<GatewayModel[]> {
+    const config = this.controlConfig ?? this.loadConfig();
+    this.lastGatewayModels = await refreshModels(
+      config,
+      this.fetchImpl,
+      (message) => this.log(message),
+    );
+    return this.lastGatewayModels;
+  }
+
+  /**
    * Derive the REST API base URL from the Agent Control WS URL, e.g.
    * `wss://host/api/v1/agents/control/ws` -> `https://host`.
    */
@@ -584,6 +616,8 @@ export class PreloopOpenClawPlugin {
   }
 }
 
+export { gatewayModelsUrl, fetchGatewayModels, type GatewayModel } from "./models.js";
+
 export const plugin = new PreloopOpenClawPlugin();
 
 export const definition = {
@@ -639,7 +673,12 @@ export function register(api: {
     });
   };
 
-  api.on?.("gateway_start", start);
+  api.on?.("gateway_start", () => {
+    start();
+    // Best-effort model-list refresh on gateway start so the model
+    // picker reflects console edits without a full restart.
+    void instance.refreshGatewayModels();
+  });
   api.on?.("gateway_stop", () => {
     started = false;
     instance.stop();

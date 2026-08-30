@@ -7,10 +7,13 @@ import {
   DEFAULT_TURN_TIMEOUT_MS,
   PROTOCOL,
   RUNTIME,
+  defaultConfigPath,
   loadControlConfig,
   verifyConfig,
   type ControlConfig,
 } from "./config.js";
+
+import { refreshModels } from "./models.js";
 
 /**
  * Structural mirror of OpenCode's permission-ask request
@@ -230,6 +233,15 @@ export class PreloopOpenCodePlugin {
       this.reconnectAttempts = 0;
       socket.send(JSON.stringify(this.presenceMessage(config)));
       this.startHeartbeat(config);
+      // Best-effort model-list refresh: fetch the current gateway models
+      // and patch the local OpenCode config so the model picker reflects
+      // console edits without a full restart.
+      void refreshModels(
+        config,
+        this.configPath ?? defaultConfigPath(),
+        this.fetchImpl as Parameters<typeof refreshModels>[2],
+        (message) => this.log(`model refresh: ${message}`),
+      );
     });
 
     socket.addEventListener("message", (event) => {
@@ -873,7 +885,12 @@ export const PreloopPlugin = async (ctx: {
   if (ctx.client) {
     instance.setOpenCodeClient(ctx.client);
   }
-  instance.configure(loadControlConfig());
+  const config = loadControlConfig();
+  instance.configure(config);
+  // Refresh the model list at session start (before the WS connect also
+  // triggers one on open).  This path is synchronous enough that the
+  // model picker shows fresh data from the first interaction.
+  void refreshModels(config, defaultConfigPath());
   await instance.start(ctx.client);
   return {
     event: async ({ event }) => {
