@@ -184,6 +184,52 @@ export function estimate_reading_minutes(markdown_body: string): number {
   return Math.max(1, Math.round(words.length / 200));
 }
 
+function normalize_heading_text(value: string): string {
+  return value
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Drop a leading `# Title` that repeats frontmatter `title`. Authors keep a
+ * standalone markdown heading; the page template already emits `<h1>`.
+ */
+export function strip_leading_markdown_title(
+  markdown: string,
+  title: string
+): string {
+  const match = /^(?:\uFEFF)?(?:[ \t]*\r?\n)*#\s+(.+?)\s*(?:\r?\n)+/.exec(
+    markdown || ''
+  );
+  if (!match) {
+    return markdown;
+  }
+  if (normalize_heading_text(match[1]) !== normalize_heading_text(title)) {
+    return markdown;
+  }
+  return (markdown || '').slice(match[0].length);
+}
+
+/**
+ * Drop a leading `<h1>` from rendered markdown when it repeats `title`.
+ */
+export function strip_duplicate_title_heading(
+  html: string,
+  title: string
+): string {
+  const source = html || '';
+  const match = /^\s*<h1(?:\s[^>]*)?>([\s\S]*?)<\/h1>\s*/i.exec(source);
+  if (!match) {
+    return source;
+  }
+  if (normalize_heading_text(match[1]) !== normalize_heading_text(title)) {
+    return source;
+  }
+  return source.slice(match[0].length);
+}
+
 function get_origin(config: BrandConfig): string {
   return `https://${config.domain}`;
 }
@@ -453,6 +499,17 @@ export const BLOG_ARTICLE_STYLES = `
       .blog-backlink:hover {
         color: #e6edf3;
       }
+      .blog-hero {
+        margin: 0 0 2rem;
+        padding: 0;
+        border: none;
+      }
+      .blog-hero img {
+        display: block;
+        width: 100%;
+        height: auto;
+        border-radius: 4px;
+      }
       .blog-index-list {
         list-style: none;
         margin: 2.5rem 0 0;
@@ -577,6 +634,15 @@ export function render_blog_post_html(
   const reading_html = post.reading_minutes
     ? `<span class="blog-sep">·</span><span>${post.reading_minutes} min read</span>`
     : '';
+  const hero_html = post.og_image
+    ? `<figure class="blog-hero"><img src="${escape_html(
+        post.og_image
+      )}" alt="${escape_html(post.title)}"></figure>`
+    : '';
+  const body_html = strip_duplicate_title_heading(
+    post.body_html || '',
+    post.title
+  );
 
   return `<article class="container py-5 blog-post">
     <style>${article_styles}${BLOG_ARTICLE_STYLES}</style>
@@ -592,7 +658,8 @@ export function render_blog_post_html(
       ${reading_html}
     </div>
     ${tags_html}
-    ${post.body_html || ''}
+    ${hero_html}
+    ${body_html}
     ${render_related_block(post)}
   </article>`;
 }

@@ -22,6 +22,7 @@ import {
   is_blog_enabled,
   render_blog_index_html,
   render_blog_post_html,
+  strip_leading_markdown_title,
   type BlogPost,
 } from './src/blog-seo';
 
@@ -148,19 +149,28 @@ async function discover_blog_posts(
       continue;
     }
 
+    const title = String(meta.title);
+    const og_image = meta.og_image ? String(meta.og_image) : undefined;
+    if (!og_image) {
+      console.warn(
+        `[blog] "${filename}" has no og_image; the post will ship without a hero`
+      );
+    }
+    const markdown_body = strip_leading_markdown_title(body, title);
+
     posts.push({
       slug,
-      title: String(meta.title),
+      title,
       description: String(meta.description),
       date,
       updated,
       author: meta.author ? String(meta.author) : undefined,
       author_url: meta.author_url ? String(meta.author_url) : undefined,
       tags: Array.isArray(meta.tags) ? meta.tags.map(String) : [],
-      og_image: meta.og_image ? String(meta.og_image) : undefined,
+      og_image,
       related: Array.isArray(meta.related) ? meta.related.map(String) : [],
-      reading_minutes: estimate_reading_minutes(body),
-      body_html: await marked.parse(body),
+      reading_minutes: estimate_reading_minutes(markdown_body),
+      body_html: await marked.parse(markdown_body),
     });
   }
 

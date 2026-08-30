@@ -19,6 +19,8 @@ import {
   render_blog_index_html,
   render_blog_post_html,
   sort_posts,
+  strip_duplicate_title_heading,
+  strip_leading_markdown_title,
   to_rfc822,
   type BlogPost,
 } from './blog-seo';
@@ -263,6 +265,41 @@ describe('blog-seo', () => {
       expect(html).to.contain('&lt;script&gt;');
     });
 
+    it('does not repeat a markdown h1 that matches the frontmatter title', () => {
+      const html = render_blog_post_html(
+        makePost({
+          title: 'Preloop 0.15.0: flow schedules',
+          body_html: '<h1>Preloop 0.15.0: flow schedules</h1>\n<p>Shipped.</p>',
+        }),
+        config,
+        ''
+      );
+      expect(html.match(/<h1>/g)).to.have.lengthOf(1);
+      expect(html).to.contain('<p>Shipped.</p>');
+    });
+
+    it('keeps a leading h1 that is not the post title', () => {
+      const html = render_blog_post_html(
+        makePost({
+          body_html: '<h1>A subsection</h1><p>Body.</p>',
+        }),
+        config,
+        ''
+      );
+      expect(html).to.contain('<h1>A Post</h1>');
+      expect(html).to.contain('<h1>A subsection</h1>');
+    });
+
+    it('renders og_image as a hero figure', () => {
+      const html = render_blog_post_html(
+        makePost({ og_image: '/assets/blog/ship.png' }),
+        config,
+        ''
+      );
+      expect(html).to.contain('class="blog-hero"');
+      expect(html).to.contain('src="/assets/blog/ship.png"');
+    });
+
     it('renders the index newest-first with links to each post', () => {
       const html = render_blog_index_html(
         config,
@@ -331,6 +368,27 @@ describe('blog-seo', () => {
       expect(
         generate_blog_llms_section(selfhosted, [makePost()])
       ).to.deep.equal([]);
+    });
+  });
+
+  describe('duplicate title stripping', () => {
+    it('strips a leading markdown heading that matches the title', () => {
+      const body = strip_leading_markdown_title(
+        '# A Post\n\nHello.\n',
+        'A Post'
+      );
+      expect(body).to.equal('Hello.\n');
+    });
+
+    it('leaves a different leading heading alone', () => {
+      const source = '# Not the title\n\nHello.\n';
+      expect(strip_leading_markdown_title(source, 'A Post')).to.equal(source);
+    });
+
+    it('strips a matching rendered h1', () => {
+      expect(
+        strip_duplicate_title_heading('<h1>A Post</h1>\n<p>Hi</p>', 'A Post')
+      ).to.equal('<p>Hi</p>');
     });
   });
 

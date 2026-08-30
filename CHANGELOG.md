@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Blog posts can show a hero image**: `og_image` in frontmatter is
+  rendered as a figure under the tags, and a missing `og_image` logs a
+  build warning.
+
 ### Fixed
+
+- **Blog posts no longer repeat the title**: the article template already
+  emits `<h1>` from frontmatter. A leading `# Title` in the markdown (or
+  the matching `<h1>` in the rendered body) is stripped so
+  `/blog/preloop-0-15-0` does not show the headline twice.
 
 - **Edit-mode model refresh lists live models**: refreshing the picker
   while editing a saved AI model (for example a Z.ai key that now serves
