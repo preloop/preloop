@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "preloop.cra.vulnscan/v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "flow",
+    "status",
+    "run_at",
+    "git",
+    "tool_versions",
+    "inputs_declared",
+    "runner",
+    "regime_profile",
+    "source_sbom",
+    "db_versions",
+    "inventory",
+    "findings",
+    "counts_by_severity",
+    "art14_candidates",
+    "gate",
+    "new_since_last_run",
+    "checks",
+    "assessments",
+    "artifacts",
+    "disclaimer"
+  ],
+  "properties": {
+    "schema": {
+      "const": "preloop.cra.vulnscan/v1"
+    },
+    "flow": {
+      "const": "sbom-exploit-check"
+    },
+    "status": {
+      "enum": [
+        "success",
+        "error"
+      ]
+    },
+    "run_at": {},
+    "git": {},
+    "tool_versions": {},
+    "inputs_declared": {},
+    "runner": {},
+    "regime_profile": {
+      "const": "cra"
+    },
+    "source_sbom": {},
+    "db_versions": {},
+    "inventory": {},
+    "findings": {},
+    "counts_by_severity": {},
+    "art14_candidates": {},
+    "gate": {},
+    "new_since_last_run": {
+      "type": "null"
+    },
+    "checks": {},
+    "assessments": {},
+    "artifacts": {},
+    "disclaimer": {
+      "const": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+    }
+  }
+}

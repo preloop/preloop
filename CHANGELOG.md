@@ -71,6 +71,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CRA result.json contract**: the four security-audit presets pin
+  `/workspace/result.json` as a versioned contract (`preloop.cra.sbomaudit/v1`,
+  `vulnscan/v1`, `releaseaudit/v1`, `duediligence/v1`). Tests parse each YAML
+  Required shape, require the honesty line, validate example artifacts against
+  those keys, and reject banned claims (`compliant: true`, `ce_mark: true`,
+  "Article 14 filed").
+
 - **Model I/O content policies**: instance policies can `allow`, `deny`,
   or `require_approval` on `model.request` and `model.response` using
   the existing policy engine. Built-in detectors cover PII, prompt
