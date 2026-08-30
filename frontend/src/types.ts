@@ -1,3 +1,27 @@
+export interface Flow {
+  id?: string;
+  name?: string;
+  description?: string;
+  prompt_template?: string;
+  agent_type?: string;
+  agent_config?: Record<string, unknown>;
+  ai_model_id?: string;
+  trigger_event_source?: string;
+  trigger_event_types?: string[];
+  trigger_organization_id?: string;
+  trigger_project_ids?: string[];
+  trigger_config?: Record<string, unknown>;
+  schedule_config?: Record<string, unknown> | null;
+  webhook_config?: Record<string, unknown>;
+  allowed_mcp_servers?: string[];
+  allowed_mcp_tools?: Array<{ server_name: string; tool_name: string }>;
+  git_clone_config?: Record<string, unknown>;
+  max_iterations?: number | null;
+  max_budget?: number | null;
+  is_enabled?: boolean;
+  [key: string]: unknown;
+}
+
 export interface AIModel {
   id: string;
   name: string;
