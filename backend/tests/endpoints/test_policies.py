@@ -1243,12 +1243,30 @@ class TestModelIORulesPermissionDeps:
     async def test_list_without_current_user_fails_closed_when_rbac_on(
         self, mock_db, mock_account, mocker
     ):
+        import preloop.utils.permissions as perms
+
+        def fake_plugin_require(permission_name: str):
+            def decorator(func):
+                return func
+
+            return decorator
+
+        mocker.patch(
+            "preloop.utils.permissions._plugin_require_permission",
+            fake_plugin_require,
+        )
         mocker.patch(
             "preloop.utils.permissions._rbac_checks_enabled",
             return_value=True,
         )
+        # OSS has no RBAC plugin, so import-time require_permission is a
+        # no-op. Re-wrap after installing a fake plugin so the fail-closed
+        # kwargs gate actually runs (same pattern as test_permissions_fallback).
+        wrapped = perms.require_permission("view_policies")(
+            inspect.unwrap(policies.list_model_io_rules)
+        )
         with pytest.raises(HTTPException) as exc_info:
-            policies.list_model_io_rules(account=mock_account, db=mock_db)
+            wrapped(account=mock_account, db=mock_db)
         assert exc_info.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
         assert "current_user and db" in exc_info.value.detail
 
