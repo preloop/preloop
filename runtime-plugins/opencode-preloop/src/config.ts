@@ -109,10 +109,26 @@ export function extractControlConfig(raw: unknown): {
   return { config: {}, source: "empty" };
 }
 
+/**
+ * Resolve the OpenCode config file every caller must agree on.
+ *
+ * Reading the control block and patching the provider models map have to
+ * target the same file, so both go through here: an explicit
+ * `PRELOOP_OPENCODE_CONTROL_CONFIG` wins, then a caller-supplied path,
+ * then the default location.
+ */
+export function resolveConfigPath(configPath?: string): string {
+  return (
+    process.env.PRELOOP_OPENCODE_CONTROL_CONFIG ??
+    configPath ??
+    defaultConfigPath()
+  );
+}
+
 export function loadControlConfig(configPath?: string): ControlConfig {
-  const resolvedPath =
-    process.env.PRELOOP_OPENCODE_CONTROL_CONFIG ?? configPath ?? defaultConfigPath();
-  const raw = JSON.parse(fs.readFileSync(resolvedPath, "utf8")) as unknown;
+  const raw = JSON.parse(
+    fs.readFileSync(resolveConfigPath(configPath), "utf8"),
+  ) as unknown;
   return extractControlConfig(raw).config;
 }
 
