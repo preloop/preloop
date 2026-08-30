@@ -7,8 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Public markdown routes come from discovered content files**: `lit-app`
+  registers `/terms`, `/dora`, and other static pages from
+  `BRAND_CONFIG.static_markdown_pages` (Vite scans `content/<brand>/*.md`
+  and `resources/*.md`). Nginx serves any `/<slug>.html` the build emitted
+  instead of an allowlist. OSS does not hardcode EU instrument paths; EE
+  adds a page by dropping a markdown file.
+
 ### Fixed
 
+- **`get_route_from_filename` maps `pandora.html` to `/pandora`, not `/dora`**:
+  top-level HTML files use the basename as the route, with no substring
+  match against `dora`.
 - **Token-free approval links open the console**: MCP and in-session
   notices now emit `/console/approval/<id>` (the registered SPA route)
   instead of `/approval/<id>`, which is the public token page and 404s
@@ -164,6 +176,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Frontend test/auth conventions that were only in
   `frontend/CLAUDE.md` now live in `frontend/README.md`; the stale
   file is not restored.
+- **Named-instrument EU pages**: SaaS landing can ship `/cra-readiness`,
+  `/dora`, and `/nis2` next to `/ai-act-readiness` when those markdown
+  files exist. Each page names the regulation and article or date.
+  Homepage FAQ can repeat the not-a-law-firm disclaimer. Evidence packs
+  stay Apache presets, not an edition gate. Page titles and descriptions
+  are brand-parameterized, and the footer links only the regulation pages
+  a build actually pre-rendered.
+
 - **Editions table lists differences only**: OSS is one operator per
   account. Users, teams, and RBAC are Cloud / Enterprise. Cloud is
   managed hosting; Cloud and Enterprise include support plans. Dropped

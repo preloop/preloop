@@ -117,6 +117,7 @@ export class LandingView extends LitElement {
   ];
   @state() private _featureSlides: FeatureSlide[] = [];
   @state() private _faqs: Array<{ q: string; a: string }> = [];
+  @state() private _legalDisclaimer = '';
   @state() private _heroTitle = '';
   @state() private _heroLead = '';
   @state() private _ctaPrimary = '';
@@ -211,6 +212,16 @@ export class LandingView extends LitElement {
         font-weight: 500;
         font-size: 1.1rem;
         color: rgb(161, 161, 170);
+      }
+
+      .legal-disclaimer {
+        max-width: 720px;
+        margin: 0 auto 48px;
+        padding: 0 16px;
+        font-size: 1rem;
+        line-height: 1.6;
+        color: rgb(161, 161, 170);
+        text-align: center;
       }
 
       .feature-stacked-block {
@@ -623,7 +634,7 @@ export class LandingView extends LitElement {
 
     // Read FAQs from light DOM slots
     const faqs: Array<{ q: string; a: string }> = [];
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40; i++) {
       const faqWrapper = children.find(
         (el) => el.getAttribute('slot') === `faq-${i}`
       ) as HTMLElement | undefined;
@@ -642,6 +653,13 @@ export class LandingView extends LitElement {
 
     if (faqs.length > 0) {
       this._faqs = faqs;
+    }
+
+    const legalDisclaimerSlot = children.find(
+      (el) => el.getAttribute('slot') === 'legal-disclaimer'
+    );
+    if (legalDisclaimerSlot?.textContent?.trim()) {
+      this._legalDisclaimer = legalDisclaimerSlot.textContent.trim();
     }
 
     // Read get-started content from light DOM slots
@@ -836,6 +854,7 @@ export class LandingView extends LitElement {
 
     // Load FAQs with safe defaults
     this._faqs = content.faqs || [];
+    this._legalDisclaimer = content.legal_disclaimer || '';
 
     // Load get-started content with safe defaults
     const getStarted = content.get_started || {};
@@ -1811,6 +1830,13 @@ export class LandingView extends LitElement {
                     </div>
                   </div>
                 </section>
+                ${
+                  this._legalDisclaimer
+                    ? html`<p class="legal-disclaimer">
+                        ${this._legalDisclaimer}
+                      </p>`
+                    : ''
+                }
               `
             : ''
         }
