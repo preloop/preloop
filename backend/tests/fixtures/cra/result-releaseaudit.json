@@ -1,0 +1,160 @@
+{
+  "schema": "preloop.cra.releaseaudit/v1",
+  "flow": "release-security-audit",
+  "run_at": "2026-08-20T12:00:00Z",
+  "git": null,
+  "tool_versions": {
+    "spdx-tools": "0.8.2",
+    "gitleaks": "unavailable: no repository attached",
+    "zizmor": "unavailable: no repository attached"
+  },
+  "inputs_declared": {
+    "sbom": "sbom/image.spdx.json (workspace seed)",
+    "previous_result": "not delivered",
+    "repository": "none"
+  },
+  "runner": {
+    "kind": null,
+    "id": null
+  },
+  "regime_profile": "cra",
+  "sbom_audit": {
+    "source": {
+      "format": "spdx",
+      "spec_version": "SPDX-2.3",
+      "generator_tool": "example-build-toolchain-1.0",
+      "build_ref": "v1.2.3"
+    },
+    "valid": true,
+    "minimum_elements": {
+      "passed": true,
+      "missing": []
+    },
+    "coverage": {
+      "components": 3,
+      "pct_with_version": 100.0,
+      "pct_with_license": 66.7,
+      "pct_with_license_concluded": 66.7,
+      "pct_with_license_declared": 66.7,
+      "pct_with_identifier": 66.7,
+      "db_resolvable": 0,
+      "not_db_resolvable": 3,
+      "unmatched_vs_build": null
+    },
+    "license_flags": [],
+    "verdict": "pass_with_findings"
+  },
+  "vuln_scan": {
+    "db_versions": {
+      "osv_queried_at": "2026-08-20T11:58:00Z",
+      "kev_snapshot_date": "2026-08-19",
+      "epss_queried_at": null,
+      "nvd": "not used"
+    },
+    "inventory": {
+      "components": 3,
+      "matchable": 0,
+      "unmatchable": 3,
+      "db_resolvable": 0,
+      "not_db_resolvable": 3,
+      "by_ecosystem": {
+        "generic": 3
+      },
+      "negative_control": {
+        "query": "pkg:generic/curl@7.50.0",
+        "result": "advisories returned",
+        "method_blind": false
+      },
+      "source_matrix": {
+        "osv_purl": {
+          "kind": "database",
+          "screenable": 0,
+          "blind": 3,
+          "negative_control": {
+            "query": "pkg:generic/curl@7.50.0",
+            "result": "advisories returned",
+            "method_blind": false
+          }
+        },
+        "osv_git": {
+          "kind": "database",
+          "screenable": 0,
+          "blind": 3,
+          "negative_control": {
+            "query": "{\"commit\": \"6fa1d817e5b1a00d7d0c8168091877476b499317\"}",
+            "result": "CVE-2023-38545",
+            "method_blind": false
+          }
+        },
+        "nvd_cpe": {
+          "kind": "heuristic",
+          "screenable": 0,
+          "blind": 3,
+          "negative_control": {
+            "query": "cpe:2.3:a:haxx:curl:7.50.0",
+            "result": "not run: nvd not used",
+            "method_blind": true
+          }
+        },
+        "osv_distro": {
+          "kind": "heuristic",
+          "screenable": 0,
+          "blind": 3,
+          "negative_control": {
+            "query": "{\"package\": {\"name\": \"curl\"}, \"version\": \"7.50.0\"}",
+            "result": "not run",
+            "method_blind": true
+          }
+        },
+        "screened_by_no_source": 3
+      }
+    },
+    "findings": [],
+    "counts_by_severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0,
+      "unknown": 0
+    },
+    "art14_candidates": [],
+    "gate": {
+      "policy": "fail on KEV or CVSS >= 9.0 (default)",
+      "passed": true,
+      "passed_before_waivers": true,
+      "waivers_applied": [],
+      "unwaived_failures": [],
+      "waivers_invalid": [],
+      "waivers_unmatched": []
+    }
+  },
+  "drift": null,
+  "verdict": "pass_with_findings",
+  "gap_register": null,
+  "evidence_storage": null,
+  "checks": [
+    {
+      "name": "build_cross_check",
+      "passed": false,
+      "skipped": true,
+      "details": "skipped: no build evidence delivered"
+    }
+  ],
+  "assessments": [
+    {
+      "topic": "inventory",
+      "judgment": "Agent judgment: pkg:generic components are not db-resolvable by purl."
+    }
+  ],
+  "artifacts": {
+    "audit_report": "evidence/audit-report.md",
+    "findings": "evidence/findings.json",
+    "source_matrix": "evidence/source-matrix.json",
+    "waivers": null,
+    "sbom_findings": "evidence/sbom-findings.json",
+    "gap_register": null,
+    "drift_report": "evidence/drift-report.md"
+  },
+  "note": "synthetic fixture",
+  "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+}

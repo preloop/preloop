@@ -1,0 +1,130 @@
+{
+  "schema": "preloop.cra.vulnscan/v1",
+  "flow": "sbom-exploit-check",
+  "status": "success",
+  "run_at": "2026-08-20T12:00:00Z",
+  "git": null,
+  "tool_versions": {
+    "osv-scanner": "unavailable: not installed"
+  },
+  "inputs_declared": {
+    "sbom": "sbom/image.spdx.json (workspace seed)"
+  },
+  "runner": {
+    "kind": null,
+    "id": null
+  },
+  "regime_profile": "cra",
+  "source_sbom": {
+    "path": "sbom/image.spdx.json",
+    "format": "spdx",
+    "spec_version": "SPDX-2.3",
+    "build_ref": "v1.2.3"
+  },
+  "db_versions": {
+    "osv_queried_at": "2026-08-20T11:58:00Z",
+    "kev_snapshot_date": "2026-08-19",
+    "epss_queried_at": null,
+    "nvd": "not used"
+  },
+  "inventory": {
+    "components": 3,
+    "matchable": 2,
+    "unmatchable": 1,
+    "source_matrix": {
+      "osv_purl": {
+        "kind": "database",
+        "screenable": 2,
+        "blind": 1,
+        "negative_control": {
+          "query": "pkg:generic/curl@7.50.0",
+          "result": "advisories returned",
+          "method_blind": false
+        }
+      },
+      "osv_git": {
+        "kind": "database",
+        "screenable": 0,
+        "blind": 3,
+        "negative_control": {
+          "query": "{\"commit\": \"6fa1d817e5b1a00d7d0c8168091877476b499317\"}",
+          "result": "CVE-2023-38545",
+          "method_blind": false
+        }
+      },
+      "nvd_cpe": {
+        "kind": "heuristic",
+        "screenable": 0,
+        "blind": 3,
+        "negative_control": {
+          "query": "cpe:2.3:a:haxx:curl:7.50.0",
+          "result": "not run: nvd not used",
+          "method_blind": true
+        }
+      },
+      "osv_distro": {
+        "kind": "heuristic",
+        "screenable": 0,
+        "blind": 3,
+        "negative_control": {
+          "query": "{\"package\": {\"name\": \"curl\"}, \"version\": \"7.50.0\"}",
+          "result": "not run",
+          "method_blind": true
+        }
+      },
+      "screened_by_no_source": 1
+    }
+  },
+  "findings": [
+    {
+      "id": "CVE-2024-0001",
+      "pkg": "libexample",
+      "version": "1.4.2",
+      "severity": "high",
+      "cvss": 8.1,
+      "epss": null,
+      "kev": false,
+      "fix_version": "1.5.0",
+      "vex_status": null,
+      "sources": [
+        "osv_purl"
+      ],
+      "match_kind": "database",
+      "aliases": null
+    }
+  ],
+  "counts_by_severity": {
+    "critical": 0,
+    "high": 1,
+    "medium": 0,
+    "low": 0,
+    "unknown": 0
+  },
+  "art14_candidates": [],
+  "gate": {
+    "policy": "fail on KEV or CVSS >= 9.0 (default)",
+    "passed": true
+  },
+  "new_since_last_run": null,
+  "checks": [
+    {
+      "name": "severity_gate",
+      "passed": true,
+      "skipped": false,
+      "details": "no KEV; no CVSS >= 9.0"
+    }
+  ],
+  "assessments": [
+    {
+      "topic": "unmatchable",
+      "judgment": "Agent judgment: one component had no purl; absence not claimed."
+    }
+  ],
+  "artifacts": {
+    "findings": "evidence/findings.json",
+    "source_matrix": "evidence/source-matrix.json",
+    "report": "evidence/vuln-report.md"
+  },
+  "note": "synthetic fixture",
+  "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+}
