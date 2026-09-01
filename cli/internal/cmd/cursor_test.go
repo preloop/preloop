@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -422,28 +423,87 @@ func TestCursorCaptureFailOpenOnIngestError(t *testing.T) {
 	}
 }
 
-func TestCursorCapturePropagatesChildExit(t *testing.T) {
-	skipNoShebangOnWindows(t, "cursor-agent capture child exit")
-	_, _ = installFakeCursorAgent(t, "#!/bin/sh\necho failing 1>&2\nexit 7\n")
+func TestCursorChildProcessExitCodes(t *testing.T) {
+	skipNoShebangOnWindows(t, "cursor-agent child exit codes")
 
-	err := runCursorCaptureWithIO(
-		io.Discard,
-		cursorRunOptions{source: "cursor"},
-		strings.NewReader(""),
-		io.Discard,
-		io.Discard,
-		time.Now().UTC(),
-		func(source, agentID string, records []map[string]interface{}, timeout time.Duration) error {
-			t.Fatal("must not ingest when there is no captured session")
-			return nil
-		},
-	)
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("expected ExitError, got %v", err)
+	tests := []struct {
+		name      string
+		mode      string
+		child     int
+		emitJSON  bool
+		ingestErr bool
+		through   string
+	}{
+		{name: "passthrough 0", mode: "passthrough", child: 0},
+		{name: "passthrough 2", mode: "passthrough", child: 2},
+		{name: "passthrough 130", mode: "passthrough", child: 130},
+		{name: "run 0", mode: "run", child: 0, emitJSON: true},
+		{name: "run 2", mode: "run", child: 2, emitJSON: true},
+		{name: "run 130", mode: "run", child: 130, emitJSON: true},
+		{name: "run 2 ingest warn", mode: "run", child: 2, emitJSON: true, ingestErr: true},
+		{name: "execute passthrough 2", mode: "passthrough", child: 2, through: "execute"},
+		{name: "execute run 130", mode: "run", child: 130, through: "execute"},
 	}
-	if exitErr.ExitCode() != 7 {
-		t.Fatalf("exit code %d", exitErr.ExitCode())
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _ = installFakeCursorAgent(t, fakeCursorExitScript(tc.child, tc.emitJSON))
+
+			ship := func(source, agentID string, records []map[string]interface{}, timeout time.Duration) error {
+				if tc.ingestErr {
+					return errors.New("server down")
+				}
+				return nil
+			}
+
+			var err error
+			switch {
+			case tc.through == "execute" && tc.mode == "passthrough":
+				rootCmd.SetArgs([]string{"cursor"})
+				t.Cleanup(func() { rootCmd.SetArgs(nil) })
+				err = Execute()
+			case tc.through == "execute" && tc.mode == "run":
+				rootCmd.SetArgs([]string{"cursor", "run"})
+				t.Cleanup(func() { rootCmd.SetArgs(nil) })
+				err = Execute()
+			case tc.mode == "passthrough":
+				bin, lookErr := findCursorAgent()
+				if lookErr != nil {
+					t.Fatal(lookErr)
+				}
+				err = runCursorAgent(bin, nil, strings.NewReader(""), io.Discard, io.Discard)
+			default:
+				err = runCursorCaptureWithIO(
+					io.Discard,
+					cursorRunOptions{source: "cursor"},
+					strings.NewReader(""),
+					io.Discard,
+					io.Discard,
+					time.Now().UTC(),
+					ship,
+				)
+			}
+
+			if got := ProcessExitCode(err); got != tc.child {
+				t.Fatalf("ProcessExitCode() = %d, want child %d (err=%v)", got, tc.child, err)
+			}
+			if tc.child == 0 && err != nil {
+				t.Fatalf("success must return a nil error, got %v", err)
+			}
+			if tc.child != 0 && err == nil {
+				t.Fatal("non-zero child must return an error")
+			}
+			if tc.child != 0 {
+				var coded *processExitError
+				if !errors.As(err, &coded) {
+					t.Fatalf("child exit must be a processExitError, got %T %v", err, err)
+				}
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) {
+					t.Fatalf("processExitError must unwrap to ExitError, got %v", err)
+				}
+			}
+		})
 	}
 }
 
@@ -469,6 +529,15 @@ func TestCursorCaptureInjectsPrintFlagsOnFakeBinary(t *testing.T) {
 	if gotArgs != "--print --output-format stream-json prompt-only" {
 		t.Fatalf("child args = %q", gotArgs)
 	}
+}
+
+func fakeCursorExitScript(code int, emitJSON bool) string {
+	if emitJSON {
+		return "#!/bin/sh\n" +
+			`printf '%s\n' '{"type":"result","subtype":"success","session_id":"sess-1"}'` +
+			"\nexit " + strconv.Itoa(code) + "\n"
+	}
+	return "#!/bin/sh\nexit " + strconv.Itoa(code) + "\n"
 }
 
 func installFakeCursorAgent(t *testing.T, script string) (binDir, argsFile string) {

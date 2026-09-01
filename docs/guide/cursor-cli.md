@@ -112,8 +112,9 @@ know this run was spawned from another conversation.
 
 ### Failure behavior
 
-- If `cursor-agent` is missing, the command exits with an install hint.
-- The child's exit status is returned to the caller. Ingest happens
+- If `cursor-agent` is missing, the command exits 1 with an install hint.
+- The process exit code is the child's exit code (2, 130, and so on),
+  not remapped to 1. Scripts and CI can branch on it. Ingest happens
   after wait, so a failed run still ships a record when a `session_id`
   was observed.
 - Ingest errors (unreachable server, expired login, bad `--agent-id`)

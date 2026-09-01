@@ -184,7 +184,7 @@ func runCursorAgent(
 	child.Stderr = stderr
 	// No SysProcAttr: the child must inherit the launcher's process group
 	// so an interactive TTY stays in the foreground (see startClaudeTUI).
-	return child.Run()
+	return wrapProcessExit(child.Run())
 }
 
 // errCursorRunHelp is returned by parseCursorRunArgs when the user asked

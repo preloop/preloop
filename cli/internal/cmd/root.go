@@ -86,6 +86,10 @@ func topLevelCommandName(cmd *cobra.Command) string {
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
+//
+// A non-nil error is turned into a process status by ProcessExitCode in
+// main: launchers that wrap an external binary return a typed exit-code
+// error so the child's status (not 1) reaches the caller.
 func Execute() error {
 	return rootCmd.Execute()
 }
