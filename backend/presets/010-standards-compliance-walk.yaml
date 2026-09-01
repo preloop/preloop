@@ -156,9 +156,34 @@ prompt_template: |
   PHASE 5: EVIDENCE PACK AND REPORT (MANDATORY)
   ═══════════════════════════════════════════════════════════
   Write to /workspace/evidence/:
-  - standards-report.md: human-readable walk; which standards were
-    delivered and how; the requirement register grouped by standard;
-    gaps first; the coverage statement; drift when a baseline exists.
+  - standards-report.md: human-readable walk. It MUST OPEN with a
+    one-page cover for a non-AI reader, at the TOP of the report,
+    before any table or finding list. Verdict sentence first: one
+    sentence stating the run's verdict (the same value written to
+    result.json) and the blocking reason if the verdict is fail. Then
+    three clearly labelled boxes, in this order:
+      BOX 1 — "What we checked". List the standards actually delivered
+      and walked, requirement counts by obligation, and the full-repo
+      searches recorded. Derive this from inputs_declared, standards[],
+      and coverage. No aggregate claim the coverage block does not
+      support.
+      BOX 2 — "What we did NOT check". Mandatory. May not be empty if
+      anything was out of scope, not reviewed, not_checkable, deferred,
+      or skipped. List undelivered standards, not_checkable
+      requirements, covered_elsewhere security rows, sampling-budget
+      items, and skipped drift when no baseline was delivered.
+      Security is out of scope on this preset, so this box always
+      names the Release Security Audit family at minimum.
+      BOX 3 — "What you should do next week". A short, concrete,
+      ordered list of the highest-value fixes implied by the register,
+      mandatory gaps first. No legal advice, no certification.
+    HONESTY RAIL. The cover may only summarize findings, register rows,
+    coverage, and out-of-scope items already present in the body of
+    this report or the other evidence files. No new claims. Strictly
+    one page.
+    After the cover: which standards were delivered and how; the
+    requirement register grouped by standard; gaps first; the coverage
+    statement; drift when a baseline exists.
   - requirements-register.md: every requirement row with status,
     obligation, evidence basis, and the required not_checkable list.
   - findings.json: machine-readable rows (the register in JSON).

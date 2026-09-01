@@ -189,10 +189,36 @@ prompt_template: |
   PHASE 5: EVIDENCE PACK
   ═══════════════════════════════════════════════════════════
   Write to /workspace/evidence/:
-  - architecture-review.md: the human-readable review. What was
-    declared and where; the observed architecture (from the inventory
-    and opened files); the conformance register; drift findings by
-    severity; coverage statement; drift vs baseline when present.
+  - architecture-review.md: the human-readable review. It MUST OPEN
+    with a one-page cover for a non-AI reader, at the TOP of the
+    report, before any table or finding list. Verdict sentence first:
+    one sentence stating the run's verdict (the same value written to
+    result.json) and the blocking reason if the verdict is fail. Then
+    three clearly labelled boxes, in this order:
+      BOX 1 — "What we checked". List the intent sources actually read,
+      the declarations extracted, the sampling plan, and the modules
+      and files opened. Derive this from inputs_declared,
+      intent.sources, and coverage. No aggregate claim the coverage
+      block does not support.
+      BOX 2 — "What we did NOT check". Mandatory. May not be empty if
+      anything was out of scope, not reviewed, not_checkable, deferred,
+      or skipped. List modules and paths in coverage.not_reviewed,
+      register not_checkable rows, skipped drift when no baseline was
+      delivered, and intent sources that were not found. Security is
+      out of scope on this preset, so this box always names the
+      Release Security Audit family at minimum.
+      BOX 3 — "What you should do next week". A short, concrete,
+      ordered list of the highest-value conformance fixes implied by
+      open drift findings and gap/partial register rows. No legal
+      advice, no certification.
+    HONESTY RAIL. The cover may only summarize findings, register rows,
+    coverage, and out-of-scope items already present in the body of
+    this report or the other evidence files. No new claims. Strictly
+    one page.
+    After the cover: what was declared and where; the observed
+    architecture (from the inventory and opened files); the
+    conformance register; drift findings by severity; coverage
+    statement; drift vs baseline when present.
   - conformance-register.md: every declaration with status, both
     pointers, and the required not_checkable list.
   - findings.json: the machine-readable drift findings ledger.

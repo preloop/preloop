@@ -178,9 +178,36 @@ prompt_template: |
   PHASE 6: EVIDENCE PACK AND REPORT (MANDATORY)
   ═══════════════════════════════════════════════════════════
   Write to /workspace/evidence/:
-  - code-health-report.md: human-readable review; module map; findings
-    by severity with pointers and snippets; the health register; the
-    coverage statement; drift when a baseline exists.
+  - code-health-report.md: human-readable review. It MUST OPEN with a
+    one-page cover for a non-AI reader, at the TOP of the report,
+    before any table or finding list. Verdict sentence first: one
+    sentence stating the run's verdict (the same value written to
+    result.json) and the blocking reason if the verdict is fail. Then
+    three clearly labelled boxes, in this order:
+      BOX 1 — "What we checked". List the five lenses applied, the
+      sampling plan, modules and files opened, and any project tests
+      actually run. Derive this from inputs_declared, the health
+      register, and coverage. No aggregate claim the coverage block
+      does not support. Never present test shape as a measured
+      coverage percentage.
+      BOX 2 — "What we did NOT check". Mandatory. May not be empty if
+      anything was out of scope, not reviewed, not_checkable, deferred,
+      or skipped. List modules and paths in coverage.not_reviewed,
+      register not_checkable rows, skipped drift when no baseline was
+      delivered, excluded paths, and lenses not applied to a module
+      because of budget. Security is out of scope on this preset, so
+      this box always names the Release Security Audit family at
+      minimum.
+      BOX 3 — "What you should do next week". A short, concrete,
+      ordered list of the highest-value health fixes implied by open
+      findings, correctness first. No legal advice, no certification.
+    HONESTY RAIL. The cover may only summarize findings, register rows,
+    coverage, and out-of-scope items already present in the body of
+    this report or the other evidence files. No new claims. Strictly
+    one page.
+    After the cover: module map; findings by severity with pointers
+    and snippets; the health register; the coverage statement; drift
+    when a baseline exists.
   - health-register.md: the PHASE 4 register plus not_checkable list.
   - findings.json: the machine-readable findings ledger.
   - drift-report.md: only when a baseline was delivered.
