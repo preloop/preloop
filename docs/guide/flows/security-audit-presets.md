@@ -45,17 +45,22 @@ and `request_approval` on due diligence); deterministic checks separated
 from agent judgment (`checks[]` vs `assessments[]`); and the disclaimer
 above on every artifact.
 
-**One-minute verdict cover.** Human-readable audit and review reports
-lead with a one-page cover so nobody has to write a verdict summary by
-hand. The Release Security Audit requires this at the top of
-`audit-report.md`. The [full-repo review presets](repo-review-presets.md)
+**One-minute verdict cover.** Every audit and review preset that writes
+a human-readable report leads with a one-page cover so nobody has to
+write a verdict summary by hand. On the audit family that is
+`audit-report.md` (SBOM Verify and Release Security Audit),
+`vuln-report.md` (SBOM Exploit Check), and `dossier.md` (Component Due
+Diligence). The [full-repo review presets](repo-review-presets.md)
 require the same cover on their report artifacts. The cover is a verdict
-sentence first, then three labelled boxes in this order: What we checked /
+sentence first (matching `result.json`; on SBOM Exploit Check that is
+`status` and `gate.passed`, because that schema has no top-level
+`verdict`), then three labelled boxes in this order: What we checked /
 What we did not check / What you should do next week. It is strictly one
 page. The cover may only summarize findings already present in the body;
 the "What we did not check" box is mandatory and may not be empty when
-anything was out of scope. The machine `result.json` contract is
-unchanged.
+anything was out of scope. On SBOM Exploit Check that box includes
+unscreened components by count from the source matrix. The machine
+`result.json` contract is unchanged.
 
 Retrieve the structured result with
 `GET /api/v1/flows/executions/{execution_id}/result`. Download the
@@ -886,15 +891,15 @@ trail is the auditable record.
 
 ```
 /workspace/evidence/
-  audit-report.md      # human-readable audit (all presets); Release Security Audit opens with the one-minute cover
+  audit-report.md      # human-readable audit (004 / 006); opens with the one-minute cover
   findings.json        # full vulnerability findings (exploit check / release audit)
   source-matrix.json   # component x source screening matrix (exploit check / release audit)
   waivers.json          # waiver entries seen (release audit, when any existed)
   sbom-findings.json   # full SBOM verification findings (release audit)
-  vuln-report.md       # human-readable vuln report (exploit check)
+  vuln-report.md       # human-readable vuln report (005); opens with the one-minute cover
   drift-report.md      # delta vs previous run (release audit, when baseline given)
   gap-register.md      # file-presence / hygiene register (release audit, when a repo is attached)
-  dossier.md           # due-diligence dossier (component due diligence)
+  dossier.md           # due-diligence dossier (007); opens with the one-minute cover
   facts.json           # machine-readable due-diligence facts (component due diligence)
 ```
 

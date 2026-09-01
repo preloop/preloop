@@ -32,8 +32,9 @@ Compliance Walk marks security rows of a named standard
 `covered_elsewhere: release-security-audit` instead of re-checking them.
 
 **One-minute verdict cover.** Every review report leads with the same
-one-page cover the [Release Security Audit](security-audit-presets.md)
-already requires, so nobody has to write a verdict summary by hand. The
+one-page cover every [audit preset](security-audit-presets.md) requires
+on its human-readable report (`audit-report.md`, `vuln-report.md`,
+`dossier.md`), so nobody has to write a verdict summary by hand. The
 cover sits at the top of `architecture-review.md`,
 `code-health-report.md`, or `standards-report.md`: a verdict sentence
 first, then three labelled boxes (What we checked / What we did not
