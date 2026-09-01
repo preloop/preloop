@@ -247,6 +247,39 @@ class TestRepoReviewPresetInvariants:
         assert "under 200 KB" in norm
         assert "null rather than inventing values" in norm
 
+    def test_one_page_verdict_cover(self, preset):
+        """Human report opens with the same three-box cover 006 uses.
+
+        Additive: the machine result.json contract is unchanged. The
+        cover may only summarize the body; BOX 2 is mandatory whenever
+        anything was out of scope (security always is).
+        """
+        name, data = preset
+        prompt = data["prompt_template"]
+        norm = _norm(prompt)
+        report_file = {
+            "Architecture and Strategy Conformance Review": ("architecture-review.md"),
+            "Full Repo Code Health Review": "code-health-report.md",
+            "Standards Compliance Walk": "standards-report.md",
+        }[name]
+        assert report_file in prompt
+        assert "MUST OPEN" in prompt
+        assert "one-page cover" in prompt
+        assert "at the TOP of the report" in norm
+        assert "Verdict sentence first" in prompt
+        for box in (
+            'BOX 1 — "What we checked"',
+            'BOX 2 — "What we did NOT check"',
+            'BOX 3 — "What you should do next week"',
+        ):
+            assert box in prompt, f"missing cover box: {box}"
+        assert "HONESTY RAIL" in prompt
+        assert "may only summarize" in norm
+        assert "No new claims" in prompt
+        assert "May not be empty if anything was out of scope" in norm
+        assert "Strictly one page" in norm
+        assert "Release Security Audit family at minimum" in norm
+
 
 class TestArchitectureStrategyReviewPreset:
     @pytest.fixture()
@@ -304,6 +337,12 @@ class TestArchitectureStrategyReviewPreset:
         norm = _norm(prompt)
         assert "goes ONLY in assessments" in norm
 
+    def test_cover_box1_is_intent_and_sampling(self, prompt):
+        """BOX 1 is adapted to declared intent vs observed structure."""
+        norm = _norm(prompt)
+        assert "intent sources actually read" in norm
+        assert "declarations extracted" in norm
+
 
 class TestRepoCodeHealthReviewPreset:
     @pytest.fixture()
@@ -355,6 +394,12 @@ class TestRepoCodeHealthReviewPreset:
             'fail" if any open high-severity correctness finding exists OR '
             "freeze_floor_passed is false" in norm
         )
+
+    def test_cover_box1_is_lenses_and_sampling(self, prompt):
+        """BOX 1 is adapted to the five health lenses."""
+        norm = _norm(prompt)
+        assert "five lenses applied" in norm
+        assert "correctness first" in norm
 
 
 class TestStandardsComplianceWalkPreset:
@@ -410,6 +455,12 @@ class TestStandardsComplianceWalkPreset:
     def test_mandatory_gap_blocks_the_verdict(self, prompt):
         norm = _norm(prompt)
         assert 'fail" if any MANDATORY requirement is gap' in norm
+
+    def test_cover_box1_is_standards_delivered(self, prompt):
+        """BOX 1 is adapted to the named-standards walk."""
+        norm = _norm(prompt)
+        assert "standards actually delivered" in norm
+        assert "mandatory gaps first" in norm
 
 
 class TestPresetsLoadThroughLoader:
