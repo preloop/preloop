@@ -31,6 +31,19 @@ pointer only, never a secret value — and moves on. The Standards
 Compliance Walk marks security rows of a named standard
 `covered_elsewhere: release-security-audit` instead of re-checking them.
 
+**One-minute verdict cover.** Every review report leads with the same
+one-page cover the [Release Security Audit](security-audit-presets.md)
+already requires, so nobody has to write a verdict summary by hand. The
+cover sits at the top of `architecture-review.md`,
+`code-health-report.md`, or `standards-report.md`: a verdict sentence
+first, then three labelled boxes (What we checked / What we did not
+check / What you should do next week). Strictly one page. The cover may
+only summarize findings already present in the body; the "What we did
+not check" box is mandatory and may not be empty when anything was out
+of scope (security always is, so that box always names the Release
+Security Audit family at minimum). The machine `result.json` contract is
+unchanged.
+
 ## The shared skeleton
 
 All three presets follow the same guarantees:
@@ -75,6 +88,10 @@ All three presets follow the same guarantees:
   rows, `declared` rows, resolved items, and positive prose never raise
   it, and `declared` (a stated commitment the files cannot verify) is
   not a pass. `not_checkable` is required, never empty by assumption.
+- **One-minute verdict cover.** The human-readable report artifact
+  opens with a verdict sentence and the three-box cover described
+  above, before any table or finding list. Additive on top of the
+  existing report body; `result.json` is unchanged.
 - **Evidence envelope.** Same `checks[]` (deterministic facts) vs
   `assessments[]` (marked judgment) split as the Observe/Eval and
   security presets; every artifact carries the line:
@@ -158,11 +175,11 @@ gap fails the run.
   inventory.json               # phase-1 command-only inventory (all three)
   findings.json                # machine-readable findings/register ledger (all three)
   drift-report.md              # only when a baseline was delivered (all three)
-  architecture-review.md       # human-readable review (architecture-strategy)
+  architecture-review.md       # human-readable review; opens with the one-minute cover
   conformance-register.md      # declaration register (architecture-strategy)
-  code-health-report.md        # human-readable review (code health)
+  code-health-report.md        # human-readable review; opens with the one-minute cover
   health-register.md           # per-module register (code health)
-  standards-report.md          # human-readable walk (standards walk)
+  standards-report.md          # human-readable walk; opens with the one-minute cover
   requirements-register.md     # requirement register (standards walk)
 ```
 

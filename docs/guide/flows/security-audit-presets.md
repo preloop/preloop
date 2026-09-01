@@ -45,6 +45,18 @@ and `request_approval` on due diligence); deterministic checks separated
 from agent judgment (`checks[]` vs `assessments[]`); and the disclaimer
 above on every artifact.
 
+**One-minute verdict cover.** Human-readable audit and review reports
+lead with a one-page cover so nobody has to write a verdict summary by
+hand. The Release Security Audit requires this at the top of
+`audit-report.md`. The [full-repo review presets](repo-review-presets.md)
+require the same cover on their report artifacts. The cover is a verdict
+sentence first, then three labelled boxes in this order: What we checked /
+What we did not check / What you should do next week. It is strictly one
+page. The cover may only summarize findings already present in the body;
+the "What we did not check" box is mandatory and may not be empty when
+anything was out of scope. The machine `result.json` contract is
+unchanged.
+
 Retrieve the structured result with
 `GET /api/v1/flows/executions/{execution_id}/result`. Download the
 captured evidence tarball with
@@ -874,7 +886,7 @@ trail is the auditable record.
 
 ```
 /workspace/evidence/
-  audit-report.md      # human-readable audit (all presets)
+  audit-report.md      # human-readable audit (all presets); Release Security Audit opens with the one-minute cover
   findings.json        # full vulnerability findings (exploit check / release audit)
   source-matrix.json   # component x source screening matrix (exploit check / release audit)
   waivers.json          # waiver entries seen (release audit, when any existed)
