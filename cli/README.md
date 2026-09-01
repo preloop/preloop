@@ -119,16 +119,30 @@ preloop tools exec <tool-name> --args-file ./input.json
 
 `preloop tools` talks directly to the MCP endpoint, so the visible and executable tools are automatically filtered by the current token's policy. Agent tokens only see the tools they are allowed to use.
 
-### Usage Import
+### Usage
 
 ```bash
 preloop usage import cursor-usage.csv                # Cursor dashboard Usage export
 preloop usage import events.json                     # Normalized usage events
 preloop usage import cursor-usage.csv --agent-id <id>
 preloop usage import export.csv --column-map '{"cost":"Cost to You"}'
+
+# Live / harness events (generic NDJSON, Cursor hooks, or Codex rollouts)
+preloop usage hook                                   # stdin; auto-detects format
+preloop usage hook --from generic --source my-harness
+preloop usage hook --from codex --file ~/.codex/sessions/2026/08/31/rollout-....jsonl
 ```
 
-Imports spend the model gateway never saw, such as Cursor's bundled models. Records are labeled as imported, so they are reported separately from gateway-metered spend and never count against gateway budgets. Re-importing the same file is safe: duplicates are detected and reported as skipped. Without `--agent-id`, the account's onboarded Cursor agent is used, so run `preloop agents onboard cursor` first or pass the id explicitly.
+`preloop usage import` loads a CSV or JSON file of already-observed spend.
+`preloop usage hook` streams or imports conversation events into
+`POST /api/v1/usage/ingest`. See
+[docs/guide/usage-hooks.md](../docs/guide/usage-hooks.md).
+
+Imported records are labeled as imported, so they are reported separately
+from gateway-metered spend and never count against gateway budgets.
+Re-importing the same file is safe: duplicates are detected and reported
+as skipped. Without `--agent-id`, the account's onboarded agent matching
+`--source` is used.
 
 ### Approvals
 
