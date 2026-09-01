@@ -41,7 +41,10 @@ Every `result.json` and every markdown evidence file carries this line:
 
 The audit presets follow the Observe / Eval pattern: no write tools
 (except `ask_user` on the release audit for optional interactive waivers,
-and `request_approval` on due diligence); deterministic checks separated
+and `request_approval` on due diligence; the exploit check and release
+audit additionally carry the read-only `resolve_sbom_upstreams` registry
+lookup that enriches vendored Arduino/PlatformIO components for `osv_git`
+screening); deterministic checks separated
 from agent judgment (`checks[]` vs `assessments[]`); and the disclaimer
 above on every artifact.
 
@@ -478,6 +481,14 @@ uses the built-in `ask_user` channel once, batched; timeout fails closed.
 Heuristic sources stay labeled and never enter the severity gate.
 `pkg:generic` and `pkg:github` are not db-resolvable by purl; they may
 still be screenable on `osv_git` when a `vcs_url` qualifier is present.
+Vendored Arduino/PlatformIO components without a `vcs_url` are first
+resolved through the built-in `resolve_sbom_upstreams` tool (public
+Arduino library index + PlatformIO registry, read-only): a resolution
+requires a registry-confirmed name+version match and is never
+fabricated. Resolution provenance is reported per SBOM in the additive
+nullable `inventory.upstream_resolution` block (`registry_resolved` /
+`vcs_url_present` / `unresolved`); unreachable registries leave the
+affected components blind and recorded, never guessed.
 
 When a repository is attached, the gap-register phase installs and
 runs **gitleaks** (recommended pin 8.24.3, git mode, full history,
