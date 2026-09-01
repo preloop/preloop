@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-
-	"github.com/preloop/preloop/cli/internal/api"
 )
 
 // uuidRe matches a canonical UUID (8-4-4-4-12 hex).
@@ -19,8 +17,6 @@ var uuidRe = regexp.MustCompile(
 )
 
 const (
-	usageIngestPath = "/api/v1/usage/ingest"
-
 	// usageHookMaxStdinBytes bounds the hook payload read from stdin. Real
 	// Cursor hook payloads are small JSON objects; the cap only guards
 	// against a misconfigured pipe streaming unbounded data into us.
@@ -145,25 +141,10 @@ func runUsageHook(cmd *cobra.Command, _ []string) error {
 		return usageHookFailOpen(cmd, err)
 	}
 
-	request := map[string]interface{}{
-		"source":  source,
-		"records": []map[string]interface{}{record},
-	}
-	if agentID != "" {
-		if !uuidRe.MatchString(agentID) {
-			return usageHookFailOpen(cmd, fmt.Errorf("--agent-id must be a UUID, got %q", agentID))
-		}
-		request["agent_id"] = agentID
-	}
-
-	client, err := api.NewClient(FlagToken, FlagURL)
-	if err != nil {
-		return usageHookFailOpen(cmd, fmt.Errorf("create API client: %w", err))
-	}
-	client.SetTimeout(usageHookTimeout)
-
-	if err := client.Post(usageIngestPath, request, nil); err != nil {
-		return usageHookFailOpen(cmd, fmt.Errorf("usage ingest failed: %w", err))
+	if err := postUsageIngest(
+		source, agentID, []map[string]interface{}{record}, usageHookTimeout,
+	); err != nil {
+		return usageHookFailOpen(cmd, err)
 	}
 	// All shipped events are observational for Cursor (their hook output
 	// is either ignored or optional), so nothing is written to stdout.
