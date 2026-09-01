@@ -147,3 +147,8 @@ When you have actual billed figures, import them separately:
   the `conversation_id`; reconciled records then supersede hook-derived
   estimates for that conversation in summary totals, and the conversation
   rollup shows both figures side by side.
+
+Headless Cursor Agent CLI runs can also ship estimated tokens via
+`preloop cursor run`. See [the cursor CLI guide](cursor-cli.md).
+That path is print-mode only; interactive `preloop cursor` does not
+capture usage.
