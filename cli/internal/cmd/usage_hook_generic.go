@@ -46,6 +46,10 @@ var ingestEventTypes = map[string]struct{}{
 	"usage":          {},
 }
 
+// Matches backend MAX_INGEST_METADATA_BYTES. One oversize object would
+// 422 the whole ingest batch, so the CLI drops it instead of shipping.
+const maxIngestMetadataBytes = 8 * 1024
+
 func recordsFromGenericEvents(
 	cmd *cobra.Command,
 	raws []json.RawMessage,
@@ -53,8 +57,8 @@ func recordsFromGenericEvents(
 	now time.Time,
 ) []map[string]interface{} {
 	records := make([]map[string]interface{}, 0, len(raws))
-	for _, raw := range raws {
-		record, err := buildGenericUsageRecord(raw, parentFlag, now)
+	for i, raw := range raws {
+		record, err := buildGenericUsageRecord(raw, parentFlag, now, i)
 		if err != nil {
 			fmt.Fprintf(
 				cmd.ErrOrStderr(),
@@ -63,15 +67,23 @@ func recordsFromGenericEvents(
 			)
 			continue
 		}
-		if record != nil {
-			records = append(records, record)
+		if record == nil {
+			continue
 		}
+		if dropped := dropOversizeGenericMetadata(record); dropped {
+			fmt.Fprintf(
+				cmd.ErrOrStderr(),
+				"preloop usage hook: skip metadata: exceeds %d bytes serialized (event still recorded)\n",
+				maxIngestMetadataBytes,
+			)
+		}
+		records = append(records, record)
 	}
 	return records
 }
 
 func buildGenericUsageRecord(
-	raw json.RawMessage, parentFlag string, now time.Time,
+	raw json.RawMessage, parentFlag string, now time.Time, index int,
 ) (map[string]interface{}, error) {
 	var event genericUsageEvent
 	if err := json.Unmarshal(raw, &event); err != nil {
@@ -95,6 +107,7 @@ func buildGenericUsageRecord(
 	hasMeasurement := inputTokens != nil || outputTokens != nil ||
 		cacheReadTokens != nil || chargedCost != nil
 
+	model := strings.TrimSpace(event.Model)
 	eventType := strings.TrimSpace(event.EventType)
 	if eventType == "" {
 		if hasMeasurement {
@@ -105,6 +118,9 @@ func buildGenericUsageRecord(
 	}
 	if _, ok := ingestEventTypes[eventType]; !ok {
 		return nil, fmt.Errorf("skip event: unknown event_type %q", eventType)
+	}
+	if eventType == "usage" && model == "" {
+		return nil, fmt.Errorf("skip event: usage event missing model")
 	}
 
 	parent := strings.TrimSpace(event.ParentConversationID)
@@ -136,7 +152,9 @@ func buildGenericUsageRecord(
 		externalID = strings.TrimSpace(event.ID)
 	}
 	if externalID == "" {
-		externalID = fmt.Sprintf("%s:%s:%s", eventType, conversationID, timestamp)
+		externalID = fmt.Sprintf(
+			"%s:%s:%s:%d", eventType, conversationID, timestamp, index,
+		)
 	}
 
 	record := map[string]interface{}{
@@ -149,7 +167,7 @@ func buildGenericUsageRecord(
 	if parent != "" {
 		record["parent_conversation_id"] = parent
 	}
-	if model := strings.TrimSpace(event.Model); model != "" {
+	if model != "" {
 		record["model"] = model
 	}
 	assignOptionalInt(record, "input_tokens", inputTokens)
@@ -172,6 +190,19 @@ func buildGenericUsageRecord(
 		metadata["event_source"] = eventSource
 	}
 	return record, nil
+}
+
+func dropOversizeGenericMetadata(record map[string]interface{}) bool {
+	metadata, ok := record["metadata"]
+	if !ok {
+		return false
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil || len(encoded) > maxIngestMetadataBytes {
+		delete(record, "metadata")
+		return true
+	}
+	return false
 }
 
 func sanitizeGenericMetadata(raw json.RawMessage) map[string]interface{} {

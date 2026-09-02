@@ -51,8 +51,8 @@ exits 0.
 | `schema` | no | Set to `preloop.usage.event.v1`. Omitted events are treated as v1. Other values are skipped. |
 | `conversation_id` | yes | Harness conversation / thread id. |
 | `parent_conversation_id` | no | Parent thread for subagent rollup. Flag `--parent-conversation-id` and env `PRELOOP_PARENT_CONVERSATION_ID` are fallbacks, in that order. Never guessed. |
-| `id` or `external_id` | no | Dedupe key with `source`. If omitted: `{event_type}:{conversation_id}:{timestamp}`. |
-| `timestamp` | no | RFC3339. If omitted, the shipper's receive time. |
+| `id` or `external_id` | no | Dedupe key with `source`. If omitted: `{event_type}:{conversation_id}:{timestamp}:{n}`, where `n` is the 0-based index in that invocation. Same-type events in one batch therefore stay unique even when timestamp is omitted. |
+| `timestamp` | no | RFC3339. If omitted, the shipper's receive time. Omitting it on a batch of same-type events no longer collapses keys. |
 | `event_type` | no | `session_start`, `session_end`, `subagent_start`, `subagent_stop`, `response`, `compaction`, or `usage`. Default: `usage` when any token/cost field is present, otherwise `response`. Unknown types are skipped. |
 | `model` | for `usage` | Source-reported model name. |
 | `input_tokens` | no | Non-negative int. Alias: `prompt_tokens`. Null or omitted means not reported, never 0. An explicit `0` is passed through. |
@@ -63,7 +63,7 @@ exits 0.
 | `charged_cost` | no | Billed amount in USD from a provider ledger. Alias: `cost_usd`. Do not send model-card estimates here. |
 | `cost_basis` | no | `estimated` (default) or `reconciled`. `reconciled` is honored only when `charged_cost` / `cost_usd` is present. |
 | `source` | no | Recorded in metadata as `event_source`. The ingest request source is `--source` (default `generic` in this mode). |
-| `metadata` | no | Small JSON object. Capped by the ingest API (8 KiB serialized). |
+| `metadata` | no | Small JSON object. Capped by the ingest API (8 KiB serialized). Oversize metadata is dropped with a warning so the rest of the event can still ship. |
 
 Example with a billed ledger amount:
 

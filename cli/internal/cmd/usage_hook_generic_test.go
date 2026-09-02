@@ -207,6 +207,101 @@ func TestUsageHookGenericFileImportPrintsSummary(t *testing.T) {
 	}
 }
 
+func TestUsageHookGenericFallbackExternalIDsAreUniqueInBatch(t *testing.T) {
+	var gotBody map[string]interface{}
+	withUsageHookServer(t, usageHookOKHandler(t, &gotBody))
+
+	stdin := strings.Join([]string{
+		`{"conversation_id":"conv-a","model":"gpt-5","input_tokens":1}`,
+		`{"conversation_id":"conv-a","model":"gpt-5","input_tokens":2}`,
+	}, "\n")
+	cmd, _, stderr := newUsageHookTestCmd(stdin)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if stderr.String() != "" {
+		t.Fatalf("unexpected stderr: %q", stderr.String())
+	}
+	records := decodeIngestRecords(t, gotBody)
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records, got %#v", gotBody["records"])
+	}
+	id0, _ := records[0]["external_id"].(string)
+	id1, _ := records[1]["external_id"].(string)
+	if id0 == "" || id1 == "" {
+		t.Fatalf("fallback external_id must be set, got %q and %q", id0, id1)
+	}
+	if id0 == id1 {
+		t.Fatalf("same-type events without id/timestamp must not share external_id %q", id0)
+	}
+}
+
+func TestUsageHookGenericFileSkipsUsageWithoutModel(t *testing.T) {
+	var gotBody map[string]interface{}
+	withUsageHookServer(t, usageHookOKHandler(t, &gotBody))
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.jsonl")
+	content := strings.Join([]string{
+		`{"conversation_id":"c-skip","input_tokens":10}`,
+		`{"conversation_id":"c-keep","model":"gpt-5","input_tokens":4,"output_tokens":1}`,
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cmd, stdout, stderr := newUsageHookTestCmd("")
+	if err := cmd.Flags().Set("file", path); err != nil {
+		t.Fatalf("set file: %v", err)
+	}
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "usage event missing model") {
+		t.Fatalf("expected model skip warning, got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "event not recorded") {
+		t.Fatalf("expected event-not-recorded warning, got %q", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "1 usage record") {
+		t.Fatalf("expected the good event to ship, got %q", stdout.String())
+	}
+	record := decodeSingleIngestRecord(t, gotBody)
+	if record["conversation_id"] != "c-keep" || record["model"] != "gpt-5" {
+		t.Fatalf("good usage event must still ship, got %#v", record)
+	}
+}
+
+func TestUsageHookGenericDropsOversizeMetadata(t *testing.T) {
+	var gotBody map[string]interface{}
+	withUsageHookServer(t, usageHookOKHandler(t, &gotBody))
+
+	blob := strings.Repeat("x", maxIngestMetadataBytes+1)
+	payload, err := json.Marshal(map[string]interface{}{
+		"conversation_id": "c1",
+		"event_type":      "response",
+		"id":              "fat",
+		"metadata":        map[string]string{"blob": blob},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	cmd, _, stderr := newUsageHookTestCmd(string(payload))
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "skip metadata") {
+		t.Fatalf("expected metadata skip warning, got %q", stderr.String())
+	}
+	record := decodeSingleIngestRecord(t, gotBody)
+	if _, present := record["metadata"]; present {
+		t.Fatalf("oversize metadata must be dropped, got %#v", record["metadata"])
+	}
+	if record["external_id"] != "fat" {
+		t.Fatalf("event must still ship, got %#v", record)
+	}
+}
+
 func TestDetectUsageHookFormat(t *testing.T) {
 	testCases := []struct {
 		name string
