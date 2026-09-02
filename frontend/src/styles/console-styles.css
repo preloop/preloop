@@ -1,9 +1,41 @@
+/* =====================================================================
+   Console surface tokens (wave 2).
+
+   One place decides the console's compact scale so a new view matches its
+   neighbours by importing this file instead of inventing sizes. Colour is
+   never spelled out here: every value is a Shoelace token, so the dark theme
+   derives from the same declarations.
+   ===================================================================== */
+:host {
+    --console-text-h1: 1.625rem; /* 26px */
+    --console-text-card-title: 0.9375rem; /* 15px */
+    --console-text-body: 0.875rem; /* 14px */
+    --console-text-meta: 0.8125rem; /* 13px */
+    --console-text-eyebrow: 0.6875rem; /* 11px */
+    --console-stat-value: 1.375rem; /* 22px */
+}
+
 a {
     color: var(--sl-color-primary-600);
     text-decoration: none;
 }
 a:hover {
     text-decoration: underline;
+}
+
+/* Every interactive thing in the console answers the keyboard the same way. */
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible,
+sl-button:focus-visible,
+sl-icon-button:focus-visible,
+sl-badge:focus-visible,
+.row:focus-visible,
+.item-card:focus-visible {
+    outline: 2px solid var(--sl-color-primary-500);
+    outline-offset: 2px;
+    border-radius: var(--sl-border-radius-small);
 }
 .column-layout {
     display: grid;
@@ -89,10 +121,13 @@ a:hover {
     padding: var(--sl-spacing-x-large);
 }
 
+/* The page title is the quietest thing that can still read as a title: at
+   1.75rem/700 it was louder than any number on the page it introduces. */
 .header h1 {
     text-align: left;
-    font-size: 1.75rem;
+    font-size: var(--console-text-h1);
     font-weight: 600;
+    letter-spacing: -0.01em;
     color: var(--sl-color-neutral-900);
     margin: 0;
 }
@@ -126,6 +161,7 @@ sl-card::part(header) {
     background-color: transparent;
     border-bottom: 1px solid var(--sl-color-neutral-200);
     padding: var(--sl-spacing-medium);
+    font-size: var(--console-text-card-title);
     font-weight: 600;
 }
 
@@ -135,12 +171,61 @@ sl-card::part(header) {
     box-shadow: var(--sl-shadow-x-small);
 }
 
+/* Cards keep the page's card surface even where a component sets its own. */
+sl-card::part(base) {
+    background-color: var(--sl-color-neutral-0);
+}
+
+/* Card title, section eyebrow, meta: the three sizes below body text. */
+.card-title,
+.section-title {
+    font-size: var(--console-text-card-title);
+    font-weight: 600;
+}
+
+.eyebrow {
+    color: var(--sl-color-neutral-500);
+    font-size: var(--console-text-eyebrow);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.meta {
+    color: var(--sl-color-neutral-500);
+    font-size: var(--console-text-meta);
+}
+
 /* Numbers line up column-wise wherever they appear. */
 .row-value,
 .tool-count-value,
 .metric-value,
-.summary-value {
+.summary-value,
+.stat-value,
+.meta {
     font-variant-numeric: tabular-nums;
+}
+
+/* =====================================================================
+   Chips. One recipe for every status pill in the console (agents list,
+   agent detail, attention, overview cards, executions), so "RUNNING" on
+   one page and "Active now" on another are the same object.
+   ===================================================================== */
+sl-badge[pill]::part(base),
+sl-badge.chip::part(base) {
+    border-width: 0;
+    font-size: 0.75rem; /* 12px */
+    font-weight: 500;
+    line-height: 1.4;
+    padding: 2px 8px;
+}
+
+/* Tags are labels, not states: outline instead of fill. */
+sl-badge.chip-tag::part(base),
+sl-badge.tag-chip::part(base) {
+    background-color: transparent;
+    border: 1px solid var(--sl-color-neutral-300);
+    color: var(--sl-color-neutral-700);
 }
 
 .styled-table {
@@ -167,6 +252,11 @@ sl-card::part(header) {
 
 .styled-table tr:last-child td {
     border-bottom: none;
+}
+
+/* Rows react to the pointer everywhere, at one weight. */
+.styled-table tbody tr:hover {
+    background-color: var(--sl-color-neutral-100);
 }
 
 .styled-table th:last-child:not(:only-child), .styled-table td:last-child:not(:only-child) {
@@ -240,6 +330,10 @@ sl-dialog.large::part(panel) {
     margin-left: auto;
 }
 
+.item-card:hover {
+    background: var(--sl-color-neutral-100);
+}
+
 .item-card.warning {
     background: var(--sl-color-warning-50);
     border-left-color: var(--sl-color-warning-600);
@@ -268,8 +362,9 @@ sl-dialog.large::part(panel) {
 }
 
 .item-secondary {
-    font-size: var(--sl-font-size-small);
-    color: var(--sl-color-neutral-600);
+    font-size: var(--console-text-meta);
+    color: var(--sl-color-neutral-500);
+    font-variant-numeric: tabular-nums;
 }
 
 .item-error {
@@ -385,13 +480,13 @@ sl-dialog.large::part(panel) {
 }
 
 .stat-label {
-    font-size: var(--sl-font-size-small);
-    color: var(--sl-color-neutral-600);
+    font-size: var(--console-text-meta);
+    color: var(--sl-color-neutral-500);
     margin-top: var(--sl-spacing-x-small);
 }
 
 .stat-subtext {
-    font-size: var(--sl-font-size-x-small);
+    font-size: var(--console-text-meta);
     color: var(--sl-color-neutral-500);
     margin-top: var(--sl-spacing-2x-small);
 }

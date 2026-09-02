@@ -1020,7 +1020,7 @@ export class AgentDetailView extends LitElement {
       </sl-tooltip>
       ${
         liveCount > 0
-          ? html`<sl-badge variant="primary" pill>Live ${liveCount}</sl-badge>`
+          ? html`<sl-badge variant="success" pill>Live ${liveCount}</sl-badge>`
           : nothing
       }
       ${

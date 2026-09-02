@@ -46,6 +46,13 @@ const SUBJECT_TYPE_LABELS: Record<string, string> = {
 export class UsageCard extends LitElement {
   @property({ type: Object })
   summary: AccountGatewayUsageSummaryResponse | null = null;
+  /**
+   * Same window, shifted back one period. A number on its own says nothing
+   * about direction, so the card states the change against the window the
+   * user is already looking at.
+   */
+  @property({ type: Object })
+  priorSummary: AccountGatewayUsageSummaryResponse | null = null;
   @property({ type: Array }) policies: BudgetPolicy[] = [];
   @property({ type: Boolean }) loading = false;
   @property({ type: String }) error: string | null = null;
@@ -96,6 +103,7 @@ export class UsageCard extends LitElement {
       }
 
       .title {
+        font-size: 0.9375rem; /* console card title */
         font-weight: 600;
         color: var(--sl-color-neutral-900);
       }
@@ -133,14 +141,23 @@ export class UsageCard extends LitElement {
         display: flex;
         align-items: center;
         gap: var(--sl-spacing-2x-small);
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-500);
+        font-size: 0.8125rem; /* console meta */
+        margin-top: var(--sl-spacing-2x-small);
+      }
+
+      /* The delta is information, not an alarm: no red, no green, no arrow
+         colouring. Spend going up is not by itself a problem. */
+      .delta {
+        color: var(--sl-color-neutral-500);
+        font-size: 0.8125rem;
+        font-variant-numeric: tabular-nums;
         margin-top: var(--sl-spacing-2x-small);
       }
 
       .secondary-line {
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-500);
+        font-size: 0.8125rem;
         font-variant-numeric: tabular-nums;
       }
 
@@ -148,6 +165,34 @@ export class UsageCard extends LitElement {
         display: block;
         width: 100%;
         height: 40px;
+      }
+
+      /* One deliberate motion on the Overview: the trend line draws itself
+         once, on the paint that first has data. Nothing loops, nothing
+         pulses. Under prefers-reduced-motion the line is simply there. */
+      @media (prefers-reduced-motion: no-preference) {
+        .sparkline-line {
+          animation: sparkline-draw 300ms ease-out forwards;
+          stroke-dasharray: 1;
+          stroke-dashoffset: 1;
+        }
+
+        .sparkline-area {
+          animation: sparkline-fade 300ms ease-out forwards;
+          opacity: 0;
+        }
+      }
+
+      @keyframes sparkline-draw {
+        to {
+          stroke-dashoffset: 0;
+        }
+      }
+
+      @keyframes sparkline-fade {
+        to {
+          opacity: 0.12;
+        }
       }
 
       .budgets {
@@ -182,7 +227,7 @@ export class UsageCard extends LitElement {
 
       .muted {
         color: var(--sl-color-neutral-500);
-        font-size: var(--sl-font-size-small);
+        font-size: 0.8125rem;
       }
 
       .more-limits {
@@ -328,6 +373,7 @@ export class UsageCard extends LitElement {
               ></sl-icon>
             </sl-tooltip>
           </div>
+          ${this.renderDelta()}
         </div>
       `;
     }
@@ -338,8 +384,44 @@ export class UsageCard extends LitElement {
         <div class="primary-label">
           <span>tokens · ${this.rangeLabel}</span>
         </div>
+        ${this.renderDelta()}
       </div>
     `;
+  }
+
+  /** The value the delta compares, in whichever unit is showing. */
+  private valueFor(summary: AccountGatewayUsageSummaryResponse | null): number {
+    if (!summary) return 0;
+    return this.unit === 'dollars'
+      ? Number(summary.estimated_cost || 0)
+      : Number(summary.token_usage?.total_tokens || 0);
+  }
+
+  /**
+   * Percent change against the previous window of equal length. Returns null
+   * when there is no prior period to compare against: "up 100% from nothing"
+   * is noise, not news.
+   */
+  private renderDelta() {
+    if (this.loading && !this.summary) {
+      return nothing;
+    }
+    const prior = this.valueFor(this.priorSummary);
+    if (prior <= 0) {
+      return nothing;
+    }
+    const current = this.valueFor(this.summary);
+    const change = ((current - prior) / prior) * 100;
+    const rounded = Math.round(change);
+    if (rounded === 0) {
+      return html`<div class="delta">
+        No change vs prior ${this.rangeLabel}
+      </div>`;
+    }
+    const arrow = rounded > 0 ? '▲' : '▼';
+    return html`<div class="delta">
+      ${arrow} ${Math.abs(rounded)}% vs prior ${this.rangeLabel}
+    </div>`;
   }
 
   private renderSecondaryLine() {
@@ -406,12 +488,15 @@ export class UsageCard extends LitElement {
         }
       >
         <polygon
+          class="sparkline-area"
           points=${areaPoints}
           fill="var(--sl-color-primary-500)"
           opacity="0.12"
         ></polygon>
         <polyline
+          class="sparkline-line"
           points=${points.join(' ')}
+          pathLength="1"
           fill="none"
           stroke="var(--sl-color-primary-500)"
           stroke-width="1.5"

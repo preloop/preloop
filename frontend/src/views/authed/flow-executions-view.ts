@@ -445,6 +445,7 @@ export class FlowExecutionsView extends AuthedElement {
                                       : ''
                                   }
                                   <sl-badge
+                                    pill
                                     variant=${this.getStatusVariant(exec.status)}
                                     >${exec.status}</sl-badge
                                   >
@@ -536,14 +537,14 @@ export class FlowExecutionsView extends AuthedElement {
     return html`<span title=${subject}>${subject}</span>`;
   }
 
+  /** Same taxonomy as the Overview: success finished, danger failed, the
+   * rest is state. The pulsing dot beside the chip says "still running". */
   getStatusVariant(status: string) {
     switch (status) {
       case 'SUCCEEDED':
         return 'success';
       case 'FAILED':
         return 'danger';
-      case 'RUNNING':
-        return 'primary';
       default:
         return 'neutral';
     }

@@ -1157,6 +1157,13 @@ export class AgentTalkComposer extends LitElement {
     );
   }
 
+  /**
+   * Compact means "in a row of a list", where one primary button per agent
+   * would put five blue buttons on the Overview. There the button is default
+   * and the tooltip carries the state; the full-size one on the agent detail
+   * page is that page's main action and keeps primary when the agent is
+   * online.
+   */
   render() {
     const controlState = getAgentControlState(this.agent);
     if (!controlState.visible) {
@@ -1167,7 +1174,7 @@ export class AgentTalkComposer extends LitElement {
       <sl-tooltip content=${controlState.detail}>
         <sl-button
           size=${this.compact ? 'small' : 'medium'}
-          variant=${controlState.online ? 'primary' : 'default'}
+          variant=${!this.compact && controlState.online ? 'primary' : 'default'}
           ?disabled=${!controlState.enabled || this.disabled}
           @click=${() => this.openDialog()}
         >

@@ -491,7 +491,7 @@ describe('DashboardView', () => {
       'Recent Flow Executions'
     );
     expect(element.shadowRoot?.textContent).to.contain('Audit exceptions');
-    expect(element.shadowRoot?.textContent).to.contain('Needs attention');
+    expect(element.shadowRoot?.textContent).to.contain('need attention');
   });
 
   it('subscribes to realtime topics and fetches dashboard data', async () => {
@@ -515,15 +515,16 @@ describe('DashboardView', () => {
         url.startsWith('/api/v1/account/gateway-usage/summary')
       )
     ).to.be.true;
-    // Two for the cards (summary + breakdown upgrade) plus the fixed 30d one
-    // the shared attention loader uses, and one agents call per source: the
-    // cards' own list and the attention loader's, which must stay on the
-    // parameters the Attention page uses.
+    // Two for the cards (summary + breakdown upgrade), one for the prior
+    // window behind the Usage delta, plus the fixed 30d one the shared
+    // attention loader uses; and one agents call per source: the cards' own
+    // list and the attention loader's, which must stay on the parameters the
+    // Attention page uses.
     expect(
       urls.filter((url) =>
         url.startsWith('/api/v1/account/gateway-usage/summary')
       ).length
-    ).to.be.at.most(3);
+    ).to.be.at.most(4);
     expect(urls.some((url) => url.includes('include_breakdown=false'))).to.be
       .true;
     expect(
@@ -731,14 +732,14 @@ describe('DashboardView', () => {
     );
     await element.updateComplete;
 
-    const metricsGrid = element.shadowRoot?.querySelector('.metrics-grid');
-    expect(metricsGrid).to.exist;
-    const metricText = metricsGrid?.textContent || '';
+    const heroStats = element.shadowRoot?.querySelector('.hero-stats');
+    expect(heroStats).to.exist;
+    const metricText = heroStats?.textContent || '';
     ['agents', 'flows', 'models', 'tools', 'need attention'].forEach((label) =>
       expect(metricText).to.contain(label)
     );
 
-    const metricLinks = metricsGrid?.querySelectorAll('a.tool-count') || [];
+    const metricLinks = heroStats?.querySelectorAll('a.hero-stat') || [];
     expect(metricLinks.length).to.equal(5);
     expect(metricLinks[4].getAttribute('href')).to.equal('/console/attention');
 
@@ -769,7 +770,7 @@ describe('DashboardView', () => {
       .null;
   });
 
-  it('surfaces pending approvals in the attention card', async () => {
+  it('surfaces pending approvals in the attention strip', async () => {
     const element = await mountDashboard();
     await waitUntil(
       () =>
@@ -781,19 +782,18 @@ describe('DashboardView', () => {
     );
     await element.updateComplete;
 
-    const attentionLink = element.shadowRoot?.querySelector(
-      'a.header-action-link[href="/console/attention"]'
-    );
-    expect(attentionLink, 'View all link').to.exist;
-
-    const rows = element.shadowRoot?.querySelectorAll('.attention-row') || [];
-    expect(rows.length).to.be.greaterThan(0);
+    const strip = element.shadowRoot?.querySelector('.attention-strip');
+    expect(strip, 'the attention strip').to.exist;
+    expect(strip?.textContent).to.contain('need attention');
+    expect(
+      strip?.querySelector('a.attention-strip-all')?.getAttribute('href')
+    ).to.equal('/console/attention');
     expect(element.shadowRoot?.textContent || '').to.not.contain(
       'Pending approvals'
     );
   });
 
-  it('keeps each attention row on one line about 44px tall', async () => {
+  it('keeps the attention strip on one line at 1440 and shows at most three items', async () => {
     const element = await mountDashboard();
     await waitUntil(
       () =>
@@ -805,40 +805,63 @@ describe('DashboardView', () => {
     );
     await element.updateComplete;
 
-    const row = element.shadowRoot?.querySelector(
-      '.attention-row'
-    ) as HTMLElement | null;
-    expect(row, 'an attention row renders').to.exist;
-    // Three stacked lines (dot, icon, text) used to make these ~70px each, so
-    // five items pushed the Usage card below the fold.
-    expect(row!.offsetHeight, 'row height').to.be.at.most(52);
-
-    const title = row!.querySelector('.row-primary') as HTMLElement;
-    const detail = row!.querySelector('.attention-detail') as HTMLElement;
-    expect(title.getBoundingClientRect().top).to.be.closeTo(
-      detail.getBoundingClientRect().top,
-      8
-    );
-    expect(getComputedStyle(title).whiteSpace).to.equal('nowrap');
-    expect(
-      title.getBoundingClientRect().right,
-      'nothing escapes the row'
-    ).to.be.at.most(row!.getBoundingClientRect().right + 1);
+    const strip = element.shadowRoot?.querySelector(
+      '.attention-strip'
+    ) as HTMLElement;
+    expect(strip, 'the attention strip').to.exist;
+    const chips = strip.querySelectorAll('a.attention-chip-link');
+    expect(chips.length, 'chips shown inline').to.be.at.most(3);
+    // The whole thing is a line, not a card: a side card cost 5 rows plus a
+    // header for the same facts.
+    expect(strip.offsetHeight, 'strip height').to.be.at.most(56);
   });
 
-  it('shows Updated and Manage Keys as one muted line in the gateway header', async () => {
+  it('hides the attention strip when nothing needs attention', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
+      'dashboard did not finish loading'
+    );
+    // A quiet account: the same shape the loader returns, with nothing in it.
+    element['attentionInputs'] = {};
+    await element.updateComplete;
+
+    expect(
+      element['attentionItems'].length,
+      'nothing needs attention'
+    ).to.equal(0);
+    expect(element.shadowRoot?.querySelector('.attention-strip')).to.not.exist;
+
+    // The hero stat still states the fact, in green.
+    const attentionStat = element.shadowRoot?.querySelector(
+      'a.hero-stat[href="/console/attention"]'
+    );
+    expect(attentionStat?.classList.contains('tone-success')).to.be.true;
+    expect(
+      attentionStat?.querySelector('.hero-stat-value')?.textContent?.trim()
+    ).to.equal('0');
+  });
+
+  it('shows Updated beside the page title, and Manage Keys in the gateway header', async () => {
     const element = await mountDashboard();
     await waitUntil(() => !element['loading'], 'dashboard did not load');
     await element.updateComplete;
 
-    const meta = element.shadowRoot?.querySelector('.gateway-header-meta');
-    expect(meta, 'the gateway header meta line renders').to.exist;
-    expect(meta?.querySelector('.updated-at')?.textContent).to.contain(
-      'Updated'
+    const updated = element.shadowRoot?.querySelector(
+      'view-header .updated-at'
     );
-    expect(
-      meta?.querySelector('a.header-action-link')?.textContent?.trim()
-    ).to.equal('Manage Keys');
+    expect(updated, 'the page-level updated line renders').to.exist;
+    expect(updated?.getAttribute('slot')).to.equal('meta');
+    expect(updated?.textContent).to.contain('Updated');
+
+    const manageKeys = element.shadowRoot?.querySelector(
+      'a.header-action-link[href="/console/settings/api-keys"]'
+    );
+    expect(manageKeys?.textContent?.trim()).to.equal('Manage Keys');
   });
 
   it('skips zero-request runtime sessions and displays ids instead of config paths', async () => {
@@ -982,5 +1005,209 @@ describe('DashboardView', () => {
       'Pull Request Reviewer'
     );
     expect(element.shadowRoot?.textContent || '').to.contain('PR #42 review');
+  });
+  describe('wave 2 Overview', () => {
+    async function mountLoaded(): Promise<DashboardView> {
+      const element = await mountDashboard();
+      await waitUntil(
+        () =>
+          !element['loading'] &&
+          !element['fetchingActiveAgents'] &&
+          !element['fetchingBudget'] &&
+          !element['fetchingAudit'] &&
+          !element['fetchingMCPAndTools'],
+        'dashboard did not finish loading'
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    it('states the five counts in a single 64px row', async () => {
+      const element = await mountLoaded();
+
+      const row = element.shadowRoot?.querySelector(
+        '.hero-stats'
+      ) as HTMLElement;
+      expect(row, 'the hero row').to.exist;
+      // It used to be about 200px: a fifth of the window for five numbers.
+      expect(row.offsetHeight, 'hero row height').to.be.at.most(96);
+
+      expect(getComputedStyle(row).flexDirection, 'stats read across').to.equal(
+        'row'
+      );
+
+      const stats = row.querySelectorAll('a.hero-stat');
+      expect(stats.length).to.equal(5);
+      const stat = stats[0] as HTMLElement;
+      expect(stat.offsetHeight, 'one stat').to.be.at.most(64);
+
+      const value = stat.querySelector('.hero-stat-value') as HTMLElement;
+      const valueStyles = getComputedStyle(value);
+      expect(valueStyles.fontSize).to.equal('22px');
+      expect(valueStyles.fontWeight).to.equal('600');
+      expect(valueStyles.fontVariantNumeric).to.contain('tabular-nums');
+
+      // Label under the number, in the meta register.
+      const label = stat.querySelector('.hero-stat-label') as HTMLElement;
+      expect(getComputedStyle(label).fontSize).to.equal('13px');
+      expect(label.getBoundingClientRect().top).to.be.greaterThan(
+        value.getBoundingClientRect().top
+      );
+
+      const icon = stat.querySelector('sl-icon') as HTMLElement;
+      expect(getComputedStyle(icon).fontSize).to.equal('18px');
+    });
+
+    it('colours the attention stat amber and marks it with a triangle when items exist', async () => {
+      const element = await mountLoaded();
+
+      const stat = element.shadowRoot?.querySelector(
+        'a.hero-stat[href="/console/attention"]'
+      ) as HTMLElement;
+      expect(stat.classList.contains('tone-warning')).to.be.true;
+      expect(stat.querySelector('sl-icon')?.getAttribute('name')).to.equal(
+        'exclamation-triangle'
+      );
+    });
+
+    it('expands the endpoints for an account with no fully onboarded agent', async () => {
+      const element = await mountLoaded();
+
+      expect(element['endpointsExpanded']).to.be.true;
+      const capsules =
+        element.shadowRoot?.querySelectorAll('.mcp-server-capsule') || [];
+      expect(capsules.length, 'both capsules').to.equal(2);
+      const toggle = element.shadowRoot?.querySelector('.connect-toggle');
+      expect(toggle?.textContent).to.contain('Hide endpoints');
+    });
+
+    it('collapses the endpoints once an agent is fully onboarded', async () => {
+      agentsResponse = {
+        ...agentsResponse,
+        items: [
+          { ...agentsResponse.items[0], onboarding_state: 'fully_onboarded' },
+        ],
+      };
+
+      const element = await mountLoaded();
+
+      expect(element['endpointsExpanded']).to.be.false;
+      expect(element.shadowRoot?.querySelector('.mcp-server-capsule')).to.not
+        .exist;
+      // The state is still stated, just without the URLs.
+      const row = element.shadowRoot?.querySelector('.connect-row');
+      expect(row?.textContent).to.contain('Model gateway');
+      expect(row?.textContent).to.contain('Tool firewall');
+      expect(row?.textContent).to.contain('Show endpoints');
+    });
+
+    it('remembers the endpoints disclosure across visits', async () => {
+      const element = await mountLoaded();
+
+      const toggle = element.shadowRoot?.querySelector(
+        '.connect-toggle'
+      ) as HTMLElement;
+      toggle.click();
+      await element.updateComplete;
+
+      expect(element['endpointsExpanded']).to.be.false;
+      expect(localStorage.getItem('dashboard_endpoints_expanded')).to.equal(
+        'false'
+      );
+
+      const second = await mountLoaded();
+      expect(second['endpointsExpanded']).to.be.false;
+      expect(second.shadowRoot?.querySelector('.mcp-server-capsule')).to.not
+        .exist;
+    });
+
+    it('hides next steps when every step is already done', async () => {
+      const element = await mountLoaded();
+
+      // The fixture has an agent, budget policies and a tool under approval.
+      expect(element['nextSteps'].every((step: any) => step.done)).to.be.true;
+      expect(element.shadowRoot?.querySelector('.next-steps-card')).to.not
+        .exist;
+    });
+
+    it('lists the open steps for a new account, with the done ones ticked', async () => {
+      budgetPoliciesResponse = [];
+      toolsResponse = toolsResponse.map((tool: any) => ({
+        ...tool,
+        is_enabled: true,
+        approval_workflow_id: null,
+      }));
+
+      const element = await mountLoaded();
+
+      const card = element.shadowRoot?.querySelector('.next-steps-card');
+      expect(card, 'the next steps card').to.exist;
+      const steps = card?.querySelectorAll('.next-step') || [];
+      expect(steps.length).to.equal(3);
+      expect(card?.textContent).to.contain('Onboard an agent');
+      expect(card?.textContent).to.contain('Set a spending limit');
+      expect(card?.textContent).to.contain('Restrict a tool');
+      // The agent exists, so that step is ticked and the other two are not.
+      expect(steps[0].classList.contains('done'), 'agent step done').to.be.true;
+      expect(steps[1].classList.contains('done'), 'budget step done').to.be
+        .false;
+      expect(
+        (steps[1].querySelector('.next-step-link') as HTMLElement).tagName
+      ).to.equal('BUTTON');
+      expect(
+        steps[2].querySelector('a.next-step-link')?.getAttribute('href')
+      ).to.equal('/console/policies');
+    });
+
+    it('adds the invite step only when user management is on', async () => {
+      budgetPoliciesResponse = [];
+      const element = await mountLoaded();
+      expect(element['nextSteps'].map((step: any) => step.id)).to.not.include(
+        'invite'
+      );
+
+      element['userManagementEnabled'] = true;
+      await element.updateComplete;
+      const invite = element['nextSteps'].find(
+        (step: any) => step.id === 'invite'
+      );
+      expect(invite?.href).to.equal('/console/settings/invitations');
+    });
+
+    it('dismisses next steps and remembers it', async () => {
+      budgetPoliciesResponse = [];
+      const element = await mountLoaded();
+
+      const dismiss = element.shadowRoot?.querySelector(
+        '.next-steps-card sl-icon-button[label="Dismiss next steps"]'
+      ) as HTMLElement;
+      expect(dismiss, 'the dismiss control').to.exist;
+      dismiss.click();
+      await element.updateComplete;
+
+      expect(element.shadowRoot?.querySelector('.next-steps-card')).to.not
+        .exist;
+      expect(localStorage.getItem('dashboard_next_steps_dismissed')).to.equal(
+        'true'
+      );
+    });
+
+    it('asks the gateway for the previous window and hands it to the Usage card', async () => {
+      const element = await mountLoaded();
+
+      const summaryCalls = fetchStub
+        .getCalls()
+        .map((call: any) => String(call.args[0]))
+        .filter((url: string) =>
+          url.startsWith('/api/v1/account/gateway-usage/summary')
+        );
+      const priorCall = summaryCalls.find((url: string) =>
+        url.includes('end_date=')
+      );
+      expect(priorCall, 'a bounded prior-window request').to.exist;
+
+      const usageCard = element.shadowRoot?.querySelector('usage-card') as any;
+      expect(usageCard.priorSummary, 'prior summary reaches the card').to.exist;
+    });
   });
 });

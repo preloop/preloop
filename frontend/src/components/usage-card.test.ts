@@ -72,6 +72,7 @@ async function renderCard(props: Partial<UsageCard> = {}): Promise<UsageCard> {
       .toolCallsCount=${props.toolCallsCount ?? 0}
       .loading=${props.loading ?? false}
       .error=${props.error ?? null}
+      .priorSummary=${props.priorSummary ?? null}
     ></usage-card>
   `);
   await element.updateComplete;
@@ -277,5 +278,74 @@ describe('usage-card', () => {
     const alert = failed.shadowRoot!.querySelector('sl-alert')!;
     expect(alert.getAttribute('variant')).to.equal('danger');
     expect(alert.textContent).to.contain('Failed to load usage');
+  });
+  describe('prior-period delta', () => {
+    it('states the change against the previous window of the same length', async () => {
+      const element = await renderCard({
+        priorSummary: summaryFixture({
+          token_usage: {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 500000000,
+          },
+        }),
+      });
+
+      // 584.3M against 500M is up 17%.
+      expect(text(element, '.delta')).to.equal('▲ 17% vs prior 30d');
+    });
+
+    it('points down when usage falls, and stays colour-free either way', async () => {
+      const element = await renderCard({
+        priorSummary: summaryFixture({
+          token_usage: {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 1000000000,
+          },
+        }),
+      });
+
+      expect(text(element, '.delta')).to.contain('▼');
+
+      // Colour-free: the delta is meta text, not a verdict. The sentinel
+      // stands in for the theme sheet, which the test page does not load.
+      document.documentElement.style.setProperty(
+        '--sl-color-neutral-500',
+        'rgb(7, 8, 9)'
+      );
+      try {
+        const delta = element.shadowRoot!.querySelector(
+          '.delta'
+        ) as HTMLElement;
+        expect(getComputedStyle(delta).color).to.equal('rgb(7, 8, 9)');
+      } finally {
+        document.documentElement.style.removeProperty('--sl-color-neutral-500');
+      }
+
+      // The unit toggle switches what the delta compares.
+      const dollars = await renderCard({
+        priorSummary: summaryFixture({ estimated_cost: 16.78 }),
+      });
+      dollars['unit'] = 'dollars';
+      await dollars.updateComplete;
+      expect(text(dollars, '.delta')).to.equal('▲ 100% vs prior 30d');
+    });
+
+    it('says nothing when there is no prior period to compare against', async () => {
+      const none = await renderCard();
+      expect(none.shadowRoot!.querySelector('.delta')).to.not.exist;
+
+      const zero = await renderCard({
+        priorSummary: summaryFixture({
+          token_usage: {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+          },
+        }),
+      });
+      expect(zero.shadowRoot!.querySelector('.delta')).to.not.exist;
+    });
   });
 });

@@ -3537,6 +3537,7 @@ export class AgentsView extends LitElement {
                   ? this.renderAgentTalkButton(agent, 'agents-card')
                   : html`
                       <sl-badge
+                        pill
                         variant=${
                           !isFlow
                             ? ''
@@ -3556,7 +3557,7 @@ export class AgentsView extends LitElement {
               }
               ${
                 liveTotal
-                  ? html`<sl-badge variant="primary"
+                  ? html`<sl-badge variant="success" pill
                       >Live ${liveTotal}</sl-badge
                     >`
                   : null
@@ -4021,11 +4022,11 @@ export class AgentsView extends LitElement {
                                     'agents-canvas'
                                   )
                                 : liveTotal > 0
-                                  ? html`<sl-badge variant="success" pulse
+                                  ? html`<sl-badge variant="success" pill pulse
                                       >Live</sl-badge
                                     >`
                                   : isFlow
-                                    ? html`<sl-badge variant="success"
+                                    ? html`<sl-badge variant="success" pill
                                         >Active</sl-badge
                                       >`
                                     : ''
