@@ -119,6 +119,27 @@ describe('getAgentControlState', () => {
       expect(hint.helptext).to.contain('cannot talk to it');
     });
 
+    it('still offers the command when a supported runtime never enrolled', () => {
+      // The server reports `unsupported` both for a runtime that has no plugin
+      // and for one that has never been enrolled. Claude Code is the second
+      // case, and it is one install away from talking.
+      const hint = getAgentControlInstallHint({
+        ...baseAgent,
+        display_name: 'Claude Code',
+        agent_kind: 'claude_code',
+        session_source_type: 'claude_code',
+        control_state: 'unsupported',
+        control_enabled: false,
+        control_capabilities: [],
+      });
+
+      expect(hint.supported).to.equal(true);
+      expect(hint.command).to.equal(
+        'preloop agents install-plugin "Claude Code"'
+      );
+      expect(hint.helptext).to.contain('not running the Agent Control plugin');
+    });
+
     it('has something to say with no agent at all', () => {
       const hint = getAgentControlInstallHint(null);
       expect(hint.supported).to.equal(false);

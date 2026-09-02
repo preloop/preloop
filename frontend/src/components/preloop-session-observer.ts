@@ -454,6 +454,15 @@ export class PreloopSessionObserver extends LitElement {
         justify-content: space-between;
       }
 
+      /*
+       * The control row is a group, not a spread: with Talk added it wraps at
+       * 1440, and space-between would strand the leftover buttons at opposite
+       * ends of the second line.
+       */
+      .mode-row {
+        justify-content: flex-end;
+      }
+
       .content {
         display: flex;
         flex-direction: column;

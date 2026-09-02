@@ -158,6 +158,22 @@ export class TalkComposer extends LitElement {
       margin: 0;
     }
 
+    /*
+     * The label says the same thing as the placeholder, and in a 520px window
+     * that duplicate line eats a whole row of the thread. Keep the label in the
+     * accessibility tree (Shoelace wires the label to the textarea) and take it
+     * out of the picture.
+     */
+    sl-textarea::part(form-control-label) {
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      height: 1px;
+      overflow: hidden;
+      position: absolute;
+      white-space: nowrap;
+      width: 1px;
+    }
+
     sl-textarea::part(textarea) {
       max-height: 30vh;
     }

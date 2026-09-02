@@ -127,31 +127,48 @@ export interface AgentControlInstallHint {
 }
 
 /**
+ * Runtimes that can run an Agent Control plugin at all.
+ *
+ * This mirrors `AGENT_CONTROL_SUPPORTED_AGENT_KINDS` in
+ * `backend/preloop/api/endpoints/account.py`. The console would rather ask the
+ * server, but `control_state` collapses two different situations into
+ * `unsupported`: "this runtime has no plugin" (Cursor, Claude Desktop) and
+ * "this runtime has one but this agent has not enrolled yet" (a Claude Code
+ * agent nobody ran `install-plugin` for). Telling the second group that Preloop
+ * can never talk to them is a dead end, so the kind decides who gets a command.
+ */
+const AGENT_CONTROL_SUPPORTED_KINDS = new Set([
+  'hermes',
+  'openclaw',
+  'claude_code',
+]);
+
+/**
  * What a composer says when it cannot send.
  *
- * The distinction comes from the server, not from a table in the console:
- * `control_state = 'unsupported'` means the runtime has no Agent Control
- * plugin at all (Claude Desktop, Cursor), so there is nothing to install and
- * offering a command would be a lie. Anything else (configured, install
- * pending) is one `install-plugin` away, and the CLI takes the agent by the
- * name the console shows.
+ * A runtime with a plugin is one `install-plugin` away, and the CLI takes the
+ * agent by the name the console shows. A runtime without one gets the docs
+ * link and nothing to copy: offering a command that cannot work is a lie.
  */
 export function getAgentControlInstallHint(
   agent: ManagedAgentSummary | null | undefined
 ): AgentControlInstallHint {
+  const kind = (agent?.agent_kind || agent?.session_source_type || '')
+    .toString()
+    .toLowerCase();
   const kindLabel = getAgentSourceLabel(
     agent?.agent_kind || agent?.session_source_type
   );
   const name = agent?.display_name || 'this agent';
   const state = getAgentControlState(agent);
 
-  if (!agent || state.state === 'unsupported') {
+  if (!agent || !AGENT_CONTROL_SUPPORTED_KINDS.has(kind)) {
     return {
       supported: false,
       command: null,
       docsUrl: AGENT_CONTROL_DOCS_URL,
       placeholder: `Agent Control is not available for ${kindLabel}`,
-      helptext: `${kindLabel} does not run an Agent Control plugin, so Preloop can watch this agent but cannot talk to it.`,
+      helptext: `${kindLabel} does not have an Agent Control plugin, so Preloop can watch this agent but cannot talk to it.`,
     };
   }
 
@@ -163,6 +180,6 @@ export function getAgentControlInstallHint(
     helptext:
       state.state === 'install_pending'
         ? 'Agent Control config was written but the runtime plugin has not connected yet. Run it on the machine that runs the agent:'
-        : 'Run this on the machine that runs the agent, then start it again:',
+        : 'This agent is not running the Agent Control plugin yet. Run this on the machine that runs the agent, then start it again:',
   };
 }
