@@ -336,6 +336,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("Skipping execution monitor for %s role.", service_role)
 
+    # Start the DB pool monitor (skip in testing mode): pool gauges plus a
+    # WARNING log when either engine's checked-out connections near the
+    # ceiling, so pool saturation is visible before requests start timing
+    # out. Runs on every role; gated by DB_MONITORING_ENABLED.
+    db_pool_monitor = None
+    if not is_testing:
+        from preloop.services.db_pool_monitor import (
+            db_monitoring_enabled,
+            get_db_pool_monitor,
+        )
+
+        if db_monitoring_enabled():
+            db_pool_monitor = get_db_pool_monitor()
+            await db_pool_monitor.start()
+            logger.info("DB pool monitor started.")
+        else:
+            logger.info("DB pool monitor disabled via DB_MONITORING_ENABLED.")
+
     # Start the optimization-job recovery sweeper (skip in testing mode). It
     # runs one sweep immediately, recovering jobs abandoned by the previous
     # process, then every couple of minutes.
@@ -565,6 +583,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.error(f"Error stopping execution monitor: {e}", exc_info=True)
     else:
         logger.info("Skipping execution monitor shutdown for %s role.", service_role)
+
+    # Stop the DB pool monitor
+    if db_pool_monitor:
+        try:
+            await db_pool_monitor.stop()
+            logger.info("DB pool monitor stopped.")
+        except Exception as e:
+            logger.error(f"Error stopping DB pool monitor: {e}", exc_info=True)
 
     # Cancel the NATS consumer task (skip in testing mode)
     if not is_testing and getattr(app.state, "nats_connected", False):

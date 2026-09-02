@@ -123,13 +123,16 @@ async def _deliver_question_in_band(
     tool_name: str,
     arguments: dict,
     account_id: str,
-    approval_request: "models.ApprovalRequest",
+    approval_request_id,
+    expires_at,
     base_url: str,
 ) -> bool:
     """Best-effort in-session delivery of a pending question (issue #130).
 
     Never raises and never blocks the approval flow; remote channels have
-    already been notified when this runs.
+    already been notified when this runs. Takes plain values rather than the
+    ApprovalRequest instance so callers can release their DB session before
+    invoking it.
     """
     try:
         from preloop.services.ask_user_inband import (
@@ -143,20 +146,20 @@ async def _deliver_question_in_band(
             return False
         return await deliver_question_to_session(
             account_id=str(account_id),
-            approval_request_id=approval_request.id,
+            approval_request_id=approval_request_id,
             tool_name=tool_name,
             arguments=arguments,
-            console_url=approval_console_url(base_url, approval_request.id),
-            mobile_link=approval_mobile_deep_link(approval_request.id),
+            console_url=approval_console_url(base_url, approval_request_id),
+            mobile_link=approval_mobile_deep_link(approval_request_id),
             runtime_session_id=session_ctx.runtime_session_id,
             managed_agent_id=session_ctx.managed_agent_id,
             user_id=session_ctx.user_id,
-            expires_at=getattr(approval_request, "expires_at", None),
+            expires_at=expires_at,
         )
     except Exception:
         logger.warning(
             "In-band question delivery failed for approval %s",
-            getattr(approval_request, "id", None),
+            approval_request_id,
             exc_info=True,
         )
         return False
@@ -479,9 +482,34 @@ async def require_approval(
                     rule_context=rule_context,
                 )
 
+                # Extract every value needed past this point into plain
+                # locals, then release this session BEFORE any waiting
+                # starts. A session held across the approval wait pins one
+                # pooled connection per pending approval for up to the
+                # workflow timeout; a handful of concurrent pending
+                # approvals then exhaust the async engine's pool. Keeping
+                # ORM instances alive across the wait is not safe either:
+                # attribute access after a commit can silently re-begin a
+                # transaction on this session.
+                approval_request_id = approval_request.id
+                approval_request_expires_at = approval_request.expires_at
+                resolved_workflow_id = workflow.id
+                workflow_name = workflow.name
+                workflow_approval_type = workflow.approval_type
+                workflow_timeout_seconds = workflow.timeout_seconds or 300
+                workflow_async_enabled = bool(
+                    getattr(workflow, "async_approval_enabled", False)
+                )
+                workflow_approver_user_ids = list(workflow.approver_user_ids or [])
+                workflow_escalation_user_ids = workflow.escalation_user_ids
+                workflow_escalation_team_ids = workflow.escalation_team_ids
+                # The remainder of this function (event logging, in-band
+                # delivery, polling) uses fresh short-lived sessions only.
+                await db.close()
+
                 # Derive notification channel from approval_type
                 notification_channels = (
-                    [workflow.approval_type] if workflow.approval_type else ["manual"]
+                    [workflow_approval_type] if workflow_approval_type else ["manual"]
                 )
                 channels_display = ", ".join(notification_channels)
 
@@ -493,10 +521,10 @@ async def require_approval(
                     f"{'=' * 60}\n"
                     f"Tool: {tool_name}\n"
                     f"Arguments: {redact_for_log(arguments)}\n"
-                    f"Request ID: {approval_request.id}\n"
+                    f"Request ID: {approval_request_id}\n"
                     f"Notification sent via: {channels_display}\n"
-                    f"Approval type: {workflow.approval_type}\n"
-                    f"Timeout: {workflow.timeout_seconds or 300}s\n"
+                    f"Approval type: {workflow_approval_type}\n"
+                    f"Timeout: {workflow_timeout_seconds}s\n"
                     f"Approval URL: [sent via notification]\n"
                     f"{'=' * 60}\n"
                     f"⏳ Waiting for approval (polling every 2s)..."
@@ -511,7 +539,7 @@ async def require_approval(
                     # Record approval request creation
                     event_db.add(
                         ApprovalEventModel(
-                            approval_request_id=approval_request.id,
+                            approval_request_id=approval_request_id,
                             account_id=account_id,
                             event_type="approval_requested",
                             detail=f"Approval request created for tool '{tool_name}'",
@@ -521,7 +549,7 @@ async def require_approval(
                     for channel in notification_channels:
                         event_db.add(
                             ApprovalEventModel(
-                                approval_request_id=approval_request.id,
+                                approval_request_id=approval_request_id,
                                 account_id=account_id,
                                 event_type="notification_sent",
                                 detail=f"Notification sent via {channel}",
@@ -541,14 +569,15 @@ async def require_approval(
                         tool_name=tool_name,
                         arguments=arguments,
                         account_id=account_id,
-                        approval_request=approval_request,
+                        approval_request_id=approval_request_id,
+                        expires_at=approval_request_expires_at,
                         base_url=base_url,
                     )
                     if delivered_in_band:
                         async with get_async_db_session() as event_db:
                             event_db.add(
                                 ApprovalEventModel(
-                                    approval_request_id=approval_request.id,
+                                    approval_request_id=approval_request_id,
                                     account_id=account_id,
                                     event_type="notification_sent",
                                     detail=(
@@ -560,17 +589,17 @@ async def require_approval(
                             await event_db.commit()
 
                 # Check if async approval mode is enabled
-                if getattr(workflow, "async_approval_enabled", False):
+                if workflow_async_enabled:
                     import json
 
                     logger.info(
-                        f"Async approval enabled for workflow '{workflow.name}' - "
+                        f"Async approval enabled for workflow '{workflow_name}' - "
                         f"returning immediately with polling instructions"
                     )
 
                     # Build approver display names
                     approver_display = []
-                    if workflow.approver_user_ids:
+                    if workflow_approver_user_ids:
                         # Try to resolve user emails
                         try:
                             from sqlalchemy import select
@@ -579,17 +608,17 @@ async def require_approval(
                             async with get_async_db_session() as user_db:
                                 users_result = await user_db.execute(
                                     select(User).where(
-                                        User.id.in_(workflow.approver_user_ids)
+                                        User.id.in_(workflow_approver_user_ids)
                                     )
                                 )
                                 for u in users_result.scalars():
                                     approver_display.append(u.email or u.username)
                         except Exception:
                             approver_display = [
-                                str(uid) for uid in workflow.approver_user_ids
+                                str(uid) for uid in workflow_approver_user_ids
                             ]
 
-                    poll_interval = min(15, (workflow.timeout_seconds or 300) // 20)
+                    poll_interval = min(15, workflow_timeout_seconds // 20)
                     poll_interval = max(5, poll_interval)  # At least 5 seconds
 
                     from preloop.services.ask_user_inband import (
@@ -602,27 +631,27 @@ async def require_approval(
                     # authenticated console/mobile session, so they cannot be
                     # used to self-approve (unlike the tokenized approval_url,
                     # which stays notification-only — see NOTE below).
-                    console_url = approval_console_url(base_url, approval_request.id)
-                    mobile_link = approval_mobile_deep_link(approval_request.id)
+                    console_url = approval_console_url(base_url, approval_request_id)
+                    mobile_link = approval_mobile_deep_link(approval_request_id)
 
                     async_response = {
                         "status": "pending_approval",
-                        "request_id": str(approval_request.id),
+                        "request_id": str(approval_request_id),
                         "message": (
-                            f"This tool call triggered approval workflow '{workflow.name}'. "
+                            f"This tool call triggered approval workflow '{workflow_name}'. "
                             f"Approval request has been sent to {', '.join(approver_display) if approver_display else 'configured approvers'} "
                             f"via {channels_display}. "
                             f"If the user is present, show them this link to answer directly: "
                             f"{console_url} (mobile: {mobile_link}). "
-                            f"Poll the approval status by calling get_approval_status(request_id='{approval_request.id}') "
-                            f"every {poll_interval} seconds for up to {workflow.timeout_seconds or 300} seconds. "
+                            f"Poll the approval status by calling get_approval_status(request_id='{approval_request_id}') "
+                            f"every {poll_interval} seconds for up to {workflow_timeout_seconds} seconds. "
                             f"When the status is 'approved', the response will include the tool execution result. "
                             f"When the status is 'declined' or 'expired', stop polling and inform the user."
                         ),
                         "approval_console_url": console_url,
                         "approval_mobile_link": mobile_link,
                         "poll_interval_seconds": poll_interval,
-                        "timeout_seconds": workflow.timeout_seconds or 300,
+                        "timeout_seconds": workflow_timeout_seconds,
                         "channels": notification_channels,
                         # NOTE: the tokenized approval_url stays intentionally
                         # excluded from the agent-visible response. That URL
@@ -654,7 +683,7 @@ async def require_approval(
                         status_message = (
                             f"Approval request sent via {channels_display} — "
                             f"answer at "
-                            f"{approval_console_url(base_url, approval_request.id)}"
+                            f"{approval_console_url(base_url, approval_request_id)}"
                         )
                         # Check if progressToken is available (do not log - sensitive)
                         progress_token = None
@@ -705,20 +734,21 @@ async def require_approval(
                         "❌ No Context available - cannot send progress notifications!"
                     )
 
-                # Polling loop with progress updates
+                # Polling loop with progress updates. Every poll uses a fresh
+                # short-lived session; no session is held across the sleep.
                 poll_interval = 2.0
-                timeout_seconds = workflow.timeout_seconds or 300
+                timeout_seconds = workflow_timeout_seconds
                 elapsed = 0
                 escalation_triggered = False
 
                 # Check if escalation is configured
                 has_escalation = bool(
-                    workflow.escalation_user_ids or workflow.escalation_team_ids
+                    workflow_escalation_user_ids or workflow_escalation_team_ids
                 )
                 logger.info(
                     f"[Polling] Escalation configured: {has_escalation}, "
-                    f"escalation_user_ids={workflow.escalation_user_ids}, "
-                    f"escalation_team_ids={workflow.escalation_team_ids}"
+                    f"escalation_user_ids={workflow_escalation_user_ids}, "
+                    f"escalation_team_ids={workflow_escalation_team_ids}"
                 )
 
                 while True:
@@ -729,7 +759,7 @@ async def require_approval(
 
                     async with get_async_db_session() as poll_db:
                         current_request = await get_approval_request_async(
-                            poll_db, request_id=approval_request.id
+                            poll_db, request_id=approval_request_id
                         )
                         # Extract needed fields before session closes to avoid DetachedInstanceError
                         current_status = (
@@ -779,7 +809,7 @@ async def require_approval(
                     if not current_request:
                         return (
                             False,
-                            f"Error: Approval request {approval_request.id} not found",
+                            f"Error: Approval request {approval_request_id} not found",
                         )
 
                     # Check if resolved
@@ -790,7 +820,7 @@ async def require_approval(
                         final_status = current_status
                         final_comment = current_comment
                         _set_last_approval_meta(
-                            approval_request.id,
+                            approval_request_id,
                             current_status,
                             resolved_at=current_resolved_at,
                             responded_by=current_responded_by,
@@ -812,13 +842,13 @@ async def require_approval(
                                 # Lock the row and check if already escalated
                                 fresh_request = (
                                     await get_approval_request_for_update_async(
-                                        escalation_db, request_id=approval_request.id
+                                        escalation_db, request_id=approval_request_id
                                     )
                                 )
 
                                 if not fresh_request:
                                     logger.warning(
-                                        f"[Polling] Request {approval_request.id} not found during escalation"
+                                        f"[Polling] Request {approval_request_id} not found during escalation"
                                     )
                                     escalation_triggered = True
                                     continue
@@ -835,7 +865,7 @@ async def require_approval(
                                     continue
 
                                 logger.info(
-                                    f"[Polling] Initial timeout reached, triggering escalation for request {approval_request.id}"
+                                    f"[Polling] Initial timeout reached, triggering escalation for request {approval_request_id}"
                                 )
                                 escalation_triggered = True
 
@@ -853,9 +883,17 @@ async def require_approval(
                                     escalation_db, base_url
                                 )
 
+                                # Re-fetch the workflow in this session rather
+                                # than reusing an instance loaded before the
+                                # wait started.
+                                escalation_workflow = await get_approval_workflow_async(
+                                    escalation_db,
+                                    workflow_id=resolved_workflow_id,
+                                )
+
                                 # Send escalation notifications
                                 await escalation_service._send_escalation_notifications(
-                                    fresh_request, workflow
+                                    fresh_request, escalation_workflow
                                 )
 
                                 # Broadcast escalation event
@@ -913,10 +951,10 @@ async def require_approval(
                             async with get_async_db_session() as update_db:
                                 update_service = ApprovalService(update_db, base_url)
                                 await update_service.update_approval_request(
-                                    approval_request.id,
+                                    approval_request_id,
                                     ApprovalRequestUpdate(status="expired"),
                                 )
-                            _set_last_approval_meta(approval_request.id, "expired")
+                            _set_last_approval_meta(approval_request_id, "expired")
                             return (
                                 False,
                                 f"Approval timeout: request expired after {timeout_seconds}s",
@@ -944,10 +982,10 @@ async def require_approval(
                         async with get_async_db_session() as update_db:
                             update_service = ApprovalService(update_db, base_url)
                             await update_service.update_approval_request(
-                                approval_request.id,
+                                approval_request_id,
                                 ApprovalRequestUpdate(status="expired"),
                             )
-                        _set_last_approval_meta(approval_request.id, "expired")
+                        _set_last_approval_meta(approval_request_id, "expired")
                         return (
                             False,
                             f"Approval timeout: request expired after {total_timeout}s (including escalation)",
