@@ -345,6 +345,15 @@ database:
   # whole was 65/200. Raising the gateway ceiling from 10 to 20 per pod is
   # what fixes it.
   #
+  # Approval waits no longer hold connections: the approval paths used to
+  # keep one async-pool connection checked out per pending approval for the
+  # whole human wait (up to the workflow timeout), so ~15-20 concurrent
+  # pending approvals could exhaust a pod's async ceiling. They now release
+  # the session before waiting and poll with short-lived sessions, so this
+  # budget does not need headroom for pending approvals. The DB pool monitor
+  # (DB_MONITORING_ENABLED, default on) logs a WARNING when a pod's
+  # checked-out connections reach 80% of its ceiling.
+  #
   # If you increase gateway maxReplicas or add components, re-check the
   # steady total against max_connections (see cnpg.parameters below).
   pool:
