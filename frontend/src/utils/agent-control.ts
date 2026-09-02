@@ -1,4 +1,5 @@
 import type { ManagedAgentSummary, RuntimeSessionSummary } from '../types';
+import { getAgentSourceLabel } from './agent-display';
 
 export interface AgentControlState {
   state:
@@ -107,4 +108,61 @@ export function formatAgentControlSessionLabel(
     ? ` · ${new Date(lastActivity).toLocaleString()}`
     : '';
   return `${reference} (${status})${suffix}`;
+}
+
+/** Where the operator reads what Agent Control is and how a runtime gets it. */
+export const AGENT_CONTROL_DOCS_URL =
+  'https://docs.preloop.ai/integrations/agent-control-runtime-adapters/';
+
+export interface AgentControlInstallHint {
+  /** Can this agent kind ever run Agent Control? */
+  supported: boolean;
+  /** The command that installs the runtime plugin, or null when it cannot. */
+  command: string | null;
+  docsUrl: string;
+  /** What the disabled composer says in place of the prompt. */
+  placeholder: string;
+  /** The line under the composer. */
+  helptext: string;
+}
+
+/**
+ * What a composer says when it cannot send.
+ *
+ * The distinction comes from the server, not from a table in the console:
+ * `control_state = 'unsupported'` means the runtime has no Agent Control
+ * plugin at all (Claude Desktop, Cursor), so there is nothing to install and
+ * offering a command would be a lie. Anything else (configured, install
+ * pending) is one `install-plugin` away, and the CLI takes the agent by the
+ * name the console shows.
+ */
+export function getAgentControlInstallHint(
+  agent: ManagedAgentSummary | null | undefined
+): AgentControlInstallHint {
+  const kindLabel = getAgentSourceLabel(
+    agent?.agent_kind || agent?.session_source_type
+  );
+  const name = agent?.display_name || 'this agent';
+  const state = getAgentControlState(agent);
+
+  if (!agent || state.state === 'unsupported') {
+    return {
+      supported: false,
+      command: null,
+      docsUrl: AGENT_CONTROL_DOCS_URL,
+      placeholder: `Agent Control is not available for ${kindLabel}`,
+      helptext: `${kindLabel} does not run an Agent Control plugin, so Preloop can watch this agent but cannot talk to it.`,
+    };
+  }
+
+  return {
+    supported: true,
+    command: `preloop agents install-plugin "${agent.display_name || agent.id}"`,
+    docsUrl: AGENT_CONTROL_DOCS_URL,
+    placeholder: `Install Agent Control to talk to ${name}`,
+    helptext:
+      state.state === 'install_pending'
+        ? 'Agent Control config was written but the runtime plugin has not connected yet. Run it on the machine that runs the agent:'
+        : 'Run this on the machine that runs the agent, then start it again:',
+  };
 }

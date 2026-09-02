@@ -1,7 +1,11 @@
 import { expect } from '@open-wc/testing';
 
 import type { ManagedAgentSummary } from '../types';
-import { getAgentControlState } from './agent-control';
+import {
+  AGENT_CONTROL_DOCS_URL,
+  getAgentControlInstallHint,
+  getAgentControlState,
+} from './agent-control';
 
 const baseAgent = {
   id: 'agent-1',
@@ -66,5 +70,59 @@ describe('getAgentControlState', () => {
     expect(state.enabled).to.equal(true);
     expect(state.online).to.equal(false);
     expect(state.label).to.equal('Agent Control configured');
+  });
+
+  describe('install hint', () => {
+    it('offers the install command for a runtime that supports the plugin', () => {
+      const hint = getAgentControlInstallHint({
+        ...baseAgent,
+        display_name: 'Hermes',
+        agent_kind: 'hermes',
+        control_state: 'plugin_configured',
+        control_enabled: false,
+        control_online: false,
+      });
+
+      expect(hint.supported).to.equal(true);
+      expect(hint.command).to.equal('preloop agents install-plugin "Hermes"');
+      expect(hint.placeholder).to.equal(
+        'Install Agent Control to talk to Hermes'
+      );
+      expect(hint.docsUrl).to.equal(AGENT_CONTROL_DOCS_URL);
+    });
+
+    it('says the config is written when the plugin has not connected', () => {
+      const hint = getAgentControlInstallHint({
+        ...baseAgent,
+        control_state: 'install_pending',
+        control_enabled: false,
+      });
+
+      expect(hint.helptext).to.contain('has not connected yet');
+      expect(hint.command).to.not.equal(null);
+    });
+
+    it('offers no command for a runtime that cannot run the plugin', () => {
+      const hint = getAgentControlInstallHint({
+        ...baseAgent,
+        display_name: 'Claude Desktop',
+        agent_kind: 'claude_desktop',
+        session_source_type: 'claude_desktop',
+        control_state: 'unsupported',
+        control_enabled: false,
+        control_capabilities: [],
+      });
+
+      expect(hint.supported).to.equal(false);
+      expect(hint.command).to.equal(null);
+      expect(hint.placeholder).to.contain('Agent Control is not available for');
+      expect(hint.helptext).to.contain('cannot talk to it');
+    });
+
+    it('has something to say with no agent at all', () => {
+      const hint = getAgentControlInstallHint(null);
+      expect(hint.supported).to.equal(false);
+      expect(hint.command).to.equal(null);
+    });
   });
 });
