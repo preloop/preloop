@@ -1,6 +1,7 @@
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
+import { invalidateApiCaches } from '../../api';
 import '../../components/view-header.ts';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import './attention-view';
@@ -16,6 +17,7 @@ describe('AttentionView', () => {
   let dismissalsResponse: any[];
   let dismissalsSupported = true;
   let rejectPolicies = false;
+  let permissions: string[] | null = null;
   let dismissalWrites: { url: string; method: string; body: any }[];
 
   const json = (data: unknown) =>
@@ -26,8 +28,10 @@ describe('AttentionView', () => {
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
+    invalidateApiCaches();
     rejectPolicies = false;
     dismissalsSupported = true;
+    permissions = null;
     dismissalsResponse = [];
     dismissalWrites = [];
     window.location.hash = '';
@@ -139,6 +143,14 @@ describe('AttentionView', () => {
         if (url === '/api/v1/features') {
           return json({ features: { billing: true } });
         }
+        if (url === '/api/v1/auth/users/me') {
+          return json({
+            id: 'user-1',
+            username: 'tester',
+            email: 'tester@example.com',
+            permissions,
+          });
+        }
         return json({ detail: `Unhandled ${url}` });
       });
 
@@ -149,6 +161,7 @@ describe('AttentionView', () => {
   });
 
   afterEach(() => {
+    invalidateApiCaches();
     fetchStub.restore();
     connectStub.restore();
     subscribeStub.restore();
@@ -409,6 +422,43 @@ describe('AttentionView', () => {
     expect(el.shadowRoot!.querySelector('.dismiss-dropdown')).to.not.exist;
     expect(el.shadowRoot!.querySelector('#dismissed')).to.not.exist;
     expect(el.shadowRoot!.querySelector('#flows')).to.exist;
+  });
+
+  // Every member can read the inbox, but only `manage_agents` may write a
+  // dismissal, so a member without it gets no button rather than a 403.
+  it('hides the dismiss controls from a member without manage_agents', async () => {
+    permissions = ['view_agents', 'view_flows'];
+    dismissalsResponse = [
+      {
+        id: 'dismissal-1',
+        item_id: 'flow:flow-1',
+        fingerprint: 'run:execution-1',
+        reason: 'expected',
+        snooze_until: null,
+        dismissed_by_user_id: 'user-2',
+        dismissed_by_username: 'owner',
+        created_at: new Date().toISOString(),
+      },
+    ];
+    const el = await mount();
+
+    expect(el.shadowRoot!.querySelector('.dismiss-dropdown')).to.not.exist;
+    // The dismissed list is still readable, it just cannot be undone here.
+    const dismissed = el.shadowRoot!.querySelector('#dismissed')!;
+    expect(dismissed).to.exist;
+    (dismissed.querySelector('.dismissed-toggle') as HTMLElement).click();
+    await el.updateComplete;
+    const restore = Array.from(dismissed.querySelectorAll('sl-button')).find(
+      (button) => button.textContent!.includes('Restore')
+    );
+    expect(restore).to.be.undefined;
+  });
+
+  it('shows the dismiss controls to a member with manage_agents', async () => {
+    permissions = ['view_flows', 'manage_agents'];
+    const el = await mount();
+
+    expect(el.shadowRoot!.querySelector('#flows .dismiss-dropdown')).to.exist;
   });
 
   it('never offers to dismiss an approval', async () => {
