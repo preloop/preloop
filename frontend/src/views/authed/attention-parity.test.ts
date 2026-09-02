@@ -225,8 +225,8 @@ describe('attention count parity', () => {
 
     const pageRows = page.shadowRoot!.querySelectorAll('.attention-row').length;
 
-    // 1 approval + 1 agent + 3 failed flow runs.
-    expect(pageRows).to.equal(5);
+    // 1 approval + 1 agent + 2 flows (three failed runs of two flows).
+    expect(pageRows).to.equal(4);
     expect(heroValue).to.equal(String(pageRows));
     expect(dashboard['attentionItems'].map((item) => item.id)).to.eql(
       page['items'].map((item) => item.id)

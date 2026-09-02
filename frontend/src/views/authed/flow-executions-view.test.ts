@@ -71,6 +71,39 @@ describe('FlowExecutionsView', () => {
     expect(el.shadowRoot?.textContent).to.contain('Triage');
   });
 
+  it('preselects the status and flow filters from the query string', async () => {
+    const requested: string[] = [];
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
+      requested.push(String(input));
+      return new Response(JSON.stringify(EXECUTIONS), { status: 200 });
+    });
+    const original = window.location.href;
+    window.history.replaceState(
+      {},
+      '',
+      '/console/flows/executions?status=FAILED&flow_id=flow-1'
+    );
+
+    try {
+      const el = (await fixture(
+        html`<flow-executions-view></flow-executions-view>`
+      )) as FlowExecutionsView;
+      await tick();
+      await el.updateComplete;
+
+      expect(requested.some((url) => url.includes('status=FAILED'))).to.be.true;
+      expect(requested.some((url) => url.includes('flow_id=flow-1'))).to.be
+        .true;
+      const failedButton = el.shadowRoot?.querySelector(
+        'sl-button[data-status="FAILED"]'
+      );
+      expect(failedButton?.getAttribute('variant')).to.equal('danger');
+      expect(el.shadowRoot?.textContent).to.contain('Flow: Nightly Sync');
+    } finally {
+      window.history.replaceState({}, '', original);
+    }
+  });
+
   it('renders filter buttons for all execution statuses', async () => {
     fetchStub = stub(EXECUTIONS);
     const el = (await fixture(

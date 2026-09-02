@@ -160,12 +160,20 @@ function approvalItems(
         approval.summary || approval.tool_name || 'Approval request';
       const title = approval.is_question ? `Question: ${subject}` : subject;
       const requester = approval.managed_agent_name || approval.flow_name || '';
-      const detail = joinReasons([
-        requester,
-        approval.requested_at
-          ? formatRelativeTime(approval.requested_at, now)
-          : '',
-      ]);
+      // "pending 7w", never a bare date: an approval that has been waiting
+      // seven weeks reads as urgent, "7/13/2026" reads as a log line.
+      const elapsed = approval.requested_at
+        ? formatRelativeTime(approval.requested_at, now, {
+            maxRelativeDays: Infinity,
+            withSuffix: false,
+          })
+        : '';
+      const waiting = !elapsed
+        ? ''
+        : elapsed === 'just now'
+          ? 'just requested'
+          : `pending ${elapsed}`;
+      const detail = joinReasons([requester, waiting]);
       return {
         id: `approval:${approval.id}`,
         kind: 'approval' as const,
@@ -239,39 +247,89 @@ function agentItems(
   return items;
 }
 
+/**
+ * One item per flow, not per run: a flow that fails on every trigger produced
+ * seven identical rows and pushed everything else off the page. The count and
+ * the age of the oldest failure carry the same information in one row.
+ */
 function flowItems(
   executions: AttentionFlowExecution[],
   now: Date
 ): AttentionItem[] {
   const cutoff = now.getTime() - SEVEN_DAYS_MS;
-  return executions
+  const recentFailures = executions
     .filter((execution) => execution.status === 'FAILED')
     .filter((execution) => {
       const startedAt = execution.start_time || execution.started_at;
       return Boolean(startedAt) && timestampOf(startedAt) >= cutoff;
-    })
-    .map((execution) => {
-      const startedAt = (execution.start_time ||
-        execution.started_at) as string;
-      const duration = formatDurationBetween(
-        startedAt,
-        execution.end_time,
-        now
-      );
-      return {
-        id: `flow:${execution.id}`,
-        kind: 'flow' as const,
-        severity: 'warning' as const,
-        title: execution.flow_name || 'Unnamed flow',
-        detail: joinReasons([
-          'Failed',
-          formatRelativeTime(startedAt, now),
-          duration,
-        ]),
-        href: `/console/flows/executions/${execution.id}`,
-        at: startedAt,
-      };
     });
+
+  const groups = new Map<
+    string,
+    { flowId: string | null; name: string; runs: AttentionFlowExecution[] }
+  >();
+  for (const execution of recentFailures) {
+    const name = execution.flow_name || 'Unnamed flow';
+    const key = execution.flow_id || `name:${name}`;
+    const group = groups.get(key) || {
+      flowId: execution.flow_id || null,
+      name,
+      runs: [] as AttentionFlowExecution[],
+    };
+    group.runs.push(execution);
+    groups.set(key, group);
+  }
+
+  return Array.from(groups.entries()).map(([key, group]) => {
+    const runs = [...group.runs].sort(
+      (left, right) =>
+        timestampOf(right.start_time || right.started_at) -
+        timestampOf(left.start_time || left.started_at)
+    );
+    const latest = runs[0];
+    const oldest = runs[runs.length - 1];
+    const latestStart = (latest.start_time || latest.started_at) as string;
+    const oldestStart = (oldest.start_time || oldest.started_at) as string;
+    const duration = formatDurationBetween(latestStart, latest.end_time, now);
+
+    const span = formatRelativeTime(oldestStart, now, {
+      maxRelativeDays: Infinity,
+      withSuffix: false,
+    });
+    const detail =
+      runs.length === 1
+        ? joinReasons([
+            'Failed',
+            formatRelativeTime(latestStart, now),
+            duration,
+          ])
+        : joinReasons([
+            `${runs.length} failed runs in ${
+              span === 'just now' ? '1m' : span
+            }`,
+            `latest ${formatRelativeTime(latestStart, now)}`,
+            duration,
+          ]);
+
+    // A single failure opens the run itself; a group opens the failed runs of
+    // that flow, which is what the count is about.
+    const href =
+      runs.length === 1 || !group.flowId
+        ? `/console/flows/executions/${latest.id}`
+        : `/console/flows/executions?flow_id=${encodeURIComponent(
+            group.flowId
+          )}&status=FAILED`;
+
+    return {
+      id: `flow:${key}`,
+      kind: 'flow' as const,
+      severity: 'warning' as const,
+      title: group.name,
+      detail,
+      href,
+      at: latestStart,
+    };
+  });
 }
 
 function modelItems(

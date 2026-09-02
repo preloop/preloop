@@ -20,6 +20,42 @@ describe('date utilities', () => {
     expect(formatRelativeTime('2026-07-12T20:00:00', now)).to.equal('3h ago');
   });
 
+  it('keeps the 7 day relative window by default', () => {
+    const now = new Date('2026-07-12T20:00:00Z');
+
+    expect(formatRelativeTime('2026-07-06T20:00:00', now)).to.equal('6d ago');
+    expect(formatRelativeTime('2026-07-05T20:00:00', now)).to.equal(
+      new Date('2026-07-05T20:00:00Z').toLocaleDateString()
+    );
+  });
+
+  it('stays relative up to the caller window and then shows the date', () => {
+    const now = new Date('2026-07-12T20:00:00Z');
+    const options = { maxRelativeDays: 30 };
+
+    expect(formatRelativeTime('2026-07-04T20:00:00', now, options)).to.equal(
+      '8d ago'
+    );
+    expect(formatRelativeTime('2026-06-20T20:00:00', now, options)).to.equal(
+      '22d ago'
+    );
+    expect(formatRelativeTime('2026-06-01T20:00:00', now, options)).to.equal(
+      new Date('2026-06-01T20:00:00Z').toLocaleDateString()
+    );
+  });
+
+  it('counts weeks and years for pages that stay relative', () => {
+    const now = new Date('2026-09-02T20:00:00Z');
+    const options = { maxRelativeDays: Infinity, withSuffix: false };
+
+    expect(formatRelativeTime('2026-07-13T20:00:00', now, options)).to.equal(
+      '7w'
+    );
+    expect(formatRelativeTime('2024-09-02T20:00:00', now, options)).to.equal(
+      '2y'
+    );
+  });
+
   it('formats future expiry times as time remaining', () => {
     const now = new Date('2026-07-12T20:00:00Z');
 

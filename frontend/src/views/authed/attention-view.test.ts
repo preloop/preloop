@@ -162,6 +162,59 @@ describe('AttentionView', () => {
     ).to.be.true;
   });
 
+  it('states how long an approval has been waiting, with the date on hover', async () => {
+    approvalsResponse = [
+      {
+        id: 'approval-1',
+        tool_name: 'Bash',
+        status: 'pending',
+        requested_at: new Date(Date.now() - 49 * 24 * 3600_000).toISOString(),
+        managed_agent_name: 'Claude Code',
+      },
+    ];
+    const el = await mount();
+
+    const detail = el.shadowRoot!.querySelector('#approvals .row-detail')!;
+    expect(detail.textContent!.trim()).to.equal('Claude Code · pending 7w');
+    expect(detail.getAttribute('title')).to.not.be.null;
+  });
+
+  it('shows one row per flow with the failure count', async () => {
+    const start = (daysAgo: number) =>
+      new Date(Date.now() - daysAgo * 24 * 3600_000).toISOString();
+    executionsResponse = [
+      {
+        id: 'execution-1',
+        flow_id: 'flow-1',
+        flow_name: 'Pull Request Reviewer',
+        status: 'FAILED',
+        start_time: start(2),
+        end_time: new Date(
+          Date.now() - 2 * 24 * 3600_000 + 31_000
+        ).toISOString(),
+      },
+      {
+        id: 'execution-2',
+        flow_id: 'flow-1',
+        flow_name: 'Pull Request Reviewer',
+        status: 'FAILED',
+        start_time: start(3),
+      },
+    ];
+    const el = await mount();
+
+    const rows = el.shadowRoot!.querySelectorAll('#flows .attention-row');
+    expect(rows).to.have.length(1);
+    expect(rows[0].textContent).to.contain('2 failed runs in 3d');
+    expect(
+      el.shadowRoot!.querySelector('#flows sl-button')!.getAttribute('href')
+    ).to.equal('/console/flows/executions?flow_id=flow-1&status=FAILED');
+    const flowsChip = Array.from(el.shadowRoot!.querySelectorAll('.chip')).find(
+      (chip) => chip.textContent!.includes('flow')
+    )!;
+    expect(flowsChip.textContent!.trim()).to.equal('1 flow');
+  });
+
   it('shows a chip per kind, muted when the kind is empty', async () => {
     const el = await mount();
     const chips = Array.from(el.shadowRoot!.querySelectorAll('.chip')).map(

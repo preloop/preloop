@@ -31,7 +31,7 @@ import {
   type AttentionKind,
 } from '../../utils/attention';
 import { loadAttentionInputs } from '../../utils/attention-data';
-import { formatRelativeTime } from '../../utils/date';
+import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
 
 /**
  * One page for everything waiting on a human or degraded right now. The
@@ -340,7 +340,11 @@ export class AttentionView extends AuthedElement {
                 ></span>
                 <div class="row-body">
                   <a class="row-title" href=${item.href}>${item.title}</a>
-                  <span class="row-detail">${item.detail}</span>
+                  <span
+                    class="row-detail"
+                    title=${item.at ? formatLocalDateTime(item.at) : nothing}
+                    >${item.detail}</span
+                  >
                 </div>
                 ${this.renderAction(item)}
               </div>

@@ -83,7 +83,7 @@ describe('deriveAttentionItems', () => {
       expect(items[0].kind).to.equal('approval');
       expect(items[0].severity).to.equal('critical');
       expect(items[0].title).to.equal('Deploy to production');
-      expect(items[0].detail).to.equal('Hermes · 5m ago');
+      expect(items[0].detail).to.equal('Hermes · pending 5m');
       expect(items[0].href).to.equal('/console/approval/approval-1');
     });
 
@@ -222,7 +222,7 @@ describe('deriveAttentionItems', () => {
   });
 
   describe('flows', () => {
-    it('emits one item per failed execution inside the 7 day window', () => {
+    it('emits one item for a single failed execution inside the 7 day window', () => {
       const items = derive({
         executions: [
           {
@@ -240,6 +240,52 @@ describe('deriveAttentionItems', () => {
       expect(items[0].title).to.equal('Pull Request Reviewer');
       expect(items[0].detail).to.equal('Failed · 1h ago · 2m 0s');
       expect(items[0].href).to.equal('/console/flows/executions/exec-1');
+    });
+
+    it('groups repeated failures of one flow into a single counted row', () => {
+      const items = derive({
+        executions: [
+          {
+            id: 'exec-1',
+            flow_id: 'flow-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: daysAgo(2),
+            end_time: minutesAgo(2 * 24 * 60 - 1),
+          },
+          {
+            id: 'exec-2',
+            flow_id: 'flow-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: daysAgo(3),
+          },
+          {
+            id: 'exec-3',
+            flow_id: 'flow-2',
+            flow_name: 'Merge Request Reviewer',
+            status: 'FAILED',
+            start_time: daysAgo(1),
+          },
+        ],
+      });
+
+      expect(items).to.have.length(2);
+      const reviewer = items.find(
+        (item) => item.title === 'Pull Request Reviewer'
+      )!;
+      expect(reviewer.id).to.equal('flow:flow-1');
+      expect(reviewer.detail).to.equal(
+        '2 failed runs in 3d · latest 2d ago · 1m 0s'
+      );
+      expect(reviewer.href).to.equal(
+        '/console/flows/executions?flow_id=flow-1&status=FAILED'
+      );
+
+      const merge = items.find(
+        (item) => item.title === 'Merge Request Reviewer'
+      )!;
+      expect(merge.href).to.equal('/console/flows/executions/exec-3');
     });
 
     it('ignores succeeded runs and anything older than 7 days', () => {
