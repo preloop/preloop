@@ -286,11 +286,12 @@ export class AgentDetailView extends LitElement {
         }
       }
 
+      /* Depth limit: two. A stat inside a card is spacing and type, not a
+         second box with its own fill and border. */
       .stat-card {
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
+        border: none;
         padding: var(--sl-spacing-medium);
-        background: var(--sl-color-neutral-50);
+        background: transparent;
       }
 
       .summary-grid .stat-card {
@@ -339,14 +340,17 @@ export class AgentDetailView extends LitElement {
         color: var(--sl-color-neutral-900);
       }
 
+      /* The identity block is a card: it sits on the page, so it takes the
+         card rung of the ladder rather than a named gray step. */
       .agent-overview {
         display: flex;
         flex-direction: column;
         gap: var(--sl-spacing-small);
         padding: var(--sl-spacing-large);
-        border-radius: var(--sl-border-radius-large);
-        background: var(--sl-color-neutral-50);
-        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--console-card-radius);
+        background: var(--console-surface);
+        border: var(--console-card-border);
+        box-shadow: var(--console-card-shadow);
       }
 
       .section-header {
@@ -454,13 +458,10 @@ export class AgentDetailView extends LitElement {
         min-width: 220px;
       }
 
+      /* No decorative gradient: the control card is a card like the others,
+         and its subject is stated by its title. */
       .agent-control-card::part(base) {
-        border-color: var(--sl-color-primary-200);
-        background: linear-gradient(
-          180deg,
-          var(--sl-color-primary-50),
-          var(--sl-color-neutral-0)
-        );
+        background: var(--console-surface);
       }
 
       .agent-control-panel {
@@ -477,10 +478,9 @@ export class AgentDetailView extends LitElement {
       }
 
       .agent-control-status {
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
+        border-left: 1px solid var(--console-hairline);
         padding: var(--sl-spacing-medium);
-        background: var(--sl-color-neutral-0);
+        background: transparent;
         display: flex;
         flex-direction: column;
         gap: var(--sl-spacing-small);

@@ -17,9 +17,19 @@ import { css } from 'lit';
  * renders one includes this snippet in its `static styles`.
  *
  * `sl-drawer` is deliberately untouched: it is anchored to a window edge.
+ *
+ * The same snippet puts the dialog panel on the raised rung of the surface
+ * ladder (styles/console-surfaces.css): a modal floats above the page and the
+ * cards, so it is the one thing that may be lighter than a card in dark.
  */
 export const consoleDialogStyles = css`
   sl-dialog::part(base) {
     left: var(--console-main-offset, 0px);
+  }
+
+  sl-dialog::part(panel) {
+    background-color: var(--console-surface-raised);
+    border-radius: var(--console-card-radius);
+    box-shadow: var(--console-raised-shadow);
   }
 `;

@@ -669,6 +669,59 @@ describe('DashboardView', () => {
     });
   });
 
+  describe('Recent Flow Executions surfaces (wave 4)', () => {
+    it('gives the rows no box of their own, only a hairline between them', async () => {
+      flowExecutionsResponse = [
+        {
+          id: 'execution-1',
+          flow_id: 'flow-1',
+          flow_name: 'Refund Assistant',
+          status: 'COMPLETED',
+          start_time: '2026-03-07T10:00:00Z',
+          end_time: '2026-03-07T10:03:00Z',
+        },
+        {
+          id: 'execution-2',
+          flow_id: 'flow-1',
+          flow_name: 'Refund Assistant',
+          status: 'COMPLETED',
+          start_time: '2026-03-07T09:00:00Z',
+          end_time: '2026-03-07T09:02:00Z',
+        },
+      ];
+
+      const element = await mountDashboard();
+      // The ladder lives on the document in the app; pin the hairline here so
+      // the separator has a colour to compute.
+      element.style.setProperty('--console-hairline', 'rgb(10, 11, 12)');
+      await waitUntil(
+        () => !element['loading'],
+        'dashboard did not finish loading'
+      );
+      await element.updateComplete;
+
+      const rows = [
+        ...(element.shadowRoot?.querySelectorAll('.item-card') || []),
+      ] as HTMLElement[];
+      expect(rows.length, 'execution rows').to.be.at.least(2);
+
+      // Depth limit is two: page, then card. A row inside a card may not
+      // paint a third surface, so it has no fill, no radius and no shadow.
+      for (const row of rows) {
+        const style = getComputedStyle(row);
+        expect(style.backgroundColor, 'row fill').to.equal('rgba(0, 0, 0, 0)');
+        expect(style.borderRadius).to.equal('0px');
+        expect(style.boxShadow).to.equal('none');
+      }
+
+      // Structure comes from a hairline instead.
+      const second = getComputedStyle(rows[1]);
+      expect(second.borderTopWidth).to.equal('1px');
+      expect(second.borderTopColor).to.equal('rgb(10, 11, 12)');
+      expect(getComputedStyle(rows[0]).borderTopWidth).to.equal('0px');
+    });
+  });
+
   it('hides exception cards when there is nothing actionable to show', async () => {
     gatewaySearchResponse = {
       ...gatewaySearchResponse,

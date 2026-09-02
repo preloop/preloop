@@ -113,8 +113,8 @@ export class AttentionView extends AuthedElement {
 
       .chip {
         align-items: center;
-        background: var(--sl-color-neutral-0);
-        border: 1px solid var(--sl-color-neutral-200);
+        background: var(--console-surface);
+        border: 1px solid var(--console-hairline);
         border-radius: var(--sl-border-radius-pill);
         color: var(--sl-color-neutral-800);
         cursor: pointer;
@@ -126,12 +126,12 @@ export class AttentionView extends AuthedElement {
       }
 
       .chip.empty {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         cursor: default;
       }
 
       .chip sl-icon {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       .sections {
@@ -153,7 +153,7 @@ export class AttentionView extends AuthedElement {
       }
 
       .attention-row + .attention-row {
-        border-top: 1px solid var(--sl-color-neutral-100);
+        border-top: 1px solid var(--console-hairline);
       }
 
       /* A jump from the Overview strip has to land somewhere visible. The tint
@@ -164,7 +164,11 @@ export class AttentionView extends AuthedElement {
 
       @keyframes row-highlight {
         0% {
-          background: var(--sl-color-primary-100);
+          background: color-mix(
+            in srgb,
+            var(--sl-color-primary-500) 18%,
+            transparent
+          );
         }
         100% {
           background: transparent;
@@ -174,7 +178,11 @@ export class AttentionView extends AuthedElement {
       @media (prefers-reduced-motion: reduce) {
         .attention-row.highlighted {
           animation: none;
-          background: var(--sl-color-primary-50);
+          background: color-mix(
+            in srgb,
+            var(--sl-color-primary-500) 12%,
+            transparent
+          );
         }
       }
 
@@ -188,7 +196,7 @@ export class AttentionView extends AuthedElement {
         align-items: center;
         background: none;
         border: none;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         cursor: pointer;
         display: flex;
         flex-shrink: 0;
@@ -237,7 +245,7 @@ export class AttentionView extends AuthedElement {
       }
 
       .row-detail {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--console-text-meta);
         font-variant-numeric: tabular-nums;
       }
@@ -275,7 +283,7 @@ export class AttentionView extends AuthedElement {
       }
 
       .evidence-table th {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-weight: 500;
         padding: 2px var(--sl-spacing-x-small) 2px 0;
         text-align: left;
@@ -291,7 +299,7 @@ export class AttentionView extends AuthedElement {
       }
 
       .evidence-table td a {
-        color: var(--sl-color-primary-700);
+        color: var(--console-link-color);
         text-decoration: none;
       }
 
@@ -299,10 +307,12 @@ export class AttentionView extends AuthedElement {
         text-align: right;
       }
 
+      /* The one filled block allowed inside a card body: a command to copy,
+         on the page colour, no border. */
       .evidence-command {
         align-items: center;
-        background: var(--sl-color-neutral-50);
-        border: 1px solid var(--sl-color-neutral-200);
+        background: var(--console-page);
+        border: none;
         border-radius: var(--sl-border-radius-medium);
         display: flex;
         gap: var(--sl-spacing-x-small);
@@ -353,7 +363,7 @@ export class AttentionView extends AuthedElement {
       }
 
       .dismissed-row + .dismissed-row {
-        border-top: 1px solid var(--sl-color-neutral-100);
+        border-top: 1px solid var(--console-hairline);
       }
 
       .all-clear {
@@ -371,7 +381,7 @@ export class AttentionView extends AuthedElement {
       }
 
       .updated-at {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
       }
 

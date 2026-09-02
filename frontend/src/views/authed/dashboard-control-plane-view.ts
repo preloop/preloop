@@ -359,7 +359,7 @@ export class DashboardView extends AuthedElement {
         padding: var(--sl-spacing-x-small) 0;
       }
       .plane-row + .plane-row {
-        border-top: 1px solid var(--sl-color-neutral-100);
+        border-top: 1px solid var(--console-hairline);
       }
       .plane-name-cell {
         align-items: center;
@@ -452,10 +452,13 @@ export class DashboardView extends AuthedElement {
         gap: var(--sl-spacing-small);
         padding: var(--sl-spacing-x-small) 0;
       }
+      /* The one exception to "no filled box inside a card": a command you
+         are meant to select and copy is a block of input, and it takes the
+         page colour so it reads as recessed rather than raised. */
       .connect-command {
         align-items: center;
-        background: var(--sl-color-neutral-50);
-        border: 1px solid var(--sl-color-neutral-200);
+        background: var(--console-page);
+        border: none;
         border-radius: var(--sl-border-radius-medium);
         display: flex;
         gap: var(--sl-spacing-2x-small);
@@ -631,7 +634,7 @@ export class DashboardView extends AuthedElement {
         left: var(--budget-soft-position, 0%);
         width: 2px;
         background: var(--sl-color-warning-600);
-        box-shadow: 0 0 0 1px var(--sl-color-neutral-0);
+        box-shadow: 0 0 0 1px var(--console-surface);
       }
       .budget-hard-marker {
         position: absolute;
@@ -704,7 +707,7 @@ export class DashboardView extends AuthedElement {
         margin-left: auto;
       }
       .expandable-content {
-        border-left: 2px solid var(--sl-color-neutral-200);
+        border-left: 2px solid var(--console-hairline);
         display: flex;
         flex-direction: column;
         gap: 4px;
@@ -1241,11 +1244,12 @@ export class DashboardView extends AuthedElement {
       /* One centered line in a 72px box. An empty card used to take as much
          vertical space as a full one, so a quiet account looked like a broken
          one. */
+      /* No dashed box: an empty list is a line of text inside the card it
+         belongs to, not a placeholder card of its own. */
       .empty-state {
         align-items: center;
-        background: var(--sl-color-neutral-0);
-        border: 1px dashed var(--sl-color-neutral-300);
-        border-radius: var(--sl-border-radius-medium);
+        background: transparent;
+        border: none;
         display: flex;
         gap: var(--sl-spacing-small);
         justify-content: center;
