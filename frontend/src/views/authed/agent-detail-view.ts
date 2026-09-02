@@ -22,6 +22,8 @@ import '../../components/preloop-session-observer.ts';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
 import '../../components/agent-talk-composer.ts';
+import '../../components/confirm-dialog.ts';
+import { confirmDialog } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import {
   fetchWithAuth,
@@ -63,7 +65,9 @@ import {
 import { getAgentControlState } from '../../utils/agent-control';
 import { renderAgentIcon } from '../../utils/agent-icons';
 import {
+  REMOVE_AGENT_CONSEQUENCE,
   getAgentSourceLabel,
+  getAgentStatusChip,
   getSystemAgentTags,
   getVisibleAgentTags,
 } from '../../utils/agent-display';
@@ -1442,11 +1446,14 @@ export class AgentDetailView extends LitElement {
     if (!this.agentId || !this.agent) {
       return;
     }
-    if (
-      !window.confirm(
-        `Remove ${this.agent.display_name} from the managed agents list?\n\nThis also revokes the agent's Preloop credentials: if this agent is still onboarded on a machine, its gateway and MCP access will stop working until you run \`preloop agents onboard\` again. To disconnect cleanly, run \`preloop agents offboard\` on that machine instead.`
-      )
-    ) {
+    const confirmed = await confirmDialog({
+      title: 'Remove agent',
+      message: `Remove ${this.agent.display_name} from the managed agents list?`,
+      detail: REMOVE_AGENT_CONSEQUENCE,
+      confirmLabel: 'Remove agent',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
     this.actionLoading = true;
@@ -1470,12 +1477,18 @@ export class AgentDetailView extends LitElement {
     if (!this.agentId || !this.agent) {
       return;
     }
-    const actionLabel = lifecycleAction === 'suspend' ? 'pause' : 'resume';
-    if (
-      !window.confirm(
-        `Are you sure you want to ${actionLabel} ${this.agent.display_name}?`
-      )
-    ) {
+    const isSuspend = lifecycleAction === 'suspend';
+    const confirmed = await confirmDialog({
+      title: isSuspend ? 'Pause agent' : 'Resume agent',
+      message: isSuspend
+        ? `Pause ${this.agent.display_name}?`
+        : `Resume ${this.agent.display_name}?`,
+      detail: isSuspend
+        ? 'Requests are blocked while paused. Resume restores the agent without re-onboarding it.'
+        : 'The existing credentials start working again immediately.',
+      confirmLabel: isSuspend ? 'Pause' : 'Resume',
+    });
+    if (!confirmed) {
       return;
     }
     this.actionLoading = true;

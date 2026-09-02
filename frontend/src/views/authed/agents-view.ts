@@ -24,6 +24,8 @@ import '../../components/preloop-agent-deployer.ts';
 import '../../components/preloop-deploy-wizard.ts';
 import '../../components/resource-actions.ts';
 import '../../components/agent-talk-composer.ts';
+import '../../components/confirm-dialog.ts';
+import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import {
   fetchWithAuth,
@@ -49,6 +51,7 @@ import { unifiedWebSocketManager } from '../../services/unified-websocket-manage
 import { getAgentControlState } from '../../utils/agent-control';
 import { renderAgentIcon } from '../../utils/agent-icons';
 import {
+  REMOVE_AGENT_CONSEQUENCE,
   getAgentSourceLabel,
   getSystemAgentTags,
   getVisibleAgentTags,
@@ -2144,12 +2147,14 @@ export class AgentsView extends LitElement {
   }
 
   private async removeAgent(agent: ManagedAgentSummary): Promise<void> {
-    if (
-      !window.confirm(
-        `Remove ${agent.display_name} from the managed agents list?\n\nThis also revokes the agent's Preloop credentials: if this agent is still onboarded on a machine, its gateway and MCP access will stop working until you run \`preloop agents onboard\` again. To disconnect cleanly, run \`preloop agents offboard\` on that machine instead.`
-      )
-    )
-      return;
+    const confirmed = await confirmDialog({
+      title: 'Remove agent',
+      message: `Remove ${agent.display_name} from the managed agents list?`,
+      detail: REMOVE_AGENT_CONSEQUENCE,
+      confirmLabel: 'Remove agent',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     this.actionAgentId = agent.id;
     try {
       await removeAccountAgent(agent.id);
@@ -2235,7 +2240,7 @@ export class AgentsView extends LitElement {
       (user) => user.username === trimmed || user.email === trimmed
     );
     if (!selected) {
-      window.alert('No user matched that username or email.');
+      showToast('No user matched that username or email.', 'warning');
       return;
     }
     void this.updateAgent(agent, { owner_user_id: selected.id });
@@ -2245,14 +2250,18 @@ export class AgentsView extends LitElement {
     agent: ManagedAgentSummary,
     lifecycleAction: 'suspend' | 'resume'
   ): Promise<void> {
-    const label = lifecycleAction === 'suspend' ? 'pause' : 'resume';
-    if (
-      !window.confirm(
-        `Are you sure you want to ${label} ${agent.display_name}?`
-      )
-    ) {
-      return;
-    }
+    const isSuspend = lifecycleAction === 'suspend';
+    const confirmed = await confirmDialog({
+      title: isSuspend ? 'Pause agent' : 'Resume agent',
+      message: isSuspend
+        ? `Pause ${agent.display_name}?`
+        : `Resume ${agent.display_name}?`,
+      detail: isSuspend
+        ? 'Requests are blocked while paused. Resume restores the agent without re-onboarding it.'
+        : 'The existing credentials start working again immediately.',
+      confirmLabel: isSuspend ? 'Pause' : 'Resume',
+    });
+    if (!confirmed) return;
     await this.updateAgent(agent, {
       lifecycle_action: lifecycleAction,
       reason:
