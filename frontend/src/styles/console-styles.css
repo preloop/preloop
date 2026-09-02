@@ -120,8 +120,27 @@ a:hover {
     padding: 0;
 }
 
+/* Cards read as one quiet surface: no gray header band, a hairline border and
+   the smallest shadow, so content (not chrome) carries the hierarchy. */
 sl-card::part(header) {
-    background-color: var(--sl-color-neutral-100);
+    background-color: transparent;
+    border-bottom: 1px solid var(--sl-color-neutral-200);
+    padding: var(--sl-spacing-medium);
+    font-weight: 600;
+}
+
+.content-card::part(base) {
+    border: 1px solid var(--sl-color-neutral-200);
+    border-radius: var(--sl-border-radius-medium);
+    box-shadow: var(--sl-shadow-x-small);
+}
+
+/* Numbers line up column-wise wherever they appear. */
+.row-value,
+.tool-count-value,
+.metric-value,
+.summary-value {
+    font-variant-numeric: tabular-nums;
 }
 
 .styled-table {

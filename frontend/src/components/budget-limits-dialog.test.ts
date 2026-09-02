@@ -5,7 +5,7 @@ import type { BudgetLimitsDialog } from './budget-limits-dialog';
 describe('budget-limits-dialog', () => {
   it('hosts the limits editor with the shared explanation', async () => {
     const element = await fixture<BudgetLimitsDialog>(
-      html`<budget-limits-dialog></budget-limits-dialog>`
+      html`<budget-limits-dialog open></budget-limits-dialog>`
     );
     await element.updateComplete;
 
@@ -17,6 +17,16 @@ describe('budget-limits-dialog', () => {
       'Soft limits notify. Hard limits stop model calls through the gateway.'
     );
     expect(element.shadowRoot!.querySelector('budget-policy-editor')).to.exist;
+  });
+
+  it('keeps the editor out of the tree until it is opened', async () => {
+    const element = await fixture<BudgetLimitsDialog>(
+      html`<budget-limits-dialog></budget-limits-dialog>`
+    );
+    await element.updateComplete;
+
+    expect(element.shadowRoot!.querySelector('budget-policy-editor')).to.not
+      .exist;
   });
 
   it('forwards budget-policies-changed from the editor', async () => {
@@ -31,6 +41,7 @@ describe('budget-limits-dialog', () => {
         new CustomEvent('budget-policies-changed', {
           bubbles: true,
           composed: true,
+          detail: { policies: [] },
         })
       )
     );

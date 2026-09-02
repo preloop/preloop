@@ -68,6 +68,18 @@ export class UsageCard extends LitElement {
         width: 100%;
       }
 
+      .content-card::part(base) {
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        box-shadow: var(--sl-shadow-x-small);
+      }
+
+      .content-card::part(header) {
+        background-color: transparent;
+        border-bottom: 1px solid var(--sl-color-neutral-200);
+        padding: var(--sl-spacing-medium);
+      }
+
       .header {
         display: flex;
         align-items: center;
@@ -497,8 +509,9 @@ export class UsageCard extends LitElement {
                   variant="text"
                   @click=${() => this.emit('configure-limits')}
                 >
-                  + ${scoped.length} more limit${scoped.length === 1 ? '' : 's'}
-                  (${this.scopedSubjectSummary(scoped)})
+                  ${`+ ${scoped.length} more limit${
+                    scoped.length === 1 ? '' : 's'
+                  } (${this.scopedSubjectSummary(scoped)})`}
                 </sl-button>
               `
             : nothing

@@ -52,6 +52,11 @@ export class TimeRangeSelect extends LitElement {
     }
   `;
 
+  /**
+   * `value` is bound as an attribute on purpose: Shoelace resets its selection
+   * to `defaultValue` (the attribute) when the option slot changes, so a
+   * property-only binding silently clears the control on first render.
+   */
   private handleChange(event: Event) {
     const value = (event.target as HTMLInputElement).value;
     if (value === this.value) {
@@ -75,7 +80,7 @@ export class TimeRangeSelect extends LitElement {
         hoist
         label=${this.ariaLabel}
         aria-label=${this.ariaLabel}
-        .value=${this.value}
+        value=${this.value}
         @sl-change=${this.handleChange}
       >
         ${this.options.map(

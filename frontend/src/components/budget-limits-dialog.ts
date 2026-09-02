@@ -1,4 +1,4 @@
-import { LitElement, css, html } from 'lit';
+import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
@@ -36,12 +36,13 @@ export class BudgetLimitsDialog extends LitElement {
     );
   }
 
-  private handlePoliciesChanged(event: Event) {
+  private handlePoliciesChanged(event: CustomEvent) {
     event.stopPropagation();
     this.dispatchEvent(
       new CustomEvent('budget-policies-changed', {
         bubbles: true,
         composed: true,
+        detail: event.detail,
       })
     );
   }
@@ -57,12 +58,18 @@ export class BudgetLimitsDialog extends LitElement {
         <div class="description">
           Soft limits notify. Hard limits stop model calls through the gateway.
         </div>
-        <budget-policy-editor
-          .billingEnabled=${this.billingEnabled}
-          .subjectType=${this.subjectType}
-          .subjectId=${this.subjectId}
-          @budget-policies-changed=${this.handlePoliciesChanged}
-        ></budget-policy-editor>
+        ${
+          // The editor loads policies and subject lists on connect; keep it out
+          // of the tree until the operator actually opens the dialog.
+          this.open
+            ? html`<budget-policy-editor
+                .billingEnabled=${this.billingEnabled}
+                .subjectType=${this.subjectType}
+                .subjectId=${this.subjectId}
+                @budget-policies-changed=${this.handlePoliciesChanged}
+              ></budget-policy-editor>`
+            : nothing
+        }
       </sl-dialog>
     `;
   }
