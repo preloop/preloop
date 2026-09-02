@@ -421,6 +421,7 @@ async def call_with_default_model_fallback(
         return call_with_aux_retry(
             lambda: caller(model, resolve_model_call_credentials(model, db=db)),
             operation_name=operation_name,
+            provider=getattr(model, "provider_name", None),
         )
 
     async def _attempt(model: AIModel) -> Any:

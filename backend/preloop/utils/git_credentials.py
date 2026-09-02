@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shlex
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -220,7 +219,8 @@ def build_push_auth_setup_shell(*, token_ref: str, username: str) -> str:
     # token_ref is empty when this repository has no tracker token; the
     # PRELOOP_GIT_CREDENTIALS / existing-file branches still apply.
     token_quoted = f'"{token_ref}"' if token_ref else '""'
-    user_quoted = shlex.quote(username)
+    # Username is interpolated into a heredoc, not argv; keep it a single token.
+    safe_username = "".join(username.split())
     return f"""
 export GIT_TERMINAL_PROMPT=0
 if [ -n "${{{GIT_CREDENTIALS_ENV_VAR}:-}}" ]; then
@@ -240,7 +240,12 @@ elif [ -n {token_quoted} ]; then
     if [ -z "$HOST" ]; then
         HOST=github.com
     fi
-    printf 'protocol=https\\nhost=%s\\nusername=%s\\npassword=%s\\n\\n' "$HOST" {user_quoted} {token_quoted} | git credential approve
+    git credential approve <<PRELOOP_GIT_CRED_EOF
+protocol=https
+host=$HOST
+username={safe_username}
+password={token_ref}
+PRELOOP_GIT_CRED_EOF
     echo "Installed git credential helper from tracker token for push"
 else
     echo "WARNING: no git credentials available for push"

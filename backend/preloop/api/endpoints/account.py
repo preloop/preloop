@@ -1331,7 +1331,11 @@ async def extract_agent_name(
             check_reasoning_model_empty_content(response)
             return response.choices[0].message.content.strip()
 
-        return call_with_aux_retry(_complete, operation_name="extract_agent_name")
+        return call_with_aux_retry(
+            _complete,
+            operation_name="extract_agent_name",
+            provider=getattr(default_model, "provider_name", None),
+        )
 
     try:
         name = await asyncio.to_thread(_call)

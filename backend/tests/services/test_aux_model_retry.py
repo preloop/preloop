@@ -160,9 +160,10 @@ def test_exhausted_transient_surfaces_classified_gateway_error():
     exc = _RateLimitError("Error code: 429 - Too Many Requests")
     fn = MagicMock(side_effect=exc)
     with pytest.raises(ModelGatewayAPIError) as caught:
-        call_with_aux_retry(fn, sleep=lambda _: None)
+        call_with_aux_retry(fn, sleep=lambda _: None, provider="anthropic")
     err = caught.value
     assert err.error_class == ERROR_CLASS_UPSTREAM_RATE_LIMITED
+    assert err.provider == "anthropic"
     assert err.__cause__ is exc
     assert fn.call_count == 2
 
@@ -292,10 +293,62 @@ def test_policy_generation_retries_litellm_completion():
     assert completion.call_count == 2
 
 
-def test_extract_agent_name_uses_aux_retry():
-    from preloop.services.aux_model_retry import call_with_aux_retry as retry_fn
+@pytest.mark.asyncio
+async def test_extract_agent_name_retries_transient_429():
+    from preloop.api.endpoints.account import (
+        AgentNameExtractionRequest,
+        extract_agent_name,
+    )
 
-    assert retry_fn.__module__ == "preloop.services.aux_model_retry"
-    import preloop.api.endpoints.account as account_mod
+    account = SimpleNamespace(id="acct-1")
+    user = SimpleNamespace(id="user-1", username="tester")
+    db = MagicMock()
+    model = SimpleNamespace(
+        id="model-1",
+        model_identifier="claude-sonnet-4-5",
+        provider_name="anthropic",
+        api_endpoint=None,
+        kind="llm",
+        created_at=None,
+    )
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="Loopbot"))]
+    )
+    completion = MagicMock(
+        side_effect=[
+            _RateLimitError("Error code: 429 - Too Many Requests"),
+            response,
+        ]
+    )
 
-    assert account_mod.call_with_aux_retry is retry_fn
+    with (
+        patch("preloop.api.auth.permissions.has_permission", return_value=True),
+        patch(
+            "preloop.api.endpoints.account.crud_ai_model.get_default_active_model",
+            return_value=model,
+        ),
+        patch(
+            "preloop.api.endpoints.account.resolve_model_call_credentials",
+            return_value={"api_key": "sk-test"},
+        ),
+        patch(
+            "preloop.api.endpoints.account.build_aux_kwargs",
+            side_effect=lambda model, creds, call_site_kwargs: call_site_kwargs,
+        ),
+        patch("preloop.api.endpoints.account.check_reasoning_model_empty_content"),
+        patch(
+            "preloop.services.litellm_routing.to_litellm_model",
+            return_value="anthropic/claude-sonnet-4-5",
+        ),
+        patch("litellm.completion", completion),
+        patch("preloop.services.aux_model_retry.time.sleep", lambda _: None),
+    ):
+        result = await extract_agent_name(
+            request=AgentNameExtractionRequest(identity_content="# IDENTITY\nLoopbot"),
+            account=account,
+            current_user=user,
+            db=db,
+        )
+
+    assert result.name == "Loopbot"
+    assert completion.call_count == 2

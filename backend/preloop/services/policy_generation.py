@@ -452,6 +452,7 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
                 response = call_with_aux_retry(
                     lambda: litellm.completion(**kwargs),
                     operation_name="policy_generation",
+                    provider=getattr(model, "provider_name", None),
                 )
                 check_reasoning_model_empty_content(response)
                 raw = response.choices[0].message.content or ""

@@ -2532,7 +2532,16 @@ echo "========================================="
                         execution_context, idx, token
                     )
 
-                username = credential_username(None, tracker_type)
+                trigger_data = execution_context.get("trigger_event_data", {})
+                repo_url = self._resolve_repository_clone_url(
+                    repo_config, idx, execution_context, trigger_data
+                )
+                host_kind = (
+                    tracker_host_kind(strip_url_credentials(repo_url))
+                    if repo_url
+                    else None
+                )
+                username = credential_username(host_kind, tracker_type)
                 push_auth = build_push_auth_setup_shell(
                     token_ref=token_ref, username=username
                 )

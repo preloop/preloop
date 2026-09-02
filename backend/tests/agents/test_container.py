@@ -1337,6 +1337,14 @@ class TestGitApiTokensNotInScript:
         assert "/workspace/evidence/branch.patch" in commands
         assert commands.index("branch.bundle") < commands.index("git push origin")
 
+    def test_post_execution_username_follows_host_kind(self, container_executor):
+        """Clone uses host_kind when tracker_type is missing; push must match."""
+        context = self._context()
+        context["git_credentials_map"]["tracker-1"]["tracker_type"] = None
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "username=x-access-token" in commands
+        assert "username=oauth2" not in commands
+
 
 class TestLogScrubbing:
     """Logs are scrubbed on read as well, so a token already present in a

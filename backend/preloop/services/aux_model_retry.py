@@ -16,7 +16,10 @@ import logging
 import time
 from typing import Callable, Optional, TypeVar
 
-from preloop.services.model_gateway_errors import ModelGatewayAPIError
+from preloop.services.model_gateway_errors import (
+    GatewayProvider,
+    ModelGatewayAPIError,
+)
 from preloop.services.upstream_errors import (
     ERROR_CLASS_UPSTREAM_RATE_LIMITED,
     UpstreamErrorClass,
@@ -35,6 +38,19 @@ AUX_RETRY_COUNT = 1
 AUX_BASE_BACKOFF_SECONDS = 0.5
 AUX_RETRY_AFTER_CAP_SECONDS = 4.0
 
+# ModelGatewayAPIError.provider is a closed literal used for the error
+# envelope shape. Unknown/custom aux providers fall back to openai.
+_GATEWAY_PROVIDERS: frozenset[str] = frozenset({"openai", "anthropic", "gemini"})
+
+
+def _as_gateway_provider(provider: Optional[str]) -> GatewayProvider:
+    """Map an AIModel.provider_name onto the gateway envelope literal."""
+
+    name = (provider or "").strip().lower()
+    if name in _GATEWAY_PROVIDERS:
+        return name  # type: ignore[return-value]
+    return "openai"
+
 
 def _backoff_seconds(classified: Optional[UpstreamErrorClass], attempt: int) -> float:
     """Exponential backoff, raised to the provider Retry-After, capped at 4s."""
@@ -45,7 +61,9 @@ def _backoff_seconds(classified: Optional[UpstreamErrorClass], attempt: int) -> 
     return min(delay, AUX_RETRY_AFTER_CAP_SECONDS)
 
 
-def _to_gateway_error(exc: Exception) -> ModelGatewayAPIError:
+def _to_gateway_error(
+    exc: Exception, *, provider: Optional[str] = None
+) -> ModelGatewayAPIError:
     """Surface an exhausted transient as a classified gateway error.
 
     The raw provider exception is chained as ``__cause__`` so GlitchTip
@@ -63,7 +81,7 @@ def _to_gateway_error(exc: Exception) -> ModelGatewayAPIError:
     retry_after = classified.retry_after_seconds if classified is not None else None
     terminal = classified.terminal if classified is not None else False
     return ModelGatewayAPIError(
-        provider="openai",
+        provider=_as_gateway_provider(provider),
         status_code=status_code,
         message=str(exc),
         error_class=error_class,
@@ -76,6 +94,7 @@ def call_with_aux_retry(
     fn: Callable[[], T],
     *,
     operation_name: str = "aux_model",
+    provider: Optional[str] = None,
     sleep: Optional[Callable[[float], None]] = None,
 ) -> T:
     """Call ``fn``, retrying once on a transient upstream fault.
@@ -83,6 +102,10 @@ def call_with_aux_retry(
     Terminal quota / auth failures fail fast. Exhausted transients are
     re-raised as :class:`ModelGatewayAPIError` with the raw exception
     chained as ``__cause__``.
+
+    ``provider`` is the model's ``provider_name`` so the classified error
+    envelope matches Anthropic/Gemini aux calls instead of always looking
+    like OpenAI.
 
     ``sleep`` is resolved at call time so tests can patch
     ``preloop.services.aux_model_retry.time.sleep``.
@@ -113,4 +136,4 @@ def call_with_aux_retry(
             sleeper(delay)
 
     assert last_exc is not None
-    raise _to_gateway_error(last_exc) from last_exc
+    raise _to_gateway_error(last_exc, provider=provider) from last_exc

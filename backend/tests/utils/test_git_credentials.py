@@ -208,9 +208,16 @@ class TestPushAuthSetupShell:
         shell = build_push_auth_setup_shell(
             token_ref="${PRELOOP_GIT_TOKEN_1}", username="x-access-token"
         )
-        assert "git credential approve" in shell
+        assert "git credential approve <<" in shell
         assert "credential.helper" in shell
         assert "GIT_TERMINAL_PROMPT=0" in shell
+
+    def test_token_is_expanded_in_heredoc_not_printf_argv(self) -> None:
+        shell = build_push_auth_setup_shell(
+            token_ref="${PRELOOP_GIT_TOKEN_1}", username="x-access-token"
+        )
+        assert "password=${PRELOOP_GIT_TOKEN_1}" in shell
+        assert "printf 'protocol=https" not in shell
 
     def test_empty_token_ref_does_not_invent_an_expansion(self) -> None:
         shell = build_push_auth_setup_shell(token_ref="", username="oauth2")
