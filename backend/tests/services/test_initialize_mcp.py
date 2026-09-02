@@ -99,6 +99,7 @@ EXPECTED_TOOLS = {
     "update_pull_request",
     "create_pull_request",
     "get_approval_status",
+    "resolve_sbom_upstreams",
 }
 
 
@@ -183,6 +184,71 @@ class TestRegisteredToolBehaviour:
             result = await fn(issue="ABC-1")
         assert result == '{"issue": "ok"}'
         mock_router.assert_awaited_once_with("ABC-1")
+
+    async def test_resolve_sbom_upstreams_no_user_context(self, mcp_server):
+        fn = await self._fn(mcp_server, "resolve_sbom_upstreams")
+        with patch(
+            "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+            return_value=None,
+        ):
+            result = await fn(components=[{"name": "JPEGDEC", "version": "1.2.8"}])
+        assert result == "Error: No user context available"
+
+    async def test_resolve_sbom_upstreams_calls_service(self, mcp_server):
+        fn = await self._fn(mcp_server, "resolve_sbom_upstreams")
+        user_ctx = SimpleNamespace(account_id=str(uuid4()), username="u")
+        report = {
+            "resolved": [],
+            "unresolved": [],
+            "stats": {
+                "requested": 0,
+                "resolved": 0,
+                "unresolved": 0,
+                "by_source": {},
+            },
+            "registry_status": {
+                "arduino_index": "not queried",
+                "platformio": "not queried",
+            },
+        }
+        with (
+            patch(
+                "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                return_value=user_ctx,
+            ),
+            patch(
+                "preloop.services.initialize_mcp.require_approval",
+                new=AsyncMock(return_value=(True, None)),
+            ),
+            patch(
+                "preloop.services.sbom_upstream_resolver.resolve_components",
+                new=AsyncMock(return_value=report),
+            ) as mock_resolve,
+        ):
+            result = await fn(components=[{"name": "JPEGDEC", "version": "1.2.8"}])
+        import json
+
+        assert json.loads(result) == report
+        mock_resolve.assert_awaited_once_with([{"name": "JPEGDEC", "version": "1.2.8"}])
+
+    async def test_resolve_sbom_upstreams_invalid_input_returns_error(self, mcp_server):
+        """Malformed component entries surface as an error string, never
+        an exception (the tool is called from unattended flow runs)."""
+        fn = await self._fn(mcp_server, "resolve_sbom_upstreams")
+        user_ctx = SimpleNamespace(account_id=str(uuid4()), username="u")
+        with (
+            patch(
+                "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                return_value=user_ctx,
+            ),
+            patch(
+                "preloop.services.initialize_mcp.require_approval",
+                new=AsyncMock(return_value=(True, None)),
+            ),
+        ):
+            result = await fn(components=[{"name": "JPEGDEC"}])
+        assert result.startswith("Error:")
+        assert "version" in result
 
     async def test_removed_test_progress_tool_not_registered(self, mcp_server):
         """The old test_progress debug tool must no longer ship to users."""
