@@ -505,7 +505,7 @@ export class AgentsView extends LitElement {
         /* Below this the eight columns cannot hold their content, so the card
            scrolls sideways instead of hiding the actions. Agent keeps at least
            180px at this width; the list falls back to cards under 640px. */
-        min-width: 880px;
+        min-width: 1040px;
       }
       .table-scroll {
         overflow-x: auto;
@@ -525,15 +525,16 @@ export class AgentsView extends LitElement {
       }
       .agents-table th.actions-cell,
       .agents-table td.actions-cell {
-        width: 48px;
+        width: 56px;
         text-align: right;
         padding-right: var(--sl-spacing-small);
+        overflow: visible;
       }
       /* Percentages for the text columns so wide screens give them the space,
          pixels for the ones whose content has a known width. Agent takes what
          is left. */
       .col-status {
-        width: 96px;
+        width: 150px;
       }
       .col-owner {
         width: 13%;
@@ -542,16 +543,16 @@ export class AgentsView extends LitElement {
         width: 18%;
       }
       .col-requests {
-        width: 80px;
+        width: 110px;
       }
       .col-spend {
-        width: 88px;
+        width: 110px;
       }
       .col-last-seen {
-        width: 104px;
+        width: 128px;
       }
       .col-actions {
-        width: 48px;
+        width: 56px;
       }
       .sort-button {
         display: flex;
