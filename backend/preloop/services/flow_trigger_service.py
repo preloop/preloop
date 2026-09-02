@@ -1129,6 +1129,7 @@ class FlowTriggerService:
         test_mode: bool = False,
         trigger_event_data: Optional[Dict[str, Any]] = None,
         retry_of_execution_id: Optional[uuid.UUID] = None,
+        triggered_by: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Manually trigger a flow execution for testing purposes or as a retry.
@@ -1138,6 +1139,9 @@ class FlowTriggerService:
             test_mode: Whether this is a test execution
             trigger_event_data: Optional custom trigger event data for testing
             retry_of_execution_id: If this is a retry, the ID of the original execution
+            triggered_by: Who started this run, for the execution subject. A
+                manual run has no repo and no reference, so the person is the
+                only thing that tells two of them apart in the console list.
 
         Returns:
             Dict with execution_id and status
@@ -1166,6 +1170,10 @@ class FlowTriggerService:
         if trigger_event_data:
             trigger_details.update(trigger_event_data)
         trigger_details["test_mode"] = test_mode
+        if triggered_by:
+            # Set after the copy so a retry is attributed to whoever retried,
+            # not to whoever started the original run.
+            trigger_details["triggered_by"] = triggered_by
 
         from preloop.services.flow_orchestrator import _make_json_serializable
 
@@ -1217,6 +1225,7 @@ class FlowTriggerService:
         matrix: List[Dict[str, Any]],
         test_mode: bool = False,
         trigger_event_data: Optional[Dict[str, Any]] = None,
+        triggered_by: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Fan a single trigger out to one execution per matrix entry.
 
@@ -1231,6 +1240,7 @@ class FlowTriggerService:
             matrix: List of ``{"agent_type"?, "ai_model_id"?}`` overrides
             test_mode: Whether this is a test/manual trigger
             trigger_event_data: Optional trigger event data shared by all cells
+            triggered_by: Who started the batch, for the execution subject
 
         Returns:
             Dict with batch_id, flow_id and per-cell execution references.
@@ -1270,6 +1280,8 @@ class FlowTriggerService:
             if trigger_event_data:
                 trigger_details.update(trigger_event_data)
             trigger_details["test_mode"] = test_mode
+            if triggered_by:
+                trigger_details["triggered_by"] = triggered_by
             trigger_details = _make_json_serializable(trigger_details)
             attach_trigger_subject(trigger_details)
 

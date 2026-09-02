@@ -45,6 +45,10 @@ import {
 } from '../../utils/attention';
 import { loadAttentionInputs } from '../../utils/attention-data';
 import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
+import {
+  executionSubjectCss,
+  renderExecutionSubject,
+} from '../../utils/execution-subject';
 
 /** Rows in a section this small are open on arrival; longer lists start shut. */
 const AUTO_EXPAND_MAX_ROWS = 3;
@@ -99,6 +103,7 @@ export class AttentionView extends AuthedElement {
 
   static styles = [
     unsafeCSS(consoleStyles),
+    unsafeCSS(executionSubjectCss),
     css`
       :host {
         display: block;
@@ -305,6 +310,12 @@ export class AttentionView extends AuthedElement {
 
       .evidence-table .numeric {
         text-align: right;
+      }
+
+      /* The subject is what the reader scans this table for, so it gets the
+         body colour while the timings stay in the -700 register. */
+      .evidence-table .subject-cell {
+        color: var(--console-body-color);
       }
 
       /* The one filled block allowed inside a card body: a command to copy,
@@ -704,8 +715,11 @@ export class AttentionView extends AuthedElement {
       <table class="evidence-table">
         <thead>
           <tr>
-            <th style="width: 22%">Started</th>
-            <th style="width: 14%">Duration</th>
+            <!-- Subject first: six failures of one flow differ by what they
+                 ran on, not by when they ran. -->
+            <th style="width: 30%">Subject</th>
+            <th style="width: 18%">Started</th>
+            <th style="width: 12%">Duration</th>
             <th>Error</th>
             <th style="width: 60px"></th>
           </tr>
@@ -714,6 +728,13 @@ export class AttentionView extends AuthedElement {
           ${runs.map(
             (run) => html`
               <tr>
+                <td class="subject-cell">
+                  ${renderExecutionSubject({
+                    id: run.id,
+                    trigger_subject: run.subject,
+                    trigger_subject_url: run.subjectUrl,
+                  })}
+                </td>
                 <td
                   title=${
                     run.startedAt ? formatLocalDateTime(run.startedAt) : nothing

@@ -131,6 +131,18 @@ SUBJECT_KEY = TRIGGER_SUBJECT_KEY
 # Separator used to join subject parts, matching the console's visual style.
 _SUBJECT_SEPARATOR = " · "
 
+# Mirrors _WEEKDAY_LABELS in models/schemas/flow.py, so a scheduled run reads
+# the same in the executions list as in the schedule editor.
+_WEEKDAY_LABELS: Dict[str, str] = {
+    "mon": "Mon",
+    "tue": "Tue",
+    "wed": "Wed",
+    "thu": "Thu",
+    "fri": "Fri",
+    "sat": "Sat",
+    "sun": "Sun",
+}
+
 
 def humanize_event_type(event_type: Optional[str]) -> str:
     """Convert a normalized event type into a human-readable label.
@@ -403,6 +415,67 @@ def _jira_subject(payload: Dict[str, Any]) -> Dict[str, Any]:
     return parts
 
 
+def describe_schedule(schedule: Any) -> Optional[str]:
+    """Render a stored schedule config as the phrase the flow editor shows.
+
+    The scheduler persists ``schedule_config.model_dump()`` in the trigger
+    payload, so this reads the plain dict rather than importing the pydantic
+    union (``preloop.models.schemas.flow`` imports the models package, which
+    would make this module part of a cycle).
+
+    Args:
+        schedule: The stored schedule config dict (any of the four forms), or
+            the legacy ``{"cron": ...}`` shape.
+
+    Returns:
+        A phrase such as "Daily at 09:00 (Europe/Berlin)", or None when the
+        config is missing or in a shape this function does not know.
+    """
+    if not isinstance(schedule, dict):
+        return None
+    timezone = schedule.get("timezone") or "UTC"
+    schedule_type = schedule.get("type")
+    if schedule_type is None and schedule.get("cron"):
+        schedule_type = "cron"
+        schedule = {**schedule, "expr": schedule["cron"]}
+
+    if schedule_type == "cron" and schedule.get("expr"):
+        return f"Cron '{schedule['expr']}' ({timezone})"
+    if schedule_type == "interval" and schedule.get("every") and schedule.get("unit"):
+        every = schedule["every"]
+        unit = str(schedule["unit"])
+        if every == 1:
+            unit = unit[:-1]
+        return f"Every {every} {unit}"
+    if schedule_type == "daily" and schedule.get("at"):
+        return f"Daily at {schedule['at']} ({timezone})"
+    if schedule_type == "weekly" and schedule.get("at") and schedule.get("days"):
+        days = ", ".join(
+            _WEEKDAY_LABELS.get(str(day), str(day)) for day in schedule["days"]
+        )
+        return f"Weekly on {days} at {schedule['at']} ({timezone})"
+    return None
+
+
+def _manual_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Subject for a run a person started, rather than an event.
+
+    A manual run has no repo and no reference, so the identifying fact is
+    who started it. Without a name the subject is the label alone, which is
+    still better than the execution id the console would otherwise show.
+    """
+    who = event_data.get("triggered_by")
+    who = str(who).strip() if who else ""
+    label = "Manual Test Run" if event_data.get("test_mode") else "Manual Run"
+    parts: Dict[str, Any] = {"event": label}
+    if who:
+        parts["actor"] = who
+        parts["text"] = f"{label} by {who}"
+    else:
+        parts["text"] = label
+    return parts
+
+
 def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Build a compact, human-readable subject for a flow execution.
 
@@ -435,6 +508,24 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
     payload = event_data.get("payload")
     if not isinstance(payload, dict):
         payload = {}
+
+    # A scheduled run and a manual run carry no repo and no reference, so
+    # they render their own line: the label plus the one fact that tells two
+    # runs of the same flow apart (which schedule, or which person).
+    if source == "schedule":
+        described = describe_schedule(payload.get("schedule"))
+        parts = {"event": "Scheduled"}
+        if described:
+            parts["schedule"] = described
+            parts["text"] = f"Scheduled · {described}"
+        else:
+            parts["text"] = "Scheduled"
+        return parts
+
+    if source in ("manual", "api", "console") or (
+        not source and (event_data.get("test_mode") or event_data.get("triggered_by"))
+    ):
+        return _manual_subject(event_data)
 
     if source == "github":
         parts = _github_subject(payload)

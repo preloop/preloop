@@ -146,6 +146,12 @@ describe('FlowExecutionView', () => {
               trigger_event_details: {
                 source: 'github',
                 type: 'issue_comment',
+                // The detail endpoint returns the snapshot, subject included;
+                // only the list endpoints project it into its own column.
+                _subject: {
+                  text: 'preloop/preloop #78 · Pull Request Updated',
+                  url: 'https://github.com/preloop/preloop/pull/78',
+                },
               },
             }),
             {
@@ -268,6 +274,35 @@ describe('FlowExecutionView', () => {
   afterEach(() => {
     fetchStub.restore();
     localStorage.clear();
+  });
+
+  it('puts what the run was about under the flow name (wave 4)', async () => {
+    const element = (await fixture(
+      html`<flow-execution-view></flow-execution-view>`
+    )) as FlowExecutionView;
+
+    element.executionId = 'exec-1';
+    await element.updateComplete;
+    await waitUntil(
+      () =>
+        (element as any).execution?.id === 'exec-1' &&
+        !(element as any).isLoading,
+      'Execution view did not finish loading'
+    );
+    await element.updateComplete;
+
+    // The title is the flow name, shared by every run of it; the subject is
+    // what this run was about, so it sits under the title and links out.
+    const line = element.shadowRoot!.querySelector('.execution-subject-line')!;
+    const link = line.querySelector('a')!;
+    expect(link.textContent).to.contain(
+      'preloop/preloop #78 · Pull Request Updated'
+    );
+    expect(link.getAttribute('href')).to.equal(
+      'https://github.com/preloop/preloop/pull/78'
+    );
+    expect(link.getAttribute('target')).to.equal('_blank');
+    expect(link.getAttribute('rel')).to.equal('noopener noreferrer');
   });
 
   it('renders execution-scoped gateway events with payload details', async () => {

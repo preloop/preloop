@@ -1091,6 +1091,17 @@ async def send_execution_command(
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
 
 
+def _display_name(user: User) -> str:
+    """The name to attribute a manually triggered run to in the console.
+
+    Prefers the operator's own name, then the username, and finally the
+    email, so the executions list says "Manual Run by Ada Lovelace" rather
+    than repeating an opaque id.
+    """
+    name = (getattr(user, "full_name", None) or "").strip()
+    return name or getattr(user, "username", None) or getattr(user, "email", "") or ""
+
+
 def _validate_matrix(
     db: Session, matrix: Any, account_id: uuid.UUID
 ) -> List[Dict[str, Any]]:
@@ -1207,10 +1218,14 @@ async def trigger_flow_execution(
             matrix=validated_matrix,
             test_mode=True,
             trigger_event_data=trigger_event_data,
+            triggered_by=_display_name(current_user),
         )
 
     result = await trigger_service.trigger_flow(
-        flow_id=flow_id, test_mode=True, trigger_event_data=trigger_event_data
+        flow_id=flow_id,
+        test_mode=True,
+        trigger_event_data=trigger_event_data,
+        triggered_by=_display_name(current_user),
     )
 
     return result
@@ -1269,6 +1284,7 @@ async def retry_flow_execution(
         test_mode=False,
         trigger_event_data=original.trigger_event_details,
         retry_of_execution_id=original.id,
+        triggered_by=_display_name(current_user),
     )
 
     return result

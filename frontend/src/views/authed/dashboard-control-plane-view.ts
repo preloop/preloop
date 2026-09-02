@@ -71,6 +71,10 @@ import type {
 import { parseUTCDate } from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
 import {
+  executionSubjectCss,
+  renderExecutionSubject,
+} from '../../utils/execution-subject';
+import {
   TOP_MODEL_GROUP_PREVIEW_LIMIT,
   TOP_MODEL_SESSION_PREVIEW_LIMIT,
   compareByUsageMetric,
@@ -127,6 +131,11 @@ interface FlowExecution {
   start_time: string;
   end_time: string | null;
   error_message: string | null;
+  /** What the run was about, derived from the trigger when it was created.
+      Five runs of one flow are otherwise indistinguishable on this card. */
+  trigger_subject?: string | null;
+  trigger_subject_url?: string | null;
+  trigger_event_details?: Record<string, unknown> | null;
 }
 
 interface ApprovalRequest {
@@ -269,9 +278,15 @@ export class DashboardView extends AuthedElement {
   private refreshTimer: number | null = null;
   private refreshInFlight = false;
 
-  /** Start time plus, when known, how long the run took or has been going. */
+  /**
+   * When the run started and how long it took, in the meta register.
+   *
+   * Relative ("3h ago"), because on this card the question is "is this
+   * recent?", not "what o'clock was it?"; the exact time is in the title
+   * attribute and on the execution page.
+   */
   private executionSecondaryText(exec: FlowExecution): string {
-    const started = this.formatDate(exec.start_time);
+    const started = this.formatRelativeTime(exec.start_time);
     const duration = executionDurationText(exec);
     return duration ? `${started} · ${duration}` : started;
   }
@@ -979,9 +994,24 @@ export class DashboardView extends AuthedElement {
     `,
 
     unsafeCSS(consoleStyles),
+    unsafeCSS(executionSubjectCss),
     css`
       :host {
         display: block;
+      }
+
+      /* Subject then timing on one line. The subject is body text and gets
+         the room (min-width: 0 lets it ellipsise instead of pushing the
+         timing off the row); the timing never wraps away from it. */
+      .execution-line {
+        align-items: baseline;
+        display: flex;
+        font-size: var(--console-text-body);
+        gap: 6px;
+        min-width: 0;
+      }
+      .execution-line .item-secondary {
+        flex: 0 0 auto;
       }
 
       .deploy-grid {
@@ -3025,9 +3055,19 @@ export class DashboardView extends AuthedElement {
                                 >`
                               : ''
                           }
-                          <span class="item-secondary"
-                            >${this.executionSecondaryText(exec)}</span
-                          >
+                          <!-- What this run was about, then when it ran. The
+                               subject is the only thing that differs between
+                               five runs of the same flow, so it leads the
+                               line in body weight and the timing follows it
+                               in meta. -->
+                          <span class="execution-line">
+                            ${renderExecutionSubject(exec)}
+                            <span
+                              class="item-secondary"
+                              title=${this.formatDate(exec.start_time)}
+                              >· ${this.executionSecondaryText(exec)}</span
+                            >
+                          </span>
                         </div>
                         <div class="item-actions">
                           <sl-badge

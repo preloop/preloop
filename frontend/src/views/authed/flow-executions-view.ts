@@ -12,6 +12,10 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import { parseUTCDate, formatLocalDateTime } from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
+import {
+  executionSubjectCss,
+  renderExecutionSubject,
+} from '../../utils/execution-subject';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import '../../components/view-header.ts';
@@ -39,6 +43,7 @@ export class FlowExecutionsView extends AuthedElement {
   static styles = [
     reducedMotionStyles,
     unsafeCSS(consoleStyles),
+    unsafeCSS(executionSubjectCss),
     css`
       :host {
         display: block;
@@ -52,14 +57,26 @@ export class FlowExecutionsView extends AuthedElement {
         border-collapse: collapse;
         min-width: 800px;
       }
+      /* A cell grid draws a box around every value in the table (wave 4).
+         Rows are separated by a hairline and nothing else, and the header is
+         the semibold label, not a filled band. */
       th,
       td {
-        border: 1px solid var(--sl-color-neutral-200);
+        border: none;
+        border-bottom: 1px solid var(--console-hairline);
         padding: 8px;
         text-align: left;
       }
       th {
-        background-color: var(--sl-color-neutral-100);
+        background-color: transparent;
+        color: var(--console-meta-color);
+        font-weight: var(--sl-font-weight-semibold);
+      }
+      tbody tr:last-child td {
+        border-bottom: none;
+      }
+      tbody tr:hover {
+        background-color: var(--console-hover-tint);
       }
       /* The subject is the primary way to tell executions apart, so give it
          room while keeping long repo/branch names from widening the table. */
@@ -69,20 +86,11 @@ export class FlowExecutionsView extends AuthedElement {
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .subject-cell a {
-        color: inherit;
-        text-decoration: none;
-        border-bottom: 1px solid var(--sl-color-neutral-300);
-      }
-      .subject-cell a:hover,
-      .subject-cell a:focus-visible {
-        color: var(--sl-color-primary-600);
-        border-bottom-color: var(--sl-color-primary-600);
-      }
-      /* Fallback for executions with no derivable subject: the short id. */
-      .subject-fallback {
+      /* The link, the fallback and the external-link icon are the shared
+         renderer's (utils/execution-subject.ts), so every list that shows a
+         subject shows the same object. */
+      .subject-cell .execution-subject.is-fallback {
         font-family: var(--sl-font-mono);
-        color: var(--console-meta-color);
       }
       .status-cell {
         display: flex;
@@ -430,7 +438,7 @@ export class FlowExecutionsView extends AuthedElement {
                             <tr>
                               <td>${exec.flow_name || 'Unnamed Flow'}</td>
                               <td class="subject-cell">
-                                ${this.renderSubject(exec)}
+                                ${renderExecutionSubject(exec)}
                               </td>
                               <td>
                                 <div class="status-cell">
@@ -512,35 +520,6 @@ export class FlowExecutionsView extends AuthedElement {
         </div>
       </div>
     `;
-  }
-
-  /**
-   * Render the identifying subject for an execution row.
-   *
-   * Prefers the server-computed trigger subject, linking to the underlying
-   * pull/merge request when the trigger payload carried a URL. Executions
-   * created before subjects were recorded (or whose trigger carried nothing
-   * identifying) fall back to the short execution id, so the column is never
-   * empty.
-   */
-  renderSubject(exec: FlowExecution) {
-    const subject = exec.trigger_subject;
-    if (!subject) {
-      return html`<span class="subject-fallback" title=${exec.id}
-        >${exec.id.slice(0, 8)}</span
-      >`;
-    }
-    if (exec.trigger_subject_url) {
-      return html`<a
-        href=${exec.trigger_subject_url}
-        target="_blank"
-        rel="noopener noreferrer"
-        title=${subject}
-        @click=${(e: Event) => e.stopPropagation()}
-        >${subject}</a
-      >`;
-    }
-    return html`<span title=${subject}>${subject}</span>`;
   }
 
   /** Same taxonomy as the Overview: success finished, danger failed, the
