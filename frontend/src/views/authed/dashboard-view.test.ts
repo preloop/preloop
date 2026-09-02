@@ -1169,14 +1169,38 @@ describe('DashboardView', () => {
       expect(rows[1].textContent).to.contain('/mcp');
     });
 
+    it('spends the endpoint line on the host and the path, not the scheme', async () => {
+      const element = await mountLoaded();
+
+      const endpoint = element.shadowRoot?.querySelector(
+        '.plane-row .server-endpoint'
+      ) as HTMLElement;
+      // The card is a third of the window wide: seven characters of "https://"
+      // cost the reader the hostname. The copy button and the tooltip still
+      // carry the exact URL.
+      expect(endpoint.textContent).to.not.contain('http');
+      expect(endpoint.querySelector('.endpoint-tail')!.textContent).to.equal(
+        '/openai/v1'
+      );
+      expect(endpoint.getAttribute('title')).to.contain('://');
+      expect(endpoint.getAttribute('title')).to.contain('/openai/v1');
+    });
+
     it('states what each plane did, and never shows a zero it cannot measure', async () => {
+      gatewaySummaryResponse = {
+        ...gatewaySummaryResponse,
+        total_requests: 13932,
+        failed_requests: 12,
+      };
       const element = await mountLoaded();
 
       const rows = element.shadowRoot?.querySelectorAll('.plane-row') || [];
       const modelStats = rows[0].querySelector('.plane-stats')!.textContent!;
-      expect(modelStats).to.contain('requests');
-      // The fixture summary has no failures, so no "0 failed" is invented.
-      expect(modelStats).to.not.contain('0 failed');
+      // Compact above a thousand, like every other count in the console.
+      expect(modelStats).to.contain('13.9K requests');
+      expect(modelStats).to.contain('12 failed');
+      // The rate-limit report is empty, so no "0 rate limited" is invented.
+      expect(modelStats).to.not.contain('rate limited');
       expect(rows[0].querySelector('.plane-dot')!.classList.contains('served'))
         .to.be.true;
     });

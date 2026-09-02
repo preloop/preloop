@@ -815,16 +815,31 @@ export class AttentionView extends AuthedElement {
     `;
   }
 
+  /**
+   * Whole under a thousand, compact above it, with the exact figure in the
+   * cell's title: the console's number rule, and 95,592,073 tokens in a table
+   * cell is a width, not a fact.
+   */
+  private formatCount(value: number): string {
+    if (value < 1000) return String(Math.round(value));
+    return new Intl.NumberFormat(undefined, {
+      notation: 'compact',
+      maximumFractionDigits: 1,
+    }).format(value);
+  }
+
   private renderPricingEvidence(item: AttentionItem) {
     const models = item.evidence?.unpricedModels || [];
     const catalogMissing = item.evidence?.catalogMissing === true;
+    // A column of "n/a" is a column of nothing: the gateway summary only
+    // carries a last-request time for some breakdowns.
+    const anyLastRequest = models.some((model) => Boolean(model.lastRequestAt));
     return html`
       ${
         catalogMissing
           ? html`<div class="evidence-line">
-              No provider price list is loaded, so nothing served through the
-              gateway can be costed. Load a catalog or add price overrides on
-              the Cost page.
+              Load a catalog or add price overrides on the Cost page, and past
+              usage is costed from then on.
             </div>`
           : nothing
       }
@@ -838,7 +853,11 @@ export class AttentionView extends AuthedElement {
                     <th style="width: 18%">Provider</th>
                     <th style="width: 12%" class="numeric">Requests</th>
                     <th style="width: 12%" class="numeric">Tokens</th>
-                    <th style="width: 16%">Last request</th>
+                    ${
+                      anyLastRequest
+                        ? html`<th style="width: 16%">Last request</th>`
+                        : nothing
+                    }
                     <th style="width: 80px"></th>
                   </tr>
                 </thead>
@@ -850,25 +869,35 @@ export class AttentionView extends AuthedElement {
                           ${model.alias}
                         </td>
                         <td>${model.provider || 'n/a'}</td>
-                        <td class="numeric">
-                          ${model.requests.toLocaleString()}
-                        </td>
-                        <td class="numeric">
-                          ${model.tokens.toLocaleString()}
+                        <td
+                          class="numeric"
+                          title=${model.requests.toLocaleString()}
+                        >
+                          ${this.formatCount(model.requests)}
                         </td>
                         <td
-                          title=${
-                            model.lastRequestAt
-                              ? formatLocalDateTime(model.lastRequestAt)
-                              : nothing
-                          }
+                          class="numeric"
+                          title=${model.tokens.toLocaleString()}
                         >
-                          ${
-                            model.lastRequestAt
-                              ? formatRelativeTime(model.lastRequestAt)
-                              : 'n/a'
-                          }
+                          ${this.formatCount(model.tokens)}
                         </td>
+                        ${
+                          anyLastRequest
+                            ? html`<td
+                                title=${
+                                  model.lastRequestAt
+                                    ? formatLocalDateTime(model.lastRequestAt)
+                                    : nothing
+                                }
+                              >
+                                ${
+                                  model.lastRequestAt
+                                    ? formatRelativeTime(model.lastRequestAt)
+                                    : ''
+                                }
+                              </td>`
+                            : nothing
+                        }
                         <td>
                           <a
                             href=${

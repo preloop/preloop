@@ -353,7 +353,7 @@ export class DashboardView extends AuthedElement {
       /* One row per plane: name, endpoint, what it did. */
       .plane-row {
         align-items: center;
-        column-gap: var(--sl-spacing-medium);
+        column-gap: var(--sl-spacing-small);
         display: grid;
         grid-template-columns: minmax(120px, auto) minmax(0, 1fr) auto;
         padding: var(--sl-spacing-x-small) 0;
@@ -404,6 +404,10 @@ export class DashboardView extends AuthedElement {
       .endpoint-tail {
         flex-shrink: 0;
         white-space: nowrap;
+      }
+      /* Every pixel the chrome gives back is a pixel of hostname. */
+      .plane-endpoint sl-icon-button::part(base) {
+        padding: 2px;
       }
       .plane-endpoint .format-select {
         background: transparent;
@@ -1317,7 +1321,7 @@ export class DashboardView extends AuthedElement {
         /* Phone: name and numbers on one line, endpoint and copy under it,
            so a 390px row never squeezes the URL into three characters. */
         .plane-row {
-          grid-template-columns: minmax(0, 1fr) auto;
+          grid-template-columns: auto minmax(0, 1fr);
           row-gap: var(--sl-spacing-2x-small);
         }
 
@@ -1326,9 +1330,16 @@ export class DashboardView extends AuthedElement {
           grid-row: 1;
         }
 
+        /* "Model gateway" broken over two lines beside its numbers reads as
+           two rows; the numbers wrap instead. */
+        .plane-name {
+          white-space: nowrap;
+        }
+
         .plane-stats {
           grid-column: 2;
           grid-row: 1;
+          white-space: normal;
         }
 
         .plane-endpoint {
@@ -3978,10 +3989,21 @@ export class DashboardView extends AuthedElement {
    * The host truncates and the path stays: a middle ellipsis without measuring
    * anything, so a long staging hostname never hides `/openai/v1`.
    */
+  /**
+   * The endpoint as a reader needs it: host first, path always.
+   *
+   * The scheme is dropped from the display (the copy button and the `title`
+   * carry the exact URL) because on a card this narrow it costs seven
+   * characters of hostname, and the path is what tells the two planes apart.
+   * The host truncates from its end, the path never does: a middle ellipsis
+   * in two spans, no width measuring.
+   */
   private renderEndpoint(url: string) {
-    const separator = url.indexOf('/', url.indexOf('//') + 2);
-    const head = separator === -1 ? url : url.slice(0, separator);
-    const tail = separator === -1 ? '' : url.slice(separator);
+    const withoutScheme = url.replace(/^https?:\/\//, '');
+    const separator = withoutScheme.indexOf('/');
+    const head =
+      separator === -1 ? withoutScheme : withoutScheme.slice(0, separator);
+    const tail = separator === -1 ? '' : withoutScheme.slice(separator);
     return html`
       <span class="server-endpoint" title=${url}>
         <span class="endpoint-head">${head}</span
@@ -4078,6 +4100,22 @@ export class DashboardView extends AuthedElement {
     `;
   }
 
+  /**
+   * Counts on the gateway rows follow the console rule: whole under 1000,
+   * compact above it (`13.9K`). The row has to hold two numbers and a path
+   * on a card that is a third of the window wide.
+   */
+  private formatCompactNumber(value: number | null | undefined): string {
+    const amount = Number(value || 0);
+    if (amount < 1000) {
+      return String(Math.round(amount));
+    }
+    return new Intl.NumberFormat(undefined, {
+      notation: 'compact',
+      maximumFractionDigits: 1,
+    }).format(amount);
+  }
+
   private get modelGatewayStats(): string[] {
     const requests = this.gatewaySummary?.total_requests || 0;
     const failed = this.gatewaySummary?.failed_requests || 0;
@@ -4085,11 +4123,11 @@ export class DashboardView extends AuthedElement {
       this.rateLimitReport?.totals?.rate_limited_requests || 0;
     // A zero we do not measure is worse than a figure we leave out.
     const stats = [
-      `${this.formatNumber(requests)} request${requests === 1 ? '' : 's'}`,
+      `${this.formatCompactNumber(requests)} request${requests === 1 ? '' : 's'}`,
     ];
-    if (failed > 0) stats.push(`${this.formatNumber(failed)} failed`);
+    if (failed > 0) stats.push(`${this.formatCompactNumber(failed)} failed`);
     if (rateLimited > 0) {
-      stats.push(`${this.formatNumber(rateLimited)} rate limited`);
+      stats.push(`${this.formatCompactNumber(rateLimited)} rate limited`);
     }
     return stats;
   }
@@ -4098,9 +4136,9 @@ export class DashboardView extends AuthedElement {
     const calls = this.toolCallsCount || 0;
     const failed = this.failedToolCallsCount || 0;
     const stats = [
-      `${this.formatNumber(calls)} tool call${calls === 1 ? '' : 's'}`,
+      `${this.formatCompactNumber(calls)} tool call${calls === 1 ? '' : 's'}`,
     ];
-    if (failed > 0) stats.push(`${this.formatNumber(failed)} failed`);
+    if (failed > 0) stats.push(`${this.formatCompactNumber(failed)} failed`);
     return stats;
   }
 
@@ -4114,15 +4152,7 @@ export class DashboardView extends AuthedElement {
     return html`
       <sl-card class="content-card gateway-card">
         <div slot="header" class="card-header-with-action">
-          <div class="chart-header">
-            <sl-icon
-              src="/assets/preloop-badge.svg"
-              slot="prefix"
-              class="mcp-icon"
-              alt="Gateway"
-            ></sl-icon>
-            Gateway
-          </div>
+          <div class="chart-header">Gateway</div>
           <div class="gateway-header-meta">
             <span>${this.gatewayRangeLabel}</span>
             ${
