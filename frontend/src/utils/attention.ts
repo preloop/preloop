@@ -381,11 +381,14 @@ function agentItems(
         latestSession?.started_at ||
         agent.last_seen_at ||
         null,
-      // A new validation result, or an onboarding that finally completed,
-      // changes this and brings a dismissed agent back.
+      // A new validation result, an onboarding that finally completed, or a
+      // fresh batch of failed requests changes this and brings a dismissed
+      // agent back.
       fingerprint: `${agent.onboarding_state}|${
         agent.live_validation_status
-      }|${agent.last_validated_at || ''}`,
+      }|${agent.last_validated_at || ''}|${
+        latestSession?.id ?? 'none'
+      }:${failedRequests}`,
       dismissable: true,
       evidence: { agentReasons: evidence },
     });
