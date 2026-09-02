@@ -489,3 +489,96 @@ async def test_sync_ai_model_catalog_endpoint_maps_service_results(
     kwargs = mock_sync.call_args.kwargs
     assert kwargs["provider"] == "anthropic"
     assert kwargs["dry_run"] is True
+
+
+@pytest.mark.asyncio
+async def test_available_models_on_subscription_oauth_model_never_calls_provider(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Founder repro: fetching available models on a Claude Code
+    subscription-OAuth model must not 401 with an API-key error. The server
+    never initiates provider calls with a principal-bound OAuth token
+    (Anthropic fingerprints Claude Code OAuth traffic and can invalidate the
+    subscription); it answers from the account catalog with an honest
+    fallback reason instead."""
+    from preloop.schemas.ai_model import AvailableModelsRequest
+
+    oauth_model = MagicMock()
+    oauth_model.provider_name = "anthropic"
+    oauth_model.api_endpoint = ""
+    oauth_model.is_principal_bound_oauth = True
+
+    catalog_sibling = MagicMock()
+    catalog_sibling.provider_name = "anthropic"
+    catalog_sibling.model_identifier = "claude-fable-5-20260415"
+    other_provider = MagicMock()
+    other_provider.provider_name = "openai"
+    other_provider.model_identifier = "gpt-5.4"
+
+    mock_crud = mocker.patch(
+        "preloop.api.endpoints.ai_models.crud_ai_model", new_callable=MagicMock
+    )
+    mock_crud.get_for_account.return_value = oauth_model
+    mock_crud.get_by_account.return_value = [catalog_sibling, other_provider]
+    mock_discovery = mocker.patch(
+        "preloop.api.endpoints.ai_models.get_available_models_for_provider"
+    )
+
+    result = await maybe_await(
+        ai_models.list_provider_available_models(
+            provider="anthropic",
+            request_in=AvailableModelsRequest(ai_model_id=uuid.uuid4()),
+            db=MagicMock(),
+            current_user=mock_account,
+        )
+    )
+
+    assert result.source == "fallback"
+    assert result.error == "subscription_oauth"
+    assert result.models == ["claude-fable-5-20260415"]
+    # The hard constraint: no upstream call, and the OAuth secret is never
+    # even decrypted for listing.
+    mock_discovery.assert_not_called()
+    mock_crud.resolve_listing_secret.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_available_models_typed_key_wins_over_subscription_oauth_model(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A user-typed API key on an OAuth model's edit form still lists live:
+    the constraint covers the stored OAuth token, not explicit keys."""
+    from preloop.schemas.ai_model import AvailableModelsRequest
+    from preloop.services.ai_model_provider import ModelDiscoveryResult
+
+    oauth_model = MagicMock()
+    oauth_model.provider_name = "anthropic"
+    oauth_model.api_endpoint = ""
+    oauth_model.is_principal_bound_oauth = True
+
+    mock_crud = mocker.patch(
+        "preloop.api.endpoints.ai_models.crud_ai_model", new_callable=MagicMock
+    )
+    mock_crud.get_for_account.return_value = oauth_model
+    mock_discovery = mocker.patch(
+        "preloop.api.endpoints.ai_models.get_available_models_for_provider",
+        return_value=ModelDiscoveryResult(
+            models=["claude-fable-5-1-20260901"], source="live"
+        ),
+    )
+
+    result = await maybe_await(
+        ai_models.list_provider_available_models(
+            provider="anthropic",
+            request_in=AvailableModelsRequest(
+                ai_model_id=uuid.uuid4(), api_key="sk-ant-typed"
+            ),
+            db=MagicMock(),
+            current_user=mock_account,
+        )
+    )
+
+    assert result.source == "live"
+    assert result.models == ["claude-fable-5-1-20260901"]
+    assert mock_discovery.call_args.args[1] == "sk-ant-typed"
+    mock_crud.resolve_listing_secret.assert_not_called()

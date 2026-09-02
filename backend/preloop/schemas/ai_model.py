@@ -330,8 +330,12 @@ class AvailableModelsResponse(BaseModel):
     picker catalog. ``error`` is a short machine-readable reason drawn from a
     fixed vocabulary (e.g. "timeout", "network", "empty_response",
     "unsupported", "missing_endpoint", "sdk_missing", "missing_key", "auth",
-    "unknown") when a live attempt failed or was impossible; it never carries
-    raw exception text, which can embed endpoint URLs or key material.
+    "unknown", "subscription_oauth") when a live attempt failed or was
+    impossible; it never carries raw exception text, which can embed endpoint
+    URLs or key material. "subscription_oauth" marks a stored principal-bound
+    subscription-OAuth credential (e.g. Claude Code): the server never
+    queries the provider with such a token, and the models list is the
+    account's own catalog for the provider instead.
     """
 
     models: List[str] = Field(

@@ -48,6 +48,7 @@ from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 from preloop.utils.permissions import require_permission
 from preloop.services.ai_model_provider import (
+    ERROR_SUBSCRIPTION_OAUTH,
     ProviderAuthError,
     ProviderValidationError,
     get_available_models_for_provider,
@@ -444,12 +445,32 @@ async def list_provider_available_models(
     The server decrypts the stored secret via CRUD. A typed ``api_key`` in
     the body always wins. Stored secrets are never returned to the client.
     """
-    api_key, api_endpoint, aws_auth, model_kind = _resolve_listing_inputs(
+    (
+        api_key,
+        api_endpoint,
+        aws_auth,
+        model_kind,
+        stored_subscription_oauth,
+    ) = _resolve_listing_inputs(
         provider=provider,
         request_in=request_in,
         db=db,
         current_user=current_user,
     )
+    if stored_subscription_oauth and not api_key:
+        # The stored credential is a principal-bound subscription-OAuth bundle
+        # (e.g. Claude Code). HARD CONSTRAINT: the server never initiates its
+        # own provider API calls with such a token; Anthropic fingerprints
+        # Claude Code OAuth traffic and can invalidate the subscription (see
+        # the error-code-1010 note in secret_service.py). Answer from the
+        # account's own catalog instead of returning an API-key auth error.
+        return AvailableModelsResponse(
+            models=_account_catalog_identifiers(
+                db=db, current_user=current_user, provider=provider
+            ),
+            source="fallback",
+            error=ERROR_SUBSCRIPTION_OAUTH,
+        )
     return await _fetch_provider_models(
         provider=provider,
         api_key=api_key,
@@ -556,11 +577,17 @@ def _resolve_listing_inputs(
     Optional[str],
     Optional[dict],
     Literal["llm", "stt", "tts"],
+    bool,
 ]:
     """Typed credentials win; otherwise decrypt the stored model secret.
 
     The stored plaintext is used only for the live list call and is never
     copied into the response.
+
+    The final tuple element reports whether the stored model carries a
+    principal-bound subscription-OAuth credential (Claude Code / Codex). Such
+    secrets are never decrypted here: the caller must not contact the
+    provider with them at all, so there is nothing to resolve.
 
     A stored secret is only ever used for the provider it was stored for. The
     edit form leaves the provider dropdown enabled, so without that check a
@@ -579,6 +606,7 @@ def _resolve_listing_inputs(
     stored_key: Optional[str] = None
     stored_endpoint: Optional[str] = None
     stored_aws: Optional[Dict[str, str]] = None
+    stored_subscription_oauth = False
     model_id = request_in.ai_model_id if request_in else None
     if model_id is not None:
         if (
@@ -604,6 +632,17 @@ def _resolve_listing_inputs(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Stored model provider does not match the requested provider",
             )
+        if bool(getattr(db_model, "is_principal_bound_oauth", False)):
+            # Never decrypt or use a principal-bound subscription-OAuth token
+            # for server-initiated listing; the caller answers from the
+            # catalog instead (see list_provider_available_models).
+            return (
+                (typed_key or None),
+                typed_endpoint or (db_model.api_endpoint or "").strip() or None,
+                typed_aws,
+                model_kind,
+                True,
+            )
         try:
             stored_key = crud_ai_model.resolve_listing_secret(db_model)
         except ValueError:
@@ -626,7 +665,32 @@ def _resolve_listing_inputs(
     api_key = typed_key or stored_key
     api_endpoint = typed_endpoint or stored_endpoint
     aws_auth = typed_aws or stored_aws
-    return api_key, api_endpoint, aws_auth, model_kind
+    return api_key, api_endpoint, aws_auth, model_kind, stored_subscription_oauth
+
+
+def _account_catalog_identifiers(
+    *,
+    db: Session,
+    current_user: User,
+    provider: str,
+) -> List[str]:
+    """The account's own model identifiers for one provider, newest first.
+
+    Used as the honest picker fallback for subscription-OAuth credentials:
+    there is no bundled provider catalog and no server-initiated listing, so
+    what the account already knows (from onboarding imports, `models sync`,
+    and gateway traffic-observed auto-registration) is the curated list.
+    """
+    provider_name = (provider or "").strip().lower()
+    identifiers = {
+        (model.model_identifier or "").strip()
+        for model in crud_ai_model.get_by_account(
+            db=db, account_id=current_user.account_id
+        )
+        if (model.provider_name or "").strip().lower() == provider_name
+        and (model.model_identifier or "").strip()
+    }
+    return sorted(identifiers, reverse=True)
 
 
 def _aws_auth_from_request(
