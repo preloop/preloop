@@ -5,6 +5,7 @@ import {
   executionSubjectUrl,
   isSubjectFallback,
   renderExecutionSubject,
+  isSafeSubjectUrl,
   shortExecutionId,
 } from './execution-subject';
 
@@ -121,6 +122,37 @@ describe('execution subjects', () => {
         'box-arrow-up-right'
       );
       expect(link.classList.contains('is-fallback')).to.be.false;
+    });
+
+    it('renders a subject with a non-http URL as plain text, never a link', async () => {
+      for (const url of [
+        'javascript:alert(1)',
+        'data:text/html,hi',
+        'vbscript:x',
+        '//evil.example/x',
+      ]) {
+        const element = (await fixture(
+          html`<div>
+            ${renderExecutionSubject({
+              id: 'dee1da93',
+              trigger_subject: 'spacecode/preloop-ios !17',
+              trigger_subject_url: url,
+            })}
+          </div>`
+        )) as HTMLElement;
+        expect(element.querySelector('a'), url).to.be.null;
+        expect(element.textContent?.trim()).to.contain(
+          'spacecode/preloop-ios !17'
+        );
+      }
+    });
+
+    it('still links http, https, and console-relative URLs', () => {
+      expect(isSafeSubjectUrl('https://github.com/preloop/preloop/pull/1')).to
+        .be.true;
+      expect(isSafeSubjectUrl('http://gitlab.local/x')).to.be.true;
+      expect(isSafeSubjectUrl('/console/flows/executions/abc')).to.be.true;
+      expect(isSafeSubjectUrl(' javascript:alert(1)')).to.be.false;
     });
 
     it('does not let the link click the row underneath it', async () => {
