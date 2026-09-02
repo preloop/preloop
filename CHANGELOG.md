@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Blog posts can show a hero image**: `og_image` in frontmatter is
-  rendered as a figure under the tags, and a missing `og_image` logs a
-  build warning.
+  rendered as a figure under the tags on the post, as a linked thumbnail
+  on `/blog`, and a missing `og_image` logs a build warning.
 
 - **Policies console hidden behind `policies_console` (off by default)**:
   the page is still being reworked, so `/api/v1/features` now advertises

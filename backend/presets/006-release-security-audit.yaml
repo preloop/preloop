@@ -611,8 +611,11 @@ prompt_template: |
   ═══════════════════════════════════════════════════════════
   Write a compliance-folder-ready pack to /workspace/evidence/:
   - audit-report.md — the combined human-readable audit. It MUST OPEN
-    with a one-page cover for a non-AI reader: three clearly labelled
-    boxes, in this order, before any table or finding list.
+    with a one-page cover for a non-AI reader. Verdict sentence first:
+    one sentence stating the run's verdict (the same value written to
+    result.json) and the blocking reason if the verdict is fail. Then
+    three clearly labelled boxes, in this order, before any table or
+    finding list.
       BOX 1 — "What we checked". List the inputs actually delivered and
       the classes actually screened. The screening coverage statement
       DERIVES FROM THE PER-SOURCE MATRIX: one line per source, in

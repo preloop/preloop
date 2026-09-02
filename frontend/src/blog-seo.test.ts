@@ -317,6 +317,17 @@ describe('blog-seo', () => {
       expect(html).to.contain('/blog/feed.xml');
     });
 
+    it('renders og_image as a linked thumbnail on the index', () => {
+      const html = render_blog_index_html(
+        config,
+        [makePost({ og_image: '/assets/blog/ship.png' })],
+        ''
+      );
+      expect(html).to.contain('class="blog-index-hero"');
+      expect(html).to.contain('src="/assets/blog/ship.png"');
+      expect(html).to.contain('href="/blog/a-post"');
+    });
+
     it('renders an empty state rather than failing with no posts', () => {
       const html = render_blog_index_html(config, [], '');
       expect(html).to.contain('No posts yet.');

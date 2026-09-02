@@ -132,6 +132,25 @@ class TestSecurityAuditPresetInvariants:
         if name != "SBOM Exploit Check":
             assert "GENERATE" in prompt
 
+    def test_one_page_verdict_cover(self, preset):
+        """Every 004-006 human report opens with the three-box cover."""
+        name, data = preset
+        prompt = data["prompt_template"]
+        report_file = {
+            "SBOM Verify": "audit-report.md",
+            "SBOM Exploit Check": "vuln-report.md",
+            "Release Security Audit": "audit-report.md",
+        }[name]
+        assert report_file in prompt
+        assert "one-page cover" in prompt
+        assert "Verdict sentence first" in prompt
+        for box in (
+            'BOX 1 — "What we checked"',
+            'BOX 2 — "What we did NOT check"',
+            'BOX 3 — "What you should do next week"',
+        ):
+            assert box in prompt, f"missing cover box: {box}"
+
 
 class TestSbomVerifyPreset:
     def test_deterministic_check_catalogue(self):
@@ -146,6 +165,18 @@ class TestSbomVerifyPreset:
             assert marker in prompt
         # Missing build evidence must be reported as skipped, not guessed.
         assert "skipped: no build evidence delivered" in prompt
+
+    def test_cover_adapted_to_sbom_checks(self):
+        """BOX 1 lists the five deterministic checks; honesty rail holds."""
+        prompt = _load_preset(PRESET_FILES["SBOM Verify"])["prompt_template"]
+        norm = _norm(prompt)
+        assert "MUST OPEN" in prompt
+        assert "the same value written to result.json" in norm
+        assert "format validity, minimum elements, coverage quality" in norm
+        assert "vulnerability matching" in norm
+        assert "HONESTY RAIL" in prompt
+        assert "may only summarize" in norm
+        assert "Strictly one page" in norm
 
 
 class TestSbomExploitCheckPreset:
@@ -171,6 +202,19 @@ class TestSbomExploitCheckPreset:
         assert '"status" is REQUIRED — it is the flow completion signal' in norm
         # Completion is about the scan finishing, not the gate outcome.
         assert "regardless of the gate outcome or findings" in norm
+
+    def test_cover_box2_includes_unscreened_count(self):
+        """BOX 2 must name unscreened components by count from the matrix."""
+        prompt = _load_preset(PRESET_FILES["SBOM Exploit Check"])["prompt_template"]
+        norm = _norm(prompt)
+        assert "MUST OPEN" in prompt
+        assert "gate.passed written to result.json" in norm
+        assert "unscreened components by count" in norm
+        assert "source_matrix.screened_by_no_source" in prompt
+        assert "unmatchable components" in norm
+        assert "HONESTY RAIL" in prompt
+        assert "may only summarize" in norm
+        assert "Strictly one page" in norm
 
 
 class TestReleaseSecurityAuditPreset:
@@ -346,6 +390,8 @@ class TestReleaseAuditEvidenceStorage:
             'BOX 3 — "What you should do next week"',
         ):
             assert box in prompt, f"missing cover box: {box}"
+        assert "Verdict sentence first" in prompt
+        assert "the same value written to result.json" in _norm(prompt)
         assert "DRIFT LINE" in prompt
         assert "NTIA RECONCILIATION LINE" in prompt
 

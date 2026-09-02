@@ -526,6 +526,16 @@ export const BLOG_ARTICLE_STYLES = `
         height: auto;
         border-radius: 4px;
       }
+      .blog-index-hero {
+        display: block;
+        margin: 0.75rem 0 0;
+      }
+      .blog-index-hero img {
+        display: block;
+        width: 100%;
+        height: auto;
+        border-radius: 4px;
+      }
       .blog-index-list {
         list-style: none;
         margin: 2.5rem 0 0;
@@ -702,10 +712,16 @@ export function render_blog_index_html(
             const reading = post.reading_minutes
               ? ` · ${post.reading_minutes} min read`
               : '';
+            const hero = post.og_image
+              ? `<a class="blog-index-hero" href="${escape_html(
+                  route
+                )}"><img src="${escape_html(post.og_image)}" alt=""></a>`
+              : '';
             return `      <li>
         <p class="blog-index-dateline"><time datetime="${escape_html(
           post.date
         )}">${escape_html(format_display_date(post.date))}</time>${reading}</p>
+        ${hero}
         <h2><a href="${escape_html(route)}">${escape_html(post.title)}</a></h2>
         <p>${escape_html(post.description)}</p>
       </li>`;
