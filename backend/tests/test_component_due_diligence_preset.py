@@ -128,6 +128,27 @@ class TestHonestLegwork:
         assert "OPEN UNKNOWNS" in norm
         assert 'an honest "not determined" is evidence' in norm
 
+    def test_one_page_verdict_cover(self, preset):
+        """dossier.md opens with the same three-box cover as 004-006."""
+        prompt = preset["prompt_template"]
+        norm = _norm(prompt)
+        assert "dossier.md" in prompt
+        assert "MUST OPEN" in prompt
+        assert "one-page cover" in prompt
+        assert "Verdict sentence first" in prompt
+        assert "the same value written to result.json" in norm
+        for box in (
+            'BOX 1 — "What we checked"',
+            'BOX 2 — "What we did NOT check"',
+            'BOX 3 — "What you should do next week"',
+        ):
+            assert box in prompt, f"missing cover box: {box}"
+        assert "OPEN UNKNOWNS" in prompt
+        assert "do NOT recommend accept or reject" in norm
+        assert "HONESTY RAIL" in prompt
+        assert "may only summarize" in norm
+        assert "Strictly one page" in norm
+
 
 class TestRecordStorage:
     def test_record_lands_in_compliance_repo(self, preset):

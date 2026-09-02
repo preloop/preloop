@@ -93,11 +93,32 @@ prompt_template: |
   PHASE 2: DOSSIER
   ═══════════════════════════════════════════════════════════
   Write the evidence pack to /workspace/evidence/:
-  - dossier.md — human-readable due-diligence dossier: component
-    identity and usage context; documents examined; CVE history with
-    KEV callouts; maintenance signals; CE declaration presence; license;
-    and an explicit OPEN UNKNOWNS section listing what could not be
-    determined and why.
+  - dossier.md — human-readable due-diligence dossier. It MUST OPEN
+    with a one-page cover for a non-AI reader, at the TOP of the
+    report, before any table or finding list. Verdict sentence first:
+    one sentence stating the run's verdict (the same value written to
+    result.json) and the blocking reason if the verdict is error.
+    Then three clearly labelled boxes, in this order:
+      BOX 1 — "What we checked". List the component identity, documents
+      actually examined, CVE/KEV query that ran, maintenance signals
+      retrieved, CE declaration presence check, and license facts.
+      Derive this from inputs_declared and evidence.docs_examined.
+      BOX 2 — "What we did NOT check". Mandatory. May not be empty if
+      anything was out of scope or not determined. List the OPEN
+      UNKNOWNS (what could not be determined and why), documents not
+      retrieved, and CVE history that was unmatchable. CE authenticity
+      is never verified.
+      BOX 3 — "What you should do next week". A short, concrete,
+      ordered list of the highest-value unknowns a human should close.
+      Present facts; do NOT recommend accept or reject. No legal
+      advice, no certification.
+    HONESTY RAIL. The cover may only summarize facts, open unknowns,
+    and out-of-scope items already present in the body of this
+    dossier or facts.json. No new claims. Strictly one page.
+    After the cover: component identity and usage context; documents
+    examined; CVE history with KEV callouts; maintenance signals; CE
+    declaration presence; license; and an explicit OPEN UNKNOWNS
+    section listing what could not be determined and why.
   - facts.json — the same facts machine-readable.
   Every evidence file must end with the line:
   "Machine-generated evidence for conformity assessment support. Not a
