@@ -75,9 +75,12 @@ jobs:
       - name: Helm render checks (chart lint + CNPG backup wiring)
         run: sh scripts/helm-render-check.sh
 
-  # Four shards, each with its own Postgres. GitLab splits this suite into
+  # Eight shards, each with its own Postgres. GitLab splits this suite into
   # dozens of per-file jobs; that is a poor fit here because each GitHub
   # runner spends ~1.5m on checkout/pip/migrations before pytest starts.
+  # Four shards left group 1 (the first duration_based_chunks slice) as the
+  # wall-clock pole: ~7-9m vs ~3-4.5m for the others. Eight shards cut that
+  # first slice in half without going back to per-file jobs.
   # pytest-split keeps new tests in the partition automatically. Use
   # duration_based_chunks (not least_duration): without a timings file,
   # least_duration round-robins individual tests across shards and breaks
@@ -86,12 +89,12 @@ jobs:
   # coverage floor is applied after shards are combined -- a single shard
   # only sees part of the tree.
   test-backend:
-    name: Backend Tests (${{ matrix.group }}/4)
+    name: Backend Tests (${{ matrix.group }}/8)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4]
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -144,7 +147,7 @@ jobs:
         run: |
           pytest -v \
             -m "not integration" \
-            --splits 4 \
+            --splits 8 \
             --group ${{ matrix.group }} \
             --splitting-algorithm=duration_based_chunks \
             --cov=preloop \
@@ -203,8 +206,8 @@ jobs:
       - name: Combine coverage and enforce floor
         run: |
           mapfile -t coverage_files < <(find coverage-shards -name 'coverage-data.*' -type f | sort)
-          if [ ${#coverage_files[@]} -ne 4 ]; then
-            echo "Expected 4 shard coverage files, found ${#coverage_files[@]}"
+          if [ ${#coverage_files[@]} -ne 8 ]; then
+            echo "Expected 8 shard coverage files, found ${#coverage_files[@]}"
             find coverage-shards -type f -print
             exit 1
           fi

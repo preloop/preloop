@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
-BACKEND_TEST_SPLITS = 4
+BACKEND_TEST_SPLITS = 8
 
 
 def _load_ci_jobs() -> dict[str, Any]:
