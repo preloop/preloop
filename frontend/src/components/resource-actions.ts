@@ -20,6 +20,17 @@ export interface ResourceAction {
     | 'warning'
     | 'danger'
     | 'text';
+  /**
+   * Render the button outlined rather than solid. Used for destructive
+   * actions that should stay legible as "danger" without a solid red block
+   * competing with the primary action on the page.
+   */
+  outline?: boolean;
+  /**
+   * Push this action away from the ones before it. Separates a destructive
+   * action from the everyday ones so it is not clicked by muscle memory.
+   */
+  separated?: boolean;
   disabled?: boolean;
   loading?: boolean;
   tooltip?: string;
@@ -85,6 +96,9 @@ export class ResourceActions extends LitElement {
         font-size: 1rem;
         margin-right: var(--sl-spacing-2x-small);
       }
+      .separated {
+        margin-left: var(--sl-spacing-large);
+      }
     `,
   ];
 
@@ -134,7 +148,9 @@ export class ResourceActions extends LitElement {
 
     const button = html`
       <sl-button
+        class=${action.separated ? 'separated' : ''}
         variant=${action.variant || 'default'}
+        ?outline=${action.outline}
         ?disabled=${action.disabled}
         ?loading=${action.loading}
         href=${action.href || ''}

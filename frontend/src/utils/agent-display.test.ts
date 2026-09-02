@@ -4,6 +4,7 @@ import type { ManagedAgentSummary } from '../types';
 import {
   getAgentLifecycleLabel,
   getAgentLifecycleVariant,
+  getAgentStatusChip,
   getSystemAgentTags,
   getVisibleAgentTags,
   isSystemAgentTag,
@@ -63,6 +64,85 @@ describe('agent lifecycle presentation', () => {
         lifecycle_state: 'decommissioned',
       })
     ).to.equal('danger');
+  });
+});
+
+describe('getAgentStatusChip', () => {
+  const onboarded = {
+    ...baseAgent,
+    onboarding_state: 'fully_onboarded',
+  } satisfies ManagedAgentSummary;
+
+  it('puts lifecycle ahead of everything else', () => {
+    expect(
+      getAgentStatusChip({
+        ...onboarded,
+        lifecycle_state: 'decommissioned',
+        is_active_now: true,
+      })
+    ).to.deep.equal({ label: 'Decommissioned', variant: 'neutral' });
+    expect(
+      getAgentStatusChip({
+        ...onboarded,
+        lifecycle_state: 'suspended',
+        live_validation_status: 'failed',
+      })
+    ).to.deep.equal({ label: 'Paused', variant: 'neutral' });
+  });
+
+  it('reports a failed live check ahead of onboarding and activity', () => {
+    expect(
+      getAgentStatusChip({
+        ...baseAgent,
+        live_validation_status: 'failed',
+        is_active_now: true,
+      })
+    ).to.deep.equal({ label: 'Live check failed', variant: 'warning' });
+  });
+
+  it('flags every partially onboarded state as Setup incomplete', () => {
+    for (const state of ['incomplete', 'gateway_only', 'mcp_proxy_only']) {
+      expect(
+        getAgentStatusChip({
+          ...baseAgent,
+          onboarding_state: state,
+          is_active_now: true,
+        }),
+        state
+      ).to.deep.equal({ label: 'Setup incomplete', variant: 'warning' });
+    }
+  });
+
+  it('shows Active now for a live agent and an outlined chip for a recent one', () => {
+    expect(
+      getAgentStatusChip({ ...onboarded, is_active_now: true })
+    ).to.deep.equal({ label: 'Active now', variant: 'success' });
+    expect(
+      getAgentStatusChip({ ...onboarded, activity_status: 'recently_active' })
+    ).to.deep.equal({
+      label: 'Recently active',
+      variant: 'success',
+      outline: true,
+    });
+  });
+
+  it('falls back to Idle', () => {
+    expect(getAgentStatusChip(onboarded)).to.deep.equal({
+      label: 'Idle',
+      variant: 'neutral',
+    });
+  });
+
+  it('does not treat an unsupported or passing live check as a failure', () => {
+    expect(getAgentStatusChip({ ...onboarded }).label).to.equal('Idle');
+    expect(
+      getAgentStatusChip({ ...onboarded, live_validation_status: 'passed' })
+        .label
+    ).to.equal('Idle');
+    expect(
+      getAgentStatusChip({ ...onboarded, live_validation_status: 'not_run' })
+        .label
+    ).to.equal('Idle');
   });
 });
 
