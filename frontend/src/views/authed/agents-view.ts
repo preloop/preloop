@@ -609,9 +609,6 @@ export class AgentsView extends LitElement {
         white-space: nowrap;
       }
       @media (prefers-color-scheme: dark) {
-        .agent-row:hover td {
-          background: var(--sl-color-neutral-100);
-        }
         .status-chip.outline::part(base) {
           color: var(--sl-color-success-400);
           border-color: var(--sl-color-success-600);
@@ -2097,24 +2094,6 @@ export class AgentsView extends LitElement {
     >`;
   }
 
-  private getLifecycleVariant(agent: ManagedAgentSummary): string {
-    if (agent.lifecycle_state === 'decommissioned') return 'danger';
-    if (agent.lifecycle_state === 'suspended') return 'warning';
-    if (agent.activity_status === 'active_now') return 'success';
-    if (agent.activity_status === 'recently_active') return 'primary';
-    if (agent.ended_at) return 'neutral';
-    return 'primary';
-  }
-
-  private getLifecycleLabel(agent: ManagedAgentSummary): string {
-    if (agent.lifecycle_state === 'decommissioned') return 'Decommissioned';
-    if (agent.lifecycle_state === 'suspended') return 'Paused';
-    if (agent.activity_status === 'active_now') return 'Active now';
-    if (agent.activity_status === 'recently_active') return 'Recently active';
-    if (agent.ended_at) return 'Ended';
-    return 'Idle';
-  }
-
   private getOnboardingVariant(agent: ManagedAgentSummary): string {
     if (agent.onboarding_state === 'fully_onboarded') return 'success';
     if (agent.onboarding_state === 'mcp_proxy_only') return 'warning';
@@ -2967,13 +2946,26 @@ export class AgentsView extends LitElement {
 
   private renderAgentIdentityBadges(agent: ManagedAgentSummary) {
     const tags = getVisibleAgentTags(agent.tags);
+    // Same taxonomy as the list rows and the detail header, so an agent never
+    // reads as two different things depending on which view you opened.
+    const status = getAgentStatusChip(agent);
+    // A failed live check is already the status; repeating it as a second
+    // badge just doubles the noise. Throttled and upstream-refused are not
+    // status (the agent may be perfectly healthy), so they still get a badge.
+    const showValidationBadge =
+      this.shouldShowValidationBadge(agent) &&
+      status.label !== 'Live check failed';
     return html`
       <div class="identity-badges">
-        <sl-badge variant="${this.getLifecycleVariant(agent)}" pill>
-          ${this.getLifecycleLabel(agent)}
+        <sl-badge
+          class="status-chip ${status.outline ? 'outline' : ''}"
+          variant="${status.variant}"
+          pill
+        >
+          ${status.label}
         </sl-badge>
         ${
-          this.shouldShowValidationBadge(agent)
+          showValidationBadge
             ? html`<sl-badge
                 class="validation-badge"
                 variant="${this.getLiveValidationVariant(agent)}"

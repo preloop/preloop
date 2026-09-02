@@ -474,10 +474,17 @@ describe('AgentsView', () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
     await waitForAgents(el);
 
+    // A failed live check IS the status, so it shows once as the status chip
+    // rather than twice (status plus a second red badge saying the same).
     const text = (el.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
     expect(text).to.contain('Live check failed');
-    const badge = el.shadowRoot?.querySelector('sl-badge.validation-badge');
-    expect(badge?.getAttribute('variant')).to.equal('danger');
+    expect(el.shadowRoot?.querySelector('sl-badge.validation-badge')).to.not
+      .exist;
+    const chip = el.shadowRoot?.querySelector(
+      '.identity-badges sl-badge.status-chip'
+    );
+    expect(chip?.textContent?.trim()).to.equal('Live check failed');
+    expect(chip?.getAttribute('variant')).to.equal('warning');
   });
 
   it('suppresses the validation badge when the live check passed', async () => {
