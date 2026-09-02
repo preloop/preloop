@@ -46,6 +46,13 @@ const SUBJECT_TYPE_LABELS: Record<string, string> = {
 export class UsageCard extends LitElement {
   @property({ type: Object })
   summary: AccountGatewayUsageSummaryResponse | null = null;
+  /**
+   * Same window, shifted back one period. A number on its own says nothing
+   * about direction, so the card states the change against the window the
+   * user is already looking at.
+   */
+  @property({ type: Object })
+  priorSummary: AccountGatewayUsageSummaryResponse | null = null;
   @property({ type: Array }) policies: BudgetPolicy[] = [];
   @property({ type: Boolean }) loading = false;
   @property({ type: String }) error: string | null = null;
@@ -136,6 +143,15 @@ export class UsageCard extends LitElement {
         gap: var(--sl-spacing-2x-small);
         color: var(--sl-color-neutral-500);
         font-size: 0.8125rem; /* console meta */
+        margin-top: var(--sl-spacing-2x-small);
+      }
+
+      /* The delta is information, not an alarm: no red, no green, no arrow
+         colouring. Spend going up is not by itself a problem. */
+      .delta {
+        color: var(--sl-color-neutral-500);
+        font-size: 0.8125rem;
+        font-variant-numeric: tabular-nums;
         margin-top: var(--sl-spacing-2x-small);
       }
 
@@ -357,6 +373,7 @@ export class UsageCard extends LitElement {
               ></sl-icon>
             </sl-tooltip>
           </div>
+          ${this.renderDelta()}
         </div>
       `;
     }
@@ -367,8 +384,44 @@ export class UsageCard extends LitElement {
         <div class="primary-label">
           <span>tokens · ${this.rangeLabel}</span>
         </div>
+        ${this.renderDelta()}
       </div>
     `;
+  }
+
+  /** The value the delta compares, in whichever unit is showing. */
+  private valueFor(summary: AccountGatewayUsageSummaryResponse | null): number {
+    if (!summary) return 0;
+    return this.unit === 'dollars'
+      ? Number(summary.estimated_cost || 0)
+      : Number(summary.token_usage?.total_tokens || 0);
+  }
+
+  /**
+   * Percent change against the previous window of equal length. Returns null
+   * when there is no prior period to compare against: "up 100% from nothing"
+   * is noise, not news.
+   */
+  private renderDelta() {
+    if (this.loading && !this.summary) {
+      return nothing;
+    }
+    const prior = this.valueFor(this.priorSummary);
+    if (prior <= 0) {
+      return nothing;
+    }
+    const current = this.valueFor(this.summary);
+    const change = ((current - prior) / prior) * 100;
+    const rounded = Math.round(change);
+    if (rounded === 0) {
+      return html`<div class="delta">
+        No change vs prior ${this.rangeLabel}
+      </div>`;
+    }
+    const arrow = rounded > 0 ? '▲' : '▼';
+    return html`<div class="delta">
+      ${arrow} ${Math.abs(rounded)}% vs prior ${this.rangeLabel}
+    </div>`;
   }
 
   private renderSecondaryLine() {

@@ -153,6 +153,17 @@ interface TopModelSubjectGroup {
   totalRequests: number;
 }
 
+export const NEXT_STEPS_DISMISSED_KEY = 'dashboard_next_steps_dismissed';
+export const ENDPOINTS_EXPANDED_KEY = 'dashboard_endpoints_expanded';
+
+interface NextStep {
+  id: string;
+  label: string;
+  done: boolean;
+  href?: string;
+  onClick?: () => void;
+}
+
 interface DashboardMetric {
   label: string;
   value: string | number;
@@ -173,6 +184,9 @@ export class DashboardView extends AuthedElement {
   @state() private error: string | null = null;
   @state() private gatewaySummary: AccountGatewayUsageSummaryResponse | null =
     null;
+  /** The window before `gatewayTimeRange`, for the Usage card's delta. */
+  @state()
+  private priorGatewaySummary: AccountGatewayUsageSummaryResponse | null = null;
   @state() private runtimeSessions: RuntimeSessionSummary[] = [];
   @state() private managedAgents: ManagedAgentSummary[] = [];
   @state() private budgetAgents: ManagedAgentSummary[] = [];
@@ -209,6 +223,14 @@ export class DashboardView extends AuthedElement {
   @state() private showSetupDialog = false;
   @state() private showBudgetDialog = false;
   @state() private welcomeCardDismissed = false;
+  @state() private nextStepsDismissed = false;
+  /**
+   * null means "the user has not said": the disclosure then follows the
+   * account. An instance with a fully onboarded agent has already copied
+   * these URLs; a fresh one still needs them.
+   */
+  @state() private endpointsExpandedPreference: boolean | null = null;
+  @state() private userManagementEnabled = false;
 
   @state() private aiModels: AIModel[] = [];
   @state() private isInviteDialogOpen = false;
@@ -263,48 +285,159 @@ export class DashboardView extends AuthedElement {
   static styles = [
     reducedMotionStyles,
     css`
-      .tool-counts {
+      /* Five stats, left aligned, on one 64px row. They are counts, so they
+         are read across, not admired: icon and number on one line, the noun
+         under it in the meta register. */
+      .hero-stats {
+        align-items: flex-start;
         display: flex;
         flex-wrap: wrap;
         gap: var(--sl-spacing-2x-large);
-        margin-top: var(--sl-spacing-small);
-        justify-content: center;
+        margin-bottom: var(--sl-spacing-medium);
+        min-height: 64px;
       }
-      .tool-count {
+      .hero-stat {
+        color: inherit;
         display: flex;
         flex-direction: column;
+        gap: 2px;
+        text-decoration: none;
+      }
+      .hero-stat-top {
         align-items: center;
-        gap: var(--sl-spacing-small);
-        font-size: var(--sl-font-size-small);
+        display: flex;
+        gap: var(--sl-spacing-2x-small);
       }
-      .tool-count sl-icon {
-        font-size: 2.5rem;
+      .hero-stat-icon {
+        color: var(--sl-color-neutral-400);
+        font-size: 18px;
       }
-      .tool-count-value {
-        font-size: 1.5rem;
-        font-weight: 700;
+      .hero-stat-value {
+        font-size: var(--console-stat-value);
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.2;
       }
-      .tool-count-label {
-        font-size: var(--sl-font-size-small);
-        color: var(--sl-color-neutral-600);
-        text-align: center;
+      .hero-stat-label {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--console-text-meta);
       }
-      .hover-underline:hover {
+      .hero-stat:hover .hero-stat-label {
         text-decoration: underline;
       }
-      /* The hero metrics sat in their own screenful of whitespace: a
-         two-x-large row gap and the same margin under them pushed the first
-         card below the fold at 1440x900. */
-      .metrics-grid {
-        display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: var(--sl-spacing-large);
-        row-gap: var(--sl-spacing-large);
-        align-items: start;
-        margin-bottom: var(--sl-spacing-large);
+      /* The only stat allowed a colour is the one that asks for something. */
+      .hero-stat.tone-warning .hero-stat-icon,
+      .hero-stat.tone-warning .hero-stat-value {
+        color: var(--sl-color-warning-600);
       }
-      .tool-count-value {
+      .hero-stat.tone-success .hero-stat-icon {
+        color: var(--sl-color-success-600);
+      }
+      /* Connect row: state first, endpoints on request. */
+      .connect-row {
+        align-items: center;
+        border-top: 1px solid var(--sl-color-neutral-200);
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-large);
+        padding-top: var(--sl-spacing-small);
+      }
+      .connect-status {
+        align-items: center;
+        color: var(--sl-color-neutral-700);
+        display: flex;
+        gap: var(--sl-spacing-2x-small);
+        font-size: var(--console-text-body);
+      }
+      .connect-toggle {
+        margin-left: auto;
+      }
+      /* One amber line above the page, or nothing. */
+      .attention-strip {
+        align-items: center;
+        background: var(--sl-color-warning-50);
+        border: 1px solid var(--sl-color-warning-200);
+        border-radius: var(--sl-border-radius-medium);
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small);
+        padding: var(--sl-spacing-x-small) var(--sl-spacing-medium);
+      }
+      .attention-strip-icon {
+        color: var(--sl-color-warning-600);
+        flex-shrink: 0;
+        font-size: 18px;
+      }
+      .attention-strip-count {
+        color: var(--sl-color-warning-800);
+        font-weight: 600;
         font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .attention-strip-items {
+        display: flex;
+        flex: 1 1 auto;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-x-small);
+        min-width: 0;
+      }
+      .attention-chip-link {
+        max-width: 100%;
+        text-decoration: none;
+      }
+      .attention-chip-link sl-badge::part(base) {
+        align-items: center;
+        display: flex;
+        gap: var(--sl-spacing-3x-small);
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .attention-strip-all {
+        color: var(--sl-color-primary-700);
+        font-size: var(--console-text-meta);
+        margin-left: auto;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+      .attention-strip-all:hover {
+        text-decoration: underline;
+      }
+      /* Next steps: a checklist, not a wizard. */
+      .next-steps-list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-2x-small);
+      }
+      .next-step-link {
+        align-items: center;
+        background: none;
+        border: none;
+        color: var(--sl-color-neutral-900);
+        cursor: pointer;
+        display: flex;
+        font: inherit;
+        gap: var(--sl-spacing-x-small);
+        padding: var(--sl-spacing-2x-small) 0;
+        text-align: left;
+        text-decoration: none;
+        width: 100%;
+      }
+      .next-step-link:hover .next-step-label {
+        text-decoration: underline;
+      }
+      .next-step-mark {
+        color: var(--sl-color-neutral-400);
+        flex-shrink: 0;
+        font-size: 16px;
+      }
+      .next-step-mark.done {
+        color: var(--sl-color-success-600);
+      }
+      .next-step.done .next-step-label {
+        color: var(--sl-color-neutral-500);
+        text-decoration: line-through;
       }
       .updated-at {
         color: var(--sl-color-neutral-500);
@@ -323,74 +456,6 @@ export class DashboardView extends AuthedElement {
         font-size: var(--sl-font-size-small);
         font-weight: var(--sl-font-weight-normal);
         font-variant-numeric: tabular-nums;
-      }
-      .attention-title {
-        align-items: center;
-        display: flex;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .attention-title sl-icon {
-        color: var(--sl-color-warning-600);
-      }
-      /* One line per item, about 44px tall, so five items and the Usage card
-         fit above the fold. The shared .row rule below stacks its children,
-         which turned every attention item into three lines: dot, icon, text.
-         The double class beats it without touching the other lists. */
-      .row.attention-row {
-        align-items: center;
-        display: flex;
-        flex-direction: row;
-        gap: var(--sl-spacing-x-small);
-        min-height: 44px;
-        padding: var(--sl-spacing-x-small) 0;
-      }
-      .severity-dot {
-        border-radius: 50%;
-        flex-shrink: 0;
-        height: 8px;
-        width: 8px;
-        background: var(--sl-color-warning-600);
-      }
-      .severity-dot.critical {
-        background: var(--sl-color-danger-600);
-      }
-      .attention-kind-icon {
-        color: var(--sl-color-neutral-500);
-        flex-shrink: 0;
-      }
-      .attention-main {
-        align-items: baseline;
-        display: flex;
-        flex-direction: row;
-        gap: var(--sl-spacing-x-small);
-        min-width: 0;
-      }
-      /* The title keeps what it needs, the detail gives way first. */
-      .attention-row .row-primary {
-        flex: 0 1 auto;
-        overflow: hidden;
-        overflow-wrap: normal;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .attention-detail {
-        color: var(--sl-color-neutral-500);
-        flex: 1 1 auto;
-        font-size: var(--sl-font-size-x-small);
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .attention-more {
-        color: var(--sl-color-primary-600);
-        display: inline-block;
-        font-size: var(--sl-font-size-small);
-        margin-top: var(--sl-spacing-small);
-        text-decoration: none;
-      }
-      .attention-more:hover {
-        text-decoration: underline;
       }
       .budget-track {
         position: relative;
@@ -1092,24 +1157,21 @@ export class DashboardView extends AuthedElement {
           grid-template-columns: 1fr;
         }
 
-        .metrics-grid {
+        /* Phone: the five stats wrap into a grid rather than scrolling off
+           the card, and the strip becomes two rows. */
+        .hero-stats {
+          column-gap: var(--sl-spacing-large);
+          display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: var(--sl-spacing-medium);
-          row-gap: var(--sl-spacing-large);
+          row-gap: var(--sl-spacing-medium);
         }
 
-        .tool-count {
-          min-width: 0;
+        .attention-strip-all {
+          margin-left: 0;
         }
 
-        .tool-count-value {
-          font-size: clamp(1rem, 7vw, 1.5rem);
-          overflow-wrap: anywhere;
-        }
-
-        .tool-count-label {
-          font-size: var(--sl-font-size-x-small);
-          line-height: 1.25;
+        .connect-toggle {
+          margin-left: 0;
         }
       }
     `,
@@ -1138,11 +1200,13 @@ export class DashboardView extends AuthedElement {
     try {
       const res = await getFeatures();
       this.computeFeatureEnabled = !!res.features?.['compute'];
+      this.userManagementEnabled = !!res.features?.['user_management'];
       this.isEnterprise = Array.isArray(res.plugins) && res.plugins.length > 0;
       return res;
     } catch {
       this.computeFeatureEnabled = false;
       this.isEnterprise = false;
+      this.userManagementEnabled = false;
       return null;
     }
   }
@@ -1266,6 +1330,30 @@ export class DashboardView extends AuthedElement {
   private loadDismissedState(): void {
     this.welcomeCardDismissed =
       localStorage.getItem('dashboard_welcome_dismissed') === 'true';
+    this.nextStepsDismissed =
+      localStorage.getItem(NEXT_STEPS_DISMISSED_KEY) === 'true';
+    const endpoints = localStorage.getItem(ENDPOINTS_EXPANDED_KEY);
+    this.endpointsExpandedPreference =
+      endpoints === 'true' ? true : endpoints === 'false' ? false : null;
+  }
+
+  private dismissNextSteps(): void {
+    this.nextStepsDismissed = true;
+    try {
+      localStorage.setItem(NEXT_STEPS_DISMISSED_KEY, 'true');
+    } catch {
+      // Private mode: the card stays hidden for this session only.
+    }
+  }
+
+  private toggleEndpoints(): void {
+    const next = !this.endpointsExpanded;
+    this.endpointsExpandedPreference = next;
+    try {
+      localStorage.setItem(ENDPOINTS_EXPANDED_KEY, String(next));
+    } catch {
+      // Non-fatal: the disclosure still works for this session.
+    }
   }
 
   private dismissWelcomeCard(): void {
@@ -1344,6 +1432,23 @@ export class DashboardView extends AuthedElement {
     const d = new Date(now);
     d.setMonth(d.getMonth() - 1);
     return d.toISOString();
+  }
+
+  /**
+   * The window immediately before the one on screen, same length. Computed
+   * from the current start date so the two summaries always cover equal spans
+   * (a month is not always 30 days).
+   */
+  private getPriorGatewayWindow(startDateStr: string): {
+    startDate: string;
+    endDate: string;
+  } {
+    const start = new Date(startDateStr).getTime();
+    const span = Date.now() - start;
+    return {
+      startDate: new Date(start - span).toISOString(),
+      endDate: new Date(start).toISOString(),
+    };
   }
 
   private getActiveAgentsStartDate(): string | undefined {
@@ -1531,6 +1636,15 @@ export class DashboardView extends AuthedElement {
         }),
         null
       );
+      const priorWindow = this.getPriorGatewayWindow(startDateStr);
+      const priorSummaryPromise = this.catchWith403Handling(
+        getAccountGatewayUsageSummary({
+          startDate: priorWindow.startDate,
+          endDate: priorWindow.endDate,
+          includeBreakdown: false,
+        }),
+        null
+      );
       const featuresPromise = this.fetchFeatures();
       const adminPromise = this.fetchAdminStatus();
 
@@ -1544,6 +1658,7 @@ export class DashboardView extends AuthedElement {
         runtimeSessions,
         managedAgents,
         featuresRes,
+        priorGatewaySummary,
       ] = await Promise.all([
         gatewaySummaryPromise,
         this.catchWith403Handling(getAccountGatewayUsageSearch({ limit: 12 }), {
@@ -1574,6 +1689,7 @@ export class DashboardView extends AuthedElement {
         ),
         agentsPromise,
         featuresPromise,
+        priorSummaryPromise,
       ]);
       await adminPromise;
 
@@ -1581,6 +1697,7 @@ export class DashboardView extends AuthedElement {
         this.gatewaySummary,
         gatewaySummary
       );
+      this.priorGatewaySummary = priorGatewaySummary;
       this.gatewayInteractions = gatewayInteractions.items || [];
       this.fetchingGatewaySummary = false;
 
@@ -2287,19 +2404,22 @@ export class DashboardView extends AuthedElement {
     return 'Never';
   }
 
+  /**
+   * Chip colour is a taxonomy, not decoration: success means finished or
+   * live, danger means failed. A run that is still going is a state, so it
+   * is neutral; amber is reserved for things asking for a human.
+   */
   private getStatusColor(status: string): string {
     switch (status.toLowerCase()) {
       case 'active':
       case 'succeeded':
+      case 'completed':
       case 'approved':
         return 'success';
       case 'failed':
       case 'error':
       case 'declined':
         return 'danger';
-      case 'running':
-      case 'pending':
-        return 'warning';
       default:
         return 'neutral';
     }
@@ -2336,6 +2456,63 @@ export class DashboardView extends AuthedElement {
     if (this.gatewayTimeRange === 'week') return '7d';
     if (this.gatewayTimeRange === 'year') return '1y';
     return '30d';
+  }
+
+  /** True once an agent talks to both the model gateway and the tool firewall. */
+  private get hasFullyOnboardedAgent(): boolean {
+    return this.managedAgents.some(
+      (agent) => agent.onboarding_state === 'fully_onboarded'
+    );
+  }
+
+  private get endpointsExpanded(): boolean {
+    if (this.endpointsExpandedPreference !== null) {
+      return this.endpointsExpandedPreference;
+    }
+    return !this.hasFullyOnboardedAgent;
+  }
+
+  /**
+   * The Policies page derives tool access rules from the tools themselves: a
+   * tool that is disabled or needs approval is a policy. Anything else is the
+   * default allow, which is not a decision anyone made.
+   */
+  private get hasToolPolicy(): boolean {
+    return this.tools.some(
+      (tool) => !tool.is_enabled || Boolean(tool.approval_workflow_id)
+    );
+  }
+
+  private get nextSteps(): NextStep[] {
+    const steps: NextStep[] = [
+      {
+        id: 'agent',
+        label: 'Onboard an agent',
+        done: this.managedAgents.length > 0 || this.totalAgentsCount > 0,
+        href: '/console/agents',
+      },
+      {
+        id: 'budget',
+        label: 'Set a spending limit',
+        done: this.budgetPolicies.length > 0,
+        onClick: () => (this.showBudgetDialog = true),
+      },
+      {
+        id: 'policy',
+        label: 'Add a tool policy',
+        done: this.hasToolPolicy,
+        href: '/console/policies',
+      },
+    ];
+    if (this.userManagementEnabled) {
+      steps.push({
+        id: 'invite',
+        label: 'Invite a teammate',
+        done: this.enabledUsersCount > 1,
+        href: '/console/settings/invitations',
+      });
+    }
+    return steps;
   }
 
   private get enabledToolsCount(): number {
@@ -2542,6 +2719,63 @@ export class DashboardView extends AuthedElement {
     `;
   }
 
+  /**
+   * The four things a new account has to do, with their real state read from
+   * the same data the rest of the page uses. It disappears on its own when
+   * they are done, so nobody has to dismiss it to be rid of it.
+   */
+  private renderNextStepsCard() {
+    if (this.nextStepsDismissed) {
+      return nothing;
+    }
+    const steps = this.nextSteps;
+    if (steps.every((step) => step.done)) {
+      return nothing;
+    }
+
+    return html`
+      <sl-card class="content-card next-steps-card">
+        <div slot="header" class="card-header-with-action">
+          <div class="card-title">Next steps</div>
+          <sl-icon-button
+            name="x-lg"
+            label="Dismiss next steps"
+            @click=${this.dismissNextSteps}
+          ></sl-icon-button>
+        </div>
+        <div class="next-steps-list">
+          ${steps.map((step) => {
+            const label = html`
+              <sl-icon
+                class="next-step-mark ${step.done ? 'done' : ''}"
+                name=${step.done ? 'check-circle-fill' : 'circle'}
+                aria-hidden="true"
+              ></sl-icon>
+              <span class="next-step-label">${step.label}</span>
+            `;
+            return html`
+              <div class="next-step ${step.done ? 'done' : ''}">
+                ${
+                  step.href
+                    ? html`<a class="next-step-link" href=${step.href}
+                        >${label}</a
+                      >`
+                    : html`<button
+                        class="next-step-link"
+                        type="button"
+                        @click=${step.onClick}
+                      >
+                        ${label}
+                      </button>`
+                }
+              </div>
+            `;
+          })}
+        </div>
+      </sl-card>
+    `;
+  }
+
   private renderRecentFlowExecutionsCard() {
     if (
       this.fetchingRecentExecutions &&
@@ -2558,7 +2792,7 @@ export class DashboardView extends AuthedElement {
           Recent Flow Executions
           ${
             this.failedFlowExecutions.length > 0
-              ? html`<sl-badge variant="danger"
+              ? html`<sl-badge class="chip" variant="danger" pill
                   >${this.failedFlowExecutions.length} failed</sl-badge
                 >`
               : ''
@@ -2603,12 +2837,12 @@ export class DashboardView extends AuthedElement {
                           >
                         </div>
                         <div class="item-actions">
-                          <sl-tag
-                            size="small"
-                            variant="${this.getStatusColor(exec.status)}"
+                          <sl-badge
+                            class="chip"
+                            pill
+                            variant=${this.getStatusColor(exec.status)}
+                            >${exec.status}</sl-badge
                           >
-                            ${exec.status}
-                          </sl-tag>
                           <sl-button
                             size="small"
                             href="/console/flows/executions/${exec.id}"
@@ -2640,6 +2874,7 @@ export class DashboardView extends AuthedElement {
     return html`
       <usage-card
         .summary=${this.gatewaySummary}
+        .priorSummary=${this.priorGatewaySummary}
         .policies=${this.budgetPolicies}
         .loading=${this.fetchingGatewaySummary || this.fetchingBudget}
         .error=${this.error}
@@ -3399,133 +3634,119 @@ export class DashboardView extends AuthedElement {
     `;
   }
 
-  private renderAttentionCard() {
+  /**
+   * One amber line across the top of the page, above everything else, or
+   * nothing at all. The side card it replaces competed with Usage for the
+   * same column and was read after it; a strip is read first because it is
+   * first, and it costs one line instead of a card.
+   */
+  private renderAttentionStrip() {
     const items = this.attentionItems;
     if (items.length === 0) {
       return nothing;
     }
-    const visible = items.slice(0, 5);
-    const overflow = items.length - visible.length;
+    const visible = items.slice(0, 3);
 
     return html`
-      <sl-card class="content-card">
-        <div slot="header" class="card-header-with-action">
-          <div class="card-title attention-title">
-            <sl-icon name="exclamation-triangle"></sl-icon>
-            Needs attention
-            <sl-badge variant="warning" pill>${items.length}</sl-badge>
-          </div>
-          <a href="/console/attention" class="header-action-link">View all</a>
-        </div>
-        <div class="list">
+      <div class="attention-strip">
+        <sl-icon
+          class="attention-strip-icon"
+          name="exclamation-triangle"
+          aria-hidden="true"
+        ></sl-icon>
+        <span class="attention-strip-count"
+          >${this.formatNumber(items.length)} need attention</span
+        >
+        <div class="attention-strip-items">
           ${repeat(
             visible,
             (item) => item.id,
             (item) => html`
-              <div class="row attention-row">
-                <span
-                  class="severity-dot ${item.severity}"
-                  aria-hidden="true"
-                ></span>
-                <sl-icon
-                  class="attention-kind-icon"
-                  name=${ATTENTION_KIND_META[item.kind].icon}
-                  aria-hidden="true"
-                ></sl-icon>
-                <div class="attention-main">
-                  <a class="row-link row-primary" href=${item.href}
-                    >${item.title}</a
-                  >
-                  <span class="attention-detail">${item.detail}</span>
-                </div>
-              </div>
+              <a class="attention-chip-link" href=${item.href}>
+                <sl-badge class="chip" variant="warning" pill>
+                  <sl-icon
+                    name=${ATTENTION_KIND_META[item.kind].icon}
+                    aria-hidden="true"
+                  ></sl-icon>
+                  ${item.title} · ${item.detail}
+                </sl-badge>
+              </a>
             `
           )}
         </div>
-        ${
-          overflow > 0
-            ? html`<a class="attention-more" href="/console/attention"
-                >and ${overflow} more</a
-              >`
-            : nothing
-        }
-      </sl-card>
+        <a class="attention-strip-all" href="/console/attention"
+          >View all <span aria-hidden="true">→</span></a
+        >
+      </div>
     `;
   }
 
+  /**
+   * A stat is an icon, a number and a word, on two lines, about 64px tall.
+   * The old block spent a fifth of a 900px screen on the same five numbers.
+   */
   private renderMetricItem(metric: DashboardMetric) {
-    const iconColor =
-      metric.tone === 'danger'
-        ? 'var(--sl-color-danger-600)'
-        : metric.tone === 'warning'
-          ? 'var(--sl-color-warning-600)'
-          : metric.tone === 'success'
-            ? 'var(--sl-color-success-600)'
-            : metric.tone === 'primary'
-              ? 'var(--sl-color-primary-600)'
-              : 'var(--sl-color-neutral-400)';
     const content = html`
-      ${
-        metric.icon.includes('/')
-          ? html`<sl-icon
-              src=${metric.icon}
-              style="color: ${iconColor};"
-            ></sl-icon>`
-          : html`<sl-icon
-              name=${metric.icon}
-              style="color: ${iconColor};"
-            ></sl-icon>`
-      }
-      <div class="tool-count-value">${metric.value}</div>
-      <div class="tool-count-label ${metric.href ? 'hover-underline' : ''}">
-        ${metric.label}
-      </div>
+      <span class="hero-stat-top">
+        ${
+          metric.icon.includes('/')
+            ? html`<sl-icon
+                class="hero-stat-icon"
+                src=${metric.icon}
+              ></sl-icon>`
+            : html`<sl-icon
+                class="hero-stat-icon"
+                name=${metric.icon}
+              ></sl-icon>`
+        }
+        <span class="hero-stat-value">${metric.value}</span>
+      </span>
+      <span class="hero-stat-label">${metric.label}</span>
     `;
+
+    const toneClass = metric.tone ? `tone-${metric.tone}` : '';
 
     if (metric.href) {
       return html`
-        <a
-          class="tool-count"
-          href=${metric.href}
-          style="color: inherit; text-decoration: none;"
-          >${content}</a
-        >
+        <a class="hero-stat ${toneClass}" href=${metric.href}>${content}</a>
       `;
     }
 
-    return html`<div class="tool-count">${content}</div>`;
+    return html`<div class="hero-stat ${toneClass}">${content}</div>`;
   }
 
   private get gatewayMetrics(): DashboardMetric[] {
     const attentionCount = this.attentionItems.length;
+    // Four counts are just counts: their icons stay neutral so the only
+    // coloured stat in the row is the one that means something.
     return [
       {
         label: 'agents',
         value: this.formatNumber(this.totalAgentsCount),
         icon: 'robot',
         href: '/console/agents',
-        tone: 'primary',
+        tone: 'neutral',
       },
       {
         label: 'flows',
         value: this.formatNumber(this.totalFlowsCount),
         icon: '/images/flow.svg',
         href: '/console/flows',
-        tone: 'primary',
+        tone: 'neutral',
       },
       {
         label: 'models',
         value: this.formatNumber(this.aiModelsCount),
         icon: 'cpu',
         href: '/console/ai-models',
-        tone: 'primary',
+        tone: 'neutral',
       },
       {
         label: 'tools',
         value: this.formatNumber(this.enabledToolsCount),
         icon: 'tools',
         href: '/console/tools',
-        tone: 'primary',
+        tone: 'neutral',
       },
       {
         label: 'need attention',
@@ -3556,24 +3777,19 @@ export class DashboardView extends AuthedElement {
               <sl-icon name="question-circle"></sl-icon>
             </sl-tooltip>
           </div>
-          <div class="gateway-header-meta">
-            <span class="updated-at"
-              >Updated ${this.formatLastUpdatedLabel()}</span
-            >
-            <a href="/console/settings/api-keys" class="header-action-link"
-              >Manage Keys</a
-            >
-          </div>
+          <a href="/console/settings/api-keys" class="header-action-link"
+            >Manage Keys</a
+          >
         </div>
 
-        <div class="metrics-grid">
+        <div class="hero-stats">
           ${
             this.fetchingGatewaySummary && !this.gatewaySummary
               ? html`
                   <div
-                    style="grid-column: 1 / -1; display: flex; justify-content: center; align-items: center; padding: var(--sl-spacing-2x-large);"
+                    style="display: flex; align-items: center; min-height: 64px;"
                   >
-                    <sl-spinner style="font-size: 2rem;"></sl-spinner>
+                    <sl-spinner style="font-size: 1.5rem;"></sl-spinner>
                   </div>
                 `
               : html`
@@ -3585,111 +3801,155 @@ export class DashboardView extends AuthedElement {
                 `
           }
         </div>
-        <!-- AI Model Gateway Endpoint -->
-        <div
-          class="mcp-server-capsule"
-          style="margin-top: 0; margin-bottom: var(--sl-spacing-small);"
-        >
-          <div class="status-indicator"></div>
-          <span class="capsule-eyebrow">Model gateway</span>
-          <sl-badge variant="primary" size="small" style="margin-right: -4px;"
-            >AI models</sl-badge
+
+        <!-- Connect: two green dots and a disclosure. The endpoints matter
+             once, when an agent is wired up; after that they are reference. -->
+        <div class="connect-row">
+          <span class="connect-status">
+            <span class="status-indicator" aria-hidden="true"></span>
+            Model gateway
+          </span>
+          <span class="connect-status">
+            <span class="status-indicator" aria-hidden="true"></span>
+            Tool firewall
+          </span>
+          <sl-button
+            class="connect-toggle"
+            size="small"
+            variant="text"
+            aria-expanded=${this.endpointsExpanded ? 'true' : 'false'}
+            @click=${this.toggleEndpoints}
           >
-          <div
-            class="server-details"
-            style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-          >
-            <span
-              style="font-size: var(--sl-font-size-x-small); font-weight: 600; color: var(--sl-color-neutral-500); text-transform: uppercase;"
-              >Format:</span
-            >
-            <select
-              aria-label="Gateway API Format"
-              style="background: transparent; border: 1px solid var(--sl-color-neutral-300); border-radius: var(--sl-border-radius-small); padding: 1px 6px; font-size: inherit; font-family: inherit; color: var(--sl-color-primary-600); cursor: pointer; outline: none; margin-right: var(--sl-spacing-2x-small);"
-              @change=${(e: Event) => {
-                const target = e.target as HTMLSelectElement;
-                const endpointSpan = target.parentElement?.querySelector(
-                  '.server-endpoint'
-                ) as HTMLElement;
-                if (endpointSpan) {
-                  endpointSpan.innerText = `${window.location.origin}${target.value}`;
-                }
-              }}
-            >
-              <option value="/openai/v1">OpenAI</option>
-              <option value="/anthropic/v1">Anthropic</option>
-              <option value="/google/v1">Gemini</option>
-            </select>
-            <span class="server-endpoint"
-              >${window.location.origin}/openai/v1</span
-            >
-            <a
-              href="https://docs.preloop.ai/guide/ai-proxy"
-              target="_blank"
-              style="display: flex; color: var(--sl-color-neutral-500); margin-left: auto;"
-            >
-              <sl-icon name="info-circle"></sl-icon>
-            </a>
-          </div>
-          <sl-tooltip content="Copy URL">
-            <sl-icon-button
-              name="clipboard"
-              style="font-size: 1rem;"
-              @click=${(e: Event) => {
-                const capsule = (e.target as HTMLElement).closest(
-                  '.mcp-server-capsule'
-                );
-                const url =
-                  capsule?.querySelector('.server-endpoint')?.textContent ||
-                  `${window.location.origin}/openai/v1`;
-                navigator.clipboard.writeText(url);
-                this.dispatchEvent(
-                  new CustomEvent('show-toast', {
-                    bubbles: true,
-                    composed: true,
-                    detail: { message: 'AI Gateway URL copied!' },
-                  })
-                );
-              }}
-            ></sl-icon-button>
-          </sl-tooltip>
+            ${this.endpointsExpanded ? 'Hide endpoints' : 'Show endpoints'}
+            <sl-icon
+              slot="suffix"
+              name=${this.endpointsExpanded ? 'chevron-up' : 'chevron-down'}
+            ></sl-icon>
+          </sl-button>
         </div>
 
-        <!-- Built-in MCP Server Endpoint -->
-        <div class="mcp-server-capsule" style="margin-top: 0;">
-          <div class="status-indicator"></div>
-          <span class="capsule-eyebrow">Tool firewall</span>
-          <sl-badge variant="neutral" size="small" style="margin-right: -4px;"
-            >MCP tools</sl-badge
-          >
-          <div class="server-details">
-            <span class="server-endpoint">${window.location.origin}/mcp</span>
-            <a
-              href="https://docs.preloop.ai/guide/mcp-server"
-              target="_blank"
-              style="display: flex; color: var(--sl-color-neutral-500); margin-left: auto;"
-            >
-              <sl-icon name="info-circle"></sl-icon>
-            </a>
-          </div>
-          <sl-tooltip content="Copy URL">
-            <sl-icon-button
-              name="clipboard"
-              style="font-size: 1rem;"
-              @click=${() => {
-                navigator.clipboard.writeText(`${window.location.origin}/mcp`);
-                this.dispatchEvent(
-                  new CustomEvent('show-toast', {
-                    bubbles: true,
-                    composed: true,
-                    detail: { message: 'MCP URL copied!' },
-                  })
-                );
-              }}
-            ></sl-icon-button>
-          </sl-tooltip>
-        </div>
+        ${this.endpointsExpanded ? this.renderGatewayEndpoints() : nothing}
       </sl-card>
+    `;
+  }
+
+  /** The two capsules, unchanged: eyebrow, format select, URL, copy. */
+  private renderGatewayEndpoints() {
+    return html`
+      <!-- AI Model Gateway Endpoint -->
+      <div
+        class="mcp-server-capsule"
+        style="margin-top: 0; margin-bottom: var(--sl-spacing-small);"
+      >
+        <div class="status-indicator"></div>
+        <span class="capsule-eyebrow">Model gateway</span>
+        <sl-badge
+          class="chip"
+          variant="neutral"
+          pill
+          size="small"
+          style="margin-right: -4px;"
+          >AI models</sl-badge
+        >
+        <div
+          class="server-details"
+          style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
+        >
+          <span
+            style="font-size: var(--sl-font-size-x-small); font-weight: 600; color: var(--sl-color-neutral-500); text-transform: uppercase;"
+            >Format:</span
+          >
+          <select
+            aria-label="Gateway API Format"
+            style="background: transparent; border: 1px solid var(--sl-color-neutral-300); border-radius: var(--sl-border-radius-small); padding: 1px 6px; font-size: inherit; font-family: inherit; color: var(--sl-color-primary-600); cursor: pointer; outline: none; margin-right: var(--sl-spacing-2x-small);"
+            @change=${(e: Event) => {
+              const target = e.target as HTMLSelectElement;
+              const endpointSpan = target.parentElement?.querySelector(
+                '.server-endpoint'
+              ) as HTMLElement;
+              if (endpointSpan) {
+                endpointSpan.innerText = `${window.location.origin}${target.value}`;
+              }
+            }}
+          >
+            <option value="/openai/v1">OpenAI</option>
+            <option value="/anthropic/v1">Anthropic</option>
+            <option value="/google/v1">Gemini</option>
+          </select>
+          <span class="server-endpoint"
+            >${window.location.origin}/openai/v1</span
+          >
+          <a
+            href="https://docs.preloop.ai/guide/ai-proxy"
+            target="_blank"
+            style="display: flex; color: var(--sl-color-neutral-500); margin-left: auto;"
+          >
+            <sl-icon name="info-circle"></sl-icon>
+          </a>
+        </div>
+        <sl-tooltip content="Copy URL">
+          <sl-icon-button
+            name="clipboard"
+            style="font-size: 1rem;"
+            @click=${(e: Event) => {
+              const capsule = (e.target as HTMLElement).closest(
+                '.mcp-server-capsule'
+              );
+              const url =
+                capsule?.querySelector('.server-endpoint')?.textContent ||
+                `${window.location.origin}/openai/v1`;
+              navigator.clipboard.writeText(url);
+              this.dispatchEvent(
+                new CustomEvent('show-toast', {
+                  bubbles: true,
+                  composed: true,
+                  detail: { message: 'AI Gateway URL copied!' },
+                })
+              );
+            }}
+          ></sl-icon-button>
+        </sl-tooltip>
+      </div>
+
+      <!-- Built-in MCP Server Endpoint -->
+      <div class="mcp-server-capsule" style="margin-top: 0;">
+        <div class="status-indicator"></div>
+        <span class="capsule-eyebrow">Tool firewall</span>
+        <sl-badge
+          class="chip"
+          variant="neutral"
+          pill
+          size="small"
+          style="margin-right: -4px;"
+          >MCP tools</sl-badge
+        >
+        <div class="server-details">
+          <span class="server-endpoint">${window.location.origin}/mcp</span>
+          <a
+            href="https://docs.preloop.ai/guide/mcp-server"
+            target="_blank"
+            style="display: flex; color: var(--sl-color-neutral-500); margin-left: auto;"
+          >
+            <sl-icon name="info-circle"></sl-icon>
+          </a>
+        </div>
+        <sl-tooltip content="Copy URL">
+          <sl-icon-button
+            name="clipboard"
+            style="font-size: 1rem;"
+            @click=${() => {
+              navigator.clipboard.writeText(`${window.location.origin}/mcp`);
+              this.dispatchEvent(
+                new CustomEvent('show-toast', {
+                  bubbles: true,
+                  composed: true,
+                  detail: { message: 'MCP URL copied!' },
+                })
+              );
+            }}
+          ></sl-icon-button>
+        </sl-tooltip>
+      </div>
     `;
   }
 
@@ -3712,20 +3972,24 @@ export class DashboardView extends AuthedElement {
     }
 
     return html`
-      <view-header headerText="Overview" width="extra-wide"></view-header>
+      <view-header headerText="Overview" width="extra-wide">
+        <span slot="meta" class="updated-at"
+          >Updated ${this.formatLastUpdatedLabel()}</span
+        >
+      </view-header>
       <div class="extra-wide" style="margin-bottom: var(--sl-spacing-large);">
         ${
           this.error
             ? html`<sl-alert variant="danger" open>${this.error}</sl-alert>`
             : nothing
         }
-        ${this.renderWelcomeCard()}
+        ${this.renderAttentionStrip()} ${this.renderWelcomeCard()}
       </div>
 
       <div class="column-layout dashboard extra-wide">
         <div class="main-column">
           <div class="dashboard-stack">
-            ${this.renderPreloopGatewayCard()}
+            ${this.renderPreloopGatewayCard()} ${this.renderNextStepsCard()}
             ${this.renderActiveExecutionsCard()}
             ${this.renderRecentFlowExecutionsCard()}
 
@@ -3739,8 +4003,7 @@ export class DashboardView extends AuthedElement {
         </div>
 
         <div class="side-column">
-          ${this.renderAttentionCard()} ${this.renderUsageCard()}
-          ${this.renderTopModelsCard()}
+          ${this.renderUsageCard()} ${this.renderTopModelsCard()}
         </div>
         <mcp-setup-dialog
           ?open=${this.showSetupDialog}

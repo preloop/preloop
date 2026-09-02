@@ -219,8 +219,8 @@ describe('attention count parity', () => {
     await dashboard.updateComplete;
 
     const heroValue = dashboard
-      .shadowRoot!.querySelector('a.tool-count[href="/console/attention"]')!
-      .querySelector('.tool-count-value')!
+      .shadowRoot!.querySelector('a.hero-stat[href="/console/attention"]')!
+      .querySelector('.hero-stat-value')!
       .textContent!.trim();
 
     const page = (await fixture(
