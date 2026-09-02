@@ -98,6 +98,7 @@ from preloop.services.cache_accounting import (
     build_request_cache_accounting,
     summarize_session_cache,
 )
+from preloop.services.aux_model_retry import call_with_aux_retry
 from preloop.services.managed_agent_identity import (
     ManagedAgentIdentityError,
     PrincipalIdentity,
@@ -1325,9 +1326,12 @@ async def extract_agent_name(
     )
 
     def _call():
-        response = litellm.completion(**kwargs)
-        check_reasoning_model_empty_content(response)
-        return response.choices[0].message.content.strip()
+        def _complete():
+            response = litellm.completion(**kwargs)
+            check_reasoning_model_empty_content(response)
+            return response.choices[0].message.content.strip()
+
+        return call_with_aux_retry(_complete, operation_name="extract_agent_name")
 
     try:
         name = await asyncio.to_thread(_call)

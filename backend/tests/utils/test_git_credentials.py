@@ -18,6 +18,7 @@ from preloop.utils.git_credentials import (
     build_credential_env,
     build_credential_setup_shell,
     build_credentials_file_content,
+    build_push_auth_setup_shell,
     credential_username,
     git_token_env_var,
     needs_http_path_scoping,
@@ -192,6 +193,29 @@ class TestCredentialSetupShell:
         assert "credential.useHttpPath true" in build_credential_setup_shell(
             use_http_path=True
         )
+
+
+class TestPushAuthSetupShell:
+    def test_shell_never_contains_a_secret(self) -> None:
+        shell = build_push_auth_setup_shell(
+            token_ref="${PRELOOP_GIT_TOKEN_1}", username="x-access-token"
+        )
+        assert LEAKED_PAT not in shell
+        assert "${PRELOOP_GIT_TOKEN_1}" in shell
+
+    def test_falls_back_to_tracker_token_when_clone_had_no_helper(self) -> None:
+        """Public clones skip PRELOOP_GIT_CREDENTIALS; push still needs a token."""
+        shell = build_push_auth_setup_shell(
+            token_ref="${PRELOOP_GIT_TOKEN_1}", username="x-access-token"
+        )
+        assert "git credential approve" in shell
+        assert "credential.helper" in shell
+        assert "GIT_TERMINAL_PROMPT=0" in shell
+
+    def test_empty_token_ref_does_not_invent_an_expansion(self) -> None:
+        shell = build_push_auth_setup_shell(token_ref="", username="oauth2")
+        assert "${PRELOOP_GIT_TOKEN" not in shell
+        assert "WARNING: no git credentials available for push" in shell
 
 
 class TestGitTokenEnvVar:

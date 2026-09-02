@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.crud.audit_log import crud_audit_log
 from preloop.models.models.ai_model import AIModel
+from preloop.services.aux_model_retry import call_with_aux_retry
 from preloop.services.litellm_routing import to_litellm_model
 from preloop.services.model_credentials import (
     build_aux_kwargs,
@@ -448,7 +449,10 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
 
         for attempt in range(2):
             try:
-                response = litellm.completion(**kwargs)
+                response = call_with_aux_retry(
+                    lambda: litellm.completion(**kwargs),
+                    operation_name="policy_generation",
+                )
                 check_reasoning_model_empty_content(response)
                 raw = response.choices[0].message.content or ""
                 yaml_text = self._extract_yaml(raw)

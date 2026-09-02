@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.models.ai_model import AIModel
+from preloop.services.aux_model_retry import call_with_aux_retry
 from preloop.services.litellm_routing import apply_preloop_client_headers
 from preloop.services.secret_service import get_secret_service
 
@@ -415,8 +416,12 @@ async def call_with_default_model_fallback(
 
     def _resolve_and_call(model: AIModel) -> Any:
         # Resolve inside the worker thread: a secret backend lookup can do
-        # network I/O and must never run on the event loop.
-        return caller(model, resolve_model_call_credentials(model, db=db))
+        # network I/O and must never run on the event loop. Retry transient
+        # provider 429s here so a blip does not burn the one-shot fallback.
+        return call_with_aux_retry(
+            lambda: caller(model, resolve_model_call_credentials(model, db=db)),
+            operation_name=operation_name,
+        )
 
     async def _attempt(model: AIModel) -> Any:
         coro = asyncio.to_thread(_resolve_and_call, model)

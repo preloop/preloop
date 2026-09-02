@@ -1319,6 +1319,24 @@ class TestGitApiTokensNotInScript:
         env = container_executor._apply_git_credential_env({}, context)
         assert env["PRELOOP_GIT_TOKEN_1"] == self.PAT
 
+    def test_post_execution_reinstalls_credential_helper(self, container_executor):
+        context = self._context()
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "credential.helper" in commands
+        assert "git credential approve" in commands
+        helper_at = commands.index("credential.helper")
+        push_at = commands.index("git push origin")
+        assert helper_at < push_at
+
+    def test_post_execution_writes_recovery_artifacts_before_push(
+        self, container_executor
+    ):
+        context = self._context()
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "/workspace/evidence/branch.bundle" in commands
+        assert "/workspace/evidence/branch.patch" in commands
+        assert commands.index("branch.bundle") < commands.index("git push origin")
+
 
 class TestLogScrubbing:
     """Logs are scrubbed on read as well, so a token already present in a

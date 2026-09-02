@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -196,6 +197,53 @@ if [ -n "${{{GIT_CREDENTIALS_ENV_VAR}:-}}" ]; then
     git config --global credential.helper 'store --file={GIT_CREDENTIALS_FILE}'
 {http_path_line}    unset {GIT_CREDENTIALS_ENV_VAR}
     echo "Configured git credential helper (credentials are not stored in remotes)"
+fi
+""".strip()
+
+
+def build_push_auth_setup_shell(*, token_ref: str, username: str) -> str:
+    """Reinstall the credential helper immediately before ``git push``.
+
+    Clone of a public repository succeeds with no helper, so
+    ``PRELOOP_GIT_CREDENTIALS`` may never be set even when a tracker token is
+    available for the post-execution REST calls. The clone snippet also
+    unsets that variable after writing the store file, and agents often
+    overwrite ``~/.gitconfig``. Either way, ``git push`` with
+    ``GIT_TERMINAL_PROMPT=0`` fails with "could not read Username for
+    'https://github.com'".
+
+    ``token_ref`` must be a shell expansion such as ``${PRELOOP_GIT_TOKEN_1}``,
+    never the raw secret. The token is written only into the mode-0600 store
+    file, matching the clone helper.
+    """
+
+    # token_ref is empty when this repository has no tracker token; the
+    # PRELOOP_GIT_CREDENTIALS / existing-file branches still apply.
+    token_quoted = f'"{token_ref}"' if token_ref else '""'
+    user_quoted = shlex.quote(username)
+    return f"""
+export GIT_TERMINAL_PROMPT=0
+if [ -n "${{{GIT_CREDENTIALS_ENV_VAR}:-}}" ]; then
+    (umask 077 && printf '%s\\n' "${GIT_CREDENTIALS_ENV_VAR}" > {GIT_CREDENTIALS_FILE})
+    chmod 600 {GIT_CREDENTIALS_FILE}
+    git config --global credential.helper 'store --file={GIT_CREDENTIALS_FILE}'
+    echo "Reinstalled git credential helper from {GIT_CREDENTIALS_ENV_VAR}"
+elif [ -f {GIT_CREDENTIALS_FILE} ]; then
+    git config --global credential.helper 'store --file={GIT_CREDENTIALS_FILE}'
+    echo "Reinstalled git credential helper from existing store file"
+elif [ -n {token_quoted} ]; then
+    git config --global credential.helper 'store --file={GIT_CREDENTIALS_FILE}'
+    (umask 077 && : > {GIT_CREDENTIALS_FILE})
+    chmod 600 {GIT_CREDENTIALS_FILE}
+    ORIGIN_URL=$(git remote get-url origin 2>/dev/null || true)
+    HOST=$(printf '%s\\n' "$ORIGIN_URL" | sed -E 's#^git@([^:]+):.*#\\1#; t; s#^https?://##; s#^[^/@]*@##; s#[/:].*##')
+    if [ -z "$HOST" ]; then
+        HOST=github.com
+    fi
+    printf 'protocol=https\\nhost=%s\\nusername=%s\\npassword=%s\\n\\n' "$HOST" {user_quoted} {token_quoted} | git credential approve
+    echo "Installed git credential helper from tracker token for push"
+else
+    echo "WARNING: no git credentials available for push"
 fi
 """.strip()
 
