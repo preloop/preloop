@@ -115,6 +115,58 @@ describe('ConsoleShell', () => {
     invalidateApiCaches();
   });
 
+  describe('window chrome', () => {
+    it('drops the sidebar, the header and the bell for ?window=1', async () => {
+      const originalUrl = window.location.pathname + window.location.search;
+      window.history.replaceState(
+        {},
+        '',
+        '/console/agents/agent-1/talk?window=1'
+      );
+      try {
+        const el = (await fixture(
+          html`<console-shell></console-shell>`
+        )) as ConsoleShell;
+        await waitUntil(
+          () => el.shadowRoot?.querySelector('.console-container') !== null,
+          'Console container did not render'
+        );
+
+        expect(el.shadowRoot!.querySelector('.sidebar-wrapper')).to.not.exist;
+        expect(el.shadowRoot!.querySelector('console-header')).to.not.exist;
+        expect(el.shadowRoot!.querySelector('approval-bypass-banner')).to.not
+          .exist;
+        // The popup content is the only row and it fills the window.
+        expect(el.shadowRoot!.querySelector('.main-view.window-mode')).to.exist;
+        expect(el.shadowRoot!.querySelector('.main-content.full-bleed')).to
+          .exist;
+        // Dialogs centre on the window, not on a sidebar that is not there.
+        expect(el.style.getPropertyValue('--console-main-offset')).to.equal(
+          '0px'
+        );
+      } finally {
+        window.history.replaceState({}, '', originalUrl);
+      }
+    });
+
+    it('keeps the full chrome on the same route without the flag', async () => {
+      const originalUrl = window.location.pathname + window.location.search;
+      window.history.replaceState({}, '', '/console/agents/agent-1/talk');
+      try {
+        const el = (await fixture(
+          html`<console-shell></console-shell>`
+        )) as ConsoleShell;
+        await waitUntil(
+          () => el.shadowRoot?.querySelector('console-header') !== null,
+          'Header did not render'
+        );
+        expect(el.shadowRoot!.querySelector('.sidebar-wrapper')).to.exist;
+      } finally {
+        window.history.replaceState({}, '', originalUrl);
+      }
+    });
+  });
+
   it('renders the component', async () => {
     const el = (await fixture(
       html`<console-shell></console-shell>`
