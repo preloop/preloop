@@ -2963,116 +2963,131 @@ class ApprovalService:
         expired, or cancelled. If escalation is configured and the request
         expires, escalation will be triggered and the timeout extended.
 
+        Every poll runs in its own short-lived session; ``self.db`` is never
+        touched while waiting. A session held across the human decision (up
+        to the workflow timeout) pins one pooled connection per pending
+        approval and exhausts the async pool under concurrent approvals, so
+        callers may release the session this service was constructed with
+        before awaiting this method.
+
         Args:
             request_id: Approval request ID
             poll_interval: How often to poll (seconds)
 
         Returns:
-            Final approval request
+            Final approval request. The instance is detached from the
+            per-poll session that loaded it; callers may read preloaded
+            scalar columns only. Accessing lazy relationships raises
+            DetachedInstanceError.
 
         Raises:
             TimeoutError: If request expires before being resolved (after escalation if configured)
         """
+        from preloop.models.db.session import get_async_db_session
+
         while True:
-            approval_request = await self.get_approval_request(request_id)
-            if not approval_request:
-                raise ValueError(f"Approval request {request_id} not found")
+            async with get_async_db_session() as poll_db:
+                poll_service = ApprovalService(poll_db, self.base_url)
+                approval_request = await poll_service.get_approval_request(request_id)
+                if not approval_request:
+                    raise ValueError(f"Approval request {request_id} not found")
 
-            # Check if resolved
-            if approval_request.status in ["approved", "declined", "cancelled"]:
-                return approval_request
+                # Check if resolved
+                if approval_request.status in ["approved", "declined", "cancelled"]:
+                    return approval_request
 
-            # Check if expired
-            if (
-                approval_request.expires_at
-                and datetime.utcnow() > approval_request.expires_at
-            ):
-                # Get the approval workflow to check for escalation configuration
-                approval_workflow = approval_request.approval_workflow
+                # Check if expired
+                if (
+                    approval_request.expires_at
+                    and datetime.utcnow() > approval_request.expires_at
+                ):
+                    # Get the approval workflow to check for escalation configuration
+                    approval_workflow = approval_request.approval_workflow
 
-                # Debug logging for escalation check
-                logger.info(
-                    f"Checking escalation for request {request_id}: "
-                    f"approval_workflow={approval_workflow}, "
-                    f"approval_workflow_id={approval_request.approval_workflow_id}, "
-                    f"escalation_user_ids={getattr(approval_workflow, 'escalation_user_ids', None) if approval_workflow else None}, "
-                    f"escalation_team_ids={getattr(approval_workflow, 'escalation_team_ids', None) if approval_workflow else None}, "
-                    f"escalation_triggered_at={approval_request.escalation_triggered_at}"
-                )
-
-                # Check if escalation is configured and hasn't been triggered yet
-                has_escalation = approval_workflow and (
-                    approval_workflow.escalation_user_ids
-                    or approval_workflow.escalation_team_ids
-                )
-                escalation_already_triggered = (
-                    approval_request.escalation_triggered_at is not None
-                )
-
-                logger.info(
-                    f"Escalation decision for request {request_id}: "
-                    f"has_escalation={has_escalation}, "
-                    f"escalation_already_triggered={escalation_already_triggered}"
-                )
-
-                if has_escalation and not escalation_already_triggered:
-                    # Trigger escalation
+                    # Debug logging for escalation check
                     logger.info(
-                        f"Triggering escalation for approval request {request_id}"
+                        f"Checking escalation for request {request_id}: "
+                        f"approval_workflow={approval_workflow}, "
+                        f"approval_workflow_id={approval_request.approval_workflow_id}, "
+                        f"escalation_user_ids={getattr(approval_workflow, 'escalation_user_ids', None) if approval_workflow else None}, "
+                        f"escalation_team_ids={getattr(approval_workflow, 'escalation_team_ids', None) if approval_workflow else None}, "
+                        f"escalation_triggered_at={approval_request.escalation_triggered_at}"
                     )
 
-                    # Mark escalation as triggered
-                    approval_request.escalation_triggered_at = datetime.utcnow()
-
-                    # Extend the timeout - give escalation recipients the same amount of time
-                    original_timeout = approval_workflow.timeout_seconds or 300
-                    new_expires_at = datetime.utcnow() + timedelta(
-                        seconds=original_timeout
+                    # Check if escalation is configured and hasn't been triggered yet
+                    has_escalation = approval_workflow and (
+                        approval_workflow.escalation_user_ids
+                        or approval_workflow.escalation_team_ids
                     )
-                    approval_request.expires_at = new_expires_at
-
-                    await self.db.commit()
-                    await self.db.refresh(approval_request)
-
-                    # Send escalation notifications
-                    await self._send_escalation_notifications(
-                        approval_request, approval_workflow
+                    escalation_already_triggered = (
+                        approval_request.escalation_triggered_at is not None
                     )
 
-                    # Broadcast escalation event
-                    await self._broadcast_approval_update(
-                        approval_request,
-                        "escalated",
-                        extra_data={"new_expires_at": new_expires_at.isoformat()},
+                    logger.info(
+                        f"Escalation decision for request {request_id}: "
+                        f"has_escalation={has_escalation}, "
+                        f"escalation_already_triggered={escalation_already_triggered}"
                     )
 
-                    # Continue polling - don't expire yet
-                    await asyncio.sleep(poll_interval)
-                    continue
+                    if has_escalation and not escalation_already_triggered:
+                        # Trigger escalation
+                        logger.info(
+                            f"Triggering escalation for approval request {request_id}"
+                        )
 
-                # No escalation configured or already escalated - expire the request
-                expired_request = await self.update_approval_request(
-                    request_id, ApprovalRequestUpdate(status="expired")
-                )
-                # Broadcast expiration event
-                if expired_request:
-                    await self._broadcast_approval_update(expired_request, "expired")
+                        # Mark escalation as triggered
+                        approval_request.escalation_triggered_at = datetime.utcnow()
 
-                    # Log to audit trail (fire-and-forget)
-                    _log_approval_lifecycle_async(
-                        account_id=str(expired_request.account_id),
-                        approval_id=expired_request.id,
-                        event="expired",
-                        tool_name=expired_request.tool_name,
-                        reason="Request timed out without response",
-                        execution_id=expired_request.execution_id,
-                    )
+                        # Extend the timeout - give escalation recipients the same amount of time
+                        original_timeout = approval_workflow.timeout_seconds or 300
+                        new_expires_at = datetime.utcnow() + timedelta(
+                            seconds=original_timeout
+                        )
+                        approval_request.expires_at = new_expires_at
 
-                raise TimeoutError(
-                    f"Approval request {request_id} expired without response"
-                )
+                        await poll_db.commit()
+                        await poll_db.refresh(approval_request)
 
-            # Wait before polling again
+                        # Send escalation notifications
+                        await poll_service._send_escalation_notifications(
+                            approval_request, approval_workflow
+                        )
+
+                        # Broadcast escalation event
+                        await poll_service._broadcast_approval_update(
+                            approval_request,
+                            "escalated",
+                            extra_data={"new_expires_at": new_expires_at.isoformat()},
+                        )
+
+                        # Continue polling - don't expire yet (the shared
+                        # sleep below runs with the session already closed)
+                    else:
+                        # No escalation configured or already escalated - expire the request
+                        expired_request = await poll_service.update_approval_request(
+                            request_id, ApprovalRequestUpdate(status="expired")
+                        )
+                        # Broadcast expiration event
+                        if expired_request:
+                            await poll_service._broadcast_approval_update(
+                                expired_request, "expired"
+                            )
+
+                            # Log to audit trail (fire-and-forget)
+                            _log_approval_lifecycle_async(
+                                account_id=str(expired_request.account_id),
+                                approval_id=expired_request.id,
+                                event="expired",
+                                tool_name=expired_request.tool_name,
+                                reason="Request timed out without response",
+                                execution_id=expired_request.execution_id,
+                            )
+
+                        raise TimeoutError(
+                            f"Approval request {request_id} expired without response"
+                        )
+
+            # Wait before polling again with no session checked out
             await asyncio.sleep(poll_interval)
 
     async def _send_escalation_notifications(

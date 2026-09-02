@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`preloop agents refresh` (alias `sync`), `preloop models sync`, and `POST /api/v1/ai-models/sync`**: refresh rewrites managed model sections of onboarded agent configs from the account catalog; models sync (and the endpoint) pull newly released provider models into that catalog using stored credentials.
+- **Opt-in scheduled model-catalog sync**: `MODEL_CATALOG_SYNC_SCHEDULED_ENABLED` (default false; helm `config.modelCatalogSync.*`) runs the same discovery as `preloop models sync` for every account, attributing audit events to the `model-catalog-sync` system actor.
+- **`preloop usage hook` accepts harness-agnostic events**: stdin is
+  auto-detected as Cursor hooks (unchanged), generic NDJSON
+  (`preloop.usage.event.v1`), or Codex CLI session rollouts. Codex
+  one-shot import uses `--from codex --file`. Guide:
+  `docs/guide/usage-hooks.md` (old `cursor-usage-hooks.md` path kept as
+  a stub).
+
 ### Changed
 
 - **Blog posts can show a hero image**: `og_image` in frontmatter is
@@ -53,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now matches `gateway.proxy.bodySize` (default 32m). Oversized requests
   used to 413 at nginx; the console now surfaces a 413 as "Image too
   large (maximum 5 MB)." instead of a generic failure.
+- **Scorecard supply-chain job pulls from GHCR**: `ossf/scorecard-action`
+  is pinned to v2.4.4 (`ghcr.io/ossf/scorecard-action`). v2.4.0 pulled
+  `gcr.io/openssf/scorecard-action`, which now denies unauthenticated pulls
+  without GCP billing.
 
 - **Blog posts no longer repeat the title**: the article template already
   emits `<h1>` from frontmatter. A leading `# Title` in the markdown (or
@@ -168,6 +183,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`resolve_sbom_upstreams` builtin (default-disabled)**: maps vendored
+  Arduino/PlatformIO SBOM components (name + version) to an upstream
+  repository URL and version-shaped tag candidates via the public library
+  registries. A resolution requires a registry-confirmed name AND version
+  match with a usable repository URL; everything else is unresolved with a
+  reason. Default-off so regular sessions do not pay the tools/list context
+  tax; security-audit presets 005 (SBOM Exploit Check) and 006 (Release
+  Security Audit) allow-list it.
 - **CRA result.json contract**: the four security-audit presets pin
   `/workspace/result.json` as a versioned contract (`preloop.cra.sbomaudit/v1`,
   `vulnscan/v1`, `releaseaudit/v1`, `duediligence/v1`). Tests parse each YAML

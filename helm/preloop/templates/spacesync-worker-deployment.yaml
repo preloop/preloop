@@ -124,6 +124,8 @@ spec:
             {{- end }}
             - name: NATS_URL
               value: {{ $.Values.nats.url | default (printf "nats://%s-nats:4222" $.Release.Name) }}
+            - name: MODEL_CATALOG_SYNC_SCHEDULED_ENABLED
+              value: {{ $.Values.config.modelCatalogSync.scheduledEnabled | default false | quote }}
             - name: FLOW_EXECUTION_WORKER_ENABLED
               value: {{ $.Values.flowExecution.workerEnabled | default false | quote }}
             - name: FLOW_EXECUTION_CLAIM_STALE_SECONDS

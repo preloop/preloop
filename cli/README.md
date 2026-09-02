@@ -119,16 +119,45 @@ preloop tools exec <tool-name> --args-file ./input.json
 
 `preloop tools` talks directly to the MCP endpoint, so the visible and executable tools are automatically filtered by the current token's policy. Agent tokens only see the tools they are allowed to use.
 
-### Usage Import
+### Cursor Agent CLI
+
+```bash
+preloop cursor                         # interactive TTY passthrough
+preloop cursor run "summarize this repo"   # headless capture + estimated usage
+```
+
+`preloop cursor` spawns `cursor-agent` with the user's TTY. Interactive
+sessions are unchanged and are not captured: Cursor only emits structured
+output in `--print` mode. `preloop cursor run` injects
+`--print --output-format stream-json`, tees stdout, and POSTs estimated
+usage to `/api/v1/usage/ingest`. Runs bill the user's own Cursor account;
+Preloop records estimates, not Cursor billing. See
+[docs/guide/cursor-cli.md](../docs/guide/cursor-cli.md).
+
+### Usage
 
 ```bash
 preloop usage import cursor-usage.csv                # Cursor dashboard Usage export
 preloop usage import events.json                     # Normalized usage events
 preloop usage import cursor-usage.csv --agent-id <id>
 preloop usage import export.csv --column-map '{"cost":"Cost to You"}'
+
+# Live / harness events (generic NDJSON, Cursor hooks, or Codex rollouts)
+preloop usage hook                                   # stdin; auto-detects format
+preloop usage hook --from generic --source my-harness
+preloop usage hook --from codex --file ~/.codex/sessions/2026/08/31/rollout-....jsonl
 ```
 
-Imports spend the model gateway never saw, such as Cursor's bundled models. Records are labeled as imported, so they are reported separately from gateway-metered spend and never count against gateway budgets. Re-importing the same file is safe: duplicates are detected and reported as skipped. Without `--agent-id`, the account's onboarded Cursor agent is used, so run `preloop agents onboard cursor` first or pass the id explicitly.
+`preloop usage import` loads a CSV or JSON file of already-observed spend.
+`preloop usage hook` streams or imports conversation events into
+`POST /api/v1/usage/ingest`. See
+[docs/guide/usage-hooks.md](../docs/guide/usage-hooks.md).
+
+Imported records are labeled as imported, so they are reported separately
+from gateway-metered spend and never count against gateway budgets.
+Re-importing the same file is safe: duplicates are detected and reported
+as skipped. Without `--agent-id`, the account's onboarded agent matching
+`--source` is used.
 
 ### Approvals
 
@@ -164,6 +193,8 @@ preloop agents offboard openclaw       # Offboard and restore the local backup
 preloop agents offboard hermes
 preloop agents offboard openclaw --yes --remove-model no --remove-mcp-servers no
 preloop agents offboard openclaw --yes --remove-model yes
+preloop agents refresh                  # Rewrite managed model sections from the catalog
+preloop agents sync                     # Alias for agents refresh
 ```
 
 `preloop agents discover` is the starting point for agent onboarding. In interactive terminals it can prompt to onboard newly discovered agents one by one. Use `--no-onboard-prompt` to keep discovery read-only in scripts/CI, or `--yes` to auto-onboard all new candidates. `preloop agents enroll openclaw` remains the explicit mutating command.
@@ -182,6 +213,18 @@ Both flags default to `ask`. With `--yes` alone, the CLI skips the main offboard
 - AI models are kept if they are still referenced by another managed agent or by any flow
 - MCP servers are kept if they are still referenced by another managed agent
 - Recently active shared resources are also skipped
+
+`preloop agents refresh` (alias `sync`) re-fetches the authorized model list and rewrites only the managed model sections of onboarded agent configs. Selection, credentials, MCP config, and local backups are preserved.
+
+### Models
+
+```bash
+preloop models sync                     # Pull newly released provider models into the catalog
+preloop models sync --provider anthropic
+preloop models sync --dry-run           # Report what would be added without writing
+```
+
+`preloop models sync` calls `POST /api/v1/ai-models/sync` so newly released provider models enter the account catalog from credentials already stored on existing models. Then run `preloop agents refresh` to push those models into onboarded agent configs.
 
 ### Flows
 
@@ -303,6 +346,7 @@ cli/
 │   │   ├── policy.go        # policy validate/apply/diff/export/list
 │   │   ├── tools.go         # tools list/describe/exec
 │   │   ├── approvals.go     # approvals list/pending/approve/deny
+│   │   ├── cursor.go        # cursor-agent launcher + usage capture
 │   │   ├── version.go       # version command
 │   │   ├── update.go        # update command
 │   │   ├── flow.go          # flow trigger

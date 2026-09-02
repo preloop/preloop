@@ -5995,6 +5995,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/ai-models/sync:
+    post:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Sync Provider Model Catalogs
+      description: 'Discover newly released provider models and add them to the catalog.
+
+
+        Runs the existing live provider discovery against credentials the account
+
+        already stores (the same discovery the console model-add flow uses) and
+
+        creates one AI model per newly discovered identifier via the CRUD layer.
+
+        New rows share the seed model''s credential secret and inherit its gateway
+
+        exposure, so authorization semantics are unchanged: API-key models stay
+
+        account-wide, and principal-bound subscription-OAuth models (which cannot
+
+        authenticate server-side discovery) are never created or widened here.
+
+
+        Backing service: ``preloop.services.ai_model_catalog_sync``. Every added
+
+        model is recorded in the audit trail. Use ``dry_run`` to preview.'
+      operationId: sync_ai_model_catalog_api_v1_ai_models_sync_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/AIModelCatalogSyncRequest'
+              - type: 'null'
+              title: Request In
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelCatalogSyncResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/ai-models/{model_id}/credentials/export:
     post:
       tags:
@@ -8868,6 +8919,86 @@ paths:
       - bearerAuth: []
 components:
   schemas:
+    AIModelCatalogSyncProviderResult:
+      properties:
+        provider:
+          type: string
+          title: Provider
+          description: Provider name, e.g. 'anthropic'
+        source:
+          type: string
+          enum:
+          - live
+          - fallback
+          title: Source
+          description: '''live'' when the provider''s listing endpoint answered; ''fallback''
+            when discovery failed or was impossible'
+          default: fallback
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+          description: Short safe reason when nothing could be discovered (fixed vocabulary;
+            never raw provider error text)
+        discovered:
+          type: integer
+          title: Discovered
+          description: Total model identifiers the provider listed
+          default: 0
+        added:
+          items:
+            type: string
+          type: array
+          title: Added
+          description: Gateway aliases of newly added catalog models
+        skipped_existing:
+          type: integer
+          title: Skipped Existing
+          description: Discovered identifiers already present in the catalog
+          default: 0
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+          description: Human-readable context for skips and errors
+      type: object
+      required:
+      - provider
+      title: AIModelCatalogSyncProviderResult
+      description: Sync outcome for one provider.
+    AIModelCatalogSyncRequest:
+      properties:
+        provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider
+          description: Optional provider filter, e.g. 'anthropic'. When omitted, every
+            provider the account has credentialed models for is synced.
+        dry_run:
+          type: boolean
+          title: Dry Run
+          description: Report what would be added without creating any models
+          default: false
+      type: object
+      title: AIModelCatalogSyncRequest
+      description: Request body for the account model-catalog sync.
+    AIModelCatalogSyncResponse:
+      properties:
+        providers:
+          items:
+            $ref: '#/components/schemas/AIModelCatalogSyncProviderResult'
+          type: array
+          title: Providers
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      title: AIModelCatalogSyncResponse
+      description: Per-provider results of one model-catalog sync run.
     AIModelCreate:
       properties:
         name:
@@ -11465,9 +11596,17 @@ components:
 
         "unsupported", "missing_endpoint", "sdk_missing", "missing_key", "auth",
 
-        "unknown") when a live attempt failed or was impossible; it never carries
+        "unknown", "subscription_oauth") when a live attempt failed or was
 
-        raw exception text, which can embed endpoint URLs or key material.'
+        impossible; it never carries raw exception text, which can embed endpoint
+
+        URLs or key material. "subscription_oauth" marks a stored principal-bound
+
+        subscription-OAuth credential (e.g. Claude Code): the server never
+
+        queries the provider with such a token, and the models list is the
+
+        account''s own catalog for the provider instead.'
     AvatarResponse:
       properties:
         avatar_url:

@@ -93,6 +93,63 @@ PERMISSION_PROMPT_TOOL: Dict[str, Any] = {
 }
 
 
+RESOLVE_SBOM_UPSTREAMS_TOOL: Dict[str, Any] = {
+    "name": "resolve_sbom_upstreams",
+    "description": (
+        "Resolve vendored Arduino/PlatformIO SBOM components (name + "
+        "version) to their upstream git repository URL and version-shaped "
+        "tag candidates via the public library registries (Arduino library "
+        "index, PlatformIO registry). Read-only lookup: a component "
+        "resolves only when a registry entry matches its name AND version "
+        "and carries a repository URL; everything else comes back "
+        "unresolved with a reason — a resolution is never fabricated. "
+        "Returns JSON with resolved[] (repository_url, ref_candidates, "
+        "enriched_purl), unresolved[] (reason), stats, and per-registry "
+        "status."
+    ),
+    "source": "builtin",
+    # Default-off: only SBOM security flows need this lookup, so regular
+    # sessions should not pay its tools/list context tax (cf. issue #128).
+    # Flow executions opt in via their allowed_mcp_tools allow-list, which
+    # bypasses the default-enable filter.
+    "default_enabled": False,
+    "requires_tracker": False,
+    "required_tracker_types": [],
+    "schema": {
+        "type": "object",
+        "properties": {
+            "components": {
+                "type": "array",
+                "description": (
+                    "Components to resolve. Each entry carries the SBOM's "
+                    "name and version, plus optionally its purl (echoed "
+                    "back enriched with a vcs_url qualifier on success)."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Component name from the SBOM",
+                        },
+                        "version": {
+                            "type": "string",
+                            "description": "Component version from the SBOM",
+                        },
+                        "purl": {
+                            "type": "string",
+                            "description": "Optional original purl",
+                        },
+                    },
+                    "required": ["name", "version"],
+                },
+            },
+        },
+        "required": ["components"],
+    },
+}
+
+
 def builtin_tools_with_ask_user(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Return ``tools`` with ``ASK_USER_TOOL`` inserted after request_approval."""
     result: List[Dict[str, Any]] = []

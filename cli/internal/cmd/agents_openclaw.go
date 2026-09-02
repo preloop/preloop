@@ -348,6 +348,7 @@ type aiModelResponse struct {
 	CredentialType      string                 `json:"credential_type"`
 	CredentialsSecretID string                 `json:"credentials_secret_id"`
 	HasAPIKey           bool                   `json:"has_api_key"`
+	IsDefault           bool                   `json:"is_default"`
 }
 
 type aiModelCreateRequest struct {
