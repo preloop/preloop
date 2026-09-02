@@ -478,6 +478,14 @@ export class PreloopSessionObserver extends LitElement {
         width: 7px;
       }
 
+      /* Zero sessions: a slim pill instead of a toolbar of dead controls. */
+      .toolbar-waiting {
+        background: transparent;
+        border: none;
+        justify-content: flex-start;
+        padding: 0;
+      }
+
       .live-indicator.pulsing {
         background: var(--sl-color-success-100);
         color: var(--sl-color-success-700);
@@ -1610,7 +1618,7 @@ export class PreloopSessionObserver extends LitElement {
    */
   private get replayEmptyText(): string {
     if (this.scope === 'managed_agent' && this.observedSessions.length === 0) {
-      return 'No sessions yet for this agent. Its first gateway call will appear here live.';
+      return 'The first gateway call from this agent will appear here.';
     }
     return 'Select a session to follow it live or replay it.';
   }
@@ -1649,6 +1657,22 @@ export class PreloopSessionObserver extends LitElement {
 
   private renderToolbar() {
     const session = this.activeSession;
+
+    // With no sessions there is nothing to follow, pause, replay, filter or
+    // refresh, so the full toolbar is six controls that all do nothing. Show
+    // only that we are listening, and reveal the toolbar when the first
+    // session arrives.
+    if (this.observedSessions.length === 0) {
+      return html`
+        <div class="toolbar toolbar-waiting">
+          <span class="live-indicator pulsing" title="Realtime session updates">
+            <span class="live-dot"></span>
+            Live · waiting for first session
+          </span>
+        </div>
+      `;
+    }
+
     return html`
       <div class="toolbar">
         <div>

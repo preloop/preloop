@@ -358,7 +358,46 @@ export class AgentDetailView extends LitElement {
       .badge-row {
         display: flex;
         flex-wrap: wrap;
+        align-items: center;
         gap: var(--sl-spacing-small);
+      }
+
+      /* "Recently active" is real but not live: outline it so only a genuinely
+         active agent gets a solid green chip. */
+      .status-chip.outline::part(base) {
+        background-color: transparent;
+        color: var(--sl-color-success-700);
+        border: 1px solid var(--sl-color-success-400);
+      }
+
+      .capability-chip::part(base) {
+        text-transform: none;
+      }
+
+      /* Tags are the operator's own labels, so they stay quiet: outlined
+         neutral, never a solid feature-flag blue. */
+      .tag-chip::part(base) {
+        background-color: transparent;
+        color: var(--sl-color-neutral-700);
+        border: 1px solid var(--sl-color-neutral-300);
+        text-transform: none;
+        font-weight: var(--sl-font-weight-normal);
+      }
+
+      .tag-chip-value {
+        opacity: 0.7;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .status-chip.outline::part(base) {
+          color: var(--sl-color-success-400);
+          border-color: var(--sl-color-success-600);
+        }
+
+        .tag-chip::part(base) {
+          color: var(--sl-color-neutral-400);
+          border-color: var(--sl-color-neutral-600);
+        }
       }
 
       .server-badges {
@@ -929,14 +968,91 @@ export class AgentDetailView extends LitElement {
     // gateway plumbing is proven but model traffic is UNVERIFIED. Never
     // present this as a check that is still in flight.
     if (this.agent.live_validation_status === 'throttled')
-      return 'Live check throttled — unverified';
+      return 'Live check throttled, unverified';
     if (this.agent.live_validation_status === 'upstream_unavailable')
-      return 'Upstream refused — unverified';
+      return 'Upstream refused, unverified';
     // ``not_run`` means the CLI was never invoked with ``--live-validate`` —
     // it's an opt-in step, not a check that's currently in flight.
     if (this.agent.live_validation_status === 'not_run')
       return 'Live check not run';
     return 'Live check pending';
+  }
+
+  /**
+   * The chips under the agent name, in one deliberate order: what the agent is
+   * doing right now, then anything that is switched off and costing you
+   * governance, then the operator's own labels.
+   *
+   * Everything here used to be a chip of its own -- onboarding state,
+   * lifecycle, live check, Agent Control, enrolment method -- which produced a
+   * row of five or six badges in four colours where nothing stood out. The
+   * status chip now carries lifecycle and onboarding (see getAgentStatusChip),
+   * capability gaps are amber and only appear when there is a gap, and tags
+   * are outlined neutral so they read as labels rather than as state.
+   */
+  private renderHeaderChips(): TemplateResult | typeof nothing {
+    if (!this.agent) return nothing;
+
+    const status = getAgentStatusChip(this.agent);
+    const control = getAgentControlState(this.agent);
+    const liveCount =
+      this.liveActivity.modelCalls + this.liveActivity.toolCalls;
+
+    // "Off" here means the check exists for this kind of agent but has not
+    // proven anything yet: never run, throttled, refused upstream or failed.
+    const liveCheckOff =
+      this.agent.live_validation_supported &&
+      this.agent.live_validation_status !== 'passed';
+    const controlOff = control.visible && !control.enabled;
+
+    return html`
+      <sl-tooltip
+        content=${`Last seen: ${this.formatDateTime(
+          this.liveActivity.lastActivityAt || this.agent.last_seen_at
+        )}`}
+      >
+        <sl-badge
+          class="status-chip ${status.outline ? 'outline' : ''}"
+          variant=${status.variant}
+          pill
+          >${status.label}</sl-badge
+        >
+      </sl-tooltip>
+      ${
+        liveCount > 0
+          ? html`<sl-badge variant="primary" pill>Live ${liveCount}</sl-badge>`
+          : nothing
+      }
+      ${
+        liveCheckOff
+          ? html`<sl-tooltip content=${this.getLiveValidationLabel()}>
+              <sl-badge class="capability-chip" variant="warning" pill
+                >Live check: off</sl-badge
+              >
+            </sl-tooltip>`
+          : nothing
+      }
+      ${
+        controlOff
+          ? html`<sl-tooltip content=${control.detail}>
+              <sl-badge class="capability-chip" variant="warning" pill
+                >Agent Control: off</sl-badge
+              >
+            </sl-tooltip>`
+          : nothing
+      }
+      ${getVisibleAgentTags(this.agent.tags).map(
+        ([key, value]) => html`
+          <sl-badge class="tag-chip" variant="neutral" pill>
+            #${key}${
+              value && value !== 'true'
+                ? html`<span class="tag-chip-value">=${value}</span>`
+                : nothing
+            }
+          </sl-badge>
+        `
+      )}
+    `;
   }
 
   private handleGatewayActivity(message: any): void {
@@ -1551,13 +1667,6 @@ export class AgentDetailView extends LitElement {
         onClick: () => this.promptRename(),
       },
       {
-        id: 'remove',
-        label: 'Remove',
-        variant: 'danger',
-        loading: this.actionLoading,
-        onClick: () => this.removeAgent(),
-      },
-      {
         id: 'edit-tags',
         label: 'Edit Tags',
         icon: 'tag',
@@ -1619,6 +1728,20 @@ export class AgentDetailView extends LitElement {
         `,
       });
     }
+
+    // Remove goes last, set apart from the everyday actions and outlined
+    // rather than solid: it is the one action on this page you cannot undo,
+    // and a solid red block next to Rename invites a mis-click.
+    actions.push({
+      id: 'remove',
+      label: 'Remove',
+      icon: 'trash',
+      variant: 'danger',
+      outline: true,
+      separated: true,
+      loading: this.actionLoading,
+      onClick: () => this.removeAgent(),
+    });
 
     return actions;
   }
@@ -2524,93 +2647,8 @@ export class AgentDetailView extends LitElement {
             <div
               style="display: flex; flex-direction: column; align-items: flex-start; gap: var(--sl-spacing-small); margin-top: var(--sl-spacing-small);"
             >
-              <div class="badge-row">
-                <sl-tooltip content=${this.getOnboardingDescription()}>
-                  <sl-badge variant=${this.getOnboardingVariant()}>
-                    ${this.getOnboardingLabel()}
-                  </sl-badge>
-                </sl-tooltip>
-                <sl-tooltip
-                  content=${`Last seen: ${this.formatDateTime(this.liveActivity.lastActivityAt || this.agent.last_seen_at)}`}
-                >
-                  <sl-badge variant=${this.getLifecycleVariant()}>
-                    ${this.getLifecycleLabel()}
-                  </sl-badge>
-                </sl-tooltip>
-                <sl-badge variant=${this.getLiveValidationVariant()}>
-                  ${this.getLiveValidationLabel()}
-                </sl-badge>
-                ${
-                  getAgentControlState(this.agent).visible
-                    ? html`
-                        <sl-tooltip
-                          content=${getAgentControlState(this.agent).detail}
-                        >
-                          <sl-badge
-                            variant=${
-                              getAgentControlState(this.agent).badgeVariant
-                            }
-                          >
-                            ${getAgentControlState(this.agent).label}
-                          </sl-badge>
-                        </sl-tooltip>
-                      `
-                    : html`<sl-badge variant="neutral"
-                        >No Agent Control</sl-badge
-                      >`
-                }
-                <sl-badge variant="primary"
-                  >${this.agent.enrolled_via}</sl-badge
-                >
-                ${
-                  this.liveActivity.modelCalls || this.liveActivity.toolCalls
-                    ? html`
-                        <sl-badge variant="primary">
-                          Live
-                          ${
-                            this.liveActivity.modelCalls +
-                            this.liveActivity.toolCalls
-                          }
-                        </sl-badge>
-                      `
-                    : null
-                }
-              </div>
+              <div class="badge-row">${this.renderHeaderChips()}</div>
 
-              ${
-                getVisibleAgentTags(this.agent.tags).length > 0
-                  ? html`
-                      <div
-                        style="display: flex; gap: var(--sl-spacing-small); align-items: center; margin-top: var(--sl-spacing-x-small);"
-                      >
-                        <div
-                          style="font-size: var(--sl-font-size-small); font-weight: 500; color: var(--sl-color-neutral-700);"
-                        >
-                          Tags:
-                        </div>
-                        <div style="display: flex; flex-wrap: wrap; gap: 4px;">
-                          ${getVisibleAgentTags(this.agent.tags).map(
-                            ([k, v]) => html`
-                              <sl-badge
-                                variant="neutral"
-                                style="text-transform: none;"
-                              >
-                                <span style="opacity: 0.7">${k}</span>${
-                                  v && v !== 'true'
-                                    ? html`<span
-                                          style="opacity: 0.4; margin: 0 4px;"
-                                          >=</span
-                                        >${v}`
-                                    : ''
-                                }
-                              </sl-badge>
-                            `
-                          )}
-                        </div>
-                      </div>
-                    `
-                  : nothing
-              }
               ${this.renderIdentityHistory()}
             </div>
           </div>
@@ -2759,7 +2797,7 @@ export class AgentDetailView extends LitElement {
                                 class="hero-title"
                                 style="display: flex; align-items: center; gap: 8px;"
                               >
-                                Sessions History
+                                Session History
                                 <sl-icon-button
                                   name="arrow-clockwise"
                                   style="font-size: 1.1rem; color: var(--sl-color-neutral-500);"
@@ -2872,10 +2910,10 @@ export class AgentDetailView extends LitElement {
                                   })
                                 </sl-option>
                                 <sl-option value="enforce">
-                                  Enforce — always require approval
+                                  Enforce: always require approval
                                 </sl-option>
                                 <sl-option value="off">
-                                  Off — auto-approve (recorded)
+                                  Off: auto-approve (recorded)
                                 </sl-option>
                               </sl-select>
                               <sl-select
