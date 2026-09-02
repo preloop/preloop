@@ -59,6 +59,7 @@ import {
   getVisibleAgentTags,
 } from '../../utils/agent-display';
 import { formatRelativeTime } from '../../utils/date';
+import { consoleDialogStyles } from '../../styles/console-dialog';
 
 const AVAILABLE_AGENT_KINDS = [
   { value: 'openclaw', label: 'OpenClaw' },
@@ -398,6 +399,7 @@ export class AgentsView extends LitElement {
   private refreshTimer: number | null = null;
 
   static styles = [
+    consoleDialogStyles,
     reducedMotionStyles,
     unsafeCSS(consoleStyles),
     css`

@@ -18,6 +18,7 @@ import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 @customElement('policy-generate-dialog')
 export class PolicyGenerateDialog extends LitElement {
@@ -37,130 +38,133 @@ export class PolicyGenerateDialog extends LitElement {
   @state() private _startDate = '';
   @state() private _endDate = '';
 
-  static styles = css`
-    :host {
-      --dialog-width: 720px;
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      :host {
+        --dialog-width: 720px;
+      }
 
-    sl-dialog::part(panel) {
-      max-width: var(--dialog-width);
-      width: 90vw;
-    }
+      sl-dialog::part(panel) {
+        max-width: var(--dialog-width);
+        width: 90vw;
+      }
 
-    sl-dialog::part(body) {
-      padding: 1rem 1.5rem;
-    }
+      sl-dialog::part(body) {
+        padding: 1rem 1.5rem;
+      }
 
-    .description {
-      color: var(--sl-color-neutral-600);
-      font-size: 0.875rem;
-      margin-bottom: 1rem;
-      line-height: 1.5;
-    }
+      .description {
+        color: var(--sl-color-neutral-600);
+        font-size: 0.875rem;
+        margin-bottom: 1rem;
+        line-height: 1.5;
+      }
 
-    .form-group {
-      margin-bottom: 1rem;
-    }
+      .form-group {
+        margin-bottom: 1rem;
+      }
 
-    .form-row {
-      display: flex;
-      gap: 1rem;
-    }
+      .form-row {
+        display: flex;
+        gap: 1rem;
+      }
 
-    .form-row > * {
-      flex: 1;
-    }
+      .form-row > * {
+        flex: 1;
+      }
 
-    .options-row {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-      margin-top: 0.75rem;
-    }
+      .options-row {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-top: 0.75rem;
+      }
 
-    .options-row sl-switch {
-      font-size: 0.875rem;
-    }
+      .options-row sl-switch {
+        font-size: 0.875rem;
+      }
 
-    .yaml-preview {
-      background: var(--sl-color-neutral-50);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      padding: 1rem;
-      margin-top: 1rem;
-      position: relative;
-      max-height: 400px;
-      overflow: auto;
-    }
+      .yaml-preview {
+        background: var(--sl-color-neutral-50);
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        padding: 1rem;
+        margin-top: 1rem;
+        position: relative;
+        max-height: 400px;
+        overflow: auto;
+      }
 
-    .yaml-preview pre,
-    .yaml-diff pre {
-      margin: 0;
-      font-family: var(--sl-font-mono);
-      font-size: 0.8125rem;
-      line-height: 1.6;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
+      .yaml-preview pre,
+      .yaml-diff pre {
+        margin: 0;
+        font-family: var(--sl-font-mono);
+        font-size: 0.8125rem;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
 
-    .yaml-diff {
-      background: var(--sl-color-neutral-50);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: 4px;
-      padding: 0.75rem 1rem;
-      margin-top: 0.5rem;
-      max-height: 360px;
-      overflow: auto;
-    }
+      .yaml-diff {
+        background: var(--sl-color-neutral-50);
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: 4px;
+        padding: 0.75rem 1rem;
+        margin-top: 0.5rem;
+        max-height: 360px;
+        overflow: auto;
+      }
 
-    .models-link {
-      color: var(--sl-color-primary-700);
-    }
+      .models-link {
+        color: var(--sl-color-primary-700);
+      }
 
-    .yaml-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-top: 1rem;
-      margin-bottom: 0.5rem;
-    }
+      .yaml-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 1rem;
+        margin-bottom: 0.5rem;
+      }
 
-    .yaml-header h4 {
-      margin: 0;
-      font-size: 0.875rem;
-      color: var(--sl-color-neutral-700);
-    }
+      .yaml-header h4 {
+        margin: 0;
+        font-size: 0.875rem;
+        color: var(--sl-color-neutral-700);
+      }
 
-    .yaml-actions {
-      display: flex;
-      gap: 0.5rem;
-    }
+      .yaml-actions {
+        display: flex;
+        gap: 0.5rem;
+      }
 
-    .loading-container {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 2rem;
-      gap: 1rem;
-      color: var(--sl-color-neutral-600);
-    }
+      .loading-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem;
+        gap: 1rem;
+        color: var(--sl-color-neutral-600);
+      }
 
-    .loading-container sl-spinner {
-      font-size: 2rem;
-      --track-width: 3px;
-    }
+      .loading-container sl-spinner {
+        font-size: 2rem;
+        --track-width: 3px;
+      }
 
-    .warning-list {
-      margin-top: 0.5rem;
-    }
+      .warning-list {
+        margin-top: 0.5rem;
+      }
 
-    .footer-actions {
-      display: flex;
-      gap: 0.75rem;
-      justify-content: flex-end;
-    }
-  `;
+      .footer-actions {
+        display: flex;
+        gap: 0.75rem;
+        justify-content: flex-end;
+      }
+    `,
+  ];
 
   render() {
     return html`

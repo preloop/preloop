@@ -19,6 +19,7 @@ import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 
 import consoleStyles from '../styles/console-styles.css?inline';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 type ResolutionStep = 'initial' | 'close' | 'merge' | 'deconflict';
 
@@ -511,6 +512,7 @@ export class ResolveIssueModal extends LitElement {
   }
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       h2 {

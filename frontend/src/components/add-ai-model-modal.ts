@@ -22,6 +22,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 type ServiceKind = 'llm' | 'stt' | 'tts';
 
@@ -142,19 +143,22 @@ const FALLBACK_REASON_LABELS: Record<string, string> = {
  */
 @customElement('add-ai-model-modal')
 export class AddAIModelModal extends LitElement {
-  static styles = css`
-    sl-dialog::part(panel) {
-      width: 620px;
-    }
-    .form-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1rem;
-    }
-    .full-width {
-      grid-column: 1 / -1;
-    }
-  `;
+  static styles = [
+    consoleDialogStyles,
+    css`
+      sl-dialog::part(panel) {
+        width: 620px;
+      }
+      .form-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+      }
+      .full-width {
+        grid-column: 1 / -1;
+      }
+    `,
+  ];
 
   /** Whether the dialog is open. */
   @property({ type: Boolean })

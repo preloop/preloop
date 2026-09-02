@@ -71,6 +71,7 @@ import {
   getSystemAgentTags,
   getVisibleAgentTags,
 } from '../../utils/agent-display';
+import { consoleDialogStyles } from '../../styles/console-dialog';
 
 interface GovernanceToolDefinition {
   name: string;
@@ -238,6 +239,7 @@ export class AgentDetailView extends LitElement {
   private refreshTimer: number | null = null;
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {

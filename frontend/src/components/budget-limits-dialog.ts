@@ -3,6 +3,7 @@ import { customElement, property } from 'lit/decorators.js';
 
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import './budget-policy-editor.ts';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 /**
  * One dialog for spending limits, shared by the Overview usage card and the
@@ -16,17 +17,20 @@ export class BudgetLimitsDialog extends LitElement {
   @property({ type: String }) subjectType?: string;
   @property({ type: String }) subjectId?: string;
 
-  static styles = css`
-    sl-dialog::part(body) {
-      padding-top: var(--sl-spacing-small);
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      sl-dialog::part(body) {
+        padding-top: var(--sl-spacing-small);
+      }
 
-    .description {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-      margin-bottom: var(--sl-spacing-medium);
-    }
-  `;
+      .description {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        margin-bottom: var(--sl-spacing-medium);
+      }
+    `,
+  ];
 
   private handleHide(event: Event) {
     if (event.target !== event.currentTarget) return;

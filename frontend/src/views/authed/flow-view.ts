@@ -39,6 +39,7 @@ import type { ResourceAction } from '../../components/resource-actions.ts';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { getTrackerEventOptions } from '../../constants/tracker-event-types';
 import type { Flow } from '../../types';
+import { consoleDialogStyles } from '../../styles/console-dialog';
 
 @customElement('flow-view')
 export class FlowView extends LitElement {
@@ -66,6 +67,7 @@ export class FlowView extends LitElement {
   }
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {

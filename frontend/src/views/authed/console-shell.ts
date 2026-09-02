@@ -28,6 +28,7 @@ import {
   type UserPermissions,
 } from '../../api';
 import '../../components/permission-denied';
+import { consoleDialogStyles } from '../../styles/console-dialog';
 
 /** Nav items that require at least one of the listed permissions when RBAC is on. */
 const NAV_PERMISSIONS: Record<string, string[]> = {
@@ -49,6 +50,13 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
 };
 
 const SIDEBAR_BREAKPOINT = 768;
+
+/**
+ * The sidebar's rendered width on desktop, published as
+ * `--console-main-offset` so that dialogs centre over the content area
+ * instead of over the window. Kept in step with the `.sidebar` rule below.
+ */
+const SIDEBAR_WIDTH_PX = 250;
 
 // static styles = [formStyles, css`
 //     h2 {}
@@ -104,6 +112,7 @@ export class ConsoleShell extends LitElement {
   private _mediaQueryHandler?: (e: MediaQueryListEvent) => void;
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {
@@ -377,6 +386,7 @@ export class ConsoleShell extends LitElement {
     );
     this._isMobile = this._mediaQuery.matches;
     this._sidebarOpen = !this._mediaQuery.matches; // desktop: visible, mobile: hidden
+    this._publishMainOffset();
     this._mediaQueryHandler = (e: MediaQueryListEvent) => {
       this._isMobile = e.matches;
       if (!e.matches) {
@@ -558,7 +568,21 @@ export class ConsoleShell extends LitElement {
     ) {
       document.body.style.overflow =
         this._sidebarOpen && this._isMobile ? 'hidden' : '';
+      this._publishMainOffset();
     }
+  }
+
+  /**
+   * How far the content area starts from the left of the window: the
+   * sidebar's width when it takes space (desktop, open), zero when it is
+   * hidden or overlaid on top of the page (mobile). Custom properties
+   * inherit through shadow roots, so every dialog in every view can centre
+   * itself on the content area by reading this one value.
+   */
+  private _publishMainOffset() {
+    const offset =
+      this._sidebarOpen && !this._isMobile ? `${SIDEBAR_WIDTH_PX}px` : '0px';
+    this.style.setProperty('--console-main-offset', offset);
   }
 
   disconnectedCallback() {

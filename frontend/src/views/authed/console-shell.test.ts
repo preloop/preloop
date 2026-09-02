@@ -165,6 +165,46 @@ describe('ConsoleShell', () => {
     expect(mainContent).to.exist;
   });
 
+  it('publishes the content offset so dialogs centre on the page, not the window', async () => {
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('.main-view') !== null,
+      'Main view did not render'
+    );
+
+    // Desktop: the sidebar takes 250px out of the window, so a dialog that
+    // centres on the window sits 125px left of the content it belongs to.
+    expect(el.style.getPropertyValue('--console-main-offset')).to.equal(
+      '250px'
+    );
+
+    // Closing the sidebar gives the content the full window back.
+    (el as any)._sidebarOpen = false;
+    await el.updateComplete;
+    expect(el.style.getPropertyValue('--console-main-offset')).to.equal('0px');
+  });
+
+  it('stops offsetting dialogs when the sidebar overlays the page', async () => {
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('.main-view') !== null,
+      'Main view did not render'
+    );
+
+    (el as any)._isMobile = true;
+    (el as any)._sidebarOpen = true;
+    await el.updateComplete;
+
+    // On a phone the sidebar floats above the page instead of beside it.
+    expect(el.style.getPropertyValue('--console-main-offset')).to.equal('0px');
+  });
+
   it('tints the page behind the cards and sets the compact type scale', async () => {
     // The Shoelace theme sheet is not loaded in the test page, so pin the two
     // tokens to sentinel colours: if the rule stops reading them the computed
