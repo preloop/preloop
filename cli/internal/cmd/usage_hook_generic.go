@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 )
@@ -198,11 +199,63 @@ func dropOversizeGenericMetadata(record map[string]interface{}) bool {
 		return false
 	}
 	encoded, err := json.Marshal(metadata)
-	if err != nil || len(encoded) > maxIngestMetadataBytes {
+	if err != nil || pythonJSONDumpsByteLen(encoded) > maxIngestMetadataBytes {
 		delete(record, "metadata")
 		return true
 	}
 	return false
+}
+
+// pythonJSONDumpsByteLen is the UTF-8 length of json.dumps(obj) with Python
+// defaults (ensure_ascii=True, separators=(', ', ': ')), matching
+// UsageIngestRecord.cap_metadata_size. encoding/json.Marshal is compact and
+// emits raw UTF-8, so a Go-only length check under-counts and can ship an
+// object the backend 422s (rejecting the whole ingest batch).
+func pythonJSONDumpsByteLen(compact []byte) int {
+	n := len(compact)
+	inString := false
+	escape := false
+	for i := 0; i < len(compact); {
+		if inString {
+			if escape {
+				escape = false
+				i++
+				continue
+			}
+			c := compact[i]
+			if c == '\\' {
+				escape = true
+				i++
+				continue
+			}
+			if c == '"' {
+				inString = false
+				i++
+				continue
+			}
+			r, size := utf8.DecodeRune(compact[i:])
+			if r >= 0x80 {
+				n += unicodeASCIIEscapeLen(r) - size
+			}
+			i += size
+			continue
+		}
+		c := compact[i]
+		if c == '"' {
+			inString = true
+		} else if c == ':' || c == ',' {
+			n++ // space after structural ':' / ',' (Python separators)
+		}
+		i++
+	}
+	return n
+}
+
+func unicodeASCIIEscapeLen(r rune) int {
+	if r < 0x10000 {
+		return 6 // \uXXXX
+	}
+	return 12 // surrogate pair
 }
 
 func sanitizeGenericMetadata(raw json.RawMessage) map[string]interface{} {

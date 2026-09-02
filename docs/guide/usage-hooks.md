@@ -91,6 +91,10 @@ command ships conversation lifecycle events as they happen.
 Hook payload fields referenced below come from Cursor's hooks reference
 (https://cursor.com/docs/agent/hooks, checked 2026-08-27).
 
+For headless cursor-agent runs, the [`preloop cursor` launcher](cursor-cli.md)
+captures print-mode output and ships estimated usage without any hook
+configuration.
+
 Cursor hook payloads carry no token counts and no billed amounts. This
 integration therefore records lifecycle facts only:
 

@@ -119,6 +119,21 @@ preloop tools exec <tool-name> --args-file ./input.json
 
 `preloop tools` talks directly to the MCP endpoint, so the visible and executable tools are automatically filtered by the current token's policy. Agent tokens only see the tools they are allowed to use.
 
+### Cursor Agent CLI
+
+```bash
+preloop cursor                         # interactive TTY passthrough
+preloop cursor run "summarize this repo"   # headless capture + estimated usage
+```
+
+`preloop cursor` spawns `cursor-agent` with the user's TTY. Interactive
+sessions are unchanged and are not captured: Cursor only emits structured
+output in `--print` mode. `preloop cursor run` injects
+`--print --output-format stream-json`, tees stdout, and POSTs estimated
+usage to `/api/v1/usage/ingest`. Runs bill the user's own Cursor account;
+Preloop records estimates, not Cursor billing. See
+[docs/guide/cursor-cli.md](../docs/guide/cursor-cli.md).
+
 ### Usage
 
 ```bash
@@ -317,6 +332,7 @@ cli/
 │   │   ├── policy.go        # policy validate/apply/diff/export/list
 │   │   ├── tools.go         # tools list/describe/exec
 │   │   ├── approvals.go     # approvals list/pending/approve/deny
+│   │   ├── cursor.go        # cursor-agent launcher + usage capture
 │   │   ├── version.go       # version command
 │   │   ├── update.go        # update command
 │   │   ├── flow.go          # flow trigger

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -300,6 +301,53 @@ func TestUsageHookGenericDropsOversizeMetadata(t *testing.T) {
 	if record["external_id"] != "fat" {
 		t.Fatalf("event must still ship, got %#v", record)
 	}
+}
+
+func TestPythonJSONDumpsByteLenMatchesPythonDefaults(t *testing.T) {
+	// json.dumps({"a": 1}) == '{"a": 1}' (8 bytes)
+	compact, err := json.Marshal(map[string]int{"a": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pythonJSONDumpsByteLen(compact); got != 8 {
+		t.Fatalf("ascii object: compact %q (%d) python-len %d want 8", compact, len(compact), got)
+	}
+	// json.dumps({"x": "é"}) == '{"x": "\\u00e9"}' (15 bytes)
+	compact, err = json.Marshal(map[string]string{"x": "é"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pythonJSONDumpsByteLen(compact); got != 15 {
+		t.Fatalf("unicode: compact %s (%d) python-len %d want 15", compact, len(compact), got)
+	}
+}
+
+func TestDropOversizeGenericMetadataUsesPythonDumpsLen(t *testing.T) {
+	// Compact Go JSON stays under the cap; Python json.dumps (spaces +
+	// ensure_ascii) does not. The CLI must drop so the backend does not 422.
+	meta := map[string]interface{}{}
+	for i := 0; i < 4000; i++ {
+		meta[fmt.Sprintf("k%04d", i)] = 0
+		encoded, err := json.Marshal(meta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		py := pythonJSONDumpsByteLen(encoded)
+		if len(encoded) <= maxIngestMetadataBytes && py > maxIngestMetadataBytes {
+			record := map[string]interface{}{"metadata": meta}
+			if !dropOversizeGenericMetadata(record) {
+				t.Fatalf("compact %d python %d: should drop", len(encoded), py)
+			}
+			if _, ok := record["metadata"]; ok {
+				t.Fatal("metadata still present after drop")
+			}
+			return
+		}
+		if len(encoded) > maxIngestMetadataBytes {
+			t.Fatalf("no under-go/over-python payload; last go=%d python=%d", len(encoded), py)
+		}
+	}
+	t.Fatal("did not find a payload in 4000 keys")
 }
 
 func TestDetectUsageHookFormat(t *testing.T) {
