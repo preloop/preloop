@@ -1146,7 +1146,7 @@ describe('DashboardView', () => {
       expect(steps.length).to.equal(3);
       expect(card?.textContent).to.contain('Onboard an agent');
       expect(card?.textContent).to.contain('Set a spending limit');
-      expect(card?.textContent).to.contain('Add a tool policy');
+      expect(card?.textContent).to.contain('Restrict a tool');
       // The agent exists, so that step is ticked and the other two are not.
       expect(steps[0].classList.contains('done'), 'agent step done').to.be.true;
       expect(steps[1].classList.contains('done'), 'budget step done').to.be
