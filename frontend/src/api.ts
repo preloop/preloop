@@ -2092,7 +2092,7 @@ export async function uploadAvatar(file: File): Promise<AvatarResponse> {
       throw new Error(detail.detail);
     }
     if (response.status === 413) {
-      throw new Error('Image too large (maximum 5 MB).');
+      throw new Error('Image too large to upload.');
     }
     throw new Error(`Failed to upload avatar (${response.status})`);
   }

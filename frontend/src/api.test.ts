@@ -403,7 +403,7 @@ describe('api', () => {
       } catch (e: unknown) {
         message = (e as Error).message;
       }
-      expect(message).to.equal('Image too large (maximum 5 MB).');
+      expect(message).to.equal('Image too large to upload.');
     });
 
     it('includes the HTTP status when the body is not JSON', async () => {

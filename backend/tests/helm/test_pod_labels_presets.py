@@ -75,9 +75,9 @@ def test_migration_job_syncs_flow_presets_after_alembic() -> None:
     container = job["spec"]["template"]["spec"]["containers"][0]
     args = " ".join(container.get("args") or [])
     assert "alembic upgrade head" in args
-    assert "python /app/scripts/sync_flow_presets.py" in args
+    assert "python /app/scripts/sync_flow_presets.py --no-propagate" in args
     assert args.index("alembic upgrade head") < args.index(
-        "python /app/scripts/sync_flow_presets.py"
+        "python /app/scripts/sync_flow_presets.py --no-propagate"
     )
     assert "--cleanup" not in args
     assert "init" not in (job["metadata"].get("name") or "")

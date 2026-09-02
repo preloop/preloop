@@ -55,15 +55,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Migration job now syncs global flow presets after alembic**: the
-  post-upgrade hook runs `scripts/sync_flow_presets.py` in the same
-  container so presets stop drifting between deploys.
+  post-upgrade hook runs `scripts/sync_flow_presets.py --no-propagate`
+  in the same container so global presets stop drifting between deploys
+  without rewriting derived user flows.
 - **API and console pods carry `app:` labels**: the selector lived only
   on Deployment metadata, so `kubectl -l app=api` found nothing. Extra
   pod-template labels do not change `spec.selector.matchLabels`.
 - **Console nginx accepts avatar uploads over 1 MB**: `client_max_body_size`
   now matches `gateway.proxy.bodySize` (default 32m). Oversized requests
-  used to 413 at nginx; the console now surfaces a 413 as "Image too
-  large (maximum 5 MB)." instead of a generic failure.
+  used to 413 at nginx; the console now surfaces an HTML 413 as "Image
+  too large to upload." instead of a generic failure.
 - **Scorecard supply-chain job pulls from GHCR**: `ossf/scorecard-action`
   is pinned to v2.4.4 (`ghcr.io/ossf/scorecard-action`). v2.4.0 pulled
   `gcr.io/openssf/scorecard-action`, which now denies unauthenticated pulls
