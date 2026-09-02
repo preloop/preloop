@@ -405,6 +405,70 @@ func TestCursorPreloopErrorsPrintToStderr(t *testing.T) {
 	})
 }
 
+func TestPrintCursorPreloopError(t *testing.T) {
+	t.Run("generic start error is printed", func(t *testing.T) {
+		var stderr bytes.Buffer
+		err := errors.New("exec: fork/exec cursor-agent: exec format error")
+		got := printCursorPreloopError(&stderr, err)
+		if got != err {
+			t.Fatalf("returned %v, want original error", got)
+		}
+		if !strings.Contains(stderr.String(), err.Error()) {
+			t.Fatalf("stderr missing start error, got %q", stderr.String())
+		}
+	})
+
+	t.Run("typed child exit stays silent", func(t *testing.T) {
+		var stderr bytes.Buffer
+		err := &processExitError{code: 2, err: errors.New("exit status 2")}
+		got := printCursorPreloopError(&stderr, err)
+		if got != err {
+			t.Fatalf("returned %v, want original error", got)
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("child exit must stay silent, got %q", stderr.String())
+		}
+	})
+}
+
+func TestCursorPassthroughStartErrorPrints(t *testing.T) {
+	skipNoShebangOnWindows(t, "cursor-agent passthrough start error")
+	testenv.SetTempHome(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A PATH hit that is not a runnable image: wrapProcessExit leaves this
+	// as a raw start error (not processExitError). Interactive mode must
+	// still print it.
+	path := filepath.Join(binDir, "cursor-agent")
+	if err := os.WriteFile(path, []byte("not a binary\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/usr/bin:/bin")
+
+	var stderr bytes.Buffer
+	rootCmd.SetErr(&stderr)
+	t.Cleanup(func() { rootCmd.SetErr(nil) })
+	rootCmd.SetArgs([]string{"cursor"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+
+	err := Execute()
+	if err == nil {
+		t.Fatal("expected start error")
+	}
+	var coded *processExitError
+	if errors.As(err, &coded) {
+		t.Fatalf("start failure must not be processExitError, got %T %v", err, err)
+	}
+	if ProcessExitCode(err) != 1 {
+		t.Fatalf("exit code = %d, want 1", ProcessExitCode(err))
+	}
+	if !strings.Contains(stderr.String(), err.Error()) {
+		t.Fatalf("stderr missing start diagnostic, got %q (err=%v)", stderr.String(), err)
+	}
+}
+
 func TestCursorPassthroughSpawnsFakeBinary(t *testing.T) {
 	skipNoShebangOnWindows(t, "cursor-agent passthrough spawn")
 	binDir, argsFile := installFakeCursorAgent(t, "")

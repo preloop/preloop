@@ -99,7 +99,7 @@ func runCursorPassthrough(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return err
 	}
-	return runCursorAgent(bin, args, os.Stdin, os.Stdout, os.Stderr)
+	return printCursorPreloopError(cmd.ErrOrStderr(), runCursorAgent(bin, args, os.Stdin, os.Stdout, os.Stderr))
 }
 
 func runCursorCapture(cmd *cobra.Command, args []string) error {
