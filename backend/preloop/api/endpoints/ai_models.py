@@ -674,12 +674,16 @@ def _account_catalog_identifiers(
     current_user: User,
     provider: str,
 ) -> List[str]:
-    """The account's own model identifiers for one provider, newest first.
+    """The account's own model identifiers for one provider.
 
     Used as the honest picker fallback for subscription-OAuth credentials:
     there is no bundled provider catalog and no server-initiated listing, so
     what the account already knows (from onboarding imports, `models sync`,
     and gateway traffic-observed auto-registration) is the curated list.
+
+    Sorted reverse-lexicographic. That is roughly newest-first for
+    date-suffixed ids, but not a chronological sort: ``model-5-20260415``
+    sorts ahead of ``model-5-1-20260901``. Display order only.
     """
     provider_name = (provider or "").strip().lower()
     identifiers = {
