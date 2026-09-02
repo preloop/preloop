@@ -19,6 +19,7 @@ agent binding, which ``preloop agents refresh`` handles client-side.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -60,8 +61,8 @@ class CatalogSyncActor:
     details so a scheduled run is distinguishable from an operator run.
     """
 
-    account_id: object
-    user_id: Optional[object] = None
+    account_id: uuid.UUID | str
+    user_id: Optional[uuid.UUID] = None
     actor_type: str = "user"  # "user" or "system"
     actor_id: str = ""  # user id, or a stable system identifier
 
@@ -75,7 +76,7 @@ class CatalogSyncActor:
         )
 
     @classmethod
-    def system(cls, account_id) -> "CatalogSyncActor":
+    def system(cls, account_id: uuid.UUID | str) -> "CatalogSyncActor":
         return cls(
             account_id=account_id,
             user_id=None,
