@@ -51,8 +51,10 @@ import {
 import {
   ATTENTION_KIND_META,
   deriveAttentionItems,
+  type AttentionInputs,
   type AttentionItem,
 } from '../../utils/attention';
+import { loadAttentionInputs } from '../../utils/attention-data';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import type {
   AccountGatewayUsageSummaryResponse,
@@ -215,6 +217,14 @@ export class DashboardView extends AuthedElement {
   @state() private isAdmin = false;
 
   @state() private budgetPolicies: BudgetPolicy[] = [];
+  /**
+   * Inputs for the hero "need attention" count and the side card, fetched
+   * through the shared loader rather than reusing the cards' own data: the
+   * cards are scoped to what they display (five recent executions, approvals
+   * minus the expired ones), and reusing them made the Overview disagree with
+   * /console/attention.
+   */
+  @state() private attentionInputs: AttentionInputs | null = null;
   @state()
   private approvalStats = {
     total: 0,
@@ -1123,6 +1133,7 @@ export class DashboardView extends AuthedElement {
       this.hasAIModels = data.hasAIModels || false;
       if (data.lastUpdatedAt) this.lastUpdatedAt = data.lastUpdatedAt;
       this.approvalStats = data.approvalStats || this.approvalStats;
+      this.attentionInputs = data.attentionInputs || null;
       this.budgetPolicies = data.budgetPolicies || [];
       this.budgetAgents = data.budgetAgents || [];
 
@@ -1163,6 +1174,7 @@ export class DashboardView extends AuthedElement {
         hasAIModels: this.hasAIModels,
         lastUpdatedAt: this.lastUpdatedAt,
         approvalStats: this.approvalStats,
+        attentionInputs: this.attentionInputs,
         budgetPolicies: this.budgetPolicies,
         budgetAgents: this.budgetAgents,
       };
@@ -1421,6 +1433,7 @@ export class DashboardView extends AuthedElement {
     this.error = null;
 
     const startDateStr = this.getGatewayStartDate();
+    const attentionPromise = this.refreshAttentionInputs();
 
     try {
       // Wave 1 (above-the-fold): gateway metrics, budget, recent executions,
@@ -1526,6 +1539,8 @@ export class DashboardView extends AuthedElement {
         sharedAgents: managedAgents,
         features: featuresRes,
       });
+
+      await attentionPromise;
 
       this.lastUpdatedAt = new Date().toISOString();
       this.loading = false;
@@ -2217,15 +2232,24 @@ export class DashboardView extends AuthedElement {
    * disagree.
    */
   private get attentionItems(): AttentionItem[] {
-    return deriveAttentionItems({
-      approvals: this.pendingApprovals,
-      agents: this.managedAgents,
-      sessions: this.runtimeSessions,
-      executions: this.recentFlowExecutions,
-      gatewayFailures: this.gatewayFailures,
-      budgetPolicies: this.budgetPolicies,
-      usageSummary: this.gatewaySummary,
-    });
+    if (!this.attentionInputs) {
+      return [];
+    }
+    return deriveAttentionItems(this.attentionInputs);
+  }
+
+  /**
+   * Same loader, same parameters as the Attention page. Runs alongside the
+   * dashboard fetch rather than inside it so a slow attention input never
+   * holds up the cards above the fold.
+   */
+  private async refreshAttentionInputs(): Promise<void> {
+    try {
+      this.attentionInputs = await loadAttentionInputs();
+      this.saveDashboardCache();
+    } catch (error) {
+      console.error('Failed to load attention inputs', error);
+    }
   }
 
   private get gatewayRangeLabel(): string {

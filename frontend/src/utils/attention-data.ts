@@ -1,0 +1,134 @@
+import {
+  getAccountAgents,
+  getAccountGatewayUsageSearch,
+  getAccountGatewayUsageSummary,
+  getAccountRuntimeSessions,
+  getBudgetPolicies,
+  getFlowExecutions,
+  listApprovalRequests,
+  type BudgetPolicy,
+} from '../api';
+import type {
+  AccountGatewayUsageSummaryResponse,
+  GatewayUsageSearchResultItem,
+  ManagedAgentSummary,
+  RuntimeSessionSummary,
+} from '../types';
+import type {
+  AttentionApproval,
+  AttentionFlowExecution,
+  AttentionInputs,
+} from './attention';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * One place that decides which requests feed `deriveAttentionItems`.
+ *
+ * The Overview hero count and the Attention page used to fetch their own
+ * inputs with different parameters (approvals filtered by expiry on one side,
+ * `limit: 200` agents that the API rejects with a 422 on the other, ten mixed
+ * flow executions versus the twenty-five most recent failures), so the same
+ * account showed "3 need attention" next to a page listing nine items. Both
+ * call this loader now, so a disagreement means a bug in the derivation, not
+ * in the fetch parameters.
+ *
+ * The agents limit is 100 because that is the maximum the `/api/v1/agents`
+ * endpoint accepts (`limit: int = Query(20, ge=1, le=100)`); anything larger
+ * is a 422 that silently empties the Agents section.
+ */
+export const ATTENTION_QUERY = {
+  approvalsLimit: 100,
+  agentsLimit: 100,
+  sessionsLimit: 100,
+  sessionsWindowDays: 7,
+  executionsLimit: 25,
+  gatewayFailuresLimit: 12,
+  usageWindowDays: 30,
+} as const;
+
+export interface LoadAttentionInputsOptions {
+  /** Injected in tests and by callers that already know "now". */
+  now?: Date;
+  /** Skip the budget policies call when billing is off (it 403s). */
+  includeBudgetPolicies?: boolean;
+}
+
+/**
+ * Fetches every input of the attention rules. Individual failures (a 403 for a
+ * permission this operator lacks, a 422, a flaky endpoint) drop that one input
+ * instead of failing the whole page, exactly like the page-level
+ * `Promise.allSettled` it replaces.
+ */
+export async function loadAttentionInputs(
+  options: LoadAttentionInputsOptions = {}
+): Promise<AttentionInputs> {
+  const now = options.now || new Date();
+  const sessionsStart = new Date(
+    now.getTime() - ATTENTION_QUERY.sessionsWindowDays * DAY_MS
+  ).toISOString();
+  const usageStart = new Date(
+    now.getTime() - ATTENTION_QUERY.usageWindowDays * DAY_MS
+  ).toISOString();
+
+  const [approvals, agents, sessions, executions, failures, policies, summary] =
+    await Promise.allSettled([
+      listApprovalRequests({
+        status: 'pending',
+        limit: ATTENTION_QUERY.approvalsLimit,
+      }),
+      getAccountAgents({ status: 'all', limit: ATTENTION_QUERY.agentsLimit }),
+      getAccountRuntimeSessions({
+        status: 'all',
+        limit: ATTENTION_QUERY.sessionsLimit,
+        startDate: sessionsStart,
+      }),
+      getFlowExecutions({
+        status: 'FAILED',
+        limit: ATTENTION_QUERY.executionsLimit,
+      }),
+      getAccountGatewayUsageSearch({
+        limit: ATTENTION_QUERY.gatewayFailuresLimit,
+      }),
+      options.includeBudgetPolicies === false
+        ? Promise.resolve([] as BudgetPolicy[])
+        : getBudgetPolicies(),
+      getAccountGatewayUsageSummary({
+        startDate: usageStart,
+        includeBreakdown: false,
+      }),
+    ]);
+
+  return {
+    approvals:
+      approvals.status === 'fulfilled' && Array.isArray(approvals.value)
+        ? (approvals.value as AttentionApproval[])
+        : [],
+    agents:
+      agents.status === 'fulfilled'
+        ? ((agents.value.items || []) as ManagedAgentSummary[])
+        : [],
+    sessions:
+      sessions.status === 'fulfilled'
+        ? ((sessions.value.items || []) as RuntimeSessionSummary[])
+        : [],
+    executions:
+      executions.status === 'fulfilled' && Array.isArray(executions.value)
+        ? (executions.value as AttentionFlowExecution[])
+        : [],
+    gatewayFailures:
+      failures.status === 'fulfilled'
+        ? (
+            (failures.value.items || []) as GatewayUsageSearchResultItem[]
+          ).filter((item) => item.outcome !== 'success')
+        : [],
+    budgetPolicies:
+      policies.status === 'fulfilled' && Array.isArray(policies.value)
+        ? (policies.value as BudgetPolicy[])
+        : [],
+    usageSummary:
+      summary.status === 'fulfilled'
+        ? (summary.value as AccountGatewayUsageSummaryResponse)
+        : null,
+  };
+}

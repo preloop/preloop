@@ -430,12 +430,12 @@ describe('DashboardView', () => {
           return json(flowsResponse);
         }
 
-        if (url === '/api/v1/approval-requests?limit=100&status=pending') {
-          return json(pendingApprovalRequestsResponse);
-        }
-
-        if (url === '/api/v1/approval-requests?limit=100') {
-          return json(allApprovalRequestsResponse);
+        if (url.startsWith('/api/v1/approval-requests')) {
+          return json(
+            url.includes('status=pending')
+              ? pendingApprovalRequestsResponse
+              : allApprovalRequestsResponse
+          );
         }
 
         if (url === '/api/v1/ai-models') {
@@ -515,16 +515,20 @@ describe('DashboardView', () => {
         url.startsWith('/api/v1/account/gateway-usage/summary')
       )
     ).to.be.true;
+    // Two for the cards (summary + breakdown upgrade) plus the fixed 30d one
+    // the shared attention loader uses, and one agents call per source: the
+    // cards' own list and the attention loader's, which must stay on the
+    // parameters the Attention page uses.
     expect(
       urls.filter((url) =>
         url.startsWith('/api/v1/account/gateway-usage/summary')
       ).length
-    ).to.be.at.most(2);
+    ).to.be.at.most(3);
     expect(urls.some((url) => url.includes('include_breakdown=false'))).to.be
       .true;
     expect(
       urls.filter((url) => url.startsWith('/api/v1/agents')).length
-    ).to.equal(1);
+    ).to.equal(2);
     expect(urls.some((url) => url === '/api/v1/auth/api-usage')).to.be.false;
     expect(urls.some((url) => url.startsWith('/api/v1/audit-logs/grouped'))).to
       .be.true;

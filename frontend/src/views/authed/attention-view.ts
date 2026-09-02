@@ -10,18 +10,7 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '../../components/budget-limits-dialog.ts';
 import '../../components/view-header.ts';
 
-import {
-  AuthedElement,
-  getAccountAgents,
-  getAccountGatewayUsageSearch,
-  getAccountGatewayUsageSummary,
-  getAccountRuntimeSessions,
-  getBudgetPolicies,
-  getFeatures,
-  getFlowExecutions,
-  listApprovalRequests,
-  type BudgetPolicy,
-} from '../../api';
+import { AuthedElement, getFeatures, type BudgetPolicy } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import type {
@@ -41,9 +30,8 @@ import {
   type AttentionItem,
   type AttentionKind,
 } from '../../utils/attention';
+import { loadAttentionInputs } from '../../utils/attention-data';
 import { formatRelativeTime } from '../../utils/date';
-
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * One page for everything waiting on a human or degraded right now. The
@@ -238,64 +226,21 @@ export class AttentionView extends AuthedElement {
   }
 
   private async fetchAll(): Promise<void> {
-    const sessionsStart = new Date(Date.now() - 7 * DAY_MS).toISOString();
-    const usageStart = new Date(Date.now() - 30 * DAY_MS).toISOString();
-
-    const [
-      approvals,
-      agents,
-      sessions,
-      executions,
-      failures,
-      policies,
-      summary,
-      features,
-    ] = await Promise.allSettled([
-      listApprovalRequests({ status: 'pending', limit: 100 }),
-      getAccountAgents({ status: 'all', limit: 200 }),
-      getAccountRuntimeSessions({
-        status: 'all',
-        limit: 100,
-        startDate: sessionsStart,
-      }),
-      getFlowExecutions({ status: 'FAILED', limit: 25 }),
-      getAccountGatewayUsageSearch({ limit: 12 }),
-      getBudgetPolicies(),
-      getAccountGatewayUsageSummary({
-        startDate: usageStart,
-        includeBreakdown: false,
-      }),
-      getFeatures(),
+    // Exactly the same loader the Overview uses, so the hero count and this
+    // page can never be computed from differently shaped data.
+    const [inputs, features] = await Promise.all([
+      loadAttentionInputs(),
+      getFeatures().catch(() => null),
     ]);
 
-    // A rejected call (usually a 403 for a permission this operator lacks)
-    // simply drops its section rather than failing the page.
-    if (approvals.status === 'fulfilled') {
-      this.approvals = (approvals.value || []) as AttentionApproval[];
-    }
-    if (agents.status === 'fulfilled') {
-      this.agents = agents.value.items || [];
-    }
-    if (sessions.status === 'fulfilled') {
-      this.sessions = sessions.value.items || [];
-    }
-    if (executions.status === 'fulfilled') {
-      this.executions = (executions.value || []) as AttentionFlowExecution[];
-    }
-    if (failures.status === 'fulfilled') {
-      this.gatewayFailures = (failures.value.items || []).filter(
-        (item) => item.outcome !== 'success'
-      );
-    }
-    if (policies.status === 'fulfilled') {
-      this.budgetPolicies = policies.value || [];
-    }
-    if (summary.status === 'fulfilled') {
-      this.usageSummary = summary.value;
-    }
-    if (features.status === 'fulfilled') {
-      this.billingEnabled = features.value?.features?.billing === true;
-    }
+    this.approvals = (inputs.approvals || []) as AttentionApproval[];
+    this.agents = inputs.agents || [];
+    this.sessions = inputs.sessions || [];
+    this.executions = (inputs.executions || []) as AttentionFlowExecution[];
+    this.gatewayFailures = inputs.gatewayFailures || [];
+    this.budgetPolicies = inputs.budgetPolicies || [];
+    this.usageSummary = inputs.usageSummary || null;
+    this.billingEnabled = features?.features?.billing === true;
 
     this.lastUpdatedAt = new Date().toISOString();
     this.loading = false;
