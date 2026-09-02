@@ -352,14 +352,16 @@ export class DashboardView extends AuthedElement {
       .connect-toggle {
         margin-left: auto;
       }
-      /* One amber line above the page, or nothing. */
+      /* One amber line above the page, or nothing. It stays one line: the
+         chips truncate before the strip is allowed to wrap, so "View all"
+         never falls to a second row. */
       .attention-strip {
         align-items: center;
         background: var(--sl-color-warning-50);
         border: 1px solid var(--sl-color-warning-200);
         border-radius: var(--sl-border-radius-medium);
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         gap: var(--sl-spacing-small);
         padding: var(--sl-spacing-x-small) var(--sl-spacing-medium);
       }
@@ -376,20 +378,41 @@ export class DashboardView extends AuthedElement {
       }
       .attention-strip-items {
         display: flex;
-        flex: 1 1 auto;
-        flex-wrap: wrap;
+        flex: 0 1 auto;
+        flex-wrap: nowrap;
         gap: var(--sl-spacing-x-small);
         min-width: 0;
+        overflow: hidden;
       }
       .attention-chip-link {
-        max-width: 100%;
+        display: flex;
+        max-width: 26ch;
+        min-width: 0;
         text-decoration: none;
       }
+      .attention-chip-link sl-badge {
+        max-width: 100%;
+        min-width: 0;
+      }
+      /* Quiet amber: the strip behind them is already the alarm, so the
+         chips read as labels rather than as five more warnings. */
       .attention-chip-link sl-badge::part(base) {
         align-items: center;
+        background-color: var(--sl-color-warning-100);
+        border-color: var(--sl-color-warning-200);
+        color: var(--sl-color-warning-900);
         display: flex;
         gap: var(--sl-spacing-3x-small);
         max-width: 100%;
+        min-width: 0;
+      }
+      .attention-chip-link:hover sl-badge::part(base) {
+        background-color: var(--sl-color-warning-200);
+      }
+      /* min-width lets the label shrink inside the badge, so a long one ends
+         in an ellipsis instead of being cut mid-word by the strip. */
+      .attention-chip-text {
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -1166,12 +1189,35 @@ export class DashboardView extends AuthedElement {
           row-gap: var(--sl-spacing-medium);
         }
 
+        /* Phone: the strip is allowed the second row it needs, and the chips
+           stop competing for one line of 390px. */
+        .attention-strip {
+          flex-wrap: wrap;
+        }
+
+        .attention-strip-items {
+          flex-wrap: wrap;
+          overflow: visible;
+        }
+
+        .attention-chip-link {
+          max-width: 100%;
+        }
+
         .attention-strip-all {
           margin-left: 0;
         }
 
         .connect-toggle {
           margin-left: 0;
+        }
+
+        /* A title and a dismiss button are a row at any width; stacking them
+           put the x on a line of its own. */
+        .next-steps-card .card-header-with-action {
+          align-items: center;
+          flex-direction: row;
+          justify-content: space-between;
         }
       }
     `,
@@ -3668,7 +3714,9 @@ export class DashboardView extends AuthedElement {
                     name=${ATTENTION_KIND_META[item.kind].icon}
                     aria-hidden="true"
                   ></sl-icon>
-                  ${item.title} · ${item.detail}
+                  <span class="attention-chip-text"
+                    >${item.title} · ${item.detail}</span
+                  >
                 </sl-badge>
               </a>
             `

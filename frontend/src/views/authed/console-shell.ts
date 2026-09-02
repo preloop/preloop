@@ -308,17 +308,10 @@ export class ConsoleShell extends LitElement {
         font-weight: 600;
       }
 
-      :host-context(.sl-theme-dark) .sidebar-link.active {
-        background-color: var(--sl-color-primary-950);
-      }
-
-      :host-context(.sl-theme-dark) .sidebar-link.active .sidebar-label,
-      :host-context(.sl-theme-dark)
-        .sidebar-link.active
-        sl-menu-item::part(label),
-      :host-context(.sl-theme-dark) .sidebar-link.active sl-icon {
-        color: var(--sl-color-primary-300);
-      }
+      /* No dark-mode override here on purpose: Shoelace's dark theme inverts
+         the palette scale, so primary-50 is already the dark tint and
+         primary-700 already the light ink. Hard-coding primary-950/300 for
+         dark inverted it twice and painted the active item near-white. */
 
       .sidebar-link sl-icon,
       sl-details.nav-section sl-icon {
