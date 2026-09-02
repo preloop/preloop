@@ -950,4 +950,107 @@ describe('PreloopSessionObserver', () => {
       ).to.equal(null);
     });
   });
+  describe('talking from the session widget', () => {
+    it('names the read-only tab Conversation, not Chat', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      const labels = Array.from(
+        el.shadowRoot?.querySelectorAll('sl-button') || []
+      ).map((button) => button.textContent?.trim());
+      expect(labels).to.include('Conversation');
+      expect(labels).to.not.include('Chat');
+    });
+
+    it('still honours ?replay=conversation', async () => {
+      window.history.replaceState(
+        {},
+        '',
+        `${window.location.pathname}?replay=conversation`
+      );
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+          .syncModeToUrl=${true}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      expect((el as any).replayMode).to.equal('conversation');
+      window.history.replaceState({}, '', window.location.pathname);
+    });
+
+    it('offers Talk only when the host view knows the agent', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      expect(el.shadowRoot!.querySelector('talk-button')).to.not.exist;
+
+      el.talkAgent = {
+        id: 'agent-1',
+        display_name: 'Hermes',
+        agent_kind: 'hermes',
+        control_state: 'plugin_connected',
+        control_enabled: true,
+        control_online: true,
+        control_capabilities: ['send_text_prompt'],
+      } as any;
+      await el.updateComplete;
+
+      const talkButton = el.shadowRoot!.querySelector('talk-button');
+      expect(talkButton).to.exist;
+      const button = talkButton!.querySelector('sl-button');
+      expect(button).to.exist;
+      expect(button!.hasAttribute('disabled')).to.be.false;
+    });
+
+    it('disables Talk when the agent has no Agent Control plugin', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+      el.talkAgent = {
+        id: 'agent-1',
+        display_name: 'Hermes',
+        agent_kind: 'hermes',
+        control_state: 'install_pending',
+        control_enabled: false,
+        control_online: false,
+        control_capabilities: [],
+      } as any;
+      await el.updateComplete;
+
+      const button = el
+        .shadowRoot!.querySelector('talk-button')!
+        .querySelector('sl-button');
+      expect(button!.hasAttribute('disabled')).to.be.true;
+    });
+  });
 });
