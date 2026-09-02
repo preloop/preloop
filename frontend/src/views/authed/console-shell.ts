@@ -203,15 +203,22 @@ export class ConsoleShell extends LitElement {
         display: grid;
         grid-template-rows: auto auto 1fr; /* Header, bypass banner, content */
         overflow-y: hidden;
-        background-color: var(--sl-color-neutral-0);
+        background-color: var(--sl-color-neutral-50);
       }
 
+      /* Page is tinted, cards are not: the one change that gives the console
+         depth without a single shadow, glow or gradient. Slotted views inherit
+         the console's compact type scale and tabular figures from here, so a
+         new page matches its neighbours without opting in. */
       .main-content {
         overflow-y: auto;
         padding: 1rem 2rem 2rem 2rem;
         display: flex;
         flex-direction: column;
         align-items: center;
+        background-color: var(--sl-color-neutral-50);
+        font-size: var(--console-text-body);
+        font-variant-numeric: tabular-nums;
       }
 
       .main-content.full-bleed {
@@ -278,16 +285,48 @@ export class ConsoleShell extends LitElement {
         color: inherit;
         text-decoration: none;
         border-radius: var(--sl-border-radius-medium);
+        /* Reserved so the active rule appears without shifting the label. */
+        border-left: 3px solid transparent;
+      }
+
+      .sidebar-link:hover {
+        background-color: var(--sl-color-neutral-200);
       }
 
       /* Style the anchor, not ::part — Shoelace shadow styles override ::part rules */
       .sidebar-link.active {
-        background-color: var(--sl-color-neutral-200);
+        background-color: var(--sl-color-primary-50);
+        border-left-color: var(--sl-color-primary-600);
       }
 
+      /* The active item is stated once, in colour and weight; bold on top of
+         a tinted rule was three signals for one fact. */
       .sidebar-link.active .sidebar-label,
-      .sidebar-link.active sl-menu-item::part(label) {
-        font-weight: var(--sl-font-weight-bold);
+      .sidebar-link.active sl-menu-item::part(label),
+      .sidebar-link.active sl-icon {
+        color: var(--sl-color-primary-700);
+        font-weight: 600;
+      }
+
+      :host-context(.sl-theme-dark) .sidebar-link.active {
+        background-color: var(--sl-color-primary-950);
+      }
+
+      :host-context(.sl-theme-dark) .sidebar-link.active .sidebar-label,
+      :host-context(.sl-theme-dark)
+        .sidebar-link.active
+        sl-menu-item::part(label),
+      :host-context(.sl-theme-dark) .sidebar-link.active sl-icon {
+        color: var(--sl-color-primary-300);
+      }
+
+      .sidebar-link sl-icon,
+      sl-details.nav-section sl-icon {
+        font-size: 18px;
+      }
+
+      .sidebar-label {
+        font-size: var(--console-text-body);
       }
 
       sl-menu-item::part(base) {
@@ -590,7 +629,7 @@ export class ConsoleShell extends LitElement {
                 ><logo-component></logo-component
               ></a>
             </div>
-            <sl-menu style="font-size: 16px;">
+            <sl-menu style="font-size: var(--console-text-body);">
               ${this._renderNavLink(
                 '/console',
                 html`

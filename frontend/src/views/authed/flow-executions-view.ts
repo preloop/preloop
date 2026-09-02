@@ -445,6 +445,7 @@ export class FlowExecutionsView extends AuthedElement {
                                       : ''
                                   }
                                   <sl-badge
+                                    pill
                                     variant=${this.getStatusVariant(exec.status)}
                                     >${exec.status}</sl-badge
                                   >

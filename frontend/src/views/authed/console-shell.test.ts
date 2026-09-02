@@ -165,6 +165,79 @@ describe('ConsoleShell', () => {
     expect(mainContent).to.exist;
   });
 
+  it('tints the page behind the cards and sets the compact type scale', async () => {
+    // The Shoelace theme sheet is not loaded in the test page, so pin the two
+    // tokens to sentinel colours: if the rule stops reading them the computed
+    // colour stops matching.
+    document.documentElement.style.setProperty(
+      '--sl-color-neutral-50',
+      'rgb(1, 2, 3)'
+    );
+
+    try {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+
+      await waitUntil(
+        () => el.shadowRoot?.querySelector('.main-content') !== null,
+        'Main content did not render'
+      );
+
+      const mainContent = el.shadowRoot?.querySelector(
+        '.main-content'
+      ) as HTMLElement;
+      const styles = getComputedStyle(mainContent);
+
+      // Page is neutral-50, cards stay neutral-0: depth without decoration.
+      expect(styles.backgroundColor).to.equal('rgb(1, 2, 3)');
+      expect(styles.fontSize).to.equal('14px');
+      expect(styles.fontVariantNumeric).to.contain('tabular-nums');
+    } finally {
+      document.documentElement.style.removeProperty('--sl-color-neutral-50');
+    }
+  });
+
+  it('marks the active nav item with a rule and colour, not bold', async () => {
+    const originalPath = window.location.pathname;
+    window.history.replaceState({}, '', '/console/tools');
+    document.documentElement.style.setProperty(
+      '--sl-color-primary-600',
+      'rgb(4, 5, 6)'
+    );
+
+    try {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+
+      await waitUntil(
+        () =>
+          el.shadowRoot?.querySelector(
+            'a.sidebar-link.active[href="/console/tools"]'
+          ) !== null,
+        'Active tools link did not render'
+      );
+
+      const link = el.shadowRoot?.querySelector(
+        'a.sidebar-link.active[href="/console/tools"]'
+      ) as HTMLElement;
+      const styles = getComputedStyle(link);
+      // A 3px primary rule and a primary label carry "you are here"; weight
+      // stays at 600 so the nav does not shout.
+      expect(styles.borderLeftWidth).to.equal('3px');
+      expect(styles.borderLeftColor).to.equal('rgb(4, 5, 6)');
+
+      const label = link.querySelector('.sidebar-label') as HTMLElement;
+      const labelStyles = getComputedStyle(label);
+      expect(labelStyles.fontWeight).to.equal('600');
+      expect(labelStyles.fontSize).to.equal('14px');
+    } finally {
+      document.documentElement.style.removeProperty('--sl-color-primary-600');
+      window.history.replaceState({}, '', originalPath);
+    }
+  });
+
   it('highlights the active sidebar section for the current route', async () => {
     const originalPath = window.location.pathname;
     window.history.replaceState({}, '', '/console/tools');
