@@ -354,6 +354,62 @@ class AvailableModelsResponse(BaseModel):
     )
 
 
+class AIModelCatalogSyncRequest(BaseModel):
+    """Request body for the account model-catalog sync."""
+
+    provider: Optional[str] = Field(
+        None,
+        description=(
+            "Optional provider filter, e.g. 'anthropic'. When omitted, every "
+            "provider the account has credentialed models for is synced."
+        ),
+    )
+    dry_run: bool = Field(
+        False,
+        description="Report what would be added without creating any models",
+    )
+
+
+class AIModelCatalogSyncProviderResult(BaseModel):
+    """Sync outcome for one provider."""
+
+    provider: str = Field(..., description="Provider name, e.g. 'anthropic'")
+    source: Literal["live", "fallback"] = Field(
+        "fallback",
+        description=(
+            "'live' when the provider's listing endpoint answered; "
+            "'fallback' when discovery failed or was impossible"
+        ),
+    )
+    error: Optional[str] = Field(
+        None,
+        description=(
+            "Short safe reason when nothing could be discovered (fixed "
+            "vocabulary; never raw provider error text)"
+        ),
+    )
+    discovered: int = Field(
+        0, description="Total model identifiers the provider listed"
+    )
+    added: List[str] = Field(
+        default_factory=list,
+        description="Gateway aliases of newly added catalog models",
+    )
+    skipped_existing: int = Field(
+        0, description="Discovered identifiers already present in the catalog"
+    )
+    note: Optional[str] = Field(
+        None, description="Human-readable context for skips and errors"
+    )
+
+
+class AIModelCatalogSyncResponse(BaseModel):
+    """Per-provider results of one model-catalog sync run."""
+
+    providers: List[AIModelCatalogSyncProviderResult] = Field(default_factory=list)
+    dry_run: bool = False
+
+
 class AIModelGatewayUsageSummaryResponse(BaseModel):
     """Gateway usage summary for one durable AI model."""
 

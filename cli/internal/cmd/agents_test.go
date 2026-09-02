@@ -2994,6 +2994,7 @@ func TestApplyOpenCodeManagedGatewayConfiguresProvider(t *testing.T) {
 		"https://preloop.example",
 		"opencode-durable-token",
 		"openai/gpt-5.4",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)

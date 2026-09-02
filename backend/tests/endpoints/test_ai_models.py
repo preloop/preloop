@@ -443,3 +443,49 @@ def test_available_models_request_masks_aws_secrets():
     assert "AKIAIOSFODNN7EXAMPLE" not in serialized
     assert "shhh" not in serialized
     assert '"***"' in serialized
+
+
+@pytest.mark.asyncio
+async def test_sync_ai_model_catalog_endpoint_maps_service_results(
+    mock_account: Account, mocker: MockerFixture
+):
+    """The sync endpoint forwards the provider filter / dry_run flag to the
+    service and maps its per-provider results into the response schema."""
+    from preloop.schemas.ai_model import AIModelCatalogSyncRequest
+    from preloop.services.ai_model_catalog_sync import (
+        CatalogSyncSummary,
+        ProviderCatalogSyncResult,
+    )
+
+    mock_sync = mocker.patch(
+        "preloop.api.endpoints.ai_models.sync_account_model_catalog",
+        return_value=CatalogSyncSummary(
+            providers=[
+                ProviderCatalogSyncResult(
+                    provider="anthropic",
+                    source="live",
+                    discovered=3,
+                    added=["anthropic/claude-fable-5-1-20260901"],
+                    skipped_existing=2,
+                )
+            ],
+            dry_run=True,
+        ),
+    )
+
+    result = await maybe_await(
+        ai_models.sync_ai_model_catalog(
+            request=MagicMock(),
+            request_in=AIModelCatalogSyncRequest(provider="anthropic", dry_run=True),
+            db=MagicMock(),
+            current_user=mock_account,
+        )
+    )
+
+    assert result.dry_run is True
+    assert result.providers[0].provider == "anthropic"
+    assert result.providers[0].added == ["anthropic/claude-fable-5-1-20260901"]
+    assert result.providers[0].skipped_existing == 2
+    kwargs = mock_sync.call_args.kwargs
+    assert kwargs["provider"] == "anthropic"
+    assert kwargs["dry_run"] is True

@@ -11,6 +11,7 @@ from fastapi import (
     HTTPException,
     status,
     Query,
+    Request,
     Response,
 )
 from sqlalchemy.orm import Session
@@ -18,6 +19,9 @@ from sqlalchemy.orm import Session
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.models.crud import crud_account
 from preloop.schemas.ai_model import (
+    AIModelCatalogSyncProviderResult,
+    AIModelCatalogSyncRequest,
+    AIModelCatalogSyncResponse,
     AIModelCreate,
     AIModelCredentialExportResponse,
     AIModelGatewayUsageSummaryResponse,
@@ -48,6 +52,7 @@ from preloop.services.ai_model_provider import (
     ProviderValidationError,
     get_available_models_for_provider,
 )
+from preloop.services.ai_model_catalog_sync import sync_account_model_catalog
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -288,6 +293,56 @@ def delete_ai_model(
 
     # No content returned for HTTP 204
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/ai-models/sync",
+    response_model=AIModelCatalogSyncResponse,
+    summary="Sync Provider Model Catalogs",
+    tags=["AI Models"],
+)
+@require_permission("create_ai_models")
+async def sync_ai_model_catalog(
+    request: Request,
+    request_in: Optional[AIModelCatalogSyncRequest] = None,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelCatalogSyncResponse:
+    """Discover newly released provider models and add them to the catalog.
+
+    Runs the existing live provider discovery against credentials the account
+    already stores (the same discovery the console model-add flow uses) and
+    creates one AI model per newly discovered identifier via the CRUD layer.
+    New rows share the seed model's credential secret and inherit its gateway
+    exposure, so authorization semantics are unchanged: API-key models stay
+    account-wide, and principal-bound subscription-OAuth models (which cannot
+    authenticate server-side discovery) are never created or widened here.
+
+    Backing service: ``preloop.services.ai_model_catalog_sync``. Every added
+    model is recorded in the audit trail. Use ``dry_run`` to preview.
+    """
+    summary = await sync_account_model_catalog(
+        db,
+        user=current_user,
+        provider=request_in.provider if request_in else None,
+        dry_run=bool(request_in.dry_run) if request_in else False,
+        request=request,
+    )
+    return AIModelCatalogSyncResponse(
+        providers=[
+            AIModelCatalogSyncProviderResult(
+                provider=result.provider,
+                source=result.source,
+                error=result.error,
+                discovered=result.discovered,
+                added=result.added,
+                skipped_existing=result.skipped_existing,
+                note=result.note,
+            )
+            for result in summary.providers
+        ],
+        dry_run=summary.dry_run,
+    )
 
 
 @router.post(
