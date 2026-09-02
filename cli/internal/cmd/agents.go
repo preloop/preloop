@@ -3931,7 +3931,7 @@ func applyManagedGatewayForAgent(
 	case "codex cli":
 		return applyCodexManagedGateway(plan, baseURL, token, modelAlias)
 	case "opencode":
-		return applyOpenCodeManagedGateway(plan, baseURL, token, modelAlias)
+		return applyOpenCodeManagedGateway(plan, baseURL, token, modelAlias, familyAliases)
 	case "claude code":
 		return applyClaudeManagedGateway(plan, baseURL, token, modelAlias, familyAliases)
 	case "gemini cli":
@@ -4072,11 +4072,34 @@ func applyGeminiManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, mo
 	return refreshManagedPlanSnapshots(plan)
 }
 
-func applyOpenCodeManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, modelAlias string) (managedMCPEnrollmentPlan, error) {
+// applyOpenCodeManagedGateway writes the managed Preloop provider block into
+// an OpenCode config. extraAliases lists additional authorized gateway
+// aliases to expose in the provider's models map alongside the selected
+// model; onboarding passes none (single-model snapshot) while
+// `preloop agents refresh` passes the full authorized list so OpenCode's
+// model picker can reach every model the gateway would serve.
+func applyOpenCodeManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, modelAlias string, extraAliases []string) (managedMCPEnrollmentPlan, error) {
 	providers, ok := asObjectMap(plan.ManagedDocument["provider"])
 	if !ok {
 		providers = make(map[string]interface{})
 		plan.ManagedDocument["provider"] = providers
+	}
+	models := map[string]interface{}{
+		modelAlias: map[string]interface{}{
+			"name": modelAlias,
+		},
+	}
+	for _, alias := range extraAliases {
+		alias = strings.TrimSpace(alias)
+		if alias == "" || strings.EqualFold(alias, modelAlias) {
+			continue
+		}
+		if _, exists := models[alias]; exists {
+			continue
+		}
+		models[alias] = map[string]interface{}{
+			"name": alias,
+		}
 	}
 	providers["preloop"] = map[string]interface{}{
 		"npm": "@ai-sdk/openai-compatible",
@@ -4084,11 +4107,7 @@ func applyOpenCodeManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, 
 			"baseURL": strings.TrimRight(baseURL, "/") + openClawGatewayPath,
 			"apiKey":  token,
 		},
-		"models": map[string]interface{}{
-			modelAlias: map[string]interface{}{
-				"name": modelAlias,
-			},
-		},
+		"models": models,
 	}
 	plan.ManagedDocument["model"] = "preloop/" + modelAlias
 	plan.ManagedModelAlias = modelAlias

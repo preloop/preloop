@@ -125,6 +125,8 @@ const FALLBACK_REASON_LABELS: Record<string, string> = {
   sdk_missing: 'provider SDK not installed',
   missing_key: 'no API key',
   auth: 'authentication failed',
+  subscription_oauth:
+    'subscription-billed credential: live listing is not queried server-side',
   unknown: 'provider unavailable',
 };
 
@@ -570,8 +572,11 @@ export class AddAIModelModal extends LitElement {
       this._modelsFallbackReason =
         result.source === 'fallback' ? result.error || null : null;
       if (this._modelSuggestions.length === 0) {
+        // missing_key and subscription_oauth are expected states with their
+        // own provenance notices, not fetch failures.
         this._modelsFetchError =
-          result.error === 'missing_key'
+          result.error === 'missing_key' ||
+          result.error === 'subscription_oauth'
             ? null
             : `No ${this._selectedServiceKind.toUpperCase()} models available for this provider`;
       }
@@ -772,6 +777,22 @@ export class AddAIModelModal extends LitElement {
    */
   private _renderModelsProvenanceNotice() {
     if (this._modelsSource === 'fallback') {
+      if (this._modelsFallbackReason === 'subscription_oauth') {
+        // Not a failure: subscription-billed OAuth credentials (e.g. Claude
+        // Code) are never used for server-initiated provider calls, so the
+        // list shows what the account catalog already knows.
+        return html`
+          <div
+            class="models-provenance-notice"
+            style="color: var(--sl-color-neutral-600); font-size: 0.875rem; margin-top: 0.5rem;"
+          >
+            This model uses a subscription-billed credential, so the live
+            provider listing is not queried server-side. Showing models already
+            in this account's catalog; new ones appear as agents use them. You
+            can also enter any model id via Other...
+          </div>
+        `;
+      }
       if (this._modelsFallbackReason === 'missing_key') {
         return html`
           <div

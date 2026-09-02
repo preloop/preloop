@@ -78,6 +78,12 @@ ERROR_SDK_MISSING = "sdk_missing"
 ERROR_MISSING_KEY = "missing_key"
 ERROR_AUTH = "auth"
 ERROR_UNKNOWN = "unknown"
+# The stored credential is a principal-bound subscription-OAuth bundle
+# (Claude Code / Codex). The server never initiates its own provider calls
+# with such a token: Anthropic fingerprints Claude Code OAuth traffic and can
+# invalidate the subscription (see the error-code-1010 note in
+# secret_service.py), so listing is answered from the local catalog instead.
+ERROR_SUBSCRIPTION_OAUTH = "subscription_oauth"
 
 FALLBACK_ERROR_REASONS = frozenset(
     {
@@ -90,6 +96,7 @@ FALLBACK_ERROR_REASONS = frozenset(
         ERROR_MISSING_KEY,
         ERROR_AUTH,
         ERROR_UNKNOWN,
+        ERROR_SUBSCRIPTION_OAUTH,
     }
 )
 

@@ -2407,6 +2407,7 @@ export type AvailableModelsFallbackReason =
   | 'sdk_missing'
   | 'missing_key'
   | 'auth'
+  | 'subscription_oauth'
   | 'unknown';
 
 export interface AvailableModelsResult {

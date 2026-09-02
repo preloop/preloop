@@ -2,6 +2,7 @@
 
 import json
 
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import ai_model as ai_model_crud_module
@@ -281,6 +282,9 @@ def test_get_ai_models_by_account(db_session: Session, create_account):
     assert len(models_acc2) == 1
     assert models_acc1[0].provider_name in ["openai", "openai"]
     assert models_acc2[0].provider_name == "anthropic"
+    # Seed resolution on catalog sync inspects is_principal_bound_oauth, which
+    # reads credentials_secret. The listing query must eager-load it.
+    assert "credentials_secret" not in sa_inspect(models_acc1[0]).unloaded
 
 
 def test_update_ai_model_and_default_logic(db_session: Session, create_account):
