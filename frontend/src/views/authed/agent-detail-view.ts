@@ -1687,8 +1687,9 @@ export class AgentDetailView extends LitElement {
       this.agent.lifecycle_state === 'suspended' ||
       this.agent.lifecycle_state === 'decommissioned';
 
-    // Play/pause toggle in warning (amber) tones: pausing is reversible, so
-    // danger red stays reserved for offboard/remove.
+    // Resume is a green "start it again"; Pause is an everyday, reversible
+    // control, so it stays neutral. Amber read as a warning next to Talk and
+    // pulled the eye away from the action people actually came for.
     if (isSuspendedOrDecommissioned) {
       actions.push({
         id: 'resume',
@@ -1704,7 +1705,7 @@ export class AgentDetailView extends LitElement {
       actions.push({
         id: 'pause',
         label: 'Pause',
-        variant: 'warning',
+        variant: 'default',
         icon: 'pause-fill',
         loading: this.actionLoading,
         onClick: () => this.updateAgentLifecycle('suspend'),

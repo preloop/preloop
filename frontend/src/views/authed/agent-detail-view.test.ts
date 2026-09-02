@@ -544,6 +544,7 @@ describe('AgentDetailView', () => {
 
     const actions = (element as any).agentActions as Array<{
       id: string;
+      icon?: string;
       variant?: string;
       outline?: boolean;
       separated?: boolean;
@@ -552,6 +553,11 @@ describe('AgentDetailView', () => {
     expect(ids.indexOf('rename')).to.be.lessThan(ids.indexOf('edit-tags'));
     expect(ids.indexOf('edit-tags')).to.be.lessThan(ids.indexOf('pause'));
     expect(ids[ids.length - 1], 'Remove is last').to.equal('remove');
+
+    // Pause is an everyday control, not a warning: amber competed with Talk.
+    const pause = actions.find((action) => action.id === 'pause');
+    expect(pause?.variant, 'Pause is neutral').to.equal('default');
+    expect((pause as { icon?: string }).icon).to.equal('pause-fill');
 
     const remove = actions[actions.length - 1];
     expect(remove.variant).to.equal('danger');

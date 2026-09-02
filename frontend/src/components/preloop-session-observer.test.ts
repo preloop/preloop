@@ -807,7 +807,7 @@ describe('PreloopSessionObserver', () => {
       const text = (hint?.textContent || '').replace(/\s+/g, ' ');
       expect(text).to.contain('This session used 1,300 tokens ($0.42).');
       expect(text).to.contain(
-        'Optimize finds where they went and suggests cuts — you verify each one by replaying the session, without touching your agent.'
+        'Optimize finds where they went and suggests cuts. You verify each one by replaying the session, without touching your agent.'
       );
       expect(text).to.contain('Try Optimize');
     });

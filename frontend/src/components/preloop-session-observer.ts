@@ -1589,7 +1589,7 @@ export class PreloopSessionObserver extends LitElement {
       <div class="optimize-hint" role="note">
         <div class="optimize-hint-body">
           <strong>${ledger}</strong> Optimize finds where they went and suggests
-          cuts — you verify each one by replaying the session, without touching
+          cuts. You verify each one by replaying the session, without touching
           your agent. →
           <a
             class="optimize-hint-link"
