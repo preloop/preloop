@@ -249,6 +249,26 @@ class TestArduinoResolution:
         assert len(report.unresolved) == 1
 
     @pytest.mark.asyncio
+    async def test_credentialed_repository_url_is_unresolved(self):
+        """Embedded credentials are rejected, not laundered into a resolution."""
+        index = {
+            "libraries": [
+                {
+                    "name": "SecretLib",
+                    "version": "1.0.0",
+                    "repository": "https://user:pass@host/repo.git",
+                }
+            ]
+        }
+        resolver = make_resolver(_routes(arduino_body=index))
+        report = await resolver.resolve(
+            [ComponentRef(name="SecretLib", version="1.0.0")]
+        )
+        assert not report.resolved
+        assert len(report.unresolved) == 1
+        assert "no usable repository URL" in report.unresolved[0].reason
+
+    @pytest.mark.asyncio
     async def test_index_downloaded_once_across_resolve_calls(self):
         counters: dict = {}
         resolver = make_resolver(_routes(counters=counters))
@@ -347,6 +367,66 @@ class TestGracefulDegradation:
         # Each search retries a bounded number of times; the circuit
         # breaker must stop far before one search per component.
         assert search_requests < 10
+
+    @pytest.mark.asyncio
+    async def test_stale_arduino_cache_served_when_refresh_fails(self):
+        """A warm index stays in service when the TTL refresh fails."""
+        calls = {"arduino": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if url.startswith(ARDUINO_INDEX_URL):
+                calls["arduino"] += 1
+                if calls["arduino"] == 1:
+                    return httpx.Response(200, json=ARDUINO_INDEX)
+                return httpx.Response(503, text="registry down")
+            return httpx.Response(404, json={"message": "Not Found"})
+
+        resolver = SbomUpstreamResolver(
+            transport=httpx.MockTransport(handler),
+            retry_delay_seconds=0.0,
+            arduino_index_ttl_seconds=0.0,
+        )
+        first = await resolver.resolve([ComponentRef(name="JPEGDEC", version="1.2.8")])
+        assert len(first.resolved) == 1
+        assert first.registry_status["arduino_index"] == "ok"
+
+        second = await resolver.resolve([ComponentRef(name="JPEGDEC", version="1.2.8")])
+        assert len(second.resolved) == 1
+        assert second.resolved[0].repository_url == (
+            "https://github.com/bitbank2/JPEGDEC.git"
+        )
+        assert second.registry_status["arduino_index"].startswith("stale cache (")
+
+    @pytest.mark.asyncio
+    async def test_malformed_arduino_index_does_not_raise(self):
+        resolver = make_resolver(_routes(arduino_body={"libraries": "not-a-list"}))
+        report = await resolver.resolve([ComponentRef(name="JPEGDEC", version="1.2.8")])
+        assert not report.resolved
+        assert report.registry_status["arduino_index"] == (
+            "unreachable: malformed index document"
+        )
+
+    @pytest.mark.asyncio
+    async def test_platformio_http_400_does_not_open_circuit_breaker(self):
+        """A 4xx client error is an honest miss, not a registry outage."""
+        counters: dict = {}
+        resolver = make_resolver(
+            _routes(arduino_status=503, pio_status=400, counters=counters)
+        )
+        components = [ComponentRef(name=f"lib-{i}", version="1.0.0") for i in range(10)]
+        report = await resolver.resolve(components)
+        assert len(report.unresolved) == 10
+        search_requests = sum(
+            count
+            for url, count in counters.items()
+            if url.startswith(f"{PLATFORMIO_API_BASE}/v3/search")
+        )
+        # One search per unique name: 400 is not retried and must not
+        # increment the hard-failure counter / open the breaker.
+        assert search_requests == 10
+        assert all("lookups suspended" not in u.reason for u in report.unresolved)
+        assert report.registry_status["platformio"] == "ok"
 
 
 # ---------------------------------------------------------------------------

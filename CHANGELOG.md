@@ -157,6 +157,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`resolve_sbom_upstreams` builtin (default-disabled)**: maps vendored
+  Arduino/PlatformIO SBOM components (name + version) to an upstream
+  repository URL and version-shaped tag candidates via the public library
+  registries. A resolution requires a registry-confirmed name AND version
+  match with a usable repository URL; everything else is unresolved with a
+  reason. Default-off so regular sessions do not pay the tools/list context
+  tax; security-audit presets 005 (SBOM Exploit Check) and 006 (Release
+  Security Audit) allow-list it.
 - **CRA result.json contract**: the four security-audit presets pin
   `/workspace/result.json` as a versioned contract (`preloop.cra.sbomaudit/v1`,
   `vulnscan/v1`, `releaseaudit/v1`, `duediligence/v1`). Tests parse each YAML

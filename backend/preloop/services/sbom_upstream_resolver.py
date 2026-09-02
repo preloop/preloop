@@ -667,8 +667,11 @@ class SbomUpstreamResolver:
         Returns:
             A pair of (payload, error). ``payload`` is the parsed JSON
             object on success. ``error`` describes the terminal failure
-            when the endpoint was unreachable; a 404 returns
-            ``(None, None)`` — an honest miss, not an outage.
+            when the endpoint was unreachable. Non-retryable 4xx client
+            errors (400/401/403/404) return ``(None, None)`` — an honest
+            miss, not an outage — so they do not trip the PlatformIO
+            circuit breaker. Transport failures and exhausted 5xx/429
+            retries return ``(None, error)``.
         """
         last_error = "unknown error"
         for attempt in range(self._retries + 1):
@@ -677,8 +680,6 @@ class SbomUpstreamResolver:
             except httpx.HTTPError as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
             else:
-                if response.status_code == 404:
-                    return None, None
                 if response.status_code == 200:
                     try:
                         payload = response.json()
@@ -688,6 +689,12 @@ class SbomUpstreamResolver:
                         return payload, None
                     return None, "unexpected JSON shape in registry response"
                 last_error = f"HTTP {response.status_code}"
+                if (
+                    400 <= response.status_code < 500
+                    and response.status_code not in _RETRYABLE_STATUS
+                ):
+                    # Client error: honest miss, not a registry outage.
+                    return None, None
                 if response.status_code not in _RETRYABLE_STATUS:
                     return None, last_error
             if attempt < self._retries and self._retry_delay > 0:
