@@ -2530,7 +2530,13 @@ export class DashboardView extends AuthedElement {
           >
             ${
               showTalkComposer && getAgentControlState(agent).visible
-                ? html` <talk-button .agent=${agent} compact></talk-button> `
+                ? html`
+                    <talk-button
+                      .agent=${agent}
+                      source-context="dashboard-active-agents"
+                      compact
+                    ></talk-button>
+                  `
                 : null
             }
             <span class="row-value">${trailingMetric}</span>

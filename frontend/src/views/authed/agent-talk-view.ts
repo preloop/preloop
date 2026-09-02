@@ -65,6 +65,8 @@ export class AgentTalkView extends LitElement {
   /** A session named in the URL is pinned: live traffic never moves it. */
   @state() private pinnedSessionId: string | null = null;
   @state() private windowMode = false;
+  /** The entry point that opened this window, for `requested_from`. */
+  @state() private sourceContext: string | null = null;
   @state() private loading = true;
   @state() private loadingEvents = false;
   @state() private loadingMoreEvents = false;
@@ -208,6 +210,16 @@ export class AgentTalkView extends LitElement {
     this.pinnedSessionId = search.get('session');
     this.sessionId = this.pinnedSessionId;
     this.windowMode = search.get('window') === '1';
+    this.sourceContext = search.get('source');
+  }
+
+  /**
+   * What the composer reports as `requested_from`: the entry point that opened
+   * this window when there was one, otherwise the shape of the page itself.
+   */
+  private get composerSourceContext(): string {
+    if (this.sourceContext) return this.sourceContext;
+    return this.windowMode ? 'talk-window' : 'talk-page';
   }
 
   connectedCallback(): void {
@@ -608,7 +620,7 @@ export class AgentTalkView extends LitElement {
       <talk-composer
         .agent=${this.agent}
         .sessionId=${this.sessionId}
-        sourceContext=${this.windowMode ? 'talk-window' : 'talk-page'}
+        sourceContext=${this.composerSourceContext}
       ></talk-composer>
     `;
   }

@@ -60,6 +60,25 @@ describe('talk-button', () => {
     );
   });
 
+  it('tells the window which entry point opened it', async () => {
+    const openStub = sinon
+      .stub(window, 'open')
+      .returns({ closed: false, focus: () => {} } as unknown as Window);
+    const el = await fixture<TalkButton>(
+      html`<talk-button
+        .agent=${agent()}
+        source-context="dashboard-active-agents"
+      ></talk-button>`
+    );
+    await el.updateComplete;
+
+    (el.querySelector('sl-button') as HTMLElement).click();
+
+    expect(openStub.firstCall.args[0]).to.equal(
+      '/console/agents/agent-1/talk?source=dashboard-active-agents&window=1'
+    );
+  });
+
   it('is disabled, with the reason, when control is not connected', async () => {
     const el = await fixture<TalkButton>(
       html`<talk-button

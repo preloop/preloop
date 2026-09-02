@@ -41,22 +41,39 @@ function sessionIdOf(session: SessionLike): string | null {
   return typeof session === 'string' ? session : session.id || null;
 }
 
+export interface TalkWindowOptions {
+  /**
+   * Which entry point opened this conversation ('dashboard-active-agents',
+   * 'agent-detail-view', ...). It rides the URL as `?source=` and the composer
+   * reports it as `requested_from` on every turn, so the audit trail still
+   * says where an operator was standing when they talked to an agent.
+   */
+  sourceContext?: string | null;
+}
+
 /** The in-console route: no window flag, so the shell keeps its chrome. */
 export function talkRoutePath(
   agentId: string,
-  session?: SessionLike | RuntimeSessionSummary
+  session?: SessionLike | RuntimeSessionSummary,
+  options: TalkWindowOptions = {}
 ): string {
   const sessionId = sessionIdOf(session as SessionLike);
-  const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : '';
+  const parts: string[] = [];
+  if (sessionId) parts.push(`session=${encodeURIComponent(sessionId)}`);
+  if (options.sourceContext) {
+    parts.push(`source=${encodeURIComponent(options.sourceContext)}`);
+  }
+  const query = parts.length ? `?${parts.join('&')}` : '';
   return `/console/agents/${encodeURIComponent(agentId)}/talk${query}`;
 }
 
 /** The same route with the window flag, which strips the console chrome. */
 export function talkWindowUrl(
   agentId: string,
-  session?: SessionLike | RuntimeSessionSummary
+  session?: SessionLike | RuntimeSessionSummary,
+  options: TalkWindowOptions = {}
 ): string {
-  const path = talkRoutePath(agentId, session);
+  const path = talkRoutePath(agentId, session, options);
   return `${path}${path.includes('?') ? '&' : '?'}window=1`;
 }
 
@@ -145,7 +162,7 @@ export function isPhoneViewport(): boolean {
 }
 
 /** Windows this tab opened, so a second click focuses instead of reopening. */
-const openWindows = new Map<string, { win: Window; url: string }>();
+const openWindows = new Map<string, { win: Window; key: string }>();
 
 /** Test seam: forget the windows this tab believes it opened. */
 export function resetTalkWindowsForTests(): void {
@@ -164,19 +181,24 @@ export interface OpenTalkWindowResult {
  */
 export function openTalkWindow(
   agent: AgentLike | string,
-  session?: SessionLike | RuntimeSessionSummary
+  session?: SessionLike | RuntimeSessionSummary,
+  options: TalkWindowOptions = {}
 ): OpenTalkWindowResult {
   const agentId = typeof agent === 'string' ? agent : agent.id;
-  const url = talkWindowUrl(agentId, session);
+  const url = talkWindowUrl(agentId, session, options);
+  // The entry point is attribution, not identity: a window opened from the
+  // dashboard and clicked again from the header chip is the same conversation
+  // and must be focused, not reloaded with a different `source`.
+  const key = talkWindowUrl(agentId, session);
 
   if (isPhoneViewport()) {
-    Router.go(talkRoutePath(agentId, session));
+    Router.go(talkRoutePath(agentId, session, options));
     return { outcome: 'navigated', win: null };
   }
 
   const existing = openWindows.get(agentId);
   if (existing && !existing.win.closed) {
-    if (existing.url === url) {
+    if (existing.key === key) {
       existing.win.focus();
       return { outcome: 'focused', win: existing.win };
     }
@@ -193,12 +215,13 @@ export function openTalkWindow(
   if (!win) {
     showToast('Your browser blocked the window', 'warning', {
       label: 'Open in a new tab',
-      onClick: () => window.open(talkRoutePath(agentId, session), '_blank'),
+      onClick: () =>
+        window.open(talkRoutePath(agentId, session, options), '_blank'),
     });
     return { outcome: 'blocked', win: null };
   }
 
-  openWindows.set(agentId, { win, url });
+  openWindows.set(agentId, { win, key });
   win.focus();
   return { outcome: 'window', win };
 }

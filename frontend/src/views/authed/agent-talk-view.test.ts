@@ -6,6 +6,7 @@ import type { AgentTalkView } from './agent-talk-view';
 import { TALK_CHANNEL_NAME } from '../../utils/talk-channel';
 import type { TalkChannelMessage } from '../../utils/talk-channel';
 import { TALK_MESSAGE_SENT_EVENT } from '../../components/talk-composer';
+import type { TalkComposer } from '../../components/talk-composer';
 
 const AGENT = {
   id: 'agent-1',
@@ -215,6 +216,24 @@ describe('agent-talk-view', () => {
       'message'
     );
     listener.close();
+    el.remove();
+  });
+
+  it('reports the entry point that opened it as the composer source', async () => {
+    const el = await mount('?window=1&session=sess-1&source=agent-detail-view');
+    const composer = el.shadowRoot!.querySelector(
+      'talk-composer'
+    ) as TalkComposer;
+    expect(composer.sourceContext).to.equal('agent-detail-view');
+    el.remove();
+  });
+
+  it('falls back to the page shape when no entry point is named', async () => {
+    const el = await mount('?window=1&session=sess-1');
+    const composer = el.shadowRoot!.querySelector(
+      'talk-composer'
+    ) as TalkComposer;
+    expect(composer.sourceContext).to.equal('talk-window');
     el.remove();
   });
 });
