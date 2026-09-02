@@ -59,17 +59,27 @@ class TestSecurityAuditPresetInvariants:
     def test_read_only_toolset(self, preset):
         """Write tools stay off. Scanners run in the sandbox, not via MCP.
 
-        SOLE exception: the Release Security Audit carries the built-in
-        ask_user question channel — and nothing else — so a human can put
-        gate waivers on the record when the payload asks for interactive
-        waiver collection. ask_user is not a write tool: it routes a
-        question through the platform approval workflow, which captures
-        the approver identity the waiver register records.
+        Exceptions, all read-only: the exploit-check and release-audit
+        presets carry the built-in resolve_sbom_upstreams registry
+        lookup (osv_git enrichment for vendored Arduino/PlatformIO
+        components; a resolution requires a registry-confirmed
+        name+version match, never fabricated), and the Release Security
+        Audit additionally carries the built-in ask_user question
+        channel so a human can put gate waivers on the record when the
+        payload asks for interactive waiver collection. ask_user is not
+        a write tool: it routes a question through the platform
+        approval workflow, which captures the approver identity the
+        waiver register records.
         """
         name, data = preset
         assert data["allowed_mcp_servers"] == []
         if name == "Release Security Audit":
-            assert data["allowed_mcp_tools"] == [{"name": "ask_user"}]
+            assert data["allowed_mcp_tools"] == [
+                {"name": "ask_user"},
+                {"name": "resolve_sbom_upstreams"},
+            ]
+        elif name == "SBOM Exploit Check":
+            assert data["allowed_mcp_tools"] == [{"name": "resolve_sbom_upstreams"}]
         else:
             assert data["allowed_mcp_tools"] == []
         assert "repo-audit" not in json.dumps(data)
@@ -533,6 +543,60 @@ class TestPerSourceScreeningMatrix:
         assert 'never "zero vulnerabilities"' in norm
 
 
+class TestUpstreamResolutionEnrichment:
+    """The osv_git source resolves vendored Arduino/PlatformIO components
+    through the resolve_sbom_upstreams builtin: registry-confirmed
+    name+version matches only, honest provenance counts, unresolved as a
+    first-class outcome, graceful degradation when registries are down."""
+
+    @pytest.fixture(params=["SBOM Exploit Check", "Release Security Audit"])
+    def prompt(self, request):
+        return _load_preset(PRESET_FILES[request.param])["prompt_template"]
+
+    def test_enrichment_step_present(self, prompt):
+        norm = _norm(prompt)
+        assert "UPSTREAM RESOLUTION (registry enrichment)" in norm
+        assert "resolve_sbom_upstreams" in prompt
+        # One batched call, not one call per component.
+        assert "ONCE, batched" in norm
+
+    def test_resolution_is_conservative(self, prompt):
+        norm = _norm(prompt)
+        assert (
+            "when — and only when — a registry entry matches both name "
+            "AND version" in norm
+        )
+        assert "NEVER fabricate a resolution" in norm
+
+    def test_resolved_repo_feeds_osv_git_not_a_new_source(self, prompt):
+        """Enrichment feeds the existing osv_git source: tag candidates
+        are still resolved to a commit with git ls-remote before OSV."""
+        norm = _norm(prompt)
+        assert (
+            "Treat a resolved repository_url exactly like an enriched vcs_url" in norm
+        )
+        assert "ref_candidates" in prompt
+
+    def test_provenance_counts_in_contract(self, prompt):
+        assert "upstream_resolution" in prompt
+        for fld in (
+            '"attempted"',
+            '"vcs_url_present"',
+            '"registry_resolved"',
+            '"unresolved"',
+            '"registry_status"',
+        ):
+            assert fld in prompt, f"missing upstream_resolution field {fld}"
+
+    def test_unresolved_is_first_class_and_degradation_honest(self, prompt):
+        norm = _norm(prompt)
+        assert "unresolved is a first-class outcome" in norm
+        assert (
+            "the affected components stay blind and the failure is "
+            "recorded in checks" in norm
+        )
+
+
 class TestReleaseAuditWaivers:
     """Waivers: the governed alternative to verdict upgrades. Human-authored
     inputs, deterministic application, verbatim echo, fail-closed defaults."""
@@ -624,9 +688,12 @@ class TestReleaseAuditWaivers:
             "waives nothing" in norm
         )
 
-    def test_ask_user_is_the_sole_allowlist_exception(self, prompt):
+    def test_ask_user_is_the_sole_question_channel(self, prompt):
+        """The allowlist carries exactly two read-only builtins; ask_user
+        remains the only question/approval channel among them."""
         norm = _norm(prompt)
-        assert "SOLE exception to the otherwise-empty allowlist" in norm
+        assert "carries exactly two read-only platform tools" in norm
+        assert "SOLE question channel on the allowlist" in norm
         assert "not a write tool" in norm
         assert "captures the approver's identity" in norm
         assert "Non-interactive runs (the default) NEVER call ask_user" in norm

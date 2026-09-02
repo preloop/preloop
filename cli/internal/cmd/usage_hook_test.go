@@ -19,6 +19,8 @@ func newUsageHookTestCmd(stdin string) (*cobra.Command, *bytes.Buffer, *bytes.Bu
 	cmd.Flags().String("agent-id", "", "")
 	cmd.Flags().String("source", "cursor", "")
 	cmd.Flags().String("parent-conversation-id", "", "")
+	cmd.Flags().String("from", "auto", "")
+	cmd.Flags().String("file", "", "")
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
@@ -53,17 +55,30 @@ func usageHookOKHandler(t *testing.T, gotBody *map[string]interface{}) http.Hand
 	}
 }
 
+func decodeIngestRecords(t *testing.T, body map[string]interface{}) []map[string]interface{} {
+	t.Helper()
+	rawRecords, ok := body["records"].([]interface{})
+	if !ok || len(rawRecords) == 0 {
+		t.Fatalf("expected records, got %#v", body["records"])
+	}
+	records := make([]map[string]interface{}, 0, len(rawRecords))
+	for _, raw := range rawRecords {
+		record, ok := raw.(map[string]interface{})
+		if !ok {
+			t.Fatalf("record is not an object: %#v", raw)
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
 func decodeSingleIngestRecord(t *testing.T, body map[string]interface{}) map[string]interface{} {
 	t.Helper()
-	records, ok := body["records"].([]interface{})
-	if !ok || len(records) != 1 {
+	records := decodeIngestRecords(t, body)
+	if len(records) != 1 {
 		t.Fatalf("expected exactly one record, got %#v", body["records"])
 	}
-	record, ok := records[0].(map[string]interface{})
-	if !ok {
-		t.Fatalf("record is not an object: %#v", records[0])
-	}
-	return record
+	return records[0]
 }
 
 func TestUsageHookShipsStopEventAsResponse(t *testing.T) {

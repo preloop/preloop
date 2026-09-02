@@ -224,7 +224,31 @@ prompt_template: |
       the upstream release tag matching the component version with
       git ls-remote <vcs_url> '<tag>^{}' (read-only, no clone), then
       POST {"commit": "<40 hex sha>"} to OSV /v1/query so OSV
-      evaluates its GIT ranges against that commit. A component with
+      evaluates its GIT ranges against that commit.
+      UPSTREAM RESOLUTION (registry enrichment). Most vendored
+      Arduino/PlatformIO components carry neither a vcs_url nor a
+      resolvable tag. Before declaring such a component blind for
+      this source, call the platform's built-in
+      resolve_sbom_upstreams tool (on this flow's allowlist; a
+      read-only lookup against the public Arduino library index and
+      PlatformIO registry) ONCE, batched with every {name, version,
+      purl} entry that lacks a vcs_url. It returns, per component,
+      the upstream repository_url plus version-shaped ref_candidates
+      when — and only when — a registry entry matches both name AND
+      version; everything else comes back unresolved with a reason.
+      Treat a resolved repository_url exactly like an enriched
+      vcs_url: resolve one of the ref_candidates to a 40-hex commit
+      with git ls-remote '<tag>^{}' and query OSV with that commit.
+      A component that stays unresolved — or whose ref candidates
+      resolve to no commit — stays blind for this source. If the
+      tool is missing, errors, or reports its registries
+      unreachable, the affected components stay blind and the
+      failure is recorded in checks; NEVER fabricate a resolution.
+      Count resolution provenance for the report
+      (vuln_scan.inventory.upstream_resolution): components
+      screenable here via an already-present vcs_url, via registry
+      resolution, and unresolved — unresolved is a first-class
+      outcome. A component with
       no vcs_url and no resolvable tag stays blind for this source —
       record it, never guess a commit. Negative control:
       {"commit": "6fa1d817e5b1a00d7d0c8168091877476b499317"} (a curl
@@ -314,11 +338,13 @@ prompt_template: |
 
   WAIVER COLLECTION (only when the payload says
   waiver_collection: "interactive"). This flow's allowed_mcp_tools
-  contains exactly one tool — the platform's built-in ask_user — as
-  the SOLE exception to the otherwise-empty allowlist: it is a
-  question channel routed through the platform approval workflow
-  (which captures the approver's identity), not a write tool, and it
-  exists here only so a human can put waivers on the record mid-run.
+  carries exactly two read-only platform tools: the
+  resolve_sbom_upstreams registry lookup (PHASE 2, osv_git source)
+  and the platform's built-in ask_user. ask_user is the SOLE
+  question channel on the allowlist: it is routed through the
+  platform approval workflow (which captures the approver's
+  identity), not a write tool, and it exists here only so a human
+  can put waivers on the record mid-run.
   Rules:
   - Non-interactive runs (the default) NEVER call ask_user, not even
     to report progress. Interactive runs call it ONLY for waiver
@@ -596,7 +622,10 @@ prompt_template: |
       matrix order — "<source>: screened <screenable> of <total>
       components (database match|labeled heuristic; control passed|
       control BLIND)" — no aggregate coverage claim that the matrix
-      does not support. It must contain the sentence: this
+      does not support — plus one UPSTREAM RESOLUTION line (osv_git
+      enrichment: resolved via registry / via already-present
+      vcs_url / unresolved, from
+      vuln_scan.inventory.upstream_resolution). It must contain the sentence: this
       run demonstrates the pipeline; it is not yet a complete CRA gap
       review unless the gap-register phase ran AND private product
       repositories were in scope. Say which of those two held.
@@ -768,6 +797,13 @@ prompt_template: |
         "db_resolvable": <int>,
         "not_db_resolvable": <int>,
         "by_ecosystem": { "<ecosystem or 'generic'>": <int> },
+        "upstream_resolution": null | {
+          "attempted": <int>,
+          "vcs_url_present": <int>,
+          "registry_resolved": <int>,
+          "unresolved": <int>,
+          "registry_status": { "arduino_index": "...", "platformio": "..." }
+        },
         "negative_control": { "query": "<the control query as sent>", "result": "<what came back>", "method_blind": true|false },
         "source_matrix": {
           "osv_purl": { "kind": "database", "screenable": <int>, "blind": <int>, "negative_control": { "query": "<verbatim>", "result": "<what came back>", "method_blind": true|false } },
@@ -882,14 +918,20 @@ agent_config:
   sandbox_type: exec
   enable_auto_lint: false
 allowed_mcp_servers: []
-# The ONLY tool on this allowlist is the built-in ask_user question
-# channel, and only for interactive waiver collection (see the WAIVER
-# COLLECTION rules in the prompt). It is not a write tool: it routes a
-# question through the platform approval workflow, which captures the
-# approver's identity. Non-interactive runs never call it. Everything
-# else stays off the allowlist — scanners run in the sandbox.
+# The ONLY tools on this allowlist are two read-only platform builtins:
+# - ask_user: the question channel for interactive waiver collection
+#   (see the WAIVER COLLECTION rules in the prompt). Not a write tool:
+#   it routes a question through the platform approval workflow, which
+#   captures the approver's identity. Non-interactive runs never call
+#   it.
+# - resolve_sbom_upstreams: the Arduino/PlatformIO registry lookup the
+#   osv_git source uses to enrich vendored components (PHASE 2). It
+#   writes nothing and a resolution requires a registry-confirmed
+#   name+version match — never fabricated.
+# Everything else stays off the allowlist — scanners run in the sandbox.
 allowed_mcp_tools:
   - name: ask_user
+  - name: resolve_sbom_upstreams
 git_clone_config: null
 trigger_config: null
 is_preset: true
