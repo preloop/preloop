@@ -1007,9 +1007,14 @@ export class AgentDetailView extends LitElement {
 
     return html`
       <sl-tooltip
-        content=${`Last seen: ${this.formatDateTime(
-          this.liveActivity.lastActivityAt || this.agent.last_seen_at
-        )}`}
+        content=${(() => {
+          const lastSeen = `Last seen: ${this.formatDateTime(
+            this.liveActivity.lastActivityAt || this.agent.last_seen_at
+          )}`;
+          // A partial-onboarding chip explains itself first; the header
+          // already carries one tooltip, so the two share it.
+          return status.tooltip ? `${status.tooltip} · ${lastSeen}` : lastSeen;
+        })()}
       >
         <sl-badge
           class="status-chip ${status.outline ? 'outline' : ''}"

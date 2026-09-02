@@ -68,14 +68,32 @@ export interface AgentStatusChip {
   variant: 'success' | 'neutral' | 'warning' | 'danger';
   /** Render as an outlined chip rather than a solid one. */
   outline?: boolean;
+  /** Explains a neutral partial-onboarding chip; absent otherwise. */
+  tooltip?: string;
 }
 
-/** Onboarding states that still leave part of the agent ungoverned. */
-const INCOMPLETE_ONBOARDING_STATES = [
-  'incomplete',
-  'gateway_only',
-  'mcp_proxy_only',
-];
+/**
+ * Partial onboarding is a configuration, not a fault.
+ *
+ * An agent that only speaks MCP through the tool firewall, or only calls
+ * models through the gateway, is doing exactly what its operator set up: it
+ * is neutral, with a tooltip that says which plane is in use. Only
+ * `incomplete` (nothing was ever configured) is amber, because that agent is
+ * not connected to anything.
+ */
+const PARTIAL_ONBOARDING_CHIPS: Record<
+  string,
+  { label: string; tooltip: string }
+> = {
+  mcp_proxy_only: {
+    label: 'MCP only',
+    tooltip: 'Tool firewall configured, model gateway not used',
+  },
+  gateway_only: {
+    label: 'Gateway only',
+    tooltip: 'Model gateway configured, tool firewall not used',
+  },
+};
 
 /**
  * The single status taxonomy for an agent, shared by the agents list rows,
@@ -84,7 +102,8 @@ const INCOMPLETE_ONBOARDING_STATES = [
  *
  * Conditions are evaluated in order and the first match wins: lifecycle beats
  * health, health beats activity. Amber means "you have something to fix",
- * green means "working right now", neutral means "nothing to do".
+ * green means "working right now", neutral means "nothing to do". Being idle
+ * for a long time is never amber: plenty of agents run once a quarter.
  */
 export function getAgentStatusChip(
   agent: ManagedAgentSummary
@@ -98,8 +117,16 @@ export function getAgentStatusChip(
   if (agent.live_validation_status === 'failed') {
     return { label: 'Live check failed', variant: 'warning' };
   }
-  if (INCOMPLETE_ONBOARDING_STATES.includes(agent.onboarding_state)) {
-    return { label: 'Setup incomplete', variant: 'warning' };
+  if (agent.onboarding_state === 'incomplete') {
+    return { label: 'Not connected', variant: 'warning' };
+  }
+  const partial = PARTIAL_ONBOARDING_CHIPS[agent.onboarding_state];
+  if (partial) {
+    return {
+      label: partial.label,
+      variant: 'neutral',
+      tooltip: partial.tooltip,
+    };
   }
   if (agent.is_active_now) {
     return { label: 'Active now', variant: 'success' };

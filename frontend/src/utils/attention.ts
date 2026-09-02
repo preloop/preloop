@@ -216,8 +216,11 @@ function agentItems(
     if (agent.live_validation_status === 'failed') {
       reasons.push('Live check failed');
     }
+    // Only `incomplete` is a problem. `mcp_proxy_only` and `gateway_only` are
+    // configurations someone chose, and an agent that has not run for weeks
+    // is not a fault: neither ever reaches this list.
     if (agent.onboarding_state === 'incomplete') {
-      reasons.push('Setup incomplete');
+      reasons.push('Not connected');
     }
     const latestSession = latestSessionForAgent(agent, sessions);
     const failedRequests = latestSession?.failed_requests || 0;

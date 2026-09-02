@@ -153,7 +153,7 @@ describe('deriveAttentionItems', () => {
 
       expect(items).to.have.length(1);
       expect(items[0].detail).to.equal(
-        'Live check failed · Setup incomplete · 2 failed requests in last session'
+        'Live check failed · Not connected · 2 failed requests in last session'
       );
     });
 

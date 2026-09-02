@@ -155,6 +155,8 @@ export interface AgentListRow {
   statusLabel: string;
   statusVariant: 'success' | 'neutral' | 'warning' | 'danger';
   statusOutline: boolean;
+  /** Why a neutral partial-onboarding chip is not a problem; '' otherwise. */
+  statusTooltip: string;
   owner: string;
   modelLabel: string;
   /** Full model text for the `title` attribute, since the cell truncates. */
@@ -3017,15 +3019,24 @@ export class AgentsView extends LitElement {
     const showValidationBadge =
       this.shouldShowValidationBadge(agent) &&
       status.label !== 'Live check failed';
+    const statusChip = html`
+      <sl-badge
+        class="status-chip ${status.outline ? 'outline' : ''}"
+        variant="${status.variant}"
+        pill
+      >
+        ${status.label}
+      </sl-badge>
+    `;
     return html`
       <div class="identity-badges">
-        <sl-badge
-          class="status-chip ${status.outline ? 'outline' : ''}"
-          variant="${status.variant}"
-          pill
-        >
-          ${status.label}
-        </sl-badge>
+        ${
+          status.tooltip
+            ? html`<sl-tooltip content=${status.tooltip}
+                >${statusChip}</sl-tooltip
+              >`
+            : statusChip
+        }
         ${
           showValidationBadge
             ? html`<sl-badge
@@ -3164,6 +3175,7 @@ export class AgentsView extends LitElement {
           kind: 'flow',
           detailUrl: `/console/flows/${encodeURIComponent(item.id)}`,
           statusLabel: item.flow_status === 'active' ? 'Active' : 'Inactive',
+          statusTooltip: '',
           statusVariant:
             item.flow_status === 'active'
               ? ('success' as const)
@@ -3197,6 +3209,7 @@ export class AgentsView extends LitElement {
         statusLabel: chip.label,
         statusVariant: chip.variant,
         statusOutline: Boolean(chip.outline),
+        statusTooltip: chip.tooltip || '',
         owner: agent.owner_username || agent.owner_email || '',
         modelLabel: model.label,
         modelTitle: model.title,
@@ -3250,7 +3263,7 @@ export class AgentsView extends LitElement {
   }
 
   private renderStatusChip(row: AgentListRow) {
-    return html`
+    const chip = html`
       <sl-badge
         class="status-chip ${row.statusOutline ? 'outline' : ''}"
         variant=${row.statusVariant}
@@ -3258,6 +3271,11 @@ export class AgentsView extends LitElement {
         >${row.statusLabel}</sl-badge
       >
     `;
+    // "MCP only" and "Gateway only" are configurations, not faults: the
+    // tooltip says which plane is in use so the neutral chip is not a riddle.
+    return row.statusTooltip
+      ? html`<sl-tooltip content=${row.statusTooltip}>${chip}</sl-tooltip>`
+      : chip;
   }
 
   private renderListRow(row: AgentListRow) {
