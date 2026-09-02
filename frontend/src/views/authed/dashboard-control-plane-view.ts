@@ -1153,16 +1153,6 @@ export class DashboardView extends AuthedElement {
         margin: 0;
       }
 
-      /* Failed flows: visible but calm — accent border only, no red wash */
-      .item-card.failed-execution {
-        background: var(--sl-color-neutral-50);
-        border-left-color: #ff5d5d;
-      }
-      .item-card.failed-execution .item-error {
-        color: #ff5d5d;
-        font-style: normal;
-      }
-
       @media (max-width: 1200px) {
         .column-layout.dashboard {
           grid-template-columns: 1fr;
@@ -2848,7 +2838,7 @@ export class DashboardView extends AuthedElement {
           Recent Flow Executions
           ${
             this.failedFlowExecutions.length > 0
-              ? html`<sl-badge class="chip" variant="danger" pill
+              ? html`<sl-badge class="chip" variant="neutral" pill
                   >${this.failedFlowExecutions.length} failed</sl-badge
                 >`
               : ''
@@ -2870,11 +2860,7 @@ export class DashboardView extends AuthedElement {
                 <div class="item-list">
                   ${this.recentFlowExecutions.slice(0, 5).map(
                     (exec) => html`
-                      <div
-                        class="item-card ${
-                          exec.status === 'FAILED' ? 'failed-execution' : ''
-                        }"
-                      >
+                      <div class="item-card">
                         <div class="item-info">
                           <span class="item-name"
                             >${exec.flow_name || 'Unnamed Flow'}</span

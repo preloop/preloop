@@ -6,6 +6,22 @@ import { unifiedWebSocketManager } from '../../services/unified-websocket-manage
 import './dashboard-control-plane-view';
 import type { DashboardView } from './dashboard-control-plane-view';
 
+/**
+ * "Is this colour a red?" - true when the red channel dominates both others
+ * by a wide margin, which is what every danger token in either theme does and
+ * no neutral token does. Written against the computed value so a rule that
+ * hard-codes a hex is caught as well as one that names a token.
+ */
+function isReddish(color: string): boolean {
+  const match = color.match(/rgba?\(([^)]+)\)/);
+  if (!match) return false;
+  const [red, green, blue, alpha = '1'] = match[1]
+    .split(',')
+    .map((part) => Number(part.trim()));
+  if (alpha === 0) return false;
+  return red > green + 24 && red > blue + 24;
+}
+
 describe('DashboardView', () => {
   let fetchStub: sinon.SinonStub;
   let connectStub: sinon.SinonStub;
@@ -546,10 +562,11 @@ describe('DashboardView', () => {
     expect(updatedAt?.textContent || '').to.not.contain('Never');
     expect(updatedAt?.textContent || '').to.not.contain('Loading');
 
-    const failedRow = element.shadowRoot?.querySelector(
-      '.item-card.failed-execution'
-    );
-    expect(failedRow).to.exist;
+    // Rows are never tinted by state (wave 3): the status pill is the only
+    // red on the card.
+    expect(element.shadowRoot?.querySelector('.item-card')).to.exist;
+    expect(element.shadowRoot?.querySelector('.item-card.failed-execution')).to
+      .not.exist;
     expect(element.shadowRoot?.querySelector('.item-card.danger')).to.not.exist;
   });
 
@@ -590,16 +607,18 @@ describe('DashboardView', () => {
     it('does not let the error text overflow the row horizontally', async () => {
       const element = await mountWithFailedExecution('520px');
       const row = element.shadowRoot?.querySelector(
-        '.item-card.failed-execution'
+        '.item-card'
       ) as HTMLElement;
       const error = row.querySelector('.item-error') as HTMLElement;
 
       expect(error).to.exist;
-      // scrollWidth exceeding clientWidth means content spills out of the box.
+      // The message is clipped to one ellipsised line (wave 3), so the box
+      // itself must stay inside the row: a wider box is text on the loose.
+      expect(getComputedStyle(error).overflow).to.equal('hidden');
       expect(
-        error.scrollWidth,
+        error.getBoundingClientRect().right,
         'error text is wider than its container'
-      ).to.be.at.most(error.clientWidth + 1);
+      ).to.be.at.most(row.getBoundingClientRect().right + 1);
     });
 
     it('keeps the row after a reload, with no dismiss control', async () => {
@@ -608,10 +627,45 @@ describe('DashboardView', () => {
       expect(element.shadowRoot?.querySelector('sl-icon-button.item-dismiss'))
         .to.not.exist;
       expect(
-        element.shadowRoot?.querySelector('.item-card.failed-execution'),
+        element.shadowRoot?.querySelector('.item-card'),
         'failed execution row'
       ).to.exist;
       expect(localStorage.getItem('dashboard_dismissed_executions')).to.be.null;
+    });
+
+    it('puts the red in the status pill and nowhere else', async () => {
+      const element = await mountWithFailedExecution('520px');
+      const row = element.shadowRoot?.querySelector(
+        '.item-card'
+      ) as HTMLElement;
+
+      // The row itself: no tint, no red rule.
+      const rowStyle = getComputedStyle(row);
+      expect(isReddish(rowStyle.backgroundColor), 'row background is red').to.be
+        .false;
+      expect(isReddish(rowStyle.borderLeftColor), 'row rule is red').to.be
+        .false;
+
+      // The error line: neutral, 13px, one line with the full text in title.
+      const error = row.querySelector('.item-error') as HTMLElement;
+      const errorStyle = getComputedStyle(error);
+      expect(isReddish(errorStyle.color), 'error text is red').to.be.false;
+      expect(errorStyle.fontSize).to.equal('13px');
+      expect(errorStyle.whiteSpace).to.equal('nowrap');
+      expect(errorStyle.textOverflow).to.equal('ellipsis');
+      expect(error.getAttribute('title')).to.equal(LONG_ERROR);
+
+      // The pill keeps danger; the header count does not.
+      const pill = row.querySelector('sl-badge.chip') as HTMLElement;
+      expect(pill.getAttribute('variant')).to.equal('danger');
+      const executionsHeader = [
+        ...(element.shadowRoot?.querySelectorAll('.chart-header') || []),
+      ].find((header) =>
+        (header.textContent || '').includes('Recent Flow Executions')
+      );
+      const headerChip = executionsHeader?.querySelector('sl-badge.chip');
+      expect(headerChip, 'header count chip').to.exist;
+      expect(headerChip?.getAttribute('variant')).to.equal('neutral');
     });
   });
 
