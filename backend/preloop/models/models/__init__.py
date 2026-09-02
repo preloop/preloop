@@ -58,6 +58,7 @@ from .event import Event
 from .visitor import Visitor
 from .identity_link import IdentityLink
 from .account_milestone import AccountMilestone
+from .attention_dismissal import AttentionDismissal
 from .instance import Instance
 from .cli_client import CliClient
 from .github_app_installation import OAuthAppInstallation, GitHubAppInstallation
@@ -149,6 +150,7 @@ __all__ = [
     "Visitor",
     "IdentityLink",
     "AccountMilestone",
+    "AttentionDismissal",
     "Instance",
     "CliClient",
     "OAuthAppInstallation",

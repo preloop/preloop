@@ -2465,6 +2465,107 @@ paths:
                 $ref: '#/components/schemas/AvatarResponse'
       security:
       - bearerAuth: []
+  /api/v1/attention/dismissals:
+    get:
+      tags:
+      - Account
+      summary: List Attention Dismissals
+      description: 'List the console attention items this account has silenced.
+
+
+        Reading is open to any member of the account: the console needs this list
+
+        to render the inbox at all, and a member who cannot see it would be shown
+
+        items their colleagues have already dealt with.
+
+
+        Expired snoozes are excluded and garbage-collected here, so "hidden until"
+
+        never quietly becomes "hidden forever".'
+      operationId: list_attention_dismissals_api_v1_attention_dismissals_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttentionDismissalListResponse'
+      security:
+      - bearerAuth: []
+  /api/v1/attention/dismissals/{item_id}:
+    put:
+      tags:
+      - Account
+      summary: Upsert Attention Dismissal
+      description: 'Silence one attention item until its fingerprint changes.
+
+
+        ``item_id`` is the console''s stable id for the item (``<kind>:<entity
+
+        id>``), and the body''s ``fingerprint`` is why it was showing. Dismissing
+
+        an item that has already been dismissed replaces the row, which is how an
+
+        item that came back with a new fingerprint gets silenced again.
+
+
+        Writing takes ``manage_agents``: an operator who may reconfigure the fleet
+
+        may also declare that one of its states is expected.'
+      operationId: upsert_attention_dismissal_api_v1_attention_dismissals__item_id__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttentionDismissalUpsertRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttentionDismissalResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Account
+      summary: Delete Attention Dismissal
+      description: Restore a silenced item so it shows in the inbox again.
+      operationId: delete_attention_dismissal_api_v1_attention_dismissals__item_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/account/deletion-request:
     post:
       tags:
@@ -11231,6 +11332,97 @@ components:
       type: object
       title: ApprovalWorkflowUpdate
       description: Schema for updating approval workflow.
+    AttentionDismissalListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/AttentionDismissalResponse'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+          default: 0
+      type: object
+      title: AttentionDismissalListResponse
+      description: Every dismissal in force for the account.
+    AttentionDismissalResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        item_id:
+          type: string
+          title: Item Id
+        fingerprint:
+          type: string
+          title: Fingerprint
+        reason:
+          type: string
+          title: Reason
+        snooze_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Snooze Until
+        dismissed_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Dismissed By User Id
+        dismissed_by_username:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dismissed By Username
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - item_id
+      - fingerprint
+      - reason
+      - created_at
+      title: AttentionDismissalResponse
+      description: One dismissal that is still in force.
+    AttentionDismissalUpsertRequest:
+      properties:
+        fingerprint:
+          type: string
+          maxLength: 4096
+          title: Fingerprint
+          description: Why the item is showing (latest failed run id, unpriced model
+            aliases, agent onboarding and validation state). The item comes back when
+            this changes.
+        reason:
+          type: string
+          enum:
+          - expected
+          - snoozed
+          - fixed
+          title: Reason
+          description: 'expected: this is how the account is configured. snoozed:
+            hide it for snooze_days. fixed: it has been dealt with.'
+        snooze_days:
+          anyOf:
+          - type: integer
+            maximum: 90.0
+            minimum: 1.0
+          - type: 'null'
+          title: Snooze Days
+          description: Required for reason='snoozed'; ignored otherwise.
+      type: object
+      required:
+      - fingerprint
+      - reason
+      title: AttentionDismissalUpsertRequest
+      description: Body of ``PUT /attention/dismissals/{item_id}``.
     AuthUserCreate:
       properties:
         username:
