@@ -1,14 +1,18 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/preloop/preloop/cli/internal/api"
 )
 
 // uuidRe matches a canonical UUID (8-4-4-4-12 hex).
@@ -17,15 +21,39 @@ var uuidRe = regexp.MustCompile(
 )
 
 const (
+	usageIngestPath = "/api/v1/usage/ingest"
+
+	// usageEventSchemaV1 is the versioned contract third-party harnesses
+	// target. Unknown schema values skip that event; they are never fatal.
+	usageEventSchemaV1 = "preloop.usage.event.v1"
+
+	// usageIngestMaxRecordsPerRequest mirrors MAX_INGEST_RECORDS_PER_REQUEST
+	// in backend/preloop/schemas/usage_import.py.
+	usageIngestMaxRecordsPerRequest = 1000
+
 	// usageHookMaxStdinBytes bounds the hook payload read from stdin. Real
 	// Cursor hook payloads are small JSON objects; the cap only guards
 	// against a misconfigured pipe streaming unbounded data into us.
+	// File imports (--file) are not capped this way: Codex rollouts can
+	// be larger than 1 MiB, and they are operator-driven rather than
+	// in-loop hooks.
 	usageHookMaxStdinBytes = 1 << 20
 
-	// usageHookTimeout bounds the ingest POST. Cursor waits on hook
-	// processes before continuing the agent loop, so a slow or unreachable
-	// server must never stall the editor for the client's default 30s.
+	// usageHookTimeout bounds the ingest POST for stdin hooks. Cursor
+	// waits on hook processes before continuing the agent loop, so a
+	// slow or unreachable server must never stall the editor for the
+	// client's default 30s. File imports use the API client's default.
 	usageHookTimeout = 3 * time.Second
+)
+
+// usageHookFormat names a stdin/file payload dialect.
+type usageHookFormat string
+
+const (
+	usageHookFormatAuto    usageHookFormat = "auto"
+	usageHookFormatCursor  usageHookFormat = "cursor"
+	usageHookFormatGeneric usageHookFormat = "generic"
+	usageHookFormatCodex   usageHookFormat = "codex"
 )
 
 // cursorHookEventMap maps Cursor hook event names (cursor.com/docs/agent/
@@ -81,73 +109,277 @@ type cursorHookInput struct {
 	ToolCallCount *int `json:"tool_call_count"`
 }
 
-// usageHookCmd ships one Cursor hook event to POST /api/v1/usage/ingest.
+// usageHookCmd ships usage/lifecycle events to POST /api/v1/usage/ingest.
 var usageHookCmd = &cobra.Command{
 	Use:   "hook",
-	Short: "Ship a Cursor hook event to Preloop usage ingest",
-	Long: `Ship a Cursor hook event to Preloop usage ingest.
+	Short: "Ship usage events to Preloop usage ingest",
+	Long: `Ship usage events to Preloop usage ingest.
 
-Reads one Cursor hook payload (JSON) from stdin and records it as a
-lifecycle event via POST /api/v1/usage/ingest, so conversations and
-their subagent conversations appear in the Cost analytics conversation
-rollup as they happen.
+Reads JSON from stdin (or --file) and records it via
+POST /api/v1/usage/ingest, so conversations appear in the Cost
+analytics conversation rollup as they happen.
+
+By default the command auto-detects the payload:
+
+  - a Cursor agent hook object (hook_event_name) is handled as before
+  - newline-delimited generic events (schema preloop.usage.event.v1)
+    are the contract third-party harnesses should target
+  - Codex CLI session rollouts (JSONL under $CODEX_HOME/sessions)
+
+Override detection with --from cursor|generic|codex.
 
 Cursor hook payloads carry no token counts and no billed amounts, so
-the shipped records are lifecycle markers on the 'estimated' basis with
-no cost attached. Billed spend arrives separately, e.g. via
-'preloop usage import' of a Cursor dashboard Usage export.
+those records are lifecycle markers on the 'estimated' basis with no
+cost attached. Generic events and Codex rollouts may carry token
+counts; cost_basis stays 'estimated' unless the event explicitly
+includes a billed amount from a provider ledger. Null stays null,
+never 0.
 
 The command is fail-open by design: any error (unreachable server,
 missing auth, malformed payload) is reported on stderr and the command
 still exits 0, so a broken shipper can never block the editor.
 
-Intended to be wired into hooks.json for the sessionStart, sessionEnd,
-subagentStart, subagentStop, stop and preCompact events; see the guide
-at docs/guide/cursor-usage-hooks.md.`,
+See the guide at docs/guide/usage-hooks.md.`,
 	RunE: runUsageHook,
 }
 
 func init() {
 	usageCmd.AddCommand(usageHookCmd)
 
-	usageHookCmd.Flags().String("agent-id", "", "managed agent UUID to attribute the events to (default: the onboarded Cursor agent)")
-	usageHookCmd.Flags().String("source", "cursor", "origin label stored on each record")
+	usageHookCmd.Flags().String("agent-id", "", "managed agent UUID to attribute the events to (default: the onboarded agent matching --source)")
+	usageHookCmd.Flags().String("source", "cursor", "origin label stored on each record (generic defaults to generic, Codex to codex, unless this flag is set)")
 	usageHookCmd.Flags().String("parent-conversation-id", "", "conversation this chat was spawned from, when the payload reports none (also PRELOOP_PARENT_CONVERSATION_ID)")
+	usageHookCmd.Flags().String("from", "auto", "payload format: auto, cursor, generic, or codex")
+	usageHookCmd.Flags().String("file", "", "read events from a file instead of stdin (generic NDJSON or a Codex rollout JSONL)")
 }
 
 func runUsageHook(cmd *cobra.Command, _ []string) error {
 	agentID, _ := cmd.Flags().GetString("agent-id")
 	source, _ := cmd.Flags().GetString("source")
 	parentFlag, _ := cmd.Flags().GetString("parent-conversation-id")
+	fromRaw, _ := cmd.Flags().GetString("from")
+	filePath, _ := cmd.Flags().GetString("file")
+	sourceChanged := cmd.Flags().Changed("source")
 
-	payload, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), usageHookMaxStdinBytes))
-	if err != nil {
-		return usageHookFailOpen(cmd, fmt.Errorf("read hook payload: %w", err))
+	if agentID != "" && !uuidRe.MatchString(agentID) {
+		return usageHookFailOpen(cmd, fmt.Errorf("--agent-id must be a UUID, got %q", agentID))
 	}
 
+	from, err := parseUsageHookFormat(fromRaw)
+	if err != nil {
+		return usageHookFailOpen(cmd, err)
+	}
+
+	reader, closer, err := openUsageHookReader(cmd, filePath)
+	if err != nil {
+		return usageHookFailOpen(cmd, err)
+	}
+	if closer != nil {
+		defer closer.Close()
+	}
+
+	raws, decodeErr := decodeUsageHookJSONStream(reader)
+	if len(raws) == 0 {
+		if decodeErr != nil {
+			return usageHookFailOpen(cmd, fmt.Errorf("parse hook payload: %w", decodeErr))
+		}
+		return usageHookFailOpen(cmd, fmt.Errorf("parse hook payload: empty input"))
+	}
+	if decodeErr != nil {
+		fmt.Fprintf(
+			cmd.ErrOrStderr(),
+			"preloop usage hook: parse hook payload: %v (remaining events not recorded)\n",
+			decodeErr,
+		)
+	}
+
+	detected := from
+	if detected == usageHookFormatAuto {
+		detected = detectUsageHookFormat(raws[0])
+	}
+
+	now := time.Now().UTC()
+	var records []map[string]interface{}
+	switch detected {
+	case usageHookFormatCursor:
+		records, err = recordsFromCursorHook(raws[0], parentFlag, now)
+	case usageHookFormatGeneric:
+		records = recordsFromGenericEvents(cmd, raws, parentFlag, now)
+	case usageHookFormatCodex:
+		records = recordsFromCodexRollout(cmd, raws, parentFlag, now)
+	default:
+		return usageHookFailOpen(cmd, fmt.Errorf(
+			"unrecognized usage hook payload; pass --from cursor, generic, or codex",
+		))
+	}
+	if err != nil {
+		return usageHookFailOpen(cmd, err)
+	}
+	if len(records) == 0 {
+		return nil
+	}
+
+	resolvedSource := resolveUsageHookSource(detected, source, sourceChanged)
+	timeout := usageHookTimeout
+	if filePath != "" {
+		timeout = 0
+	}
+	if err := postUsageIngestRecords(agentID, resolvedSource, records, timeout); err != nil {
+		return usageHookFailOpen(cmd, err)
+	}
+	if filePath != "" {
+		fmt.Fprintf(
+			cmd.OutOrStdout(),
+			"shipped %s from %s\n",
+			pluralizeUsageRecords(len(records)),
+			filePath,
+		)
+	}
+	return nil
+}
+
+func parseUsageHookFormat(raw string) (usageHookFormat, error) {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "", "auto":
+		return usageHookFormatAuto, nil
+	case "cursor":
+		return usageHookFormatCursor, nil
+	case "generic":
+		return usageHookFormatGeneric, nil
+	case "codex":
+		return usageHookFormatCodex, nil
+	default:
+		return "", fmt.Errorf("--from must be auto, cursor, generic, or codex, got %q", raw)
+	}
+}
+
+func openUsageHookReader(cmd *cobra.Command, filePath string) (io.Reader, io.Closer, error) {
+	if filePath == "" {
+		return io.LimitReader(cmd.InOrStdin(), usageHookMaxStdinBytes), nil, nil
+	}
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open %s: %w", filePath, err)
+	}
+	return file, file, nil
+}
+
+func decodeUsageHookJSONStream(reader io.Reader) ([]json.RawMessage, error) {
+	decoder := json.NewDecoder(reader)
+	var raws []json.RawMessage
+	for {
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			if err == io.EOF {
+				return raws, nil
+			}
+			return raws, err
+		}
+		if len(bytes.TrimSpace(raw)) == 0 {
+			continue
+		}
+		raws = append(raws, raw)
+	}
+}
+
+func detectUsageHookFormat(raw json.RawMessage) usageHookFormat {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return ""
+	}
+	if _, ok := probe["hook_event_name"]; ok {
+		return usageHookFormatCursor
+	}
+	if schema, ok := jsonRawString(probe["schema"]); ok && strings.HasPrefix(schema, "preloop.usage.event.") {
+		return usageHookFormatGeneric
+	}
+	typeName, _ := jsonRawString(probe["type"])
+	if _, hasPayload := probe["payload"]; hasPayload && isCodexRolloutType(typeName) {
+		return usageHookFormatCodex
+	}
+	if _, ok := probe["conversation_id"]; ok {
+		return usageHookFormatGeneric
+	}
+	return ""
+}
+
+func jsonRawString(raw json.RawMessage) (string, bool) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return "", false
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func resolveUsageHookSource(format usageHookFormat, flagValue string, flagChanged bool) string {
+	if flagChanged && strings.TrimSpace(flagValue) != "" {
+		return flagValue
+	}
+	switch format {
+	case usageHookFormatGeneric:
+		return "generic"
+	case usageHookFormatCodex:
+		return "codex"
+	default:
+		if strings.TrimSpace(flagValue) == "" {
+			return "cursor"
+		}
+		return flagValue
+	}
+}
+
+func recordsFromCursorHook(
+	payload json.RawMessage, parentFlag string, now time.Time,
+) ([]map[string]interface{}, error) {
 	var input cursorHookInput
 	if err := json.Unmarshal(payload, &input); err != nil {
-		return usageHookFailOpen(cmd, fmt.Errorf("parse hook payload: %w", err))
+		return nil, fmt.Errorf("parse hook payload: %w", err)
 	}
 
 	eventType, shipped := cursorHookEventMap[input.HookEventName]
 	if !shipped {
-		// Not a lifecycle event we track; acknowledge and do nothing.
-		return nil
+		return nil, nil
 	}
 
-	record, err := buildUsageHookRecord(input, eventType, parentFlag, time.Now().UTC())
+	record, err := buildUsageHookRecord(input, eventType, parentFlag, now)
 	if err != nil {
-		return usageHookFailOpen(cmd, err)
+		return nil, err
+	}
+	return []map[string]interface{}{record}, nil
+}
+
+func postUsageIngestRecords(
+	agentID, source string,
+	records []map[string]interface{},
+	timeout time.Duration,
+) error {
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil {
+		return fmt.Errorf("create API client: %w", err)
+	}
+	if timeout > 0 {
+		client.SetTimeout(timeout)
 	}
 
-	if err := postUsageIngest(
-		source, agentID, []map[string]interface{}{record}, usageHookTimeout,
-	); err != nil {
-		return usageHookFailOpen(cmd, err)
+	for start := 0; start < len(records); start += usageIngestMaxRecordsPerRequest {
+		end := start + usageIngestMaxRecordsPerRequest
+		if end > len(records) {
+			end = len(records)
+		}
+		request := map[string]interface{}{
+			"source":  source,
+			"records": records[start:end],
+		}
+		if agentID != "" {
+			request["agent_id"] = agentID
+		}
+		if err := client.Post(usageIngestPath, request, nil); err != nil {
+			return fmt.Errorf("usage ingest failed: %w", err)
+		}
 	}
-	// All shipped events are observational for Cursor (their hook output
-	// is either ignored or optional), so nothing is written to stdout.
 	return nil
 }
 
