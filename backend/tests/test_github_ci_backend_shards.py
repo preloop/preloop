@@ -52,6 +52,9 @@ def test_backend_shards_partition_with_pytest_split() -> None:
     backend = _load_ci_jobs()["test-backend"]
     groups = backend["strategy"]["matrix"]["group"]
     assert groups == list(range(1, BACKEND_TEST_SPLITS + 1))
+    assert backend["name"] == (
+        f"Backend Tests (${{{{ matrix.group }}}}/{BACKEND_TEST_SPLITS})"
+    )
     assert backend["strategy"]["fail-fast"] is False
 
     script = _step_script(backend, "Run tests")
