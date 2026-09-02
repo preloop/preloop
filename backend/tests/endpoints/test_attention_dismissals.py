@@ -183,8 +183,12 @@ def test_delete_restores_the_item(client):
     response = client.delete(f"{DISMISSALS}/budget:policy-1")
 
     assert response.status_code == 204
-    assert client.get(DISMISSALS).json()["total"] == 0
-    assert client.delete(f"{DISMISSALS}/budget:policy-1").status_code == 404
+    listed = client.get(DISMISSALS).json()
+    assert listed["total"] == 0
+    # The request itself is kept out of the assert: an assert can be compiled
+    # away with -O, and a delete that only runs sometimes is not a test.
+    second_delete = client.delete(f"{DISMISSALS}/budget:policy-1")
+    assert second_delete.status_code == 404
 
 
 def test_delete_cannot_reach_another_account(client, db_session):
