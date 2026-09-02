@@ -19,9 +19,12 @@ import {
   AuthedElement,
   dismissAttentionItem,
   getFeatures,
+  getUserProfile,
+  hasPermission,
   restoreAttentionItem,
   type AttentionDismissal,
   type BudgetPolicy,
+  type UserPermissions,
 } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import consoleStyles from '../../styles/console-styles.css?inline';
@@ -86,6 +89,11 @@ export class AttentionView extends AuthedElement {
   @state() private dismissals: AttentionDismissal[] = [];
   /** False on a server without the endpoint: no dismiss controls at all. */
   @state() private dismissalsSupported = false;
+  /**
+   * `null` when RBAC is off (the permission helpers then allow everything);
+   * an allow-list otherwise. Writing a dismissal needs `manage_agents`.
+   */
+  @state() private permissions: UserPermissions = null;
   @state() private lastUpdatedAt: string | null = null;
   @state() private billingEnabled = false;
   @state() private showLimitsDialog = false;
@@ -499,9 +507,10 @@ export class AttentionView extends AuthedElement {
   private async fetchAll(): Promise<void> {
     // Exactly the same loader the Overview uses, so the hero count and this
     // page can never be computed from differently shaped data.
-    const [inputs, features] = await Promise.all([
+    const [inputs, features, profile] = await Promise.all([
       loadAttentionInputs(),
       getFeatures().catch(() => null),
+      getUserProfile().catch(() => null),
     ]);
 
     this.approvals = (inputs.approvals || []) as AttentionApproval[];
@@ -513,6 +522,7 @@ export class AttentionView extends AuthedElement {
     this.usageSummary = inputs.usageSummary || null;
     this.dismissals = (inputs.dismissals || []) as AttentionDismissal[];
     this.dismissalsSupported = inputs.dismissalsSupported;
+    this.permissions = profile?.permissions ?? null;
     this.billingEnabled = features?.features?.billing === true;
 
     this.lastUpdatedAt = new Date().toISOString();
@@ -684,11 +694,24 @@ export class AttentionView extends AuthedElement {
   }
 
   /**
+   * Writing a dismissal needs `manage_agents`, the permission the backend
+   * checks on `PUT/DELETE /attention/dismissals`; any member can read the
+   * inbox. Without it the controls are absent rather than present and
+   * answering with a 403.
+   */
+  private get canWriteDismissals(): boolean {
+    return (
+      this.dismissalsSupported &&
+      hasPermission(this.permissions, 'manage_agents')
+    );
+  }
+
+  /**
    * Approvals are never dismissable, and a server without the endpoint gets no
    * controls at all rather than buttons that fail.
    */
   private renderDismiss(item: AttentionItem) {
-    if (!this.dismissalsSupported || !item.dismissable) {
+    if (!this.canWriteDismissals || !item.dismissable) {
       return nothing;
     }
     return html`
@@ -1180,13 +1203,17 @@ export class AttentionView extends AuthedElement {
                           }
                         </span>
                       </div>
-                      <sl-button
-                        class="row-action"
-                        size="small"
-                        ?loading=${this.busyItemId === item.id}
-                        @click=${() => void this.restore(item.id)}
-                        >Restore</sl-button
-                      >
+                      ${
+                        this.canWriteDismissals
+                          ? html`<sl-button
+                              class="row-action"
+                              size="small"
+                              ?loading=${this.busyItemId === item.id}
+                              @click=${() => void this.restore(item.id)}
+                              >Restore</sl-button
+                            >`
+                          : nothing
+                      }
                     </div>
                   `
                 )}

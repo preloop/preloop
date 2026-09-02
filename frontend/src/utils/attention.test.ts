@@ -771,8 +771,58 @@ describe('deriveAttentionItems', () => {
       }).items;
 
       expect(item.fingerprint).to.equal(
-        'incomplete|failed|2026-08-01T00:00:00Z'
+        'incomplete|failed|2026-08-01T00:00:00Z|none:0'
       );
+    });
+
+    it('fingerprints an agent by its latest session failures', () => {
+      const agent = agentFixture({
+        onboarding_state: 'fully_onboarded',
+        live_validation_status: 'passed',
+        last_validated_at: '2026-08-01T00:00:00Z',
+      });
+      const [first] = deriveAttentionItems({
+        now: NOW,
+        agents: [agent],
+        sessions: [
+          sessionFixture({
+            id: 'session-1',
+            failed_requests: 2,
+            started_at: minutesAgo(90),
+            last_activity_at: minutesAgo(80),
+          }),
+        ],
+      }).items;
+
+      expect(first.fingerprint).to.equal(
+        'fully_onboarded|passed|2026-08-01T00:00:00Z|session-1:2'
+      );
+
+      // Same agent, same onboarding and validation state, but a newer session
+      // that failed: the fingerprint moves, so a dismissed item comes back.
+      const [second] = deriveAttentionItems({
+        now: NOW,
+        agents: [agent],
+        sessions: [
+          sessionFixture({
+            id: 'session-1',
+            failed_requests: 2,
+            started_at: minutesAgo(90),
+            last_activity_at: minutesAgo(80),
+          }),
+          sessionFixture({
+            id: 'session-2',
+            failed_requests: 5,
+            started_at: minutesAgo(20),
+            last_activity_at: minutesAgo(5),
+          }),
+        ],
+      }).items;
+
+      expect(second.fingerprint).to.equal(
+        'fully_onboarded|passed|2026-08-01T00:00:00Z|session-2:5'
+      );
+      expect(second.fingerprint).to.not.equal(first.fingerprint);
     });
   });
 

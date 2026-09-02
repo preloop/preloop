@@ -2522,6 +2522,8 @@ paths:
         required: true
         schema:
           type: string
+          minLength: 1
+          maxLength: 255
           title: Item Id
       requestBody:
         required: true
@@ -2556,6 +2558,8 @@ paths:
         required: true
         schema:
           type: string
+          minLength: 1
+          maxLength: 255
           title: Item Id
       responses:
         '204':
