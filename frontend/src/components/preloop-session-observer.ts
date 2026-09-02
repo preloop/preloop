@@ -2045,7 +2045,7 @@ export class PreloopSessionObserver extends LitElement {
                             ?selected=${session.id === this.activeSessionId}
                           >
                             ${session.title}${
-                              session.subtitle ? ` — ${session.subtitle}` : ''
+                              session.subtitle ? ` · ${session.subtitle}` : ''
                             }
                           </option>
                         `
