@@ -1014,6 +1014,29 @@ export class DashboardView extends AuthedElement {
         flex: 0 0 auto;
       }
 
+      /* On a phone the timing is wide enough to squeeze the subject down to
+         "s..", which tells nobody anything. Give the subject the row and let
+         the timing sit under it; the middot only separates them on one line. */
+      @media (max-width: 600px) {
+        .execution-line {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 0;
+        }
+        .execution-line .line-sep {
+          display: none;
+        }
+        /* The status chip and View button take 175px of a 326px row, which
+           leaves the subject 150px. Below the fold of a phone they can have
+           their own line and the subject can have the width. */
+        .executions-list .item-card {
+          flex-wrap: wrap;
+        }
+        .executions-list .item-info {
+          flex-basis: 100%;
+        }
+      }
+
       .deploy-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -3038,7 +3061,7 @@ export class DashboardView extends AuthedElement {
                 </div>
               `
             : html`
-                <div class="item-list">
+                <div class="item-list executions-list">
                   ${this.recentFlowExecutions.slice(0, 5).map(
                     (exec) => html`
                       <div class="item-card">
@@ -3065,7 +3088,8 @@ export class DashboardView extends AuthedElement {
                             <span
                               class="item-secondary"
                               title=${this.formatDate(exec.start_time)}
-                              >· ${this.executionSecondaryText(exec)}</span
+                              ><span class="line-sep">· </span
+                              >${this.executionSecondaryText(exec)}</span
                             >
                           </span>
                         </div>

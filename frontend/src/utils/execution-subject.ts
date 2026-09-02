@@ -124,6 +124,8 @@ export function renderExecutionSubject(
   const className = `execution-subject${fallback ? ' is-fallback' : ''}`;
 
   if (url) {
+    // The icon sits outside the ellipsised text, or a long subject clips the
+    // one mark that says the link leaves the console.
     return html`<a
       class="${className} execution-subject-link"
       href=${url}
@@ -131,20 +133,27 @@ export function renderExecutionSubject(
       rel="noopener noreferrer"
       title=${text}
       @click=${(event: Event) => event.stopPropagation()}
-      >${text}<sl-icon
-        name="box-arrow-up-right"
-        label="Opens in a new tab"
-      ></sl-icon
+      ><span class="execution-subject-text">${text}</span
+      ><sl-icon name="box-arrow-up-right" label="Opens in a new tab"></sl-icon
     ></a>`;
   }
 
-  return html`<span class=${className} title=${text}>${text}</span>`;
+  return html`<span class=${className} title=${text}
+    ><span class="execution-subject-text">${text}</span></span
+  >`;
 }
 
 /** Shared styling for the two shapes above, as a plain CSS string. */
 export const executionSubjectCss = `
   .execution-subject {
+    align-items: center;
+    display: inline-flex;
+    gap: 4px;
+    max-width: 100%;
     min-width: 0;
+  }
+  /* The text is what gives way when the row is narrow; the icon never does. */
+  .execution-subject-text {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -153,14 +162,11 @@ export const executionSubjectCss = `
     color: var(--console-meta-color);
   }
   a.execution-subject-link {
-    align-items: center;
     color: var(--console-link-color);
-    display: inline-flex;
-    gap: 4px;
     text-decoration: none;
   }
-  a.execution-subject-link:hover,
-  a.execution-subject-link:focus-visible {
+  a.execution-subject-link:hover .execution-subject-text,
+  a.execution-subject-link:focus-visible .execution-subject-text {
     text-decoration: underline;
   }
   a.execution-subject-link sl-icon {

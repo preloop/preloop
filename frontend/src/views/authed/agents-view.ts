@@ -3039,7 +3039,7 @@ export class AgentsView extends LitElement {
         ${
           showValidationBadge
             ? html`<sl-badge
-                class="validation-badge"
+                class="chip validation-badge"
                 variant="${this.getLiveValidationVariant(agent)}"
                 pill
               >
@@ -3049,22 +3049,23 @@ export class AgentsView extends LitElement {
         }
         ${
           agent.owner_username
-            ? html`<sl-badge variant="neutral" pill title="Owner">
-                <sl-icon
-                  name="person"
-                  style="margin-right: 3px; opacity: 0.7;"
-                ></sl-icon
+            ? html`<sl-badge
+                class="tag-chip"
+                variant="neutral"
+                pill
+                title="Owner"
+              >
+                <sl-icon name="person"></sl-icon
                 >${agent.owner_username}</sl-badge
               >`
             : null
         }
         ${tags.map(
           ([key, value]) => html`
-            <sl-badge variant="neutral" pill>
-              <span style="opacity: 0.7">${key}</span>${
+            <sl-badge class="tag-chip" variant="neutral" pill>
+              <sl-icon name="tag"></sl-icon>${key}${
                 value && value !== 'true'
-                  ? html`<span style="opacity: 0.4; margin: 0 4px;">=</span
-                      >${value}`
+                  ? html`<span class="tag-chip-value">=${value}</span>`
                   : ''
               }
             </sl-badge>

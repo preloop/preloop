@@ -307,6 +307,17 @@ sl-badge.tag-chip::part(base) {
     gap: 4px;
 }
 
+sl-badge.chip-tag sl-icon,
+sl-badge.tag-chip sl-icon {
+    font-size: 13px;
+    vertical-align: -2px;
+}
+
+/* `team=platform`: the key names the label, the value qualifies it. */
+.tag-chip-value {
+    opacity: 0.7;
+}
+
 .styled-table {
     width: 100%;
     border-collapse: collapse;
