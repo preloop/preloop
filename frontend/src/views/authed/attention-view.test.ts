@@ -13,7 +13,10 @@ describe('AttentionView', () => {
   let approvalsResponse: any[];
   let executionsResponse: any[];
   let policiesResponse: any[];
+  let dismissalsResponse: any[];
+  let dismissalsSupported = true;
   let rejectPolicies = false;
+  let dismissalWrites: { url: string; method: string; body: any }[];
 
   const json = (data: unknown) =>
     new Response(JSON.stringify(data), {
@@ -24,6 +27,10 @@ describe('AttentionView', () => {
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     rejectPolicies = false;
+    dismissalsSupported = true;
+    dismissalsResponse = [];
+    dismissalWrites = [];
+    window.location.hash = '';
 
     approvalsResponse = [
       {
@@ -58,9 +65,40 @@ describe('AttentionView', () => {
 
     fetchStub = sinon
       .stub(window, 'fetch')
-      .callsFake(async (input: RequestInfo | URL) => {
+      .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
 
+        if (url.startsWith('/api/v1/attention/dismissals')) {
+          if (!dismissalsSupported) {
+            return new Response('{"detail":"Not Found"}', { status: 404 });
+          }
+          const method = (init?.method || 'GET').toUpperCase();
+          if (method === 'GET') {
+            return json({ items: dismissalsResponse });
+          }
+          dismissalWrites.push({
+            url,
+            method,
+            body: init?.body ? JSON.parse(String(init.body)) : null,
+          });
+          if (method === 'DELETE') {
+            dismissalsResponse = [];
+            return new Response(null, { status: 204 });
+          }
+          const body = JSON.parse(String(init!.body));
+          const record = {
+            id: 'dismissal-1',
+            item_id: decodeURIComponent(url.split('/').pop()!),
+            fingerprint: body.fingerprint,
+            reason: body.reason,
+            snooze_until: null,
+            dismissed_by_user_id: 'user-1',
+            dismissed_by_username: 'tester',
+            created_at: new Date().toISOString(),
+          };
+          dismissalsResponse = [record];
+          return json(record);
+        }
         if (url.startsWith('/api/v1/approval-requests')) {
           return json(approvalsResponse);
         }
@@ -253,6 +291,147 @@ describe('AttentionView', () => {
 
     expect(el.shadowRoot!.querySelector('#budgets')).to.not.exist;
     expect(el.shadowRoot!.querySelector('#approvals')).to.exist;
+  });
+
+  it('expands a flow row onto the runs behind the count', async () => {
+    executionsResponse = [
+      {
+        id: 'execution-1',
+        flow_id: 'flow-1',
+        flow_name: 'Refund Assistant',
+        status: 'FAILED',
+        start_time: new Date(Date.now() - 3_600_000).toISOString(),
+        end_time: new Date(Date.now() - 3_500_000).toISOString(),
+        error_message: 'Failed to start agent Job: (409) Conflict\n  at x.py',
+      },
+      {
+        id: 'execution-2',
+        flow_id: 'flow-1',
+        flow_name: 'Refund Assistant',
+        status: 'FAILED',
+        start_time: new Date(Date.now() - 7_200_000).toISOString(),
+        error_message: 'Failed to start agent Job: (409) Conflict',
+      },
+    ];
+    const el = await mount();
+
+    // One row in the section: open on arrival, no click needed.
+    const row = el.shadowRoot!.querySelector('#flows .attention-row')!;
+    expect(
+      row.querySelector('.row-toggle')!.getAttribute('aria-expanded')
+    ).to.equal('true');
+    const evidence = row.querySelector('.row-evidence')!;
+    expect(evidence.textContent).to.contain('Most common:');
+    expect(evidence.textContent).to.contain('(2 of 2)');
+    const runLinks = Array.from(evidence.querySelectorAll('a')).map((link) =>
+      link.getAttribute('href')
+    );
+    expect(runLinks).to.contain('/console/flows/executions/execution-1');
+    expect(runLinks).to.contain('/console/flows/executions/execution-2');
+
+    (row.querySelector('.row-toggle') as HTMLElement).click();
+    await el.updateComplete;
+    expect(row.querySelector('.row-evidence')).to.not.exist;
+  });
+
+  it('dismisses a row with a reason and lists it under Dismissed', async () => {
+    const el = await mount();
+
+    const dropdown = el.shadowRoot!.querySelector(
+      '#flows .dismiss-dropdown'
+    ) as HTMLElement;
+    expect(dropdown).to.exist;
+    const menu = dropdown.querySelector('sl-menu')!;
+    menu.dispatchEvent(
+      new CustomEvent('sl-select', {
+        detail: { item: { value: 'expected' } },
+      })
+    );
+    await waitUntil(
+      () => dismissalWrites.length > 0,
+      'the dismissal was never written'
+    );
+    await waitUntil(
+      () => !el.shadowRoot!.querySelector('#flows'),
+      'the dismissed flow row stayed on the page'
+    );
+
+    expect(dismissalWrites[0].method).to.equal('PUT');
+    expect(dismissalWrites[0].url).to.contain('flow%3Aflow-1');
+    expect(dismissalWrites[0].body.reason).to.equal('expected');
+    expect(dismissalWrites[0].body.fingerprint).to.equal('run:execution-1');
+
+    const dismissed = el.shadowRoot!.querySelector('#dismissed')!;
+    expect(dismissed.textContent).to.contain('Dismissed (1)');
+
+    // Collapsed by default; the detail only appears once it is opened.
+    expect(dismissed.querySelector('.dismissed-row')).to.not.exist;
+    (dismissed.querySelector('.dismissed-toggle') as HTMLElement).click();
+    await el.updateComplete;
+    const row = dismissed.querySelector('.dismissed-row')!;
+    expect(row.textContent).to.contain('Expected');
+    expect(row.textContent).to.contain('tester');
+
+    const restore = Array.from(row.querySelectorAll('sl-button')).find(
+      (button) => button.textContent!.includes('Restore')
+    )!;
+    (restore as HTMLElement).click();
+    await waitUntil(
+      () => Boolean(el.shadowRoot!.querySelector('#flows')),
+      'the restored flow row never came back'
+    );
+    expect(dismissalWrites[1].method).to.equal('DELETE');
+  });
+
+  it('sends a snooze with the number of days the menu promises', async () => {
+    const el = await mount();
+    const menu = el.shadowRoot!.querySelector(
+      '#flows .dismiss-dropdown sl-menu'
+    )!;
+    menu.dispatchEvent(
+      new CustomEvent('sl-select', { detail: { item: { value: 'snoozed' } } })
+    );
+    await waitUntil(() => dismissalWrites.length > 0, 'nothing was written');
+
+    expect(dismissalWrites[0].body).to.deep.equal({
+      fingerprint: 'run:execution-1',
+      reason: 'snoozed',
+      snooze_days: 7,
+    });
+  });
+
+  // Staging runs a build without the endpoint: the inbox still works, it just
+  // cannot hide anything.
+  it('hides every dismiss control when the endpoint is missing', async () => {
+    dismissalsSupported = false;
+    const el = await mount();
+
+    expect(el.shadowRoot!.querySelector('.dismiss-dropdown')).to.not.exist;
+    expect(el.shadowRoot!.querySelector('#dismissed')).to.not.exist;
+    expect(el.shadowRoot!.querySelector('#flows')).to.exist;
+  });
+
+  it('never offers to dismiss an approval', async () => {
+    const el = await mount();
+    expect(el.shadowRoot!.querySelector('#approvals .dismiss-dropdown')).to.not
+      .exist;
+    expect(el.shadowRoot!.querySelector('#flows .dismiss-dropdown')).to.exist;
+  });
+
+  it('opens and highlights the row named in the hash', async () => {
+    window.location.hash = '#item-flow%3Aflow-1';
+    const el = await mount();
+    await el.updateComplete;
+
+    const row = el.shadowRoot!.querySelector(
+      '[data-item-id="flow:flow-1"]'
+    ) as HTMLElement;
+    expect(row).to.exist;
+    expect(row.classList.contains('highlighted')).to.be.true;
+    expect(
+      row.querySelector('.row-toggle')!.getAttribute('aria-expanded')
+    ).to.equal('true');
+    window.location.hash = '';
   });
 
   it('shows an all-clear card when nothing needs attention', async () => {

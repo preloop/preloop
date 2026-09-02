@@ -59,7 +59,7 @@ function failureFixture(overrides: Record<string, unknown> = {}): any {
 }
 
 function derive(inputs: AttentionInputs) {
-  return deriveAttentionItems({ now: NOW, ...inputs });
+  return deriveAttentionItems({ now: NOW, ...inputs }).items;
 }
 
 describe('deriveAttentionItems', () => {
@@ -464,11 +464,12 @@ describe('deriveAttentionItems', () => {
       expect(items[0].detail).to.contain('Price catalog stale since');
       expect(items[0].action).to.deep.equal({
         label: 'Update prices',
-        href: '/console/cost',
+        href: '/console/cost?panel=pricing',
       });
     });
 
-    it('flags an empty catalog and unpriced requests in one item', () => {
+    // Staging shape: `price_catalog` is null, so nothing can be costed at all.
+    it('names the missing catalog rather than counting unpriced requests', () => {
       const items = derive({
         usageSummary: summary({
           price_catalog: { fetched_at: null, model_count: 0 },
@@ -477,9 +478,73 @@ describe('deriveAttentionItems', () => {
       });
 
       expect(items).to.have.length(1);
+      expect(items[0].title).to.equal('No price catalog loaded');
       expect(items[0].detail).to.equal(
-        'Price catalog has no models · 4 requests unpriced'
+        'Estimated spend is missing for 4 requests because no provider price list is loaded.'
       );
+      expect(items[0].evidence?.catalogMissing).to.equal(true);
+    });
+
+    // The count alone ("336 requests unpriced") is not actionable: the row has
+    // to say which models have no price.
+    it('lists the models a loaded catalog cannot price', () => {
+      const items = derive({
+        usageSummary: summary({
+          price_catalog: { fetched_at: daysAgo(1), model_count: 120 },
+          unpriced_requests: 2161,
+          usage_by_model: [
+            {
+              ai_model_id: 'model-1',
+              model_alias: 'openrouter/stealth/ox-alpha',
+              provider_name: 'openrouter',
+              request_count: 2134,
+              token_usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 900,
+              },
+              estimated_cost: 0,
+              last_request_at: minutesAgo(10),
+            },
+            {
+              ai_model_id: null,
+              model_alias: 'zai/glm-5-3-turbo',
+              provider_name: 'zai',
+              request_count: 27,
+              token_usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 40,
+              },
+              estimated_cost: 0,
+              last_request_at: minutesAgo(90),
+            },
+            {
+              ai_model_id: 'model-3',
+              model_alias: 'anthropic/claude-4-opus',
+              provider_name: 'anthropic',
+              request_count: 500,
+              token_usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 80,
+              },
+              estimated_cost: 12.5,
+              last_request_at: minutesAgo(5),
+            },
+          ],
+        }),
+      });
+
+      expect(items).to.have.length(1);
+      expect(items[0].title).to.equal('2 models without a price');
+      const unpriced = items[0].evidence?.unpricedModels || [];
+      expect(unpriced.map((model) => model.alias)).to.eql([
+        'openrouter/stealth/ox-alpha',
+        'zai/glm-5-3-turbo',
+      ]);
+      expect(unpriced[0].aiModelId).to.equal('model-1');
+      expect(unpriced[0].requests).to.equal(2134);
     });
 
     it('stays quiet for a fresh catalog with everything priced', () => {
@@ -491,6 +556,223 @@ describe('deriveAttentionItems', () => {
       });
 
       expect(items).to.have.length(0);
+    });
+  });
+
+  describe('evidence', () => {
+    it('carries the failed runs and the most common error behind a flow count', () => {
+      const items = derive({
+        executions: [
+          {
+            id: 'run-3',
+            flow_id: 'flow-1',
+            flow_name: 'Nightly Sync',
+            status: 'FAILED',
+            start_time: minutesAgo(30),
+            end_time: minutesAgo(29),
+            error_message:
+              'Failed to start agent Job: (409) Conflict\n  at runner.py:88',
+          },
+          {
+            id: 'run-2',
+            flow_id: 'flow-1',
+            flow_name: 'Nightly Sync',
+            status: 'FAILED',
+            start_time: minutesAgo(90),
+            error_message: 'Failed to start agent Job: (409) Conflict',
+          },
+          {
+            id: 'run-1',
+            flow_id: 'flow-1',
+            flow_name: 'Nightly Sync',
+            status: 'FAILED',
+            start_time: minutesAgo(200),
+            error_message: 'Timed out waiting for tool response',
+          },
+        ],
+      });
+
+      const runs = items[0].evidence?.failedRuns || [];
+      expect(runs.map((run) => run.id)).to.eql(['run-3', 'run-2', 'run-1']);
+      // Only the first line: stack traces belong in the title attribute.
+      expect(runs[0].errorMessage).to.contain('(409) Conflict');
+      expect(items[0].evidence?.mostCommonError).to.deep.equal({
+        message: 'Failed to start agent Job: (409) Conflict',
+        count: 2,
+        total: 3,
+      });
+      expect(items[0].fingerprint).to.equal('run:run-3');
+    });
+
+    it('gives an unconnected agent a sentence and the command that fixes it', () => {
+      const items = derive({
+        agents: [
+          agentFixture({
+            display_name: 'Researcher',
+            onboarding_state: 'incomplete',
+          }),
+        ],
+      });
+
+      const reasons = items[0].evidence?.agentReasons || [];
+      expect(reasons).to.have.length(1);
+      expect(reasons[0].text).to.contain('Onboarding never completed');
+      expect(reasons[0].command).to.equal(
+        'preloop agents onboard "Researcher"'
+      );
+      expect(reasons[0].action).to.deep.equal({
+        label: 'Open agent',
+        href: '/console/agents/agent-1',
+      });
+    });
+
+    it('keeps the last five gateway failures for a model', () => {
+      const items = derive({
+        gatewayFailures: Array.from({ length: 7 }, (_, index) =>
+          failureFixture({
+            api_usage_id: `usage-${index}`,
+            timestamp: minutesAgo(index + 1),
+            excerpt: `boom ${index}`,
+            runtime_session_id: 'session-9',
+          })
+        ),
+      });
+
+      const failures = items[0].evidence?.modelFailures || [];
+      expect(failures).to.have.length(5);
+      expect(failures[0].excerpt).to.equal('boom 0');
+      expect(failures[0].statusCode).to.equal(500);
+      expect(failures[0].sessionId).to.equal('session-9');
+    });
+  });
+
+  describe('dismissals', () => {
+    const flowInputs: AttentionInputs = {
+      executions: [
+        {
+          id: 'run-9',
+          flow_id: 'flow-1',
+          flow_name: 'Nightly Sync',
+          status: 'FAILED',
+          start_time: minutesAgo(30),
+          error_message: 'boom',
+        },
+      ],
+    };
+
+    it('hides an item whose fingerprint still matches its dismissal', () => {
+      const result = deriveAttentionItems({
+        now: NOW,
+        ...flowInputs,
+        dismissals: [
+          {
+            item_id: 'flow:flow-1',
+            fingerprint: 'run:run-9',
+            reason: 'expected',
+            created_at: minutesAgo(10),
+          },
+        ],
+      });
+
+      expect(result.items).to.have.length(0);
+      expect(result.dismissed).to.have.length(1);
+      expect(result.dismissed[0].item.id).to.equal('flow:flow-1');
+      expect(result.dismissed[0].dismissal.reason).to.equal('expected');
+    });
+
+    it('brings the item back when the fingerprint changes', () => {
+      const result = deriveAttentionItems({
+        now: NOW,
+        ...flowInputs,
+        dismissals: [
+          {
+            item_id: 'flow:flow-1',
+            fingerprint: 'run:run-8',
+            reason: 'expected',
+          },
+        ],
+      });
+
+      expect(result.items.map((item) => item.id)).to.eql(['flow:flow-1']);
+      expect(result.dismissed).to.have.length(0);
+    });
+
+    it('ignores a snooze that has run out', () => {
+      const result = deriveAttentionItems({
+        now: NOW,
+        ...flowInputs,
+        dismissals: [
+          {
+            item_id: 'flow:flow-1',
+            fingerprint: 'run:run-9',
+            reason: 'snoozed',
+            snooze_until: minutesAgo(1),
+          },
+        ],
+      });
+
+      expect(result.items).to.have.length(1);
+    });
+
+    it('honours a snooze that is still running', () => {
+      const result = deriveAttentionItems({
+        now: NOW,
+        ...flowInputs,
+        dismissals: [
+          {
+            item_id: 'flow:flow-1',
+            fingerprint: 'run:run-9',
+            reason: 'snoozed',
+            snooze_until: new Date(NOW.getTime() + 3 * 86400000).toISOString(),
+          },
+        ],
+      });
+
+      expect(result.items).to.have.length(0);
+      expect(result.dismissed).to.have.length(1);
+    });
+
+    it('never hides an approval, even with a matching dismissal', () => {
+      const approvals = [
+        {
+          id: 'approval-1',
+          tool_name: 'refund_order',
+          requested_at: minutesAgo(5),
+        },
+      ];
+      const [item] = deriveAttentionItems({ now: NOW, approvals }).items;
+      expect(item.dismissable).to.equal(false);
+
+      const result = deriveAttentionItems({
+        now: NOW,
+        approvals,
+        dismissals: [
+          {
+            item_id: item.id,
+            fingerprint: item.fingerprint,
+            reason: 'expected',
+          },
+        ],
+      });
+
+      expect(result.items).to.have.length(1);
+    });
+
+    it('fingerprints an agent by its onboarding and validation state', () => {
+      const [item] = deriveAttentionItems({
+        now: NOW,
+        agents: [
+          agentFixture({
+            onboarding_state: 'incomplete',
+            live_validation_status: 'failed',
+            last_validated_at: '2026-08-01T00:00:00Z',
+          }),
+        ],
+      }).items;
+
+      expect(item.fingerprint).to.equal(
+        'incomplete|failed|2026-08-01T00:00:00Z'
+      );
     });
   });
 

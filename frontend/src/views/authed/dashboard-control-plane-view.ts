@@ -49,6 +49,7 @@ import {
   sessionBelongsToAgent,
 } from '../../utils/agent-display';
 import {
+  attentionItemAnchor,
   ATTENTION_KIND_META,
   deriveAttentionItems,
   type AttentionInputs,
@@ -2479,7 +2480,7 @@ export class DashboardView extends AuthedElement {
     if (!this.attentionInputs) {
       return [];
     }
-    return deriveAttentionItems(this.attentionInputs);
+    return deriveAttentionItems(this.attentionInputs).items;
   }
 
   /**
@@ -3704,7 +3705,10 @@ export class DashboardView extends AuthedElement {
             visible,
             (item) => item.id,
             (item) => html`
-              <a class="attention-chip-link" href=${item.href}>
+              <a
+                class="attention-chip-link"
+                href=${attentionItemAnchor(item.id)}
+              >
                 <sl-badge class="chip" variant="warning" pill>
                   <sl-icon
                     name=${ATTENTION_KIND_META[item.kind].icon}

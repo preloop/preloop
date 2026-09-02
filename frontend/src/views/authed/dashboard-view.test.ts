@@ -870,6 +870,36 @@ describe('DashboardView', () => {
     expect(strip.offsetHeight, 'strip height').to.be.at.most(56);
   });
 
+  it('points each strip chip at its own row on the attention page', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
+      'dashboard did not finish loading'
+    );
+    await element.updateComplete;
+
+    const strip = element.shadowRoot?.querySelector(
+      '.attention-strip'
+    ) as HTMLElement;
+    const chips = Array.from(
+      strip.querySelectorAll('a.attention-chip-link')
+    ) as HTMLAnchorElement[];
+    expect(chips.length).to.be.greaterThan(0);
+    // A chip used to open the entity itself, which lost the context that
+    // explained why it was on the list. It now lands on the row.
+    for (const chip of chips) {
+      expect(chip.getAttribute('href')).to.match(/^\/console\/attention#item-/);
+    }
+    const first = element['attentionItems'][0];
+    expect(chips[0].getAttribute('href')).to.equal(
+      `/console/attention#item-${encodeURIComponent(first.id)}`
+    );
+  });
+
   it('hides the attention strip when nothing needs attention', async () => {
     const element = await mountDashboard();
     await waitUntil(

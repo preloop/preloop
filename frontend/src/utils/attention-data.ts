@@ -1,5 +1,8 @@
 import {
   getAccountAgents,
+  getAttentionDismissals,
+  DISMISSALS_UNSUPPORTED,
+  type AttentionDismissal,
   getAccountGatewayUsageSearch,
   getAccountGatewayUsageSummary,
   getAccountRuntimeSessions,
@@ -69,6 +72,14 @@ function isUnexpiredPendingApproval(
   return parseUTCDate(approval.expires_at).getTime() > now.getTime();
 }
 
+export interface LoadedAttentionInputs extends AttentionInputs {
+  /**
+   * False when the server has no dismissals endpoint (older deployment): the
+   * page hides its dismiss controls instead of showing buttons that 404.
+   */
+  dismissalsSupported: boolean;
+}
+
 export interface LoadAttentionInputsOptions {
   /** Injected in tests and by callers that already know "now". */
   now?: Date;
@@ -84,7 +95,7 @@ export interface LoadAttentionInputsOptions {
  */
 export async function loadAttentionInputs(
   options: LoadAttentionInputsOptions = {}
-): Promise<AttentionInputs> {
+): Promise<LoadedAttentionInputs> {
   const now = options.now || new Date();
   const sessionsStart = new Date(
     now.getTime() - ATTENTION_QUERY.sessionsWindowDays * DAY_MS
@@ -93,33 +104,50 @@ export async function loadAttentionInputs(
     now.getTime() - ATTENTION_QUERY.usageWindowDays * DAY_MS
   ).toISOString();
 
-  const [approvals, agents, sessions, executions, failures, policies, summary] =
-    await Promise.allSettled([
-      listApprovalRequests({
-        status: 'pending',
-        limit: ATTENTION_QUERY.approvalsLimit,
-      }),
-      getAccountAgents({ status: 'all', limit: ATTENTION_QUERY.agentsLimit }),
-      getAccountRuntimeSessions({
-        status: 'all',
-        limit: ATTENTION_QUERY.sessionsLimit,
-        startDate: sessionsStart,
-      }),
-      getFlowExecutions({
-        status: 'FAILED',
-        limit: ATTENTION_QUERY.executionsLimit,
-      }),
-      getAccountGatewayUsageSearch({
-        limit: ATTENTION_QUERY.gatewayFailuresLimit,
-      }),
-      options.includeBudgetPolicies === false
-        ? Promise.resolve([] as BudgetPolicy[])
-        : getBudgetPolicies(),
-      getAccountGatewayUsageSummary({
-        startDate: usageStart,
-        includeBreakdown: false,
-      }),
-    ]);
+  const [
+    approvals,
+    agents,
+    sessions,
+    executions,
+    failures,
+    policies,
+    summary,
+    dismissals,
+  ] = await Promise.allSettled([
+    listApprovalRequests({
+      status: 'pending',
+      limit: ATTENTION_QUERY.approvalsLimit,
+    }),
+    getAccountAgents({ status: 'all', limit: ATTENTION_QUERY.agentsLimit }),
+    getAccountRuntimeSessions({
+      status: 'all',
+      limit: ATTENTION_QUERY.sessionsLimit,
+      startDate: sessionsStart,
+    }),
+    getFlowExecutions({
+      status: 'FAILED',
+      limit: ATTENTION_QUERY.executionsLimit,
+    }),
+    getAccountGatewayUsageSearch({
+      limit: ATTENTION_QUERY.gatewayFailuresLimit,
+    }),
+    options.includeBudgetPolicies === false
+      ? Promise.resolve([] as BudgetPolicy[])
+      : getBudgetPolicies(),
+    // The breakdown is what turns "336 requests unpriced" into "these seven
+    // models have no price", which is the part somebody can act on.
+    getAccountGatewayUsageSummary({
+      startDate: usageStart,
+      includeBreakdown: true,
+    }),
+    getAttentionDismissals(),
+  ]);
+
+  const dismissalList =
+    dismissals.status === 'fulfilled' &&
+    dismissals.value !== DISMISSALS_UNSUPPORTED
+      ? (dismissals.value as AttentionDismissal[])
+      : [];
 
   return {
     approvals:
@@ -154,5 +182,9 @@ export async function loadAttentionInputs(
       summary.status === 'fulfilled'
         ? (summary.value as AccountGatewayUsageSummaryResponse)
         : null,
+    dismissals: dismissalList,
+    dismissalsSupported:
+      dismissals.status === 'fulfilled' &&
+      dismissals.value !== DISMISSALS_UNSUPPORTED,
   };
 }
