@@ -2975,7 +2975,10 @@ class ApprovalService:
             poll_interval: How often to poll (seconds)
 
         Returns:
-            Final approval request
+            Final approval request. The instance is detached from the
+            per-poll session that loaded it; callers may read preloaded
+            scalar columns only. Accessing lazy relationships raises
+            DetachedInstanceError.
 
         Raises:
             TimeoutError: If request expires before being resolved (after escalation if configured)

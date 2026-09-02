@@ -29,6 +29,18 @@ DEFAULT_WARN_RATIO = 0.8
 _FALSE_VALUES = {"0", "false", "no", "off"}
 
 
+def _env_float(name: str, default: float) -> float:
+    """Read a float environment variable with a safe fallback."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, value, default)
+        return default
+
+
 def db_monitoring_enabled() -> bool:
     """Return whether pool monitoring is enabled (DB_MONITORING_ENABLED)."""
     return os.getenv("DB_MONITORING_ENABLED", "true").strip().lower() not in (
@@ -143,12 +155,16 @@ class DbPoolMonitor:
             warn_ratio: Fraction of the ceiling that triggers a WARNING
                 (DB_POOL_WARN_RATIO).
         """
-        self.interval_seconds = interval_seconds or int(
-            os.getenv("DB_MONITORING_INTERVAL", str(DEFAULT_INTERVAL_SECONDS))
-        )
-        self.warn_ratio = warn_ratio or float(
-            os.getenv("DB_POOL_WARN_RATIO", str(DEFAULT_WARN_RATIO))
-        )
+        if interval_seconds is None:
+            from preloop.models.db.session import _env_int
+
+            interval_seconds = _env_int(
+                "DB_MONITORING_INTERVAL", DEFAULT_INTERVAL_SECONDS
+            )
+        self.interval_seconds = interval_seconds
+        if warn_ratio is None:
+            warn_ratio = _env_float("DB_POOL_WARN_RATIO", DEFAULT_WARN_RATIO)
+        self.warn_ratio = warn_ratio
         self._running = False
         self._task: Optional[asyncio.Task] = None
 

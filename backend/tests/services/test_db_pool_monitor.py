@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from preloop.services.db_pool_monitor import (
+    DEFAULT_INTERVAL_SECONDS,
+    DEFAULT_WARN_RATIO,
     DbPoolMonitor,
     collect_pool_stats,
     db_monitoring_enabled,
@@ -108,6 +110,15 @@ class TestWarnThreshold:
         assert not [
             r for r in caplog.records if "pool nearing exhaustion" in r.getMessage()
         ]
+
+
+class TestEnvParsing:
+    def test_invalid_env_falls_back_to_defaults(self, monkeypatch):
+        monkeypatch.setenv("DB_MONITORING_INTERVAL", "30s")
+        monkeypatch.setenv("DB_POOL_WARN_RATIO", "not-a-float")
+        monitor = DbPoolMonitor()
+        assert monitor.interval_seconds == DEFAULT_INTERVAL_SECONDS
+        assert monitor.warn_ratio == DEFAULT_WARN_RATIO
 
 
 class TestEnableFlag:
