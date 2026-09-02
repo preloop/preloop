@@ -24,7 +24,7 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy | default "Always" }}
           command: ["/bin/sh", "-c"]
-          args: ["cd /app/backend/preloop/models && alembic upgrade head"]
+          args: ["cd /app/backend/preloop/models && alembic upgrade head && python /app/scripts/sync_flow_presets.py --no-propagate"]
           env:
             {{- include "preloop.databaseUrlEnv" . | nindent 12 }}
             {{- include "preloop.extraEnv" . | nindent 12 }}

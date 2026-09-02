@@ -11,6 +11,7 @@ from fastapi import (
     HTTPException,
     status,
     Query,
+    Request,
     Response,
 )
 from sqlalchemy.orm import Session
@@ -18,6 +19,9 @@ from sqlalchemy.orm import Session
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.models.crud import crud_account
 from preloop.schemas.ai_model import (
+    AIModelCatalogSyncProviderResult,
+    AIModelCatalogSyncRequest,
+    AIModelCatalogSyncResponse,
     AIModelCreate,
     AIModelCredentialExportResponse,
     AIModelGatewayUsageSummaryResponse,
@@ -44,10 +48,12 @@ from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 from preloop.utils.permissions import require_permission
 from preloop.services.ai_model_provider import (
+    ERROR_SUBSCRIPTION_OAUTH,
     ProviderAuthError,
     ProviderValidationError,
     get_available_models_for_provider,
 )
+from preloop.services.ai_model_catalog_sync import sync_account_model_catalog
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -291,6 +297,56 @@ def delete_ai_model(
 
 
 @router.post(
+    "/ai-models/sync",
+    response_model=AIModelCatalogSyncResponse,
+    summary="Sync Provider Model Catalogs",
+    tags=["AI Models"],
+)
+@require_permission("create_ai_models")
+async def sync_ai_model_catalog(
+    request: Request,
+    request_in: Optional[AIModelCatalogSyncRequest] = None,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelCatalogSyncResponse:
+    """Discover newly released provider models and add them to the catalog.
+
+    Runs the existing live provider discovery against credentials the account
+    already stores (the same discovery the console model-add flow uses) and
+    creates one AI model per newly discovered identifier via the CRUD layer.
+    New rows share the seed model's credential secret and inherit its gateway
+    exposure, so authorization semantics are unchanged: API-key models stay
+    account-wide, and principal-bound subscription-OAuth models (which cannot
+    authenticate server-side discovery) are never created or widened here.
+
+    Backing service: ``preloop.services.ai_model_catalog_sync``. Every added
+    model is recorded in the audit trail. Use ``dry_run`` to preview.
+    """
+    summary = await sync_account_model_catalog(
+        db,
+        user=current_user,
+        provider=request_in.provider if request_in else None,
+        dry_run=bool(request_in.dry_run) if request_in else False,
+        request=request,
+    )
+    return AIModelCatalogSyncResponse(
+        providers=[
+            AIModelCatalogSyncProviderResult(
+                provider=result.provider,
+                source=result.source,
+                error=result.error,
+                discovered=result.discovered,
+                added=result.added,
+                skipped_existing=result.skipped_existing,
+                note=result.note,
+            )
+            for result in summary.providers
+        ],
+        dry_run=summary.dry_run,
+    )
+
+
+@router.post(
     "/ai-models/{model_id}/credentials/export",
     response_model=AIModelCredentialExportResponse,
     summary="Export Subscription OAuth Credential",
@@ -389,12 +445,32 @@ async def list_provider_available_models(
     The server decrypts the stored secret via CRUD. A typed ``api_key`` in
     the body always wins. Stored secrets are never returned to the client.
     """
-    api_key, api_endpoint, aws_auth, model_kind = _resolve_listing_inputs(
+    (
+        api_key,
+        api_endpoint,
+        aws_auth,
+        model_kind,
+        stored_subscription_oauth,
+    ) = _resolve_listing_inputs(
         provider=provider,
         request_in=request_in,
         db=db,
         current_user=current_user,
     )
+    if stored_subscription_oauth and not api_key:
+        # The stored credential is a principal-bound subscription-OAuth bundle
+        # (e.g. Claude Code). HARD CONSTRAINT: the server never initiates its
+        # own provider API calls with such a token; Anthropic fingerprints
+        # Claude Code OAuth traffic and can invalidate the subscription (see
+        # the error-code-1010 note in secret_service.py). Answer from the
+        # account's own catalog instead of returning an API-key auth error.
+        return AvailableModelsResponse(
+            models=_account_catalog_identifiers(
+                db=db, current_user=current_user, provider=provider
+            ),
+            source="fallback",
+            error=ERROR_SUBSCRIPTION_OAUTH,
+        )
     return await _fetch_provider_models(
         provider=provider,
         api_key=api_key,
@@ -501,11 +577,17 @@ def _resolve_listing_inputs(
     Optional[str],
     Optional[dict],
     Literal["llm", "stt", "tts"],
+    bool,
 ]:
     """Typed credentials win; otherwise decrypt the stored model secret.
 
     The stored plaintext is used only for the live list call and is never
     copied into the response.
+
+    The final tuple element reports whether the stored model carries a
+    principal-bound subscription-OAuth credential (Claude Code / Codex). Such
+    secrets are never decrypted here: the caller must not contact the
+    provider with them at all, so there is nothing to resolve.
 
     A stored secret is only ever used for the provider it was stored for. The
     edit form leaves the provider dropdown enabled, so without that check a
@@ -524,6 +606,7 @@ def _resolve_listing_inputs(
     stored_key: Optional[str] = None
     stored_endpoint: Optional[str] = None
     stored_aws: Optional[Dict[str, str]] = None
+    stored_subscription_oauth = False
     model_id = request_in.ai_model_id if request_in else None
     if model_id is not None:
         if (
@@ -549,6 +632,17 @@ def _resolve_listing_inputs(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Stored model provider does not match the requested provider",
             )
+        if bool(getattr(db_model, "is_principal_bound_oauth", False)):
+            # Never decrypt or use a principal-bound subscription-OAuth token
+            # for server-initiated listing; the caller answers from the
+            # catalog instead (see list_provider_available_models).
+            return (
+                (typed_key or None),
+                typed_endpoint or (db_model.api_endpoint or "").strip() or None,
+                typed_aws,
+                model_kind,
+                True,
+            )
         try:
             stored_key = crud_ai_model.resolve_listing_secret(db_model)
         except ValueError:
@@ -571,7 +665,36 @@ def _resolve_listing_inputs(
     api_key = typed_key or stored_key
     api_endpoint = typed_endpoint or stored_endpoint
     aws_auth = typed_aws or stored_aws
-    return api_key, api_endpoint, aws_auth, model_kind
+    return api_key, api_endpoint, aws_auth, model_kind, stored_subscription_oauth
+
+
+def _account_catalog_identifiers(
+    *,
+    db: Session,
+    current_user: User,
+    provider: str,
+) -> List[str]:
+    """The account's own model identifiers for one provider.
+
+    Used as the honest picker fallback for subscription-OAuth credentials:
+    there is no bundled provider catalog and no server-initiated listing, so
+    what the account already knows (from onboarding imports, `models sync`,
+    and gateway traffic-observed auto-registration) is the curated list.
+
+    Sorted reverse-lexicographic. That is roughly newest-first for
+    date-suffixed ids, but not a chronological sort: ``model-5-20260415``
+    sorts ahead of ``model-5-1-20260901``. Display order only.
+    """
+    provider_name = (provider or "").strip().lower()
+    identifiers = {
+        (model.model_identifier or "").strip()
+        for model in crud_ai_model.get_by_account(
+            db=db, account_id=current_user.account_id
+        )
+        if (model.provider_name or "").strip().lower() == provider_name
+        and (model.model_identifier or "").strip()
+    }
+    return sorted(identifiers, reverse=True)
 
 
 def _aws_auth_from_request(

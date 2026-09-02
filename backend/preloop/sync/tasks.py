@@ -24,6 +24,7 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "reprice_gateway_usage_task",
     "ingest_provider_billing",
     "send_optimization_digest",
+    "sync_model_catalog",
     "execute_flow",
     "resume_flow_execution",
 )
@@ -302,6 +303,44 @@ def ingest_provider_billing(account_id: str | None = None) -> object | None:
         return service.ingest(db, account_id=account_id)
     except Exception as e:
         logger.error("Provider billing ingestion failed: %s", e, exc_info=True)
+        return None
+    finally:
+        db.close()
+
+
+async def sync_model_catalog(account_id: str | None = None) -> dict[str, int] | None:
+    """Scheduled model-catalog sync: pull newly released provider models.
+
+    Runs the same sync logic as POST /api/v1/ai-models/sync for every account
+    (or one account when ``account_id`` is given), attributed to the
+    ``model-catalog-sync`` system actor. Principal-bound subscription-OAuth
+    credentials are hard-excluded, identically to the manual sync.
+
+    Guarded by ``model_catalog_sync_scheduled_enabled`` (default off) on the
+    worker side too, so a stale queued task after the setting is turned off
+    still no-ops.
+    """
+    from preloop.config import settings
+    from preloop.services.ai_model_catalog_sync import (
+        CatalogSyncActor,
+        sync_account_model_catalog,
+        sync_all_account_model_catalogs,
+    )
+
+    if not getattr(settings, "model_catalog_sync_scheduled_enabled", False):
+        logger.debug("Scheduled model catalog sync is disabled; skipping")
+        return None
+    db = next(get_db_session())
+    try:
+        if account_id:
+            summary = await sync_account_model_catalog(
+                db, actor=CatalogSyncActor.system(account_id)
+            )
+            total = sum(len(result.added) for result in summary.providers)
+            return {account_id: total} if total else {}
+        return await sync_all_account_model_catalogs(db)
+    except Exception as e:
+        logger.error("Scheduled model catalog sync failed: %s", e, exc_info=True)
         return None
     finally:
         db.close()

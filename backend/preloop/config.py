@@ -339,6 +339,28 @@ class Settings(BaseSettings):
             "day so repeated traffic never re-triggers lookups."
         ),
     )
+    model_catalog_sync_scheduled_enabled: bool = Field(
+        False,
+        description=(
+            "Schedule the automatic model-catalog sync (the scheduled "
+            "equivalent of 'preloop models sync'): periodically discover "
+            "newly released provider models with stored API-key credentials "
+            "and add them to each account catalog. Principal-bound "
+            "subscription-OAuth credentials (Claude Code / Codex) are never "
+            "used. Default off so self-hosted catalogs never change on "
+            "upgrade without an explicit opt-in; set "
+            "MODEL_CATALOG_SYNC_SCHEDULED_ENABLED=true (helm: "
+            "config.modelCatalogSync.scheduledEnabled) to enable."
+        ),
+    )
+    model_catalog_sync_interval_hours: int = Field(
+        24,
+        description=(
+            "How often the scheduled model-catalog sync runs, in hours. "
+            "Only meaningful when model_catalog_sync_scheduled_enabled is "
+            "true (helm: config.modelCatalogSync.intervalHours)."
+        ),
+    )
     provider_billing_sync_enabled: bool = Field(
         True,
         description=(
