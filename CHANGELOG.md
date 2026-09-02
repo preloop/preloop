@@ -54,6 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Scorecard supply-chain job pulls from GHCR**: `ossf/scorecard-action`
+  is pinned to v2.4.4 (`ghcr.io/ossf/scorecard-action`). v2.4.0 pulled
+  `gcr.io/openssf/scorecard-action`, which now denies unauthenticated pulls
+  without GCP billing.
+
 - **Blog posts no longer repeat the title**: the article template already
   emits `<h1>` from frontmatter. A leading `# Title` in the markdown (or
   the matching `<h1>` in the rendered body) is stripped so
