@@ -5,6 +5,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from sqlalchemy import or_
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from ..models.attention_dismissal import AttentionDismissal
@@ -99,32 +100,54 @@ class CRUDAttentionDismissal(CRUDBase[AttentionDismissal]):
         fingerprint) overwrites the existing row rather than adding a second
         one, so ``(account_id, item_id)`` stays unique and the row always
         describes the state the operator actually looked at.
+
+        The write is a single ``INSERT ... ON CONFLICT DO UPDATE``: a
+        read-then-insert let two operators dismissing the same item at the
+        same moment both miss the existing row and race into the unique
+        constraint, which surfaced as a 500 rather than an idempotent
+        re-dismissal.
         """
-        existing = self.get_by_item(db, account_id=account_id, item_id=item_id)
-        if existing is None:
-            existing = AttentionDismissal(
+        # The row records a new decision, so it is dated by it. ``created_at``
+        # and ``updated_at`` are Base's naive-UTC timestamps, and neither the
+        # server default nor ``onupdate`` fires for the conflict branch of a
+        # Core insert, so both are set explicitly.
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        statement = (
+            pg_insert(AttentionDismissal)
+            .values(
                 account_id=account_id,
                 item_id=item_id,
                 fingerprint=fingerprint,
                 reason=reason,
                 snooze_until=snooze_until,
                 dismissed_by_user_id=dismissed_by_user_id,
+                created_at=now,
+                updated_at=now,
             )
-            db.add(existing)
-        else:
-            existing.fingerprint = fingerprint
-            existing.reason = reason
-            existing.snooze_until = snooze_until
-            existing.dismissed_by_user_id = dismissed_by_user_id
-            # The row now records a new decision, so it is dated by it. The
-            # column is Base's naive-UTC timestamp.
-            existing.created_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            .on_conflict_do_update(
+                constraint="uq_attention_dismissal_account_item",
+                set_={
+                    "fingerprint": fingerprint,
+                    "reason": reason,
+                    "snooze_until": snooze_until,
+                    "dismissed_by_user_id": dismissed_by_user_id,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+            .returning(AttentionDismissal.id)
+        )
+        dismissal_id = db.execute(statement).scalar_one()
         if commit:
             db.commit()
-            db.refresh(existing)
         else:
             db.flush()
-        return existing
+        # ``populate_existing`` because the caller may already hold a stale
+        # copy of this row in the session's identity map.
+        dismissal = db.get(AttentionDismissal, dismissal_id, populate_existing=True)
+        if dismissal is None:  # pragma: no cover - the row was just written
+            raise RuntimeError(f"Attention dismissal {dismissal_id} vanished on write")
+        return dismissal
 
     def delete_by_item(
         self,
