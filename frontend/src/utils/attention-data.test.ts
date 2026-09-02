@@ -6,6 +6,7 @@ import { ATTENTION_QUERY, loadAttentionInputs } from './attention-data';
 describe('loadAttentionInputs', () => {
   let fetchStub: sinon.SinonStub;
   let failing: string[] = [];
+  let dismissalsStatus = 200;
 
   const json = (data: unknown) =>
     new Response(JSON.stringify(data), {
@@ -19,12 +20,34 @@ describe('loadAttentionInputs', () => {
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     failing = [];
+    dismissalsStatus = 200;
     fetchStub = sinon
       .stub(window, 'fetch')
       .callsFake(async (input: RequestInfo | URL) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (failing.some((fragment) => url.includes(fragment))) {
           return new Response('{"detail":"forbidden"}', { status: 403 });
+        }
+        if (url.startsWith('/api/v1/attention/dismissals')) {
+          if (dismissalsStatus !== 200) {
+            return new Response('{"detail":"Not Found"}', {
+              status: dismissalsStatus,
+            });
+          }
+          return json({
+            items: [
+              {
+                id: 'dismissal-1',
+                item_id: 'flow:flow-1',
+                fingerprint: 'run:run-9',
+                reason: 'expected',
+                snooze_until: null,
+                dismissed_by_user_id: null,
+                dismissed_by_username: 'tester',
+                created_at: new Date().toISOString(),
+              },
+            ],
+          });
         }
         if (url.startsWith('/api/v1/approval-requests')) {
           return json([
@@ -157,6 +180,39 @@ describe('loadAttentionInputs', () => {
     expect(inputs.budgetPolicies).to.eql([]);
     expect(inputs.approvals).to.have.length(1);
     expect(inputs.agents).to.have.length(1);
+  });
+
+  it('asks the summary for the per-model breakdown', async () => {
+    await loadAttentionInputs();
+    // Without the breakdown the pricing item can only say "336 requests
+    // unpriced" and never which models have no price.
+    expect(
+      requestedUrls().some(
+        (url) =>
+          url.startsWith('/api/v1/account/gateway-usage/summary') &&
+          url.includes('include_breakdown=true')
+      )
+    ).to.be.true;
+  });
+
+  it('loads the active dismissals alongside the rest', async () => {
+    const inputs = await loadAttentionInputs();
+
+    expect(inputs.dismissalsSupported).to.be.true;
+    expect(inputs.dismissals?.map((dismissal) => dismissal.item_id)).to.eql([
+      'flow:flow-1',
+    ]);
+  });
+
+  // An older server has no such endpoint. Nothing is hidden and the page hides
+  // its dismiss controls instead of showing buttons that cannot work.
+  it('degrades quietly when the dismissals endpoint 404s', async () => {
+    dismissalsStatus = 404;
+    const inputs = await loadAttentionInputs();
+
+    expect(inputs.dismissalsSupported).to.be.false;
+    expect(inputs.dismissals).to.eql([]);
+    expect(inputs.approvals).to.have.length(1);
   });
 
   it('skips the budget call when billing is off', async () => {

@@ -5,6 +5,7 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 export interface ConfirmDialogOptions {
   title: string;
@@ -36,21 +37,24 @@ export class ConfirmDialog extends LitElement {
    */
   private settled = false;
 
-  static styles = css`
-    :host {
-      display: contents;
-    }
-    .message {
-      color: var(--sl-color-neutral-800);
-      white-space: pre-line;
-    }
-    .detail {
-      margin-top: var(--sl-spacing-small);
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-      white-space: pre-line;
-    }
-  `;
+  static styles = [
+    consoleDialogStyles,
+    css`
+      :host {
+        display: contents;
+      }
+      .message {
+        color: var(--sl-color-neutral-800);
+        white-space: pre-line;
+      }
+      .detail {
+        margin-top: var(--sl-spacing-small);
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        white-space: pre-line;
+      }
+    `,
+  ];
 
   /** Opens the dialog and resolves once the operator answers. */
   ask(options: ConfirmDialogOptions): Promise<boolean> {

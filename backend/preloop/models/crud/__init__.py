@@ -110,6 +110,10 @@ from .event import CRUDEvent, crud_event
 from .visitor import CRUDVisitor, crud_visitor
 from .identity_link import CRUDIdentityLink, crud_identity_link
 from .account_milestone import CRUDAccountMilestone, crud_account_milestone
+from .attention_dismissal import (
+    CRUDAttentionDismissal,
+    crud_attention_dismissal,
+)
 from .oauth_app_installation import (
     CRUDOAuthAppInstallation,
     crud_oauth_app_installation,
@@ -303,6 +307,8 @@ __all__ = [
     "crud_identity_link",
     "CRUDAccountMilestone",
     "crud_account_milestone",
+    "CRUDAttentionDismissal",
+    "crud_attention_dismissal",
     "CRUDOAuthAppInstallation",
     "crud_oauth_app_installation",
     "CRUDOAuthToken",

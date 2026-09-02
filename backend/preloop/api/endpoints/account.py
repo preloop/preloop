@@ -12,6 +12,7 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     HTTPException,
+    Path,
     Query,
     UploadFile,
     status,
@@ -25,6 +26,7 @@ from preloop.models.crud import (
     crud_account,
     crud_ai_model,
     crud_api_key,
+    crud_attention_dismissal,
     crud_approval_workflow,
     crud_managed_agent,
     crud_managed_agent_ai_model_binding,
@@ -36,7 +38,13 @@ from preloop.models.crud import (
 )
 from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
+from preloop.models.models.attention_dismissal import AttentionDismissal
 from preloop.models.models.user import User as UserModel
+from preloop.schemas.attention import (
+    AttentionDismissalListResponse,
+    AttentionDismissalResponse,
+    AttentionDismissalUpsertRequest,
+)
 from preloop.schemas.gateway_usage import (
     AccountManagedAgentListResponse,
     AccountGatewayUsageSearchResponse,
@@ -3115,3 +3123,132 @@ async def delete_avatar(
     db.commit()
     db.refresh(current_user)
     return AvatarResponse(avatar_url=None, avatar_source=None)
+
+
+def _dismissal_response(
+    dismissal: AttentionDismissal,
+    usernames: dict[str, str],
+) -> AttentionDismissalResponse:
+    """Serialize one dismissal, resolving who silenced it."""
+    response = AttentionDismissalResponse.model_validate(dismissal)
+    if dismissal.dismissed_by_user_id:
+        response.dismissed_by_username = usernames.get(
+            str(dismissal.dismissed_by_user_id)
+        )
+    return response
+
+
+def _resolve_dismissal_usernames(
+    db: Session, dismissals: list[AttentionDismissal]
+) -> dict[str, str]:
+    """Map user id -> display name for a batch of dismissals, in one query."""
+    user_ids = {
+        dismissal.dismissed_by_user_id
+        for dismissal in dismissals
+        if dismissal.dismissed_by_user_id
+    }
+    if not user_ids:
+        return {}
+    rows = db.query(UserModel).filter(UserModel.id.in_(user_ids)).all()
+    return {
+        str(row.id): (row.full_name or row.username or row.email or str(row.id))
+        for row in rows
+    }
+
+
+@router.get(
+    "/attention/dismissals",
+    response_model=AttentionDismissalListResponse,
+)
+async def list_attention_dismissals(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AttentionDismissalListResponse:
+    """List the console attention items this account has silenced.
+
+    Reading is open to any member of the account: the console needs this list
+    to render the inbox at all, and a member who cannot see it would be shown
+    items their colleagues have already dealt with.
+
+    Expired snoozes are excluded and garbage-collected here, so "hidden until"
+    never quietly becomes "hidden forever".
+    """
+    crud_attention_dismissal.purge_expired_for_account(db, account_id=account.id)
+    dismissals = crud_attention_dismissal.get_active_for_account(
+        db, account_id=account.id
+    )
+    usernames = _resolve_dismissal_usernames(db, dismissals)
+    return AttentionDismissalListResponse(
+        items=[_dismissal_response(dismissal, usernames) for dismissal in dismissals],
+        total=len(dismissals),
+    )
+
+
+@router.put(
+    "/attention/dismissals/{item_id}",
+    response_model=AttentionDismissalResponse,
+)
+@require_permission("manage_agents")
+async def upsert_attention_dismissal(
+    # Bounded by the column (``String(255)``): an oversized id is a 422 rather
+    # than a Postgres DataError behind a 500.
+    item_id: Annotated[str, Path(min_length=1, max_length=255)],
+    payload: AttentionDismissalUpsertRequest,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AttentionDismissalResponse:
+    """Silence one attention item until its fingerprint changes.
+
+    ``item_id`` is the console's stable id for the item (``<kind>:<entity
+    id>``), and the body's ``fingerprint`` is why it was showing. Dismissing
+    an item that has already been dismissed replaces the row, which is how an
+    item that came back with a new fingerprint gets silenced again.
+
+    Writing takes ``manage_agents``: an operator who may reconfigure the fleet
+    may also declare that one of its states is expected.
+    """
+    if payload.reason == "snoozed" and not payload.snooze_days:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="snooze_days is required when reason is 'snoozed'",
+        )
+    snooze_until = (
+        datetime.now(UTC) + timedelta(days=payload.snooze_days)
+        if payload.reason == "snoozed" and payload.snooze_days
+        else None
+    )
+    dismissal = crud_attention_dismissal.upsert(
+        db,
+        account_id=account.id,
+        item_id=item_id,
+        fingerprint=payload.fingerprint,
+        reason=payload.reason,
+        snooze_until=snooze_until,
+        dismissed_by_user_id=current_user.id,
+    )
+    usernames = _resolve_dismissal_usernames(db, [dismissal])
+    return _dismissal_response(dismissal, usernames)
+
+
+@router.delete(
+    "/attention/dismissals/{item_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+@require_permission("manage_agents")
+async def delete_attention_dismissal(
+    item_id: Annotated[str, Path(min_length=1, max_length=255)],
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> None:
+    """Restore a silenced item so it shows in the inbox again."""
+    removed = crud_attention_dismissal.delete_by_item(
+        db, account_id=account.id, item_id=item_id
+    )
+    if not removed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dismissal not found",
+        )

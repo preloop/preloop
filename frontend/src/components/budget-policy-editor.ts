@@ -35,6 +35,7 @@ import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 /** List groups, in display order. Rendered only when they hold a limit. */
 const SUBJECT_GROUPS: {
@@ -115,6 +116,7 @@ export class BudgetPolicyEditor extends LitElement {
   @state() private newCustomEmails: string[] = [];
 
   static styles = [
+    consoleDialogStyles,
     budgetTrackStyles,
     css`
       :host {

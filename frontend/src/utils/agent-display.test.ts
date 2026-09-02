@@ -100,17 +100,49 @@ describe('getAgentStatusChip', () => {
     ).to.deep.equal({ label: 'Live check failed', variant: 'warning' });
   });
 
-  it('flags every partially onboarded state as Setup incomplete', () => {
-    for (const state of ['incomplete', 'gateway_only', 'mcp_proxy_only']) {
-      expect(
-        getAgentStatusChip({
-          ...baseAgent,
-          onboarding_state: state,
-          is_active_now: true,
-        }),
-        state
-      ).to.deep.equal({ label: 'Setup incomplete', variant: 'warning' });
-    }
+  it('flags an agent that was never connected, and only that one', () => {
+    expect(
+      getAgentStatusChip({
+        ...baseAgent,
+        onboarding_state: 'incomplete',
+        is_active_now: true,
+      })
+    ).to.deep.equal({ label: 'Not connected', variant: 'warning' });
+  });
+
+  it('reads partial onboarding as a configuration, not a fault', () => {
+    expect(
+      getAgentStatusChip({
+        ...baseAgent,
+        onboarding_state: 'mcp_proxy_only',
+        is_active_now: true,
+      })
+    ).to.deep.equal({
+      label: 'MCP only',
+      variant: 'neutral',
+      tooltip: 'Tool firewall configured, model gateway not used',
+    });
+    expect(
+      getAgentStatusChip({
+        ...baseAgent,
+        onboarding_state: 'gateway_only',
+        is_active_now: true,
+      })
+    ).to.deep.equal({
+      label: 'Gateway only',
+      variant: 'neutral',
+      tooltip: 'Model gateway configured, tool firewall not used',
+    });
+  });
+
+  it('never turns a long idle agent amber', () => {
+    expect(
+      getAgentStatusChip({
+        ...onboarded,
+        last_seen_at: '2026-01-01T00:00:00Z',
+        activity_status: 'inactive',
+      })
+    ).to.deep.equal({ label: 'Idle', variant: 'neutral' });
   });
 
   it('shows Active now for a live agent and an outlined chip for a recent one', () => {

@@ -6,6 +6,7 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 export interface Tracker {
   id: string;
@@ -23,66 +24,69 @@ export class TrackerItem extends LitElement {
   @state()
   private isConfirmingDelete = false;
 
-  static styles = css`
-    .tracker-card {
-      width: 250px;
-      height: 320px;
-      display: flex;
-      flex-direction: column;
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      .tracker-card {
+        width: 250px;
+        height: 320px;
+        display: flex;
+        flex-direction: column;
+      }
 
-    .card-content {
-      flex-grow: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: var(--sl-spacing-large);
-      text-align: center;
-      cursor: pointer;
-    }
+      .card-content {
+        flex-grow: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: var(--sl-spacing-large);
+        text-align: center;
+        cursor: pointer;
+      }
 
-    .card-content:hover {
-      background-color: var(--sl-color-neutral-50);
-    }
+      .card-content:hover {
+        background-color: var(--sl-color-neutral-50);
+      }
 
-    .tracker-icon {
-      font-size: 4rem;
-      margin-bottom: var(--sl-spacing-medium);
-      color: var(--sl-color-primary-600);
-    }
+      .tracker-icon {
+        font-size: 4rem;
+        margin-bottom: var(--sl-spacing-medium);
+        color: var(--sl-color-primary-600);
+      }
 
-    .tracker-name {
-      font-size: var(--sl-font-size-large);
-      font-weight: var(--sl-font-weight-semibold);
-      margin: 0 0 var(--sl-spacing-x-small) 0;
-    }
+      .tracker-name {
+        font-size: var(--sl-font-size-large);
+        font-weight: var(--sl-font-weight-semibold);
+        margin: 0 0 var(--sl-spacing-x-small) 0;
+      }
 
-    .tracker-type {
-      font-size: var(--sl-font-size-small);
-      color: var(--sl-color-neutral-600);
-      text-transform: capitalize;
-      margin: 0;
-    }
+      .tracker-type {
+        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-600);
+        text-transform: capitalize;
+        margin: 0;
+      }
 
-    .tracker-created {
-      font-size: var(--sl-font-size-x-small);
-      color: var(--sl-color-neutral-500);
-      margin-top: var(--sl-spacing-medium);
-    }
+      .tracker-created {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-500);
+        margin-top: var(--sl-spacing-medium);
+      }
 
-    sl-card::part(footer) {
-      display: flex;
-      justify-content: space-evenly;
-      padding: var(--sl-spacing-small);
-      border-top: 1px solid var(--sl-color-neutral-200);
-    }
+      sl-card::part(footer) {
+        display: flex;
+        justify-content: space-evenly;
+        padding: var(--sl-spacing-small);
+        border-top: 1px solid var(--sl-color-neutral-200);
+      }
 
-    sl-button {
-      flex: 1 1 50%;
-      margin: 0 var(--sl-spacing-small);
-    }
-  `;
+      sl-button {
+        flex: 1 1 50%;
+        margin: 0 var(--sl-spacing-small);
+      }
+    `,
+  ];
 
   private _requestDeleteConfirmation() {
     this.isConfirmingDelete = true;

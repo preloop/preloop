@@ -12,6 +12,7 @@ import {
   createToolConfiguration,
   updateToolConfiguration,
 } from '../api';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 interface UnlockRow {
   tool: Tool;
@@ -40,111 +41,114 @@ export class UnlockedToolsReviewDialog extends LitElement {
     updateToolConfiguration,
   };
 
-  static styles = css`
-    :host {
-      display: contents;
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      :host {
+        display: contents;
+      }
 
-    .intro {
-      margin: 0 0 1rem;
-      color: var(--sl-color-neutral-700);
-      font-size: 0.875rem;
-      line-height: 1.45;
-    }
+      .intro {
+        margin: 0 0 1rem;
+        color: var(--sl-color-neutral-700);
+        font-size: 0.875rem;
+        line-height: 1.45;
+      }
 
-    .tool-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-      max-height: min(50vh, 360px);
-      overflow-y: auto;
-    }
+      .tool-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        max-height: min(50vh, 360px);
+        overflow-y: auto;
+      }
 
-    .tool-row {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 0.25rem 1rem;
-      align-items: center;
-      padding: 0.65rem 0.75rem;
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: 4px;
-      background: var(--sl-color-neutral-0);
-    }
+      .tool-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 0.25rem 1rem;
+        align-items: center;
+        padding: 0.65rem 0.75rem;
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: 4px;
+        background: var(--sl-color-neutral-0);
+      }
 
-    .tool-row.disabled {
-      opacity: 0.65;
-    }
+      .tool-row.disabled {
+        opacity: 0.65;
+      }
 
-    .tool-name {
-      font-weight: 600;
-      font-size: 0.875rem;
-      font-family: var(--sl-font-mono, ui-monospace, monospace);
-    }
+      .tool-name {
+        font-weight: 600;
+        font-size: 0.875rem;
+        font-family: var(--sl-font-mono, ui-monospace, monospace);
+      }
 
-    .tool-desc {
-      grid-column: 1 / 2;
-      font-size: 0.8rem;
-      color: var(--sl-color-neutral-600);
-      line-height: 1.35;
-    }
+      .tool-desc {
+        grid-column: 1 / 2;
+        font-size: 0.8rem;
+        color: var(--sl-color-neutral-600);
+        line-height: 1.35;
+      }
 
-    .tool-meta {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      grid-column: 2 / 3;
-      grid-row: 1 / 3;
-    }
+      .tool-meta {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        grid-column: 2 / 3;
+        grid-row: 1 / 3;
+      }
 
-    .schema-tokens {
-      font-size: 0.75rem;
-      color: var(--sl-color-neutral-600);
-      white-space: nowrap;
-    }
+      .schema-tokens {
+        font-size: 0.75rem;
+        color: var(--sl-color-neutral-600);
+        white-space: nowrap;
+      }
 
-    .context-tax {
-      margin-top: 0.85rem;
-      font-size: 0.875rem;
-      color: var(--sl-color-neutral-700);
-    }
+      .context-tax {
+        margin-top: 0.85rem;
+        font-size: 0.875rem;
+        color: var(--sl-color-neutral-700);
+      }
 
-    .context-tax strong {
-      font-weight: 600;
-    }
+      .context-tax strong {
+        font-weight: 600;
+      }
 
-    .dialog-footer {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.75rem;
-      justify-content: flex-end;
-    }
+      .dialog-footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.75rem;
+        justify-content: flex-end;
+      }
 
-    .review-later {
-      margin-right: auto;
-      font-size: 0.875rem;
-      color: var(--sl-color-primary-600);
-      text-decoration: underline;
-      background: none;
-      border: none;
-      padding: 0;
-      cursor: pointer;
-    }
+      .review-later {
+        margin-right: auto;
+        font-size: 0.875rem;
+        color: var(--sl-color-primary-600);
+        text-decoration: underline;
+        background: none;
+        border: none;
+        padding: 0;
+        cursor: pointer;
+      }
 
-    .review-later:hover {
-      color: var(--sl-color-primary-700);
-    }
+      .review-later:hover {
+        color: var(--sl-color-primary-700);
+      }
 
-    .loading,
-    .empty {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 1rem 0;
-      color: var(--sl-color-neutral-600);
-      font-size: 0.875rem;
-    }
-  `;
+      .loading,
+      .empty {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 1rem 0;
+        color: var(--sl-color-neutral-600);
+        font-size: 0.875rem;
+      }
+    `,
+  ];
 
   updated(changed: Map<string, unknown>) {
     if (changed.has('open') && !this.open) {

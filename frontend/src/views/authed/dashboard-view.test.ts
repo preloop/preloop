@@ -6,6 +6,22 @@ import { unifiedWebSocketManager } from '../../services/unified-websocket-manage
 import './dashboard-control-plane-view';
 import type { DashboardView } from './dashboard-control-plane-view';
 
+/**
+ * "Is this colour a red?" - true when the red channel dominates both others
+ * by a wide margin, which is what every danger token in either theme does and
+ * no neutral token does. Written against the computed value so a rule that
+ * hard-codes a hex is caught as well as one that names a token.
+ */
+function isReddish(color: string): boolean {
+  const match = color.match(/rgba?\(([^)]+)\)/);
+  if (!match) return false;
+  const [red, green, blue, alpha = '1'] = match[1]
+    .split(',')
+    .map((part) => Number(part.trim()));
+  if (alpha === 0) return false;
+  return red > green + 24 && red > blue + 24;
+}
+
 describe('DashboardView', () => {
   let fetchStub: sinon.SinonStub;
   let connectStub: sinon.SinonStub;
@@ -546,10 +562,11 @@ describe('DashboardView', () => {
     expect(updatedAt?.textContent || '').to.not.contain('Never');
     expect(updatedAt?.textContent || '').to.not.contain('Loading');
 
-    const failedRow = element.shadowRoot?.querySelector(
-      '.item-card.failed-execution'
-    );
-    expect(failedRow).to.exist;
+    // Rows are never tinted by state (wave 3): the status pill is the only
+    // red on the card.
+    expect(element.shadowRoot?.querySelector('.item-card')).to.exist;
+    expect(element.shadowRoot?.querySelector('.item-card.failed-execution')).to
+      .not.exist;
     expect(element.shadowRoot?.querySelector('.item-card.danger')).to.not.exist;
   });
 
@@ -590,16 +607,18 @@ describe('DashboardView', () => {
     it('does not let the error text overflow the row horizontally', async () => {
       const element = await mountWithFailedExecution('520px');
       const row = element.shadowRoot?.querySelector(
-        '.item-card.failed-execution'
+        '.item-card'
       ) as HTMLElement;
       const error = row.querySelector('.item-error') as HTMLElement;
 
       expect(error).to.exist;
-      // scrollWidth exceeding clientWidth means content spills out of the box.
+      // The message is clipped to one ellipsised line (wave 3), so the box
+      // itself must stay inside the row: a wider box is text on the loose.
+      expect(getComputedStyle(error).overflow).to.equal('hidden');
       expect(
-        error.scrollWidth,
+        error.getBoundingClientRect().right,
         'error text is wider than its container'
-      ).to.be.at.most(error.clientWidth + 1);
+      ).to.be.at.most(row.getBoundingClientRect().right + 1);
     });
 
     it('keeps the row after a reload, with no dismiss control', async () => {
@@ -608,10 +627,45 @@ describe('DashboardView', () => {
       expect(element.shadowRoot?.querySelector('sl-icon-button.item-dismiss'))
         .to.not.exist;
       expect(
-        element.shadowRoot?.querySelector('.item-card.failed-execution'),
+        element.shadowRoot?.querySelector('.item-card'),
         'failed execution row'
       ).to.exist;
       expect(localStorage.getItem('dashboard_dismissed_executions')).to.be.null;
+    });
+
+    it('puts the red in the status pill and nowhere else', async () => {
+      const element = await mountWithFailedExecution('520px');
+      const row = element.shadowRoot?.querySelector(
+        '.item-card'
+      ) as HTMLElement;
+
+      // The row itself: no tint, no red rule.
+      const rowStyle = getComputedStyle(row);
+      expect(isReddish(rowStyle.backgroundColor), 'row background is red').to.be
+        .false;
+      expect(isReddish(rowStyle.borderLeftColor), 'row rule is red').to.be
+        .false;
+
+      // The error line: neutral, 13px, one line with the full text in title.
+      const error = row.querySelector('.item-error') as HTMLElement;
+      const errorStyle = getComputedStyle(error);
+      expect(isReddish(errorStyle.color), 'error text is red').to.be.false;
+      expect(errorStyle.fontSize).to.equal('13px');
+      expect(errorStyle.whiteSpace).to.equal('nowrap');
+      expect(errorStyle.textOverflow).to.equal('ellipsis');
+      expect(error.getAttribute('title')).to.equal(LONG_ERROR);
+
+      // The pill keeps danger; the header count does not.
+      const pill = row.querySelector('sl-badge.chip') as HTMLElement;
+      expect(pill.getAttribute('variant')).to.equal('danger');
+      const executionsHeader = [
+        ...(element.shadowRoot?.querySelectorAll('.chart-header') || []),
+      ].find((header) =>
+        (header.textContent || '').includes('Recent Flow Executions')
+      );
+      const headerChip = executionsHeader?.querySelector('sl-badge.chip');
+      expect(headerChip, 'header count chip').to.exist;
+      expect(headerChip?.getAttribute('variant')).to.equal('neutral');
     });
   });
 
@@ -816,6 +870,36 @@ describe('DashboardView', () => {
     expect(strip.offsetHeight, 'strip height').to.be.at.most(56);
   });
 
+  it('points each strip chip at its own row on the attention page', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
+      'dashboard did not finish loading'
+    );
+    await element.updateComplete;
+
+    const strip = element.shadowRoot?.querySelector(
+      '.attention-strip'
+    ) as HTMLElement;
+    const chips = Array.from(
+      strip.querySelectorAll('a.attention-chip-link')
+    ) as HTMLAnchorElement[];
+    expect(chips.length).to.be.greaterThan(0);
+    // A chip used to open the entity itself, which lost the context that
+    // explained why it was on the list. It now lands on the row.
+    for (const chip of chips) {
+      expect(chip.getAttribute('href')).to.match(/^\/console\/attention#item-/);
+    }
+    const first = element['attentionItems'][0];
+    expect(chips[0].getAttribute('href')).to.equal(
+      `/console/attention#item-${encodeURIComponent(first.id)}`
+    );
+  });
+
   it('hides the attention strip when nothing needs attention', async () => {
     const element = await mountDashboard();
     await waitUntil(
@@ -846,7 +930,7 @@ describe('DashboardView', () => {
     ).to.equal('0');
   });
 
-  it('shows Updated beside the page title, and Manage Keys in the gateway header', async () => {
+  it('shows Updated beside the page title, and Manage keys in the gateway header', async () => {
     const element = await mountDashboard();
     await waitUntil(() => !element['loading'], 'dashboard did not load');
     await element.updateComplete;
@@ -861,7 +945,7 @@ describe('DashboardView', () => {
     const manageKeys = element.shadowRoot?.querySelector(
       'a.header-action-link[href="/console/settings/api-keys"]'
     );
-    expect(manageKeys?.textContent?.trim()).to.equal('Manage Keys');
+    expect(manageKeys?.textContent?.trim()).to.equal('Manage keys');
   });
 
   it('skips zero-request runtime sessions and displays ids instead of config paths', async () => {
@@ -1070,55 +1154,153 @@ describe('DashboardView', () => {
       );
     });
 
-    it('expands the endpoints for an account with no fully onboarded agent', async () => {
+    it('shows both endpoints without a disclosure', async () => {
       const element = await mountLoaded();
 
-      expect(element['endpointsExpanded']).to.be.true;
-      const capsules =
-        element.shadowRoot?.querySelectorAll('.mcp-server-capsule') || [];
-      expect(capsules.length, 'both capsules').to.equal(2);
-      const toggle = element.shadowRoot?.querySelector('.connect-toggle');
-      expect(toggle?.textContent).to.contain('Hide endpoints');
+      // Wave 2 hid the URLs behind "Show endpoints". They are reference
+      // material, but they are one line each: the disclosure cost more than
+      // it saved.
+      expect(element.shadowRoot?.querySelector('.connect-toggle')).to.not.exist;
+      const rows = element.shadowRoot?.querySelectorAll('.plane-row') || [];
+      expect(rows.length, 'one row per plane').to.equal(2);
+      expect(rows[0].textContent).to.contain('Model gateway');
+      expect(rows[0].textContent).to.contain('/openai/v1');
+      expect(rows[1].textContent).to.contain('Tool firewall');
+      expect(rows[1].textContent).to.contain('/mcp');
     });
 
-    it('collapses the endpoints once an agent is fully onboarded', async () => {
-      agentsResponse = {
-        ...agentsResponse,
-        items: [
-          { ...agentsResponse.items[0], onboarding_state: 'fully_onboarded' },
-        ],
-      };
-
+    it('spends the endpoint line on the host and the path, not the scheme', async () => {
       const element = await mountLoaded();
 
-      expect(element['endpointsExpanded']).to.be.false;
-      expect(element.shadowRoot?.querySelector('.mcp-server-capsule')).to.not
-        .exist;
-      // The state is still stated, just without the URLs.
-      const row = element.shadowRoot?.querySelector('.connect-row');
-      expect(row?.textContent).to.contain('Model gateway');
-      expect(row?.textContent).to.contain('Tool firewall');
-      expect(row?.textContent).to.contain('Show endpoints');
-    });
-
-    it('remembers the endpoints disclosure across visits', async () => {
-      const element = await mountLoaded();
-
-      const toggle = element.shadowRoot?.querySelector(
-        '.connect-toggle'
+      const endpoint = element.shadowRoot?.querySelector(
+        '.plane-row .server-endpoint'
       ) as HTMLElement;
-      toggle.click();
+      // The card is a third of the window wide: seven characters of "https://"
+      // cost the reader the hostname. The copy button and the tooltip still
+      // carry the exact URL.
+      expect(endpoint.textContent).to.not.contain('http');
+      expect(endpoint.querySelector('.endpoint-tail')!.textContent).to.equal(
+        '/openai/v1'
+      );
+      expect(endpoint.getAttribute('title')).to.contain('://');
+      expect(endpoint.getAttribute('title')).to.contain('/openai/v1');
+    });
+
+    it('states what each plane did, and never shows a zero it cannot measure', async () => {
+      gatewaySummaryResponse = {
+        ...gatewaySummaryResponse,
+        total_requests: 13932,
+        failed_requests: 12,
+      };
+      const element = await mountLoaded();
+
+      const rows = element.shadowRoot?.querySelectorAll('.plane-row') || [];
+      const modelStats = rows[0].querySelector('.plane-stats')!.textContent!;
+      // Compact above a thousand, like every other count in the console.
+      expect(modelStats).to.contain('13.9K requests');
+      expect(modelStats).to.contain('12 failed');
+      // The rate-limit report is empty, so no "0 rate limited" is invented.
+      expect(modelStats).to.not.contain('rate limited');
+      expect(rows[0].querySelector('.plane-dot')!.classList.contains('served'))
+        .to.be.true;
+    });
+
+    it('names the card Gateway and drops the question mark', async () => {
+      const element = await mountLoaded();
+
+      const header = element.shadowRoot?.querySelector(
+        '.gateway-card .chart-header'
+      ) as HTMLElement;
+      expect(header.textContent!.trim()).to.equal('Gateway');
+      expect(header.querySelector('sl-tooltip')).to.not.exist;
+      const meta = element.shadowRoot?.querySelector('.gateway-header-meta');
+      expect(meta?.textContent?.replace(/\s+/g, ' ')).to.contain(
+        'active API key'
+      );
+    });
+
+    it('switches the model endpoint with the format select', async () => {
+      const element = await mountLoaded();
+
+      const select = element.shadowRoot?.querySelector(
+        '.plane-row .format-select'
+      ) as HTMLSelectElement;
+      select.value = '/anthropic/v1';
+      select.dispatchEvent(new Event('change'));
       await element.updateComplete;
 
-      expect(element['endpointsExpanded']).to.be.false;
-      expect(localStorage.getItem('dashboard_endpoints_expanded')).to.equal(
-        'false'
+      const row = element.shadowRoot?.querySelector('.plane-row')!;
+      expect(row.querySelector('.endpoint-tail')!.textContent).to.equal(
+        '/anthropic/v1'
       );
+    });
 
-      const second = await mountLoaded();
-      expect(second['endpointsExpanded']).to.be.false;
-      expect(second.shadowRoot?.querySelector('.mcp-server-capsule')).to.not
-        .exist;
+    it('moves the five counts out of the card and under the page title', async () => {
+      const element = await mountLoaded();
+
+      const strip = element.shadowRoot?.querySelector(
+        '.hero-stats.stat-strip'
+      ) as HTMLElement;
+      expect(strip, 'the stat strip').to.exist;
+      expect(strip.querySelectorAll('a.hero-stat').length).to.equal(5);
+      expect(element.shadowRoot?.querySelector('.gateway-card .hero-stats')).to
+        .not.exist;
+      // Borderless: the strip is a line of numbers under the title, not a
+      // card. (The hairline under it is a token the test environment does not
+      // load, so it is checked in the screenshots.)
+      const styles = getComputedStyle(strip);
+      expect(styles.borderTopWidth).to.equal('0px');
+      expect(styles.borderLeftWidth).to.equal('0px');
+
+      // And it sits above the first card in the main column.
+      const card = element.shadowRoot?.querySelector(
+        '.gateway-card'
+      ) as HTMLElement;
+      expect(strip.getBoundingClientRect().top).to.be.lessThan(
+        card.getBoundingClientRect().top
+      );
+    });
+
+    it('replaces the plane rows with one onboarding line on a new instance', async () => {
+      agentsResponse = { ...agentsResponse, total: 0, items: [] };
+      const element = await mountLoaded();
+
+      // Nothing has ever called the gateway, so two endpoint rows would be
+      // reference material for a reader with nothing to point at them.
+      expect(
+        element.shadowRoot?.querySelectorAll('.plane-row').length
+      ).to.equal(0);
+      const line = element.shadowRoot?.querySelector(
+        '.connect-first'
+      ) as HTMLElement;
+      expect(line, 'the connect line').to.exist;
+      expect(line.textContent).to.contain('Connect your first agent');
+      expect(line.querySelector('code')?.textContent).to.equal(
+        'preloop agents onboard'
+      );
+      expect(line.querySelector('a[href="/console/agents"]')).to.exist;
+      // The Next steps card is still there to carry the rest of the setup.
+      expect(element.shadowRoot?.querySelector('.next-steps-card')).to.exist;
+    });
+
+    it('wraps a plane row onto two lines on a phone', async () => {
+      const element = await mountLoaded();
+      const row = element.shadowRoot?.querySelector(
+        '.plane-row'
+      ) as HTMLElement;
+      // The test window is a phone width, where the row is name + stats on
+      // the first line and the endpoint underneath.
+      const name = row.querySelector('.plane-name') as HTMLElement;
+      const stats = row.querySelector('.plane-stats') as HTMLElement;
+      const endpoint = row.querySelector('.plane-endpoint') as HTMLElement;
+      expect(window.innerWidth, 'phone width').to.be.at.most(800);
+      expect(stats.getBoundingClientRect().top).to.be.closeTo(
+        name.getBoundingClientRect().top,
+        6
+      );
+      expect(endpoint.getBoundingClientRect().top).to.be.greaterThan(
+        name.getBoundingClientRect().top
+      );
     });
 
     it('hides next steps when every step is already done', async () => {

@@ -19,6 +19,7 @@ import { formatLocalDateTime } from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import type { Flow } from '../../types';
+import { consoleDialogStyles } from '../../styles/console-dialog';
 
 /** A flow row from the list endpoints, where id and name are always present. */
 type FlowListItem = Flow & { id: string; name: string };
@@ -34,6 +35,7 @@ interface FlowExecution {
 @customElement('flows-view')
 export class FlowsView extends LitElement {
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {

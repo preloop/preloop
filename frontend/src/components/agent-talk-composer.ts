@@ -37,6 +37,7 @@ import {
 import type { ObservedSession } from '../utils/session-observer';
 import { normalizeObservedSession } from '../utils/session-observer';
 import './session-replay-panel';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 interface SpeechRecognitionLike {
   lang: string;
@@ -139,48 +140,51 @@ export class AgentTalkComposer extends LitElement {
   private fallbackTranscriptionUnavailable = false;
   private dialogPortal: HTMLDivElement | null = null;
 
-  static styles = css`
-    :host {
-      display: inline-block;
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      :host {
+        display: inline-block;
+      }
 
-    .cockpit-bar {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
-      font-size: 13px;
-    }
+      .cockpit-bar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        font-size: 13px;
+      }
 
-    .mode-badge {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-weight: 600;
-      font-size: 12px;
-    }
+      .mode-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-weight: 600;
+        font-size: 12px;
+      }
 
-    .mode-badge.remote {
-      color: #26d962;
-      background: rgba(38, 217, 98, 0.15);
-    }
+      .mode-badge.remote {
+        color: #26d962;
+        background: rgba(38, 217, 98, 0.15);
+      }
 
-    .mode-badge.local {
-      color: #30c9e8;
-      background: rgba(48, 201, 232, 0.15);
-    }
+      .mode-badge.local {
+        color: #30c9e8;
+        background: rgba(48, 201, 232, 0.15);
+      }
 
-    .mode-badge.queued {
-      color: #f2a93b;
-      background: rgba(242, 169, 59, 0.15);
-    }
+      .mode-badge.queued {
+        color: #f2a93b;
+        background: rgba(242, 169, 59, 0.15);
+      }
 
-    .mode-badge.offline {
-      color: #ff5d5d;
-      background: rgba(255, 93, 93, 0.15);
-    }
-  `;
+      .mode-badge.offline {
+        color: #ff5d5d;
+        background: rgba(255, 93, 93, 0.15);
+      }
+    `,
+  ];
 
   disconnectedCallback(): void {
     super.disconnectedCallback();

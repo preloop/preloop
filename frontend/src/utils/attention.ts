@@ -28,6 +28,67 @@ export interface AttentionItemAction {
   event?: 'configure-limits';
 }
 
+/** One failed run behind a flow item's count. */
+export interface AttentionFailedRun {
+  id: string;
+  startedAt: string | null;
+  durationText: string;
+  errorMessage: string;
+}
+
+/** One gateway failure behind a model item's count. */
+export interface AttentionModelFailure {
+  at: string | null;
+  statusCode: number | null;
+  excerpt: string;
+  sessionId: string | null;
+}
+
+/** One model the price catalog cannot price. */
+export interface AttentionUnpricedModel {
+  alias: string;
+  provider: string;
+  requests: number;
+  tokens: number;
+  lastRequestAt: string | null;
+  aiModelId: string | null;
+}
+
+/** One sentence about an agent, with the thing to do about it. */
+export interface AttentionAgentReason {
+  text: string;
+  /** Shown as a copyable command line when present. */
+  command?: string;
+  action?: { label: string; href: string };
+}
+
+/** The numbers behind a budget item. */
+export interface AttentionBudgetDetail {
+  spendUsd: number;
+  softLimitUsd: number;
+  hardLimitUsd: number;
+  period: string;
+}
+
+/**
+ * What the row shows when it is expanded: which runs failed, which models are
+ * unpriced, what the gateway said. A count with no "which" is what made the
+ * inbox unactionable.
+ */
+export interface AttentionEvidence {
+  failedRuns?: AttentionFailedRun[];
+  /** "Failed to start agent Job: (409) Conflict" plus how many runs said it. */
+  mostCommonError?: { message: string; count: number; total: number };
+  flowId?: string | null;
+  agentReasons?: AttentionAgentReason[];
+  modelFailures?: AttentionModelFailure[];
+  unpricedModels?: AttentionUnpricedModel[];
+  /** True for the "no provider price list is loaded at all" shape. */
+  catalogMissing?: boolean;
+  unpricedRequests?: number;
+  budget?: AttentionBudgetDetail;
+}
+
 export interface AttentionItem {
   /** Stable across refetches: `${kind}:${entityId}`. */
   id: string;
@@ -39,6 +100,38 @@ export interface AttentionItem {
   /** ISO timestamp used for ordering and relative time; null when unknown. */
   at: string | null;
   action?: AttentionItemAction;
+  /**
+   * Why this item is showing, in a form a dismissal can be compared against.
+   * A new failed run, a new unpriced model or a new validation result changes
+   * the fingerprint, which brings a dismissed item back.
+   */
+  fingerprint: string;
+  /** Approvals are never dismissable: somebody is waiting on an answer. */
+  dismissable: boolean;
+  evidence?: AttentionEvidence;
+}
+
+/** The shape of a stored dismissal the rules need; the API type is assignable. */
+export interface AttentionDismissalRecord {
+  item_id: string;
+  fingerprint: string;
+  reason: string;
+  snooze_until?: string | null;
+  dismissed_by_username?: string | null;
+  created_at?: string;
+}
+
+/** An item plus the dismissal that is currently hiding it. */
+export interface DismissedAttentionItem {
+  item: AttentionItem;
+  dismissal: AttentionDismissalRecord;
+}
+
+export interface AttentionResult {
+  /** What the strip, the hero count and the page all show. */
+  items: AttentionItem[];
+  /** Hidden by a dismissal that still matches; listed at the foot of the page. */
+  dismissed: DismissedAttentionItem[];
 }
 
 /**
@@ -68,6 +161,8 @@ export interface AttentionFlowExecution {
   start_time?: string | null;
   started_at?: string | null;
   end_time?: string | null;
+  /** Already returned by the API; the console never showed it until wave 3. */
+  error_message?: string | null;
 }
 
 export interface AttentionInputs {
@@ -78,6 +173,11 @@ export interface AttentionInputs {
   gatewayFailures?: GatewayUsageSearchResultItem[];
   budgetPolicies?: BudgetPolicy[];
   usageSummary?: AccountGatewayUsageSummaryResponse | null;
+  /**
+   * Active dismissals. `undefined` (an older backend without the endpoint)
+   * hides nothing and is not an error.
+   */
+  dismissals?: AttentionDismissalRecord[];
   now?: Date;
 }
 
@@ -133,6 +233,9 @@ export const ATTENTION_KIND_ORDER: AttentionKind[] = [
   'pricing',
 ];
 
+/** The Cost page reads `panel` and scrolls its pricing card into view. */
+const PRICING_HREF = '/console/cost?panel=pricing';
+
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -183,6 +286,10 @@ function approvalItems(
         detail,
         href: `/console/approval/${approval.id}`,
         at: approval.requested_at || null,
+        fingerprint: `requested:${approval.requested_at || ''}`,
+        // Somebody is waiting for an answer: an approval can be decided, not
+        // silenced.
+        dismissable: false,
       };
     });
 }
@@ -202,7 +309,8 @@ function latestSessionForAgent(
 
 function agentItems(
   agents: ManagedAgentSummary[],
-  sessions: RuntimeSessionSummary[]
+  sessions: RuntimeSessionSummary[],
+  now: Date
 ): AttentionItem[] {
   const items: AttentionItem[] = [];
   for (const agent of agents) {
@@ -213,11 +321,28 @@ function agentItems(
       continue;
     }
     const reasons: string[] = [];
+    const evidence: AttentionAgentReason[] = [];
+    const agentHref = `/console/agents/${agent.id}`;
     if (agent.live_validation_status === 'failed') {
       reasons.push('Live check failed');
+      const checkedAt = agent.last_validated_at
+        ? formatRelativeTime(agent.last_validated_at, now)
+        : 'unknown';
+      evidence.push({
+        text: `Last check ${checkedAt}: the agent's credentials did not pass a live call through the gateway.`,
+        action: { label: 'Open agent', href: agentHref },
+      });
     }
+    // Only `incomplete` is a problem. `mcp_proxy_only` and `gateway_only` are
+    // configurations someone chose, and an agent that has not run for weeks
+    // is not a fault: neither ever reaches this list.
     if (agent.onboarding_state === 'incomplete') {
-      reasons.push('Setup incomplete');
+      reasons.push('Not connected');
+      evidence.push({
+        text: 'Onboarding never completed. Onboard it on the machine it runs on, or remove it.',
+        command: `preloop agents onboard "${agent.display_name || agent.id}"`,
+        action: { label: 'Open agent', href: agentHref },
+      });
     }
     const latestSession = latestSessionForAgent(agent, sessions);
     const failedRequests = latestSession?.failed_requests || 0;
@@ -227,6 +352,19 @@ function agentItems(
           failedRequests === 1 ? '' : 's'
         } in last session`
       );
+      const total = latestSession?.total_requests || failedRequests;
+      const startedAt = latestSession?.started_at
+        ? formatRelativeTime(latestSession.started_at, now)
+        : 'recently';
+      evidence.push({
+        text: `${failedRequests} of ${total} requests failed in the session started ${startedAt}.`,
+        action: latestSession
+          ? {
+              label: 'Open session',
+              href: `/console/runtime-sessions?sessionId=${latestSession.id}`,
+            }
+          : undefined,
+      });
     }
     if (reasons.length === 0) {
       continue;
@@ -237,12 +375,22 @@ function agentItems(
       severity: 'warning',
       title: agent.display_name || agent.id,
       detail: joinReasons(reasons),
-      href: `/console/agents/${agent.id}`,
+      href: agentHref,
       at:
         latestSession?.last_activity_at ||
         latestSession?.started_at ||
         agent.last_seen_at ||
         null,
+      // A new validation result, an onboarding that finally completed, or a
+      // fresh batch of failed requests changes this and brings a dismissed
+      // agent back.
+      fingerprint: `${agent.onboarding_state}|${
+        agent.live_validation_status
+      }|${agent.last_validated_at || ''}|${
+        latestSession?.id ?? 'none'
+      }:${failedRequests}`,
+      dismissable: true,
+      evidence: { agentReasons: evidence },
     });
   }
   return items;
@@ -321,6 +469,18 @@ function flowItems(
             group.flowId
           )}&status=FAILED`;
 
+    const failedRuns: AttentionFailedRun[] = runs.map((run) => {
+      const startedAt = run.start_time || run.started_at || null;
+      return {
+        id: run.id,
+        startedAt,
+        durationText: startedAt
+          ? formatDurationBetween(startedAt, run.end_time, now)
+          : '',
+        errorMessage: (run.error_message || '').trim(),
+      };
+    });
+
     return {
       id: `flow:${key}`,
       kind: 'flow' as const,
@@ -329,8 +489,43 @@ function flowItems(
       detail,
       href,
       at: latestStart,
+      // The newest failed run: one more failure un-dismisses the flow.
+      fingerprint: `run:${latest.id}`,
+      dismissable: true,
+      evidence: {
+        failedRuns,
+        mostCommonError: mostCommonError(failedRuns),
+        flowId: group.flowId,
+      },
     };
   });
+}
+
+/**
+ * "Failed to start agent Job: (409) Conflict (5 of 5)": when every run died the
+ * same way there is one thing to fix, and saying so saves reading five rows.
+ */
+function mostCommonError(
+  runs: AttentionFailedRun[]
+): { message: string; count: number; total: number } | undefined {
+  const counts = new Map<string, number>();
+  for (const run of runs) {
+    const message = firstLine(run.errorMessage);
+    if (!message) continue;
+    counts.set(message, (counts.get(message) || 0) + 1);
+  }
+  if (counts.size === 0) {
+    return undefined;
+  }
+  const [message, count] = Array.from(counts.entries()).sort(
+    (left, right) => right[1] - left[1]
+  )[0];
+  return { message, count, total: runs.length };
+}
+
+/** Errors arrive with stack traces attached; the row shows the first line. */
+export function firstLine(text: string | null | undefined): string {
+  return (text || '').split('\n')[0].trim();
 }
 
 function modelItems(
@@ -339,7 +534,12 @@ function modelItems(
 ): AttentionItem[] {
   const groups = new Map<
     string,
-    { count: number; lastAt: string | null; modelId: string | null }
+    {
+      count: number;
+      lastAt: string | null;
+      modelId: string | null;
+      failures: GatewayUsageSearchResultItem[];
+    }
   >();
   for (const failure of failures) {
     if (failure.outcome === 'success') {
@@ -350,8 +550,10 @@ function modelItems(
       count: 0,
       lastAt: null as string | null,
       modelId: null as string | null,
+      failures: [] as GatewayUsageSearchResultItem[],
     };
     existing.count += 1;
+    existing.failures.push(failure);
     if (timestampOf(failure.timestamp) > timestampOf(existing.lastAt)) {
       existing.lastAt = failure.timestamp;
     }
@@ -375,6 +577,23 @@ function modelItems(
       ? `/console/ai-models/${group.modelId}`
       : '/console/ai-models',
     at: group.lastAt,
+    // The newest failure: another one after a dismissal shows the model again.
+    fingerprint: `last:${group.lastAt || ''}`,
+    dismissable: true,
+    evidence: {
+      modelFailures: [...group.failures]
+        .sort(
+          (left, right) =>
+            timestampOf(right.timestamp) - timestampOf(left.timestamp)
+        )
+        .slice(0, 5)
+        .map((failure) => ({
+          at: failure.timestamp || null,
+          statusCode: failure.status_code ?? null,
+          excerpt: firstLine(failure.excerpt),
+          sessionId: failure.runtime_session_id || null,
+        })),
+    },
   }));
 }
 
@@ -425,9 +644,41 @@ function budgetItems(policies: BudgetPolicy[]): AttentionItem[] {
       href: '/console/attention#budgets',
       at: policy.period_end || null,
       action: { label: 'Configure limits', event: 'configure-limits' },
+      // The next period starts a new conversation about the same limit.
+      fingerprint: `${policy.id}|${policy.period_start || ''}`,
+      dismissable: true,
+      evidence: {
+        budget: {
+          spendUsd: spend,
+          softLimitUsd: softLimit,
+          hardLimitUsd: hardLimit,
+          period: policy.period,
+        },
+      },
     });
   }
   return items;
+}
+
+/**
+ * A model that served requests but cost nothing is a model nobody can price.
+ * The summary's aggregate `unpriced_requests` says how many; `usage_by_model`
+ * says which, which is the part an operator can act on.
+ */
+function unpricedModelsOf(
+  usageSummary: AccountGatewayUsageSummaryResponse
+): AttentionUnpricedModel[] {
+  return (usageSummary.usage_by_model || [])
+    .filter((model) => model.request_count > 0 && !model.estimated_cost)
+    .map((model) => ({
+      alias: model.model_alias || model.provider_name || 'Unknown model',
+      provider: model.provider_name || '',
+      requests: model.request_count,
+      tokens: model.token_usage?.total_tokens || 0,
+      lastRequestAt: model.last_request_at || null,
+      aiModelId: model.ai_model_id || null,
+    }))
+    .sort((left, right) => right.requests - left.requests);
 }
 
 function pricingItems(
@@ -438,38 +689,95 @@ function pricingItems(
     return [];
   }
   const catalog = usageSummary.price_catalog;
-  const reasons: string[] = [];
   const fetchedAt = catalog?.fetched_at || null;
   const modelCount = catalog?.model_count ?? null;
+  const unpricedRequests = usageSummary.unpriced_requests || 0;
+  const unpricedModels = unpricedModelsOf(usageSummary);
   const stale =
     Boolean(fetchedAt) &&
     now.getTime() - timestampOf(fetchedAt) > FOURTEEN_DAYS_MS;
-  if (catalog && (stale || modelCount === 0)) {
-    reasons.push(
-      fetchedAt
-        ? `Price catalog stale since ${formatRelativeTime(fetchedAt, now)}`
-        : 'Price catalog has no models'
-    );
+  const catalogMissing = !catalog || modelCount === 0;
+
+  const fingerprint = `${unpricedModels
+    .map((model) => model.alias)
+    .sort()
+    .join(',')} catalog:${fetchedAt ?? 'none'}`;
+
+  // Shape 1: nothing can be priced because no provider price list is loaded.
+  if (catalogMissing && unpricedRequests > 0) {
+    return [
+      {
+        id: 'pricing:catalog',
+        kind: 'pricing',
+        severity: 'warning',
+        title: 'No price catalog loaded',
+        detail: `Estimated spend is missing for ${unpricedRequests} request${
+          unpricedRequests === 1 ? '' : 's'
+        } because no provider price list is loaded.`,
+        href: PRICING_HREF,
+        at: null,
+        action: { label: 'Update prices', href: PRICING_HREF },
+        fingerprint,
+        dismissable: true,
+        evidence: {
+          catalogMissing: true,
+          unpricedRequests,
+          unpricedModels,
+        },
+      },
+    ];
   }
-  const unpriced = usageSummary.unpriced_requests || 0;
-  if (unpriced > 0) {
-    reasons.push(`${unpriced} request${unpriced === 1 ? '' : 's'} unpriced`);
+
+  // Shape 2: a catalog is loaded but some models are not in it.
+  if (unpricedModels.length > 0) {
+    return [
+      {
+        id: 'pricing:catalog',
+        kind: 'pricing',
+        severity: 'warning',
+        title: `${unpricedModels.length} model${
+          unpricedModels.length === 1 ? '' : 's'
+        } without a price`,
+        detail: joinReasons([
+          `${unpricedRequests || 0} request${
+            unpricedRequests === 1 ? '' : 's'
+          } unpriced`,
+          stale && fetchedAt
+            ? `catalog last updated ${formatRelativeTime(fetchedAt, now)}`
+            : '',
+        ]),
+        href: PRICING_HREF,
+        at: fetchedAt,
+        action: { label: 'Update prices', href: PRICING_HREF },
+        fingerprint,
+        dismissable: true,
+        evidence: { unpricedModels, unpricedRequests },
+      },
+    ];
   }
-  if (reasons.length === 0) {
-    return [];
+
+  // Neither shape applies but the catalog itself has gone stale.
+  if (catalog && stale && fetchedAt) {
+    return [
+      {
+        id: 'pricing:catalog',
+        kind: 'pricing',
+        severity: 'warning',
+        title: 'Price catalog',
+        detail: `Price catalog stale since ${formatRelativeTime(
+          fetchedAt,
+          now
+        )}`,
+        href: PRICING_HREF,
+        at: fetchedAt,
+        action: { label: 'Update prices', href: PRICING_HREF },
+        fingerprint,
+        dismissable: true,
+        evidence: { unpricedRequests },
+      },
+    ];
   }
-  return [
-    {
-      id: 'pricing:catalog',
-      kind: 'pricing',
-      severity: 'warning',
-      title: 'Price catalog',
-      detail: joinReasons(reasons),
-      href: '/console/cost',
-      at: fetchedAt,
-      action: { label: 'Update prices', href: '/console/cost' },
-    },
-  ];
+  return [];
 }
 
 /** Critical first, then most recent first; items without a timestamp last. */
@@ -487,17 +795,61 @@ export function sortAttentionItems(items: AttentionItem[]): AttentionItem[] {
   });
 }
 
-export function deriveAttentionItems(inputs: AttentionInputs): AttentionItem[] {
+/**
+ * Is this dismissal still hiding this item? Same item, same fingerprint, and
+ * (for a snooze) not yet expired. Anything else and the item comes back on its
+ * own, which is the point: dismissing is "quiet until it changes", not "never
+ * tell me again".
+ */
+function dismissalHides(
+  dismissal: AttentionDismissalRecord,
+  item: AttentionItem,
+  now: Date
+): boolean {
+  if (dismissal.fingerprint !== item.fingerprint) {
+    return false;
+  }
+  if (dismissal.snooze_until) {
+    return timestampOf(dismissal.snooze_until) > now.getTime();
+  }
+  return true;
+}
+
+export function deriveAttentionItems(inputs: AttentionInputs): AttentionResult {
   const now = inputs.now || new Date();
-  const items: AttentionItem[] = [
+  const derived: AttentionItem[] = [
     ...approvalItems(inputs.approvals || [], now),
-    ...agentItems(inputs.agents || [], inputs.sessions || []),
+    ...agentItems(inputs.agents || [], inputs.sessions || [], now),
     ...flowItems(inputs.executions || [], now),
     ...modelItems(inputs.gatewayFailures || [], now),
     ...budgetItems(inputs.budgetPolicies || []),
     ...pricingItems(inputs.usageSummary, now),
   ];
-  return sortAttentionItems(items);
+
+  const byItemId = new Map<string, AttentionDismissalRecord>();
+  for (const dismissal of inputs.dismissals || []) {
+    byItemId.set(dismissal.item_id, dismissal);
+  }
+
+  const items: AttentionItem[] = [];
+  const dismissed: DismissedAttentionItem[] = [];
+  for (const item of derived) {
+    const dismissal = byItemId.get(item.id);
+    if (item.dismissable && dismissal && dismissalHides(dismissal, item, now)) {
+      dismissed.push({ item, dismissal });
+      continue;
+    }
+    items.push(item);
+  }
+
+  return {
+    items: sortAttentionItems(items),
+    dismissed: dismissed.sort(
+      (left, right) =>
+        timestampOf(right.dismissal.created_at) -
+        timestampOf(left.dismissal.created_at)
+    ),
+  };
 }
 
 /** Non-empty kinds only, in the canonical section order. */
@@ -512,6 +864,15 @@ export function groupAttentionItems(
     }
   }
   return grouped;
+}
+
+/**
+ * Where the Overview strip chips point: the Attention page scrolls to this row
+ * and tints it briefly. Ids contain `:` and `/` (model aliases), so the id is
+ * encoded.
+ */
+export function attentionItemAnchor(itemId: string): string {
+  return `/console/attention#item-${encodeURIComponent(itemId)}`;
 }
 
 /** "2 approvals", "1 agent" - the chip label used by the Attention page. */

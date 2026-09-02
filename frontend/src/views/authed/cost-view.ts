@@ -49,6 +49,7 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
+import { consoleDialogStyles } from '../../styles/console-dialog';
 
 type DateRangePreset =
   | 'today'
@@ -203,6 +204,7 @@ export class CostView extends AuthedElement {
   }
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {
@@ -476,8 +478,30 @@ export class CostView extends AuthedElement {
   connectedCallback() {
     super.connectedCallback();
     this.selectedRange = this.loadStoredDateRange();
+    this.requestedPanel = new URLSearchParams(window.location.search).get(
+      'panel'
+    );
     void this.load();
   }
+
+  /**
+   * `?panel=pricing` is how an attention item about unpriced models lands on
+   * the part of this page that fixes it, instead of at the top of a long page
+   * with no hint where to look.
+   */
+  protected updated(): void {
+    if (this.loading || !this.requestedPanel) {
+      return;
+    }
+    const panel = this.requestedPanel;
+    this.requestedPanel = null;
+    const target =
+      this.renderRoot.querySelector(`#panel-${panel}`) ||
+      this.renderRoot.querySelector('#panel-pricing-catalog');
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  private requestedPanel: string | null = null;
 
   private loadStoredDateRange(): DateRangePreset {
     const stored = window.localStorage.getItem(COST_DATE_RANGE_STORAGE_KEY);
@@ -1130,12 +1154,12 @@ export class CostView extends AuthedElement {
         : nothing;
     }
     return html`
-      <sl-alert variant="warning" open role="alert">
+      <sl-alert id="panel-pricing-catalog" variant="warning" open role="alert">
         <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
         ${this.formatNumber(unpricedRequests)}
         request${unpricedRequests === 1 ? '' : 's'}
         (${this.formatNumber(this.summary?.unpriced_tokens)} tokens) in this
-        window have no cost estimate — their model was missing from the price
+        window have no cost estimate: their model was missing from the price
         catalog when recorded, so total spend is understated.
         ${
           this.billingEnabled
@@ -2192,7 +2216,7 @@ export class CostView extends AuthedElement {
   private renderPricing() {
     const overrides = this.pricingOverrides;
     return html`
-      <sl-card>
+      <sl-card id="panel-pricing">
         ${this.renderSectionHeader('tags', 'Pricing overrides')}
         <div class="action-card-body">
           <div>

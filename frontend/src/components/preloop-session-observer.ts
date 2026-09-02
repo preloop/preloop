@@ -58,6 +58,7 @@ import './session-chat-view';
 import './session-list-panel';
 import './session-replay-panel';
 import './session-request-timeline';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 type SessionInput = RuntimeSessionSummary | Record<string, unknown>;
 type EventPageState = {
@@ -336,6 +337,7 @@ export class PreloopSessionObserver extends LitElement {
   private livePulseTimer: number | null = null;
 
   static styles = [
+    consoleDialogStyles,
     reducedMotionStyles,
     css`
       :host {

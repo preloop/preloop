@@ -40,6 +40,7 @@ import type {
 } from '../../../types';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
 import consoleStyles from '../../../styles/console-styles.css?inline';
+import { consoleDialogStyles } from '../../../styles/console-dialog';
 
 type DateRangePreset = 'last-7' | 'last-30' | 'last-90' | 'all' | 'custom';
 
@@ -106,6 +107,7 @@ export class AIModelDetailView extends LitElement {
   private refreshInFlight = false;
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {

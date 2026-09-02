@@ -685,6 +685,77 @@ export async function getAccountRateLimitReport(
   return response.json();
 }
 
+/**
+ * A console attention item the account has silenced.
+ *
+ * `fingerprint` is why the item was showing when it was dismissed; the item
+ * comes back by itself when the reason changes.
+ */
+export interface AttentionDismissal {
+  id: string;
+  item_id: string;
+  fingerprint: string;
+  reason: 'expected' | 'snoozed' | 'fixed';
+  snooze_until: string | null;
+  dismissed_by_user_id: string | null;
+  dismissed_by_username: string | null;
+  created_at: string;
+}
+
+/** Distinguishes "nothing is dismissed" from "this backend has no such API". */
+export const DISMISSALS_UNSUPPORTED = 'unsupported' as const;
+
+/**
+ * Active dismissals, or `DISMISSALS_UNSUPPORTED` when the backend predates
+ * the endpoint. A console pointed at an older instance must show its inbox
+ * without dismiss controls rather than an error.
+ */
+export async function getAttentionDismissals(): Promise<
+  AttentionDismissal[] | typeof DISMISSALS_UNSUPPORTED
+> {
+  const response = await fetchWithAuth('/api/v1/attention/dismissals');
+  if (response.status === 404 || response.status === 405) {
+    return DISMISSALS_UNSUPPORTED;
+  }
+  if (!response.ok) {
+    throw new Error('Failed to fetch attention dismissals');
+  }
+  const body = await response.json();
+  return (body?.items || []) as AttentionDismissal[];
+}
+
+export async function dismissAttentionItem(
+  itemId: string,
+  body: {
+    fingerprint: string;
+    reason: 'expected' | 'snoozed' | 'fixed';
+    snooze_days?: number;
+  }
+): Promise<AttentionDismissal> {
+  const response = await fetchWithAuth(
+    `/api/v1/attention/dismissals/${encodeURIComponent(itemId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to dismiss item');
+  }
+  return response.json();
+}
+
+export async function restoreAttentionItem(itemId: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/attention/dismissals/${encodeURIComponent(itemId)}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to restore item');
+  }
+}
+
 export async function getCostAnalyticsSummary(
   params: GatewayUsageSummaryParams = {}
 ): Promise<CostAnalyticsSummaryResponse> {

@@ -334,15 +334,9 @@ sl-dialog.large::part(panel) {
     background: var(--sl-color-neutral-100);
 }
 
-.item-card.warning {
-    background: var(--sl-color-warning-50);
-    border-left-color: var(--sl-color-warning-600);
-}
-
-.item-card.danger {
-    background: var(--sl-color-danger-50);
-    border-left-color: var(--sl-color-danger-600);
-}
+/* A row is never tinted by its state: the status pill is the one place a
+   list row is allowed to be red or amber. A card of five runs where two
+   failed used to read as a wall of red for two facts. */
 
 .item-info {
     display: flex;
@@ -368,16 +362,13 @@ sl-dialog.large::part(panel) {
 }
 
 .item-error {
-    font-size: var(--sl-font-size-small);
-    color: var(--sl-color-danger-700);
-    font-style: italic;
-    /* Break inside long URLs and paths rather than overflowing the row, and
-       cap the message at three lines so one error cannot dominate the card. */
-    overflow-wrap: anywhere;
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
+    font-size: var(--console-text-meta);
+    color: var(--sl-color-neutral-600);
+    /* One line, ellipsised, full text in the title: the message is evidence
+       for the pill next to it, not the headline of the row. */
+    white-space: nowrap;
     overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Empty state */

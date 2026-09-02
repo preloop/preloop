@@ -10,33 +10,37 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 @customElement('preloop-invite-dialog')
 export class PreloopInviteDialog extends LitElement {
-  static styles = css`
-    :host {
-      display: block;
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      :host {
+        display: block;
+      }
 
-    .form-grid {
-      display: grid;
-      gap: 1.25rem;
-      margin-top: 0.5rem;
-    }
+      .form-grid {
+        display: grid;
+        gap: 1.25rem;
+        margin-top: 0.5rem;
+      }
 
-    .error-alert {
-      margin-top: 1rem;
-    }
+      .error-alert {
+        margin-top: 1rem;
+      }
 
-    .success-alert {
-      margin-top: 1rem;
-    }
+      .success-alert {
+        margin-top: 1rem;
+      }
 
-    sl-select::part(combobox) {
-      max-height: 120px;
-      overflow-y: auto;
-    }
-  `;
+      sl-select::part(combobox) {
+        max-height: 120px;
+        overflow-y: auto;
+      }
+    `,
+  ];
 
   @property({ type: Boolean })
   open = false;

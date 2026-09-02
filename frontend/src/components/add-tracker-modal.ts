@@ -14,6 +14,7 @@ import '@shoelace-style/shoelace/dist/components/tree/tree.js';
 import '@shoelace-style/shoelace/dist/components/tree-item/tree-item.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 @customElement('add-tracker-modal')
 export class AddTrackerModal extends LitElement {
@@ -86,23 +87,26 @@ export class AddTrackerModal extends LitElement {
   @property({ type: String })
   githubTargetLogin: string | null = null;
 
-  static styles = css`
-    .error {
-      color: var(--sl-color-danger-700);
-    }
-    sl-input,
-    sl-select {
-      margin-bottom: 1rem;
-    }
-    .select-all {
-      margin-bottom: 1rem;
-      margin-left: 0.5rem;
-    }
-    .include-future {
-      margin-left: 0.5rem;
-      margin-top: 1rem;
-    }
-  `;
+  static styles = [
+    consoleDialogStyles,
+    css`
+      .error {
+        color: var(--sl-color-danger-700);
+      }
+      sl-input,
+      sl-select {
+        margin-bottom: 1rem;
+      }
+      .select-all {
+        margin-bottom: 1rem;
+        margin-left: 0.5rem;
+      }
+      .include-future {
+        margin-left: 0.5rem;
+        margin-top: 1rem;
+      }
+    `,
+  ];
 
   connectedCallback() {
     super.connectedCallback();
