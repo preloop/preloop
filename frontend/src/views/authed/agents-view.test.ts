@@ -581,6 +581,46 @@ describe('AgentsView', () => {
     expect(getComputedStyle(name!).whiteSpace).to.equal('nowrap');
   });
 
+  it('offers Talk in the list kebab only for agents with Agent Control', async () => {
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Mini', 'openclaw'),
+        control_state: 'plugin_connected',
+        control_enabled: true,
+        control_online: true,
+        control_capabilities: ['send_text_prompt'],
+      },
+      makeAgent('agent-2', 'Claude Desktop', 'claude_desktop'),
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const rows = Array.from(
+      el.shadowRoot?.querySelectorAll('table.agents-table tbody tr') || []
+    );
+    const menuFor = (name: string) => {
+      const row = rows.find((candidate) =>
+        (candidate.textContent || '').includes(name)
+      );
+      return row?.querySelector('resource-actions') as HTMLElement & {
+        actions: Array<Record<string, unknown>>;
+      };
+    };
+
+    const connected = menuFor('Mini');
+    const talk = connected.actions.find((action) => action.id === 'talk');
+    expect(talk, 'the connected agent can be talked to').to.exist;
+    expect(talk!.label).to.equal('Talk');
+    expect(talk!.disabled).to.equal(false);
+    expect(connected.actions[0].id, 'Talk leads the menu').to.equal('talk');
+
+    expect(
+      menuFor('Claude Desktop').actions.some((action) => action.id === 'talk'),
+      'a runtime without Agent Control gets no Talk item'
+    ).to.equal(false);
+  });
+
   it('shows only the model alias, with the full model text in the title', async () => {
     agentItems = [
       {
