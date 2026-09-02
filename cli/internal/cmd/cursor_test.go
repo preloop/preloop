@@ -184,7 +184,10 @@ func TestParseCursorAgentOutput(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := parseCursorAgentOutput([]byte(tc.raw))
+			got, err := parseCursorAgentOutput([]byte(tc.raw))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
 			if got.SessionID != tc.want.SessionID || got.Model != tc.want.Model ||
 				got.RequestID != tc.want.RequestID || got.HasInit != tc.want.HasInit ||
 				got.HasResult != tc.want.HasResult {
@@ -211,6 +214,22 @@ func TestParseCursorAgentOutput(t *testing.T) {
 	}
 }
 
+func TestParseCursorAgentOutputTruncatedLine(t *testing.T) {
+	init := `{"type":"system","subtype":"init","session_id":"sess-trunc","model":"Composer"}` + "\n"
+	// Scanner max token is 8 MiB. A longer line must error rather than
+	// returning the init event as a successful partial capture.
+	raw := append([]byte(init), bytes.Repeat([]byte("x"), 8*1024*1024+16)...)
+	raw = append(raw, '\n')
+
+	got, err := parseCursorAgentOutput(raw)
+	if err == nil {
+		t.Fatal("expected scanner error for an oversized line")
+	}
+	if got.SessionID != "" || got.HasInit || got.HasResult {
+		t.Fatalf("truncated parse must not return a partial capture, got %+v", got)
+	}
+}
+
 func TestBuildCursorIngestRecordsHonesty(t *testing.T) {
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	in := 11
@@ -233,7 +252,7 @@ func TestBuildCursorIngestRecordsHonesty(t *testing.T) {
 			CacheWriteTokens: &cacheWrite,
 		},
 	}
-	records := buildCursorIngestRecords(withUsage, "parent-1", now)
+	records := buildCursorIngestRecords(withUsage, "parent-1", now, now)
 	if len(records) != 2 {
 		t.Fatalf("expected session_start + usage, got %d", len(records))
 	}
@@ -274,7 +293,7 @@ func TestBuildCursorIngestRecordsHonesty(t *testing.T) {
 		RequestID: "req-2",
 		HasResult: true,
 	}
-	records = buildCursorIngestRecords(noTokens, "", now)
+	records = buildCursorIngestRecords(noTokens, "", now, now)
 	if len(records) != 1 || records[0]["event_type"] != "response" {
 		t.Fatalf("no-token result must be a response lifecycle event, got %#v", records)
 	}
@@ -289,7 +308,7 @@ func TestBuildCursorIngestRecordsHonesty(t *testing.T) {
 		HasResult: true,
 		Usage:     &cursorStreamUsage{InputTokens: &in},
 	}
-	records = buildCursorIngestRecords(tokensNoModel, "", now)
+	records = buildCursorIngestRecords(tokensNoModel, "", now, now)
 	if records[0]["event_type"] != "response" {
 		t.Fatalf("tokens without model cannot be event_type=usage, got %#v", records[0]["event_type"])
 	}
@@ -297,8 +316,30 @@ func TestBuildCursorIngestRecordsHonesty(t *testing.T) {
 		t.Fatalf("observed tokens still ship on the lifecycle event: %#v", records[0])
 	}
 
-	if got := buildCursorIngestRecords(cursorCapture{}, "", now); got != nil {
+	if got := buildCursorIngestRecords(cursorCapture{}, "", now, now); got != nil {
 		t.Fatalf("no session_id must ship nothing, got %#v", got)
+	}
+}
+
+func TestBuildCursorIngestRecordsResultTimestampIsCompletion(t *testing.T) {
+	started := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	ended := time.Date(2026, 9, 2, 12, 0, 5, 250000000, time.UTC)
+	capture := cursorCapture{
+		SessionID: "sess-1",
+		Model:     "Composer",
+		RequestID: "req-1",
+		HasInit:   true,
+		HasResult: true,
+	}
+	records := buildCursorIngestRecords(capture, "", started, ended)
+	if len(records) != 2 {
+		t.Fatalf("expected session_start + result, got %d", len(records))
+	}
+	if records[0]["timestamp"] != started.Format(time.RFC3339Nano) {
+		t.Fatalf("session_start timestamp = %#v, want start", records[0]["timestamp"])
+	}
+	if records[1]["timestamp"] != ended.Format(time.RFC3339Nano) {
+		t.Fatalf("result timestamp = %#v, want completion", records[1]["timestamp"])
 	}
 }
 
@@ -316,6 +357,52 @@ func TestFindCursorAgentMissing(t *testing.T) {
 	if !strings.Contains(err.Error(), cursorInstallHint) {
 		t.Fatalf("error should include the install command, got: %v", err)
 	}
+}
+
+func TestCursorPreloopErrorsPrintToStderr(t *testing.T) {
+	testenv.SetTempHome(t)
+	t.Setenv("PATH", t.TempDir()+string(os.PathListSeparator)+"/usr/bin:/bin")
+
+	t.Run("missing binary passthrough", func(t *testing.T) {
+		var stderr bytes.Buffer
+		rootCmd.SetErr(&stderr)
+		t.Cleanup(func() { rootCmd.SetErr(nil) })
+		rootCmd.SetArgs([]string{"cursor"})
+		t.Cleanup(func() { rootCmd.SetArgs(nil) })
+
+		err := Execute()
+		if err == nil {
+			t.Fatal("expected missing-binary error")
+		}
+		if ProcessExitCode(err) != 1 {
+			t.Fatalf("exit code = %d, want 1", ProcessExitCode(err))
+		}
+		if !strings.Contains(stderr.String(), "cursor-agent was not found") {
+			t.Fatalf("stderr missing PATH diagnostic, got %q", stderr.String())
+		}
+		if !strings.Contains(stderr.String(), cursorInstallHint) {
+			t.Fatalf("stderr missing install hint, got %q", stderr.String())
+		}
+	})
+
+	t.Run("flag error", func(t *testing.T) {
+		var stderr bytes.Buffer
+		rootCmd.SetErr(&stderr)
+		t.Cleanup(func() { rootCmd.SetErr(nil) })
+		rootCmd.SetArgs([]string{"cursor", "run", "--agent-id"})
+		t.Cleanup(func() { rootCmd.SetArgs(nil) })
+
+		err := Execute()
+		if err == nil {
+			t.Fatal("expected flag error")
+		}
+		if ProcessExitCode(err) != 1 {
+			t.Fatalf("exit code = %d, want 1", ProcessExitCode(err))
+		}
+		if !strings.Contains(stderr.String(), "--agent-id requires a value") {
+			t.Fatalf("stderr missing flag error, got %q", stderr.String())
+		}
+	})
 }
 
 func TestCursorPassthroughSpawnsFakeBinary(t *testing.T) {
@@ -420,6 +507,82 @@ func TestCursorCaptureFailOpenOnIngestError(t *testing.T) {
 	}
 	if !strings.Contains(warn.String(), "usage not recorded") {
 		t.Fatalf("expected fail-open warning, got %q", warn.String())
+	}
+}
+
+func TestCursorCaptureResultTimestampIsCompletion(t *testing.T) {
+	skipNoShebangOnWindows(t, "cursor-agent capture timestamps")
+	_, _ = installFakeCursorAgent(t, "")
+
+	started := time.Now().UTC()
+	var shipped []map[string]interface{}
+	err := runCursorCaptureWithIO(
+		io.Discard,
+		cursorRunOptions{source: "cursor"},
+		strings.NewReader(""),
+		io.Discard,
+		io.Discard,
+		started,
+		func(source, agentID string, records []map[string]interface{}, timeout time.Duration) error {
+			shipped = records
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if len(shipped) != 2 {
+		t.Fatalf("expected session_start + result, got %#v", shipped)
+	}
+	startStamp, _ := shipped[0]["timestamp"].(string)
+	if startStamp != started.Format(time.RFC3339Nano) {
+		t.Fatalf("session_start timestamp = %q, want start %q", startStamp, started.Format(time.RFC3339Nano))
+	}
+	endStamp, _ := shipped[1]["timestamp"].(string)
+	ended, parseErr := time.Parse(time.RFC3339Nano, endStamp)
+	if parseErr != nil {
+		t.Fatalf("result timestamp: %v", parseErr)
+	}
+	if ended.Before(started) {
+		t.Fatalf("result timestamp %s is before start %s", ended, started)
+	}
+}
+
+func TestCursorCaptureTruncatedLineWarnsAndDoesNotShip(t *testing.T) {
+	skipNoShebangOnWindows(t, "cursor-agent truncated capture")
+	outFile := filepath.Join(t.TempDir(), "huge.txt")
+	var payload bytes.Buffer
+	payload.WriteString(`{"type":"system","subtype":"init","session_id":"sess-1","model":"Composer"}` + "\n")
+	payload.Write(bytes.Repeat([]byte("x"), 8*1024*1024+16))
+	payload.WriteByte('\n')
+	if err := os.WriteFile(outFile, payload.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = installFakeCursorAgent(t, "#!/bin/sh\ncat "+strconv.Quote(outFile)+"\n")
+
+	var warn bytes.Buffer
+	shipped := false
+	err := runCursorCaptureWithIO(
+		&warn,
+		cursorRunOptions{source: "cursor"},
+		strings.NewReader(""),
+		io.Discard,
+		io.Discard,
+		time.Now().UTC(),
+		func(source, agentID string, records []map[string]interface{}, timeout time.Duration) error {
+			shipped = true
+			t.Errorf("truncated capture must not ship, got %d records", len(records))
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("child succeeded; truncated parse must fail open, got %v", err)
+	}
+	if shipped {
+		t.Fatal("truncated capture shipped usage")
+	}
+	if !strings.Contains(warn.String(), "truncated") || !strings.Contains(warn.String(), "usage not recorded") {
+		t.Fatalf("expected truncated-line warning, got %q", warn.String())
 	}
 }
 

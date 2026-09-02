@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -95,6 +96,7 @@ func runCursorPassthrough(cmd *cobra.Command, args []string) error {
 	}
 	bin, err := findCursorAgent()
 	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return err
 	}
 	return runCursorAgent(bin, args, os.Stdin, os.Stdout, os.Stderr)
@@ -106,9 +108,10 @@ func runCursorCapture(cmd *cobra.Command, args []string) error {
 		if err == errCursorRunHelp {
 			return cmd.Help()
 		}
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return err
 	}
-	return runCursorCaptureWithIO(
+	err = runCursorCaptureWithIO(
 		cmd.ErrOrStderr(),
 		opts,
 		os.Stdin,
@@ -117,6 +120,22 @@ func runCursorCapture(cmd *cobra.Command, args []string) error {
 		time.Now().UTC(),
 		postUsageIngest,
 	)
+	return printCursorPreloopError(cmd.ErrOrStderr(), err)
+}
+
+// printCursorPreloopError writes Preloop-side failures (missing binary,
+// start errors) to stderr. Child wrapProcessExit errors stay silent:
+// cursor-agent already wrote its own diagnostics.
+func printCursorPreloopError(w io.Writer, err error) error {
+	if err == nil {
+		return nil
+	}
+	var coded *processExitError
+	if errors.As(err, &coded) {
+		return err
+	}
+	fmt.Fprintln(w, err)
+	return err
 }
 
 func runCursorCaptureWithIO(
@@ -124,7 +143,7 @@ func runCursorCaptureWithIO(
 	opts cursorRunOptions,
 	stdin io.Reader,
 	stdout, stderr io.Writer,
-	now time.Time,
+	started time.Time,
 	ship func(source, agentID string, records []map[string]interface{}, timeout time.Duration) error,
 ) error {
 	bin, err := findCursorAgent()
@@ -141,11 +160,18 @@ func runCursorCaptureWithIO(
 		io.MultiWriter(stdout, &captured),
 		stderr,
 	)
+	ended := time.Now().UTC()
 
+	capture, parseErr := parseCursorAgentOutput(captured.Bytes())
+	if parseErr != nil {
+		fmt.Fprintf(warn, "preloop cursor: cursor-agent output truncated (usage not recorded)\n")
+		return waitErr
+	}
 	records := buildCursorIngestRecords(
-		parseCursorAgentOutput(captured.Bytes()),
+		capture,
 		opts.parent,
-		now,
+		started,
+		ended,
 	)
 	if len(records) == 0 {
 		if captured.Len() > 0 {
@@ -312,7 +338,7 @@ type cursorCapture struct {
 	Usage      *cursorStreamUsage
 }
 
-func parseCursorAgentOutput(raw []byte) cursorCapture {
+func parseCursorAgentOutput(raw []byte) (cursorCapture, error) {
 	var capture cursorCapture
 	sawObject := false
 
@@ -330,21 +356,27 @@ func parseCursorAgentOutput(raw []byte) cursorCapture {
 		sawObject = true
 		applyCursorEvent(&capture, event)
 	}
+	if err := scanner.Err(); err != nil {
+		// Token-too-long and other scan failures must not look like a
+		// successful partial capture: the dropped line may have been the
+		// result event with the only token counts.
+		return cursorCapture{}, err
+	}
 
 	if sawObject {
-		return capture
+		return capture, nil
 	}
 
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return capture
+		return capture, nil
 	}
 	var event cursorStreamEvent
 	if err := json.Unmarshal(trimmed, &event); err != nil || event.Type == "" {
-		return capture
+		return capture, nil
 	}
 	applyCursorEvent(&capture, event)
-	return capture
+	return capture, nil
 }
 
 func applyCursorEvent(capture *cursorCapture, event cursorStreamEvent) {
@@ -380,7 +412,7 @@ func applyCursorEvent(capture *cursorCapture, event cursorStreamEvent) {
 func buildCursorIngestRecords(
 	capture cursorCapture,
 	parent string,
-	now time.Time,
+	started, ended time.Time,
 ) []map[string]interface{} {
 	if capture.SessionID == "" {
 		return nil
@@ -393,12 +425,12 @@ func buildCursorIngestRecords(
 			"sessionStart:"+capture.SessionID,
 			capture,
 			parent,
-			now,
+			started,
 			false,
 		))
 	}
 	if capture.HasResult {
-		records = append(records, cursorResultRecord(capture, parent, now))
+		records = append(records, cursorResultRecord(capture, parent, ended))
 	}
 	if len(records) == 0 {
 		// session_id observed on a non-init, non-result event (e.g. a
@@ -406,10 +438,10 @@ func buildCursorIngestRecords(
 		// still appears; no tokens.
 		records = append(records, cursorLifecycleRecord(
 			"response",
-			cursorResultExternalID(capture, now),
+			cursorResultExternalID(capture, ended),
 			capture,
 			parent,
-			now,
+			ended,
 			false,
 		))
 	}
