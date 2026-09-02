@@ -157,6 +157,8 @@ export const NEXT_STEPS_DISMISSED_KEY = 'dashboard_next_steps_dismissed';
 export const ENDPOINTS_EXPANDED_KEY = 'dashboard_endpoints_expanded';
 
 interface NextStep {
+  /** Nice to have: never keeps the card alive on its own. */
+  optional?: boolean;
   id: string;
   label: string;
   done: boolean;
@@ -357,8 +359,15 @@ export class DashboardView extends AuthedElement {
          never falls to a second row. */
       .attention-strip {
         align-items: center;
-        background: var(--sl-color-warning-50);
-        border: 1px solid var(--sl-color-warning-200);
+        /* A translucent mix of one warning token reads as a pale tint in light
+           and a dim tint in dark, instead of the inverted-scale solid band. */
+        background: color-mix(
+          in srgb,
+          var(--sl-color-warning-500) 12%,
+          var(--sl-color-neutral-0)
+        );
+        border: 1px solid
+          color-mix(in srgb, var(--sl-color-warning-500) 40%, transparent);
         border-radius: var(--sl-border-radius-medium);
         display: flex;
         flex-wrap: nowrap;
@@ -2553,6 +2562,7 @@ export class DashboardView extends AuthedElement {
     if (this.userManagementEnabled) {
       steps.push({
         id: 'invite',
+        optional: true,
         label: 'Invite a teammate',
         done: this.enabledUsersCount > 1,
         href: '/console/settings/invitations',
@@ -2775,7 +2785,7 @@ export class DashboardView extends AuthedElement {
       return nothing;
     }
     const steps = this.nextSteps;
-    if (steps.every((step) => step.done)) {
+    if (steps.every((step) => step.done || step.optional)) {
       return nothing;
     }
 
@@ -3723,7 +3733,12 @@ export class DashboardView extends AuthedElement {
           )}
         </div>
         <a class="attention-strip-all" href="/console/attention"
-          >View all <span aria-hidden="true">→</span></a
+          >${
+            items.length > visible.length
+              ? html`+${this.formatNumber(items.length - visible.length)} more · `
+              : nothing
+          }View
+          all <span aria-hidden="true">→</span></a
         >
       </div>
     `;
