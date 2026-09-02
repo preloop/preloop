@@ -29,14 +29,23 @@ describe('attention count parity', () => {
       headers: { 'Content-Type': 'application/json' },
     });
 
-  // Pending for seven weeks and past its expiry: the Overview used to hide it.
+  // The API reports both of these as pending. The first one's expiry has
+  // passed, so nobody can act on it: both views must hide it, and neither may
+  // count it (backend issue #335 tracks flipping those rows to `expired`).
   const pendingApprovals = [
     {
-      id: 'approval-1',
+      id: 'approval-expired',
       tool_name: 'Bash',
       status: 'pending',
       requested_at: ago(49 * 24 * 3600_000),
       expires_at: ago(48 * 24 * 3600_000),
+      managed_agent_name: 'Claude Code',
+    },
+    {
+      id: 'approval-1',
+      tool_name: 'Write',
+      status: 'pending',
+      requested_at: ago(49 * 24 * 3600_000),
       managed_agent_name: 'Claude Code',
     },
   ];
@@ -225,9 +234,13 @@ describe('attention count parity', () => {
 
     const pageRows = page.shadowRoot!.querySelectorAll('.attention-row').length;
 
-    // 1 approval + 1 agent + 2 flows (three failed runs of two flows).
+    // 1 live approval + 1 agent + 2 flows (three failed runs of two flows).
+    // The expired-but-still-pending request is on neither side.
     expect(pageRows).to.equal(4);
     expect(heroValue).to.equal(String(pageRows));
+    expect(page['items'].map((item) => item.id)).to.not.contain(
+      'approval:approval-expired'
+    );
     expect(dashboard['attentionItems'].map((item) => item.id)).to.eql(
       page['items'].map((item) => item.id)
     );

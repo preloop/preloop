@@ -52,6 +52,7 @@ export interface AttentionApproval {
   summary?: string | null;
   status?: string;
   requested_at: string;
+  expires_at?: string | null;
   managed_agent_name?: string | null;
   flow_name?: string | null;
   is_question?: boolean;

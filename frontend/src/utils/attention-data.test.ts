@@ -27,7 +27,14 @@ describe('loadAttentionInputs', () => {
           return new Response('{"detail":"forbidden"}', { status: 403 });
         }
         if (url.startsWith('/api/v1/approval-requests')) {
-          return json([{ id: 'approval-1', status: 'pending' }]);
+          return json([
+            { id: 'approval-1', status: 'pending' },
+            {
+              id: 'approval-expired',
+              status: 'pending',
+              expires_at: new Date(Date.now() - 3600_000).toISOString(),
+            },
+          ]);
         }
         if (url.startsWith('/api/v1/agents')) {
           return json({ items: [{ id: 'agent-1' }], total: 1 });
@@ -131,6 +138,16 @@ describe('loadAttentionInputs', () => {
     expect(inputs.gatewayFailures?.[0].id).to.equal('bad');
     expect(inputs.budgetPolicies).to.have.length(1);
     expect(inputs.usageSummary?.total_requests).to.equal(3);
+  });
+
+  it('hides approvals whose expiry has passed, whatever the API calls them', async () => {
+    const inputs = await loadAttentionInputs();
+
+    // The API keeps reporting expired requests as pending (backend issue
+    // #335). Nobody can act on one, so neither view may count it.
+    expect(inputs.approvals?.map((approval) => approval.id)).to.eql([
+      'approval-1',
+    ]);
   });
 
   it('drops only the input whose request fails', async () => {

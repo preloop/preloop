@@ -19,6 +19,7 @@ import type {
   AttentionFlowExecution,
   AttentionInputs,
 } from './attention';
+import { parseUTCDate } from './date';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -46,6 +47,27 @@ export const ATTENTION_QUERY = {
   gatewayFailuresLimit: 12,
   usageWindowDays: 30,
 } as const;
+
+/**
+ * The API still reports a request as `pending` after its expiry passes
+ * (backend issue #335), and nobody can act on one of those. The Overview
+ * filtered them out and the Attention page did not, which is how the same
+ * account showed two different approval counts. The filter lives here so
+ * there is one answer for both views; the backend should flip those rows to
+ * `expired` separately.
+ */
+function isUnexpiredPendingApproval(
+  approval: AttentionApproval,
+  now: Date
+): boolean {
+  if (approval.status && approval.status !== 'pending') {
+    return false;
+  }
+  if (!approval.expires_at) {
+    return true;
+  }
+  return parseUTCDate(approval.expires_at).getTime() > now.getTime();
+}
 
 export interface LoadAttentionInputsOptions {
   /** Injected in tests and by callers that already know "now". */
@@ -102,7 +124,9 @@ export async function loadAttentionInputs(
   return {
     approvals:
       approvals.status === 'fulfilled' && Array.isArray(approvals.value)
-        ? (approvals.value as AttentionApproval[])
+        ? (approvals.value as AttentionApproval[]).filter((approval) =>
+            isUnexpiredPendingApproval(approval, now)
+          )
         : [],
     agents:
       agents.status === 'fulfilled'
