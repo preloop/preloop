@@ -158,8 +158,11 @@ describe('usage-card', () => {
     });
     const rows = element.shadowRoot!.querySelectorAll('.budget-row');
     expect(rows.length).to.equal(2);
-    expect(rows[0].textContent).to.contain('Daily budget');
-    expect(rows[1].textContent).to.contain('Monthly budget');
+    // Each row says which window it resets in, so the number is not read as
+    // a running total.
+    expect(rows[0].textContent).to.contain('Daily budget · today');
+    const month = new Date().toLocaleDateString(undefined, { month: 'short' });
+    expect(rows[1].textContent).to.contain(`Monthly budget · ${month}`);
     expect(rows[1].textContent!.replace(/\s+/g, ' ')).to.contain(
       '$33.57 / $300.00'
     );
@@ -185,6 +188,28 @@ describe('usage-card', () => {
     expect(row.textContent!.replace(/\s+/g, ' ')).to.contain(
       '$33.57 / $500.00'
     );
+  });
+
+  it('puts the unit toggle in the header, left of the range select', async () => {
+    const element = await renderCard({});
+    const header = element.shadowRoot!.querySelector('.header')!;
+    const controls = header.querySelector('.header-controls')!;
+    const children = Array.from(controls.children).map((child) =>
+      child.tagName.toLowerCase()
+    );
+    expect(children[0]).to.equal('div');
+    expect(controls.querySelector('.unit-toggle')).to.exist;
+    expect(children[children.length - 1]).to.equal('time-range-select');
+
+    // The label stays for screen readers but takes no room on screen.
+    const group = controls.querySelector('sl-radio-group')!;
+    expect(group.getAttribute('label')).to.equal('Usage unit');
+    const label = group.shadowRoot?.querySelector(
+      '[part~="form-control-label"]'
+    ) as HTMLElement | null;
+    if (label) {
+      expect(label.getBoundingClientRect().height).to.be.at.most(1);
+    }
   });
 
   it('summarises non global policies on one line', async () => {

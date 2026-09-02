@@ -87,6 +87,14 @@ export class UsageCard extends LitElement {
         gap: var(--sl-spacing-small);
       }
 
+      /* Unit toggle and range live together in the header: they are the two
+         controls that change what every number below them means. */
+      .header-controls {
+        align-items: center;
+        display: flex;
+        gap: var(--sl-spacing-small);
+      }
+
       .title {
         font-weight: 600;
         color: var(--sl-color-neutral-900);
@@ -100,7 +108,17 @@ export class UsageCard extends LitElement {
 
       .unit-toggle {
         display: flex;
-        justify-content: flex-end;
+      }
+
+      /* The control is self-explanatory next to the numbers it switches, so
+         the label is for screen readers only. */
+      .unit-toggle sl-radio-group::part(form-control-label) {
+        clip: rect(0 0 0 0);
+        height: 1px;
+        overflow: hidden;
+        position: absolute;
+        white-space: nowrap;
+        width: 1px;
       }
 
       .primary-value {
@@ -426,9 +444,28 @@ export class UsageCard extends LitElement {
     return this.summary?.budget?.monthly_limit_usd || 0;
   }
 
-  private periodLabel(period: string): string {
-    if (period === 'all_time') return 'All time budget';
-    return `${period.charAt(0).toUpperCase()}${period.slice(1)} budget`;
+  /**
+   * Which window a budget row is about. "Monthly budget: $12 / $50" was read
+   * as a running total; "Monthly budget - Sep" says the number resets.
+   */
+  private periodWindow(period: string, now: Date): string {
+    if (period === 'hourly') return 'this hour';
+    if (period === 'daily') return 'today';
+    if (period === 'weekly') return 'this week';
+    if (period === 'monthly') {
+      return now.toLocaleDateString(undefined, { month: 'short' });
+    }
+    if (period === 'yearly') return String(now.getFullYear());
+    return '';
+  }
+
+  private periodLabel(period: string, now: Date = new Date()): string {
+    const base =
+      period === 'all_time'
+        ? 'All time budget'
+        : `${period.charAt(0).toUpperCase()}${period.slice(1)} budget`;
+    const window = this.periodWindow(period, now);
+    return window ? `${base} · ${window}` : base;
   }
 
   private renderBudgetRow(
@@ -489,7 +526,7 @@ export class UsageCard extends LitElement {
     if (!hasGlobalMonthly && legacyLimit > 0) {
       rows.unshift(
         this.renderBudgetRow(
-          'Monthly budget',
+          this.periodLabel('monthly'),
           this.summary?.budget?.current_spend_usd || 0,
           this.summary?.budget?.soft_limit_usd || 0,
           legacyLimit
@@ -538,17 +575,20 @@ export class UsageCard extends LitElement {
       <sl-card class="content-card">
         <div slot="header" class="header">
           <div class="title">Usage</div>
-          <time-range-select
-            ariaLabel="Usage time range"
-            .value=${this.timeRange}
-            .options=${[
-              { value: 'day', label: '24h' },
-              { value: 'week', label: '7d' },
-              { value: 'month', label: '30d' },
-              { value: 'year', label: '1y' },
-            ]}
-            @range-change=${this.handleRangeChange}
-          ></time-range-select>
+          <div class="header-controls">
+            ${this.renderUnitToggle()}
+            <time-range-select
+              ariaLabel="Usage time range"
+              .value=${this.timeRange}
+              .options=${[
+                { value: 'day', label: '24h' },
+                { value: 'week', label: '7d' },
+                { value: 'month', label: '30d' },
+                { value: 'year', label: '1y' },
+              ]}
+              @range-change=${this.handleRangeChange}
+            ></time-range-select>
+          </div>
         </div>
 
         <div class="body">
@@ -560,9 +600,8 @@ export class UsageCard extends LitElement {
                 </sl-alert>`
               : nothing
           }
-          ${this.renderUnitToggle()} ${this.renderPrimary()}
-          ${this.renderSecondaryLine()} ${this.renderSparkline()}
-          ${this.renderBudgets()}
+          ${this.renderPrimary()} ${this.renderSecondaryLine()}
+          ${this.renderSparkline()} ${this.renderBudgets()}
           <div class="footer">
             <sl-button
               size="small"

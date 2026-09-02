@@ -793,6 +793,54 @@ describe('DashboardView', () => {
     );
   });
 
+  it('keeps each attention row on one line about 44px tall', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
+      'dashboard did not finish loading'
+    );
+    await element.updateComplete;
+
+    const row = element.shadowRoot?.querySelector(
+      '.attention-row'
+    ) as HTMLElement | null;
+    expect(row, 'an attention row renders').to.exist;
+    // Three stacked lines (dot, icon, text) used to make these ~70px each, so
+    // five items pushed the Usage card below the fold.
+    expect(row!.offsetHeight, 'row height').to.be.at.most(52);
+
+    const title = row!.querySelector('.row-primary') as HTMLElement;
+    const detail = row!.querySelector('.attention-detail') as HTMLElement;
+    expect(title.getBoundingClientRect().top).to.be.closeTo(
+      detail.getBoundingClientRect().top,
+      8
+    );
+    expect(getComputedStyle(title).whiteSpace).to.equal('nowrap');
+    expect(
+      title.getBoundingClientRect().right,
+      'nothing escapes the row'
+    ).to.be.at.most(row!.getBoundingClientRect().right + 1);
+  });
+
+  it('shows Updated and Manage Keys as one muted line in the gateway header', async () => {
+    const element = await mountDashboard();
+    await waitUntil(() => !element['loading'], 'dashboard did not load');
+    await element.updateComplete;
+
+    const meta = element.shadowRoot?.querySelector('.gateway-header-meta');
+    expect(meta, 'the gateway header meta line renders').to.exist;
+    expect(meta?.querySelector('.updated-at')?.textContent).to.contain(
+      'Updated'
+    );
+    expect(
+      meta?.querySelector('a.header-action-link')?.textContent?.trim()
+    ).to.equal('Manage Keys');
+  });
+
   it('skips zero-request runtime sessions and displays ids instead of config paths', async () => {
     runtimeSessionsResponse = {
       ...runtimeSessionsResponse,

@@ -292,13 +292,16 @@ export class DashboardView extends AuthedElement {
       .hover-underline:hover {
         text-decoration: underline;
       }
+      /* The hero metrics sat in their own screenful of whitespace: a
+         two-x-large row gap and the same margin under them pushed the first
+         card below the fold at 1440x900. */
       .metrics-grid {
         display: grid;
         grid-template-columns: repeat(5, minmax(0, 1fr));
         gap: var(--sl-spacing-large);
-        row-gap: var(--sl-spacing-2x-large);
+        row-gap: var(--sl-spacing-large);
         align-items: start;
-        margin-bottom: var(--sl-spacing-2x-large);
+        margin-bottom: var(--sl-spacing-large);
       }
       .tool-count-value {
         font-variant-numeric: tabular-nums;
@@ -329,16 +332,22 @@ export class DashboardView extends AuthedElement {
       .attention-title sl-icon {
         color: var(--sl-color-warning-600);
       }
-      .attention-row {
-        align-items: flex-start;
+      /* One line per item, about 44px tall, so five items and the Usage card
+         fit above the fold. The shared .row rule below stacks its children,
+         which turned every attention item into three lines: dot, icon, text.
+         The double class beats it without touching the other lists. */
+      .row.attention-row {
+        align-items: center;
         display: flex;
+        flex-direction: row;
         gap: var(--sl-spacing-x-small);
+        min-height: 44px;
+        padding: var(--sl-spacing-x-small) 0;
       }
       .severity-dot {
         border-radius: 50%;
         flex-shrink: 0;
         height: 8px;
-        margin-top: 6px;
         width: 8px;
         background: var(--sl-color-warning-600);
       }
@@ -348,17 +357,27 @@ export class DashboardView extends AuthedElement {
       .attention-kind-icon {
         color: var(--sl-color-neutral-500);
         flex-shrink: 0;
-        margin-top: 3px;
       }
       .attention-main {
+        align-items: baseline;
         display: flex;
-        flex-direction: column;
-        gap: 2px;
+        flex-direction: row;
+        gap: var(--sl-spacing-x-small);
         min-width: 0;
+      }
+      /* The title keeps what it needs, the detail gives way first. */
+      .attention-row .row-primary {
+        flex: 0 1 auto;
+        overflow: hidden;
+        overflow-wrap: normal;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .attention-detail {
         color: var(--sl-color-neutral-500);
+        flex: 1 1 auto;
         font-size: var(--sl-font-size-x-small);
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -582,6 +601,7 @@ export class DashboardView extends AuthedElement {
         min-width: 0;
       }
       .server-endpoint {
+        min-width: 0;
         font-family: monospace;
         font-size: var(--sl-font-size-small);
         color: var(--sl-color-neutral-900);
@@ -610,6 +630,40 @@ export class DashboardView extends AuthedElement {
       }
       .capsule-link:hover {
         text-decoration: underline;
+      }
+      /* "Updated 2m ago" and "Manage Keys" read as one muted line about the
+         card, wherever the header has room for them. */
+      .gateway-header-meta {
+        align-items: center;
+        display: flex;
+        gap: var(--sl-spacing-small);
+        min-width: 0;
+      }
+      /* Phone width: the capsule is a two-row block, not a pill. Row one
+         names the endpoint, row two is the thing you came to copy. Without
+         this the select and the URL pushed the copy button outside the card. */
+      @media (max-width: 640px) {
+        .card-header-with-action {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: var(--sl-spacing-2x-small);
+        }
+        .mcp-server-capsule {
+          border-radius: var(--sl-border-radius-medium);
+          column-gap: var(--sl-spacing-x-small);
+          flex-wrap: wrap;
+          row-gap: var(--sl-spacing-x-small);
+        }
+        .mcp-server-capsule > * {
+          min-width: 0;
+        }
+        /* Leaves room on the same row for the copy button that follows. */
+        .server-details {
+          flex: 1 1 calc(100% - 3rem);
+        }
+        .server-details select {
+          max-width: 8rem;
+        }
       }
       @media (min-width: 1024px) {
         .overview-layout {
@@ -735,10 +789,17 @@ export class DashboardView extends AuthedElement {
         padding: var(--sl-spacing-2x-large);
       }
 
+      /* Overview only: the cards are dense, so a large gap between them read
+         as "unrelated sections" and cost a scroll. */
       .dashboard-stack {
         display: flex;
         flex-direction: column;
-        gap: var(--sl-spacing-large);
+        gap: var(--sl-spacing-medium);
+      }
+
+      .main-column,
+      .side-column {
+        gap: var(--sl-spacing-medium);
       }
 
       .summary-grid,
@@ -969,12 +1030,30 @@ export class DashboardView extends AuthedElement {
         align-items: center;
       }
 
+      /* One centered line in a 72px box. An empty card used to take as much
+         vertical space as a full one, so a quiet account looked like a broken
+         one. */
       .empty-state {
+        align-items: center;
+        background: var(--sl-color-neutral-0);
         border: 1px dashed var(--sl-color-neutral-300);
         border-radius: var(--sl-border-radius-medium);
-        padding: var(--sl-spacing-large);
+        display: flex;
+        gap: var(--sl-spacing-small);
+        justify-content: center;
+        min-height: 72px;
+        padding: var(--sl-spacing-medium);
         text-align: center;
-        background: var(--sl-color-neutral-0);
+      }
+
+      .empty-state sl-icon {
+        color: var(--sl-color-neutral-400);
+        flex-shrink: 0;
+        font-size: 1.25rem;
+      }
+
+      .empty-state p {
+        margin: 0;
       }
 
       /* Failed flows: visible but calm — accent border only, no red wash */
@@ -3476,13 +3555,11 @@ export class DashboardView extends AuthedElement {
             >
               <sl-icon name="question-circle"></sl-icon>
             </sl-tooltip>
+          </div>
+          <div class="gateway-header-meta">
             <span class="updated-at"
               >Updated ${this.formatLastUpdatedLabel()}</span
             >
-          </div>
-          <div
-            style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-          >
             <a href="/console/settings/api-keys" class="header-action-link"
               >Manage Keys</a
             >
@@ -3653,7 +3730,7 @@ export class DashboardView extends AuthedElement {
             ${this.renderRecentFlowExecutionsCard()}
 
             <div
-              style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sl-spacing-large); margin-top: var(--sl-spacing-large);"
+              style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sl-spacing-medium);"
             >
               ${this.renderGatewayFailuresCard()}
               ${this.renderAuditExceptionsCard()}
