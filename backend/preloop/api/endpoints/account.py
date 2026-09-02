@@ -12,6 +12,7 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     HTTPException,
+    Path,
     Query,
     UploadFile,
     status,
@@ -3190,7 +3191,9 @@ async def list_attention_dismissals(
 )
 @require_permission("manage_agents")
 async def upsert_attention_dismissal(
-    item_id: str,
+    # Bounded by the column (``String(255)``): an oversized id is a 422 rather
+    # than a Postgres DataError behind a 500.
+    item_id: Annotated[str, Path(min_length=1, max_length=255)],
     payload: AttentionDismissalUpsertRequest,
     account: Annotated[Account, Depends(get_account_for_user)],
     current_user: UserModel = Depends(get_current_active_user),
@@ -3235,7 +3238,7 @@ async def upsert_attention_dismissal(
 )
 @require_permission("manage_agents")
 async def delete_attention_dismissal(
-    item_id: str,
+    item_id: Annotated[str, Path(min_length=1, max_length=255)],
     account: Annotated[Account, Depends(get_account_for_user)],
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),

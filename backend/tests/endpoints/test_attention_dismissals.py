@@ -120,6 +120,24 @@ def test_unknown_reason_is_rejected(client):
     assert response.status_code == 422
 
 
+def test_oversized_item_id_is_rejected(client):
+    """The path parameter is bounded by the column, so it never reaches the DB.
+
+    ``item_id`` is ``String(255)``; without the bound a longer id is a
+    Postgres DataError behind a 500 instead of a 422.
+    """
+    long_item_id = "agent:" + "a" * 300
+
+    put_response = client.put(
+        f"{DISMISSALS}/{long_item_id}",
+        json={"fingerprint": "x", "reason": "expected"},
+    )
+    delete_response = client.delete(f"{DISMISSALS}/{long_item_id}")
+
+    assert put_response.status_code == 422
+    assert delete_response.status_code == 422
+
+
 def test_expired_snooze_is_excluded_and_collected(client, db_session, test_user):
     """A snooze that ran out neither hides the item nor lingers in the table."""
     crud_attention_dismissal.upsert(
