@@ -308,6 +308,16 @@ config:
     apiKey: ""
   anthropic:
     apiKey: ""
+  # Scheduled automatic model-catalog sync: periodically discover newly
+  # released provider models with stored API-key credentials and add them to
+  # each account catalog (the scheduled equivalent of 'preloop models sync').
+  # Principal-bound subscription-OAuth credentials (Claude Code / Codex) are
+  # never used for discovery. Default off so catalogs never change on
+  # upgrade without an explicit opt-in; every sync run that adds models
+  # emits an audit event attributed to the "model-catalog-sync" system actor.
+  modelCatalogSync:
+    scheduledEnabled: false
+    intervalHours: 24
   smtp:
     host: ""
     port: 587

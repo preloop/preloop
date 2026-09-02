@@ -115,6 +115,37 @@ async def run_scheduler_async(
         )
         logger.info("Scheduled daily provider billing ingestion.")
 
+    # Scheduled model-catalog sync (the automatic 'preloop models sync').
+    # Default OFF: self-hosted catalogs must never change on upgrade without
+    # an explicit opt-in (MODEL_CATALOG_SYNC_SCHEDULED_ENABLED=true). The
+    # worker-side task re-checks the setting, so a queued task after a
+    # disable still no-ops. Principal-bound subscription-OAuth credentials
+    # are never used for discovery.
+    if getattr(settings, "model_catalog_sync_scheduled_enabled", False):
+        catalog_sync_interval_hours = max(
+            1, int(getattr(settings, "model_catalog_sync_interval_hours", 24) or 24)
+        )
+
+        async def _publish_model_catalog_sync() -> None:
+            try:
+                await event_bus_service.publish_task("sync_model_catalog")
+            except Exception:
+                logger.exception("Failed to publish model catalog sync task")
+
+        scheduler.add_job(
+            _publish_model_catalog_sync,
+            trigger=IntervalTrigger(hours=catalog_sync_interval_hours),
+            id="model_catalog_sync_job",
+            name="Sync Provider Model Catalogs",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            next_run_time=datetime.now(pytz.utc) + timedelta(minutes=15),
+        )
+        logger.info(
+            "Scheduled model catalog sync every %d hour(s).",
+            catalog_sync_interval_hours,
+        )
+
     # Weekly cost optimization & savings digest. The worker-side task no-ops
     # unless the Enterprise billing plugin is present.
     if getattr(settings, "cost_digest_enabled", True):

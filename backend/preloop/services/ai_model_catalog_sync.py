@@ -25,7 +25,7 @@ from typing import List, Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from preloop.models.crud import crud_ai_model, crud_audit_log
+from preloop.models.crud import crud_account, crud_ai_model, crud_audit_log
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.user import User
 from preloop.services.ai_model_provider import (
@@ -44,6 +44,44 @@ logger = logging.getLogger(__name__)
 # alone lists hundreds of models), and Bedrock listing needs the AWS
 # credential envelope the console flow collects interactively.
 UNSYNCABLE_PROVIDERS = frozenset(OPENAI_COMPATIBLE_PROVIDERS) | {"bedrock"}
+
+# Stable identifier for the scheduled (non-user) sync in audit events.
+SYSTEM_ACTOR_MODEL_CATALOG_SYNC = "model-catalog-sync"
+
+
+@dataclass(frozen=True)
+class CatalogSyncActor:
+    """Who ran a catalog sync, for audit attribution.
+
+    The audit_log schema already models system actions as ``user_id=None``
+    (see :class:`preloop.models.models.audit_log.AuditLog`); this dataclass is
+    the smallest honest layer on top: it pins the account, carries the
+    optional user, and stamps ``actor_type``/``actor`` into the audit event
+    details so a scheduled run is distinguishable from an operator run.
+    """
+
+    account_id: object
+    user_id: Optional[object] = None
+    actor_type: str = "user"  # "user" or "system"
+    actor_id: str = ""  # user id, or a stable system identifier
+
+    @classmethod
+    def for_user(cls, user: User) -> "CatalogSyncActor":
+        return cls(
+            account_id=user.account_id,
+            user_id=user.id,
+            actor_type="user",
+            actor_id=str(user.id),
+        )
+
+    @classmethod
+    def system(cls, account_id) -> "CatalogSyncActor":
+        return cls(
+            account_id=account_id,
+            user_id=None,
+            actor_type="system",
+            actor_id=SYSTEM_ACTOR_MODEL_CATALOG_SYNC,
+        )
 
 
 @dataclass
@@ -127,7 +165,7 @@ def _create_discovered_model(
     db: Session,
     *,
     result: ProviderCatalogSyncResult,
-    user: User,
+    account_id,
     seed: AIModel,
     provider_name: str,
     identifier: str,
@@ -161,7 +199,7 @@ def _create_discovered_model(
                     },
                 },
             },
-            account_id=user.account_id,
+            account_id=account_id,
             commit=False,
         )
     except ValueError as exc:
@@ -183,7 +221,8 @@ def _create_discovered_model(
 async def sync_account_model_catalog(
     db: Session,
     *,
-    user: User,
+    actor: Optional[CatalogSyncActor] = None,
+    user: Optional[User] = None,
     provider: Optional[str] = None,
     dry_run: bool = False,
     request=None,
@@ -196,10 +235,16 @@ async def sync_account_model_catalog(
     identifier via the CRUD layer. New rows share the seed model's credential
     secret and inherit its gateway exposure.
 
+    One audit event is emitted per run when anything was added (or would be
+    added on a dry run); a run that changes nothing is logged only.
+
     Args:
         db: Active database session.
-        user: The operator running the sync (audit attribution and account
-            scoping).
+        actor: Attribution for the run. Defaults to the acting ``user`` when
+            omitted; the scheduled job passes :meth:`CatalogSyncActor.system`.
+        user: The operator running a manual sync. Also feeds the EE
+            config-change audit plugin, which is user-centric; system runs
+            record only the OSS audit event.
         provider: Optional provider filter, e.g. ``"anthropic"``.
         dry_run: When True, report what would be added without writing.
         request: Optional FastAPI request for audit IP/user-agent context.
@@ -208,7 +253,11 @@ async def sync_account_model_catalog(
         Per-provider results: discovery provenance, added aliases, and
         skip/error notes.
     """
-    account_models = crud_ai_model.get_by_account(db=db, account_id=user.account_id)
+    if actor is None:
+        if user is None:
+            raise ValueError("sync_account_model_catalog needs an actor or a user")
+        actor = CatalogSyncActor.for_user(user)
+    account_models = crud_ai_model.get_by_account(db=db, account_id=actor.account_id)
     provider_filter = (provider or "").strip().lower()
 
     grouped: dict[str, List[AIModel]] = {}
@@ -238,24 +287,30 @@ async def sync_account_model_catalog(
     for provider_name in sorted(grouped):
         result = await _sync_provider_catalog(
             db,
-            user=user,
+            actor=actor,
             provider_name=provider_name,
             provider_models=grouped[provider_name],
             dry_run=dry_run,
-            request=request,
         )
         summary.providers.append(result)
+
+    _audit_catalog_sync_run(
+        db,
+        actor=actor,
+        user=user,
+        summary=summary,
+        request=request,
+    )
     return summary
 
 
 async def _sync_provider_catalog(
     db: Session,
     *,
-    user: User,
+    actor: CatalogSyncActor,
     provider_name: str,
     provider_models: List[AIModel],
     dry_run: bool,
-    request=None,
 ) -> ProviderCatalogSyncResult:
     """Sync one provider's catalog; see :func:`sync_account_model_catalog`."""
     result = ProviderCatalogSyncResult(provider=provider_name)
@@ -269,7 +324,7 @@ async def _sync_provider_catalog(
         )
         return result
 
-    seed, secret = _resolve_seed_model(db, user.account_id, provider_models)
+    seed, secret = _resolve_seed_model(db, actor.account_id, provider_models)
     if seed is None or not secret:
         result.error = ERROR_MISSING_KEY
         result.note = (
@@ -316,7 +371,7 @@ async def _sync_provider_catalog(
         created = _create_discovered_model(
             db,
             result=result,
-            user=user,
+            account_id=actor.account_id,
             seed=seed,
             provider_name=provider_name,
             identifier=identifier,
@@ -330,38 +385,52 @@ async def _sync_provider_catalog(
         db.commit()
 
     result.added = added_aliases
-    if added_aliases:
-        _audit_catalog_sync(
-            db,
-            user=user,
-            provider_name=provider_name,
-            added=added_aliases,
-            dry_run=dry_run,
-            request=request,
-        )
     return result
 
 
-def _audit_catalog_sync(
+def _audit_catalog_sync_run(
     db: Session,
     *,
-    user: User,
-    provider_name: str,
-    added: List[str],
-    dry_run: bool,
+    actor: CatalogSyncActor,
+    user: Optional[User],
+    summary: CatalogSyncSummary,
     request=None,
 ) -> None:
-    """Record the sync in the audit trail (OSS audit log + EE audit plugin)."""
+    """Record one audit event summarizing a sync run's added models.
+
+    A run that added nothing (and would add nothing on a dry run) is logged
+    only, never audited: a scheduled no-op every interval would otherwise
+    bury real events. System runs carry ``user_id=None`` plus
+    ``actor_type``/``actor`` details; the user-centric EE config-change
+    plugin is invoked only for operator runs.
+    """
+    provider_details = [
+        {"provider": result.provider, "added": result.added}
+        for result in summary.providers
+        if result.added
+    ]
+    total_added = sum(len(entry["added"]) for entry in provider_details)
+    if total_added == 0:
+        logger.info(
+            "Model catalog sync for account %s (%s) added nothing",
+            actor.account_id,
+            actor.actor_id or actor.actor_type,
+        )
+        return
+
     details = {
-        "provider": provider_name,
-        "added": added,
-        "dry_run": dry_run,
+        "actor_type": actor.actor_type,
+        "actor": actor.actor_id,
+        "trigger": "scheduled" if actor.actor_type == "system" else "manual",
+        "dry_run": summary.dry_run,
+        "providers": provider_details,
+        "total_added": total_added,
     }
     try:
         crud_audit_log.log_action(
             db,
-            account_id=user.account_id,
-            user_id=user.id,
+            account_id=actor.account_id,
+            user_id=actor.user_id,
             action="ai_model_catalog_sync",
             resource_type="ai_model",
             status="success",
@@ -369,11 +438,59 @@ def _audit_catalog_sync(
         )
     except Exception:  # pragma: no cover - audit must not break the sync
         logger.debug("Audit log for model catalog sync failed", exc_info=True)
-    log_config_change(
-        db,
-        user=user,
-        config_type="ai_model",
-        action="synced",
-        new_value=details,
-        request=request,
+    if user is not None:
+        log_config_change(
+            db,
+            user=user,
+            config_type="ai_model",
+            action="synced",
+            new_value=details,
+            request=request,
+        )
+
+
+async def sync_all_account_model_catalogs(db: Session) -> dict[str, int]:
+    """Run the catalog sync for every account, as the scheduled system actor.
+
+    Pages through all accounts via the CRUD layer and syncs each one exactly
+    like the manual endpoint would, attributed to the
+    ``model-catalog-sync`` system actor (``user_id=None`` in audit events).
+    Principal-bound subscription-OAuth credentials stay hard-excluded by
+    :func:`_resolve_seed_model`, identically to manual runs. Per-account
+    failures are logged and skipped so one broken credential cannot stall
+    the whole run.
+
+    Returns:
+        Mapping of account id to the number of models added for accounts
+        where anything changed.
+    """
+    added_by_account: dict[str, int] = {}
+    skip = 0
+    page_size = 100
+    while True:
+        accounts = crud_account.get_multi(db, skip=skip, limit=page_size)
+        if not accounts:
+            break
+        for account in accounts:
+            try:
+                summary = await sync_account_model_catalog(
+                    db,
+                    actor=CatalogSyncActor.system(account.id),
+                )
+            except Exception:
+                logger.exception(
+                    "Scheduled model catalog sync failed for account %s",
+                    account.id,
+                )
+                continue
+            total = sum(len(result.added) for result in summary.providers)
+            if total:
+                added_by_account[str(account.id)] = total
+        if len(accounts) < page_size:
+            break
+        skip += page_size
+    logger.info(
+        "Scheduled model catalog sync finished: %d account(s) gained models",
+        len(added_by_account),
     )
+    return added_by_account

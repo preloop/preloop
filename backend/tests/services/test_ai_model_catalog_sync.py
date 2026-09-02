@@ -120,7 +120,14 @@ async def test_sync_adds_newly_discovered_models_sharing_seed_credential(
 
     audit_kwargs = mock_audit_log.log_action.call_args.kwargs
     assert audit_kwargs["action"] == "ai_model_catalog_sync"
-    assert audit_kwargs["details"]["added"] == ["anthropic/claude-fable-5-1-20260901"]
+    assert audit_kwargs["user_id"] == user.id
+    details = audit_kwargs["details"]
+    assert details["actor_type"] == "user"
+    assert details["trigger"] == "manual"
+    assert details["total_added"] == 1
+    assert details["providers"] == [
+        {"provider": "anthropic", "added": ["anthropic/claude-fable-5-1-20260901"]}
+    ]
     mock_config_audit.assert_called_once()
 
 
@@ -337,3 +344,128 @@ async def test_sync_create_value_error_records_provider_error_and_keeps_siblings
     nested = db.begin_nested.return_value
     assert nested.rollback.call_count == 1
     assert nested.commit.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_system_actor_sync_audits_with_null_user(
+    mock_crud: MagicMock,
+    mock_audit_log: MagicMock,
+    mock_config_audit: MagicMock,
+    mocker: MockerFixture,
+):
+    """A scheduled run is attributed to the model-catalog-sync system actor:
+    the audit event carries user_id=None plus actor_type/actor details, and
+    the user-centric EE config-change plugin is never invoked."""
+    seed = _fake_model()
+    account_id = uuid.uuid4()
+    mock_crud.get_by_account.return_value = [seed]
+    mock_crud.get_for_account.return_value = seed
+    mock_crud.resolve_listing_secret.return_value = "sk-ant-live"
+    mocker.patch.object(
+        ai_model_catalog_sync,
+        "get_available_models_for_provider",
+        return_value=ModelDiscoveryResult(
+            models=["claude-fable-5-1-20260901"], source="live"
+        ),
+    )
+
+    summary = await sync_account_model_catalog(
+        MagicMock(),
+        actor=ai_model_catalog_sync.CatalogSyncActor.system(account_id),
+    )
+
+    assert summary.providers[0].added == ["anthropic/claude-fable-5-1-20260901"]
+    audit_kwargs = mock_audit_log.log_action.call_args.kwargs
+    assert audit_kwargs["account_id"] == account_id
+    assert audit_kwargs["user_id"] is None
+    details = audit_kwargs["details"]
+    assert details["actor_type"] == "system"
+    assert details["actor"] == "model-catalog-sync"
+    assert details["trigger"] == "scheduled"
+    assert details["total_added"] == 1
+    mock_config_audit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scheduled_sync_is_idempotent_second_run_adds_nothing(
+    mock_crud: MagicMock,
+    mock_audit_log: MagicMock,
+    mock_config_audit: MagicMock,
+    mocker: MockerFixture,
+):
+    """Second run against a catalog that already gained the model adds
+    nothing, creates nothing, and emits no audit event (logs only)."""
+    account_id = uuid.uuid4()
+    seed = _fake_model()
+    discovered = ModelDiscoveryResult(
+        models=["claude-fable-5-1-20260901", "claude-fable-5-20260415"],
+        source="live",
+    )
+    mocker.patch.object(
+        ai_model_catalog_sync,
+        "get_available_models_for_provider",
+        return_value=discovered,
+    )
+    mock_crud.get_for_account.return_value = seed
+    mock_crud.resolve_listing_secret.return_value = "sk-ant-live"
+
+    # First run: the catalog only knows the seed model.
+    mock_crud.get_by_account.return_value = [seed]
+    first = await sync_account_model_catalog(
+        MagicMock(), actor=ai_model_catalog_sync.CatalogSyncActor.system(account_id)
+    )
+    assert first.providers[0].added == ["anthropic/claude-fable-5-1-20260901"]
+    assert mock_crud.create_with_account.call_count == 1
+    assert mock_audit_log.log_action.call_count == 1
+
+    # Second run: the catalog now contains what the first run added.
+    mock_crud.get_by_account.return_value = [
+        seed,
+        _fake_model(model_identifier="claude-fable-5-1-20260901"),
+    ]
+    second = await sync_account_model_catalog(
+        MagicMock(), actor=ai_model_catalog_sync.CatalogSyncActor.system(account_id)
+    )
+    assert second.providers[0].added == []
+    assert second.providers[0].skipped_existing == 2
+    assert mock_crud.create_with_account.call_count == 1  # unchanged
+    assert mock_audit_log.log_action.call_count == 1  # no new audit event
+
+
+@pytest.mark.asyncio
+async def test_sync_all_accounts_runs_each_account_as_system_actor(
+    mock_crud: MagicMock,
+    mock_audit_log: MagicMock,
+    mock_config_audit: MagicMock,
+    mocker: MockerFixture,
+):
+    account_a, account_b = MagicMock(), MagicMock()
+    account_a.id = uuid.uuid4()
+    account_b.id = uuid.uuid4()
+    mock_crud_account = mocker.patch.object(ai_model_catalog_sync, "crud_account")
+    mock_crud_account.get_multi.side_effect = [[account_a, account_b]]
+
+    seen_actors = []
+
+    async def fake_sync(db, *, actor):
+        seen_actors.append(actor)
+        result = ai_model_catalog_sync.ProviderCatalogSyncResult(
+            provider="anthropic",
+            source="live",
+            added=["anthropic/new-model"] if actor.account_id == account_a.id else [],
+        )
+        return ai_model_catalog_sync.CatalogSyncSummary(providers=[result])
+
+    mocker.patch.object(
+        ai_model_catalog_sync, "sync_account_model_catalog", side_effect=fake_sync
+    )
+
+    added = await ai_model_catalog_sync.sync_all_account_model_catalogs(MagicMock())
+
+    assert [actor.account_id for actor in seen_actors] == [
+        account_a.id,
+        account_b.id,
+    ]
+    assert all(actor.actor_type == "system" for actor in seen_actors)
+    assert all(actor.actor_id == "model-catalog-sync" for actor in seen_actors)
+    assert added == {str(account_a.id): 1}
