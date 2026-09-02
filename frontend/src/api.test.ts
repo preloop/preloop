@@ -1,7 +1,12 @@
 import { expect } from '@open-wc/testing';
 import sinon from 'sinon';
 import { Router } from '@vaadin/router';
-import { fetchWithAuth, AuthedElement, getFlowExecutions } from './api.js';
+import {
+  fetchWithAuth,
+  AuthedElement,
+  getFlowExecutions,
+  uploadAvatar,
+} from './api.js';
 import { customElement } from 'lit/decorators.js';
 
 // Minimal test element that exposes fetchData for testing
@@ -361,6 +366,61 @@ describe('api', () => {
 
       expect(result).to.be.null;
       document.body.removeChild(el);
+    });
+  });
+
+  describe('uploadAvatar', () => {
+    const file = new File(['avatar'], 'photo.png', { type: 'image/png' });
+
+    it('uses the API detail string when present', async () => {
+      fetchStub.resolves(
+        new Response(JSON.stringify({ detail: 'Not an image.' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+
+      let message = '';
+      try {
+        await uploadAvatar(file);
+      } catch (e: unknown) {
+        message = (e as Error).message;
+      }
+      expect(message).to.equal('Not an image.');
+    });
+
+    it('explains a 413 HTML body as too large', async () => {
+      fetchStub.resolves(
+        new Response('<html>413 Request Entity Too Large</html>', {
+          status: 413,
+          headers: { 'Content-Type': 'text/html' },
+        })
+      );
+
+      let message = '';
+      try {
+        await uploadAvatar(file);
+      } catch (e: unknown) {
+        message = (e as Error).message;
+      }
+      expect(message).to.equal('Image too large (maximum 5 MB).');
+    });
+
+    it('includes the HTTP status when the body is not JSON', async () => {
+      fetchStub.resolves(
+        new Response('<html>Bad Gateway</html>', {
+          status: 502,
+          headers: { 'Content-Type': 'text/html' },
+        })
+      );
+
+      let message = '';
+      try {
+        await uploadAvatar(file);
+      } catch (e: unknown) {
+        message = (e as Error).message;
+      }
+      expect(message).to.equal('Failed to upload avatar (502)');
     });
   });
 });

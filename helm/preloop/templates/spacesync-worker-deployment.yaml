@@ -22,6 +22,7 @@ spec:
       labels:
         {{- include "preloop.selectorLabels" $ | nindent 8 }}
         app.kubernetes.io/component: preloop-sync-worker-{{ .name }}
+        app: preloop-sync-worker-{{ .name}}
     spec:
       {{- with $.Values.imagePullSecrets }}
       imagePullSecrets:

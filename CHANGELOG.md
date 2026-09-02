@@ -43,6 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Migration job now syncs global flow presets after alembic**: the
+  post-upgrade hook runs `scripts/sync_flow_presets.py` in the same
+  container so presets stop drifting between deploys.
+- **API and console pods carry `app:` labels**: the selector lived only
+  on Deployment metadata, so `kubectl -l app=api` found nothing. Extra
+  pod-template labels do not change `spec.selector.matchLabels`.
+- **Console nginx accepts avatar uploads over 1 MB**: `client_max_body_size`
+  now matches `gateway.proxy.bodySize` (default 32m). Oversized requests
+  used to 413 at nginx; the console now surfaces a 413 as "Image too
+  large (maximum 5 MB)." instead of a generic failure.
+
 - **Blog posts no longer repeat the title**: the article template already
   emits `<h1>` from frontmatter. A leading `# Title` in the markdown (or
   the matching `<h1>` in the rendered body) is stripped so
