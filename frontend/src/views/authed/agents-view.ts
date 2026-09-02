@@ -24,7 +24,7 @@ import '../../components/view-header.ts';
 import '../../components/preloop-agent-deployer.ts';
 import '../../components/preloop-deploy-wizard.ts';
 import '../../components/resource-actions.ts';
-import '../../components/agent-talk-composer.ts';
+import '../../components/talk-button.ts';
 import '../../components/confirm-dialog.ts';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
@@ -3090,13 +3090,11 @@ export class AgentsView extends LitElement {
         @keydown=${(event: Event) => event.stopPropagation()}
         @pointerdown=${(event: Event) => event.stopPropagation()}
       >
-        <agent-talk-composer
+        <talk-button
           .agent=${agent}
-          .sessions=${[]}
-          sourceContext=${sourceContext}
+          data-source-context=${sourceContext}
           compact
-          @agent-control-sent=${() => this.loadAgents()}
-        ></agent-talk-composer>
+        ></talk-button>
       </div>
     `;
   }

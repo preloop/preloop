@@ -10,7 +10,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/progress-bar/progress-bar.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
-import '../../components/agent-talk-composer.ts';
+import '../../components/talk-button.ts';
 import '../../components/mcp-setup-dialog.ts';
 import '../../components/budget-limits-dialog.ts';
 import '../../components/time-range-select.ts';
@@ -2497,7 +2497,6 @@ export class DashboardView extends AuthedElement {
     trailingMetric: string,
     options: {
       showTalkComposer?: boolean;
-      onAgentControlSent?: () => void;
       nestedPreviewKey?: string;
     } = {}
   ) {
@@ -2539,16 +2538,7 @@ export class DashboardView extends AuthedElement {
           >
             ${
               showTalkComposer && getAgentControlState(agent).visible
-                ? html`
-                    <agent-talk-composer
-                      .agent=${agent}
-                      .sessions=${sessions}
-                      sourceContext="dashboard-active-agents"
-                      compact
-                      @agent-control-sent=${() =>
-                        options.onAgentControlSent?.()}
-                    ></agent-talk-composer>
-                  `
+                ? html` <talk-button .agent=${agent} compact></talk-button> `
                 : null
             }
             <span class="row-value">${trailingMetric}</span>
@@ -2600,10 +2590,7 @@ export class DashboardView extends AuthedElement {
       agent,
       sessions,
       `${this.formatCurrency(agent.estimated_cost)} · ${this.formatRelativeTime(agent.last_seen_at)}`,
-      {
-        showTalkComposer: true,
-        onAgentControlSent: () => this.fetchActiveAgentsData(),
-      }
+      { showTalkComposer: true }
     );
   }
 

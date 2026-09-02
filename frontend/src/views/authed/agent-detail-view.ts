@@ -21,7 +21,7 @@ import '../../components/tool-cost-flags-panel.ts';
 import '../../components/preloop-session-observer.ts';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
-import '../../components/agent-talk-composer.ts';
+import '../../components/talk-button.ts';
 import '../../components/confirm-dialog.ts';
 import { confirmDialog } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
@@ -1725,14 +1725,7 @@ export class AgentDetailView extends LitElement {
       actions.push({
         id: 'talk',
         label: 'Talk',
-        render: () => html`
-          <agent-talk-composer
-            .agent=${this.agent}
-            .sessions=${this.sessions}
-            sourceContext="agent-detail-view"
-            @agent-control-sent=${() => this.loadData(true)}
-          ></agent-talk-composer>
-        `,
+        render: () => html` <talk-button .agent=${this.agent}></talk-button> `,
       });
     }
 
@@ -2818,6 +2811,7 @@ export class AgentDetailView extends LitElement {
                           scope="managed_agent"
                           .scopeId=${this.agentId}
                           .sessions=${this.sessions}
+                          .talkAgent=${this.agent}
                           layout="embedded"
                           defaultReplayMode="timeline"
                           .features=${{
