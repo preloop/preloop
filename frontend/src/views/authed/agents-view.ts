@@ -157,6 +157,8 @@ export interface AgentListRow {
   statusOutline: boolean;
   owner: string;
   modelLabel: string;
+  /** Full model text for the `title` attribute, since the cell truncates. */
+  modelTitle: string;
   modelId: string | null;
   modelGated: boolean;
   requests: number;
@@ -455,6 +457,14 @@ export class AgentsView extends LitElement {
       .view-switcher-group sl-radio-group {
         white-space: nowrap;
       }
+      /* Says how many rows the filters matched, right where the eye already
+         goes to switch views. */
+      .results-count {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
       .toolbar-divider {
         width: 1px;
         height: 32px;
@@ -472,7 +482,9 @@ export class AgentsView extends LitElement {
       }
       .cards {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        /* auto-fill, not auto-fit: two agents should stay two 320px cards, not
+           stretch into two half-screen banners. */
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
         gap: var(--sl-spacing-large);
         padding: 1rem 1rem 0 2rem;
       }
@@ -484,13 +496,29 @@ export class AgentsView extends LitElement {
         padding: 0 1rem 2rem 2rem;
         box-sizing: border-box;
       }
+      /* The table sizes itself from the colgroup, not from its content: an
+         agent named after a container hash used to push the kebab column past
+         the right edge of the card, where it was clipped and unclickable. */
       .agents-table {
-        table-layout: auto;
+        table-layout: fixed;
+        width: 100%;
+        /* Below this the eight columns cannot hold their content, so the card
+           scrolls sideways instead of hiding the actions. Agent keeps at least
+           180px at this width; the list falls back to cards under 640px. */
+        min-width: 880px;
+      }
+      .table-scroll {
+        overflow-x: auto;
+        width: 100%;
       }
       .agents-table th,
       .agents-table td {
         padding: var(--sl-spacing-small) var(--sl-spacing-medium);
         vertical-align: middle;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .agents-table th {
         padding: 0;
@@ -500,6 +528,30 @@ export class AgentsView extends LitElement {
         width: 48px;
         text-align: right;
         padding-right: var(--sl-spacing-small);
+      }
+      /* Percentages for the text columns so wide screens give them the space,
+         pixels for the ones whose content has a known width. Agent takes what
+         is left. */
+      .col-status {
+        width: 96px;
+      }
+      .col-owner {
+        width: 13%;
+      }
+      .col-model {
+        width: 18%;
+      }
+      .col-requests {
+        width: 80px;
+      }
+      .col-spend {
+        width: 88px;
+      }
+      .col-last-seen {
+        width: 104px;
+      }
+      .col-actions {
+        width: 48px;
       }
       .sort-button {
         display: flex;
@@ -544,20 +596,27 @@ export class AgentsView extends LitElement {
         display: flex;
         align-items: center;
         gap: var(--sl-spacing-small);
-        min-width: 0;
+        min-width: 180px;
       }
       .agent-identity-text {
         min-width: 0;
+        overflow: hidden;
       }
       .row-icon {
         width: 20px;
         height: 20px;
         flex-shrink: 0;
       }
+      /* Names never wrap: a two-line name in one row and a one-line name in
+         the next made the whole table look ragged. */
       .row-link {
         color: var(--sl-color-primary-700);
+        display: block;
         font-weight: var(--sl-font-weight-semibold);
+        overflow: hidden;
         text-decoration: none;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .row-link:hover,
       .row-link:focus-visible {
@@ -566,6 +625,9 @@ export class AgentsView extends LitElement {
       .row-subtitle {
         color: var(--sl-color-neutral-500);
         font-size: var(--sl-font-size-small);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .muted-cell {
         color: var(--sl-color-neutral-500);
@@ -577,7 +639,6 @@ export class AgentsView extends LitElement {
         white-space: nowrap;
       }
       .model-cell {
-        max-width: 260px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -3031,6 +3092,7 @@ export class AgentsView extends LitElement {
   /** Model label + link target for one agent, shared by the list and cards. */
   private getAgentModelPresentation(agent: ManagedAgentSummary): {
     label: string;
+    title: string;
     modelId: string | null;
     gated: boolean;
   } {
@@ -3043,16 +3105,47 @@ export class AgentsView extends LitElement {
       null;
     if (modelId) {
       const known = this.aiModels.find((model) => model.id === modelId);
-      return {
-        label: known?.name || alias || modelId,
-        modelId,
-        gated: true,
-      };
+      // The column shows the alias alone. The catalog display name repeats the
+      // provider ("OpenClaw preloop/deepseek/deepseek-chat"), which truncated
+      // to the part every row has in common; the full name lives in `title`.
+      const label = alias || known?.model_identifier || known?.name || modelId;
+      const title = [label, known?.name, known?.model_identifier]
+        .filter((part): part is string => Boolean(part))
+        .filter((part, index, parts) => parts.indexOf(part) === index)
+        .join(' · ');
+      return { label, title, modelId, gated: true };
     }
     if (alias) {
-      return { label: alias, modelId: null, gated: true };
+      return { label: alias, title: alias, modelId: null, gated: true };
     }
-    return { label: 'direct (not gated)', modelId: null, gated: false };
+    return {
+      label: 'direct (not gated)',
+      title: 'Calls a provider directly, without a gateway credential',
+      modelId: null,
+      gated: false,
+    };
+  }
+
+  /**
+   * "11 agents", or "9 agents · 2 flows" when the query also matched flows.
+   * A count next to the view switcher answers "did my filter do anything"
+   * without counting rows by hand.
+   */
+  private get resultsLabel(): string {
+    if (this.loading && !this.agents) {
+      return '';
+    }
+    const items = this.getCanvasItems({ includeExiting: false });
+    const flows = items.filter(
+      (item: any) =>
+        'flow_status' in item || ('name' in item && !('display_name' in item))
+    ).length;
+    const agents = items.length - flows;
+    const parts = [`${agents} ${agents === 1 ? 'agent' : 'agents'}`];
+    if (flows > 0) {
+      parts.push(`${flows} ${flows === 1 ? 'flow' : 'flows'}`);
+    }
+    return parts.join(' · ');
   }
 
   /** Flattens agents and flow nodes into the rows the table renders. */
@@ -3077,6 +3170,7 @@ export class AgentsView extends LitElement {
           statusOutline: false,
           owner: item.owner_username || '',
           modelLabel: item.ai_model_id ? item.ai_model_id : '',
+          modelTitle: item.ai_model_id ? item.ai_model_id : '',
           modelId: item.ai_model_id || null,
           modelGated: Boolean(item.ai_model_id),
           requests: stats.total_execs || 0,
@@ -3104,6 +3198,7 @@ export class AgentsView extends LitElement {
         statusOutline: Boolean(chip.outline),
         owner: agent.owner_username || agent.owner_email || '',
         modelLabel: model.label,
+        modelTitle: model.title,
         modelId: model.modelId,
         modelGated: model.gated,
         requests: agent.total_requests || 0,
@@ -3171,7 +3266,7 @@ export class AgentsView extends LitElement {
         class="agent-row"
         @click=${(event: MouseEvent) => this.handleRowClick(event, row)}
       >
-        <td class="agent-cell">
+        <td class="agent-cell" title=${row.name}>
           <div class="agent-identity">
             ${
               row.isFlow
@@ -3194,7 +3289,7 @@ export class AgentsView extends LitElement {
         </td>
         <td>${this.renderStatusChip(row)}</td>
         <td class="muted-cell">${row.owner || 'Unassigned'}</td>
-        <td class="model-cell">
+        <td class="model-cell" title=${row.modelTitle || row.modelLabel}>
           ${
             row.modelId
               ? html`<a
@@ -3213,7 +3308,15 @@ export class AgentsView extends LitElement {
           class="muted-cell"
           title=${row.lastSeen ? this.formatDateTime(row.lastSeen) : 'Never'}
         >
-          ${row.lastSeen ? formatRelativeTime(row.lastSeen) : 'Never'}
+          ${
+            row.lastSeen
+              ? // A month of relative time: "23d ago" still reads as recent
+                // activity, "213d ago" is arithmetic, so that becomes a date.
+                formatRelativeTime(row.lastSeen, undefined, {
+                  maxRelativeDays: 30,
+                })
+              : 'Never'
+          }
         </td>
         <td class="actions-cell">
           ${
@@ -3292,25 +3395,37 @@ export class AgentsView extends LitElement {
     return html`
       <div class="list-bounds">
         <sl-card class="table-card">
-          <table class="styled-table agents-table">
-            <thead>
-              <tr>
-                ${this.renderSortableHeader('agent', 'Agent')}
-                ${this.renderSortableHeader('status', 'Status')}
-                ${this.renderSortableHeader('owner', 'Owner')}
-                ${this.renderSortableHeader('model', 'Model')}
-                ${this.renderSortableHeader('requests', 'Requests', true)}
-                ${this.renderSortableHeader('spend', 'Spend (est.)', true)}
-                ${this.renderSortableHeader('last_seen', 'Last seen')}
-                <th class="actions-cell">
-                  <span class="visually-hidden">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rows.map((row) => this.renderListRow(row))}
-            </tbody>
-          </table>
+          <div class="table-scroll">
+            <table class="styled-table agents-table">
+              <colgroup>
+                <col class="col-agent" />
+                <col class="col-status" />
+                <col class="col-owner" />
+                <col class="col-model" />
+                <col class="col-requests" />
+                <col class="col-spend" />
+                <col class="col-last-seen" />
+                <col class="col-actions" />
+              </colgroup>
+              <thead>
+                <tr>
+                  ${this.renderSortableHeader('agent', 'Agent')}
+                  ${this.renderSortableHeader('status', 'Status')}
+                  ${this.renderSortableHeader('owner', 'Owner')}
+                  ${this.renderSortableHeader('model', 'Model')}
+                  ${this.renderSortableHeader('requests', 'Requests', true)}
+                  ${this.renderSortableHeader('spend', 'Spend (est.)', true)}
+                  ${this.renderSortableHeader('last_seen', 'Last seen')}
+                  <th class="actions-cell">
+                    <span class="visually-hidden">Actions</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows.map((row) => this.renderListRow(row))}
+              </tbody>
+            </table>
+          </div>
         </sl-card>
       </div>
     `;
@@ -4282,14 +4397,14 @@ export class AgentsView extends LitElement {
                 }}
               >
                 <sl-icon slot="prefix" name="cloud-arrow-up"></sl-icon>
-                Deploy Agent
+                Deploy new agent
               </sl-button>
               <sl-button
                 variant="primary"
                 @click=${() => (this.showOnboardingDialog = true)}
               >
                 <sl-icon slot="prefix" name="plus-lg"></sl-icon>
-                Onboard Agents
+                Onboard existing agent
               </sl-button>
             </div>
           </view-header>
@@ -4363,6 +4478,9 @@ export class AgentsView extends LitElement {
             </form>
 
             <div class="view-switcher-group">
+              <span class="results-count" aria-live="polite"
+                >${this.resultsLabel}</span
+              >
               <span class="toolbar-divider" aria-hidden="true"></span>
               <sl-button-group label="Agents view">
                 ${[

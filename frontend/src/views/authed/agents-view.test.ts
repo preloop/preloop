@@ -74,6 +74,7 @@ function makeRow(overrides: Partial<AgentListRow>): AgentListRow {
     statusOutline: false,
     owner: '',
     modelLabel: 'direct (not gated)',
+    modelTitle: 'direct (not gated)',
     modelId: null,
     modelGated: false,
     requests: 0,
@@ -544,6 +545,130 @@ describe('AgentsView', () => {
     await waitForAgents(el);
 
     expect(el.shadowRoot?.querySelector('.model-traffic-failing')).to.not.exist;
+  });
+
+  it('gives every column a fixed width so the kebab stays inside the card', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const table = el.shadowRoot?.querySelector('table.agents-table');
+    const cols = Array.from(table?.querySelectorAll('colgroup col') || []);
+    expect(cols.map((col) => col.className)).to.deep.equal([
+      'col-agent',
+      'col-status',
+      'col-owner',
+      'col-model',
+      'col-requests',
+      'col-spend',
+      'col-last-seen',
+      'col-actions',
+    ]);
+
+    const actionsCell = table?.querySelector('tbody td.actions-cell');
+    expect(actionsCell, 'the actions cell renders').to.exist;
+    const tableRight = table!.getBoundingClientRect().right;
+    const cellRight = actionsCell!.getBoundingClientRect().right;
+    expect(cellRight, 'kebab column is not clipped').to.be.at.most(
+      tableRight + 1
+    );
+
+    const name = table?.querySelector('tbody .agent-cell a.row-link');
+    expect(getComputedStyle(name!).whiteSpace).to.equal('nowrap');
+  });
+
+  it('shows only the model alias, with the full model text in the title', async () => {
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Claude Code Workspace', 'claude_code'),
+        ai_model_id: 'model-1',
+        configured_model_alias: 'preloop/deepseek/deepseek-chat',
+      },
+    ];
+    fetchStub.withArgs(sinon.match(/\/api\/v1\/ai-models/)).resolves(
+      new Response(
+        JSON.stringify([
+          {
+            id: 'model-1',
+            name: 'OpenClaw preloop/deepseek/deepseek-chat',
+            provider_name: 'deepseek',
+            model_identifier: 'deepseek-chat',
+            created_at: '2026-03-01T00:00:00Z',
+          },
+        ]),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const cell = el.shadowRoot?.querySelector('tbody td.model-cell');
+    expect(cell?.textContent?.trim()).to.equal(
+      'preloop/deepseek/deepseek-chat'
+    );
+    expect(cell?.getAttribute('title')).to.contain(
+      'OpenClaw preloop/deepseek/deepseek-chat'
+    );
+  });
+
+  it('keeps last seen relative for a month and absolute after it', async () => {
+    const now = Date.now();
+    const tenDaysAgo = new Date(now - 10 * 86400000).toISOString();
+    const twoHundredDaysAgo = new Date(now - 200 * 86400000).toISOString();
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Recent agent', 'claude_code'),
+        last_seen_at: tenDaysAgo,
+        last_activity_at: tenDaysAgo,
+        is_active_now: false,
+        activity_status: 'idle',
+      },
+      {
+        ...makeAgent('agent-2', 'Stale agent', 'claude_code'),
+        last_seen_at: twoHundredDaysAgo,
+        last_activity_at: twoHundredDaysAgo,
+        is_active_now: false,
+        activity_status: 'idle',
+      },
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const lastSeen = Array.from(
+      el.shadowRoot?.querySelectorAll('tbody tr') || []
+    ).map((row) => row.children[6].textContent?.trim());
+    expect(lastSeen).to.contain('10d ago');
+    expect(lastSeen).to.contain(
+      new Date(twoHundredDaysAgo).toLocaleDateString()
+    );
+  });
+
+  it('counts the rows the filters matched next to the view switcher', async () => {
+    agentItems = [
+      makeAgent('agent-1', 'One', 'claude_code'),
+      makeAgent('agent-2', 'Two', 'claude_code'),
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    expect(
+      el.shadowRoot?.querySelector('.results-count')?.textContent?.trim()
+    ).to.equal('2 agents');
+  });
+
+  it('labels the header actions by what they do', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const labels = Array.from(
+      el.shadowRoot?.querySelectorAll('view-header sl-button') || []
+    ).map((button) => button.textContent?.trim());
+    expect(labels).to.deep.equal([
+      'Deploy new agent',
+      'Onboard existing agent',
+    ]);
   });
 
   it('explains the dashed unmanaged nodes in the canvas legend', async () => {
