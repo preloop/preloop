@@ -400,8 +400,18 @@ class CRUDAIModel(CRUDBase[AIModel]):
     def get_by_account(
         self, db: Session, *, account_id: uuid.UUID | str
     ) -> list[AIModel]:
-        """Get all AIModels for a specific account."""
-        return db.query(self.model).filter(self.model.account_id == account_id).all()
+        """Get all AIModels for a specific account.
+
+        Eager-loads ``credentials_secret`` so callers that inspect
+        ``is_principal_bound_oauth`` (credential type via the secret) do not
+        issue one query per row. This is a relationship load, not a decrypt.
+        """
+        return (
+            db.query(self.model)
+            .options(joinedload(self.model.credentials_secret))
+            .filter(self.model.account_id == account_id)
+            .all()
+        )
 
     def get_for_account(
         self,

@@ -22,6 +22,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_ai_model, crud_audit_log
@@ -105,6 +106,78 @@ def _existing_identifiers(provider_models: List[AIModel]) -> set[str]:
         for model in provider_models
         if (model.model_identifier or "").strip()
     }
+
+
+def _record_create_failure(
+    result: ProviderCatalogSyncResult, *, identifier: str, note: str
+) -> None:
+    """Keep the first create failure on the provider result; keep syncing."""
+    logger.warning(
+        "Catalog sync could not create model %s for provider %s: %s",
+        identifier,
+        result.provider,
+        note,
+    )
+    if result.error is None:
+        result.error = "create"
+        result.note = note
+
+
+def _create_discovered_model(
+    db: Session,
+    *,
+    result: ProviderCatalogSyncResult,
+    user: User,
+    seed: AIModel,
+    provider_name: str,
+    identifier: str,
+    alias: str,
+    seed_gateway_enabled: bool,
+) -> bool:
+    """Create one catalog row inside a savepoint.
+
+    ``ValueError`` (deleted secret reference, alias collision) and
+    ``IntegrityError`` must not 500 the request or roll back siblings.
+    Returns True when the row was flushed into the outer transaction.
+    """
+    nested = db.begin_nested()
+    try:
+        crud_ai_model.create_with_account(
+            db=db,
+            obj_in={
+                "name": identifier,
+                "description": (
+                    f"Added by preloop models sync from live {provider_name} discovery"
+                ),
+                "provider_name": seed.provider_name,
+                "model_identifier": identifier,
+                "api_endpoint": seed.api_endpoint,
+                "credentials_secret_id": seed.credentials_secret_id,
+                "meta_data": {
+                    "managed_by": "preloop models sync",
+                    "gateway": {
+                        "enabled": seed_gateway_enabled,
+                        "model_alias": alias,
+                    },
+                },
+            },
+            account_id=user.account_id,
+            commit=False,
+        )
+    except ValueError as exc:
+        nested.rollback()
+        _record_create_failure(result, identifier=identifier, note=str(exc))
+        return False
+    except IntegrityError:
+        nested.rollback()
+        _record_create_failure(
+            result,
+            identifier=identifier,
+            note="could not persist a newly discovered model",
+        )
+        return False
+    nested.commit()
+    return True
 
 
 async def sync_account_model_catalog(
@@ -236,32 +309,22 @@ async def _sync_provider_catalog(
             result.skipped_existing += 1
             continue
         alias = f"{provider_name}/{identifier}"
-        added_aliases.append(alias)
         existing.add(identifier.lower())
         if dry_run:
+            added_aliases.append(alias)
             continue
-        crud_ai_model.create_with_account(
-            db=db,
-            obj_in={
-                "name": identifier,
-                "description": (
-                    f"Added by preloop models sync from live {provider_name} discovery"
-                ),
-                "provider_name": seed.provider_name,
-                "model_identifier": identifier,
-                "api_endpoint": seed.api_endpoint,
-                "credentials_secret_id": seed.credentials_secret_id,
-                "meta_data": {
-                    "managed_by": "preloop models sync",
-                    "gateway": {
-                        "enabled": seed_gateway_enabled,
-                        "model_alias": alias,
-                    },
-                },
-            },
-            account_id=user.account_id,
-            commit=False,
+        created = _create_discovered_model(
+            db,
+            result=result,
+            user=user,
+            seed=seed,
+            provider_name=provider_name,
+            identifier=identifier,
+            alias=alias,
+            seed_gateway_enabled=seed_gateway_enabled,
         )
+        if created:
+            added_aliases.append(alias)
 
     if not dry_run and added_aliases:
         db.commit()

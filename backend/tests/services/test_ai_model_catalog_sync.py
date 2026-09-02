@@ -297,3 +297,43 @@ async def test_sync_inherits_gateway_disabled_seed_exposure(
 
     created = mock_crud.create_with_account.call_args.kwargs["obj_in"]
     assert created["meta_data"]["gateway"]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_sync_create_value_error_records_provider_error_and_keeps_siblings(
+    mock_crud: MagicMock,
+    mock_audit_log: MagicMock,
+    mock_config_audit: MagicMock,
+    mocker: MockerFixture,
+):
+    """A create ValueError (e.g. deleted secret) is a per-provider error, not a
+    500: the sibling identifier is still created and the batch commits."""
+    seed = _fake_model()
+    mock_crud.get_by_account.return_value = [seed]
+    mock_crud.get_for_account.return_value = seed
+    mock_crud.resolve_listing_secret.return_value = "sk-ant-live"
+    mocker.patch.object(
+        ai_model_catalog_sync,
+        "get_available_models_for_provider",
+        return_value=ModelDiscoveryResult(
+            models=["claude-fable-5-1-20260901", "claude-opus-4-20250514"],
+            source="live",
+        ),
+    )
+    mock_crud.create_with_account.side_effect = [
+        ValueError("Referenced credential secret does not exist"),
+        MagicMock(),
+    ]
+    db = MagicMock()
+
+    summary = await sync_account_model_catalog(db, user=_fake_user())
+
+    result = summary.providers[0]
+    assert result.error == "create"
+    assert "Referenced credential secret does not exist" in (result.note or "")
+    assert result.added == ["anthropic/claude-opus-4-20250514"]
+    assert mock_crud.create_with_account.call_count == 2
+    db.commit.assert_called_once()
+    nested = db.begin_nested.return_value
+    assert nested.rollback.call_count == 1
+    assert nested.commit.call_count == 1
