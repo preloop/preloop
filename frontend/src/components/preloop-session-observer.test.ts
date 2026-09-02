@@ -549,10 +549,48 @@ describe('PreloopSessionObserver', () => {
     await (panel as any).updateComplete;
 
     expect(deepText(el.shadowRoot)).to.include(
-      'No sessions yet for this agent. Its first gateway call will appear here live.'
+      'The first gateway call from this agent will appear here.'
     );
     expect(panel!.shadowRoot?.querySelector('.loading sl-spinner')).to.not
       .exist;
+  });
+
+  it('replaces the dead toolbar with a slim waiting pill when there are no sessions', async () => {
+    const el = (await fixture(
+      html`<preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[]}
+      ></preloop-session-observer>`
+    )) as PreloopSessionObserver;
+    await el.updateComplete;
+
+    const toolbar = el.shadowRoot?.querySelector('.toolbar');
+    expect(toolbar).to.exist;
+    expect(toolbar?.classList.contains('toolbar-waiting')).to.equal(true);
+    expect(toolbar?.textContent?.replace(/\s+/g, ' ').trim()).to.equal(
+      'Live \u00b7 waiting for first session'
+    );
+    // None of the follow/replay/refresh controls are offered yet.
+    expect(toolbar?.querySelector('sl-button')).to.not.exist;
+  });
+
+  it('reveals the full toolbar once the first session arrives', async () => {
+    const el = (await fixture(
+      html`<preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[]}
+      ></preloop-session-observer>`
+    )) as PreloopSessionObserver;
+    await el.updateComplete;
+    expect(el.shadowRoot?.querySelector('.toolbar-waiting')).to.exist;
+
+    el.sessions = [session];
+    await el.updateComplete;
+
+    expect(el.shadowRoot?.querySelector('.toolbar-waiting')).to.not.exist;
+    expect(el.shadowRoot?.querySelector('.toolbar sl-button')).to.exist;
   });
 
   describe('Collapsing session list', () => {
@@ -769,7 +807,7 @@ describe('PreloopSessionObserver', () => {
       const text = (hint?.textContent || '').replace(/\s+/g, ' ');
       expect(text).to.contain('This session used 1,300 tokens ($0.42).');
       expect(text).to.contain(
-        'Optimize finds where they went and suggests cuts — you verify each one by replaying the session, without touching your agent.'
+        'Optimize finds where they went and suggests cuts. You verify each one by replaying the session, without touching your agent.'
       );
       expect(text).to.contain('Try Optimize');
     });

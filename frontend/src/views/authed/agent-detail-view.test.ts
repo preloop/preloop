@@ -461,11 +461,18 @@ describe('AgentDetailView', () => {
     );
 
     const content = getDeepText(element).replace(/\s+/g, ' ');
-    expect(content).to.contain('Live validated');
     expect(content).to.contain('openai/gpt-5');
-    expect(
-      element.shadowRoot?.querySelector('sl-tooltip')?.getAttribute('content')
-    ).to.contain('Tool calls and model traffic both flow through Preloop.');
+
+    // A fully onboarded agent whose live check passed has nothing to warn
+    // about, so the header carries the status chip and nothing else.
+    const chips = Array.from(
+      element.shadowRoot?.querySelectorAll('.badge-row sl-badge') || []
+    ).map((chip) => chip.textContent?.replace(/\s+/g, ' ').trim());
+    expect(chips).to.deep.equal(['Active now']);
+    expect(content).to.not.contain('Live check: off');
+    expect(content).to.not.contain('Live validated');
+    // Enrolment method is plumbing, not a feature: no blue chip for it.
+    expect(content).to.not.contain('runtime_session_token');
 
     (element as any).activeTab = 'models';
     await element.updateComplete;
@@ -491,8 +498,9 @@ describe('AgentDetailView', () => {
     );
 
     // The CLI persisted an upstream-refused probe: the gateway plumbing is
-    // proven but model traffic is unverified. The badge must say so — the
-    // old fallthrough rendered an eternal "Live check pending".
+    // proven but model traffic is unverified. The header chip says "Live
+    // check: off" and the detail is on its tooltip; the old fallthrough
+    // rendered an eternal "Live check pending".
     (element as any).agent = {
       ...(element as any).agent,
       live_validation_passed: false,
@@ -500,9 +508,15 @@ describe('AgentDetailView', () => {
     };
     await element.updateComplete;
 
-    const content = getDeepText(element).replace(/\s+/g, ' ');
-    expect(content).to.contain('Live check throttled — unverified');
-    expect(content).to.not.contain('Live check pending');
+    const chip = element.shadowRoot?.querySelector(
+      '.badge-row sl-badge.capability-chip'
+    );
+    expect(chip?.textContent?.trim()).to.equal('Live check: off');
+    expect(chip?.getAttribute('variant')).to.equal('warning');
+    expect(chip?.closest('sl-tooltip')?.getAttribute('content')).to.equal(
+      'Live check throttled, unverified'
+    );
+    expect(getDeepText(element)).to.not.contain('Live check pending');
     expect((element as any).getLiveValidationVariant()).to.equal('warning');
 
     (element as any).agent = {
@@ -510,7 +524,90 @@ describe('AgentDetailView', () => {
       live_validation_status: 'upstream_unavailable',
     };
     await element.updateComplete;
-    expect(getDeepText(element)).to.contain('Upstream refused — unverified');
+    expect(
+      element.shadowRoot
+        ?.querySelector('.badge-row sl-badge.capability-chip')
+        ?.closest('sl-tooltip')
+        ?.getAttribute('content')
+    ).to.equal('Upstream refused, unverified');
+  });
+
+  it('orders the action bar and keeps Remove last, outlined and set apart', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    const actions = (element as any).agentActions as Array<{
+      id: string;
+      icon?: string;
+      variant?: string;
+      outline?: boolean;
+      separated?: boolean;
+    }>;
+    const ids = actions.map((action) => action.id);
+    expect(ids.indexOf('rename')).to.be.lessThan(ids.indexOf('edit-tags'));
+    expect(ids.indexOf('edit-tags')).to.be.lessThan(ids.indexOf('pause'));
+    expect(ids[ids.length - 1], 'Remove is last').to.equal('remove');
+
+    // Pause is an everyday control, not a warning: amber competed with Talk.
+    const pause = actions.find((action) => action.id === 'pause');
+    expect(pause?.variant, 'Pause is neutral').to.equal('default');
+    expect((pause as { icon?: string }).icon).to.equal('pause-fill');
+
+    const remove = actions[actions.length - 1];
+    expect(remove.variant).to.equal('danger');
+    expect(remove.outline, 'Remove is outlined, never solid red').to.equal(
+      true
+    );
+    expect(remove.separated, 'Remove is set apart').to.equal(true);
+  });
+
+  it('shows operator tags as outlined chips prefixed with a hash', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    (element as any).agent = {
+      ...(element as any).agent,
+      tags: { team: 'platform', pilot: 'true' },
+    };
+    await element.updateComplete;
+
+    const tagChips = Array.from(
+      element.shadowRoot?.querySelectorAll('.badge-row sl-badge.tag-chip') || []
+    );
+    expect(tagChips.map((chip) => chip.getAttribute('variant'))).to.deep.equal([
+      'neutral',
+      'neutral',
+    ]);
+    expect(
+      tagChips.map((chip) => chip.textContent?.replace(/\s+/g, '').trim())
+    ).to.deep.equal(['#team=platform', '#pilot']);
+  });
+
+  it('calls the session history panel Session History', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    const text = getDeepText(element).replace(/\s+/g, ' ');
+    expect(text).to.not.contain('Sessions History');
+    expect(text).to.contain('Session History');
   });
 
   it('lets the user pick the approval workflow for native tool approvals', async () => {

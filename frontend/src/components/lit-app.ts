@@ -20,6 +20,7 @@ import '../views/public/delete-account-view';
 import '../views/public/whatis-mcp-view';
 import '../views/public/pricing-view';
 import '../views/public/welcome-view';
+import '../views/public/not-found-view';
 import '../views/public/static-view';
 import '../views/authed/console-shell';
 import '../views/authed/oauth-consent-view';
@@ -60,6 +61,7 @@ import '../views/authed/policies-view';
 import '../views/authed/audit-view';
 import '../views/authed/agents-view';
 import '../views/authed/agent-detail-view';
+import '../views/authed/attention-view';
 import './app-header';
 import './app-footer';
 import './update-banner';
@@ -430,8 +432,12 @@ export class LitApp extends LitElement {
             },
           },
           { path: 'audit', component: 'audit-view' },
+          { path: 'attention', component: 'attention-view' },
         ],
       },
+      // Must stay last: Vaadin Router matches in order, so a catch-all above
+      // any real route would swallow it.
+      { path: '(.*)', component: 'not-found-view' },
     ]);
   }
 

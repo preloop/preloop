@@ -430,12 +430,12 @@ describe('DashboardView', () => {
           return json(flowsResponse);
         }
 
-        if (url === '/api/v1/approval-requests?limit=3&status=pending') {
-          return json(pendingApprovalRequestsResponse);
-        }
-
-        if (url === '/api/v1/approval-requests?limit=100') {
-          return json(allApprovalRequestsResponse);
+        if (url.startsWith('/api/v1/approval-requests')) {
+          return json(
+            url.includes('status=pending')
+              ? pendingApprovalRequestsResponse
+              : allApprovalRequestsResponse
+          );
         }
 
         if (url === '/api/v1/ai-models') {
@@ -491,7 +491,7 @@ describe('DashboardView', () => {
       'Recent Flow Executions'
     );
     expect(element.shadowRoot?.textContent).to.contain('Audit exceptions');
-    expect(element.shadowRoot?.textContent).to.contain('Pending approvals');
+    expect(element.shadowRoot?.textContent).to.contain('Needs attention');
   });
 
   it('subscribes to realtime topics and fetches dashboard data', async () => {
@@ -515,16 +515,20 @@ describe('DashboardView', () => {
         url.startsWith('/api/v1/account/gateway-usage/summary')
       )
     ).to.be.true;
+    // Two for the cards (summary + breakdown upgrade) plus the fixed 30d one
+    // the shared attention loader uses, and one agents call per source: the
+    // cards' own list and the attention loader's, which must stay on the
+    // parameters the Attention page uses.
     expect(
       urls.filter((url) =>
         url.startsWith('/api/v1/account/gateway-usage/summary')
       ).length
-    ).to.be.at.most(2);
+    ).to.be.at.most(3);
     expect(urls.some((url) => url.includes('include_breakdown=false'))).to.be
       .true;
     expect(
       urls.filter((url) => url.startsWith('/api/v1/agents')).length
-    ).to.equal(1);
+    ).to.equal(2);
     expect(urls.some((url) => url === '/api/v1/auth/api-usage')).to.be.false;
     expect(urls.some((url) => url.startsWith('/api/v1/audit-logs/grouped'))).to
       .be.true;
@@ -537,7 +541,7 @@ describe('DashboardView', () => {
       .be.true;
 
     const updatedAt = element.shadowRoot?.querySelector('.updated-at');
-    expect(updatedAt?.textContent || '').to.match(/Last updated (just now|\d)/);
+    expect(updatedAt?.textContent || '').to.match(/Updated (just now|\d)/);
     expect(updatedAt?.textContent || '').to.not.contain('Never');
     expect(updatedAt?.textContent || '').to.not.contain('Loading');
 
@@ -548,7 +552,7 @@ describe('DashboardView', () => {
     expect(element.shadowRoot?.querySelector('.item-card.danger')).to.not.exist;
   });
 
-  describe('Recent Flow Executions dismiss control (#174)', () => {
+  describe('Recent Flow Executions failed row (#174)', () => {
     // A real failing run: a git clone error long enough to overflow the row.
     // The URL has no break opportunity, which is what actually broke the
     // layout: it set the min-content width of the flex column.
@@ -582,47 +586,6 @@ describe('DashboardView', () => {
       return element;
     }
 
-    function dismissButtonOf(element: DashboardView) {
-      const row = element.shadowRoot?.querySelector(
-        '.item-card.failed-execution'
-      ) as HTMLElement | null;
-      const button = row?.querySelector(
-        'sl-icon-button.item-dismiss'
-      ) as HTMLElement | null;
-      return { row, button };
-    }
-
-    // The bug: a long error message pushed the action group past the row's
-    // right edge, so the dismiss control could not be clicked.
-    ['520px', '640px', '900px'].forEach((width) => {
-      it(`keeps the dismiss control inside the row at ${width}`, async () => {
-        const element = await mountWithFailedExecution(width);
-        const { row, button } = dismissButtonOf(element);
-
-        expect(row, 'failed execution row').to.exist;
-        expect(button, 'dismiss button').to.exist;
-
-        const rowBox = row!.getBoundingClientRect();
-        const buttonBox = button!.getBoundingClientRect();
-
-        expect(buttonBox.width, 'dismiss button has width').to.be.greaterThan(
-          0
-        );
-        expect(buttonBox.height, 'dismiss button has height').to.be.greaterThan(
-          0
-        );
-        // Allow a 1px rounding tolerance on the border-box edge.
-        expect(
-          buttonBox.right,
-          'dismiss button overflows the row on the right'
-        ).to.be.at.most(rowBox.right + 1);
-        expect(
-          buttonBox.left,
-          'dismiss button starts beyond the row'
-        ).to.be.at.least(rowBox.left - 1);
-      });
-    });
-
     it('does not let the error text overflow the row horizontally', async () => {
       const element = await mountWithFailedExecution('520px');
       const row = element.shadowRoot?.querySelector(
@@ -638,32 +601,16 @@ describe('DashboardView', () => {
       ).to.be.at.most(error.clientWidth + 1);
     });
 
-    it('dismisses the failed execution when the control is clicked', async () => {
+    it('keeps the row after a reload, with no dismiss control', async () => {
       const element = await mountWithFailedExecution('520px');
-      const { button } = dismissButtonOf(element);
 
-      (button as HTMLElement).click();
-      await element.updateComplete;
-
+      expect(element.shadowRoot?.querySelector('sl-icon-button.item-dismiss'))
+        .to.not.exist;
       expect(
         element.shadowRoot?.querySelector('.item-card.failed-execution'),
-        'row remains after dismiss'
-      ).to.not.exist;
-      expect(
-        JSON.parse(
-          localStorage.getItem('dashboard_dismissed_executions') || '[]'
-        )
-      ).to.include('execution-failed');
-    });
-
-    it('exposes an accessible name on the dismiss control', async () => {
-      const element = await mountWithFailedExecution('520px');
-      const { button } = dismissButtonOf(element);
-
-      expect(button?.getAttribute('label')).to.contain('Dismiss');
-      expect(button?.getAttribute('label')).to.contain(
-        'Security Vulnerability Scanner'
-      );
+        'failed execution row'
+      ).to.exist;
+      expect(localStorage.getItem('dashboard_dismissed_executions')).to.be.null;
     });
   });
 
@@ -692,7 +639,7 @@ describe('DashboardView', () => {
     expect(content).to.not.contain('Audit exceptions');
   });
 
-  it('shows all configured budget policies with matching spend and thresholds', async () => {
+  it('shows usage first with the global budgets under it', async () => {
     const element = await mountDashboard();
     await waitUntil(
       () =>
@@ -705,39 +652,29 @@ describe('DashboardView', () => {
     );
     await element.updateComplete;
 
-    const budgetCard = element.shadowRoot?.querySelector('budget-health-card');
-    await budgetCard?.updateComplete;
-    const budgetContent = budgetCard?.shadowRoot?.textContent || '';
-    expect(budgetContent).to.contain('Global spend · 30d');
-    expect(budgetContent).to.contain('Global · 24h');
-    expect(budgetContent).to.contain('$12.34');
-    expect(budgetContent).to.contain('$50.00');
-    expect(budgetContent).to.not.contain('Configured limits');
-    expect(budgetContent).to.contain('Ops Agent');
-    expect(budgetContent).to.contain('$4.20');
-    expect(budgetContent).to.contain('$25.00');
-    expect(budgetContent).to.contain('Soft $20.00');
-    expect(budgetContent).to.contain('Hard $25.00');
+    expect(element.shadowRoot?.querySelector('budget-health-card')).to.not
+      .exist;
 
-    const softMarkers = budgetCard?.shadowRoot?.querySelectorAll(
-      '.budget-soft-marker'
-    );
-    const hardMarkers = budgetCard?.shadowRoot?.querySelectorAll(
-      '.budget-hard-marker'
-    );
-    const warningSegments = budgetCard?.shadowRoot?.querySelectorAll(
-      '.budget-track-fill.warning'
-    );
-    const dangerSegments = budgetCard?.shadowRoot?.querySelectorAll(
-      '.budget-track-fill.danger'
-    );
-    expect(softMarkers?.length).to.be.greaterThan(0);
-    expect(hardMarkers?.length).to.be.greaterThan(0);
-    expect(dangerSegments?.length).to.be.greaterThan(0);
-    expect(warningSegments?.length || 0).to.equal(0);
+    const usageCard = element.shadowRoot?.querySelector('usage-card');
+    expect(usageCard).to.exist;
+    await usageCard?.updateComplete;
+    const usageContent = usageCard?.shadowRoot?.textContent || '';
+
+    // Tokens lead, dollars are one toggle away.
+    expect(usageContent).to.contain('1.5K');
+    expect(usageContent).to.contain('tokens · 30d');
+    expect(usageContent).to.contain('1K prompt');
+
+    // Global policies only, ordered daily then monthly; the agent policy is
+    // summarised on one line.
+    expect(usageContent).to.contain('Daily budget');
+    expect(usageContent).to.contain('Monthly budget');
+    expect(usageContent).to.contain('$50.00');
+    expect(usageContent).to.contain('+ 1 more limit (agents)');
+    expect(usageContent).to.contain('Configure limits');
   });
 
-  it('renders budget health when there is no gateway usage or configured limit', async () => {
+  it('offers to set a budget when none is configured', async () => {
     gatewaySummaryResponse = {
       ...gatewaySummaryResponse,
       total_requests: 0,
@@ -773,16 +710,15 @@ describe('DashboardView', () => {
     );
     await element.updateComplete;
 
-    const budgetCard = element.shadowRoot?.querySelector('budget-health-card');
-    await budgetCard?.updateComplete;
-    const budgetContent = budgetCard?.shadowRoot?.textContent || '';
-    expect(budgetContent).to.contain('Budget health');
-    expect(budgetContent).to.contain('Global spend · 30d');
-    expect(budgetContent).to.contain('$0.00');
-    expect(budgetContent).to.contain('Configure Limits');
+    const usageCard = element.shadowRoot?.querySelector('usage-card');
+    await usageCard?.updateComplete;
+    const usageContent = usageCard?.shadowRoot?.textContent || '';
+    expect(usageContent).to.contain('No budget set.');
+    expect(usageContent).to.contain('Configure limits');
+    expect(usageContent).to.contain('Cost details');
   });
 
-  it('renders the requested responsive control-plane metrics behind the expand toggle', async () => {
+  it('renders exactly the five hero metrics with no expand toggle', async () => {
     const element = await mountDashboard();
     await waitUntil(
       () =>
@@ -797,12 +733,17 @@ describe('DashboardView', () => {
 
     const metricsGrid = element.shadowRoot?.querySelector('.metrics-grid');
     expect(metricsGrid).to.exist;
-    let metricText = metricsGrid?.textContent || '';
-    ['agents', 'flows', 'models', 'tools', 'approved requests'].forEach(
-      (label) => expect(metricText).to.contain(label)
+    const metricText = metricsGrid?.textContent || '';
+    ['agents', 'flows', 'models', 'tools', 'need attention'].forEach((label) =>
+      expect(metricText).to.contain(label)
     );
 
+    const metricLinks = metricsGrid?.querySelectorAll('a.tool-count') || [];
+    expect(metricLinks.length).to.equal(5);
+    expect(metricLinks[4].getAttribute('href')).to.equal('/console/attention');
+
     [
+      'approved requests',
       'inactive agents',
       'flow executions',
       'model requests',
@@ -823,35 +764,81 @@ describe('DashboardView', () => {
     const toggle = Array.from(
       element.shadowRoot?.querySelectorAll('sl-button') || []
     ).find((button) => button.textContent?.includes('Show more metrics'));
-    expect(toggle).to.exist;
-    (toggle as HTMLElement).click();
+    expect(toggle).to.not.exist;
+    expect(localStorage.getItem('preloop_dashboard_metrics_expanded')).to.be
+      .null;
+  });
+
+  it('surfaces pending approvals in the attention card', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
+      'dashboard did not finish loading'
+    );
     await element.updateComplete;
 
-    metricText =
-      element.shadowRoot?.querySelector('.metrics-grid')?.textContent || '';
-    [
-      'inactive agents',
-      'flow executions',
-      'model requests',
-      'tool calls',
-      'declined requests',
-      'total runtime sessions',
-      'failed executions',
-      'failed requests',
-      'failed tool calls',
-      'timed out approval requests',
-      'total tokens',
-      'flow execution success rate',
-      'model request success rate',
-      'tool call success rate',
-      'approval rate',
-    ].forEach((label) => expect(metricText).to.contain(label));
-    expect(element.shadowRoot?.textContent || '').to.contain(
-      'Show less metrics'
+    const attentionLink = element.shadowRoot?.querySelector(
+      'a.header-action-link[href="/console/attention"]'
     );
+    expect(attentionLink, 'View all link').to.exist;
 
-    expect(metricText).to.not.contain('used tools');
-    expect(metricText).to.not.contain('total tools');
+    const rows = element.shadowRoot?.querySelectorAll('.attention-row') || [];
+    expect(rows.length).to.be.greaterThan(0);
+    expect(element.shadowRoot?.textContent || '').to.not.contain(
+      'Pending approvals'
+    );
+  });
+
+  it('keeps each attention row on one line about 44px tall', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
+      'dashboard did not finish loading'
+    );
+    await element.updateComplete;
+
+    const row = element.shadowRoot?.querySelector(
+      '.attention-row'
+    ) as HTMLElement | null;
+    expect(row, 'an attention row renders').to.exist;
+    // Three stacked lines (dot, icon, text) used to make these ~70px each, so
+    // five items pushed the Usage card below the fold.
+    expect(row!.offsetHeight, 'row height').to.be.at.most(52);
+
+    const title = row!.querySelector('.row-primary') as HTMLElement;
+    const detail = row!.querySelector('.attention-detail') as HTMLElement;
+    expect(title.getBoundingClientRect().top).to.be.closeTo(
+      detail.getBoundingClientRect().top,
+      8
+    );
+    expect(getComputedStyle(title).whiteSpace).to.equal('nowrap');
+    expect(
+      title.getBoundingClientRect().right,
+      'nothing escapes the row'
+    ).to.be.at.most(row!.getBoundingClientRect().right + 1);
+  });
+
+  it('shows Updated and Manage Keys as one muted line in the gateway header', async () => {
+    const element = await mountDashboard();
+    await waitUntil(() => !element['loading'], 'dashboard did not load');
+    await element.updateComplete;
+
+    const meta = element.shadowRoot?.querySelector('.gateway-header-meta');
+    expect(meta, 'the gateway header meta line renders').to.exist;
+    expect(meta?.querySelector('.updated-at')?.textContent).to.contain(
+      'Updated'
+    );
+    expect(
+      meta?.querySelector('a.header-action-link')?.textContent?.trim()
+    ).to.equal('Manage Keys');
   });
 
   it('skips zero-request runtime sessions and displays ids instead of config paths', async () => {

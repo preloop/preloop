@@ -176,6 +176,21 @@ export class ConsoleHeader extends LitElement {
     .notification-section {
       border-bottom: 1px solid var(--sl-color-neutral-100);
     }
+    .dropdown-footer {
+      border-top: 1px solid var(--sl-color-neutral-100);
+      padding: var(--sl-spacing-x-small) var(--sl-spacing-medium);
+      position: sticky;
+      bottom: 0;
+      background: var(--sl-color-neutral-0);
+    }
+    .dropdown-footer a {
+      color: var(--sl-color-primary-600);
+      font-size: var(--sl-font-size-small);
+      text-decoration: none;
+    }
+    .dropdown-footer a:hover {
+      text-decoration: underline;
+    }
     .notification-section:last-child {
       border-bottom: none;
     }
@@ -1037,6 +1052,9 @@ export class ConsoleHeader extends LitElement {
                     `
                   : this.renderEmptyState()
               }
+              <div class="dropdown-footer">
+                <a href="/console/attention">Everything needing attention →</a>
+              </div>
             </div>
           </sl-dropdown>
 

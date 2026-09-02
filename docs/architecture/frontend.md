@@ -60,6 +60,10 @@ The Tracker Detail page is the entry point for issue analytics. Clicking a track
 
 Issue analytics features are no longer accessible from the main sidebar — they are scoped to individual trackers via this detail page.
 
+### Overview and Attention (`src/views/authed/dashboard-control-plane-view.ts`, `attention-view.ts`)
+
+The Overview (`/console`) leads with five current-state counts (agents, flows, models, tools, need attention), the two gateway endpoints (model gateway and tool firewall), a Usage card (tokens or estimated dollars over one page-wide time range, with global budget rows and the limits dialog), and activity cards. "Need attention" links to `/console/attention`, which lists pending approvals, agents with setup or live-check problems, flows with failed runs, models with gateway failures, budgets over their soft or hard limit, and a stale price catalog. Both views derive their items with `utils/attention.ts` (`deriveAttentionItems`, pure) from the same inputs fetched by `utils/attention-data.ts` (`loadAttentionInputs`), so the hero count and the page agree.
+
 ### Tools Page (`src/views/authed/tools-view.ts`)
 
 The Tools page has been redesigned from a card-based layout to a tree-style list view:

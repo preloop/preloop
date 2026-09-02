@@ -144,6 +144,16 @@ export class FlowExecutionsView extends AuthedElement {
   @state()
   private statusFilter = 'all';
 
+  /**
+   * Set from `?flow_id=` so links can point at the failed runs of one flow
+   * (the Attention page groups failures per flow and links here).
+   */
+  @state()
+  private flowIdFilter: string | null = null;
+
+  @state()
+  private flowNameFilter: string | null = null;
+
   @state()
   private currentPage = 1;
 
@@ -157,8 +167,31 @@ export class FlowExecutionsView extends AuthedElement {
 
   async connectedCallback() {
     super.connectedCallback();
+    this.applyQueryParams();
     await this.loadExecutions();
     this.connectWebSocket();
+  }
+
+  /** `?status=FAILED&flow_id=<id>` preselects the filters on entry. */
+  private applyQueryParams(): void {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get('status');
+    if (status) {
+      const known = [
+        'all',
+        'RUNNING',
+        'PENDING',
+        'SUCCEEDED',
+        'FAILED',
+        'CANCELLED',
+      ];
+      const normalized =
+        status.toLowerCase() === 'all' ? 'all' : status.toUpperCase();
+      if (known.includes(normalized)) {
+        this.statusFilter = normalized;
+      }
+    }
+    this.flowIdFilter = params.get('flow_id');
   }
 
   async loadExecutions() {
@@ -166,9 +199,24 @@ export class FlowExecutionsView extends AuthedElement {
       limit: this.pageSize + 1,
       skip: (this.currentPage - 1) * this.pageSize,
       status: this.statusFilter === 'all' ? undefined : this.statusFilter,
+      flowId: this.flowIdFilter || undefined,
     });
     this.hasNextPage = rows.length > this.pageSize;
     this.executions = rows.slice(0, this.pageSize);
+    this.flowNameFilter = this.flowIdFilter
+      ? this.executions.find((execution) => execution.flow_name)?.flow_name ||
+        this.flowNameFilter
+      : null;
+  }
+
+  private clearFlowFilter(): void {
+    this.flowIdFilter = null;
+    this.flowNameFilter = null;
+    this.currentPage = 1;
+    const url = new URL(window.location.href);
+    url.searchParams.delete('flow_id');
+    window.history.replaceState({}, '', url.toString());
+    void this.loadExecutions();
   }
 
   get filteredExecutions(): FlowExecution[] {
@@ -319,6 +367,19 @@ export class FlowExecutionsView extends AuthedElement {
                 <sl-icon name="arrow-clockwise"></sl-icon>
                 Refresh
               </sl-button>
+              ${
+                this.flowIdFilter
+                  ? html`<sl-button
+                      size="small"
+                      pill
+                      class="flow-filter-chip"
+                      @click=${this.clearFlowFilter}
+                    >
+                      Flow: ${this.flowNameFilter || this.flowIdFilter}
+                      <sl-icon slot="suffix" name="x"></sl-icon>
+                    </sl-button>`
+                  : ''
+              }
             </div>
             <div class="connection-status">
               <div

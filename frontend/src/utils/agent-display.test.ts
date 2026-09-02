@@ -4,9 +4,11 @@ import type { ManagedAgentSummary } from '../types';
 import {
   getAgentLifecycleLabel,
   getAgentLifecycleVariant,
+  getAgentStatusChip,
   getSystemAgentTags,
   getVisibleAgentTags,
   isSystemAgentTag,
+  sessionBelongsToAgent,
 } from './agent-display';
 
 const baseAgent = {
@@ -65,6 +67,85 @@ describe('agent lifecycle presentation', () => {
   });
 });
 
+describe('getAgentStatusChip', () => {
+  const onboarded = {
+    ...baseAgent,
+    onboarding_state: 'fully_onboarded',
+  } satisfies ManagedAgentSummary;
+
+  it('puts lifecycle ahead of everything else', () => {
+    expect(
+      getAgentStatusChip({
+        ...onboarded,
+        lifecycle_state: 'decommissioned',
+        is_active_now: true,
+      })
+    ).to.deep.equal({ label: 'Decommissioned', variant: 'neutral' });
+    expect(
+      getAgentStatusChip({
+        ...onboarded,
+        lifecycle_state: 'suspended',
+        live_validation_status: 'failed',
+      })
+    ).to.deep.equal({ label: 'Paused', variant: 'neutral' });
+  });
+
+  it('reports a failed live check ahead of onboarding and activity', () => {
+    expect(
+      getAgentStatusChip({
+        ...baseAgent,
+        live_validation_status: 'failed',
+        is_active_now: true,
+      })
+    ).to.deep.equal({ label: 'Live check failed', variant: 'warning' });
+  });
+
+  it('flags every partially onboarded state as Setup incomplete', () => {
+    for (const state of ['incomplete', 'gateway_only', 'mcp_proxy_only']) {
+      expect(
+        getAgentStatusChip({
+          ...baseAgent,
+          onboarding_state: state,
+          is_active_now: true,
+        }),
+        state
+      ).to.deep.equal({ label: 'Setup incomplete', variant: 'warning' });
+    }
+  });
+
+  it('shows Active now for a live agent and an outlined chip for a recent one', () => {
+    expect(
+      getAgentStatusChip({ ...onboarded, is_active_now: true })
+    ).to.deep.equal({ label: 'Active now', variant: 'success' });
+    expect(
+      getAgentStatusChip({ ...onboarded, activity_status: 'recently_active' })
+    ).to.deep.equal({
+      label: 'Recently active',
+      variant: 'success',
+      outline: true,
+    });
+  });
+
+  it('falls back to Idle', () => {
+    expect(getAgentStatusChip(onboarded)).to.deep.equal({
+      label: 'Idle',
+      variant: 'neutral',
+    });
+  });
+
+  it('does not treat an unsupported or passing live check as a failure', () => {
+    expect(getAgentStatusChip({ ...onboarded }).label).to.equal('Idle');
+    expect(
+      getAgentStatusChip({ ...onboarded, live_validation_status: 'passed' })
+        .label
+    ).to.equal('Idle');
+    expect(
+      getAgentStatusChip({ ...onboarded, live_validation_status: 'not_run' })
+        .label
+    ).to.equal('Idle');
+  });
+});
+
 describe('agent tag visibility', () => {
   const tags = {
     team: 'platform',
@@ -89,5 +170,57 @@ describe('agent tag visibility', () => {
   it('tolerates agents without tags', () => {
     expect(getVisibleAgentTags(null)).to.deep.equal([]);
     expect(getSystemAgentTags(undefined)).to.deep.equal({});
+  });
+});
+
+describe('sessionBelongsToAgent', () => {
+  const agent = { id: 'agent-1', session_source_id: 'openclaw-1' };
+
+  it('matches the agent source id on either session identifier', () => {
+    expect(
+      sessionBelongsToAgent(
+        { runtime_principal_id: 'openclaw-1', session_source_id: null },
+        agent
+      )
+    ).to.equal(true);
+    expect(
+      sessionBelongsToAgent(
+        { runtime_principal_id: null, session_source_id: 'openclaw-1' },
+        agent
+      )
+    ).to.equal(true);
+  });
+
+  it('matches the agent id itself', () => {
+    expect(
+      sessionBelongsToAgent(
+        { runtime_principal_id: 'agent-1', session_source_id: null },
+        agent
+      )
+    ).to.equal(true);
+  });
+
+  it('matches per-run suffixes of the source id', () => {
+    expect(
+      sessionBelongsToAgent(
+        { runtime_principal_id: 'openclaw-1:2', session_source_id: null },
+        agent
+      )
+    ).to.equal(true);
+    expect(
+      sessionBelongsToAgent(
+        { runtime_principal_id: 'openclaw-1-cli', session_source_id: null },
+        agent
+      )
+    ).to.equal(true);
+  });
+
+  it('rejects an unrelated session', () => {
+    expect(
+      sessionBelongsToAgent(
+        { runtime_principal_id: 'other-agent', session_source_id: 'other' },
+        agent
+      )
+    ).to.equal(false);
   });
 });

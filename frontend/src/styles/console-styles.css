@@ -120,8 +120,27 @@ a:hover {
     padding: 0;
 }
 
+/* Cards read as one quiet surface: no gray header band, a hairline border and
+   the smallest shadow, so content (not chrome) carries the hierarchy. */
 sl-card::part(header) {
-    background-color: var(--sl-color-neutral-100);
+    background-color: transparent;
+    border-bottom: 1px solid var(--sl-color-neutral-200);
+    padding: var(--sl-spacing-medium);
+    font-weight: 600;
+}
+
+.content-card::part(base) {
+    border: 1px solid var(--sl-color-neutral-200);
+    border-radius: var(--sl-border-radius-medium);
+    box-shadow: var(--sl-shadow-x-small);
+}
+
+/* Numbers line up column-wise wherever they appear. */
+.row-value,
+.tool-count-value,
+.metric-value,
+.summary-value {
+    font-variant-numeric: tabular-nums;
 }
 
 .styled-table {
@@ -267,16 +286,23 @@ sl-dialog.large::part(panel) {
 }
 
 /* Empty state */
+/* One centered line in a 72px box: an empty list should say what is missing
+   in the space of a row, not in the space of a full card. */
 .empty-state {
-    text-align: center;
-    padding: var(--sl-spacing-large);
+    align-items: center;
     color: var(--sl-color-neutral-600);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 72px;
+    padding: var(--sl-spacing-medium);
+    text-align: center;
 }
 
 .empty-state sl-icon {
-    font-size: 3rem;
+    font-size: 1.5rem;
     color: var(--sl-color-neutral-400);
-    margin-bottom: var(--sl-spacing-small);
+    margin-bottom: var(--sl-spacing-2x-small);
 }
 
 /* Chart/Card header */

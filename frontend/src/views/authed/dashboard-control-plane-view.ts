@@ -9,10 +9,12 @@ import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/progress-bar/progress-bar.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
+import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
 import '../../components/agent-talk-composer.ts';
 import '../../components/mcp-setup-dialog.ts';
-import '../../components/budget-policy-editor.ts';
-import '../../components/budget-health-card.ts';
+import '../../components/budget-limits-dialog.ts';
+import '../../components/time-range-select.ts';
+import '../../components/usage-card.ts';
 import '../../components/view-header.ts';
 import {
   AuthedElement,
@@ -44,7 +46,15 @@ import { renderAgentIcon } from '../../utils/agent-icons';
 import {
   getAgentSourceLabel,
   renderAgentIdentityBadges,
+  sessionBelongsToAgent,
 } from '../../utils/agent-display';
+import {
+  ATTENTION_KIND_META,
+  deriveAttentionItems,
+  type AttentionInputs,
+  type AttentionItem,
+} from '../../utils/attention';
+import { loadAttentionInputs } from '../../utils/attention-data';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import type {
   AccountGatewayUsageSummaryResponse,
@@ -122,6 +132,10 @@ interface ApprovalRequest {
   requested_at: string;
   resolved_at?: string | null;
   expires_at?: string | null;
+  summary?: string | null;
+  managed_agent_name?: string | null;
+  flow_name?: string | null;
+  is_question?: boolean;
 }
 
 interface UsageSessionSubject {
@@ -146,15 +160,6 @@ interface DashboardMetric {
   href?: string;
   tone?: 'primary' | 'neutral' | 'success' | 'warning' | 'danger';
 }
-
-type BudgetPolicyUsage = {
-  policy: BudgetPolicy;
-  spend: number;
-  hardLimit: number;
-  softLimit: number;
-  maxLimit: number;
-  percent: number;
-};
 
 @customElement('dashboard-view')
 export class DashboardView extends AuthedElement {
@@ -194,18 +199,7 @@ export class DashboardView extends AuthedElement {
   @state() private totalRuntimeSessionsCount = 0;
   @state() private gatewayTimeRange: 'day' | 'week' | 'month' | 'year' =
     'month';
-  @state() private budgetTimeRange: 'day' | 'week' | 'month' | 'year' = 'month';
-  @state() private budgetSummary: AccountGatewayUsageSummaryResponse | null =
-    null;
   @state() private fetchingBudget = false;
-  @state() private budgetSummariesByPeriod = new Map<
-    string,
-    AccountGatewayUsageSummaryResponse
-  >();
-  @state() private budgetPolicySummaries = new Map<
-    string,
-    AccountGatewayUsageSummaryResponse
-  >();
   @state() private activeAgentsTimeRange: '5m' | '1h' | '1d' | '1w' | '1mo' =
     '1d';
   @state() private fetchingActiveAgents = false;
@@ -215,7 +209,6 @@ export class DashboardView extends AuthedElement {
   @state() private showSetupDialog = false;
   @state() private showBudgetDialog = false;
   @state() private welcomeCardDismissed = false;
-  @state() private gatewayMetricsExpanded = false;
 
   @state() private aiModels: AIModel[] = [];
   @state() private isInviteDialogOpen = false;
@@ -224,7 +217,14 @@ export class DashboardView extends AuthedElement {
   @state() private isAdmin = false;
 
   @state() private budgetPolicies: BudgetPolicy[] = [];
-  @state() private dismissedExecutions: string[] = [];
+  /**
+   * Inputs for the hero "need attention" count and the side card, fetched
+   * through the shared loader rather than reusing the cards' own data: the
+   * cards are scoped to what they display (five recent executions, approvals
+   * minus the expired ones), and reusing them made the Overview disagree with
+   * /console/attention.
+   */
+  @state() private attentionInputs: AttentionInputs | null = null;
   @state()
   private approvalStats = {
     total: 0,
@@ -237,16 +237,6 @@ export class DashboardView extends AuthedElement {
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
   private refreshInFlight = false;
-
-  private dismissExecution(id: string) {
-    if (!this.dismissedExecutions.includes(id)) {
-      this.dismissedExecutions = [...this.dismissedExecutions, id];
-      localStorage.setItem(
-        'dashboard_dismissed_executions',
-        JSON.stringify(this.dismissedExecutions)
-      );
-    }
-  }
 
   /** Start time plus, when known, how long the run took or has been going. */
   private executionSecondaryText(exec: FlowExecution): string {
@@ -302,13 +292,105 @@ export class DashboardView extends AuthedElement {
       .hover-underline:hover {
         text-decoration: underline;
       }
+      /* The hero metrics sat in their own screenful of whitespace: a
+         two-x-large row gap and the same margin under them pushed the first
+         card below the fold at 1440x900. */
       .metrics-grid {
         display: grid;
         grid-template-columns: repeat(5, minmax(0, 1fr));
         gap: var(--sl-spacing-large);
-        row-gap: var(--sl-spacing-2x-large);
+        row-gap: var(--sl-spacing-large);
         align-items: start;
-        margin-bottom: var(--sl-spacing-2x-large);
+        margin-bottom: var(--sl-spacing-large);
+      }
+      .tool-count-value {
+        font-variant-numeric: tabular-nums;
+      }
+      .updated-at {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-small);
+        font-weight: var(--sl-font-weight-normal);
+      }
+      .capsule-eyebrow {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-x-small);
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .range-note {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-small);
+        font-weight: var(--sl-font-weight-normal);
+        font-variant-numeric: tabular-nums;
+      }
+      .attention-title {
+        align-items: center;
+        display: flex;
+        gap: var(--sl-spacing-2x-small);
+      }
+      .attention-title sl-icon {
+        color: var(--sl-color-warning-600);
+      }
+      /* One line per item, about 44px tall, so five items and the Usage card
+         fit above the fold. The shared .row rule below stacks its children,
+         which turned every attention item into three lines: dot, icon, text.
+         The double class beats it without touching the other lists. */
+      .row.attention-row {
+        align-items: center;
+        display: flex;
+        flex-direction: row;
+        gap: var(--sl-spacing-x-small);
+        min-height: 44px;
+        padding: var(--sl-spacing-x-small) 0;
+      }
+      .severity-dot {
+        border-radius: 50%;
+        flex-shrink: 0;
+        height: 8px;
+        width: 8px;
+        background: var(--sl-color-warning-600);
+      }
+      .severity-dot.critical {
+        background: var(--sl-color-danger-600);
+      }
+      .attention-kind-icon {
+        color: var(--sl-color-neutral-500);
+        flex-shrink: 0;
+      }
+      .attention-main {
+        align-items: baseline;
+        display: flex;
+        flex-direction: row;
+        gap: var(--sl-spacing-x-small);
+        min-width: 0;
+      }
+      /* The title keeps what it needs, the detail gives way first. */
+      .attention-row .row-primary {
+        flex: 0 1 auto;
+        overflow: hidden;
+        overflow-wrap: normal;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .attention-detail {
+        color: var(--sl-color-neutral-500);
+        flex: 1 1 auto;
+        font-size: var(--sl-font-size-x-small);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .attention-more {
+        color: var(--sl-color-primary-600);
+        display: inline-block;
+        font-size: var(--sl-font-size-small);
+        margin-top: var(--sl-spacing-small);
+        text-decoration: none;
+      }
+      .attention-more:hover {
+        text-decoration: underline;
       }
       .budget-track {
         position: relative;
@@ -519,6 +601,7 @@ export class DashboardView extends AuthedElement {
         min-width: 0;
       }
       .server-endpoint {
+        min-width: 0;
         font-family: monospace;
         font-size: var(--sl-font-size-small);
         color: var(--sl-color-neutral-900);
@@ -547,6 +630,40 @@ export class DashboardView extends AuthedElement {
       }
       .capsule-link:hover {
         text-decoration: underline;
+      }
+      /* "Updated 2m ago" and "Manage Keys" read as one muted line about the
+         card, wherever the header has room for them. */
+      .gateway-header-meta {
+        align-items: center;
+        display: flex;
+        gap: var(--sl-spacing-small);
+        min-width: 0;
+      }
+      /* Phone width: the capsule is a two-row block, not a pill. Row one
+         names the endpoint, row two is the thing you came to copy. Without
+         this the select and the URL pushed the copy button outside the card. */
+      @media (max-width: 640px) {
+        .card-header-with-action {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: var(--sl-spacing-2x-small);
+        }
+        .mcp-server-capsule {
+          border-radius: var(--sl-border-radius-medium);
+          column-gap: var(--sl-spacing-x-small);
+          flex-wrap: wrap;
+          row-gap: var(--sl-spacing-x-small);
+        }
+        .mcp-server-capsule > * {
+          min-width: 0;
+        }
+        /* Leaves room on the same row for the copy button that follows. */
+        .server-details {
+          flex: 1 1 calc(100% - 3rem);
+        }
+        .server-details select {
+          max-width: 8rem;
+        }
       }
       @media (min-width: 1024px) {
         .overview-layout {
@@ -672,10 +789,17 @@ export class DashboardView extends AuthedElement {
         padding: var(--sl-spacing-2x-large);
       }
 
+      /* Overview only: the cards are dense, so a large gap between them read
+         as "unrelated sections" and cost a scroll. */
       .dashboard-stack {
         display: flex;
         flex-direction: column;
-        gap: var(--sl-spacing-large);
+        gap: var(--sl-spacing-medium);
+      }
+
+      .main-column,
+      .side-column {
+        gap: var(--sl-spacing-medium);
       }
 
       .summary-grid,
@@ -906,12 +1030,30 @@ export class DashboardView extends AuthedElement {
         align-items: center;
       }
 
+      /* One centered line in a 72px box. An empty card used to take as much
+         vertical space as a full one, so a quiet account looked like a broken
+         one. */
       .empty-state {
+        align-items: center;
+        background: var(--sl-color-neutral-0);
         border: 1px dashed var(--sl-color-neutral-300);
         border-radius: var(--sl-border-radius-medium);
-        padding: var(--sl-spacing-large);
+        display: flex;
+        gap: var(--sl-spacing-small);
+        justify-content: center;
+        min-height: 72px;
+        padding: var(--sl-spacing-medium);
         text-align: center;
-        background: var(--sl-color-neutral-0);
+      }
+
+      .empty-state sl-icon {
+        color: var(--sl-color-neutral-400);
+        flex-shrink: 0;
+        font-size: 1.25rem;
+      }
+
+      .empty-state p {
+        margin: 0;
       }
 
       /* Failed flows: visible but calm — accent border only, no red wash */
@@ -951,7 +1093,7 @@ export class DashboardView extends AuthedElement {
         }
 
         .metrics-grid {
-          grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+          grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: var(--sl-spacing-medium);
           row-gap: var(--sl-spacing-large);
         }
@@ -1070,16 +1212,9 @@ export class DashboardView extends AuthedElement {
       this.hasAIModels = data.hasAIModels || false;
       if (data.lastUpdatedAt) this.lastUpdatedAt = data.lastUpdatedAt;
       this.approvalStats = data.approvalStats || this.approvalStats;
-      if (data.budgetSummary) this.budgetSummary = data.budgetSummary;
+      this.attentionInputs = data.attentionInputs || null;
       this.budgetPolicies = data.budgetPolicies || [];
       this.budgetAgents = data.budgetAgents || [];
-
-      if (data.budgetSummariesByPeriod) {
-        this.budgetSummariesByPeriod = new Map(data.budgetSummariesByPeriod);
-      }
-      if (data.budgetPolicySummaries) {
-        this.budgetPolicySummaries = new Map(data.budgetPolicySummaries);
-      }
 
       this.loading = false;
     } catch (e) {
@@ -1118,13 +1253,9 @@ export class DashboardView extends AuthedElement {
         hasAIModels: this.hasAIModels,
         lastUpdatedAt: this.lastUpdatedAt,
         approvalStats: this.approvalStats,
-        budgetSummary: this.budgetSummary,
+        attentionInputs: this.attentionInputs,
         budgetPolicies: this.budgetPolicies,
         budgetAgents: this.budgetAgents,
-        budgetSummariesByPeriod: Array.from(
-          this.budgetSummariesByPeriod.entries()
-        ),
-        budgetPolicySummaries: Array.from(this.budgetPolicySummaries.entries()),
       };
       sessionStorage.setItem(key, JSON.stringify(cacheObj));
     } catch (e) {
@@ -1135,22 +1266,6 @@ export class DashboardView extends AuthedElement {
   private loadDismissedState(): void {
     this.welcomeCardDismissed =
       localStorage.getItem('dashboard_welcome_dismissed') === 'true';
-    this.gatewayMetricsExpanded =
-      localStorage.getItem('preloop_dashboard_metrics_expanded') === 'true';
-
-    try {
-      const dismissedExecsRaw = localStorage.getItem(
-        'dashboard_dismissed_executions'
-      );
-      if (dismissedExecsRaw) {
-        const parsed = JSON.parse(dismissedExecsRaw);
-        if (Array.isArray(parsed)) {
-          this.dismissedExecutions = parsed as string[];
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to parse dismissed executions from localStorage', e);
-    }
   }
 
   private dismissWelcomeCard(): void {
@@ -1161,14 +1276,6 @@ export class DashboardView extends AuthedElement {
     if (this.managedAgents.length > 0) {
       localStorage.setItem('dashboard_welcome_dismissed', 'true');
     }
-  }
-
-  private toggleGatewayMetrics(): void {
-    this.gatewayMetricsExpanded = !this.gatewayMetricsExpanded;
-    localStorage.setItem(
-      'preloop_dashboard_metrics_expanded',
-      String(this.gatewayMetricsExpanded)
-    );
   }
 
   private connectRealtime(): void {
@@ -1324,27 +1431,21 @@ export class DashboardView extends AuthedElement {
     this.budgetPolicies = event.detail.policies;
   }
 
+  /**
+   * Budget policies and the agents that name their subjects. The spend the
+   * Usage card shows comes from the one gateway summary the page already
+   * fetches for `gatewayTimeRange`, plus each policy's period-aligned
+   * `current_spend_usd`, so there is no second summary request.
+   */
   private async fetchBudgetSummary(
     options: {
-      sharedGatewaySummary?: AccountGatewayUsageSummaryResponse | null;
       sharedAgents?: Awaited<ReturnType<typeof getAccountAgents>> | null;
       features?: Awaited<ReturnType<typeof getFeatures>> | null;
     } = {}
   ) {
     this.fetchingBudget = true;
     try {
-      const budgetStartDate = this.getBudgetStartDate(this.budgetTimeRange);
-      const canReuseGatewaySummary =
-        options.sharedGatewaySummary != null &&
-        this.gatewayTimeRange === this.budgetTimeRange;
-
-      const [budgetSummary, budgetAgents, featuresRes] = await Promise.all([
-        canReuseGatewaySummary
-          ? Promise.resolve(options.sharedGatewaySummary!)
-          : getAccountGatewayUsageSummary({
-              startDate: budgetStartDate,
-              includeBreakdown: false,
-            }).catch(() => null),
+      const [budgetAgents, featuresRes] = await Promise.all([
         options.sharedAgents
           ? Promise.resolve(options.sharedAgents)
           : this.managedAgents.length > 0
@@ -1366,13 +1467,8 @@ export class DashboardView extends AuthedElement {
         ? await getBudgetPolicies().catch(() => [] as BudgetPolicy[])
         : [];
 
-      this.budgetSummary = budgetSummary;
       this.budgetPolicies = Array.isArray(policies) ? policies : [];
       this.budgetAgents = budgetAgents.items || [];
-      // Prefer a single selected-window summary; policy.current_spend_usd
-      // (from getBudgetPolicies) drives per-policy spend in the card.
-      this.budgetSummariesByPeriod = new Map();
-      this.budgetPolicySummaries = new Map();
       this.saveDashboardCache();
     } finally {
       this.fetchingBudget = false;
@@ -1416,6 +1512,7 @@ export class DashboardView extends AuthedElement {
     this.error = null;
 
     const startDateStr = this.getGatewayStartDate();
+    const attentionPromise = this.refreshAttentionInputs();
 
     try {
       // Wave 1 (above-the-fold): gateway metrics, budget, recent executions,
@@ -1457,7 +1554,10 @@ export class DashboardView extends AuthedElement {
           getFlowExecutions({ limit: 10 }),
           [] as FlowExecution[]
         ),
-        this.catchWith403Handling(this.fetchApprovalRequests('pending', 3), []),
+        this.catchWith403Handling(
+          this.fetchApprovalRequests('pending', 100),
+          []
+        ),
         this.catchWith403Handling(
           this.fetchApprovalRequests(undefined, 100),
           []
@@ -1515,10 +1615,11 @@ export class DashboardView extends AuthedElement {
       this.fetchingActiveAgents = false;
 
       await this.fetchBudgetSummary({
-        sharedGatewaySummary: gatewaySummary,
         sharedAgents: managedAgents,
         features: featuresRes,
       });
+
+      await attentionPromise;
 
       this.lastUpdatedAt = new Date().toISOString();
       this.loading = false;
@@ -1670,18 +1771,6 @@ export class DashboardView extends AuthedElement {
         return;
       }
       this.gatewaySummary = detailed;
-      if (
-        this.gatewayTimeRange === this.budgetTimeRange &&
-        this.budgetSummary
-      ) {
-        this.budgetSummary = {
-          ...this.budgetSummary,
-          usage_by_model: detailed.usage_by_model,
-          usage_by_flow: detailed.usage_by_flow,
-          usage_by_session: detailed.usage_by_session,
-          requests_by_day: detailed.requests_by_day,
-        };
-      }
     } catch (error) {
       console.error('Failed to load gateway breakdown for top models', error);
     }
@@ -1794,49 +1883,6 @@ export class DashboardView extends AuthedElement {
       });
   }
 
-  private getBudgetStartDate(range: 'day' | 'week' | 'month' | 'year'): string {
-    const now = new Date();
-    const start = new Date(now);
-    if (range === 'day') {
-      start.setDate(start.getDate() - 1);
-    } else if (range === 'week') {
-      start.setDate(start.getDate() - 7);
-    } else if (range === 'month') {
-      start.setMonth(start.getMonth() - 1);
-    } else if (range === 'year') {
-      start.setFullYear(start.getFullYear() - 1);
-    }
-    return start.toISOString();
-  }
-
-  private getBudgetPolicyStartDate(period: string): string | undefined {
-    const now = new Date();
-    const start = new Date(now);
-    if (period === 'hourly') {
-      start.setHours(start.getHours() - 1);
-    } else if (period === 'daily') {
-      start.setDate(start.getDate() - 1);
-    } else if (period === 'weekly') {
-      start.setDate(start.getDate() - 7);
-    } else if (period === 'monthly') {
-      start.setMonth(start.getMonth() - 1);
-    } else if (period === 'yearly') {
-      start.setFullYear(start.getFullYear() - 1);
-    } else {
-      return undefined;
-    }
-    return start.toISOString();
-  }
-
-  private timeRangeToBudgetPeriod(
-    range: 'day' | 'week' | 'month' | 'year'
-  ): string {
-    if (range === 'day') return 'daily';
-    if (range === 'week') return 'weekly';
-    if (range === 'year') return 'yearly';
-    return 'monthly';
-  }
-
   private get gatewayFailures(): GatewayUsageSearchResultItem[] {
     return this.gatewayInteractions.filter(
       (item) => item.outcome !== 'success'
@@ -1845,9 +1891,7 @@ export class DashboardView extends AuthedElement {
 
   private get failedFlowExecutions(): FlowExecution[] {
     return this.recentFlowExecutions.filter(
-      (execution) =>
-        execution.status === 'FAILED' &&
-        !this.dismissedExecutions.includes(execution.id)
+      (execution) => execution.status === 'FAILED'
     );
   }
 
@@ -1857,13 +1901,6 @@ export class DashboardView extends AuthedElement {
 
   private formatNumber(value: number | null | undefined): string {
     return Intl.NumberFormat().format(value || 0);
-  }
-
-  private formatPercent(numerator: number, denominator: number): string {
-    if (denominator <= 0) {
-      return '0%';
-    }
-    return `${((numerator / denominator) * 100).toFixed(1)}%`;
   }
 
   private formatDateTime(value: string | null | undefined): string {
@@ -2268,6 +2305,39 @@ export class DashboardView extends AuthedElement {
     }
   }
 
+  /**
+   * The same derivation the Attention page uses, over data this view already
+   * fetches, so the hero count, the side card and /console/attention can never
+   * disagree.
+   */
+  private get attentionItems(): AttentionItem[] {
+    if (!this.attentionInputs) {
+      return [];
+    }
+    return deriveAttentionItems(this.attentionInputs);
+  }
+
+  /**
+   * Same loader, same parameters as the Attention page. Runs alongside the
+   * dashboard fetch rather than inside it so a slow attention input never
+   * holds up the cards above the fold.
+   */
+  private async refreshAttentionInputs(): Promise<void> {
+    try {
+      this.attentionInputs = await loadAttentionInputs();
+      this.saveDashboardCache();
+    } catch (error) {
+      console.error('Failed to load attention inputs', error);
+    }
+  }
+
+  private get gatewayRangeLabel(): string {
+    if (this.gatewayTimeRange === 'day') return '24h';
+    if (this.gatewayTimeRange === 'week') return '7d';
+    if (this.gatewayTimeRange === 'year') return '1y';
+    return '30d';
+  }
+
   private get enabledToolsCount(): number {
     return this.tools.filter((tool) => tool.is_enabled).length;
   }
@@ -2279,315 +2349,6 @@ export class DashboardView extends AuthedElement {
         agent.activity_status === 'active_now' ||
         agent.activity_status === 'recently_active'
     ).length;
-  }
-
-  private get inactiveAgentsCount(): number {
-    return Math.max(0, this.totalAgentsCount - this.activeAgentsCount);
-  }
-
-  private get flowExecutionSuccessRate(): string {
-    return this.formatPercent(
-      this.succeededFlowExecutionsCount,
-      this.flowExecutionsCount
-    );
-  }
-
-  private get modelRequestSuccessRate(): string {
-    return this.formatPercent(
-      this.gatewaySummary?.successful_requests || 0,
-      this.gatewaySummary?.total_requests || 0
-    );
-  }
-
-  private get toolCallSuccessRate(): string {
-    return this.formatPercent(
-      this.toolCallsCount - this.failedToolCallsCount,
-      this.toolCallsCount
-    );
-  }
-
-  private get approvalRate(): string {
-    const decidedApprovals =
-      this.approvalStats.approved +
-      this.approvalStats.declined +
-      this.approvalStats.expired;
-    return this.formatPercent(this.approvalStats.approved, decidedApprovals);
-  }
-
-  private getGlobalPolicyUsage() {
-    return this.calculatePolicyUsages().find(
-      (u) =>
-        u.policy.subject_type === 'global' ||
-        u.policy.subject_type === 'account'
-    );
-  }
-
-  private getSelectedGlobalPolicyUsage(): BudgetPolicyUsage | undefined {
-    const selectedPeriod = this.timeRangeToBudgetPeriod(this.budgetTimeRange);
-    return this.calculatePolicyUsages().find(
-      (u) =>
-        (u.policy.subject_type === 'global' ||
-          u.policy.subject_type === 'account') &&
-        u.policy.period === selectedPeriod
-    );
-  }
-
-  private budgetVariant() {
-    const globalUsage =
-      this.getSelectedGlobalPolicyUsage() || this.getGlobalPolicyUsage();
-    if (globalUsage && globalUsage.maxLimit > 0) {
-      if (globalUsage.percent >= 100) return 'danger';
-      if (globalUsage.percent >= 80) return 'warning';
-      return 'success';
-    }
-
-    const budget = this.budgetSummary?.budget;
-    if (!budget) {
-      return 'neutral';
-    }
-    if (budget.hard_limit_exceeded) {
-      return 'danger';
-    }
-    if (budget.soft_limit_exceeded) {
-      return 'warning';
-    }
-    return 'success';
-  }
-
-  private budgetPercent(): number {
-    const globalUsage =
-      this.getSelectedGlobalPolicyUsage() || this.getGlobalPolicyUsage();
-    if (globalUsage && globalUsage.maxLimit > 0) {
-      return globalUsage.percent;
-    }
-
-    const budget = this.budgetSummary?.budget;
-    const limit = budget?.monthly_limit_usd || budget?.soft_limit_usd || 0;
-    if (!limit) {
-      return 0;
-    }
-    return Math.min(
-      100,
-      Math.round(((budget?.current_spend_usd || 0) / limit) * 100)
-    );
-  }
-
-  private calculatePolicyUsages(): BudgetPolicyUsage[] {
-    if (!this.budgetPolicies) return [];
-
-    return this.budgetPolicies
-      .map((policy) => {
-        const summary =
-          this.budgetPolicySummaries.get(policy.id) ||
-          this.budgetSummariesByPeriod.get(policy.period) ||
-          this.budgetSummary;
-        let spend = 0;
-        if (!summary) {
-          spend = 0;
-        } else if (
-          policy.subject_type === 'global' ||
-          policy.subject_type === 'account'
-        ) {
-          spend =
-            summary.budget?.current_spend_usd || summary.estimated_cost || 0;
-        } else if (policy.subject_type === 'ai_model') {
-          spend = summary.usage_by_model
-            .filter((m) => m.ai_model_id === policy.subject_id)
-            .reduce((acc, m) => acc + m.estimated_cost, 0);
-        } else if (policy.subject_type === 'managed_agent') {
-          const agent = this.getManagedAgentBySourceId(policy.subject_id);
-          const agentIds = new Set(
-            [policy.subject_id, agent?.id, agent?.session_source_id].filter(
-              Boolean
-            ) as string[]
-          );
-          if (this.budgetPolicySummaries.has(policy.id)) {
-            spend =
-              summary.estimated_cost || summary.budget?.current_spend_usd || 0;
-          } else {
-            spend = summary.usage_by_session
-              .filter(
-                (s) =>
-                  agentIds.has(s.session_source_id || '') ||
-                  agentIds.has(s.runtime_principal_id || '')
-              )
-              .reduce((acc, s) => acc + s.estimated_cost, 0);
-          }
-        } else if (policy.subject_type === 'flow') {
-          spend = summary.usage_by_flow
-            .filter((flow) => flow.flow_id === policy.subject_id)
-            .reduce((acc, flow) => acc + flow.estimated_cost, 0);
-        } else if (policy.subject_type === 'api_key') {
-          spend = summary.usage_by_session
-            .filter(
-              (session) =>
-                session.session_source_id === policy.subject_id ||
-                session.runtime_principal_id === policy.subject_id
-            )
-            .reduce((acc, session) => acc + session.estimated_cost, 0);
-        }
-
-        const hardLimit = policy.hard_limit_usd || 0;
-        const softLimit = policy.soft_limit_usd || 0;
-        const maxLimit = hardLimit || softLimit;
-        const percent =
-          maxLimit > 0
-            ? Math.min(100, Math.round((spend / maxLimit) * 100))
-            : 0;
-
-        return { policy, spend, hardLimit, softLimit, maxLimit, percent };
-      })
-      .sort((a, b) => {
-        const aGlobal =
-          a.policy.subject_type === 'global' ||
-          a.policy.subject_type === 'account';
-        const bGlobal =
-          b.policy.subject_type === 'global' ||
-          b.policy.subject_type === 'account';
-        if (aGlobal !== bGlobal) return aGlobal ? -1 : 1;
-        return b.percent - a.percent;
-      });
-  }
-
-  private getBudgetPolicyDisplayName(policy: BudgetPolicy): string {
-    const period = this.formatBudgetPeriod(policy.period);
-    if (policy.subject_type === 'global' || policy.subject_type === 'account') {
-      return `Global · ${period}`;
-    }
-    if (policy.subject_type === 'managed_agent') {
-      const agentName =
-        this.getManagedAgentBySourceId(policy.subject_id)?.display_name ||
-        'Managed agent';
-      return `${agentName} · ${period}`;
-    }
-    if (policy.subject_type === 'ai_model') {
-      return `${policy.model_alias || 'Model'} · ${period}`;
-    }
-    return `${policy.subject_type.replace(/_/g, ' ')} · ${period}`;
-  }
-
-  private formatBudgetPeriod(period: string): string {
-    if (period === 'hourly') return '1h';
-    if (period === 'daily') return '24h';
-    if (period === 'weekly') return '7d';
-    if (period === 'monthly') return '30d';
-    if (period === 'yearly') return '1y';
-    if (period === 'all_time') return 'all time';
-    return period;
-  }
-
-  private getBudgetPolicyIcon(policy: BudgetPolicy): string {
-    if (policy.subject_type === 'global' || policy.subject_type === 'account') {
-      return 'globe';
-    }
-    if (policy.subject_type === 'managed_agent') {
-      return 'robot';
-    }
-    if (policy.subject_type === 'ai_model') {
-      return 'cpu';
-    }
-    return 'sliders';
-  }
-
-  private renderBudgetLimitRow(
-    label: string,
-    icon: string,
-    spend: number,
-    softLimit: number,
-    hardLimit: number
-  ) {
-    const maxLimit = hardLimit || softLimit;
-    const fillPercent =
-      maxLimit > 0 ? Math.min(100, (spend / maxLimit) * 100) : 0;
-    const softPercent =
-      softLimit > 0 && maxLimit > 0
-        ? Math.min(100, (softLimit / maxLimit) * 100)
-        : 0;
-    const successFillPercent =
-      softLimit > 0 ? Math.min(fillPercent, softPercent) : fillPercent;
-    const warningFillPercent =
-      softLimit > 0 && fillPercent > softPercent
-        ? fillPercent - softPercent
-        : 0;
-    return html`
-      <div style="display: flex; flex-direction: column; gap: 4px;">
-        <div
-          style="display: flex; justify-content: space-between; font-size: var(--sl-font-size-small); align-items: center; gap: var(--sl-spacing-small);"
-        >
-          <span style="display: flex; align-items: center; gap: 4px;">
-            <sl-icon name=${icon}></sl-icon>
-            ${label}
-          </span>
-          <span style="font-weight: 500; text-align: right;">
-            ${this.formatCurrency(spend)}
-            ${
-              maxLimit > 0
-                ? html` / ${this.formatCurrency(maxLimit)}`
-                : html`<span
-                    style="color: var(--sl-color-neutral-500); font-weight: 400;"
-                  >
-                    spent</span
-                  >`
-            }
-          </span>
-        </div>
-        ${
-          maxLimit > 0
-            ? html`
-                <div class="budget-track">
-                  <div
-                    class="budget-track-fill success"
-                    style="--budget-fill-width: ${successFillPercent}%;"
-                  ></div>
-                  ${
-                    warningFillPercent > 0
-                      ? html`<div
-                          class="budget-track-fill warning"
-                          style="--budget-fill-left: ${softPercent}%; --budget-fill-width: ${warningFillPercent}%;"
-                        ></div>`
-                      : nothing
-                  }
-                  ${
-                    softLimit > 0 && hardLimit > 0 && softLimit < hardLimit
-                      ? html`<div
-                          class="budget-soft-marker"
-                          title=${`Soft limit ${this.formatCurrency(softLimit)}`}
-                          style="--budget-soft-position: ${softPercent}%;"
-                        ></div>`
-                      : nothing
-                  }
-                  ${
-                    hardLimit > 0
-                      ? html`<div
-                          class="budget-hard-marker"
-                          title=${`Hard limit ${this.formatCurrency(hardLimit)}`}
-                        ></div>`
-                      : nothing
-                  }
-                </div>
-                <div
-                  style="display: flex; justify-content: space-between; gap: var(--sl-spacing-small); color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-x-small);"
-                >
-                  <span>
-                    ${
-                      softLimit > 0
-                        ? html`Soft ${this.formatCurrency(softLimit)}`
-                        : nothing
-                    }
-                  </span>
-                  <span>
-                    ${
-                      hardLimit > 0
-                        ? html`Hard ${this.formatCurrency(hardLimit)}`
-                        : nothing
-                    }
-                  </span>
-                </div>
-              `
-            : nothing
-        }
-      </div>
-    `;
   }
 
   private getManagedAgentBySourceId(
@@ -2817,63 +2578,47 @@ export class DashboardView extends AuthedElement {
               `
             : html`
                 <div class="item-list">
-                  ${this.recentFlowExecutions
-                    .filter(
-                      (exec) => !this.dismissedExecutions.includes(exec.id)
-                    )
-                    .slice(0, 5)
-                    .map(
-                      (exec) => html`
-                        <div
-                          class="item-card ${
-                            exec.status === 'FAILED' ? 'failed-execution' : ''
-                          }"
-                        >
-                          <div class="item-info">
-                            <span class="item-name"
-                              >${exec.flow_name || 'Unnamed Flow'}</span
-                            >
-                            ${
-                              exec.error_message
-                                ? html`<span
-                                    class="item-error"
-                                    title=${exec.error_message}
-                                    >${exec.error_message}</span
-                                  >`
-                                : ''
-                            }
-                            <span class="item-secondary"
-                              >${this.executionSecondaryText(exec)}</span
-                            >
-                          </div>
-                          <div class="item-actions">
-                            <sl-tag
-                              size="small"
-                              variant="${this.getStatusColor(exec.status)}"
-                            >
-                              ${exec.status}
-                            </sl-tag>
-                            <sl-button
-                              size="small"
-                              href="/console/flows/executions/${exec.id}"
-                            >
-                              View
-                            </sl-button>
-                            <sl-icon-button
-                              class="item-dismiss"
-                              name="x-lg"
-                              label="Dismiss execution ${
-                                exec.flow_name || 'Unnamed Flow'
-                              }"
-                              @click=${(e: Event) => {
-                                e.preventDefault();
-                                this.dismissExecution(exec.id);
-                              }}
-                            ></sl-icon-button>
-                          </div>
+                  ${this.recentFlowExecutions.slice(0, 5).map(
+                    (exec) => html`
+                      <div
+                        class="item-card ${
+                          exec.status === 'FAILED' ? 'failed-execution' : ''
+                        }"
+                      >
+                        <div class="item-info">
+                          <span class="item-name"
+                            >${exec.flow_name || 'Unnamed Flow'}</span
+                          >
+                          ${
+                            exec.error_message
+                              ? html`<span
+                                  class="item-error"
+                                  title=${exec.error_message}
+                                  >${exec.error_message}</span
+                                >`
+                              : ''
+                          }
+                          <span class="item-secondary"
+                            >${this.executionSecondaryText(exec)}</span
+                          >
                         </div>
-                      `
-                    )}
+                        <div class="item-actions">
+                          <sl-tag
+                            size="small"
+                            variant="${this.getStatusColor(exec.status)}"
+                          >
+                            ${exec.status}
+                          </sl-tag>
+                          <sl-button
+                            size="small"
+                            href="/console/flows/executions/${exec.id}"
+                          >
+                            View
+                          </sl-button>
+                        </div>
+                      </div>
+                    `
+                  )}
                 </div>
 
                 <div class="quick-actions">
@@ -2891,81 +2636,23 @@ export class DashboardView extends AuthedElement {
       </sl-card>
     `;
   }
-  private renderBudgetHealthCard() {
+  private renderUsageCard() {
     return html`
-      <budget-health-card
-        .summary=${this.budgetSummary}
+      <usage-card
+        .summary=${this.gatewaySummary}
         .policies=${this.budgetPolicies}
-        .agents=${this.managedAgents.length > 0 ? this.managedAgents : this.budgetAgents}
-        .loading=${this.fetchingBudget}
-        .timeRange=${this.budgetTimeRange}
-        .showRangeSelector=${true}
-        configurable
+        .loading=${this.fetchingGatewaySummary || this.fetchingBudget}
+        .error=${this.error}
+        .timeRange=${this.gatewayTimeRange}
+        .toolCallsCount=${this.toolCallsCount}
         @range-change=${(event: CustomEvent<{ value: string }>) => {
-          this.budgetTimeRange = event.detail.value as any;
-          this.fetchBudgetSummary();
+          event.stopPropagation();
+          this.gatewayTimeRange = event.detail.value as
+            'day' | 'week' | 'month' | 'year';
+          void this.fetchDashboardData({ preserveLoadingState: true });
         }}
-        @configure=${() => (this.showBudgetDialog = true)}
-      ></budget-health-card>
-    `;
-  }
-
-  private renderBudgetHealthContent() {
-    const policyUsages = this.calculatePolicyUsages();
-    const selectedPeriod = this.timeRangeToBudgetPeriod(this.budgetTimeRange);
-    const selectedGlobalUsage = policyUsages.find(
-      (usage) =>
-        (usage.policy.subject_type === 'global' ||
-          usage.policy.subject_type === 'account') &&
-        usage.policy.period === selectedPeriod
-    );
-    const additionalUsages = selectedGlobalUsage
-      ? policyUsages.filter(
-          (usage) => usage.policy.id !== selectedGlobalUsage.policy.id
-        )
-      : policyUsages;
-    const globalSpend = this.budgetSummary?.budget?.current_spend_usd || 0;
-
-    return html`
-      <div
-        style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
-      >
-        <div
-          style="display: flex; flex-direction: column; gap: var(--sl-spacing-small);"
-        >
-          ${this.renderBudgetLimitRow(
-            `Global spend · ${this.formatBudgetPeriod(selectedPeriod)}`,
-            'globe',
-            globalSpend,
-            selectedGlobalUsage?.softLimit ||
-              this.budgetSummary?.budget?.soft_limit_usd ||
-              0,
-            selectedGlobalUsage?.hardLimit ||
-              this.budgetSummary?.budget?.monthly_limit_usd ||
-              0
-          )}
-          ${additionalUsages.map((usage) =>
-            this.renderBudgetLimitRow(
-              this.getBudgetPolicyDisplayName(usage.policy),
-              this.getBudgetPolicyIcon(usage.policy),
-              usage.spend,
-              usage.softLimit,
-              usage.hardLimit
-            )
-          )}
-        </div>
-        <div style="margin-top: var(--sl-spacing-small);">
-          <sl-button
-            size="small"
-            variant="default"
-            @click=${() => (this.showBudgetDialog = true)}
-            style="width: 100%;"
-          >
-            <sl-icon slot="prefix" name="gear"></sl-icon>
-            Configure Limits
-          </sl-button>
-        </div>
-      </div>
+        @configure-limits=${() => (this.showBudgetDialog = true)}
+      ></usage-card>
     `;
   }
 
@@ -3202,10 +2889,38 @@ export class DashboardView extends AuthedElement {
     );
   }
 
+  private renderTopModelsSkeleton() {
+    return html`
+      <sl-card class="content-card">
+        <div slot="header" class="card-header-with-action">
+          <div class="card-title">Top Models</div>
+        </div>
+        <div class="list">
+          ${[0, 1, 2, 3].map(
+            () => html`
+              <div class="row">
+                <sl-skeleton
+                  effect="sheen"
+                  style="width: 60%; height: 0.9rem;"
+                ></sl-skeleton>
+                <sl-skeleton
+                  effect="sheen"
+                  style="width: 35%; height: 0.75rem; margin-top: var(--sl-spacing-2x-small);"
+                ></sl-skeleton>
+              </div>
+            `
+          )}
+        </div>
+      </sl-card>
+    `;
+  }
+
   private renderTopModelsCard() {
     const rawModels = this.gatewaySummary?.usage_by_model || [];
     if (rawModels.length === 0) {
-      return nothing;
+      return this.fetchingGatewaySummary
+        ? this.renderTopModelsSkeleton()
+        : nothing;
     }
 
     const aggregatedModels = new Map<string, any>();
@@ -3248,6 +2963,7 @@ export class DashboardView extends AuthedElement {
               <option value="spend">by Spend</option>
               <option value="usage">by Usage</option>
             </select>
+            <span class="range-note">· ${this.gatewayRangeLabel}</span>
           </div>
           <div
             style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
@@ -3559,21 +3275,24 @@ export class DashboardView extends AuthedElement {
                 : ''
             }
           </div>
-          <select
-            style="background: transparent; border: none; font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600); cursor: pointer; outline: none; margin-left: auto; margin-right: var(--sl-spacing-small);"
+          <time-range-select
+            style="margin-left: auto; margin-right: var(--sl-spacing-small);"
+            ariaLabel="Active agents time range"
             .value=${this.activeAgentsTimeRange}
-            @change=${(e: Event) => {
-              this.activeAgentsTimeRange = (e.target as HTMLSelectElement)
-                .value as any;
+            .options=${[
+              { value: '5m', label: '5m' },
+              { value: '1h', label: '1h' },
+              { value: '1d', label: '1d' },
+              { value: '1w', label: '1w' },
+              { value: '1mo', label: '1mo' },
+            ]}
+            @range-change=${(event: CustomEvent<{ value: string }>) => {
+              event.stopPropagation();
+              this.activeAgentsTimeRange = event.detail.value as
+                '5m' | '1h' | '1d' | '1w' | '1mo';
               this.fetchActiveAgentsData();
             }}
-          >
-            <option value="5m">5m</option>
-            <option value="1h">1h</option>
-            <option value="1d">1d</option>
-            <option value="1w">1w</option>
-            <option value="1mo">1mo</option>
-          </select>
+          ></time-range-select>
           <div
             style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
           >
@@ -3680,40 +3399,56 @@ export class DashboardView extends AuthedElement {
     `;
   }
 
-  private renderPendingApprovalsCard() {
-    if (this.pendingApprovals.length === 0) {
+  private renderAttentionCard() {
+    const items = this.attentionItems;
+    if (items.length === 0) {
       return nothing;
     }
+    const visible = items.slice(0, 5);
+    const overflow = items.length - visible.length;
 
     return html`
       <sl-card class="content-card">
         <div slot="header" class="card-header-with-action">
-          Pending approvals
-          <sl-badge variant="warning">${this.pendingApprovals.length}</sl-badge>
+          <div class="card-title attention-title">
+            <sl-icon name="exclamation-triangle"></sl-icon>
+            Needs attention
+            <sl-badge variant="warning" pill>${items.length}</sl-badge>
+          </div>
+          <a href="/console/attention" class="header-action-link">View all</a>
         </div>
         <div class="list">
           ${repeat(
-            this.pendingApprovals,
-            (approval) => approval.id,
-            (approval) => html`
-              <div class="row">
-                <div class="row-main">
-                  <span class="row-primary">${approval.tool_name}</span>
-                  <sl-button
-                    size="small"
-                    href=${`/console/approval/${approval.id}`}
+            visible,
+            (item) => item.id,
+            (item) => html`
+              <div class="row attention-row">
+                <span
+                  class="severity-dot ${item.severity}"
+                  aria-hidden="true"
+                ></span>
+                <sl-icon
+                  class="attention-kind-icon"
+                  name=${ATTENTION_KIND_META[item.kind].icon}
+                  aria-hidden="true"
+                ></sl-icon>
+                <div class="attention-main">
+                  <a class="row-link row-primary" href=${item.href}
+                    >${item.title}</a
                   >
-                    Review
-                  </sl-button>
-                </div>
-                <div class="row-meta">
-                  <span>${approval.status}</span>
-                  <span>${this.formatRelativeTime(approval.requested_at)}</span>
+                  <span class="attention-detail">${item.detail}</span>
                 </div>
               </div>
             `
           )}
         </div>
+        ${
+          overflow > 0
+            ? html`<a class="attention-more" href="/console/attention"
+                >and ${overflow} more</a
+              >`
+            : nothing
+        }
       </sl-card>
     `;
   }
@@ -3762,6 +3497,7 @@ export class DashboardView extends AuthedElement {
   }
 
   private get gatewayMetrics(): DashboardMetric[] {
+    const attentionCount = this.attentionItems.length;
     return [
       {
         label: 'agents',
@@ -3792,127 +3528,16 @@ export class DashboardView extends AuthedElement {
         tone: 'primary',
       },
       {
-        label: 'approved requests',
-        value: this.formatNumber(this.approvalStats.approved),
-        icon: 'check-circle',
-        href: '/console/approvals?status=approved',
-        tone: 'success',
-      },
-      {
-        label: 'inactive agents',
-        value: this.formatNumber(this.inactiveAgentsCount),
-        icon: 'pause-circle',
-        href: '/console/agents',
-        tone: this.inactiveAgentsCount > 0 ? 'warning' : 'neutral',
-      },
-      {
-        label: 'flow executions',
-        value: this.formatNumber(this.flowExecutionsCount),
-        icon: 'play-circle',
-        href: '/console/flows/executions',
-        tone: 'primary',
-      },
-      {
-        label: 'model requests',
-        value: this.formatNumber(this.gatewaySummary?.total_requests || 0),
-        icon: 'activity',
-        href: '/console/audit?event_type=model_gateway_request',
-        tone: 'primary',
-      },
-      {
-        label: 'tool calls',
-        value: this.formatNumber(this.toolCallsCount),
-        icon: 'terminal',
-        href: '/console/audit?event_type=tool_call',
-        tone: 'primary',
-      },
-      {
-        label: 'declined requests',
-        value: this.formatNumber(this.approvalStats.declined),
-        icon: 'x-circle',
-        href: '/console/approvals?status=declined',
-        tone: this.approvalStats.declined > 0 ? 'danger' : 'neutral',
-      },
-      {
-        label: 'total runtime sessions',
-        value: this.formatNumber(this.totalRuntimeSessionsCount),
-        icon: 'collection',
-        href: '/console/runtime-sessions',
-        tone: 'primary',
-      },
-      {
-        label: 'failed executions',
-        value: this.formatNumber(this.failedExecutionsCount),
-        icon: 'exclamation-triangle',
-        href: '/console/flows/executions',
-        tone: this.failedExecutionsCount > 0 ? 'danger' : 'neutral',
-      },
-      {
-        label: 'failed requests',
-        value: this.formatNumber(this.gatewaySummary?.failed_requests || 0),
-        icon: 'exclamation-triangle',
-        href: '/console/audit?event_type=model_gateway_request&outcome=failed',
-        tone: this.gatewaySummary?.failed_requests ? 'danger' : 'neutral',
-      },
-      {
-        label: 'failed tool calls',
-        value: this.formatNumber(this.failedToolCallsCount),
-        icon: 'exclamation-octagon',
-        href: '/console/audit?event_type=tool_call&outcome=failed',
-        tone: this.failedToolCallsCount > 0 ? 'danger' : 'neutral',
-      },
-      {
-        label: 'timed out approval requests',
-        value: this.formatNumber(this.approvalStats.expired),
-        icon: 'clock',
-        href: '/console/approvals?status=expired',
-        tone: this.approvalStats.expired > 0 ? 'warning' : 'neutral',
-      },
-      {
-        label: 'total tokens',
-        value: this.formatNumber(
-          this.gatewaySummary?.token_usage.total_tokens || 0
-        ),
-        icon: 'braces',
-        href: '/console/api-usage',
-        tone: 'primary',
-      },
-      {
-        label: 'flow execution success rate',
-        value: this.flowExecutionSuccessRate,
-        icon: 'check-circle',
-        href: '/console/flows/executions',
-        tone: 'success',
-      },
-      {
-        label: 'model request success rate',
-        value: this.modelRequestSuccessRate,
-        icon: 'check-circle',
-        href: '/console/audit?event_type=model_gateway_request',
-        tone: 'success',
-      },
-      {
-        label: 'tool call success rate',
-        value: this.toolCallSuccessRate,
-        icon: 'check-circle',
-        href: '/console/audit?event_type=tool_call',
-        tone: 'success',
-      },
-      {
-        label: 'approval rate',
-        value: this.approvalRate,
-        icon: 'shield-check',
-        href: '/console/approvals',
-        tone: 'success',
+        label: 'need attention',
+        value: this.formatNumber(attentionCount),
+        icon: attentionCount > 0 ? 'exclamation-triangle' : 'check-circle',
+        href: '/console/attention',
+        tone: attentionCount > 0 ? 'warning' : 'success',
       },
     ];
   }
 
   private renderPreloopGatewayCard() {
-    const visibleMetrics = this.gatewayMetricsExpanded
-      ? this.gatewayMetrics
-      : this.gatewayMetrics.slice(0, 5);
-
     return html`
       <!-- Preloop Gateway Status -->
       <sl-card class="content-card">
@@ -3931,9 +3556,10 @@ export class DashboardView extends AuthedElement {
               <sl-icon name="question-circle"></sl-icon>
             </sl-tooltip>
           </div>
-          <div
-            style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-          >
+          <div class="gateway-header-meta">
+            <span class="updated-at"
+              >Updated ${this.formatLastUpdatedLabel()}</span
+            >
             <a href="/console/settings/api-keys" class="header-action-link"
               >Manage Keys</a
             >
@@ -3952,41 +3578,20 @@ export class DashboardView extends AuthedElement {
                 `
               : html`
                   <div style="display: contents;">
-                    ${visibleMetrics.map((metric) =>
+                    ${this.gatewayMetrics.map((metric) =>
                       this.renderMetricItem(metric)
                     )}
                   </div>
                 `
           }
         </div>
-        <div
-          style="display: flex; justify-content: center; margin-top: calc(-1 * var(--sl-spacing-medium)); margin-bottom: var(--sl-spacing-medium);"
-        >
-          <sl-button
-            size="small"
-            variant="text"
-            @click=${this.toggleGatewayMetrics}
-          >
-            ${
-              this.gatewayMetricsExpanded
-                ? 'Show less metrics'
-                : 'Show more metrics'
-            }
-            <sl-icon
-              slot="suffix"
-              name=${
-                this.gatewayMetricsExpanded ? 'chevron-up' : 'chevron-down'
-              }
-            ></sl-icon>
-          </sl-button>
-        </div>
-
         <!-- AI Model Gateway Endpoint -->
         <div
           class="mcp-server-capsule"
           style="margin-top: 0; margin-bottom: var(--sl-spacing-small);"
         >
           <div class="status-indicator"></div>
+          <span class="capsule-eyebrow">Model gateway</span>
           <sl-badge variant="primary" size="small" style="margin-right: -4px;"
             >AI models</sl-badge
           >
@@ -4053,6 +3658,7 @@ export class DashboardView extends AuthedElement {
         <!-- Built-in MCP Server Endpoint -->
         <div class="mcp-server-capsule" style="margin-top: 0;">
           <div class="status-indicator"></div>
+          <span class="capsule-eyebrow">Tool firewall</span>
           <sl-badge variant="neutral" size="small" style="margin-right: -4px;"
             >MCP tools</sl-badge
           >
@@ -4106,11 +3712,7 @@ export class DashboardView extends AuthedElement {
     }
 
     return html`
-      <view-header headerText="Overview" width="extra-wide">
-        <div class="updated-at" slot="description">
-          Last updated ${this.formatLastUpdatedLabel()}
-        </div>
-      </view-header>
+      <view-header headerText="Overview" width="extra-wide"></view-header>
       <div class="extra-wide" style="margin-bottom: var(--sl-spacing-large);">
         ${
           this.error
@@ -4128,7 +3730,7 @@ export class DashboardView extends AuthedElement {
             ${this.renderRecentFlowExecutionsCard()}
 
             <div
-              style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sl-spacing-large); margin-top: var(--sl-spacing-large);"
+              style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sl-spacing-medium);"
             >
               ${this.renderGatewayFailuresCard()}
               ${this.renderAuditExceptionsCard()}
@@ -4137,41 +3739,19 @@ export class DashboardView extends AuthedElement {
         </div>
 
         <div class="side-column">
-          ${this.renderPendingApprovalsCard()} ${this.renderBudgetHealthCard()}
+          ${this.renderAttentionCard()} ${this.renderUsageCard()}
           ${this.renderTopModelsCard()}
         </div>
         <mcp-setup-dialog
           ?open=${this.showSetupDialog}
           @close=${() => (this.showSetupDialog = false)}
         ></mcp-setup-dialog>
-        <sl-dialog
-          label="Configure Budget Limits"
+        <budget-limits-dialog
           ?open=${this.showBudgetDialog}
-          @sl-after-hide=${(e: Event) => {
-            if (e.target === e.currentTarget) {
-              this.showBudgetDialog = false;
-            }
-          }}
-          style="--width: 600px;"
-        >
-          ${
-            this.showBudgetDialog
-              ? html`
-                  <p
-                    style="margin: 0 0 var(--sl-spacing-medium); color: var(--sl-color-neutral-500); font-size: 0.9rem;"
-                  >
-                    Spending limits for the account or individual agents. Soft
-                    limits notify you; hard limits stop further model calls
-                    through the gateway.
-                  </p>
-                  <budget-policy-editor
-                    billingEnabled
-                    @budget-policies-changed=${this.handleBudgetPoliciesChanged}
-                  ></budget-policy-editor>
-                `
-              : nothing
-          }
-        </sl-dialog>
+          billingEnabled
+          @sl-hide=${() => (this.showBudgetDialog = false)}
+          @budget-policies-changed=${this.handleBudgetPoliciesChanged}
+        ></budget-limits-dialog>
         <preloop-invite-dialog
           ?open=${this.isInviteDialogOpen}
           @close=${() => {
