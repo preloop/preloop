@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **GitHub backend CI uses 8 pytest-split shards**: group 1 of 4 was the
+  wall-clock pole (~7-9m vs ~3-4.5m). Eight `duration_based_chunks` slices
+  split that first quarter in half. Coverage still combines before the 60%
+  floor.
+
 - **Blog posts can show a hero image**: `og_image` in frontmatter is
   rendered as a figure under the tags on the post, as a linked thumbnail
   on `/blog`, and a missing `og_image` logs a build warning.
