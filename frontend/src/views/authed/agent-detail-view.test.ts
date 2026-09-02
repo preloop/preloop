@@ -567,7 +567,9 @@ describe('AgentDetailView', () => {
     expect(remove.separated, 'Remove is set apart').to.equal(true);
   });
 
-  it('shows operator tags as outlined chips prefixed with a hash', async () => {
+  // Wave 4: tags are labels, not states, so they lost the pill and took a
+  // leading tag icon instead of the hash.
+  it('shows operator tags as text with a leading tag icon', async () => {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
     );
@@ -592,7 +594,11 @@ describe('AgentDetailView', () => {
     ]);
     expect(
       tagChips.map((chip) => chip.textContent?.replace(/\s+/g, '').trim())
-    ).to.deep.equal(['#team=platform', '#pilot']);
+    ).to.deep.equal(['team=platform', 'pilot']);
+    expect(
+      tagChips.every((chip) => chip.querySelector('sl-icon[name="tag"]')),
+      'every tag chip has a leading tag icon'
+    ).to.be.true;
   });
 
   it('calls the session history panel Session History', async () => {

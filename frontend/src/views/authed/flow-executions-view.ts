@@ -82,7 +82,7 @@ export class FlowExecutionsView extends AuthedElement {
       /* Fallback for executions with no derivable subject: the short id. */
       .subject-fallback {
         font-family: var(--sl-font-mono);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
       .status-cell {
         display: flex;
@@ -445,6 +445,12 @@ export class FlowExecutionsView extends AuthedElement {
                                       : ''
                                   }
                                   <sl-badge
+                                    class="chip ${
+                                      this.getStatusVariant(exec.status) ===
+                                      'danger'
+                                        ? 'solid'
+                                        : ''
+                                    }"
                                     pill
                                     variant=${this.getStatusVariant(exec.status)}
                                     >${exec.status}</sl-badge

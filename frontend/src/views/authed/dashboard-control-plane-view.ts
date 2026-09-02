@@ -328,7 +328,7 @@ export class DashboardView extends AuthedElement {
         line-height: 1.2;
       }
       .hero-stat-label {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--console-text-meta);
       }
       .hero-stat:hover .hero-stat-label {
@@ -421,7 +421,7 @@ export class DashboardView extends AuthedElement {
         padding: 1px 4px;
       }
       .plane-docs {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         display: flex;
       }
       .plane-stats {
@@ -432,11 +432,11 @@ export class DashboardView extends AuthedElement {
         white-space: nowrap;
       }
       .plane-quiet {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
       .gateway-header-meta {
         align-items: center;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         display: flex;
         font-size: var(--console-text-meta);
         gap: var(--sl-spacing-x-small);
@@ -473,15 +473,15 @@ export class DashboardView extends AuthedElement {
          never falls to a second row. */
       .attention-strip {
         align-items: center;
-        /* A translucent mix of one warning token reads as a pale tint in light
-           and a dim tint in dark, instead of the inverted-scale solid band. */
+        /* A translucent mix of one warning token over the card surface reads
+           as a tinted band in both themes, instead of an orange block. */
         background: color-mix(
           in srgb,
-          var(--sl-color-warning-500) 12%,
-          var(--sl-color-neutral-0)
+          var(--sl-color-warning-500) 10%,
+          var(--console-surface)
         );
         border: 1px solid
-          color-mix(in srgb, var(--sl-color-warning-500) 40%, transparent);
+          color-mix(in srgb, var(--sl-color-warning-500) 35%, transparent);
         border-radius: var(--sl-border-radius-medium);
         display: flex;
         flex-wrap: nowrap;
@@ -518,19 +518,28 @@ export class DashboardView extends AuthedElement {
         min-width: 0;
       }
       /* Quiet amber: the strip behind them is already the alarm, so the
-         chips read as labels rather than as five more warnings. */
+         chips read as labels rather than as five more warnings. Soft chip
+         recipe, one tone at 16% with no border. */
       .attention-chip-link sl-badge::part(base) {
         align-items: center;
-        background-color: var(--sl-color-warning-100);
-        border-color: var(--sl-color-warning-200);
-        color: var(--sl-color-warning-900);
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-warning-500) 16%,
+          transparent
+        );
+        border-width: 0;
+        color: var(--sl-color-warning-800);
         display: flex;
         gap: var(--sl-spacing-3x-small);
         max-width: 100%;
         min-width: 0;
       }
       .attention-chip-link:hover sl-badge::part(base) {
-        background-color: var(--sl-color-warning-200);
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-warning-500) 26%,
+          transparent
+        );
       }
       /* min-width lets the label shrink inside the badge, so a long one ends
          in an ellipsis instead of being cut mid-word by the strip. */
@@ -582,23 +591,23 @@ export class DashboardView extends AuthedElement {
         color: var(--sl-color-success-600);
       }
       .next-step.done .next-step-label {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         text-decoration: line-through;
       }
       .updated-at {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
         font-weight: var(--sl-font-weight-normal);
       }
       .capsule-eyebrow {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         font-weight: 600;
         letter-spacing: 0.04em;
         text-transform: uppercase;
       }
       .range-note {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
         font-weight: var(--sl-font-weight-normal);
         font-variant-numeric: tabular-nums;
@@ -657,7 +666,7 @@ export class DashboardView extends AuthedElement {
         user-select: none;
       }
       .expand-icon {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         flex-shrink: 0;
         margin-top: 2px;
         transition: transform 0.2s ease;
@@ -685,7 +694,7 @@ export class DashboardView extends AuthedElement {
         white-space: nowrap;
       }
       .agent-meta-line {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         overflow: hidden;
         text-overflow: ellipsis;
@@ -737,7 +746,7 @@ export class DashboardView extends AuthedElement {
         margin-top: 2px;
       }
       .expandable-subheader-metric {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         flex-shrink: 0;
         font-size: var(--sl-font-size-x-small);
         margin-left: auto;
@@ -762,7 +771,7 @@ export class DashboardView extends AuthedElement {
         white-space: nowrap;
       }
       .nested-session-metric {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         flex-shrink: 0;
         font-size: var(--sl-font-size-x-small);
       }
@@ -2980,7 +2989,7 @@ export class DashboardView extends AuthedElement {
           Recent Flow Executions
           ${
             this.failedFlowExecutions.length > 0
-              ? html`<sl-badge class="chip" variant="neutral" pill
+              ? html`<sl-badge class="chip solid" variant="neutral" pill
                   >${this.failedFlowExecutions.length} failed</sl-badge
                 >`
               : ''
@@ -3022,7 +3031,11 @@ export class DashboardView extends AuthedElement {
                         </div>
                         <div class="item-actions">
                           <sl-badge
-                            class="chip"
+                            class="chip ${
+                              this.getStatusColor(exec.status) === 'danger'
+                                ? 'solid'
+                                : ''
+                            }"
                             pill
                             variant=${this.getStatusColor(exec.status)}
                             >${exec.status}</sl-badge
@@ -3105,7 +3118,9 @@ export class DashboardView extends AuthedElement {
                   >
                     ${item.model_alias || item.provider_name || item.endpoint}
                   </a>
-                  <sl-badge variant="danger">${item.status_code}</sl-badge>
+                  <sl-badge class="chip" pill variant="danger"
+                    >${item.status_code}</sl-badge
+                  >
                 </div>
                 <div class="row-meta">
                   <span>
@@ -3147,6 +3162,8 @@ export class DashboardView extends AuthedElement {
                     ${group.primary_event.action.replace(/_/g, ' ')}
                   </span>
                   <sl-badge
+                    class="chip"
+                    pill
                     variant=${
                       group.outcome === 'budget_denied' ? 'warning' : 'danger'
                     }
@@ -3461,7 +3478,7 @@ export class DashboardView extends AuthedElement {
                     </span>
                   </div>
                   <div
-                    style="display: flex; justify-content: space-between; align-items: center; font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-500);"
+                    style="display: flex; justify-content: space-between; align-items: center; font-size: var(--sl-font-size-x-small); color: var(--console-meta-color);"
                   >
                     <span>${item.provider_name || 'provider unknown'}</span>
                     <span

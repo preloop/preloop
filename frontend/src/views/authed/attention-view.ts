@@ -1055,6 +1055,9 @@ export class AttentionView extends AuthedElement {
           <div class="section-title">
             <sl-icon name=${meta.icon}></sl-icon>
             ${meta.plural}
+            <!-- A section count stays a solid pill (wave 4): it is a
+                 badge on a heading, not a state on a row. The page's own
+                 .chip class is the filter strip, so it is not used here. -->
             <sl-badge variant="neutral" pill>${items.length}</sl-badge>
           </div>
         </div>

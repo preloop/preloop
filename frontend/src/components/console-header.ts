@@ -296,7 +296,7 @@ export class ConsoleHeader extends LitElement {
     .empty-state {
       padding: 2rem 1rem;
       text-align: center;
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
     }
     .empty-state sl-icon {
       font-size: 2rem;

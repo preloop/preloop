@@ -628,14 +628,14 @@ export class AgentsView extends LitElement {
         text-decoration: underline;
       }
       .row-subtitle {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
       .muted-cell {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
       .agents-table td.numeric,
       .agents-table th.numeric {
@@ -652,13 +652,18 @@ export class AgentsView extends LitElement {
         display: flex;
         justify-content: flex-end;
       }
-      /* Shoelace badges are solid by default; the outline variant marks a
-         softer state (recently active) without stealing attention from a
-         live one. */
+      /* "Recently active" is real but not live: a fainter tint of the same
+         tone. No border, because nothing inside a card gets a box (wave 4);
+         the -700 ink reads on both themes because Shoelace inverts the
+         scale in dark. */
       .status-chip.outline::part(base) {
-        background-color: transparent;
-        color: var(--sl-color-success-700);
-        border-color: var(--sl-color-success-500);
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-success-500) 8%,
+          transparent
+        );
+        color: var(--sl-color-success-800);
+        border-width: 0;
       }
       .canvas-last-seen {
         font-weight: 600;
@@ -673,12 +678,6 @@ export class AgentsView extends LitElement {
         overflow: hidden;
         clip: rect(0 0 0 0);
         white-space: nowrap;
-      }
-      @media (prefers-color-scheme: dark) {
-        .status-chip.outline::part(base) {
-          color: var(--sl-color-success-400);
-          border-color: var(--sl-color-success-600);
-        }
       }
       .deploy-grid {
         display: grid;
@@ -3678,7 +3677,7 @@ export class AgentsView extends LitElement {
                     style="background: var(--sl-color-neutral-100); padding: 8px 12px; border-radius: var(--sl-border-radius-medium); margin-bottom: 12px; font-size: 0.85rem;"
                   >
                     <div
-                      style="font-weight: 600; font-size: 0.75rem; text-transform: uppercase; color: var(--sl-color-neutral-500); margin-bottom: 4px;"
+                      style="font-weight: 600; font-size: 0.75rem; text-transform: uppercase; color: var(--console-meta-color); margin-bottom: 4px;"
                     >
                       Latest from ${liveActivity.lastMessageSource || 'Agent'}
                     </div>
@@ -4051,7 +4050,7 @@ export class AgentsView extends LitElement {
                             }
                           </div>
                           <div
-                            style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-500); margin-bottom: 8px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; word-break: break-word;"
+                            style="font-size: var(--sl-font-size-small); color: var(--console-meta-color); margin-bottom: 8px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; word-break: break-word;"
                             title="${
                               isFlow
                                 ? flowNode?.description || ''

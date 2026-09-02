@@ -222,12 +222,89 @@ sl-badge.chip::part(base) {
     padding: 2px 8px;
 }
 
-/* Tags are labels, not states: outline instead of fill. */
+/* A state is a tint, not a paint (wave 4). Soft chips: 16% of the tone over
+   whatever surface they sit on, no border, one ink step for the text. The
+   Shoelace dark theme inverts every scale, so the same token is a dark ink on
+   the light theme and a light ink on the dark one: one declaration, both.
+   Solid pills survive in exactly two places, and both opt in with .solid:
+   the count badge in a section header and the danger pill on a failed run.
+   The ink is the -800 step, not -700: on a 16% tint -700 measures 4.4:1 for
+   amber and green in the light theme, and 12px text needs 4.5. */
+sl-badge.chip:not(.solid)::part(base),
+sl-badge.status-chip:not(.solid)::part(base) {
+    background-color: color-mix(
+        in srgb,
+        var(--sl-color-neutral-500) 16%,
+        transparent
+    );
+    color: var(--sl-color-neutral-800);
+    border-width: 0;
+}
+
+sl-badge.chip[variant='primary']:not(.solid)::part(base),
+sl-badge.status-chip[variant='primary']:not(.solid)::part(base) {
+    background-color: color-mix(
+        in srgb,
+        var(--sl-color-primary-500) 16%,
+        transparent
+    );
+    color: var(--sl-color-primary-800);
+}
+
+sl-badge.chip[variant='success']:not(.solid)::part(base),
+sl-badge.status-chip[variant='success']:not(.solid)::part(base) {
+    background-color: color-mix(
+        in srgb,
+        var(--sl-color-success-500) 16%,
+        transparent
+    );
+    color: var(--sl-color-success-800);
+}
+
+sl-badge.chip[variant='warning']:not(.solid)::part(base),
+sl-badge.status-chip[variant='warning']:not(.solid)::part(base) {
+    background-color: color-mix(
+        in srgb,
+        var(--sl-color-warning-500) 16%,
+        transparent
+    );
+    color: var(--sl-color-warning-800);
+}
+
+sl-badge.chip[variant='danger']:not(.solid)::part(base),
+sl-badge.status-chip[variant='danger']:not(.solid)::part(base) {
+    background-color: color-mix(
+        in srgb,
+        var(--sl-color-danger-500) 16%,
+        transparent
+    );
+    color: var(--sl-color-danger-800);
+}
+
+/* Default buttons take their face from the ladder: Shoelace's white in
+   light, nothing but a 14% white hairline in dark, where a filled button
+   would be darker than the card behind it. */
+sl-button[variant='default']:not([disabled])::part(base) {
+    background-color: var(--console-button-face);
+    border-color: var(--console-button-border);
+}
+
+sl-button[variant='default']:not([disabled])::part(base):hover {
+    background-color: var(--console-button-face-hover);
+    border-color: var(--console-button-border-hover);
+}
+
+/* Tags are labels, not states, and a label needs no box at all: an icon and
+   the word, in meta colour. */
 sl-badge.chip-tag::part(base),
 sl-badge.tag-chip::part(base) {
     background-color: transparent;
-    border: 1px solid var(--sl-color-neutral-300);
-    color: var(--sl-color-neutral-700);
+    border-width: 0;
+    padding: 2px 0;
+    color: var(--console-meta-color);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
 }
 
 .styled-table {

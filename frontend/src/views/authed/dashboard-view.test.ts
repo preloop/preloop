@@ -658,6 +658,10 @@ describe('DashboardView', () => {
       // The pill keeps danger; the header count does not.
       const pill = row.querySelector('sl-badge.chip') as HTMLElement;
       expect(pill.getAttribute('variant')).to.equal('danger');
+      // The two survivors of the solid pill (wave 4): a failed run and a
+      // section header count. Everything else is a soft tint.
+      expect(pill.classList.contains('solid'), 'failed run pill is solid').to.be
+        .true;
       const executionsHeader = [
         ...(element.shadowRoot?.querySelectorAll('.chart-header') || []),
       ].find((header) =>
@@ -666,6 +670,7 @@ describe('DashboardView', () => {
       const headerChip = executionsHeader?.querySelector('sl-badge.chip');
       expect(headerChip, 'header count chip').to.exist;
       expect(headerChip?.getAttribute('variant')).to.equal('neutral');
+      expect(headerChip?.classList.contains('solid')).to.be.true;
     });
   });
 

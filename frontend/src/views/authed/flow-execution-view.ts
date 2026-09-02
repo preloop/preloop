@@ -2005,6 +2005,12 @@ export class FlowExecutionView extends LitElement {
               </div>
               <div class="summary-value">
                 <sl-badge
+                  class="chip ${
+                    this.getStatusVariant(this.execution.status) === 'danger'
+                      ? 'solid'
+                      : ''
+                  }"
+                  pill
                   variant=${this.getStatusVariant(this.execution.status)}
                   >${this.execution.status}</sl-badge
                 >
