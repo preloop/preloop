@@ -47,18 +47,10 @@ def test_no_rules_allows_matching_tool_default():
 
 
 def test_text_privacy_fingerprint_stays_sha256():
-    """Audit rows store SHA-256 of the scanned text, not a password KDF.
-
-    usedforsecurity=False does not change the digest; it only tells hashlib
-    and CodeQL that this is an audit fingerprint, not password storage.
-    """
+    """Audit rows store SHA-256 of the scanned text, not a password KDF."""
     text = "hello"
     expected = hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert _text_privacy(text) == expected
-    assert (
-        _text_privacy(text)
-        == hashlib.sha256(text.encode("utf-8"), usedforsecurity=False).hexdigest()
-    )
     decision = evaluate_model_io(
         rules=[],
         target="model.request",

@@ -239,14 +239,9 @@ def _text_privacy(text: str) -> str:
     Prompts can contain secrets, so audit rows keep only this digest.
     This is not password storage: a KDF would change existing
     ``text_sha256`` values and would run on every model call.
-    ``usedforsecurity=False`` marks that contract for hashlib and CodeQL
-    (py/weak-sensitive-data-hashing), which otherwise treats SHA-256 of
-    tainted request text as password hashing.
     """
-    return hashlib.sha256(
-        text.encode("utf-8", errors="replace"),
-        usedforsecurity=False,
-    ).hexdigest()
+    # codeql[py/weak-sensitive-data-hashing] Prompt fingerprint for audit, not password hashing
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
 def _rule_enables_detector(rule: ModelIORule, name: str) -> bool:
