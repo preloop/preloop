@@ -587,6 +587,37 @@ describe('AddAIModelModal model list provenance', () => {
     expect((element as any)._modelSuggestions).to.deep.equal([]);
   });
 
+  it('does not treat subscription OAuth as a fetch failure', async () => {
+    fetchStub.callsFake(async (url: any) => {
+      if (String(url).includes('available-models')) {
+        return new Response(
+          JSON.stringify({
+            models: ['vendor-opus-4', 'vendor-sonnet-4'],
+            source: 'fallback',
+            error: 'subscription_oauth',
+          })
+        );
+      }
+      return new Response(JSON.stringify([]));
+    });
+
+    await fetchAsProvider('anthropic');
+
+    expect((element as any)._modelsFetchError).to.equal(null);
+    expect((element as any)._modelsFallbackReason).to.equal(
+      'subscription_oauth'
+    );
+    const text = noticeText();
+    expect(text).to.not.contain('Could not fetch');
+    expect(text).to.not.contain('No LLM models available');
+    expect(text).to.contain('subscription-billed');
+    expect(text).to.contain("account's catalog");
+    expect((element as any)._modelSuggestions).to.deep.equal([
+      'vendor-opus-4',
+      'vendor-sonnet-4',
+    ]);
+  });
+
   it('shows no fallback notice for a live listing', async () => {
     fetchStub.callsFake(async (url: any) => {
       if (String(url).includes('available-models')) {

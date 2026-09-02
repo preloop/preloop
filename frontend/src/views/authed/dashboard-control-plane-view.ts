@@ -866,14 +866,6 @@ export class DashboardView extends AuthedElement {
       .capsule-link:hover {
         text-decoration: underline;
       }
-      /* "Updated 2m ago" and "Manage Keys" read as one muted line about the
-         card, wherever the header has room for them. */
-      .gateway-header-meta {
-        align-items: center;
-        display: flex;
-        gap: var(--sl-spacing-small);
-        min-width: 0;
-      }
       /* Phone width: the capsule is a two-row block, not a pill. Row one
          names the endpoint, row two is the thing you came to copy. Without
          this the select and the URL pushed the copy button outside the card. */
@@ -2722,9 +2714,9 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
-   * The Policies page derives tool access rules from the tools themselves: a
-   * tool that is disabled or needs approval is a policy. Anything else is the
-   * default allow, which is not a decision anyone made.
+   * True when at least one tool is disabled or approval-gated. The next-step
+   * label ("Restrict a tool") matches this signal. Subject-scoped model lists
+   * and other Policies-page rules are not visible here.
    */
   private get hasToolPolicy(): boolean {
     return this.tools.some(
@@ -2748,7 +2740,7 @@ export class DashboardView extends AuthedElement {
       },
       {
         id: 'policy',
-        label: 'Add a tool policy',
+        label: 'Restrict a tool',
         done: this.hasToolPolicy,
         href: '/console/policies',
       },

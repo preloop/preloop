@@ -10,6 +10,11 @@ data:
         listen 80;
         server_name _;
 
+        # Avatar uploads are PUT multipart up to 5 MB. nginx defaults to 1m and
+        # returns 413 HTML before the request reaches the API. Match ingress
+        # proxy-body-size so console-fronted /api/ traffic is not the bottleneck.
+        client_max_body_size {{ .Values.gateway.proxy.bodySize }};
+
         # Security headers
         add_header X-Frame-Options "SAMEORIGIN" always;
         add_header X-XSS-Protection "1; mode=block" always;

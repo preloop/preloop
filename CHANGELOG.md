@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`preloop agents refresh` (alias `sync`), `preloop models sync`, and `POST /api/v1/ai-models/sync`**: refresh rewrites managed model sections of onboarded agent configs from the account catalog; models sync (and the endpoint) pull newly released provider models into that catalog using stored credentials.
+- **Opt-in scheduled model-catalog sync**: `MODEL_CATALOG_SYNC_SCHEDULED_ENABLED` (default false; helm `config.modelCatalogSync.*`) runs the same discovery as `preloop models sync` for every account, attributing audit events to the `model-catalog-sync` system actor.
 - **`preloop usage hook` accepts harness-agnostic events**: stdin is
   auto-detected as Cursor hooks (unchanged), generic NDJSON
   (`preloop.usage.event.v1`), or Codex CLI session rollouts. Codex
@@ -17,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a stub).
 
 ### Changed
+
+- **GitHub backend CI uses 8 pytest-split shards**: group 1 of 4 was the
+  wall-clock pole (~7-9m vs ~3-4.5m). Eight `duration_based_chunks` slices
+  split that first quarter in half. Coverage still combines before the 60%
+  floor.
 
 - **Blog posts can show a hero image**: `og_image` in frontmatter is
   rendered as a figure under the tags on the post, as a linked thumbnail
@@ -51,6 +58,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds a page by dropping a markdown file.
 
 ### Fixed
+
+- **Migration job now syncs global flow presets after alembic**: the
+  post-upgrade hook runs `scripts/sync_flow_presets.py --no-propagate`
+  in the same container so global presets stop drifting between deploys
+  without rewriting derived user flows.
+- **API and console pods carry `app:` labels**: the selector lived only
+  on Deployment metadata, so `kubectl -l app=api` found nothing. Extra
+  pod-template labels do not change `spec.selector.matchLabels`.
+- **Console nginx accepts avatar uploads over 1 MB**: `client_max_body_size`
+  now matches `gateway.proxy.bodySize` (default 32m). Oversized requests
+  used to 413 at nginx; the console now surfaces an HTML 413 as "Image
+  too large to upload." instead of a generic failure.
+- **Scorecard supply-chain job pulls from GHCR**: `ossf/scorecard-action`
+  is pinned to v2.4.4 (`ghcr.io/ossf/scorecard-action`). v2.4.0 pulled
+  `gcr.io/openssf/scorecard-action`, which now denies unauthenticated pulls
+  without GCP billing.
 
 - **Blog posts no longer repeat the title**: the article template already
   emits `<h1>` from frontmatter. A leading `# Title` in the markdown (or

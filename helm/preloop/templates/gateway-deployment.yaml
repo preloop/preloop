@@ -31,6 +31,7 @@ spec:
       labels:
         {{- include "preloop.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: gateway
+        app: gateway
     spec:
       # In-flight streaming LLM responses must be allowed to finish before
       # kubelet SIGKILLs the pod. With the k8s default of 30s, rollouts
