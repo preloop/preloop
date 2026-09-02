@@ -131,6 +131,20 @@ def get_engine(database_url: Optional[str] = None):
         raise Exception(f"Database connection failed: {e}")
 
 
+def get_engine_if_initialized() -> Optional[Engine]:
+    """Return the sync engine if one exists, without creating it.
+
+    Used by pool observability, which must never trigger engine creation
+    (a worker role may legitimately never build one of the engines).
+    """
+    return _engine
+
+
+def get_async_engine_if_initialized() -> Optional[AsyncEngine]:
+    """Return the async engine if one exists, without creating it."""
+    return _async_engine
+
+
 def get_session_factory(engine=None):
     """Get or create session factory for database."""
     global _session_factory, _engine

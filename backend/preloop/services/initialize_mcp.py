@@ -18,7 +18,11 @@ from preloop.services.dynamic_fastmcp import (
     _justification_var,
     create_dynamic_mcp_server,
 )
-from preloop.tools.builtin_defs import ASK_USER_TOOL, PERMISSION_PROMPT_TOOL
+from preloop.tools.builtin_defs import (
+    ASK_USER_TOOL,
+    PERMISSION_PROMPT_TOOL,
+    RESOLVE_SBOM_UPSTREAMS_TOOL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -659,6 +663,55 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 "as a safety measure. Retry the tool call.",
             }
         return _dump(behavior)
+
+    # Register Tool 7d: resolve_sbom_upstreams (shared metadata:
+    # tools.builtin_defs.RESOLVE_SBOM_UPSTREAMS_TOOL). Read-only registry
+    # lookup used by the SBOM security presets (005/006) to enrich vendored
+    # Arduino/PlatformIO components for osv_git screening. Resolution logic
+    # lives in preloop.services.sbom_upstream_resolver; it performs no DB
+    # access and degrades gracefully when the registries are unreachable.
+    @mcp.tool(description=RESOLVE_SBOM_UPSTREAMS_TOOL["description"])
+    async def resolve_sbom_upstreams(
+        components: list[dict],
+        ctx: Optional[Context] = None,
+    ) -> str:
+        """Resolve vendored SBOM components to upstream repositories.
+
+        Args:
+            components: Component mappings carrying ``name`` and
+                ``version`` (strings) plus optionally ``purl``.
+            ctx: MCP context (injected by FastMCP).
+
+        Returns:
+            The JSON resolution report, or an error string.
+        """
+        import json
+
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+        from preloop.services.sbom_upstream_resolver import resolve_components
+
+        user_context = get_current_user_context()
+        if not user_context:
+            return "Error: No user context available"
+
+        approved, error = await require_approval(
+            tool_name=RESOLVE_SBOM_UPSTREAMS_TOOL["name"],
+            tool_source="builtin",
+            account_id=user_context.account_id,
+            arguments={"components": components},
+            ctx=ctx,
+            workflow_id=_rule_workflow_id_var.get(None),
+            correlation_id=_correlation_id_var.get(None),
+            justification=_justification_var.get(None),
+        )
+        if not approved:
+            return error
+
+        try:
+            report = await resolve_components(components)
+        except ValueError as exc:
+            return f"Error: {exc}"
+        return json.dumps(report)
 
     # Register Tool 8: add_comment
     @mcp.tool()

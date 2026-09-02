@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +13,26 @@ from preloop.models.schemas.approval_request import ApprovalRequestUpdate
 from preloop.services.approval_service import ApprovalService
 
 pytestmark = pytest.mark.asyncio
+
+
+@contextmanager
+def fresh_poll_sessions():
+    """Stub the fresh per-poll sessions opened by wait_for_approval.
+
+    wait_for_approval must not reuse the session the service was constructed
+    with (that would pin a pooled connection for the whole human wait), so it
+    opens a short-lived session per poll; tests provide those here.
+    """
+
+    @asynccontextmanager
+    async def _fake_session():
+        yield AsyncMock()
+
+    with patch(
+        "preloop.models.db.session.get_async_db_session",
+        new=_fake_session,
+    ):
+        yield
 
 
 @pytest.fixture
@@ -1760,7 +1781,12 @@ class TestCreateAndNotify:
 
 
 class TestWaitForApproval:
-    """Test wait_for_approval method."""
+    """Test wait_for_approval method.
+
+    wait_for_approval polls with a fresh service on a fresh session per
+    iteration, so the tests patch methods at the class level rather than on
+    the instance under test.
+    """
 
     async def test_wait_for_approval_already_approved(
         self, approval_service, sample_approval_request
@@ -1768,10 +1794,13 @@ class TestWaitForApproval:
         """Test waiting for an already approved request."""
         sample_approval_request.status = "approved"
 
-        with patch.object(
-            approval_service,
-            "get_approval_request",
-            return_value=sample_approval_request,
+        with (
+            fresh_poll_sessions(),
+            patch.object(
+                ApprovalService,
+                "get_approval_request",
+                return_value=sample_approval_request,
+            ),
         ):
             result = await approval_service.wait_for_approval(
                 sample_approval_request.id
@@ -1785,10 +1814,13 @@ class TestWaitForApproval:
         """Test waiting for an already declined request."""
         sample_approval_request.status = "declined"
 
-        with patch.object(
-            approval_service,
-            "get_approval_request",
-            return_value=sample_approval_request,
+        with (
+            fresh_poll_sessions(),
+            patch.object(
+                ApprovalService,
+                "get_approval_request",
+                return_value=sample_approval_request,
+            ),
         ):
             result = await approval_service.wait_for_approval(
                 sample_approval_request.id
@@ -1802,10 +1834,13 @@ class TestWaitForApproval:
         """Test waiting for a cancelled request."""
         sample_approval_request.status = "cancelled"
 
-        with patch.object(
-            approval_service,
-            "get_approval_request",
-            return_value=sample_approval_request,
+        with (
+            fresh_poll_sessions(),
+            patch.object(
+                ApprovalService,
+                "get_approval_request",
+                return_value=sample_approval_request,
+            ),
         ):
             result = await approval_service.wait_for_approval(
                 sample_approval_request.id
@@ -1817,7 +1852,10 @@ class TestWaitForApproval:
         """Test waiting for a non-existent request."""
         request_id = uuid.uuid4()
 
-        with patch.object(approval_service, "get_approval_request", return_value=None):
+        with (
+            fresh_poll_sessions(),
+            patch.object(ApprovalService, "get_approval_request", return_value=None),
+        ):
             with pytest.raises(ValueError) as exc_info:
                 await approval_service.wait_for_approval(request_id)
 
@@ -1830,14 +1868,19 @@ class TestWaitForApproval:
         # Set expiration in the past
         sample_approval_request.status = "pending"
         sample_approval_request.expires_at = datetime.utcnow() - timedelta(seconds=1)
+        sample_approval_request.escalation_triggered_at = None
+        sample_approval_request.approval_workflow = None
 
-        with patch.object(
-            approval_service,
-            "get_approval_request",
-            return_value=sample_approval_request,
+        with (
+            fresh_poll_sessions(),
+            patch.object(
+                ApprovalService,
+                "get_approval_request",
+                return_value=sample_approval_request,
+            ),
         ):
             with patch.object(
-                approval_service, "update_approval_request"
+                ApprovalService, "update_approval_request"
             ) as mock_update:
                 with pytest.raises(TimeoutError) as exc_info:
                     await approval_service.wait_for_approval(sample_approval_request.id)
@@ -1853,6 +1896,7 @@ class TestWaitForApproval:
         """Test polling behavior when waiting for approval."""
         # First call: pending, second call: approved
         sample_approval_request.status = "pending"
+        sample_approval_request.expires_at = None
         approved_request = MagicMock(spec=ApprovalRequest)
         approved_request.status = "approved"
 
@@ -1866,10 +1910,13 @@ class TestWaitForApproval:
             else:
                 return approved_request
 
-        with patch.object(
-            approval_service,
-            "get_approval_request",
-            side_effect=mock_get_approval_request,
+        with (
+            fresh_poll_sessions(),
+            patch.object(
+                ApprovalService,
+                "get_approval_request",
+                side_effect=mock_get_approval_request,
+            ),
         ):
             result = await approval_service.wait_for_approval(
                 sample_approval_request.id, poll_interval=0.5
@@ -1885,10 +1932,13 @@ class TestWaitForApproval:
         """Test waiting with custom poll interval."""
         sample_approval_request.status = "approved"
 
-        with patch.object(
-            approval_service,
-            "get_approval_request",
-            return_value=sample_approval_request,
+        with (
+            fresh_poll_sessions(),
+            patch.object(
+                ApprovalService,
+                "get_approval_request",
+                return_value=sample_approval_request,
+            ),
         ):
             result = await approval_service.wait_for_approval(
                 sample_approval_request.id, poll_interval=2.0
@@ -2150,19 +2200,22 @@ class TestEscalationBehavior:
                 approved.status = "approved"
                 return approved
 
-        with patch.object(
-            approval_service,
-            "get_approval_request",
-            side_effect=mock_get_request,
+        with (
+            fresh_poll_sessions(),
+            patch.object(
+                ApprovalService,
+                "get_approval_request",
+                side_effect=mock_get_request,
+            ),
         ):
             with patch.object(
-                approval_service,
+                ApprovalService,
                 "_send_escalation_notifications",
                 new_callable=AsyncMock,
                 return_value={"success": True},
             ) as mock_escalation:
                 with patch.object(
-                    approval_service,
+                    ApprovalService,
                     "_broadcast_approval_update",
                     new_callable=AsyncMock,
                 ):
@@ -2187,25 +2240,28 @@ class TestEscalationBehavior:
         sample_approval_workflow.escalation_user_ids = [uuid.uuid4()]
         sample_approval_request.approval_workflow = sample_approval_workflow
 
-        with patch.object(
-            approval_service,
-            "get_approval_request",
-            new_callable=AsyncMock,
-            return_value=sample_approval_request,
+        with (
+            fresh_poll_sessions(),
+            patch.object(
+                ApprovalService,
+                "get_approval_request",
+                new_callable=AsyncMock,
+                return_value=sample_approval_request,
+            ),
         ):
             with patch.object(
-                approval_service,
+                ApprovalService,
                 "update_approval_request",
                 new_callable=AsyncMock,
                 return_value=sample_approval_request,
             ):
                 with patch.object(
-                    approval_service,
+                    ApprovalService,
                     "_send_escalation_notifications",
                     new_callable=AsyncMock,
                 ) as mock_escalation:
                     with patch.object(
-                        approval_service,
+                        ApprovalService,
                         "_broadcast_approval_update",
                         new_callable=AsyncMock,
                     ):
@@ -2228,20 +2284,23 @@ class TestEscalationBehavior:
         sample_approval_workflow.escalation_team_ids = None
         sample_approval_request.approval_workflow = sample_approval_workflow
 
-        with patch.object(
-            approval_service,
-            "get_approval_request",
-            new_callable=AsyncMock,
-            return_value=sample_approval_request,
+        with (
+            fresh_poll_sessions(),
+            patch.object(
+                ApprovalService,
+                "get_approval_request",
+                new_callable=AsyncMock,
+                return_value=sample_approval_request,
+            ),
         ):
             with patch.object(
-                approval_service,
+                ApprovalService,
                 "update_approval_request",
                 new_callable=AsyncMock,
                 return_value=sample_approval_request,
             ):
                 with patch.object(
-                    approval_service,
+                    ApprovalService,
                     "_broadcast_approval_update",
                     new_callable=AsyncMock,
                 ):
@@ -2269,20 +2328,23 @@ class TestEscalationBehavior:
         expired_request.tool_name = sample_approval_request.tool_name
         expired_request.execution_id = None
 
-        with patch.object(
-            approval_service,
-            "get_approval_request",
-            new_callable=AsyncMock,
-            return_value=sample_approval_request,
+        with (
+            fresh_poll_sessions(),
+            patch.object(
+                ApprovalService,
+                "get_approval_request",
+                new_callable=AsyncMock,
+                return_value=sample_approval_request,
+            ),
         ):
             with patch.object(
-                approval_service,
+                ApprovalService,
                 "update_approval_request",
                 new_callable=AsyncMock,
                 return_value=expired_request,
             ):
                 with patch.object(
-                    approval_service,
+                    ApprovalService,
                     "_broadcast_approval_update",
                     new_callable=AsyncMock,
                 ) as mock_broadcast:

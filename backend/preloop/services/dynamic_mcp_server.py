@@ -711,35 +711,38 @@ class DynamicMCPServer:
                     execution_id=None,  # Could be extracted from context if available
                     rule_context=rule_context,
                 )
+                approval_request_id = approval_request.id
+            # The session closes HERE, before the wait: holding it across the
+            # human decision (up to the workflow timeout) pins one pooled
+            # connection per pending approval and exhausts the async pool
+            # under concurrent approvals. wait_for_approval polls with fresh
+            # short-lived sessions and does not use the session this service
+            # was constructed with.
 
-                logger.info(
-                    f"Approval request created: {approval_request.id}, waiting for response..."
+            logger.info(
+                f"Approval request created: {approval_request_id}, waiting for response..."
+            )
+
+            # Wait for approval with polling
+            final_request = await approval_service.wait_for_approval(
+                approval_request_id, poll_interval=2.0
+            )
+            final_status = final_request.status
+            final_comment = final_request.approver_comment
+
+            # Check final status
+            if final_status == "declined":
+                raise PermissionError(
+                    "Tool execution declined"
+                    + (f": {final_comment}" if final_comment else "")
                 )
+            elif final_status == "cancelled":
+                raise PermissionError("Tool execution cancelled")
+            elif final_status != "approved":
+                raise Exception(f"Unexpected approval status: {final_status}")
 
-                # Wait for approval with polling
-                final_request = await approval_service.wait_for_approval(
-                    approval_request.id, poll_interval=2.0
-                )
-
-                # Check final status
-                if final_request.status == "declined":
-                    raise PermissionError(
-                        "Tool execution declined"
-                        + (
-                            f": {final_request.approver_comment}"
-                            if final_request.approver_comment
-                            else ""
-                        )
-                    )
-                elif final_request.status == "cancelled":
-                    raise PermissionError("Tool execution cancelled")
-                elif final_request.status != "approved":
-                    raise Exception(
-                        f"Unexpected approval status: {final_request.status}"
-                    )
-
-                # Approval granted!
-                logger.info(f"Tool {tool_name} approved by user")
+            # Approval granted!
+            logger.info(f"Tool {tool_name} approved by user")
 
         except Exception as e:
             logger.error(f"Error in approval flow: {e}", exc_info=True)
