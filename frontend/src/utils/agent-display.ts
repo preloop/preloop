@@ -1,6 +1,35 @@
 import { html, type TemplateResult } from 'lit';
-import type { ManagedAgentSummary } from '../types';
+import type { ManagedAgentSummary, RuntimeSessionSummary } from '../types';
 import { getAgentKindPresentation } from './agent-kinds';
+
+/**
+ * Does a runtime session belong to this managed agent?
+ *
+ * Sessions reference an agent through the runtime principal or the session
+ * source, and long-lived agents suffix those ids per run (`<base>:2`,
+ * `<base>-cli`), so prefix matches count too. Shared by the Overview's active
+ * agents card and the attention rules.
+ */
+export function sessionBelongsToAgent(
+  session: Pick<
+    RuntimeSessionSummary,
+    'runtime_principal_id' | 'session_source_id'
+  >,
+  agent: Pick<ManagedAgentSummary, 'id' | 'session_source_id'>
+): boolean {
+  const base = agent.session_source_id;
+  const candidates = [
+    session.runtime_principal_id,
+    session.session_source_id,
+  ].filter((value): value is string => Boolean(value));
+  return candidates.some(
+    (id) =>
+      id === base ||
+      id === agent.id ||
+      (Boolean(base) &&
+        (id.startsWith(`${base}:`) || id.startsWith(`${base}-`)))
+  );
+}
 
 export function getAgentSourceLabel(
   sourceType: string | null | undefined

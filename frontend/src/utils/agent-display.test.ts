@@ -7,6 +7,7 @@ import {
   getSystemAgentTags,
   getVisibleAgentTags,
   isSystemAgentTag,
+  sessionBelongsToAgent,
 } from './agent-display';
 
 const baseAgent = {
@@ -89,5 +90,57 @@ describe('agent tag visibility', () => {
   it('tolerates agents without tags', () => {
     expect(getVisibleAgentTags(null)).to.deep.equal([]);
     expect(getSystemAgentTags(undefined)).to.deep.equal({});
+  });
+});
+
+describe('sessionBelongsToAgent', () => {
+  const agent = { id: 'agent-1', session_source_id: 'openclaw-1' };
+
+  it('matches the agent source id on either session identifier', () => {
+    expect(
+      sessionBelongsToAgent(
+        { runtime_principal_id: 'openclaw-1', session_source_id: null },
+        agent
+      )
+    ).to.equal(true);
+    expect(
+      sessionBelongsToAgent(
+        { runtime_principal_id: null, session_source_id: 'openclaw-1' },
+        agent
+      )
+    ).to.equal(true);
+  });
+
+  it('matches the agent id itself', () => {
+    expect(
+      sessionBelongsToAgent(
+        { runtime_principal_id: 'agent-1', session_source_id: null },
+        agent
+      )
+    ).to.equal(true);
+  });
+
+  it('matches per-run suffixes of the source id', () => {
+    expect(
+      sessionBelongsToAgent(
+        { runtime_principal_id: 'openclaw-1:2', session_source_id: null },
+        agent
+      )
+    ).to.equal(true);
+    expect(
+      sessionBelongsToAgent(
+        { runtime_principal_id: 'openclaw-1-cli', session_source_id: null },
+        agent
+      )
+    ).to.equal(true);
+  });
+
+  it('rejects an unrelated session', () => {
+    expect(
+      sessionBelongsToAgent(
+        { runtime_principal_id: 'other-agent', session_source_id: 'other' },
+        agent
+      )
+    ).to.equal(false);
   });
 });
