@@ -930,7 +930,7 @@ describe('DashboardView', () => {
     ).to.equal('0');
   });
 
-  it('shows Updated beside the page title, and Manage Keys in the gateway header', async () => {
+  it('shows Updated beside the page title, and Manage keys in the gateway header', async () => {
     const element = await mountDashboard();
     await waitUntil(() => !element['loading'], 'dashboard did not load');
     await element.updateComplete;
@@ -945,7 +945,7 @@ describe('DashboardView', () => {
     const manageKeys = element.shadowRoot?.querySelector(
       'a.header-action-link[href="/console/settings/api-keys"]'
     );
-    expect(manageKeys?.textContent?.trim()).to.equal('Manage Keys');
+    expect(manageKeys?.textContent?.trim()).to.equal('Manage keys');
   });
 
   it('skips zero-request runtime sessions and displays ids instead of config paths', async () => {
@@ -1154,55 +1154,129 @@ describe('DashboardView', () => {
       );
     });
 
-    it('expands the endpoints for an account with no fully onboarded agent', async () => {
+    it('shows both endpoints without a disclosure', async () => {
       const element = await mountLoaded();
 
-      expect(element['endpointsExpanded']).to.be.true;
-      const capsules =
-        element.shadowRoot?.querySelectorAll('.mcp-server-capsule') || [];
-      expect(capsules.length, 'both capsules').to.equal(2);
-      const toggle = element.shadowRoot?.querySelector('.connect-toggle');
-      expect(toggle?.textContent).to.contain('Hide endpoints');
+      // Wave 2 hid the URLs behind "Show endpoints". They are reference
+      // material, but they are one line each: the disclosure cost more than
+      // it saved.
+      expect(element.shadowRoot?.querySelector('.connect-toggle')).to.not.exist;
+      const rows = element.shadowRoot?.querySelectorAll('.plane-row') || [];
+      expect(rows.length, 'one row per plane').to.equal(2);
+      expect(rows[0].textContent).to.contain('Model gateway');
+      expect(rows[0].textContent).to.contain('/openai/v1');
+      expect(rows[1].textContent).to.contain('Tool firewall');
+      expect(rows[1].textContent).to.contain('/mcp');
     });
 
-    it('collapses the endpoints once an agent is fully onboarded', async () => {
-      agentsResponse = {
-        ...agentsResponse,
-        items: [
-          { ...agentsResponse.items[0], onboarding_state: 'fully_onboarded' },
-        ],
-      };
-
+    it('states what each plane did, and never shows a zero it cannot measure', async () => {
       const element = await mountLoaded();
 
-      expect(element['endpointsExpanded']).to.be.false;
-      expect(element.shadowRoot?.querySelector('.mcp-server-capsule')).to.not
-        .exist;
-      // The state is still stated, just without the URLs.
-      const row = element.shadowRoot?.querySelector('.connect-row');
-      expect(row?.textContent).to.contain('Model gateway');
-      expect(row?.textContent).to.contain('Tool firewall');
-      expect(row?.textContent).to.contain('Show endpoints');
+      const rows = element.shadowRoot?.querySelectorAll('.plane-row') || [];
+      const modelStats = rows[0].querySelector('.plane-stats')!.textContent!;
+      expect(modelStats).to.contain('requests');
+      // The fixture summary has no failures, so no "0 failed" is invented.
+      expect(modelStats).to.not.contain('0 failed');
+      expect(rows[0].querySelector('.plane-dot')!.classList.contains('served'))
+        .to.be.true;
     });
 
-    it('remembers the endpoints disclosure across visits', async () => {
+    it('names the card Gateway and drops the question mark', async () => {
       const element = await mountLoaded();
 
-      const toggle = element.shadowRoot?.querySelector(
-        '.connect-toggle'
+      const header = element.shadowRoot?.querySelector(
+        '.gateway-card .chart-header'
       ) as HTMLElement;
-      toggle.click();
+      expect(header.textContent!.trim()).to.equal('Gateway');
+      expect(header.querySelector('sl-tooltip')).to.not.exist;
+      const meta = element.shadowRoot?.querySelector('.gateway-header-meta');
+      expect(meta?.textContent?.replace(/\s+/g, ' ')).to.contain(
+        'active API key'
+      );
+    });
+
+    it('switches the model endpoint with the format select', async () => {
+      const element = await mountLoaded();
+
+      const select = element.shadowRoot?.querySelector(
+        '.plane-row .format-select'
+      ) as HTMLSelectElement;
+      select.value = '/anthropic/v1';
+      select.dispatchEvent(new Event('change'));
       await element.updateComplete;
 
-      expect(element['endpointsExpanded']).to.be.false;
-      expect(localStorage.getItem('dashboard_endpoints_expanded')).to.equal(
-        'false'
+      const row = element.shadowRoot?.querySelector('.plane-row')!;
+      expect(row.querySelector('.endpoint-tail')!.textContent).to.equal(
+        '/anthropic/v1'
       );
+    });
 
-      const second = await mountLoaded();
-      expect(second['endpointsExpanded']).to.be.false;
-      expect(second.shadowRoot?.querySelector('.mcp-server-capsule')).to.not
-        .exist;
+    it('moves the five counts out of the card and under the page title', async () => {
+      const element = await mountLoaded();
+
+      const strip = element.shadowRoot?.querySelector(
+        '.hero-stats.stat-strip'
+      ) as HTMLElement;
+      expect(strip, 'the stat strip').to.exist;
+      expect(strip.querySelectorAll('a.hero-stat').length).to.equal(5);
+      expect(element.shadowRoot?.querySelector('.gateway-card .hero-stats')).to
+        .not.exist;
+      // Borderless: the strip is a line of numbers under the title, not a
+      // card. (The hairline under it is a token the test environment does not
+      // load, so it is checked in the screenshots.)
+      const styles = getComputedStyle(strip);
+      expect(styles.borderTopWidth).to.equal('0px');
+      expect(styles.borderLeftWidth).to.equal('0px');
+
+      // And it sits above the first card in the main column.
+      const card = element.shadowRoot?.querySelector(
+        '.gateway-card'
+      ) as HTMLElement;
+      expect(strip.getBoundingClientRect().top).to.be.lessThan(
+        card.getBoundingClientRect().top
+      );
+    });
+
+    it('replaces the plane rows with one onboarding line on a new instance', async () => {
+      agentsResponse = { ...agentsResponse, total: 0, items: [] };
+      const element = await mountLoaded();
+
+      // Nothing has ever called the gateway, so two endpoint rows would be
+      // reference material for a reader with nothing to point at them.
+      expect(
+        element.shadowRoot?.querySelectorAll('.plane-row').length
+      ).to.equal(0);
+      const line = element.shadowRoot?.querySelector(
+        '.connect-first'
+      ) as HTMLElement;
+      expect(line, 'the connect line').to.exist;
+      expect(line.textContent).to.contain('Connect your first agent');
+      expect(line.querySelector('code')?.textContent).to.equal(
+        'preloop agents onboard'
+      );
+      expect(line.querySelector('a[href="/console/agents"]')).to.exist;
+      // The Next steps card is still there to carry the rest of the setup.
+      expect(element.shadowRoot?.querySelector('.next-steps-card')).to.exist;
+    });
+
+    it('wraps a plane row onto two lines on a phone', async () => {
+      const element = await mountLoaded();
+      const row = element.shadowRoot?.querySelector(
+        '.plane-row'
+      ) as HTMLElement;
+      // The test window is a phone width, where the row is name + stats on
+      // the first line and the endpoint underneath.
+      const name = row.querySelector('.plane-name') as HTMLElement;
+      const stats = row.querySelector('.plane-stats') as HTMLElement;
+      const endpoint = row.querySelector('.plane-endpoint') as HTMLElement;
+      expect(window.innerWidth, 'phone width').to.be.at.most(800);
+      expect(stats.getBoundingClientRect().top).to.be.closeTo(
+        name.getBoundingClientRect().top,
+        6
+      );
+      expect(endpoint.getBoundingClientRect().top).to.be.greaterThan(
+        name.getBoundingClientRect().top
+      );
     });
 
     it('hides next steps when every step is already done', async () => {

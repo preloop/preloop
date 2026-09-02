@@ -23,7 +23,9 @@ import {
   getAccountAgents,
   getAccountGatewayUsageSearch,
   getAccountGatewayUsageSummary,
+  getAccountRateLimitReport,
   getAccountRuntimeSessions,
+  getApiKeys,
   getBudgetPolicies,
   BudgetPolicy,
   getFlowExecutions,
@@ -59,6 +61,7 @@ import { loadAttentionInputs } from '../../utils/attention-data';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import type {
   AccountGatewayUsageSummaryResponse,
+  AccountRateLimitReportResponse,
   GatewayUsageBySession,
   GatewayUsageSearchResultItem,
   ManagedAgentSummary,
@@ -155,7 +158,9 @@ interface TopModelSubjectGroup {
 }
 
 export const NEXT_STEPS_DISMISSED_KEY = 'dashboard_next_steps_dismissed';
-export const ENDPOINTS_EXPANDED_KEY = 'dashboard_endpoints_expanded';
+
+/** The wire formats the model gateway speaks, as URL prefixes. */
+type GatewayFormat = '/openai/v1' | '/anthropic/v1' | '/google/v1';
 
 interface NextStep {
   /** Nice to have: never keeps the card alive on its own. */
@@ -227,13 +232,14 @@ export class DashboardView extends AuthedElement {
   @state() private showBudgetDialog = false;
   @state() private welcomeCardDismissed = false;
   @state() private nextStepsDismissed = false;
-  /**
-   * null means "the user has not said": the disclosure then follows the
-   * account. An instance with a fully onboarded agent has already copied
-   * these URLs; a fresh one still needs them.
-   */
-  @state() private endpointsExpandedPreference: boolean | null = null;
   @state() private userManagementEnabled = false;
+  /** Rate-limited requests for the gateway row; null when the call failed. */
+  @state() private rateLimitReport: AccountRateLimitReportResponse | null =
+    null;
+  /** Active API keys for the card header; null when we could not count them. */
+  @state() private apiKeysCount: number | null = null;
+  /** Which wire format the model gateway row is showing a URL for. */
+  @state() private gatewayFormat: GatewayFormat = '/openai/v1';
 
   @state() private aiModels: AIModel[] = [];
   @state() private isInviteDialogOpen = false;
@@ -336,24 +342,124 @@ export class DashboardView extends AuthedElement {
       .hero-stat.tone-success .hero-stat-icon {
         color: var(--sl-color-success-600);
       }
-      /* Connect row: state first, endpoints on request. */
-      .connect-row {
-        align-items: center;
-        border-top: 1px solid var(--sl-color-neutral-200);
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-large);
-        padding-top: var(--sl-spacing-small);
+      /* The strip sits under the H1, not inside a card: five counts and a
+         hairline, so the first card on the page is about what is happening
+         rather than about how many things exist. */
+      .hero-stats.stat-strip {
+        border-bottom: 1px solid var(--sl-color-neutral-200);
+        margin-bottom: var(--sl-spacing-medium);
+        padding-bottom: var(--sl-spacing-small);
       }
-      .connect-status {
+      /* One row per plane: name, endpoint, what it did. */
+      .plane-row {
         align-items: center;
-        color: var(--sl-color-neutral-700);
+        column-gap: var(--sl-spacing-medium);
+        display: grid;
+        grid-template-columns: minmax(120px, auto) minmax(0, 1fr) auto;
+        padding: var(--sl-spacing-x-small) 0;
+      }
+      .plane-row + .plane-row {
+        border-top: 1px solid var(--sl-color-neutral-100);
+      }
+      .plane-name-cell {
+        align-items: center;
         display: flex;
-        gap: var(--sl-spacing-2x-small);
+        gap: var(--sl-spacing-x-small);
+      }
+      .plane-name {
+        color: var(--sl-color-neutral-900);
         font-size: var(--console-text-body);
       }
-      .connect-toggle {
-        margin-left: auto;
+      /* Neutral until the plane has served something. Never red: a failure is
+         a number on this row, not a broken gateway. */
+      .plane-dot {
+        background: var(--sl-color-neutral-300);
+        border-radius: 50%;
+        flex-shrink: 0;
+        height: 8px;
+        width: 8px;
+      }
+      .plane-dot.served {
+        background: var(--sl-color-success-600);
+      }
+      .plane-endpoint {
+        align-items: center;
+        display: flex;
+        gap: var(--sl-spacing-2x-small);
+        min-width: 0;
+      }
+      .plane-endpoint .server-endpoint {
+        display: flex;
+        font-family: var(--sl-font-mono);
+        font-size: var(--console-text-meta);
+        min-width: 0;
+        color: var(--sl-color-neutral-700);
+      }
+      /* The host gives way, the path stays: a middle ellipsis in two spans. */
+      .endpoint-head {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .endpoint-tail {
+        flex-shrink: 0;
+        white-space: nowrap;
+      }
+      .plane-endpoint .format-select {
+        background: transparent;
+        border: 1px solid var(--sl-color-neutral-300);
+        border-radius: var(--sl-border-radius-small);
+        color: var(--sl-color-primary-600);
+        cursor: pointer;
+        font-family: inherit;
+        font-size: var(--console-text-meta);
+        outline: none;
+        padding: 1px 4px;
+      }
+      .plane-docs {
+        color: var(--sl-color-neutral-500);
+        display: flex;
+      }
+      .plane-stats {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--console-text-meta);
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+        white-space: nowrap;
+      }
+      .plane-quiet {
+        color: var(--sl-color-neutral-500);
+      }
+      .gateway-header-meta {
+        align-items: center;
+        color: var(--sl-color-neutral-500);
+        display: flex;
+        font-size: var(--console-text-meta);
+        gap: var(--sl-spacing-x-small);
+      }
+      .gateway-header-meta > span + span::before {
+        content: '· ';
+      }
+      .connect-first {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        font-size: var(--console-text-body);
+        gap: var(--sl-spacing-small);
+        padding: var(--sl-spacing-x-small) 0;
+      }
+      .connect-command {
+        align-items: center;
+        background: var(--sl-color-neutral-50);
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        display: flex;
+        gap: var(--sl-spacing-2x-small);
+        padding: 0 var(--sl-spacing-2x-small) 0 var(--sl-spacing-x-small);
+      }
+      .connect-command code {
+        font-family: var(--sl-font-mono);
+        font-size: 12px;
       }
       /* One amber line above the page, or nothing. It stays one line: the
          chips truncate before the strip is allowed to wrap, so "View all"
@@ -1208,8 +1314,26 @@ export class DashboardView extends AuthedElement {
           margin-left: 0;
         }
 
-        .connect-toggle {
-          margin-left: 0;
+        /* Phone: name and numbers on one line, endpoint and copy under it,
+           so a 390px row never squeezes the URL into three characters. */
+        .plane-row {
+          grid-template-columns: minmax(0, 1fr) auto;
+          row-gap: var(--sl-spacing-2x-small);
+        }
+
+        .plane-name-cell {
+          grid-column: 1;
+          grid-row: 1;
+        }
+
+        .plane-stats {
+          grid-column: 2;
+          grid-row: 1;
+        }
+
+        .plane-endpoint {
+          grid-column: 1 / -1;
+          grid-row: 2;
         }
 
         /* A title and a dismiss button are a row at any width; stacking them
@@ -1378,9 +1502,6 @@ export class DashboardView extends AuthedElement {
       localStorage.getItem('dashboard_welcome_dismissed') === 'true';
     this.nextStepsDismissed =
       localStorage.getItem(NEXT_STEPS_DISMISSED_KEY) === 'true';
-    const endpoints = localStorage.getItem(ENDPOINTS_EXPANDED_KEY);
-    this.endpointsExpandedPreference =
-      endpoints === 'true' ? true : endpoints === 'false' ? false : null;
   }
 
   private dismissNextSteps(): void {
@@ -1389,16 +1510,6 @@ export class DashboardView extends AuthedElement {
       localStorage.setItem(NEXT_STEPS_DISMISSED_KEY, 'true');
     } catch {
       // Private mode: the card stays hidden for this session only.
-    }
-  }
-
-  private toggleEndpoints(): void {
-    const next = !this.endpointsExpanded;
-    this.endpointsExpandedPreference = next;
-    try {
-      localStorage.setItem(ENDPOINTS_EXPANDED_KEY, String(next));
-    } catch {
-      // Non-fatal: the disclosure still works for this session.
     }
   }
 
@@ -1691,6 +1802,12 @@ export class DashboardView extends AuthedElement {
         }),
         null
       );
+      // One call, same window as the summary: without it the model row cannot
+      // say how many requests a provider throttled.
+      const rateLimitPromise = this.catchWith403Handling(
+        getAccountRateLimitReport({ startDate: startDateStr }),
+        null
+      );
       const featuresPromise = this.fetchFeatures();
       const adminPromise = this.fetchAdminStatus();
 
@@ -1705,6 +1822,7 @@ export class DashboardView extends AuthedElement {
         managedAgents,
         featuresRes,
         priorGatewaySummary,
+        rateLimitReport,
       ] = await Promise.all([
         gatewaySummaryPromise,
         this.catchWith403Handling(getAccountGatewayUsageSearch({ limit: 12 }), {
@@ -1736,8 +1854,10 @@ export class DashboardView extends AuthedElement {
         agentsPromise,
         featuresPromise,
         priorSummaryPromise,
+        rateLimitPromise,
       ]);
       await adminPromise;
+      this.rateLimitReport = rateLimitReport;
 
       this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
         this.gatewaySummary,
@@ -1863,27 +1983,40 @@ export class DashboardView extends AuthedElement {
 
     const pTools = (async () => {
       try {
-        const [mcpServers, tools, aiModels, users] = await Promise.all([
-          this.catchWith403Handling(getMCPServers(), [] as MCPServer[]),
-          this.catchWith403Handling(getTools(), [] as Tool[]),
-          this.catchWith403Handling(getAIModels(), []),
-          this.catchWith403Handling(
-            isSaaS()
-              ? getUsers()
-              : Promise.resolve({
-                  users: [],
-                  total: 0,
-                  skip: 0,
-                  limit: 0,
-                }),
-            {
-              users: [],
-              total: 0,
-              skip: 0,
-              limit: 0,
-            }
-          ),
-        ]);
+        const [mcpServers, tools, aiModels, users, apiKeys] = await Promise.all(
+          [
+            this.catchWith403Handling(getMCPServers(), [] as MCPServer[]),
+            this.catchWith403Handling(getTools(), [] as Tool[]),
+            this.catchWith403Handling(getAIModels(), []),
+            this.catchWith403Handling(
+              isSaaS()
+                ? getUsers()
+                : Promise.resolve({
+                    users: [],
+                    total: 0,
+                    skip: 0,
+                    limit: 0,
+                  }),
+              {
+                users: [],
+                total: 0,
+                skip: 0,
+                limit: 0,
+              }
+            ),
+            // Already the api-keys page's endpoint; here it is only a count.
+            this.catchWith403Handling(getApiKeys(), null),
+          ]
+        );
+        // "Active" means usable: not revoked, not past its expiry.
+        this.apiKeysCount = apiKeys
+          ? apiKeys.filter(
+              (key) =>
+                key.activity_status !== 'revoked' &&
+                (!key.expires_at ||
+                  parseUTCDate(key.expires_at).getTime() > Date.now())
+            ).length
+          : null;
         this.mcpServers = mcpServers;
         this.tools = tools;
         this.aiModels = aiModels || [];
@@ -2509,13 +2642,6 @@ export class DashboardView extends AuthedElement {
     return this.managedAgents.some(
       (agent) => agent.onboarding_state === 'fully_onboarded'
     );
-  }
-
-  private get endpointsExpanded(): boolean {
-    if (this.endpointsExpandedPreference !== null) {
-      return this.endpointsExpandedPreference;
-    }
-    return !this.hasFullyOnboardedAgent;
   }
 
   /**
@@ -3811,10 +3937,182 @@ export class DashboardView extends AuthedElement {
     ];
   }
 
-  private renderPreloopGatewayCard() {
+  /** Five counts, borderless, directly under the page title. */
+  private renderStatStrip() {
+    if (this.fetchingGatewaySummary && !this.gatewaySummary) {
+      return html`
+        <div class="hero-stats stat-strip">
+          <div style="display: flex; align-items: center; min-height: 64px;">
+            <sl-spinner style="font-size: 1.5rem;"></sl-spinner>
+          </div>
+        </div>
+      `;
+    }
     return html`
-      <!-- Preloop Gateway Status -->
-      <sl-card class="content-card">
+      <div class="hero-stats stat-strip">
+        ${this.gatewayMetrics.map((metric) => this.renderMetricItem(metric))}
+      </div>
+    `;
+  }
+
+  private get modelGatewayUrl(): string {
+    return `${window.location.origin}${this.gatewayFormat}`;
+  }
+
+  private get toolFirewallUrl(): string {
+    return `${window.location.origin}/mcp`;
+  }
+
+  private copyEndpoint(url: string, message: string): void {
+    void navigator.clipboard.writeText(url);
+    this.dispatchEvent(
+      new CustomEvent('show-toast', {
+        bubbles: true,
+        composed: true,
+        detail: { message },
+      })
+    );
+  }
+
+  /**
+   * The host truncates and the path stays: a middle ellipsis without measuring
+   * anything, so a long staging hostname never hides `/openai/v1`.
+   */
+  private renderEndpoint(url: string) {
+    const separator = url.indexOf('/', url.indexOf('//') + 2);
+    const head = separator === -1 ? url : url.slice(0, separator);
+    const tail = separator === -1 ? '' : url.slice(separator);
+    return html`
+      <span class="server-endpoint" title=${url}>
+        <span class="endpoint-head">${head}</span
+        ><span class="endpoint-tail">${tail}</span>
+      </span>
+    `;
+  }
+
+  /**
+   * A dot, a plane, its endpoint and what it did. Green means the plane served
+   * something in this window; it is never red, because a failure is a number
+   * on the row and not a broken gateway.
+   */
+  private renderPlaneRow(options: {
+    name: string;
+    served: boolean;
+    url: string;
+    copyMessage: string;
+    docsHref: string;
+    docsLabel: string;
+    stats: string[];
+    formatSelect?: boolean;
+  }) {
+    return html`
+      <div class="plane-row">
+        <span class="plane-name-cell">
+          <span
+            class="plane-dot ${options.served ? 'served' : ''}"
+            aria-hidden="true"
+          ></span>
+          <span class="plane-name">${options.name}</span>
+        </span>
+        <span class="plane-endpoint">
+          ${
+            options.formatSelect
+              ? html`<select
+                  class="format-select"
+                  aria-label="Gateway API format"
+                  .value=${this.gatewayFormat}
+                  @change=${(event: Event) =>
+                    (this.gatewayFormat = (event.target as HTMLSelectElement)
+                      .value as GatewayFormat)}
+                >
+                  <option value="/openai/v1">OpenAI</option>
+                  <option value="/anthropic/v1">Anthropic</option>
+                  <option value="/google/v1">Gemini</option>
+                </select>`
+              : nothing
+          }
+          ${this.renderEndpoint(options.url)}
+          <sl-tooltip content="Copy URL">
+            <sl-icon-button
+              name="clipboard"
+              label="Copy URL"
+              @click=${() =>
+                this.copyEndpoint(options.url, options.copyMessage)}
+            ></sl-icon-button>
+          </sl-tooltip>
+          <sl-tooltip content=${options.docsLabel}>
+            <a class="plane-docs" href=${options.docsHref} target="_blank">
+              <sl-icon name="info-circle"></sl-icon>
+            </a>
+          </sl-tooltip>
+        </span>
+        <span class="plane-stats">
+          ${
+            options.served
+              ? options.stats.join(' · ')
+              : html`<span class="plane-quiet">No traffic yet</span>`
+          }
+        </span>
+      </div>
+    `;
+  }
+
+  /** Nothing is connected yet: one line and the command that changes that. */
+  private renderConnectFirstAgent() {
+    const command = 'preloop agents onboard';
+    return html`
+      <div class="connect-first">
+        <span>Connect your first agent</span>
+        <span class="connect-command">
+          <code>${command}</code>
+          <sl-tooltip content="Copy command">
+            <sl-icon-button
+              name="clipboard"
+              label="Copy command"
+              @click=${() => this.copyEndpoint(command, 'Command copied')}
+            ></sl-icon-button>
+          </sl-tooltip>
+        </span>
+        <a class="header-action-link" href="/console/agents">Onboard</a>
+      </div>
+    `;
+  }
+
+  private get modelGatewayStats(): string[] {
+    const requests = this.gatewaySummary?.total_requests || 0;
+    const failed = this.gatewaySummary?.failed_requests || 0;
+    const rateLimited =
+      this.rateLimitReport?.totals?.rate_limited_requests || 0;
+    // A zero we do not measure is worse than a figure we leave out.
+    const stats = [
+      `${this.formatNumber(requests)} request${requests === 1 ? '' : 's'}`,
+    ];
+    if (failed > 0) stats.push(`${this.formatNumber(failed)} failed`);
+    if (rateLimited > 0) {
+      stats.push(`${this.formatNumber(rateLimited)} rate limited`);
+    }
+    return stats;
+  }
+
+  private get toolFirewallStats(): string[] {
+    const calls = this.toolCallsCount || 0;
+    const failed = this.failedToolCallsCount || 0;
+    const stats = [
+      `${this.formatNumber(calls)} tool call${calls === 1 ? '' : 's'}`,
+    ];
+    if (failed > 0) stats.push(`${this.formatNumber(failed)} failed`);
+    return stats;
+  }
+
+  /**
+   * What the gateway is doing, one row per plane. The five inventory counts
+   * that used to live here are the strip under the page title now: this card
+   * is about traffic, not about how many things exist.
+   */
+  private renderGatewayCard() {
+    const hasAgents = this.managedAgents.length > 0;
+    return html`
+      <sl-card class="content-card gateway-card">
         <div slot="header" class="card-header-with-action">
           <div class="chart-header">
             <sl-icon
@@ -3823,186 +4121,50 @@ export class DashboardView extends AuthedElement {
               class="mcp-icon"
               alt="Gateway"
             ></sl-icon>
-            Preloop Gateway
-            <sl-tooltip
-              content="Unified proxy for AI models and MCP tools with budget and access controls"
-            >
-              <sl-icon name="question-circle"></sl-icon>
-            </sl-tooltip>
+            Gateway
           </div>
-          <a href="/console/settings/api-keys" class="header-action-link"
-            >Manage Keys</a
-          >
+          <div class="gateway-header-meta">
+            <span>${this.gatewayRangeLabel}</span>
+            ${
+              this.apiKeysCount !== null
+                ? html`<span
+                    >${this.formatNumber(this.apiKeysCount)} active API
+                    key${this.apiKeysCount === 1 ? '' : 's'}</span
+                  >`
+                : nothing
+            }
+            <a href="/console/settings/api-keys" class="header-action-link"
+              >Manage keys</a
+            >
+          </div>
         </div>
 
-        <div class="hero-stats">
-          ${
-            this.fetchingGatewaySummary && !this.gatewaySummary
-              ? html`
-                  <div
-                    style="display: flex; align-items: center; min-height: 64px;"
-                  >
-                    <sl-spinner style="font-size: 1.5rem;"></sl-spinner>
-                  </div>
-                `
-              : html`
-                  <div style="display: contents;">
-                    ${this.gatewayMetrics.map((metric) =>
-                      this.renderMetricItem(metric)
-                    )}
-                  </div>
-                `
-          }
-        </div>
-
-        <!-- Connect: two green dots and a disclosure. The endpoints matter
-             once, when an agent is wired up; after that they are reference. -->
-        <div class="connect-row">
-          <span class="connect-status">
-            <span class="status-indicator" aria-hidden="true"></span>
-            Model gateway
-          </span>
-          <span class="connect-status">
-            <span class="status-indicator" aria-hidden="true"></span>
-            Tool firewall
-          </span>
-          <sl-button
-            class="connect-toggle"
-            size="small"
-            variant="text"
-            aria-expanded=${this.endpointsExpanded ? 'true' : 'false'}
-            @click=${this.toggleEndpoints}
-          >
-            ${this.endpointsExpanded ? 'Hide endpoints' : 'Show endpoints'}
-            <sl-icon
-              slot="suffix"
-              name=${this.endpointsExpanded ? 'chevron-up' : 'chevron-down'}
-            ></sl-icon>
-          </sl-button>
-        </div>
-
-        ${this.endpointsExpanded ? this.renderGatewayEndpoints() : nothing}
+        ${
+          hasAgents
+            ? html`
+                ${this.renderPlaneRow({
+                  name: 'Model gateway',
+                  served: (this.gatewaySummary?.total_requests || 0) > 0,
+                  url: this.modelGatewayUrl,
+                  copyMessage: 'Model gateway URL copied',
+                  docsHref: 'https://docs.preloop.ai/guide/ai-proxy',
+                  docsLabel: 'Model gateway docs',
+                  stats: this.modelGatewayStats,
+                  formatSelect: true,
+                })}
+                ${this.renderPlaneRow({
+                  name: 'Tool firewall',
+                  served: (this.toolCallsCount || 0) > 0,
+                  url: this.toolFirewallUrl,
+                  copyMessage: 'Tool firewall URL copied',
+                  docsHref: 'https://docs.preloop.ai/guide/mcp-server',
+                  docsLabel: 'Tool firewall docs',
+                  stats: this.toolFirewallStats,
+                })}
+              `
+            : this.renderConnectFirstAgent()
+        }
       </sl-card>
-    `;
-  }
-
-  /** The two capsules, unchanged: eyebrow, format select, URL, copy. */
-  private renderGatewayEndpoints() {
-    return html`
-      <!-- AI Model Gateway Endpoint -->
-      <div
-        class="mcp-server-capsule"
-        style="margin-top: 0; margin-bottom: var(--sl-spacing-small);"
-      >
-        <div class="status-indicator"></div>
-        <span class="capsule-eyebrow">Model gateway</span>
-        <sl-badge
-          class="chip"
-          variant="neutral"
-          pill
-          size="small"
-          style="margin-right: -4px;"
-          >AI models</sl-badge
-        >
-        <div
-          class="server-details"
-          style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-        >
-          <span
-            style="font-size: var(--sl-font-size-x-small); font-weight: 600; color: var(--sl-color-neutral-500); text-transform: uppercase;"
-            >Format:</span
-          >
-          <select
-            aria-label="Gateway API Format"
-            style="background: transparent; border: 1px solid var(--sl-color-neutral-300); border-radius: var(--sl-border-radius-small); padding: 1px 6px; font-size: inherit; font-family: inherit; color: var(--sl-color-primary-600); cursor: pointer; outline: none; margin-right: var(--sl-spacing-2x-small);"
-            @change=${(e: Event) => {
-              const target = e.target as HTMLSelectElement;
-              const endpointSpan = target.parentElement?.querySelector(
-                '.server-endpoint'
-              ) as HTMLElement;
-              if (endpointSpan) {
-                endpointSpan.innerText = `${window.location.origin}${target.value}`;
-              }
-            }}
-          >
-            <option value="/openai/v1">OpenAI</option>
-            <option value="/anthropic/v1">Anthropic</option>
-            <option value="/google/v1">Gemini</option>
-          </select>
-          <span class="server-endpoint"
-            >${window.location.origin}/openai/v1</span
-          >
-          <a
-            href="https://docs.preloop.ai/guide/ai-proxy"
-            target="_blank"
-            style="display: flex; color: var(--sl-color-neutral-500); margin-left: auto;"
-          >
-            <sl-icon name="info-circle"></sl-icon>
-          </a>
-        </div>
-        <sl-tooltip content="Copy URL">
-          <sl-icon-button
-            name="clipboard"
-            style="font-size: 1rem;"
-            @click=${(e: Event) => {
-              const capsule = (e.target as HTMLElement).closest(
-                '.mcp-server-capsule'
-              );
-              const url =
-                capsule?.querySelector('.server-endpoint')?.textContent ||
-                `${window.location.origin}/openai/v1`;
-              navigator.clipboard.writeText(url);
-              this.dispatchEvent(
-                new CustomEvent('show-toast', {
-                  bubbles: true,
-                  composed: true,
-                  detail: { message: 'AI Gateway URL copied!' },
-                })
-              );
-            }}
-          ></sl-icon-button>
-        </sl-tooltip>
-      </div>
-
-      <!-- Built-in MCP Server Endpoint -->
-      <div class="mcp-server-capsule" style="margin-top: 0;">
-        <div class="status-indicator"></div>
-        <span class="capsule-eyebrow">Tool firewall</span>
-        <sl-badge
-          class="chip"
-          variant="neutral"
-          pill
-          size="small"
-          style="margin-right: -4px;"
-          >MCP tools</sl-badge
-        >
-        <div class="server-details">
-          <span class="server-endpoint">${window.location.origin}/mcp</span>
-          <a
-            href="https://docs.preloop.ai/guide/mcp-server"
-            target="_blank"
-            style="display: flex; color: var(--sl-color-neutral-500); margin-left: auto;"
-          >
-            <sl-icon name="info-circle"></sl-icon>
-          </a>
-        </div>
-        <sl-tooltip content="Copy URL">
-          <sl-icon-button
-            name="clipboard"
-            style="font-size: 1rem;"
-            @click=${() => {
-              navigator.clipboard.writeText(`${window.location.origin}/mcp`);
-              this.dispatchEvent(
-                new CustomEvent('show-toast', {
-                  bubbles: true,
-                  composed: true,
-                  detail: { message: 'MCP URL copied!' },
-                })
-              );
-            }}
-          ></sl-icon-button>
-        </sl-tooltip>
-      </div>
     `;
   }
 
@@ -4036,13 +4198,14 @@ export class DashboardView extends AuthedElement {
             ? html`<sl-alert variant="danger" open>${this.error}</sl-alert>`
             : nothing
         }
-        ${this.renderAttentionStrip()} ${this.renderWelcomeCard()}
+        ${this.renderAttentionStrip()} ${this.renderStatStrip()}
+        ${this.renderWelcomeCard()}
       </div>
 
       <div class="column-layout dashboard extra-wide">
         <div class="main-column">
           <div class="dashboard-stack">
-            ${this.renderPreloopGatewayCard()} ${this.renderNextStepsCard()}
+            ${this.renderGatewayCard()} ${this.renderNextStepsCard()}
             ${this.renderActiveExecutionsCard()}
             ${this.renderRecentFlowExecutionsCard()}
 
