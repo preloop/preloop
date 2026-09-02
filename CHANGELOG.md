@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`preloop usage hook` accepts harness-agnostic events**: stdin is
+  auto-detected as Cursor hooks (unchanged), generic NDJSON
+  (`preloop.usage.event.v1`), or Codex CLI session rollouts. Codex
+  one-shot import uses `--from codex --file`. Guide:
+  `docs/guide/usage-hooks.md` (old `cursor-usage-hooks.md` path kept as
+  a stub).
+
 ### Changed
 
 - **Blog posts can show a hero image**: `og_image` in frontmatter is
