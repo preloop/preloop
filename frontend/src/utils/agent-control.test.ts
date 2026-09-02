@@ -84,11 +84,26 @@ describe('getAgentControlState', () => {
       });
 
       expect(hint.supported).to.equal(true);
-      expect(hint.command).to.equal('preloop agents install-plugin "Hermes"');
+      expect(hint.command).to.equal("preloop agents install-plugin 'Hermes'");
       expect(hint.placeholder).to.equal(
         'Install Agent Control to talk to Hermes'
       );
       expect(hint.docsUrl).to.equal(AGENT_CONTROL_DOCS_URL);
+    });
+
+    it('quotes a display name that would otherwise run in the operator’s shell', () => {
+      const hint = getAgentControlInstallHint({
+        ...baseAgent,
+        display_name: `Hermes"; $(rm -rf /) 'x`,
+        agent_kind: 'hermes',
+        control_state: 'plugin_configured',
+        control_enabled: false,
+        control_online: false,
+      });
+
+      expect(hint.command).to.equal(
+        `preloop agents install-plugin 'Hermes"; $(rm -rf /) '\\''x'`
+      );
     });
 
     it('says the config is written when the plugin has not connected', () => {
@@ -135,7 +150,7 @@ describe('getAgentControlState', () => {
 
       expect(hint.supported).to.equal(true);
       expect(hint.command).to.equal(
-        'preloop agents install-plugin "Claude Code"'
+        "preloop agents install-plugin 'Claude Code'"
       );
       expect(hint.helptext).to.contain('not running the Agent Control plugin');
     });

@@ -1,5 +1,6 @@
 import type { ManagedAgentSummary, RuntimeSessionSummary } from '../types';
 import { getAgentSourceLabel } from './agent-display';
+import { shellQuote } from './shell';
 
 export interface AgentControlState {
   state:
@@ -174,7 +175,12 @@ export function getAgentControlInstallHint(
 
   return {
     supported: true,
-    command: `preloop agents install-plugin "${agent.display_name || agent.id}"`,
+    // The CLI resolves this agent locally, by the name the console shows, so
+    // the name is what goes in the command; it is quoted because a display
+    // name is free text and this command is meant to be pasted into a shell.
+    command: `preloop agents install-plugin ${shellQuote(
+      agent.display_name || agent.id
+    )}`,
     docsUrl: AGENT_CONTROL_DOCS_URL,
     placeholder: `Install Agent Control to talk to ${name}`,
     helptext:

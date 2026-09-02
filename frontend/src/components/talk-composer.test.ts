@@ -77,7 +77,7 @@ describe('talk-composer', () => {
     );
     const command = el.shadowRoot!.querySelector('.install-command code');
     expect(command!.textContent).to.equal(
-      'preloop agents install-plugin "Hermes"'
+      "preloop agents install-plugin 'Hermes'"
     );
     const link = el.shadowRoot!.querySelector('a[href]') as HTMLAnchorElement;
     expect(link.href).to.contain('docs.preloop.ai');
