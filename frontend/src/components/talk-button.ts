@@ -38,6 +38,15 @@ export class TalkButton extends LitElement {
   @property({ type: Boolean, attribute: 'always-visible' })
   alwaysVisible = false;
 
+  /**
+   * Where this button lives ('dashboard-active-agents', 'agent-detail-view',
+   * ...). It travels to the talk window in the URL and ends up on every turn
+   * as `requested_from`, so the audit trail keeps naming the entry point the
+   * retired dialog used to record.
+   */
+  @property({ type: String, attribute: 'source-context' })
+  sourceContext: string | null = null;
+
   createRenderRoot() {
     // Light DOM: the button inherits the surrounding row's density and the
     // host page's tooltip stacking, exactly as the old composer button did.
@@ -48,7 +57,9 @@ export class TalkButton extends LitElement {
     if (!this.agent) return;
     // Synchronous inside the click handler: a `window.open` after an await is
     // no longer trusted by the browser and gets blocked.
-    openTalkWindow(this.agent, this.session ?? undefined);
+    openTalkWindow(this.agent, this.session ?? undefined, {
+      sourceContext: this.sourceContext,
+    });
   }
 
   render() {

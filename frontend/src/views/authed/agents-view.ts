@@ -2933,7 +2933,7 @@ export class AgentsView extends LitElement {
         // Runs inside the menu item's click handler, so the window still opens
         // on the user gesture.
         onClick: () => {
-          openTalkWindow(agent);
+          openTalkWindow(agent, undefined, { sourceContext: 'agents-list' });
         },
       });
     }
@@ -3116,7 +3116,7 @@ export class AgentsView extends LitElement {
       >
         <talk-button
           .agent=${agent}
-          data-source-context=${sourceContext}
+          source-context=${sourceContext}
           compact
         ></talk-button>
       </div>

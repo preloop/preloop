@@ -1,8 +1,12 @@
-import { expect, fixture, html, waitUntil } from '@open-wc/testing';
+import { aTimeout, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import './agent-talk-view.ts';
 import type { AgentTalkView } from './agent-talk-view';
+import { TALK_CHANNEL_NAME } from '../../utils/talk-channel';
+import type { TalkChannelMessage } from '../../utils/talk-channel';
+import { TALK_MESSAGE_SENT_EVENT } from '../../components/talk-composer';
+import type { TalkComposer } from '../../components/talk-composer';
 
 const AGENT = {
   id: 'agent-1',
@@ -40,6 +44,28 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+/** Everything this agent's window says on the talk channel, in order. */
+function listenOnTalkChannel(): {
+  messages: TalkChannelMessage[];
+  close: () => void;
+} {
+  const messages: TalkChannelMessage[] = [];
+  const channel = new BroadcastChannel(TALK_CHANNEL_NAME);
+  channel.onmessage = (event: MessageEvent<TalkChannelMessage>) => {
+    if (event.data?.agentId === 'agent-1') messages.push(event.data);
+  };
+  return { messages, close: () => channel.close() };
+}
+
+/** Is the operator looking at this window, or at something else? */
+function setAttention(state: { hidden: boolean; focused: boolean }): void {
+  Object.defineProperty(document, 'hidden', {
+    configurable: true,
+    get: () => state.hidden,
+  });
+  sinon.stub(document, 'hasFocus').returns(state.focused);
+}
+
 describe('agent-talk-view', () => {
   let fetchStub: sinon.SinonStub;
 
@@ -61,6 +87,7 @@ describe('agent-talk-view', () => {
 
   afterEach(() => {
     sinon.restore();
+    delete (document as unknown as { hidden?: boolean }).hidden;
   });
 
   async function mount(search = ''): Promise<AgentTalkView> {
@@ -136,6 +163,77 @@ describe('agent-talk-view', () => {
       el.shadowRoot!.querySelector('[data-testid="talk-session-subject"]')!
         .textContent
     ).to.contain('Refactor the billing job');
+    el.remove();
+  });
+
+  it('flags an agent turn that arrives while the window is not focused', async () => {
+    setAttention({ hidden: true, focused: false });
+    const listener = listenOnTalkChannel();
+    const el = await mount('?window=1&session=sess-1');
+
+    el.receiveActivity({
+      payload: { managed_agent_id: 'agent-1', runtime_session_id: 'sess-1' },
+    });
+
+    await waitUntil(
+      () => listener.messages.some((message) => message.type === 'message'),
+      'the window never announced the unread turn'
+    );
+    listener.close();
+    el.remove();
+  });
+
+  it('does not flag the operator’s own send', async () => {
+    // Hidden, so a stray post would be visible: the send itself is what must
+    // not raise the dot, not the focus state.
+    setAttention({ hidden: true, focused: false });
+    const listener = listenOnTalkChannel();
+    const el = await mount('?window=1&session=sess-1');
+
+    el.dispatchEvent(
+      new CustomEvent(TALK_MESSAGE_SENT_EVENT, { bubbles: true })
+    );
+
+    await aTimeout(50);
+    expect(listener.messages.map((message) => message.type)).to.not.contain(
+      'message'
+    );
+    listener.close();
+    el.remove();
+  });
+
+  it('does not flag a turn the operator is already watching', async () => {
+    setAttention({ hidden: false, focused: true });
+    const listener = listenOnTalkChannel();
+    const el = await mount('?window=1&session=sess-1');
+
+    el.receiveActivity({
+      payload: { managed_agent_id: 'agent-1', runtime_session_id: 'sess-1' },
+    });
+
+    await aTimeout(50);
+    expect(listener.messages.map((message) => message.type)).to.not.contain(
+      'message'
+    );
+    listener.close();
+    el.remove();
+  });
+
+  it('reports the entry point that opened it as the composer source', async () => {
+    const el = await mount('?window=1&session=sess-1&source=agent-detail-view');
+    const composer = el.shadowRoot!.querySelector(
+      'talk-composer'
+    ) as TalkComposer;
+    expect(composer.sourceContext).to.equal('agent-detail-view');
+    el.remove();
+  });
+
+  it('falls back to the page shape when no entry point is named', async () => {
+    const el = await mount('?window=1&session=sess-1');
+    const composer = el.shadowRoot!.querySelector(
+      'talk-composer'
+    ) as TalkComposer;
+    expect(composer.sourceContext).to.equal('talk-window');
     el.remove();
   });
 });

@@ -1725,7 +1725,12 @@ export class AgentDetailView extends LitElement {
       actions.push({
         id: 'talk',
         label: 'Talk',
-        render: () => html` <talk-button .agent=${this.agent}></talk-button> `,
+        render: () => html`
+          <talk-button
+            .agent=${this.agent}
+            source-context="agent-detail-view"
+          ></talk-button>
+        `,
       });
     }
 

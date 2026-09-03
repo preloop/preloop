@@ -618,12 +618,28 @@ describe('deriveAttentionItems', () => {
       expect(reasons).to.have.length(1);
       expect(reasons[0].text).to.contain('Onboarding never completed');
       expect(reasons[0].command).to.equal(
-        'preloop agents onboard "Researcher"'
+        "preloop agents onboard 'Researcher'"
       );
       expect(reasons[0].action).to.deep.equal({
         label: 'Open agent',
         href: '/console/agents/agent-1',
       });
+    });
+
+    it('quotes a display name so the copied command cannot run anything else', () => {
+      const items = derive({
+        agents: [
+          agentFixture({
+            display_name: `Researcher'; rm -rf / #`,
+            onboarding_state: 'incomplete',
+          }),
+        ],
+      });
+
+      const reasons = items[0].evidence?.agentReasons || [];
+      expect(reasons[0].command).to.equal(
+        `preloop agents onboard 'Researcher'\\''; rm -rf / #'`
+      );
     });
 
     it('keeps the last five gateway failures for a model', () => {

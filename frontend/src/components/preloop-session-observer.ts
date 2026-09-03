@@ -1816,6 +1816,7 @@ export class PreloopSessionObserver extends LitElement {
       .session=${
         session?.canLoadEvents && session.id ? { id: session.id } : null
       }
+      source-context="session-widget"
       compact
     ></talk-button>`;
   }

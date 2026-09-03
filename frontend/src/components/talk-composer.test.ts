@@ -77,7 +77,7 @@ describe('talk-composer', () => {
     );
     const command = el.shadowRoot!.querySelector('.install-command code');
     expect(command!.textContent).to.equal(
-      'preloop agents install-plugin "Hermes"'
+      "preloop agents install-plugin 'Hermes'"
     );
     const link = el.shadowRoot!.querySelector('a[href]') as HTMLAnchorElement;
     expect(link.href).to.contain('docs.preloop.ai');
@@ -131,6 +131,37 @@ describe('talk-composer', () => {
     const [url, init] = controlCalls(fetchStub)[0].args;
     expect(url).to.contain('/agents/agent-1/control/command');
     expect(JSON.parse(init.body).message).to.equal('ship it');
+  });
+
+  it('attributes the turn to the entry point it was given', async () => {
+    fetchStub.resolves(
+      new Response(JSON.stringify({ status: 'delivered', published: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    const el = await fixture<TalkComposer>(
+      html`<talk-composer
+        .agent=${agent()}
+        sessionId="sess-1"
+        sourceContext="dashboard-active-agents"
+      ></talk-composer>`
+    );
+    await el.updateComplete;
+    const input = textarea(el);
+    input.value = 'status?';
+    input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+    await el.updateComplete;
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+
+    await waitUntil(() => controlCalls(fetchStub).length > 0);
+    const [, init] = controlCalls(fetchStub)[0].args;
+    expect(JSON.parse(init.body).metadata).to.deep.equal({
+      source: 'preloop_console',
+      requested_from: 'dashboard-active-agents',
+    });
   });
 
   it('shows the turn optimistically and offers Retry when it fails', async () => {

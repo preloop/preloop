@@ -144,6 +144,49 @@ describe('talk-window', () => {
     alert!.remove();
   });
 
+  it('carries the entry point into the url', () => {
+    expect(
+      talkRoutePath(
+        'agent-1',
+        { id: 'sess-2' },
+        { sourceContext: 'agents-list' }
+      )
+    ).to.equal(
+      '/console/agents/agent-1/talk?session=sess-2&source=agents-list'
+    );
+    expect(
+      talkWindowUrl('agent-1', undefined, {
+        sourceContext: 'dashboard-active-agents',
+      })
+    ).to.equal(
+      '/console/agents/agent-1/talk?source=dashboard-active-agents&window=1'
+    );
+    // No entry point, no parameter: the window falls back to its own shape.
+    expect(talkWindowUrl('agent-1', undefined, {})).to.equal(
+      '/console/agents/agent-1/talk?window=1'
+    );
+
+    const fakeWindow = { closed: false, focus: sinon.spy() };
+    openStub.returns(fakeWindow);
+    openTalkWindow(agent, undefined, { sourceContext: 'agent-detail-view' });
+    expect(openStub.firstCall.args[0]).to.equal(
+      '/console/agents/agent-1/talk?source=agent-detail-view&window=1'
+    );
+  });
+
+  it('treats the entry point as attribution, not as a second window', () => {
+    const fakeWindow = { closed: false, focus: sinon.spy() };
+    openStub.returns(fakeWindow);
+
+    openTalkWindow(agent, undefined, { sourceContext: 'agents-list' });
+    // The header chip re-opens the same conversation without a source; that
+    // must focus the live window rather than reload it at a new url.
+    const second = openTalkWindow(agent);
+
+    expect(second.outcome).to.equal('focused');
+    expect(openStub.calledOnce).to.be.true;
+  });
+
   it('navigates instead of opening a window on a phone', async () => {
     const router = await import('@vaadin/router');
     const goStub = sinon.stub(router.Router, 'go');

@@ -65,6 +65,8 @@ export class AgentTalkView extends LitElement {
   /** A session named in the URL is pinned: live traffic never moves it. */
   @state() private pinnedSessionId: string | null = null;
   @state() private windowMode = false;
+  /** The entry point that opened this window, for `requested_from`. */
+  @state() private sourceContext: string | null = null;
   @state() private loading = true;
   @state() private loadingEvents = false;
   @state() private loadingMoreEvents = false;
@@ -208,6 +210,16 @@ export class AgentTalkView extends LitElement {
     this.pinnedSessionId = search.get('session');
     this.sessionId = this.pinnedSessionId;
     this.windowMode = search.get('window') === '1';
+    this.sourceContext = search.get('source');
+  }
+
+  /**
+   * What the composer reports as `requested_from`: the entry point that opened
+   * this window when there was one, otherwise the shape of the page itself.
+   */
+  private get composerSourceContext(): string {
+    if (this.sourceContext) return this.sourceContext;
+    return this.windowMode ? 'talk-window' : 'talk-page';
   }
 
   connectedCallback(): void {
@@ -285,6 +297,25 @@ export class AgentTalkView extends LitElement {
       () => this.postChannel('open'),
       TALK_HEARTBEAT_MS
     );
+  }
+
+  /**
+   * The unread dot means "the agent said something you have not seen", so it
+   * is posted from realtime activity, never from the operator's own send, and
+   * only while this window is not the one being looked at. `document.hidden`
+   * covers a minimised or backgrounded window, `hasFocus()` the far more
+   * common case of a visible popup sitting behind the console.
+   */
+  private isUnattended(): boolean {
+    if (document.hidden) return true;
+    return typeof document.hasFocus === 'function'
+      ? !document.hasFocus()
+      : false;
+  }
+
+  private noteAgentTurn(): void {
+    if (!this.isUnattended()) return;
+    this.postChannel('message');
   }
 
   private postChannel(type: 'open' | 'message' | 'close'): void {
@@ -456,7 +487,13 @@ export class AgentTalkView extends LitElement {
       this.followSession(sessionId);
       return;
     }
+    this.noteAgentTurn();
     this.scheduleReload();
+  }
+
+  /** Test seam: feed one realtime message without a socket. */
+  public receiveActivity(message: { payload?: Record<string, unknown> }): void {
+    this.handleActivity(message);
   }
 
   private followSession(sessionId: string): void {
@@ -583,7 +620,7 @@ export class AgentTalkView extends LitElement {
       <talk-composer
         .agent=${this.agent}
         .sessionId=${this.sessionId}
-        sourceContext=${this.windowMode ? 'talk-window' : 'talk-page'}
+        sourceContext=${this.composerSourceContext}
       ></talk-composer>
     `;
   }
@@ -602,8 +639,10 @@ export class AgentTalkView extends LitElement {
           ?.pending ?? []),
       ];
     });
+    // Sending is not news: the turn the operator just typed is already on
+    // screen. Only the reload is owed here; the unread dot belongs to
+    // `handleActivity`, which is where the agent's answer arrives.
     this.addEventListener(TALK_MESSAGE_SENT_EVENT, () => {
-      this.postChannel('message');
       this.scheduleReload();
     });
     this.syncDocumentTitle();
