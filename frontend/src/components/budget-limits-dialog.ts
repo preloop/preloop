@@ -32,6 +32,18 @@ export class BudgetLimitsDialog extends LitElement {
     `,
   ];
 
+  /**
+   * Overlay clicks are too easy to hit while filling the form. Hoisted
+   * selects (notify recipients, period, scope) portal outside the panel, so
+   * a click on an option looks like an overlay click and used to close the
+   * dialog. Only the close button and Escape dismiss it.
+   */
+  private handleRequestClose = (event: CustomEvent<{ source?: string }>) => {
+    if (event.detail?.source === 'overlay') {
+      event.preventDefault();
+    }
+  };
+
   private handleHide(event: Event) {
     if (event.target !== event.currentTarget) return;
     this.open = false;
@@ -57,6 +69,7 @@ export class BudgetLimitsDialog extends LitElement {
         label="Spending limits"
         style="--width: 720px;"
         ?open=${this.open}
+        @sl-request-close=${this.handleRequestClose}
         @sl-hide=${this.handleHide}
       >
         <div class="description">

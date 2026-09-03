@@ -60,4 +60,24 @@ describe('budget-limits-dialog', () => {
 
     expect(element.open).to.be.false;
   });
+
+  it('does not dismiss when the overlay is clicked', async () => {
+    const element = await fixture<BudgetLimitsDialog>(
+      html`<budget-limits-dialog open></budget-limits-dialog>`
+    );
+    await element.updateComplete;
+    const dialog = element.shadowRoot!.querySelector('sl-dialog')!;
+    const event = new CustomEvent('sl-request-close', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      detail: { source: 'overlay' },
+    });
+
+    dialog.dispatchEvent(event);
+    await element.updateComplete;
+
+    expect(event.defaultPrevented).to.be.true;
+    expect(element.open).to.be.true;
+  });
 });
