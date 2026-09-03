@@ -1892,14 +1892,6 @@ export class DashboardView extends AuthedElement {
     );
   }
 
-  private get activeAgents(): ManagedAgentSummary[] {
-    return [...this.managedAgents].sort(
-      (left, right) =>
-        new Date(right.last_seen_at).getTime() -
-        new Date(left.last_seen_at).getTime()
-    );
-  }
-
   private get activeSessions(): RuntimeSessionSummary[] {
     return [...this.runtimeSessions]
       .filter((session) => session.id && (session.total_requests || 0) > 0)
@@ -2103,15 +2095,6 @@ export class DashboardView extends AuthedElement {
 
   private get enabledToolsCount(): number {
     return this.tools.filter((tool) => tool.is_enabled).length;
-  }
-
-  private get activeAgentsCount(): number {
-    return this.managedAgents.filter(
-      (agent) =>
-        agent.is_active_now ||
-        agent.activity_status === 'active_now' ||
-        agent.activity_status === 'recently_active'
-    ).length;
   }
 
   private getManagedAgentBySourceId(
