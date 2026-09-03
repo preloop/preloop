@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import './agents-view.ts';
 import type { AgentListRow, AgentsView } from './agents-view';
 import { sortAgentListRows } from './agents-view';
+import { loadShoelaceTokens } from '../../utils/test-shoelace-theme';
 
 function makeAgent(
   id: string,
@@ -579,6 +580,40 @@ describe('AgentsView', () => {
 
     const name = table?.querySelector('tbody .agent-cell a.row-link');
     expect(getComputedStyle(name!).whiteSpace).to.equal('nowrap');
+  });
+
+  it('keeps the kebab button inside its own cell', async () => {
+    // Measured against the real tokens: without them the button renders at
+    // less than half its size and a column that clips it looks roomy.
+    await loadShoelaceTokens();
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const cell = el.shadowRoot?.querySelector<HTMLElement>(
+      'table.agents-table tbody td.actions-cell'
+    );
+    expect(cell, 'the actions cell renders').to.exist;
+
+    const kebab = cell
+      ?.querySelector('resource-actions')
+      ?.shadowRoot?.querySelector<HTMLElement>('sl-dropdown > sl-button');
+    expect(kebab, 'the kebab trigger renders').to.exist;
+
+    const cellBox = cell!.getBoundingClientRect();
+    const buttonBox = kebab!.getBoundingClientRect();
+
+    expect(buttonBox.width, 'the kebab has its real width').to.be.greaterThan(
+      30
+    );
+    expect(
+      buttonBox.left,
+      'the kebab is not cut off the left edge of its cell'
+    ).to.be.at.least(cellBox.left);
+    expect(
+      buttonBox.right,
+      'the kebab is not cut off the right edge of its cell'
+    ).to.be.at.most(cellBox.right);
   });
 
   it('offers Talk in the list kebab only for agents with Agent Control', async () => {

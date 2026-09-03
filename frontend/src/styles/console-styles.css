@@ -50,14 +50,20 @@ sl-badge:focus-visible,
     } */
 }
 
-/* Dashboard-specific layout with responsive 2-column ratio */
+/* Dashboard-specific layout with responsive 2-column ratio.
+
+   The side column is a rail: from 1200px up it sits beside the main column,
+   sticks under the shell header and is never taller than what the operator
+   can see (see .side-column below and the Overview's own sheet). Below that
+   it is a plain stack. 1200 rather than 1400 because the rail needs about
+   290px to hold the Usage card, which it has from 1200 up. */
 .column-layout.dashboard {
     grid-template-columns: 1fr; /* Default: stacked */
 }
 
-@media (min-width: 1400px) {
+@media (min-width: 1200px) {
     .column-layout.dashboard {
-        grid-template-columns: 2fr 1fr; /* Above 1400px: proportional columns */
+        grid-template-columns: 2fr 1fr; /* Above 1200px: proportional columns */
     }
 }
 

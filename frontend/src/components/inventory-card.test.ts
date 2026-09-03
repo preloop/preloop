@@ -286,6 +286,48 @@ describe('inventory-card', () => {
     ]);
   });
 
+  it('drops the provider prefix the next column already prints', async () => {
+    // At 1440 the cell read "deepseek/deepse...", half of it spent saying
+    // "DeepSeek" to the left of a column that says DeepSeek.
+    const el = await card({
+      modelRows: [
+        modelRow({
+          id: 'model-ds',
+          alias: 'deepseek/deepseek-v4-pro',
+          provider: 'DeepSeek',
+        }),
+        modelRow({
+          id: 'model-or',
+          alias: 'anthropic/claude-sonnet-4',
+          provider: 'OpenRouter',
+        }),
+      ],
+    });
+    await showTab(el, 'models');
+    const names = Array.from(
+      el.shadowRoot!.querySelectorAll('tbody a.row-name')
+    ).map((a) => (a.textContent || '').trim());
+    expect(names).to.eql([
+      'deepseek-v4-pro',
+      // A prefix that is not this provider is part of the name.
+      'anthropic/claude-sonnet-4',
+    ]);
+    const cell = el.shadowRoot!.querySelector('tbody td.identity-cell');
+    expect(cell?.getAttribute('title')).to.equal('deepseek/deepseek-v4-pro');
+  });
+
+  it('gives the model name the width and the counts the gutters', async () => {
+    const el = await card();
+    await showTab(el, 'models');
+    const widths = Array.from(el.shadowRoot!.querySelectorAll('col')).map(
+      (col) => col.getAttribute('style')
+    );
+    expect(widths[0]).to.contain('42%');
+    expect(widths.slice(2).every((style) => style?.includes('12%'))).to.equal(
+      true
+    );
+  });
+
   it('keeps an old timestamp relative, with the date in the title', async () => {
     const stale = new Date(Date.now() - 45 * 86400000).toISOString();
     const el = await card({ agentRows: [agentRow({ lastSeenAt: stale })] });
@@ -335,8 +377,9 @@ describe('inventory-card', () => {
     );
     const el = await card({ agentRows: rows });
     const shown = el.shadowRoot!.querySelectorAll('tbody tr').length;
-    expect(shown).to.be.at.most(8);
-    expect(shown).to.be.at.least(6);
+    // Six rows on a laptop, eight when the viewport can hold them: the card
+    // is sized by the screen, not by how much data happens to exist.
+    expect(shown).to.equal(window.innerHeight > 1000 ? 8 : 6);
 
     const footer = el.shadowRoot?.querySelector('.footer a');
     expect((footer?.textContent || '').trim()).to.equal('View all 10 agents →');

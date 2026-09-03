@@ -510,7 +510,7 @@ export class AgentsView extends LitElement {
         /* Below this the eight columns cannot hold their content, so the card
            scrolls sideways instead of hiding the actions. Agent keeps at least
            180px at this width; the list falls back to cards under 640px. */
-        min-width: 1040px;
+        min-width: 1056px;
       }
       .table-scroll {
         overflow-x: auto;
@@ -528,11 +528,28 @@ export class AgentsView extends LitElement {
       .agents-table th {
         padding: 0;
       }
+      /* The kebab column is measured from the button it holds, not guessed.
+         resource-actions renders one medium sl-button whose width is two
+         --sl-spacing-medium of label padding + a 1rem icon + a 1px border on
+         each side = 48px at the default tokens. The old column was 56px wide
+         with 16px of left padding and 12px of right padding, so its content
+         box was 28px: the button overflowed it by 20px and the component's
+         own overflow:hidden clipped that overflow off the left edge, which is
+         the "dotted actions button cut from the left" bug. 56px of content
+         plus 8px of padding on each side leaves the button its 48px and room
+         to grow before anything clips again. */
       .agents-table th.actions-cell,
       .agents-table td.actions-cell {
-        width: 56px;
+        width: 72px;
         text-align: right;
-        padding-right: var(--sl-spacing-small);
+        padding-left: var(--sl-spacing-x-small);
+        padding-right: var(--sl-spacing-x-small);
+        overflow: visible;
+      }
+      /* Belt and braces: even if a future token change makes the button wider
+         than its column, it stays whole and clickable by spilling into the
+         padding rather than being cut in half. */
+      .actions-cell resource-actions::part(container) {
         overflow: visible;
       }
       /* Percentages for the text columns so wide screens give them the space,
@@ -557,7 +574,7 @@ export class AgentsView extends LitElement {
         width: 128px;
       }
       .col-actions {
-        width: 56px;
+        width: 72px;
       }
       .sort-button {
         display: flex;

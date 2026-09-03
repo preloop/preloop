@@ -274,6 +274,16 @@ export class DashboardView extends AuthedElement {
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
   private refreshInFlight = false;
+  /**
+   * Makes "Updated just now" age.
+   *
+   * The label is a relative time, and a relative time that only recomputes
+   * when its data changes is a lie by the second minute: a page left open
+   * over lunch claimed the numbers under it were a minute old. Bumping this
+   * every 30s re-renders the header and nothing else.
+   */
+  @state() private updatedTick = 0;
+  private updatedTimer: number | null = null;
 
   private formatDate(dateStr: string | null | undefined): string {
     if (!dateStr) return '';
@@ -824,6 +834,43 @@ export class DashboardView extends AuthedElement {
         gap: var(--sl-spacing-medium);
       }
 
+      /* The side column is a rail, not a stack that grows the page.
+         The .main-content element is the scroll port (console-shell), so a
+         sticky child of it sticks at the top of what the operator can see,
+         and a column that is exactly viewport-tall subtracts the header.
+
+         align-self: stretch makes the rail as tall as the row it shares
+         with the main column, so on a short page it stops at the main
+         column's foot instead of pushing the page down; the max-height
+         then caps it at one viewport. Usage keeps its natural height and
+         the feed takes what is left (flex: 1 1 0, so its own rows never
+         vote on how tall the column wants to be) and scrolls internally. */
+      @media (min-width: 1200px) {
+        .column-layout.dashboard > .side-column {
+          position: sticky;
+          top: var(--sl-spacing-medium);
+          align-self: stretch;
+          max-height: calc(
+            100dvh - var(--console-header-height) - var(--sl-spacing-medium) * 2
+          );
+        }
+
+        /* The floor is what makes the rail a list rather than a peephole:
+           at 240px the card showed three lines and an expanded row had to be
+           scrolled to be read. It is stated against the viewport as well as
+           in pixels so a short laptop window shrinks the feed instead of
+           pushing the Usage card off the rail. */
+        .column-layout.dashboard > .side-column > activity-feed {
+          flex: 1 1 0;
+          min-height: min(360px, 34dvh);
+          /* The rail is bounded and stretched above, so here (and only
+             here) the column decides the feed's height and the card's own
+             360px stop would only make the list shorter than the space it
+             has been given. */
+          --activity-feed-list-max-height: none;
+        }
+      }
+
       .summary-grid,
       .control-plane-grid,
       .analytics-grid {
@@ -1144,6 +1191,9 @@ export class DashboardView extends AuthedElement {
     this.loadCachedDashboardData();
     void this.fetchDashboardData();
     this.connectRealtime();
+    this.updatedTimer = window.setInterval(() => {
+      if (this.lastUpdatedAt) this.updatedTick += 1;
+    }, 30000);
   }
 
   private async fetchAdminStatus() {
@@ -1177,6 +1227,10 @@ export class DashboardView extends AuthedElement {
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
+    }
+    if (this.updatedTimer !== null) {
+      window.clearInterval(this.updatedTimer);
+      this.updatedTimer = null;
     }
   }
 
@@ -1362,6 +1416,17 @@ export class DashboardView extends AuthedElement {
     }
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = null;
+      if (this.refreshInFlight) {
+        // A fetch is already running and will return data from before this
+        // event; dropping the event here is what left "Updated 4m ago" on
+        // a page that had just been told something changed. Wait for the
+        // one in flight to land, then take our turn.
+        this.refreshTimer = window.setTimeout(() => {
+          this.refreshTimer = null;
+          void this.fetchDashboardData({ preserveLoadingState: true });
+        }, 1000);
+        return;
+      }
       void this.fetchDashboardData({ preserveLoadingState: true });
     }, 250);
   }
@@ -2961,7 +3026,14 @@ export class DashboardView extends AuthedElement {
 
     return html`
       <view-header headerText="Overview" width="extra-wide">
-        <span slot="meta" class="updated-at"
+        <span
+          slot="meta"
+          class="updated-at"
+          title=${
+            this.lastUpdatedAt
+              ? parseUTCDate(this.lastUpdatedAt).toLocaleString()
+              : 'Not loaded yet'
+          }
           >Updated ${this.formatLastUpdatedLabel()}</span
         >
       </view-header>
