@@ -1,6 +1,7 @@
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import './activity-feed.ts';
 import {
+  AUDIT_PAGE_SIZE,
   FEED_CAP,
   feedEventFromAuditGroup,
   feedEventFromRealtime,
@@ -30,22 +31,71 @@ function auditGroup(
   };
 }
 
-/** Answer the feed's two startup requests with a fixed timeline. */
-function stubFetch(groups: AuditGroupLike[]): () => void {
+/**
+ * Answer the feed's startup requests with a fixed timeline.
+ *
+ * `pages` is the audit timeline in fetch order: one array per page the feed
+ * asks for. `users` decides how `/api/v1/users` behaves, since the actor
+ * lookup is the other startup request and its failure must not cost rows.
+ */
+function stubFetch(
+  pages: AuditGroupLike[][],
+  users: 'ok' | 'reject' | 'forbidden' | 'odd-shape' = 'ok'
+): { restore: () => void; urls: string[] } {
   const original = window.fetch;
+  const urls: string[] = [];
+  let page = 0;
   window.fetch = (async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input.toString();
-    const body = url.includes('/audit-logs/grouped')
-      ? { groups, total: groups.length, skip: 0, limit: 40 }
-      : { users: [{ id: 'user-1', username: 'dimo', full_name: 'Dimo' }] };
+    urls.push(url);
+    if (url.includes('/audit-logs/grouped')) {
+      const groups = pages[Math.min(page, pages.length - 1)] || [];
+      page += 1;
+      return new Response(
+        JSON.stringify({
+          groups,
+          total: groups.length,
+          skip: 0,
+          limit: 50,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    if (users === 'reject') throw new Error('network down');
+    if (users === 'forbidden') {
+      return new Response(JSON.stringify({ detail: 'nope' }), { status: 403 });
+    }
+    const body =
+      users === 'odd-shape'
+        ? { items: [{ id: 'user-1', username: 'dimo' }] }
+        : { users: [{ id: 'user-1', username: 'dimo', full_name: 'Dimo' }] };
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
   }) as typeof window.fetch;
-  return () => {
-    window.fetch = original;
+  return {
+    restore: () => {
+      window.fetch = original;
+    },
+    urls,
   };
+}
+
+/** A successful gateway call: traffic the feed drops, whole pages of it. */
+function gatewayNoise(count: number): AuditGroupLike[] {
+  return Array.from({ length: count }, (_, index) =>
+    auditGroup(
+      'model_gateway_request',
+      {
+        id: `noise-${index}`,
+        resource_id: 'deepseek/deepseek-v4-pro',
+        status: 'success',
+        details: { model_alias: 'deepseek/deepseek-v4-pro', status_code: 200 },
+      },
+      'success'
+    )
+  );
 }
 
 async function feed(autoload = false): Promise<ActivityFeed> {
@@ -273,18 +323,20 @@ describe('activity-feed', () => {
   describe('the card', () => {
     it('fills from the audit timeline, newest first', async () => {
       localStorage.setItem('accessToken', 'test-token');
-      const restore = stubFetch([
-        auditGroup('runtime_session_created', {
-          id: 'a',
-          resource_id: 'sess-9',
-          details: { runtime_principal_name: 'Hermes' },
-          timestamp: new Date(Date.now() - 600000).toISOString(),
-        }),
-        auditGroup(
-          'tool_call',
-          { id: 'b', resource_id: 'Bash', timestamp: NOW },
-          'failed'
-        ),
+      const { restore } = stubFetch([
+        [
+          auditGroup('runtime_session_created', {
+            id: 'a',
+            resource_id: 'sess-9',
+            details: { runtime_principal_name: 'Hermes' },
+            timestamp: new Date(Date.now() - 600000).toISOString(),
+          }),
+          auditGroup(
+            'tool_call',
+            { id: 'b', resource_id: 'Bash', timestamp: NOW },
+            'failed'
+          ),
+        ],
       ]);
       const el = await fixture<ActivityFeed>(
         html`<activity-feed></activity-feed>`
@@ -292,6 +344,109 @@ describe('activity-feed', () => {
       await waitUntil(() => rowText(el).length === 2, 'timeline rows appear');
       expect(rowText(el)[0]).to.contain('Bash failed');
       expect(rowText(el)[1]).to.contain('Hermes started a session');
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('pages past a wall of gateway traffic to find the news', async () => {
+      // The staging 03:00 bug: the newest audit page was 50 successful
+      // gateway calls, which are not news, so the feed read "Nothing yet"
+      // while the audit page listed events from a minute before.
+      localStorage.setItem('accessToken', 'test-token');
+      const { restore, urls } = stubFetch([
+        gatewayNoise(AUDIT_PAGE_SIZE),
+        [
+          auditGroup(
+            'tool_call',
+            {
+              id: 'deep',
+              resource_id: 'get_pull_request',
+              details: { runtime_principal_name: 'Pull Request Reviewer' },
+              timestamp: NOW,
+            },
+            'allow'
+          ),
+        ],
+      ]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(() => rowText(el).length === 1, 'the news is found');
+      expect(rowText(el)[0]).to.contain('get_pull_request');
+      const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
+      expect(audit.length).to.be.greaterThan(1);
+      expect(audit[1]).to.contain(`skip=${AUDIT_PAGE_SIZE}`);
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('renders rows even when the user lookup fails', async () => {
+      localStorage.setItem('accessToken', 'test-token');
+      const { restore } = stubFetch(
+        [
+          [
+            auditGroup(
+              'tool_call',
+              { id: 'x', resource_id: 'Bash', timestamp: NOW },
+              'failed'
+            ),
+            auditGroup('api_key_created', { id: 'k' }, 'success'),
+          ],
+        ],
+        'reject'
+      );
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(() => rowText(el).length === 2, 'rows survive');
+      expect(rowText(el).join(' ')).to.contain('Bash failed');
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('survives a user list in a shape it did not expect', async () => {
+      // `{ items: [...] }` used to be stored as-is, and the first `.find`
+      // on it threw through the whole fill.
+      localStorage.setItem('accessToken', 'test-token');
+      const { restore } = stubFetch(
+        [[auditGroup('api_key_created', { id: 'k2' }, 'success')]],
+        'odd-shape'
+      );
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(() => rowText(el).length === 1, 'the row is there');
+      expect(rowText(el)[0]).to.contain('API key created');
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('falls back to the newest events when the last day is empty', async () => {
+      localStorage.setItem('accessToken', 'test-token');
+      const old = new Date(Date.now() - 40 * 3600 * 1000).toISOString();
+      const { restore, urls } = stubFetch([
+        [],
+        [
+          auditGroup(
+            'runtime_session_created',
+            {
+              id: 'old',
+              resource_id: 'sess-old',
+              details: { runtime_principal_name: 'Hermes' },
+              timestamp: old,
+            },
+            'created'
+          ),
+        ],
+      ]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(() => rowText(el).length === 1, 'yesterday still shows');
+      expect(rowText(el)[0]).to.contain('Hermes started a session');
+      const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
+      expect(audit[0]).to.contain('start_date=');
+      expect(audit[1]).to.not.contain('start_date=');
       restore();
       localStorage.removeItem('accessToken');
     });

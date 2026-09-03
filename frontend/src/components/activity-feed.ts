@@ -76,8 +76,18 @@ export const FEED_TOPICS = [
 /** How many rows the feed keeps in memory, and how many it fetches to start. */
 export const FEED_CAP = 30;
 export const FEED_INITIAL_ROWS = 12;
-/** The audit page is chatty: fetch a wider slice, then keep what is news. */
-const AUDIT_FETCH_LIMIT = 40;
+/**
+ * The audit timeline is mostly traffic, so the fill pages through it.
+ *
+ * On an account doing 14k gateway calls a day, every one of the newest 40
+ * audit groups can be a successful `model_gateway_request`, which is not
+ * news and never becomes a row. That is what emptied the feed on staging at
+ * 03:00 while `/console/audit` was listing events from a minute before. So
+ * the fill asks for a page, keeps what is news, and asks for the next page
+ * until it has enough rows or it runs out of patience.
+ */
+export const AUDIT_PAGE_SIZE = 50;
+export const AUDIT_MAX_PAGES = 4;
 const AUDIT_WINDOW_HOURS = 24;
 
 interface AuditLogLike {
@@ -671,6 +681,8 @@ export class ActivityFeed extends LitElement {
 
   private unsubscribes: (() => void)[] = [];
   private seen = new Set<string>();
+  /** Resolved (never rejected) once the user lookup has had its turn. */
+  private usersReady: Promise<void> = Promise.resolve();
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -876,7 +888,7 @@ export class ActivityFeed extends LitElement {
       );
     }
     if (this.autoload) {
-      void this.loadUsers();
+      this.usersReady = this.loadUsers();
       void this.loadInitial();
     } else {
       this.loading = false;
@@ -905,44 +917,93 @@ export class ActivityFeed extends LitElement {
     };
   }
 
-  /** Names for `... by dimo`. Unavailable to non-admins, and that is fine. */
+  /**
+   * Names for `... by dimo`. Unavailable to non-admins, and that is fine.
+   *
+   * Never throws and never stores anything but an array: the actor's name is
+   * a nicety, and a lookup that fails, 403s or answers in a shape nobody
+   * expected must not cost the operator the whole timeline.
+   */
   private async loadUsers(): Promise<void> {
     try {
       const response = await fetchWithAuth('/api/v1/users');
       if (!response.ok) return;
       const data = await response.json();
-      this.users = data.users || data || [];
+      const users = Array.isArray(data) ? data : data?.users;
+      this.users = Array.isArray(users) ? users : [];
     } catch {
       // The feed degrades to "by" nothing rather than failing.
     }
   }
 
+  /** One page of the audit timeline, or null when it cannot be read. */
+  private async fetchAuditPage(
+    skip: number,
+    since: string | null
+  ): Promise<AuditGroupLike[] | null> {
+    const params = new URLSearchParams();
+    params.set('limit', String(AUDIT_PAGE_SIZE));
+    if (skip) params.set('skip', String(skip));
+    if (since) params.set('start_date', since);
+    const response = await fetchWithAuth(
+      `/api/v1/audit-logs/grouped?${params}`
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    return Array.isArray(data?.groups) ? data.groups : [];
+  }
+
+  /**
+   * Turn audit groups into rows, one at a time.
+   *
+   * Reading a group is a pure function over a payload the console does not
+   * control, so a single odd row is skipped rather than allowed to throw
+   * through the whole fill.
+   */
+  private rowsFrom(groups: AuditGroupLike[], into: FeedEvent[]): void {
+    for (const group of groups) {
+      if (into.length >= FEED_INITIAL_ROWS) return;
+      let event: FeedEvent | null = null;
+      try {
+        event = feedEventFromAuditGroup(group, this.context);
+      } catch {
+        continue;
+      }
+      if (event && !this.seen.has(event.id)) {
+        this.seen.add(event.id);
+        into.push(event);
+      }
+    }
+  }
+
   private async loadInitial(): Promise<void> {
     this.loading = true;
+    // The actor's name belongs on the first paint, not the second, but a
+    // lookup that never answers must not hold the timeline hostage either.
+    await Promise.race([
+      this.usersReady,
+      new Promise((resolve) => setTimeout(resolve, 2000)),
+    ]);
     try {
-      const params = new URLSearchParams();
-      params.set('limit', String(AUDIT_FETCH_LIMIT));
-      params.set(
-        'start_date',
-        new Date(Date.now() - AUDIT_WINDOW_HOURS * 60 * 60 * 1000).toISOString()
-      );
-      const response = await fetchWithAuth(
-        `/api/v1/audit-logs/grouped?${params}`
-      );
-      if (!response.ok) {
-        this.loading = false;
-        return;
-      }
-      const data = await response.json();
-      const groups: AuditGroupLike[] = data.groups || [];
+      const since = new Date(
+        Date.now() - AUDIT_WINDOW_HOURS * 60 * 60 * 1000
+      ).toISOString();
       const events: FeedEvent[] = [];
-      for (const group of groups) {
-        const event = feedEventFromAuditGroup(group, this.context);
-        if (event && !this.seen.has(event.id)) {
-          this.seen.add(event.id);
-          events.push(event);
-        }
+      let emptyWindow = false;
+      for (let page = 0; page < AUDIT_MAX_PAGES; page += 1) {
+        const groups = await this.fetchAuditPage(page * AUDIT_PAGE_SIZE, since);
+        if (groups === null) break;
+        if (page === 0 && groups.length === 0) emptyWindow = true;
+        this.rowsFrom(groups, events);
         if (events.length >= FEED_INITIAL_ROWS) break;
+        if (groups.length < AUDIT_PAGE_SIZE) break;
+      }
+      // A quiet account has nothing in the last day and still has a history.
+      // Rather than say "Nothing yet" to an account that worked yesterday,
+      // ask once for the newest events whenever they happened.
+      if (emptyWindow && events.length === 0) {
+        const groups = await this.fetchAuditPage(0, null);
+        if (groups) this.rowsFrom(groups, events);
       }
       this.events = this.sortAndCap([...events, ...this.events]);
     } catch {
