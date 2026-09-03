@@ -171,6 +171,22 @@ RESULT_ARTIFACT_SUCCESS_STATUSES = frozenset(
 )
 RESULT_ARTIFACT_FAILURE_STATUSES = frozenset({"failure", "failed", "error"})
 
+# Statuses that mean the work did not finish. On the widened-signal path
+# (runtimes that cannot be resumed) these must not count as success: a
+# report that says "timeout" is the agent saying it ran out of time.
+RESULT_ARTIFACT_INCOMPLETE_STATUSES = frozenset(
+    {
+        "timeout",
+        "timed_out",
+        "cancelled",
+        "canceled",
+        "partial",
+        "in_progress",
+        "running",
+        "pending",
+    }
+)
+
 # Audit vocabulary (preloop.cra.sbomaudit/v1, preloop.cra.releaseaudit/v1):
 # the top-level field is "verdict", never "status". As with eval, "fail" and
 # "pass_with_findings" are completed-run verdicts — the audit ran to
@@ -2569,8 +2585,11 @@ class FlowExecutionOrchestrator:
         report the agent actually wrote is the best evidence available. A
         non-empty JSON object at ``/workspace/result.json`` is accepted as
         completion even when its status vocabulary is not one Preloop
-        recognizes. An explicit failure status never reaches this point: it
-        is decided earlier and fails the run.
+        recognizes, except for known failure and incomplete statuses
+        (``timeout``, ``cancelled``, ``in_progress``, ...): those say the
+        work did not finish and must not be recorded as success. An explicit
+        failure status is usually decided earlier; the check here is the
+        last line of defence on this path.
 
         Runtimes that CAN resume are deliberately excluded: for them the
         agent was asked directly and declined to confirm, which is a much
@@ -2592,6 +2611,14 @@ class FlowExecutionOrchestrator:
             return False
         if not isinstance(result_artifact, dict) or not result_artifact:
             return False
+        status = result_artifact.get("status")
+        if isinstance(status, str):
+            normalized = status.strip().lower()
+            if (
+                normalized in RESULT_ARTIFACT_FAILURE_STATUSES
+                or normalized in RESULT_ARTIFACT_INCOMPLETE_STATUSES
+            ):
+                return False
         return True
 
     async def _resolve_missing_confirmation(
@@ -2696,6 +2723,7 @@ class FlowExecutionOrchestrator:
                 "artifact_confirmation": _result_artifact_confirmation(result_artifact),
                 "nudge_outcome": nudge_outcome,
                 "inplace_nudge": self._inplace_nudge_seen,
+                "inplace_nudge_unsupported": self._inplace_nudge_unsupported,
             },
         )
         # When no error heuristics fired (result.error_message is empty),
@@ -2951,6 +2979,10 @@ class FlowExecutionOrchestrator:
         slot indefinitely.
         """
         default_seconds = int(settings.flow_execution_max_wait_seconds)
+        default_seconds = max(
+            FLOW_TIMEOUT_SECONDS_MIN,
+            min(FLOW_TIMEOUT_SECONDS_MAX, default_seconds),
+        )
         configured = getattr(self.flow, "timeout_seconds", None)
         if configured is None:
             return TimeoutBudget(seconds=default_seconds, source="default")

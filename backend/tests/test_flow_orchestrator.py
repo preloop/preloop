@@ -3111,6 +3111,8 @@ class TestInPlaceCompletionNudge:
         assert _milestones(orchestrator, "completion_nudge") == []
         assert orchestrator._inplace_nudge_seen is False
         assert orchestrator._inplace_nudge_unsupported is True
+        missing = _milestones(orchestrator, "success_confirmation_missing")
+        assert missing[0]["details"]["inplace_nudge_unsupported"] is True
 
 
 class TestWiderCompletionSignalFallback:
@@ -3176,6 +3178,22 @@ class TestWiderCompletionSignalFallback:
         assert result["status"] == "FAILED"
         assert _milestones(orchestrator, "completion_signal_accepted") == []
 
+    @pytest.mark.asyncio
+    async def test_timeout_status_is_not_success_for_a_non_resumable_runtime(
+        self, mock_nats_client, event_data
+    ):
+        """A report that says the work did not finish must not be recorded
+        as SUCCEEDED just because the runtime cannot be asked again."""
+        executor = _confirmation_executor(artifact={"status": "timeout"})
+        executor.get_logs = AsyncMock(return_value=[])
+        executor.supports_inplace_completion_nudge = False
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+
+        result = await orchestrator._monitor_agent_execution("session-1", executor)
+
+        assert result["status"] == "FAILED"
+        assert _milestones(orchestrator, "completion_signal_accepted") == []
+
 
 class TestPerFlowTimeoutBudget:
     """Item 3: each flow may own its wall-clock budget."""
@@ -3201,6 +3219,17 @@ class TestPerFlowTimeoutBudget:
         budget = orchestrator._execution_timeout_budget()
 
         assert budget.seconds == settings.flow_execution_max_wait_seconds
+        assert budget.source == "default"
+
+    def test_tiny_deployment_default_is_floored(self, mock_nats_client, event_data):
+        """A mistyped FLOW_EXECUTION_MAX_WAIT_SECONDS must not make every
+        flow unrunnable."""
+        orchestrator = self._orchestrator(mock_nats_client, event_data, None)
+
+        with patch.object(settings, "flow_execution_max_wait_seconds", 10):
+            budget = orchestrator._execution_timeout_budget()
+
+        assert budget.seconds == FLOW_TIMEOUT_SECONDS_MIN
         assert budget.source == "default"
 
     def test_flow_budget_wins(self, mock_nats_client, event_data):
