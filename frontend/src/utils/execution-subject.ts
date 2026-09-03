@@ -1,4 +1,4 @@
-import { html, nothing, TemplateResult } from 'lit';
+import { html, TemplateResult } from 'lit';
 
 /**
  * The subject of a flow execution: what this run was about.
@@ -123,7 +123,10 @@ export function renderExecutionSubject(
   const fallback = isSubjectFallback(exec);
   const className = `execution-subject${fallback ? ' is-fallback' : ''}`;
 
-  if (url) {
+  // Only http(s) and console-relative URLs become links. The URL is stored
+  // from webhook payloads and from user-supplied test-run payloads, and Lit
+  // does not strip `javascript:`; anything else renders as plain text.
+  if (url && isSafeSubjectUrl(url)) {
     // The icon sits outside the ellipsised text, or a long subject clips the
     // one mark that says the link leaves the console.
     return html`<a
@@ -175,5 +178,7 @@ export const executionSubjectCss = `
   }
 `;
 
-/** Keeps `nothing` importable for callers that render conditionally. */
-export const SUBJECT_NOTHING = nothing;
+/** True for `http:`, `https:`, and root-relative URLs; false for everything else. */
+export function isSafeSubjectUrl(url: string): boolean {
+  return /^(https?:\/\/|\/(?!\/))/i.test(url.trim());
+}
