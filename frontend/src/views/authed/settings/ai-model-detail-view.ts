@@ -1401,7 +1401,11 @@ export class AIModelDetailView extends LitElement {
         <div slot="header" class="model-heading">
           <div class="model-title">Pricing</div>
           <div class="badge-row">
-            <sl-badge variant=${source === 'none' ? 'warning' : 'neutral'}>
+            <sl-badge
+              class="chip"
+              pill
+              variant=${source === 'none' ? 'warning' : 'neutral'}
+            >
               ${PRICING_SOURCE_LABEL[source] || source}
             </sl-badge>
           </div>

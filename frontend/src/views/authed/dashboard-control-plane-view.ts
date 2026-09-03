@@ -1854,7 +1854,11 @@ export class DashboardView extends AuthedElement {
             this.catchWith403Handling(getTools(), [] as Tool[]),
             this.catchWith403Handling(getAIModels(), []),
             this.catchWith403Handling(
-              isSaaS()
+              // User management is a licensed feature, not a hosting model:
+              // a self-hosted Enterprise account has teammates too, and the
+              // Inventory's Users tab is gated on the same flag. Features
+              // have resolved by the time this secondary fetch runs.
+              isSaaS() || this.userManagementEnabled
                 ? getUsers()
                 : Promise.resolve({
                     users: [],
