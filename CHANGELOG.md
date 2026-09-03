@@ -81,6 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CLI runner interrupt test no longer races `exec.Cmd`**: GitLab
+  `test:unit:cli` (`-race`) failed because the test read `Process` /
+  `ProcessState` while the runner called `Start`/`Wait`. It now watches a
+  pid file from the child.
 - **Unused dashboard test helper and redundant asyncio import**: drop
   `isReddish` from `dashboard-view.test.ts` and the second `import asyncio`
   in the Kubernetes log streamer (`container.py` already imports it at

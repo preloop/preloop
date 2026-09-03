@@ -169,26 +169,48 @@ def test_shutdown_stops_accepting_records() -> None:
 
 
 def test_shutdown_retries_stop_sentinel_when_queue_is_full() -> None:
-    """A full queue must not leave workers blocked on get() after shutdown."""
-    release = threading.Event()
+    """A full queue must not leave workers blocked on get() after shutdown.
 
-    def _blocked_session_factory() -> Any:
+    One writer is held inside ``_write`` so the queue can actually fill.
+    Shutdown then runs while ``put_nowait(None)`` would raise ``Full``; the
+    writer is released only after shutdown has started, so the stop sentinel
+    has to retry (or ``_stopping`` has to wake ``get``) rather than succeed
+    on an empty queue.
+    """
+    release = threading.Event()
+    written: list[Any] = []
+    batches: list[int] = []
+
+    def _gated_session_factory() -> Any:
         release.wait(timeout=10)
-        raise SQLAlchemyTimeoutError(POOL_TIMEOUT_MESSAGE)
+        return _FakeSession(written, batches)
 
     recorder = ApiUsageRecorder(
-        session_factory=_blocked_session_factory,
+        session_factory=_gated_session_factory,
         queue_size=2,
-        workers=2,
+        workers=1,
         batch_size=1,
     )
-    try:
-        for _ in range(2):
-            assert recorder.submit(_record()) is True
-        started = time.perf_counter()
-        recorder.shutdown(timeout=2.0)
-        elapsed = time.perf_counter() - started
-    finally:
-        release.set()
+    assert recorder.submit(_record()) is True
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and recorder.stats()["queued"] != 0:
+        time.sleep(0.01)
+    assert recorder.stats()["queued"] == 0, "worker should have dequeued the first row"
+    assert recorder.submit(_record()) is True
+    assert recorder.submit(_record()) is True
+    assert recorder.stats()["queued"] == 2
+    assert recorder.submit(_record()) is False
+    workers = list(recorder._workers)
 
-    assert elapsed < 2.5, "shutdown should not rely on daemon threads alone"
+    def _run_shutdown() -> None:
+        recorder.shutdown(timeout=2.0)
+
+    shutting = threading.Thread(target=_run_shutdown)
+    shutting.start()
+    time.sleep(0.05)
+    release.set()
+    shutting.join(timeout=3.0)
+    assert not shutting.is_alive(), "shutdown did not return"
+    assert all(not worker.is_alive() for worker in workers), (
+        "workers must exit after shutdown even when the queue was full"
+    )
