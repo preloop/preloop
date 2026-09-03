@@ -3,6 +3,9 @@ import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './flow-executions-view';
 import { FlowExecutionsView } from './flow-executions-view';
+import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
+import type { ConfirmDialog } from '../../components/confirm-dialog';
+import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 
 const tick = (ms = 150) => new Promise((r) => setTimeout(r, ms));
 
@@ -34,7 +37,10 @@ describe('FlowExecutionsView', () => {
   });
 
   afterEach(() => {
-    fetchStub?.restore();
+    sinon.restore();
+    fetchStub = undefined as unknown as sinon.SinonStub;
+    resetConfirmDialogForTests();
+    document.body.querySelectorAll('sl-alert').forEach((a) => a.remove());
     localStorage.clear();
   });
 
@@ -472,6 +478,165 @@ describe('FlowExecutionsView', () => {
       const status = el.shadowRoot?.querySelector('.connection-status');
       expect(status?.getAttribute('data-connection')).to.equal('dropped');
       expect((status?.textContent || '').trim()).to.equal('Live updates lost');
+    });
+  });
+
+  describe('wave 7 review fixes', () => {
+    async function render() {
+      const el = (await fixture(
+        html`<flow-executions-view></flow-executions-view>`
+      )) as FlowExecutionsView;
+      await tick();
+      await el.updateComplete;
+      return el;
+    }
+
+    async function clickDialogButton(label: string) {
+      const dialog = document.body.querySelector(
+        'confirm-dialog'
+      ) as ConfirmDialog | null;
+      expect(dialog, 'confirm-dialog is mounted').to.exist;
+      await dialog!.updateComplete;
+      const button = [
+        ...(dialog!.shadowRoot?.querySelectorAll('sl-button') || []),
+      ].find((candidate) => candidate.textContent?.trim() === label);
+      expect(button, `dialog button "${label}"`).to.exist;
+      (button as HTMLElement).click();
+      await tick(20);
+    }
+
+    function actionById(el: FlowExecutionsView, id: string) {
+      const menus = Array.from(
+        el.shadowRoot?.querySelectorAll('tbody resource-actions') || []
+      ) as Array<
+        HTMLElement & { actions: Array<{ id: string; onClick?: () => void }> }
+      >;
+      for (const menu of menus) {
+        const action = menu.actions.find((candidate) => candidate.id === id);
+        if (action) return action;
+      }
+      throw new Error(`no "${id}" action in the row menus`);
+    }
+
+    it('states a failed load, keeps live updates, and retries on demand', async () => {
+      let fail = true;
+      fetchStub = sinon.stub(window, 'fetch').callsFake(async () => {
+        if (fail) throw new Error('Network unreachable');
+        return new Response(JSON.stringify(EXECUTIONS), { status: 200 });
+      });
+      const connect = sinon.spy(unifiedWebSocketManager, 'subscribe');
+
+      const el = await render();
+
+      expect(el.shadowRoot?.querySelector('sl-alert.load-error')).to.exist;
+      expect(el.shadowRoot?.textContent).to.contain(
+        'Could not load the executions'
+      );
+      // The old code threw out of connectedCallback before subscribing.
+      expect(connect.called, 'still subscribed to live updates').to.be.true;
+      expect(el.shadowRoot?.textContent).to.not.contain('No executions found');
+
+      fail = false;
+      (
+        el.shadowRoot?.querySelector('.load-error .retry-button') as HTMLElement
+      ).click();
+      await tick();
+      await el.updateComplete;
+
+      expect(el.shadowRoot?.querySelector('sl-alert.load-error')).to.not.exist;
+      expect(el.shadowRoot?.querySelectorAll('tbody tr').length).to.equal(2);
+    });
+
+    it('asks before it cancels a run and does nothing when the answer is no', async () => {
+      const requests: string[] = [];
+      fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
+        requests.push(String(input));
+        return new Response(JSON.stringify(EXECUTIONS), { status: 200 });
+      });
+      const el = await render();
+
+      actionById(el, 'cancel').onClick?.();
+      await tick(20);
+
+      const dialog = document.body.querySelector(
+        'confirm-dialog'
+      ) as ConfirmDialog;
+      await dialog.updateComplete;
+      expect(dialog.shadowRoot?.textContent).to.contain('Stop the run of');
+      expect(
+        dialog.shadowRoot?.querySelector('sl-dialog')?.getAttribute('label')
+      ).to.equal('Cancel run');
+
+      await clickDialogButton('Keep running');
+      expect(requests.some((url) => url.includes('/command'))).to.be.false;
+    });
+
+    it('sends the stop only after the run cancel is confirmed', async () => {
+      const requests: string[] = [];
+      fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
+        requests.push(String(input));
+        return new Response(JSON.stringify(EXECUTIONS), { status: 200 });
+      });
+      const el = await render();
+
+      actionById(el, 'cancel').onClick?.();
+      await tick(20);
+      await clickDialogButton('Cancel run');
+
+      expect(
+        requests.some((url) =>
+          url.includes('/api/v1/flows/executions/exec-bbbbbbbb-2/command')
+        )
+      ).to.be.true;
+    });
+
+    it('says so when a retry comes back without a run to open', async () => {
+      fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
+        if (String(input).includes('/retry')) {
+          return new Response(JSON.stringify({}), { status: 200 });
+        }
+        return new Response(
+          JSON.stringify([
+            {
+              id: 'exec-failed',
+              flow_id: 'flow-1',
+              flow_name: 'Nightly Sync',
+              status: 'FAILED',
+              start_time: '2026-03-09T10:00:00Z',
+              end_time: '2026-03-09T10:01:00Z',
+            },
+          ]),
+          { status: 200 }
+        );
+      });
+      const el = await render();
+      const toasts: string[] = [];
+      el.addEventListener('show-toast', (event) => {
+        toasts.push((event as CustomEvent).detail.message);
+      });
+
+      actionById(el, 'retry').onClick?.();
+      await tick();
+
+      expect(toasts).to.eql([
+        'The retry did not return a new run. Check the executions list.',
+      ]);
+    });
+
+    it('drops the connection-state listener when the view goes away', async () => {
+      fetchStub = stub(EXECUTIONS);
+      const unsubscribeState = sinon.spy();
+      sinon
+        .stub(unifiedWebSocketManager, 'onStateChange')
+        .returns(unsubscribeState);
+
+      const el = await render();
+      expect(unsubscribeState.called).to.be.false;
+
+      el.remove();
+      await tick(0);
+
+      expect(unsubscribeState.calledOnce, 'state listener released').to.be.true;
     });
   });
 });

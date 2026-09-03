@@ -799,4 +799,191 @@ describe('FlowsView', () => {
       ).to.deep.equal(['Alpha']);
     });
   });
+
+  describe('wave 7 review fixes', () => {
+    const FLOWS = [
+      {
+        id: 'flow-review',
+        name: 'Pull Request Reviewer',
+        is_enabled: true,
+        trigger_event_source: 'webhook',
+        trigger_event_types: ['pull_request_updated'],
+      },
+    ];
+
+    /** A backend timestamp without a zone, which is UTC. */
+    const naive = (ms: number) =>
+      new Date(ms).toISOString().replace('Z', '').replace('.000', '');
+
+    function stubApi(options: { executions: unknown[]; flowsStatus?: number }) {
+      return sinon
+        .stub(window, 'fetch')
+        .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          const method = (init?.method || 'GET').toUpperCase();
+          const json = (data: unknown, status = 200) =>
+            new Response(JSON.stringify(data), {
+              status,
+              headers: { 'Content-Type': 'application/json' },
+            });
+
+          if (url.includes('/api/v1/flows/presets')) return json([]);
+          if (url.includes('/api/v1/flows/executions')) {
+            return json(url.includes('status=') ? [] : options.executions);
+          }
+          if (url.includes('/api/v1/flows') && method === 'GET') {
+            const status = options.flowsStatus ?? 200;
+            return status === 200
+              ? json(FLOWS)
+              : json({ detail: 'Gateway timeout' }, status);
+          }
+          if (url.includes('/api/v1/account/gateway-usage/summary')) {
+            return json({ usage_by_flow: [] });
+          }
+          if (url.includes('/api/v1/trackers')) return json([]);
+          return json({ detail: `Unhandled: ${method} ${url}` });
+        });
+    }
+
+    async function renderFlows(options: {
+      executions: unknown[];
+      flowsStatus?: number;
+    }): Promise<FlowsView> {
+      fetchStub = stubApi(options);
+      const element = (await fixture(
+        html`<flows-view></flows-view>`
+      )) as FlowsView;
+      await waitUntil(
+        () => !(element as any).isLoading,
+        'Flows view did not finish loading'
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    it('reads a zoneless run timestamp as UTC when it ranks the last run', async () => {
+      const now = Date.now();
+      const element = await renderFlows({
+        executions: [
+          {
+            id: 'exec-zoneless-older',
+            flow_id: 'flow-review',
+            status: 'SUCCEEDED',
+            // No zone: UTC, two hours back. Read as local time this run
+            // jumps by the browser offset and can outrank the newer one.
+            start_time: naive(now - 2 * 60 * 60 * 1000),
+          },
+          {
+            id: 'exec-newer',
+            flow_id: 'flow-review',
+            status: 'SUCCEEDED',
+            start_time: new Date(now - 60 * 60 * 1000).toISOString(),
+          },
+        ],
+      });
+
+      const row = element.rows.find(
+        (candidate: FlowListRow) => candidate.id === 'flow-review'
+      );
+      expect(row?.runs).to.equal(2);
+      expect(row?.lastRun?.id).to.equal('exec-newer');
+    });
+
+    it('keeps a zoneless run inside the window it belongs to', async () => {
+      const element = await renderFlows({
+        executions: [
+          {
+            id: 'exec-23h',
+            flow_id: 'flow-review',
+            status: 'SUCCEEDED',
+            start_time: naive(Date.now() - 23 * 60 * 60 * 1000),
+          },
+        ],
+      });
+      (element as unknown as { range: string }).range = 'day';
+      await element.updateComplete;
+
+      const row = element.rows.find(
+        (candidate: FlowListRow) => candidate.id === 'flow-review'
+      );
+      expect(row?.runs, '23h back is inside 24h in any timezone').to.equal(1);
+    });
+
+    it('cuts 30d at thirty days, not at a calendar month', async () => {
+      const day = 24 * 60 * 60 * 1000;
+      const element = await renderFlows({
+        executions: [
+          {
+            id: 'exec-29d',
+            flow_id: 'flow-review',
+            status: 'SUCCEEDED',
+            start_time: new Date(Date.now() - 29 * day).toISOString(),
+          },
+          {
+            id: 'exec-30d-and-a-half',
+            flow_id: 'flow-review',
+            status: 'SUCCEEDED',
+            start_time: new Date(Date.now() - 30.5 * day).toISOString(),
+          },
+        ],
+      });
+
+      const row = element.rows.find(
+        (candidate: FlowListRow) => candidate.id === 'flow-review'
+      );
+      // A 31 day month used to stretch "30d" to 31 days.
+      expect(row?.runs).to.equal(1);
+      expect(row?.lastRun?.id).to.equal('exec-29d');
+    });
+
+    it('says which window the failures filter counts', async () => {
+      const element = await renderFlows({ executions: [] });
+      const option = [
+        ...(element.shadowRoot?.querySelectorAll('sl-option') || []),
+      ].find((candidate) => candidate.getAttribute('value') === 'failing');
+
+      expect((option?.textContent || '').replace(/\s+/g, ' ').trim()).to.equal(
+        'Failed in the last 30d'
+      );
+    });
+
+    it('says the flows fetch failed instead of showing an empty account', async () => {
+      const element = await renderFlows({
+        executions: [],
+        flowsStatus: 500,
+      });
+
+      const text = (element.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+      expect(text).to.contain('Could not load your flows');
+      expect(text).to.not.contain('No flows yet');
+      // The failure no longer escapes loadData, so the rest of the page ran.
+      expect((element as any).isLoading).to.be.false;
+    });
+
+    it('reloads the flows when the failure card is retried', async () => {
+      const element = await renderFlows({
+        executions: [],
+        flowsStatus: 500,
+      });
+      fetchStub.restore();
+      fetchStub = stubApi({ executions: [] });
+      invalidateApiCaches();
+
+      const retry = element.shadowRoot?.querySelector(
+        '.empty-card .empty-cta-btn'
+      ) as HTMLElement;
+      expect(retry, 'the failure card offers a retry').to.exist;
+      retry.click();
+      await waitUntil(
+        () => !(element as any).isLoading,
+        'Flows view did not finish reloading'
+      );
+      await element.updateComplete;
+
+      expect(element.shadowRoot?.textContent).to.not.contain(
+        'Could not load your flows'
+      );
+      expect(element.shadowRoot?.querySelector('table.flows-table')).to.exist;
+    });
+  });
 });

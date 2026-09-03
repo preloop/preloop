@@ -89,10 +89,12 @@ async function card(
     usersTotal: number;
     showUsers: boolean;
     loading: boolean;
+    flowRunsCapped: boolean;
   }> = {}
 ): Promise<InventoryCard> {
   const el = await fixture<InventoryCard>(html`
     <inventory-card
+      .flowRunsCapped=${props.flowRunsCapped ?? false}
       .agentRows=${props.agentRows ?? [agentRow()]}
       .flowRows=${props.flowRows ?? [flowRow()]}
       .modelRows=${props.modelRows ?? [modelRow()]}
@@ -247,6 +249,46 @@ describe('inventory-card', () => {
     expect(text).to.not.contain('SUCCEEDED');
     expect(text).to.contain('preloop/preloop #352');
     expect(text).to.contain('3m 7s');
+  });
+
+  it('calls a run count the range when the range is what it counted', async () => {
+    const el = await card();
+    await showTab(el, 'flows');
+    const cells = Array.from(el.shadowRoot!.querySelectorAll('td.num'));
+    const runs = cells.find((td) => td.getAttribute('data-label') === 'Runs');
+    const failed = cells.find(
+      (td) => td.getAttribute('data-label') === 'Failed'
+    );
+    expect(runs?.getAttribute('title')).to.equal('In the last 30d');
+    expect(failed?.getAttribute('title')).to.equal('In the last 30d');
+
+    const empty = await card({
+      flowRows: [flowRow({ lastRun: null, runs: 0, failed: 0 })],
+    });
+    await showTab(empty, 'flows');
+    expect(empty.shadowRoot?.textContent).to.contain('No run in range');
+  });
+
+  it('says the counts came off the last 100 runs when they did', async () => {
+    const el = await card({ flowRunsCapped: true });
+    await showTab(el, 'flows');
+    const runs = Array.from(el.shadowRoot!.querySelectorAll('td.num')).find(
+      (td) => td.getAttribute('data-label') === 'Runs'
+    );
+    expect(runs?.getAttribute('title')).to.equal(
+      'In the last 30d, from the most recent 100 runs'
+    );
+
+    // "No run in range" would be a claim the page cannot make: the range
+    // reaches further back than the hundred runs it read.
+    const empty = await card({
+      flowRunsCapped: true,
+      flowRows: [flowRow({ lastRun: null, runs: 0, failed: 0 })],
+    });
+    await showTab(empty, 'flows');
+    const text = (empty.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain('No run in the most recent 100');
+    expect(text).to.not.contain('No run in range');
   });
 
   it('claims no per-model failure count it cannot stand behind', async () => {

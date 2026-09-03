@@ -28,7 +28,11 @@ import {
 } from '../../api';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
-import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
+import {
+  formatLocalDateTime,
+  formatRelativeTime,
+  parseUTCDate,
+} from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
 import {
   executionSubjectCss,
@@ -75,6 +79,9 @@ const LIST_TO_CARDS_BREAKPOINT = '(max-width: 640px)';
  * sample of a wider period has to say so (DESIGN.md, The Inventory box).
  */
 const EXECUTIONS_SAMPLE_LIMIT = 200;
+
+/** One day, for the ranges whose labels are counted in hours and days. */
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function loadInitialFlowsViewMode(): FlowsViewMode {
   try {
@@ -208,9 +215,18 @@ export function flowTriggerSummary(
   return { label, title: label };
 }
 
+/**
+ * A backend timestamp as epoch milliseconds.
+ *
+ * `Date.parse` reads a naive `2026-09-03T09:00:00` as local time, while the
+ * range boundary this is compared against is UTC. West of Greenwich that
+ * shifted every run count, the failures filter and the last-run sort by the
+ * offset; `parseUTCDate` is what the rest of the console uses for the same
+ * reason.
+ */
 function timeValue(value: string | null | undefined): number {
   if (!value) return Number.NEGATIVE_INFINITY;
-  const parsed = Date.parse(value);
+  const parsed = parseUTCDate(value).getTime();
   return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }
 
@@ -804,6 +820,8 @@ export class FlowsView extends LitElement {
   @state() private costByFlow: Record<string, number> = {};
   @state() private trackerNames: Record<string, string> = {};
   @state() private isLoading = true;
+  /** Set when the flows fetch failed, so the page says so instead of "none". */
+  @state() private loadError: string | null = null;
   @state() private triggeringFlowId: string | null = null;
   @state() private showPresets = true;
   @state() private expandedDescription: {
@@ -867,14 +885,25 @@ export class FlowsView extends LitElement {
     } catch (e) {}
   }
 
-  /** The start of the page range, as the gateway summary wants it. */
+  /**
+   * The start of the page range, as the gateway summary wants it.
+   *
+   * Each window is what its label says. "30d" is 30×24h, not
+   * `setMonth(getMonth() - 1)`: a calendar month is 28 to 31 days, so the
+   * label and the window disagreed by up to three days depending on which
+   * month it was read in. "1y" stays a calendar year, which is what that
+   * label means.
+   */
   private rangeStartDate(): string {
-    const date = new Date();
-    if (this.range === 'day') date.setDate(date.getDate() - 1);
-    else if (this.range === 'week') date.setDate(date.getDate() - 7);
-    else if (this.range === 'year') date.setFullYear(date.getFullYear() - 1);
-    else date.setMonth(date.getMonth() - 1);
-    return date.toISOString();
+    const now = Date.now();
+    if (this.range === 'day') return new Date(now - DAY_MS).toISOString();
+    if (this.range === 'week') return new Date(now - 7 * DAY_MS).toISOString();
+    if (this.range === 'year') {
+      const date = new Date();
+      date.setFullYear(date.getFullYear() - 1);
+      return date.toISOString();
+    }
+    return new Date(now - 30 * DAY_MS).toISOString();
   }
 
   private get rangeLabel(): string {
@@ -889,14 +918,29 @@ export class FlowsView extends LitElement {
     try {
       // Defer /flows/presets (~38KB) until the presets UI is shown or a flow
       // turns out to have been cloned from one.
+      //
+      // The flows call is the one that can empty the page, so its failure is
+      // caught and shown rather than left to become an unhandled rejection
+      // that skips the socket and renders "No flows yet" over an account that
+      // has flows.
       const [flows, executions, activeExecutions] = await Promise.all([
-        getFlows(),
+        getFlows().catch((error) => {
+          console.error('Failed to load flows:', error);
+          return null;
+        }),
         getFlowExecutions({ limit: EXECUTIONS_SAMPLE_LIMIT }).catch(() => []),
         getFlowExecutions({
           limit: 20,
           status: ['PENDING', 'INITIALIZING', 'STARTING', 'RUNNING'],
         }).catch(() => []),
       ]);
+      if (flows === null) {
+        this.loadError = 'Could not load your flows.';
+        this.executions = executions;
+        this.activeExecutions = activeExecutions;
+        return;
+      }
+      this.loadError = null;
       this.flows = flows;
       this.executions = executions;
       this.activeExecutions = activeExecutions;
@@ -1038,7 +1082,7 @@ export class FlowsView extends LitElement {
     string,
     { runs: number; failed: number; last: FlowExecution | null }
   > {
-    const since = Date.parse(this.rangeStartDate());
+    const since = timeValue(this.rangeStartDate());
     const grouped = new Map<
       string,
       { runs: number; failed: number; last: FlowExecution | null }
@@ -1326,16 +1370,18 @@ export class FlowsView extends LitElement {
               : nothing
           }
           ${
-            this.flows.length > 0
-              ? html`
-                  ${this.renderToolbar()}
-                  ${
-                    this.effectiveView === 'list'
-                      ? this.renderListView()
-                      : this.renderCardsView()
-                  }
-                `
-              : this.renderEmptyAccount()
+            this.loadError
+              ? this.renderLoadError()
+              : this.flows.length > 0
+                ? html`
+                    ${this.renderToolbar()}
+                    ${
+                      this.effectiveView === 'list'
+                        ? this.renderListView()
+                        : this.renderCardsView()
+                    }
+                  `
+                : this.renderEmptyAccount()
           }
 
           <sl-divider></sl-divider>
@@ -1501,7 +1547,11 @@ export class FlowsView extends LitElement {
             <sl-option value="enabled">Enabled</sl-option>
             <sl-option value="paused">Paused</sl-option>
             <sl-option value="draft">Draft</sl-option>
-            <sl-option value="failing">Has failures</sl-option>
+            <!-- The count behind this is the page range, like the Failed
+                 column, so the option says which window it means. -->
+            <sl-option value="failing"
+              >Failed in the last ${this.rangeLabel}</sl-option
+            >
           </sl-select>
 
           <time-range-select
@@ -1914,6 +1964,36 @@ export class FlowsView extends LitElement {
           }</span
         >
       </span>
+    `;
+  }
+
+  /**
+   * The flows fetch failed. "No flows yet" would be a lie with a Create flow
+   * button under it, so the page says what happened and offers the retry.
+   */
+  private renderLoadError() {
+    return html`
+      <div class="empty-state empty-state-wrapper">
+        <sl-card class="empty-card">
+          <div class="empty-card-body">
+            <div class="empty-icon-circle">
+              <sl-icon name="exclamation-triangle"></sl-icon>
+            </div>
+            <h3 class="empty-card-title">Could not load your flows</h3>
+            <p class="empty-card-desc">
+              ${this.loadError} The list below is not empty — it is unknown.
+            </p>
+            <sl-button
+              class="empty-cta-btn"
+              variant="primary"
+              @click=${() => void this.loadData()}
+            >
+              <sl-icon slot="prefix" name="arrow-clockwise"></sl-icon>
+              Try again
+            </sl-button>
+          </div>
+        </sl-card>
+      </div>
     `;
   }
 
