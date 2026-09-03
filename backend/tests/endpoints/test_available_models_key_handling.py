@@ -197,6 +197,20 @@ async def test_post_response_never_carries_key_or_endpoint_material(mocker):
     assert result.error == "network"
 
 
+def _stored_api_key_model(*, provider_name: str = "zai") -> MagicMock:
+    """Stored model mock for the API-key listing path.
+
+    MagicMock is truthy, so ``is_principal_bound_oauth`` must be False
+    or the OAuth short-circuit skips decrypt and never hits live listing.
+    """
+    stored = MagicMock()
+    stored.provider_name = provider_name
+    stored.api_endpoint = None
+    stored.meta_data = {}
+    stored.is_principal_bound_oauth = False
+    return stored
+
+
 def test_ai_model_id_is_a_body_field_on_the_post_route():
     assert "ai_model_id" in AvailableModelsRequest.model_fields
 
@@ -207,10 +221,7 @@ async def test_post_edit_refresh_decrypts_stored_key(mocker):
     model_id = uuid.uuid4()
     user = MagicMock()
     user.account_id = uuid.uuid4()
-    stored = MagicMock()
-    stored.provider_name = "zai"
-    stored.api_endpoint = None
-    stored.meta_data = {}
+    stored = _stored_api_key_model()
     mocker.patch.object(ai_models.crud_ai_model, "get_for_account", return_value=stored)
     mocker.patch.object(
         ai_models.crud_ai_model,
@@ -245,10 +256,7 @@ async def test_post_typed_key_wins_over_stored_key(mocker):
     model_id = uuid.uuid4()
     user = MagicMock()
     user.account_id = uuid.uuid4()
-    stored = MagicMock()
-    stored.provider_name = "zai"
-    stored.api_endpoint = None
-    stored.meta_data = {}
+    stored = _stored_api_key_model()
     mocker.patch.object(ai_models.crud_ai_model, "get_for_account", return_value=stored)
     mocker.patch.object(
         ai_models.crud_ai_model,
@@ -307,10 +315,7 @@ async def test_post_provider_mismatch_never_decrypts_the_stored_key(mocker):
     """
     user = MagicMock()
     user.account_id = uuid.uuid4()
-    stored = MagicMock()
-    stored.provider_name = "zai"
-    stored.api_endpoint = None
-    stored.meta_data = {}
+    stored = _stored_api_key_model()
     mocker.patch.object(ai_models.crud_ai_model, "get_for_account", return_value=stored)
     resolve = mocker.patch.object(
         ai_models.crud_ai_model,
@@ -349,10 +354,7 @@ async def test_post_provider_match_is_case_insensitive(mocker):
     """Provider casing from the path must not break a legitimate refresh."""
     user = MagicMock()
     user.account_id = uuid.uuid4()
-    stored = MagicMock()
-    stored.provider_name = "ZAI"
-    stored.api_endpoint = None
-    stored.meta_data = {}
+    stored = _stored_api_key_model(provider_name="ZAI")
     mocker.patch.object(ai_models.crud_ai_model, "get_for_account", return_value=stored)
     mocker.patch.object(
         ai_models.crud_ai_model,
@@ -388,10 +390,7 @@ async def test_post_unexpected_secret_error_is_not_swallowed(mocker):
     """
     user = MagicMock()
     user.account_id = uuid.uuid4()
-    stored = MagicMock()
-    stored.provider_name = "zai"
-    stored.api_endpoint = None
-    stored.meta_data = {}
+    stored = _stored_api_key_model()
     mocker.patch.object(ai_models.crud_ai_model, "get_for_account", return_value=stored)
     mocker.patch.object(
         ai_models.crud_ai_model,
@@ -413,10 +412,7 @@ async def test_post_undecryptable_secret_still_falls_back(mocker):
     """An unreadable stored secret still degrades gracefully."""
     user = MagicMock()
     user.account_id = uuid.uuid4()
-    stored = MagicMock()
-    stored.provider_name = "zai"
-    stored.api_endpoint = None
-    stored.meta_data = {}
+    stored = _stored_api_key_model()
     mocker.patch.object(ai_models.crud_ai_model, "get_for_account", return_value=stored)
     mocker.patch.object(
         ai_models.crud_ai_model,

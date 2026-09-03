@@ -2159,7 +2159,13 @@ export async function uploadAvatar(file: File): Promise<AvatarResponse> {
   });
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
-    throw new Error(detail.detail || 'Failed to upload avatar');
+    if (typeof detail.detail === 'string') {
+      throw new Error(detail.detail);
+    }
+    if (response.status === 413) {
+      throw new Error('Image too large to upload.');
+    }
+    throw new Error(`Failed to upload avatar (${response.status})`);
   }
   // Profile changed -- drop cached /me so the next reader gets fresh data.
   userProfileCache = null;
@@ -2478,6 +2484,7 @@ export type AvailableModelsFallbackReason =
   | 'sdk_missing'
   | 'missing_key'
   | 'auth'
+  | 'subscription_oauth'
   | 'unknown';
 
 export interface AvailableModelsResult {
