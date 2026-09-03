@@ -19,19 +19,26 @@ import '../../../components/budget-policy-editor.ts';
 import '../../../components/preloop-session-observer.ts';
 import '../../../components/add-ai-model-modal';
 import {
+  createModelPriceOverride,
   deleteAIModel,
   extractErrorMessage,
+  fetchAIModelPricingFromProvider,
   fetchWithAuth,
   getAIModel,
+  getAIModelPricing,
   getAIModelGatewayUsageSearch,
   getAIModelGatewayUsageSummary,
   getAIModelRuntimeSessions,
+  getFeatures,
   updateAIModel,
+  updateModelPriceOverride,
   type GatewayUsageSummaryParams,
 } from '../../../api';
 import type {
   AIModel,
   AIModelGatewayUsageSearchResponse,
+  AIModelPriceQuote,
+  AIModelPricingResponse,
   AIModelGatewayUsageSummaryResponse,
   AIModelRuntimeSessionListResponse,
   GatewayUsageByDay,
@@ -43,6 +50,20 @@ import consoleStyles from '../../../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
 
 type DateRangePreset = 'last-7' | 'last-30' | 'last-90' | 'all' | 'custom';
+
+type PriceField =
+  'input' | 'output' | 'cachedInput' | 'request' | 'effectiveFrom';
+
+/** How a price got its numbers, said in the words the console uses elsewhere. */
+const PRICING_SOURCE_LABEL: Record<string, string> = {
+  override: 'Account override',
+  model_config: 'Set on this model',
+  catalog: 'Provider catalog',
+  none: 'No price',
+};
+
+/** Stored overrides are per 1,000 tokens; providers publish per 1,000,000. */
+const PER_1K_TO_PER_1M = 1000;
 
 @customElement('ai-model-detail-view')
 export class AIModelDetailView extends LitElement {
@@ -96,10 +117,44 @@ export class AIModelDetailView extends LitElement {
   private gatewayEnableInFlight = false;
 
   @state()
+  private pricing: AIModelPricingResponse | null = null;
+
+  @state()
+  private pricingEditOpen = false;
+
+  @state()
+  private pricingSaving = false;
+
+  @state()
+  private pricingFetching = false;
+
+  @state()
+  private pricingError: string | null = null;
+
+  @state()
+  private pricingNotice: string | null = null;
+
+  /** The form's own values, in USD per million tokens, as typed. */
+  @state()
+  private priceDraft: Record<PriceField, string> = {
+    input: '',
+    output: '',
+    cachedInput: '',
+    request: '',
+    effectiveFrom: '',
+  };
+
+  @state()
+  private priceOverridesEnabled = false;
+
+  @state()
   private isEditModalOpen = false;
 
   @state()
   private isDeleteConfirmOpen = false;
+
+  /** Set when the URL asked for the price editor before the price arrived. */
+  private pendingPricingEdit = false;
 
   private initialized = false;
   private unsubscribeRealtime?: () => void;
@@ -126,6 +181,67 @@ export class AIModelDetailView extends LitElement {
       .page,
       .stack {
         gap: var(--sl-spacing-large);
+      }
+
+      .price-grid {
+        display: grid;
+        gap: var(--sl-spacing-medium);
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .price-cell-label {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+      }
+
+      .price-cell-value {
+        font-size: var(--sl-font-size-large);
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+      }
+
+      .price-cell-value.unknown {
+        color: var(--sl-color-neutral-500);
+        font-weight: 400;
+      }
+
+      .price-cell-unit {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-x-small);
+      }
+
+      .price-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small);
+        margin-top: var(--sl-spacing-medium);
+      }
+
+      .price-form {
+        border-top: 1px solid var(--sl-color-neutral-200);
+        margin-top: var(--sl-spacing-medium);
+        padding-top: var(--sl-spacing-medium);
+      }
+
+      .price-form-grid {
+        display: grid;
+        gap: var(--sl-spacing-small);
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        margin-bottom: var(--sl-spacing-small);
+      }
+
+      .price-notice,
+      .price-error {
+        font-size: var(--sl-font-size-small);
+        margin-top: var(--sl-spacing-small);
+      }
+
+      .price-notice {
+        color: var(--sl-color-neutral-700);
+      }
+
+      .price-error {
+        color: var(--sl-color-danger-700);
       }
 
       .filters-grid,
@@ -342,6 +458,10 @@ export class AIModelDetailView extends LitElement {
           grid-template-columns: 1fr;
         }
 
+        .price-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
         .cell-numeric {
           text-align: left;
         }
@@ -362,6 +482,10 @@ export class AIModelDetailView extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.connectRealtime();
+    // The attention list links here with ?pricing=edit, so "Set price" lands
+    // on the form rather than on a page with a form somewhere down it.
+    this.pendingPricingEdit =
+      new URLSearchParams(window.location.search).get('pricing') === 'edit';
 
     if (!this.initialized) {
       if (this.selectedRange !== 'custom') {
@@ -471,6 +595,8 @@ export class AIModelDetailView extends LitElement {
       this.loading = false;
       return;
     }
+
+    void this.loadPricing();
 
     try {
       const params = this.buildSummaryParams();
@@ -587,6 +713,209 @@ export class AIModelDetailView extends LitElement {
 
   private formatNumber(value: number | null | undefined): string {
     return typeof value === 'number' ? value.toLocaleString() : '0';
+  }
+
+  /**
+   * The price is loaded on its own: it comes from a different endpoint than
+   * the usage numbers, and a model with no price is still worth reading about.
+   */
+  private async loadPricing(): Promise<void> {
+    if (!this.modelId) {
+      return;
+    }
+    try {
+      const [pricing, features] = await Promise.all([
+        getAIModelPricing(this.modelId),
+        getFeatures().catch(() => ({ features: {} })),
+      ]);
+      this.pricing = pricing;
+      this.priceOverridesEnabled =
+        (features.features || {}).model_price_overrides === true;
+      if (!this.pricingEditOpen) {
+        this.resetPriceDraft();
+      }
+      if (this.pendingPricingEdit) {
+        this.pendingPricingEdit = false;
+        if (this.canEditPrice) {
+          this.openPriceEditor();
+        }
+      }
+    } catch {
+      // A missing price is not an error worth a banner: the card says so.
+      this.pricing = null;
+    }
+  }
+
+  private get canEditPrice(): boolean {
+    return this.priceOverridesEnabled;
+  }
+
+  /** Fill the form from the price in force, so editing starts from today. */
+  private resetPriceDraft(): void {
+    const price = this.pricing?.price;
+    this.priceDraft = {
+      input: this.priceInputValue(price?.input_per_1m),
+      output: this.priceInputValue(price?.output_per_1m),
+      cachedInput: this.priceInputValue(price?.cached_input_per_1m),
+      request: this.priceInputValue(price?.request_price),
+      effectiveFrom: this.getLocalDateString(new Date()),
+    };
+  }
+
+  private priceInputValue(value: number | null | undefined): string {
+    return typeof value === 'number' ? String(value) : '';
+  }
+
+  private openPriceEditor = () => {
+    this.resetPriceDraft();
+    this.pricingError = null;
+    this.pricingNotice = null;
+    this.pricingEditOpen = true;
+  };
+
+  private closePriceEditor = () => {
+    this.pricingEditOpen = false;
+    this.pricingError = null;
+  };
+
+  private setPriceField(field: PriceField, value: string): void {
+    this.priceDraft = { ...this.priceDraft, [field]: value };
+  }
+
+  /**
+   * Read one typed price. Empty means "say nothing about this", which is not
+   * the same as zero, so it comes back as null.
+   */
+  private parsePrice(value: string): number | null | undefined {
+    const text = value.trim();
+    if (!text) {
+      return null;
+    }
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return undefined;
+    }
+    return parsed;
+  }
+
+  /** Ask the provider what it charges. The answer fills the form, unsaved. */
+  private async fetchProviderPrice(): Promise<void> {
+    if (!this.modelId) {
+      return;
+    }
+    this.pricingFetching = true;
+    this.pricingError = null;
+    this.pricingNotice = null;
+    try {
+      const quote: AIModelPriceQuote = await fetchAIModelPricingFromProvider(
+        this.modelId
+      );
+      if (!this.pricingEditOpen) {
+        this.resetPriceDraft();
+        this.pricingEditOpen = true;
+      }
+      this.priceDraft = {
+        ...this.priceDraft,
+        input: this.priceInputValue(quote.price.input_per_1m),
+        output: this.priceInputValue(quote.price.output_per_1m),
+        cachedInput: this.priceInputValue(quote.price.cached_input_per_1m),
+        request: this.priceInputValue(quote.price.request_price),
+      };
+      const label =
+        this.pricing?.fetch_provider_label ||
+        quote.provider_name ||
+        'the provider';
+      this.pricingNotice = `${label} lists ${quote.model_key}. Check the numbers and save to use them.`;
+    } catch (error) {
+      this.pricingError =
+        error instanceof Error
+          ? error.message
+          : 'Could not read a price from the provider.';
+    } finally {
+      this.pricingFetching = false;
+    }
+  }
+
+  /**
+   * Save the form as an account price override. An override already in force
+   * is updated in place; anything else creates one, so history is not rewritten
+   * by accident.
+   */
+  private async savePrice(): Promise<void> {
+    const input = this.parsePrice(this.priceDraft.input);
+    const output = this.parsePrice(this.priceDraft.output);
+    const cached = this.parsePrice(this.priceDraft.cachedInput);
+    const request = this.parsePrice(this.priceDraft.request);
+    if (
+      input === undefined ||
+      output === undefined ||
+      cached === undefined ||
+      request === undefined
+    ) {
+      this.pricingError = 'Prices must be zero or more.';
+      return;
+    }
+    if (input === null && output === null && request === null) {
+      this.pricingError =
+        'Enter at least an input price, an output price or a price per request.';
+      return;
+    }
+    const effectiveFrom = this.priceDraft.effectiveFrom.trim();
+    if (!effectiveFrom) {
+      this.pricingError = 'Pick the date this price starts.';
+      return;
+    }
+    const effectiveDate = new Date(`${effectiveFrom}T00:00:00`);
+    if (Number.isNaN(effectiveDate.getTime())) {
+      this.pricingError = 'That is not a date Preloop can read.';
+      return;
+    }
+    const modelAlias =
+      this.pricing?.model_alias || this.gatewayModelAlias || this.model?.name;
+    if (!modelAlias) {
+      this.pricingError = 'This model has no gateway alias to price.';
+      return;
+    }
+
+    const perThousand = (value: number | null): number | null =>
+      value === null ? null : value / PER_1K_TO_PER_1M;
+
+    this.pricingSaving = true;
+    this.pricingError = null;
+    try {
+      const payload = {
+        ai_model_id: this.modelId,
+        provider_name: this.model?.provider_name || null,
+        model_alias: modelAlias,
+        currency: this.pricing?.currency || 'USD',
+        input_price_per_1k: perThousand(input),
+        output_price_per_1k: perThousand(output),
+        cache_read_input_price_per_1k: perThousand(cached),
+        cache_creation_input_price_per_1k: null,
+        price_per_1k: null,
+        request_price: request,
+        discount_percent: null,
+        prepaid_token_balance: null,
+        prepaid_credit_balance_usd: null,
+        effective_from: effectiveDate.toISOString(),
+        effective_until: null,
+        is_active: true,
+        notes: null,
+      };
+      if (this.pricing?.override_id) {
+        await updateModelPriceOverride(this.pricing.override_id, payload);
+      } else {
+        await createModelPriceOverride(payload);
+      }
+      this.pricingEditOpen = false;
+      this.pricingNotice = 'Price saved. New requests are costed with it.';
+      await this.loadPricing();
+    } catch (error) {
+      this.pricingError =
+        error instanceof Error ? error.message : 'Failed to save the price.';
+    } finally {
+      this.pricingSaving = false;
+    }
   }
 
   private formatCost(value: number | null | undefined): string {
@@ -1056,6 +1385,246 @@ export class AIModelDetailView extends LitElement {
     `;
   }
 
+  /**
+   * What this model costs, where that number comes from, and the two ways to
+   * change it. Every other page reports spend; this is the only place the
+   * price behind it can be read.
+   */
+  private renderPricingCard() {
+    const pricing = this.pricing;
+    const price = pricing?.price;
+    const source = pricing?.source || 'none';
+    const providerLabel =
+      pricing?.fetch_provider_label || this.model?.provider_name || 'provider';
+    return html`
+      <sl-card id="pricing">
+        <div slot="header" class="model-heading">
+          <div class="model-title">Pricing</div>
+          <div class="badge-row">
+            <sl-badge variant=${source === 'none' ? 'warning' : 'neutral'}>
+              ${PRICING_SOURCE_LABEL[source] || source}
+            </sl-badge>
+          </div>
+        </div>
+        ${
+          pricing
+            ? html`
+                <div class="price-grid">
+                  ${this.renderPriceCell('Input', price?.input_per_1m)}
+                  ${this.renderPriceCell('Output', price?.output_per_1m)}
+                  ${this.renderPriceCell(
+                    'Cached input',
+                    price?.cached_input_per_1m
+                  )}
+                  ${this.renderPriceCell(
+                    'Per request',
+                    price?.request_price,
+                    true
+                  )}
+                </div>
+                <div class="meta-line">${this.pricingProvenance()}</div>
+              `
+            : html`
+                <div class="meta-line">
+                  Pricing is not available for this model.
+                </div>
+              `
+        }
+        ${
+          this.pricingNotice
+            ? html`<div class="price-notice" role="status">
+                ${this.pricingNotice}
+              </div>`
+            : ''
+        }
+        ${
+          this.pricingError
+            ? html`<div class="price-error" role="alert">
+                ${this.pricingError}
+              </div>`
+            : ''
+        }
+        ${this.pricingEditOpen ? this.renderPriceForm() : ''}
+        <div class="price-actions">
+          ${
+            this.canEditPrice && !this.pricingEditOpen
+              ? html`<sl-button
+                  size="small"
+                  data-testid="edit-price"
+                  @click=${this.openPriceEditor}
+                  >Edit price</sl-button
+                >`
+              : ''
+          }
+          ${
+            pricing?.fetch_supported
+              ? html`<sl-button
+                  size="small"
+                  data-testid="fetch-price"
+                  ?loading=${this.pricingFetching}
+                  @click=${() => void this.fetchProviderPrice()}
+                  >Fetch from provider</sl-button
+                >`
+              : html`<sl-button
+                  size="small"
+                  disabled
+                  data-testid="fetch-price"
+                  title=${`Not offered by ${providerLabel}`}
+                  >Not offered by ${providerLabel}</sl-button
+                >`
+          }
+        </div>
+        ${
+          this.canEditPrice
+            ? ''
+            : html`<div class="meta-line">
+                Price overrides are part of Preloop Cloud and Enterprise. The
+                price above comes from the provider catalog.
+              </div>`
+        }
+      </sl-card>
+    `;
+  }
+
+  private renderPriceCell(
+    label: string,
+    value: number | null | undefined,
+    perRequest = false
+  ) {
+    const known = typeof value === 'number';
+    return html`
+      <div class="price-cell">
+        <div class="price-cell-label">${label}</div>
+        <div class="price-cell-value ${known ? '' : 'unknown'}">
+          ${known ? this.formatPrice(value as number) : 'Not priced'}
+        </div>
+        <div class="price-cell-unit">
+          ${perRequest ? 'per request' : 'per 1M tokens'}
+        </div>
+      </div>
+    `;
+  }
+
+  /** Prices run from $0.02 to $75 per million, so two decimals is not enough. */
+  private formatPrice(value: number): string {
+    if (value === 0) {
+      return '$0';
+    }
+    if (value >= 1) {
+      return `$${value.toFixed(2)}`;
+    }
+    return `$${value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}`;
+  }
+
+  private pricingProvenance(): string {
+    const pricing = this.pricing;
+    if (!pricing) {
+      return '';
+    }
+    if (pricing.source === 'none') {
+      return 'Nothing prices this model, so its requests are recorded without a cost.';
+    }
+    const parts: string[] = [];
+    if (pricing.source === 'catalog' && pricing.catalog_key) {
+      parts.push(`Catalog entry ${pricing.catalog_key}`);
+    }
+    if (pricing.source === 'override') {
+      parts.push('Set by an account price override');
+    }
+    if (pricing.source === 'model_config') {
+      parts.push('Set on the model itself');
+    }
+    if (pricing.effective_from) {
+      parts.push(
+        `in force since ${this.formatDateTime(pricing.effective_from)}`
+      );
+    }
+    if (pricing.effective_until) {
+      parts.push(`until ${this.formatDateTime(pricing.effective_until)}`);
+    }
+    return `${parts.join(', ')}.`;
+  }
+
+  private renderPriceForm() {
+    return html`
+      <div class="price-form" data-testid="price-form">
+        <div class="price-form-grid">
+          <sl-input
+            label="Input per 1M tokens"
+            inputmode="decimal"
+            data-testid="price-input"
+            value=${this.priceDraft.input}
+            @sl-input=${(event: Event) =>
+              this.setPriceField(
+                'input',
+                (event.target as HTMLInputElement).value
+              )}
+          ></sl-input>
+          <sl-input
+            label="Output per 1M tokens"
+            inputmode="decimal"
+            data-testid="price-output"
+            value=${this.priceDraft.output}
+            @sl-input=${(event: Event) =>
+              this.setPriceField(
+                'output',
+                (event.target as HTMLInputElement).value
+              )}
+          ></sl-input>
+          <sl-input
+            label="Cached input per 1M tokens"
+            inputmode="decimal"
+            data-testid="price-cached"
+            value=${this.priceDraft.cachedInput}
+            @sl-input=${(event: Event) =>
+              this.setPriceField(
+                'cachedInput',
+                (event.target as HTMLInputElement).value
+              )}
+          ></sl-input>
+          <sl-input
+            label="Per request"
+            inputmode="decimal"
+            data-testid="price-request"
+            value=${this.priceDraft.request}
+            @sl-input=${(event: Event) =>
+              this.setPriceField(
+                'request',
+                (event.target as HTMLInputElement).value
+              )}
+          ></sl-input>
+          <sl-input
+            type="date"
+            label="In force from"
+            data-testid="price-effective-from"
+            value=${this.priceDraft.effectiveFrom}
+            @sl-input=${(event: Event) =>
+              this.setPriceField(
+                'effectiveFrom',
+                (event.target as HTMLInputElement).value
+              )}
+          ></sl-input>
+        </div>
+        <div class="meta-line">
+          Leave a field empty to say nothing about it. Empty is not $0.
+        </div>
+        <div class="price-actions">
+          <sl-button
+            variant="primary"
+            size="small"
+            data-testid="save-price"
+            ?loading=${this.pricingSaving}
+            @click=${() => void this.savePrice()}
+            >Save price</sl-button
+          >
+          <sl-button size="small" @click=${this.closePriceEditor}
+            >Cancel</sl-button
+          >
+        </div>
+      </div>
+    `;
+  }
+
   private renderGatewayValidation() {
     const gatewayConfig = this.getGatewayConfig();
     return html`
@@ -1323,7 +1892,7 @@ export class AIModelDetailView extends LitElement {
               ></budget-policy-editor>
             </sl-card>
 
-            ${this.renderGatewayValidation()}
+            ${this.renderPricingCard()} ${this.renderGatewayValidation()}
 
             <sl-card>
               <div slot="header" class="model-title">Filters</div>
