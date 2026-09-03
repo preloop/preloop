@@ -1712,7 +1712,6 @@ export class DashboardView extends AuthedElement {
     this.error = null;
 
     const startDateStr = this.getGatewayStartDate();
-    const attentionPromise = this.refreshAttentionInputs();
 
     try {
       // Wave 1 (above-the-fold): gateway metrics, budget, recent executions,
@@ -1858,11 +1857,15 @@ export class DashboardView extends AuthedElement {
         features: featuresRes,
       });
 
-      await attentionPromise;
-
       this.lastUpdatedAt = new Date().toISOString();
       this.loading = false;
       this.saveDashboardCache();
+
+      // After the fold, not during wave 1: attention used to fetch its own
+      // usage breakdown in parallel and first paint waited for it. The
+      // loader still uses a fixed 30-day window so the strip matches
+      // /console/attention; wave 2's selected range is a different query.
+      void this.refreshAttentionInputs();
 
       // Wave 2 is slow (full session breakdown + audit/tools). On a live
       // websocket refresh only upgrade the top-models breakdown so the card
@@ -2288,9 +2291,9 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
-   * Same loader, same parameters as the Attention page. Runs alongside the
-   * dashboard fetch rather than inside it so a slow attention input never
-   * holds up the cards above the fold.
+   * Same loader, same parameters as the Attention page, including the
+   * fixed 30-day usage breakdown. Starts after the first paint so a slow
+   * attention input never holds up the cards above the fold.
    */
   private async refreshAttentionInputs(): Promise<void> {
     try {

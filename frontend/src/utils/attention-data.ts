@@ -138,7 +138,9 @@ export async function loadAttentionInputs(
       ? Promise.resolve([] as BudgetPolicy[])
       : getBudgetPolicies(),
     // The breakdown is what turns "336 requests unpriced" into "these seven
-    // models have no price", which is the part somebody can act on.
+    // models have no price", which is the part somebody can act on. Always
+    // a fixed ATTENTION_QUERY.usageWindowDays window so Overview and
+    // /console/attention agree; do not reuse the dashboard's selected range.
     getAccountGatewayUsageSummary({
       startDate: usageStart,
       includeBreakdown: true,
@@ -186,7 +188,7 @@ export async function loadAttentionInputs(
         ? (policies.value as BudgetPolicy[])
         : [],
     usageSummary:
-      summary.status === 'fulfilled'
+      summary.status === 'fulfilled' && summary.value
         ? (summary.value as AccountGatewayUsageSummaryResponse)
         : null,
     priceOverrides:
