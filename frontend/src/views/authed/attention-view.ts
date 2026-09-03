@@ -21,11 +21,13 @@ import {
   getFeatures,
   getUserProfile,
   hasPermission,
+  removeAccountAgent,
   restoreAttentionItem,
   type AttentionDismissal,
   type BudgetPolicy,
   type UserPermissions,
 } from '../../api';
+import { confirmDialog } from '../../components/confirm-dialog';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import type {
@@ -46,6 +48,7 @@ import {
   type AttentionKind,
   type DismissedAttentionItem,
 } from '../../utils/attention';
+import { REMOVE_AGENT_CONSEQUENCE } from '../../utils/agent-display';
 import { loadAttentionInputs } from '../../utils/attention-data';
 import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
 import {
@@ -706,6 +709,42 @@ export class AttentionView extends AuthedElement {
     );
   }
 
+  /** Removing an agent is the same permission the agent page checks. */
+  private get canRemoveAgents(): boolean {
+    return hasPermission(this.permissions, 'manage_agents');
+  }
+
+  /**
+   * The Remove offered next to "start it where it runs": one confirmation
+   * naming the agent and its consequence, then the same DELETE the agent page
+   * uses, then a refetch so the row leaves the inbox.
+   */
+  private async removeAgent(
+    item: AttentionItem,
+    agent: { id: string; name: string }
+  ): Promise<void> {
+    const confirmed = await confirmDialog({
+      title: 'Remove agent',
+      message: `Remove ${agent.name} from the managed agents list?`,
+      detail: REMOVE_AGENT_CONSEQUENCE,
+      confirmLabel: 'Remove agent',
+      variant: 'danger',
+    });
+    if (!confirmed) {
+      return;
+    }
+    this.busyItemId = item.id;
+    this.dismissError = null;
+    try {
+      await removeAccountAgent(agent.id);
+      await this.fetchAll();
+    } catch {
+      this.dismissError = 'Could not remove that agent. Try again.';
+    } finally {
+      this.busyItemId = null;
+    }
+  }
+
   /**
    * Approvals are never dismissable, and a server without the endpoint gets no
    * controls at all rather than buttons that fail.
@@ -846,11 +885,31 @@ export class AttentionView extends AuthedElement {
             <div class="evidence-line">${reason.text}</div>
             ${reason.command ? this.renderCommand(reason.command) : nothing}
             ${
-              reason.action
+              reason.action || reason.removeAgent
                 ? html`<div class="evidence-actions">
-                    <sl-button size="small" href=${reason.action.href}
-                      >${reason.action.label}</sl-button
-                    >
+                    ${
+                      reason.action
+                        ? html`<sl-button
+                            size="small"
+                            href=${reason.action.href}
+                            >${reason.action.label}</sl-button
+                          >`
+                        : nothing
+                    }
+                    ${
+                      reason.removeAgent && this.canRemoveAgents
+                        ? html`<sl-button
+                            size="small"
+                            variant="danger"
+                            outline
+                            data-testid="remove-agent"
+                            ?loading=${this.busyItemId === item.id}
+                            @click=${() =>
+                              this.removeAgent(item, reason.removeAgent!)}
+                            >Remove</sl-button
+                          >`
+                        : nothing
+                    }
                   </div>`
                 : nothing
             }

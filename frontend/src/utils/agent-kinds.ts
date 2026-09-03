@@ -55,6 +55,45 @@ export const AGENT_KIND_PRESENTATION: Record<string, AgentKindPresentation> = {
 };
 
 /**
+ * Kinds the CLI discovers on a machine and can onboard.
+ *
+ * `preloop agents onboard <name>` scans the local machine for a known product
+ * and enrolls it. These are the kinds it can produce (see
+ * `managedAgentKindForAgent` in the CLI). Everything else - `custom` agents,
+ * LangGraph graphs, anything wired through an SDK - is started by whoever
+ * wrote it, so telling its owner to run the onboarding command is wrong: the
+ * CLI has nothing to find.
+ */
+export const CLI_ONBOARDABLE_AGENT_KINDS: ReadonlySet<string> = new Set([
+  'claude_code',
+  'claude_desktop',
+  'codex',
+  'openclaw',
+  'gemini_cli',
+  'geminicli',
+  'opencode',
+  'hermes',
+  'cursor',
+  'windsurf',
+  'vscode',
+  'antigravity',
+  'devin',
+  'desktop_agent',
+]);
+
+/**
+ * True when `preloop agents onboard` is the right instruction for this kind.
+ *
+ * An unknown kind answers false on purpose: printing a command that cannot
+ * work is worse than printing none.
+ */
+export function isCliOnboardableAgentKind(
+  kind: string | null | undefined
+): boolean {
+  return CLI_ONBOARDABLE_AGENT_KINDS.has(normalizeAgentKind(kind));
+}
+
+/**
  * Fold a raw kind into the canonical form used as a table key.
  *
  * Mirrors the server-side normalization so `Gemini CLI`, `gemini-cli`, and

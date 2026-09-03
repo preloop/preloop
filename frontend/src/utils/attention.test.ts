@@ -23,6 +23,7 @@ function agentFixture(overrides: Record<string, unknown> = {}): any {
   return {
     id: 'agent-1',
     display_name: 'Hermes',
+    agent_kind: 'hermes',
     session_source_id: 'hermes-principal',
     lifecycle_state: 'active',
     activity_status: 'idle',
@@ -604,11 +605,12 @@ describe('deriveAttentionItems', () => {
       expect(items[0].fingerprint).to.equal('run:run-3');
     });
 
-    it('gives an unconnected agent a sentence and the command that fixes it', () => {
+    it('gives an unconnected CLI agent a sentence and the command that fixes it', () => {
       const items = derive({
         agents: [
           agentFixture({
             display_name: 'Researcher',
+            agent_kind: 'claude_code',
             onboarding_state: 'incomplete',
           }),
         ],
@@ -631,6 +633,7 @@ describe('deriveAttentionItems', () => {
         agents: [
           agentFixture({
             display_name: `Researcher'; rm -rf / #`,
+            agent_kind: 'claude_code',
             onboarding_state: 'incomplete',
           }),
         ],
@@ -640,6 +643,50 @@ describe('deriveAttentionItems', () => {
       expect(reasons[0].command).to.equal(
         `preloop agents onboard 'Researcher'\\''; rm -rf / #'`
       );
+    });
+
+    it('tells a custom agent to start or remove it, with no CLI command', () => {
+      const items = derive({
+        agents: [
+          agentFixture({
+            id: 'agent-7',
+            display_name: 'Researcher',
+            agent_kind: 'custom',
+            onboarding_state: 'incomplete',
+          }),
+        ],
+      });
+
+      const reasons = items[0].evidence?.agentReasons || [];
+      expect(reasons).to.have.length(1);
+      expect(reasons[0].text).to.equal(
+        'Custom agents are started by you. Start it where it runs, remove it if it is gone, or dismiss this if it is expected.'
+      );
+      expect(reasons[0].command).to.equal(undefined);
+      expect(reasons[0].action).to.deep.equal({
+        label: 'Open agent',
+        href: '/console/agents/agent-7',
+      });
+      expect(reasons[0].removeAgent).to.deep.equal({
+        id: 'agent-7',
+        name: 'Researcher',
+      });
+    });
+
+    it('treats an unknown agent kind as not CLI onboardable', () => {
+      const items = derive({
+        agents: [
+          agentFixture({
+            display_name: 'LangGraph Researcher',
+            agent_kind: 'langgraph',
+            onboarding_state: 'incomplete',
+          }),
+        ],
+      });
+
+      const reasons = items[0].evidence?.agentReasons || [];
+      expect(reasons[0].command).to.equal(undefined);
+      expect(reasons[0].removeAgent?.name).to.equal('LangGraph Researcher');
     });
 
     it('keeps the last five gateway failures for a model', () => {

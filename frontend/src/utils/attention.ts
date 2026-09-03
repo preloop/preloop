@@ -11,6 +11,7 @@ import {
   parseUTCDate,
 } from './date';
 import { sessionBelongsToAgent } from './agent-display';
+import { isCliOnboardableAgentKind } from './agent-kinds';
 import { shellQuote } from './shell';
 
 /**
@@ -65,6 +66,12 @@ export interface AttentionAgentReason {
   /** Shown as a copyable command line when present. */
   command?: string;
   action?: { label: string; href: string };
+  /**
+   * When set, the row offers a danger-outline Remove for this agent. Used for
+   * kinds the CLI cannot onboard, where "remove it if it is gone" is the
+   * instruction rather than a command to run.
+   */
+  removeAgent?: { id: string; name: string };
 }
 
 /** The numbers behind a budget item. */
@@ -346,13 +353,29 @@ function agentItems(
     // is not a fault: neither ever reaches this list.
     if (agent.onboarding_state === 'incomplete') {
       reasons.push('Not connected');
-      evidence.push({
-        text: 'Onboarding never completed. Onboard it on the machine it runs on, or remove it.',
-        command: `preloop agents onboard ${shellQuote(
-          agent.display_name || agent.id
-        )}`,
-        action: { label: 'Open agent', href: agentHref },
-      });
+      // `agent_kind` is what the product is; older rows only carry the
+      // transport they connected with, which is the same token for every kind
+      // the CLI onboards.
+      if (
+        isCliOnboardableAgentKind(agent.agent_kind || agent.session_source_type)
+      ) {
+        evidence.push({
+          text: 'Onboarding never completed. Onboard it on the machine it runs on, or remove it.',
+          command: `preloop agents onboard ${shellQuote(
+            agent.display_name || agent.id
+          )}`,
+          action: { label: 'Open agent', href: agentHref },
+        });
+      } else {
+        // A custom or SDK-integrated agent is not something the CLI can find
+        // on a machine, so the onboarding command would fail. What its owner
+        // can do is start it, remove it, or say it is expected.
+        evidence.push({
+          text: 'Custom agents are started by you. Start it where it runs, remove it if it is gone, or dismiss this if it is expected.',
+          action: { label: 'Open agent', href: agentHref },
+          removeAgent: { id: agent.id, name: agent.display_name || agent.id },
+        });
+      }
     }
     const latestSession = latestSessionForAgent(agent, sessions);
     const failedRequests = latestSession?.failed_requests || 0;
