@@ -35,6 +35,8 @@ import {
   getUsers,
   getFeatures,
   getUserProfile,
+  hasPermission,
+  type UserPermissions,
 } from '../../api';
 import '../../components/preloop-invite-dialog';
 import '../../components/preloop-flow-form';
@@ -76,9 +78,25 @@ import type {
   InventoryFlowRow,
   InventoryModelRow,
   InventoryToolRow,
+  InventoryUserRow,
 } from '../../components/inventory-card';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
+
+/**
+ * A user as the admin list returns them: the shared `User` type predates
+ * roles being carried on the list, and the Inventory only reads four fields.
+ */
+interface AccountUser {
+  id: string;
+  username?: string | null;
+  email?: string | null;
+  full_name?: string | null;
+  is_active?: boolean;
+  last_login?: string | null;
+  roles?: Array<{ name?: string | null }> | null;
+  inherited_roles?: Array<{ name?: string | null }> | null;
+}
 
 interface AuditEvent {
   id: string;
@@ -168,6 +186,15 @@ interface TopModelSubjectGroup {
 
 export const NEXT_STEPS_DISMISSED_KEY = 'dashboard_next_steps_dismissed';
 
+/**
+ * What the last completed load concluded about the checklist. The card is
+ * derived from four separate fetches; before they land, every step looks
+ * undone, which is how a finished account saw "Next steps" flash back on
+ * every refresh. Remembering the answer means the page can stay quiet until
+ * it knows better.
+ */
+export const NEXT_STEPS_DONE_KEY = 'dashboard_next_steps_all_done';
+
 /** The wire formats the model gateway speaks, as URL prefixes. */
 type GatewayFormat = '/openai/v1' | '/anthropic/v1' | '/google/v1';
 
@@ -225,6 +252,16 @@ export class DashboardView extends AuthedElement {
   @state() private hasAIModels = false;
   @state() private aiModelsCount = 0;
   @state() private enabledUsersCount = 0;
+  /** Active users, kept for the Inventory's Users tab (Cloud/Enterprise). */
+  @state() private accountUsers: AccountUser[] = [];
+  /**
+   * This account's permissions, or null when RBAC is off (OSS, DISABLE_RBAC).
+   *
+   * `undefined` means the profile has not answered yet; both that and null
+   * read as unrestricted, the same way the shell treats them, so a slow or
+   * failed profile call never hides something the operator can use.
+   */
+  @state() private permissions: UserPermissions = undefined;
   @state() private toolCallsCount = 0;
   @state() private failedToolCallsCount = 0;
   @state() private totalFlowsCount = 0;
@@ -239,6 +276,8 @@ export class DashboardView extends AuthedElement {
   @state() private welcomeCardDismissed = false;
   @state() private nextStepsDismissed = false;
   @state() private userManagementEnabled = false;
+  /** True once the feature flags have answered, either way. */
+  @state() private featuresResolved = false;
   /** Rate-limited requests for the gateway row; null when the call failed. */
   @state() private rateLimitReport: AccountRateLimitReportResponse | null =
     null;
@@ -511,6 +550,17 @@ export class DashboardView extends AuthedElement {
       }
       .attention-strip-all:hover {
         text-decoration: underline;
+      }
+      /* Nothing is wrong, one thing is worth a look: same line, no amber. */
+      .attention-strip.low-only {
+        background: var(--console-surface);
+        border-color: var(--sl-color-neutral-200);
+      }
+      .attention-strip.low-only .attention-strip-icon {
+        color: var(--sl-color-neutral-500);
+      }
+      .attention-strip.low-only .attention-strip-count {
+        color: var(--sl-color-neutral-700);
       }
       /* Next steps: a checklist, not a wizard. */
       .next-steps-list {
@@ -1200,10 +1250,30 @@ export class DashboardView extends AuthedElement {
     try {
       const user = await getUserProfile();
       this.isAdmin = user?.is_superuser || false;
+      this.permissions = user?.permissions ?? null;
     } catch (error) {
       console.error('Failed to fetch user profile:', error);
       this.isAdmin = false;
+      this.permissions = null;
     }
+  }
+
+  /**
+   * Whether this account has teammates to show *and* this operator may see
+   * them.
+   *
+   * `GET /api/v1/users` requires `view_users`, which the system viewer role
+   * does not carry. Gating the tab on the licence flag alone put a Users tab
+   * in front of a viewer that answered "No teammates yet." after a swallowed
+   * 403 - a sentence about the account when the truth was about the reader.
+   * Without the permission there is no tab, which is what the sidebar already
+   * does with /console/settings/users.
+   */
+  private get canViewUsers(): boolean {
+    return (
+      this.userManagementEnabled &&
+      hasPermission(this.permissions, 'view_users')
+    );
   }
 
   private async fetchFeatures() {
@@ -1218,6 +1288,8 @@ export class DashboardView extends AuthedElement {
       this.isEnterprise = false;
       this.userManagementEnabled = false;
       return null;
+    } finally {
+      this.featuresResolved = true;
     }
   }
 
@@ -1353,6 +1425,38 @@ export class DashboardView extends AuthedElement {
       localStorage.getItem('dashboard_welcome_dismissed') === 'true';
     this.nextStepsDismissed =
       localStorage.getItem(NEXT_STEPS_DISMISSED_KEY) === 'true';
+  }
+
+  /**
+   * True once agents, budget policies, tools and the feature flags have all
+   * answered. Until then the checklist has nothing to read.
+   */
+  private get nextStepsInputsResolved(): boolean {
+    return (
+      !this.loading &&
+      !this.fetchingAgents &&
+      !this.fetchingBudget &&
+      !this.fetchingMCPAndTools &&
+      this.featuresResolved
+    );
+  }
+
+  /** `null` when no load has ever finished on this browser. */
+  private readCoreStepsDone(): boolean | null {
+    try {
+      const stored = localStorage.getItem(NEXT_STEPS_DONE_KEY);
+      return stored === null ? null : stored === 'true';
+    } catch {
+      return null;
+    }
+  }
+
+  private rememberCoreStepsDone(done: boolean): void {
+    try {
+      localStorage.setItem(NEXT_STEPS_DONE_KEY, done ? 'true' : 'false');
+    } catch {
+      // Private mode: the card behaves as it did before, one refresh late.
+    }
   }
 
   private dismissNextSteps(): void {
@@ -1805,7 +1909,14 @@ export class DashboardView extends AuthedElement {
             this.catchWith403Handling(getTools(), [] as Tool[]),
             this.catchWith403Handling(getAIModels(), []),
             this.catchWith403Handling(
-              isSaaS()
+              // User management is a licensed feature, not a hosting model:
+              // a self-hosted Enterprise account has teammates too, and the
+              // Inventory's Users tab is gated on the same flag and on
+              // view_users. Both the flags and the profile have answered by
+              // the time this secondary fetch runs, so a reader without the
+              // permission does not spend a request on a certain 403.
+              hasPermission(this.permissions, 'view_users') &&
+                (isSaaS() || this.userManagementEnabled)
                 ? getUsers()
                 : Promise.resolve({
                     users: [],
@@ -1851,6 +1962,11 @@ export class DashboardView extends AuthedElement {
         }
         this.hasAIModels = (aiModels || []).length > 0;
         this.aiModelsCount = Array.isArray(aiModels) ? aiModels.length : 0;
+        this.accountUsers = Array.isArray(users.users)
+          ? (users.users as AccountUser[]).filter(
+              (user) => user.is_active !== false
+            )
+          : [];
         this.enabledUsersCount = Array.isArray(users.users)
           ? users.users.filter((u: { is_active?: boolean }) => u.is_active)
               .length
@@ -2313,8 +2429,19 @@ export class DashboardView extends AuthedElement {
     if (this.nextStepsDismissed) {
       return nothing;
     }
+    const remembered = this.readCoreStepsDone();
+    if (!this.nextStepsInputsResolved && remembered !== false) {
+      // Either this browser has never seen a finished load, or the last one
+      // said the checklist was done. Both cases stay quiet until the four
+      // fetches land, instead of drawing an empty checklist for a second.
+      return nothing;
+    }
     const steps = this.nextSteps;
-    if (steps.every((step) => step.done || step.optional)) {
+    const allDone = steps.every((step) => step.done || step.optional);
+    if (this.nextStepsInputsResolved) {
+      this.rememberCoreStepsDone(allDone);
+    }
+    if (allDone) {
       return nothing;
     }
 
@@ -2493,21 +2620,28 @@ export class DashboardView extends AuthedElement {
    * first, and it costs one line instead of a card.
    */
   private renderAttentionStrip() {
-    const items = this.attentionItems;
+    const all = this.attentionItems;
+    // Low-tone items (a model priced at $0) are a question, not a problem.
+    // They never take a slot from something that is actually wrong, so the
+    // strip shows them only when nothing louder is open.
+    const loud = all.filter((item) => item.severity !== 'low');
+    const lowOnly = loud.length === 0;
+    const items = lowOnly ? all : loud;
     if (items.length === 0) {
       return nothing;
     }
     const visible = items.slice(0, 3);
 
     return html`
-      <div class="attention-strip">
+      <div class="attention-strip ${lowOnly ? 'low-only' : ''}">
         <sl-icon
           class="attention-strip-icon"
-          name="exclamation-triangle"
+          name=${lowOnly ? 'info-circle' : 'exclamation-triangle'}
           aria-hidden="true"
         ></sl-icon>
         <span class="attention-strip-count"
-          >${this.formatNumber(items.length)} need attention</span
+          >${this.formatNumber(items.length)}
+          ${lowOnly ? 'worth a look' : 'need attention'}</span
         >
         <div class="attention-strip-items">
           ${repeat(
@@ -2518,7 +2652,11 @@ export class DashboardView extends AuthedElement {
                 class="attention-chip-link"
                 href=${attentionItemAnchor(item.id)}
               >
-                <sl-badge class="chip" variant="warning" pill>
+                <sl-badge
+                  class="chip"
+                  variant=${lowOnly ? 'neutral' : 'warning'}
+                  pill
+                >
                   <sl-icon
                     name=${ATTENTION_KIND_META[item.kind].icon}
                     aria-hidden="true"
@@ -2953,6 +3091,54 @@ export class DashboardView extends AuthedElement {
     return rows;
   }
 
+  /**
+   * One row per active teammate. Spend reaches a person through the agents
+   * they own, which is the only link the gateway records between a request
+   * and a human; flows carry no owner at all, so there is no flows column.
+   */
+  private get inventoryUserRows(): InventoryUserRow[] {
+    const perAgent = new Map<string, { tokens: number; cost: number }>();
+    for (const session of this.gatewaySummary?.usage_by_session || []) {
+      const agent = this.getManagedAgentForUsageSession(session);
+      if (!agent) continue;
+      const running = perAgent.get(agent.id) || { tokens: 0, cost: 0 };
+      running.tokens += session.token_usage?.total_tokens || 0;
+      running.cost += session.estimated_cost || 0;
+      perAgent.set(agent.id, running);
+    }
+
+    const byOwner = new Map<
+      string,
+      { agents: number; tokens: number; cost: number }
+    >();
+    for (const agent of this.managedAgents) {
+      const ownerId = agent.owner_user_id;
+      if (!ownerId) continue;
+      const running = byOwner.get(ownerId) || { agents: 0, tokens: 0, cost: 0 };
+      running.agents += 1;
+      const usage = perAgent.get(agent.id);
+      running.tokens += usage?.tokens || 0;
+      running.cost += usage?.cost || 0;
+      byOwner.set(ownerId, running);
+    }
+
+    return this.accountUsers.map((user) => {
+      const owned = byOwner.get(user.id);
+      const roles = [...(user.roles || []), ...(user.inherited_roles || [])]
+        .map((role) => role?.name)
+        .filter((name): name is string => Boolean(name));
+      return {
+        id: user.id,
+        name: user.full_name || user.username || user.email || 'Unknown',
+        role: [...new Set(roles)].join(', '),
+        lastLoginAt: user.last_login || null,
+        agentsOwned: owned?.agents ?? 0,
+        tokens: owned?.tokens ?? 0,
+        cost: owned?.cost ?? 0,
+      };
+    });
+  }
+
   private get inventoryToolRows(): InventoryToolRow[] {
     const usage = new Map<string, GatewayUsageByTool>();
     for (const tool of this.gatewaySummary?.usage_by_tool || []) {
@@ -2982,10 +3168,13 @@ export class DashboardView extends AuthedElement {
         .flowRows=${this.inventoryFlowRows}
         .modelRows=${this.inventoryModelRows}
         .toolRows=${this.inventoryToolRows}
+        .userRows=${this.inventoryUserRows}
         .agentsTotal=${this.totalAgentsCount}
         .flowsTotal=${this.totalFlowsCount}
         .modelsTotal=${this.aiModelsCount}
         .toolsTotal=${this.enabledToolsCount}
+        .usersTotal=${this.enabledUsersCount}
+        ?showUsers=${this.canViewUsers}
         .rangeLabel=${this.gatewayRangeLabel}
         .flowRunsCapped=${this.flowRunsCapped}
         ?loading=${this.loading || this.fetchingMCPAndTools}

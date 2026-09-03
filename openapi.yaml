@@ -6100,6 +6100,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/ai-models/{model_id}/pricing:
+    get:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Get AI Model Pricing
+      description: Return the effective price for one model and where it came from.
+      operationId: get_ai_model_pricing_api_v1_ai_models__model_id__pricing_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelPricingResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/ai-models/{model_id}/pricing/fetch:
+    post:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Fetch AI Model Pricing From Provider
+      description: 'Read this model''s published price from its provider, without
+        saving it.
+
+
+        A price decides what every past and future request cost, so it is never
+
+        written by a fetch: the numbers come back for a person to confirm, and
+
+        saving one stays with the price override endpoints.'
+      operationId: fetch_ai_model_pricing_api_v1_ai_models__model_id__pricing_fetch_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelPriceQuote'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/ai-models/sync:
     post:
       tags:
@@ -9313,6 +9383,151 @@ components:
       - token_usage
       title: AIModelGatewayUsageSummaryResponse
       description: Gateway usage summary for one durable AI model.
+    AIModelPrice:
+      properties:
+        input_per_1m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Input Per 1M
+          description: Price of a million input tokens, in USD.
+        output_per_1m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Output Per 1M
+          description: Price of a million output tokens, in USD.
+        cached_input_per_1m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cached Input Per 1M
+          description: Price of a million cached input tokens, in USD. Absent when
+            the source says nothing about caching, which is not the same as free.
+        blended_per_1m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Blended Per 1M
+          description: Single price applied to every token, in USD per million. Set
+            by overrides that do not separate input from output.
+        request_price:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Request Price
+          description: Flat price added per request, in USD.
+      type: object
+      title: AIModelPrice
+      description: One price, in USD per million tokens.
+    AIModelPriceQuote:
+      properties:
+        ai_model_id:
+          type: string
+          title: Ai Model Id
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        source_url:
+          type: string
+          title: Source Url
+        model_key:
+          type: string
+          title: Model Key
+          description: The provider's own identifier for the model.
+        price:
+          $ref: '#/components/schemas/AIModelPrice'
+        currency:
+          type: string
+          title: Currency
+          default: USD
+        fetched_at:
+          type: string
+          format: date-time
+          title: Fetched At
+      type: object
+      required:
+      - ai_model_id
+      - source_url
+      - model_key
+      - price
+      - fetched_at
+      title: AIModelPriceQuote
+      description: A price read from the provider, for confirmation. Nothing is saved.
+    AIModelPricingResponse:
+      properties:
+        ai_model_id:
+          type: string
+          title: Ai Model Id
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        source:
+          type: string
+          enum:
+          - override
+          - model_config
+          - catalog
+          - none
+          title: Source
+          description: 'override: an account price override. model_config: pricing
+            configured on the model itself. catalog: the bundled or live provider
+            price list. none: nothing prices this model, so its requests land unpriced.'
+        price:
+          $ref: '#/components/schemas/AIModelPrice'
+        currency:
+          type: string
+          title: Currency
+          default: USD
+        override_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Override Id
+        effective_from:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Effective From
+        effective_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Effective Until
+        catalog_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Catalog Key
+          description: The price list entry that matched, when the source is the catalog.
+        fetch_supported:
+          type: boolean
+          title: Fetch Supported
+          description: True when this provider publishes prices Preloop can read.
+          default: false
+        fetch_provider_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fetch Provider Label
+          description: Provider name to show when a price fetch is not offered.
+      type: object
+      required:
+      - ai_model_id
+      - source
+      title: AIModelPricingResponse
+      description: The price this account is actually charged for one model, and why.
     AIModelRead:
       properties:
         id:
@@ -13760,6 +13975,24 @@ components:
           type: number
           title: Estimated Cost
           default: 0.0
+        unpriced_request_count:
+          type: integer
+          title: Unpriced Request Count
+          description: Requests that consumed tokens and carried no price at all,
+            so their cost is missing from every total.
+          default: 0
+        zero_priced_request_count:
+          type: integer
+          title: Zero Priced Request Count
+          description: Requests a price was applied to and the price was exactly zero.
+            Free tier, a promotion, or a price entered wrongly; unlike an unpriced
+            request, nothing is missing from the total.
+          default: 0
+        failed_request_count:
+          type: integer
+          title: Failed Request Count
+          description: Requests the gateway answered with a 4xx or 5xx status.
+          default: 0
         last_request_at:
           anyOf:
           - type: string

@@ -11,6 +11,7 @@ import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
 import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
+import './user-avatar';
 
 import consoleStyles from '../styles/console-styles.css?inline';
 import { parseUTCDate, formatRelativeTime } from '../utils/date';
@@ -24,7 +25,7 @@ import { renderAgentIcon } from '../utils/agent-icons';
 import type { AgentStatusChip } from '../utils/agent-display';
 
 /** Which inventory the box is showing. */
-export type InventoryTab = 'agents' | 'flows' | 'models' | 'tools';
+export type InventoryTab = 'agents' | 'flows' | 'models' | 'tools' | 'users';
 
 export const INVENTORY_TAB_STORAGE_KEY = 'overview_inventory_tab';
 
@@ -98,6 +99,23 @@ export function modelAliasLabel(alias: string, provider: string): string {
   return match[2];
 }
 
+/**
+ * One teammate, with what they own and what they spent in the range.
+ *
+ * There is no "flows owned" column. Flows carry no owner in the data model,
+ * so the number would be a zero that looks like a fact. Agents do carry one.
+ */
+export interface InventoryUserRow {
+  id: string;
+  name: string;
+  /** Role names, already joined; empty when the account has no roles set. */
+  role: string;
+  lastLoginAt: string | null;
+  agentsOwned: number;
+  tokens: number;
+  cost: number;
+}
+
 export interface InventoryToolRow {
   name: string;
   server: string;
@@ -131,15 +149,26 @@ const SORT_OPTIONS: Record<InventoryTab, SortOption[]> = {
     { value: 'calls', label: 'Calls' },
     { value: 'failures', label: 'Failures' },
   ],
+  users: [
+    { value: 'last-login', label: 'Last login' },
+    { value: 'spend', label: 'Spend' },
+  ],
 };
 
-const TAB_ORDER: InventoryTab[] = ['agents', 'flows', 'models', 'tools'];
+const TAB_ORDER: InventoryTab[] = [
+  'agents',
+  'flows',
+  'models',
+  'tools',
+  'users',
+];
 
 const TAB_LABELS: Record<InventoryTab, string> = {
   agents: 'Agents',
   flows: 'Flows',
   models: 'Models',
   tools: 'Tools',
+  users: 'Users',
 };
 
 /**
@@ -170,6 +199,11 @@ const EMPTY_STATES: Record<
     href: '/console/tools',
     linkText: 'Connect a server',
   },
+  users: {
+    text: 'No teammates yet.',
+    href: '/console/settings/invitations',
+    linkText: 'Invite a teammate',
+  },
 };
 
 const ALL_LINKS: Record<InventoryTab, { href: string; noun: string }> = {
@@ -177,6 +211,7 @@ const ALL_LINKS: Record<InventoryTab, { href: string; noun: string }> = {
   flows: { href: '/console/flows', noun: 'flows' },
   models: { href: '/console/ai-models', noun: 'models' },
   tools: { href: '/console/tools', noun: 'tools' },
+  users: { href: '/console/settings/users', noun: 'users' },
 };
 
 /** A taller window shows two more rows; nothing else changes. */
@@ -206,12 +241,20 @@ export class InventoryCard extends LitElement {
   @property({ type: Array }) flowRows: InventoryFlowRow[] = [];
   @property({ type: Array }) modelRows: InventoryModelRow[] = [];
   @property({ type: Array }) toolRows: InventoryToolRow[] = [];
+  @property({ type: Array }) userRows: InventoryUserRow[] = [];
 
   /** Totals for the tab labels and the footer link: everything, not the page. */
   @property({ type: Number }) agentsTotal = 0;
   @property({ type: Number }) flowsTotal = 0;
   @property({ type: Number }) modelsTotal = 0;
   @property({ type: Number }) toolsTotal = 0;
+  @property({ type: Number }) usersTotal = 0;
+
+  /**
+   * Off on OSS, where there is one account and no user management: a tab
+   * listing one person, always, is furniture.
+   */
+  @property({ type: Boolean }) showUsers = false;
 
   @property({ type: Boolean }) loading = false;
   /** The page range, already worded ("30d"), shown but not editable here. */
@@ -229,6 +272,7 @@ export class InventoryCard extends LitElement {
     flows: SORT_OPTIONS.flows[0].value,
     models: SORT_OPTIONS.models[0].value,
     tools: SORT_OPTIONS.tools[0].value,
+    users: SORT_OPTIONS.users[0].value,
   };
   @state() private rowLimit = ROWS_DEFAULT;
 
@@ -464,6 +508,12 @@ export class InventoryCard extends LitElement {
         padding: var(--sl-spacing-small) var(--sl-spacing-medium);
       }
 
+      .footer-note {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+        margin-right: var(--sl-spacing-2x-small);
+      }
+
       .footer a {
         color: var(--console-link-color);
         font-size: var(--console-text-meta);
@@ -576,10 +626,21 @@ export class InventoryCard extends LitElement {
     super.disconnectedCallback();
   }
 
+  /** The Users tab exists only where user management does. */
+  private get visibleTabs(): InventoryTab[] {
+    return TAB_ORDER.filter((tab) => tab !== 'users' || this.showUsers);
+  }
+
+  /** The tab actually on screen, which is never a tab that is not there. */
+  private get activeTab(): InventoryTab {
+    return this.visibleTabs.includes(this.tab) ? this.tab : 'agents';
+  }
+
   private countFor(tab: InventoryTab): number {
     if (tab === 'agents') return this.agentsTotal;
     if (tab === 'flows') return this.flowsTotal;
     if (tab === 'models') return this.modelsTotal;
+    if (tab === 'users') return this.usersTotal;
     return this.toolsTotal;
   }
 
@@ -594,7 +655,7 @@ export class InventoryCard extends LitElement {
   }
 
   private setSort(value: string): void {
-    this.sorts = { ...this.sorts, [this.tab]: value };
+    this.sorts = { ...this.sorts, [this.activeTab]: value };
   }
 
   private formatCompactNumber(value: number | null | undefined): string {
@@ -692,6 +753,16 @@ export class InventoryCard extends LitElement {
     return rows;
   }
 
+  private get sortedUsers(): InventoryUserRow[] {
+    const rows = [...this.userRows];
+    if (this.sorts.users === 'spend') {
+      rows.sort((a, b) => b.cost - a.cost);
+    } else {
+      rows.sort((a, b) => timeValue(b.lastLoginAt) - timeValue(a.lastLoginAt));
+    }
+    return rows;
+  }
+
   private get sortedTools(): InventoryToolRow[] {
     const rows = [...this.toolRows];
     const sort = this.sorts.tools;
@@ -704,17 +775,17 @@ export class InventoryCard extends LitElement {
   }
 
   private renderHeader() {
-    const options = SORT_OPTIONS[this.tab];
+    const options = SORT_OPTIONS[this.activeTab];
     return html`
       <div slot="header" class="card-head">
         <span class="title">Inventory</span>
         <div class="header-controls">
           <sl-select
             class="sort-select"
-            label="Sort ${TAB_LABELS[this.tab].toLowerCase()} by"
+            label="Sort ${TAB_LABELS[this.activeTab].toLowerCase()} by"
             size="small"
             hoist
-            value=${this.sorts[this.tab]}
+            value=${this.sorts[this.activeTab]}
             @sl-change=${(event: Event) => {
               const select = event.target as HTMLElement & { value: string };
               this.setSort(select.value);
@@ -746,9 +817,9 @@ export class InventoryCard extends LitElement {
             }
           }}
         >
-          ${TAB_ORDER.map(
+          ${this.visibleTabs.map(
             (tab) => html`
-              <sl-tab slot="nav" panel=${tab} ?active=${this.tab === tab}>
+              <sl-tab slot="nav" panel=${tab} ?active=${this.activeTab === tab}>
                 ${TAB_LABELS[tab]}
                 <span class="tab-count">${this.countFor(tab)}</span>
               </sl-tab>
@@ -778,7 +849,7 @@ export class InventoryCard extends LitElement {
   }
 
   private renderEmpty() {
-    const empty = EMPTY_STATES[this.tab];
+    const empty = EMPTY_STATES[this.activeTab];
     return html`
       <div class="empty">
         ${empty.text}
@@ -1045,6 +1116,82 @@ export class InventoryCard extends LitElement {
     `;
   }
 
+  /**
+   * Who is on the account, what they own and what they spent in the range.
+   *
+   * Spend is attributed through the agents a person owns, which is the only
+   * link the gateway records between a request and a person. Someone who owns
+   * no agent shows no spend, which is true: their spend is somebody's agent.
+   */
+  private renderUsers() {
+    const rows = this.sortedUsers.slice(0, this.rowLimit);
+    return html`
+      <table class="inventory-table">
+        <colgroup>
+          <col style="width: 30%" />
+          <col style="width: 18%" />
+          <col style="width: 14%" />
+          <col style="width: 12%" />
+          <col style="width: 12%" />
+          <col style="width: 14%" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Role</th>
+            <th class="num">Last login</th>
+            <th class="num">Agents</th>
+            <th class="num">Tokens</th>
+            <th class="num">$ est.</th>
+          </tr>
+        </thead>
+        ${
+          this.loading && rows.length === 0
+            ? this.renderSkeleton(6)
+            : html`
+                <tbody>
+                  ${repeat(
+                    rows,
+                    (row) => row.id,
+                    (row) => html`
+                      <tr>
+                        <td class="identity-cell">
+                          <span class="identity">
+                            <user-avatar
+                              .label=${row.name}
+                              .seed=${row.id}
+                              .size=${20}
+                            ></user-avatar>
+                            <span class="row-name">${row.name}</span>
+                          </span>
+                        </td>
+                        <td class="secondary muted" title=${row.role || ''}>
+                          ${row.role || 'No role'}
+                        </td>
+                        <td
+                          class="num"
+                          data-label="Last login"
+                          title=${this.absolute(row.lastLoginAt)}
+                        >
+                          ${this.relative(row.lastLoginAt)}
+                        </td>
+                        <td class="num" data-label="Agents">
+                          ${this.formatCompactNumber(row.agentsOwned)}
+                        </td>
+                        <td class="num" data-label="Tokens">
+                          ${this.formatCompactNumber(row.tokens)}
+                        </td>
+                        <td class="num">${this.formatCurrency(row.cost)}</td>
+                      </tr>
+                    `
+                  )}
+                </tbody>
+              `
+        }
+      </table>
+    `;
+  }
+
   private renderTools() {
     const rows = this.sortedTools.slice(0, this.rowLimit);
     return html`
@@ -1104,9 +1251,10 @@ export class InventoryCard extends LitElement {
   }
 
   private currentRowCount(): number {
-    if (this.tab === 'agents') return this.agentRows.length;
-    if (this.tab === 'flows') return this.flowRows.length;
-    if (this.tab === 'models') return this.modelRows.length;
+    if (this.activeTab === 'agents') return this.agentRows.length;
+    if (this.activeTab === 'flows') return this.flowRows.length;
+    if (this.activeTab === 'models') return this.modelRows.length;
+    if (this.activeTab === 'users') return this.userRows.length;
     return this.toolRows.length;
   }
 
@@ -1114,17 +1262,29 @@ export class InventoryCard extends LitElement {
     if (!this.loading && this.currentRowCount() === 0) {
       return this.renderEmpty();
     }
-    if (this.tab === 'agents') return this.renderAgents();
-    if (this.tab === 'flows') return this.renderFlows();
-    if (this.tab === 'models') return this.renderModels();
+    if (this.activeTab === 'agents') return this.renderAgents();
+    if (this.activeTab === 'flows') return this.renderFlows();
+    if (this.activeTab === 'models') return this.renderModels();
+    if (this.activeTab === 'users') return this.renderUsers();
     return this.renderTools();
   }
 
   private renderFooter() {
-    const link = ALL_LINKS[this.tab];
-    const count = this.countFor(this.tab);
+    const tab = this.activeTab;
+    const link = ALL_LINKS[tab];
+    const count = this.countFor(tab);
     if (count === 0) {
       return nothing;
+    }
+    // One person on the account is not a list worth opening; it is a hint
+    // that nobody else has been asked yet.
+    if (tab === 'users' && count === 1) {
+      return html`
+        <div class="footer">
+          <span class="footer-note">Working alone?</span>
+          <a href="/console/settings/invitations">Invite a teammate →</a>
+        </div>
+      `;
     }
     return html`
       <div class="footer">

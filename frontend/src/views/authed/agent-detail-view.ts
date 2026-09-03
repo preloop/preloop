@@ -63,6 +63,7 @@ import {
   type ScopedToolRules,
 } from '../../utils/scoped-governance';
 import { getAgentControlState } from '../../utils/agent-control';
+import { isCliOnboardableAgentKind } from '../../utils/agent-kinds';
 import { renderAgentIcon } from '../../utils/agent-icons';
 import {
   REMOVE_AGENT_CONSEQUENCE,
@@ -2976,35 +2977,58 @@ export class AgentDetailView extends LitElement {
                                     still recorded in Approvals, marked
                                     auto-approved and excluded from your
                                     approval stats, so you keep the audit trail.
-                                    The local hook installed at onboarding still
-                                    adds a network round-trip to Preloop on
-                                    every tool call.
-                                    <sl-details
-                                      summary="How to fully disable the hook locally"
-                                      style="margin-top: var(--sl-spacing-small);"
-                                    >
-                                      <div class="meta-line">
-                                        Re-onboard without approvals:
-                                        <code
-                                          >preloop agents offboard
-                                          &lt;agent&gt;</code
-                                        >
-                                        then
-                                        <code
-                                          >preloop agents onboard
-                                          &lt;agent&gt;</code
-                                        >
-                                        without <code>--approvals</code>. Or
-                                        remove the hook entry by hand: delete
-                                        the Preloop PreToolUse entry from
-                                        <code>~/.claude/settings.json</code>
-                                        (Claude Code), or the Preloop entries in
-                                        <code>~/.cursor/hooks.json</code>
-                                        (Cursor) /
-                                        <code>~/.codex/hooks.json</code> (Codex
-                                        CLI).
-                                      </div>
-                                    </sl-details>
+                                    ${
+                                      // The local hook, and the command that
+                                      // removes it, only exist for agents the
+                                      // CLI onboarded. A custom agent has no
+                                      // hook to disable, so telling its owner
+                                      // to re-onboard would send them at a
+                                      // command that cannot find it.
+                                      isCliOnboardableAgentKind(
+                                        this.agent?.agent_kind ||
+                                          this.agent?.session_source_type
+                                      )
+                                        ? html`The local hook installed at
+                                            onboarding still adds a network
+                                            round-trip to Preloop on every tool
+                                            call.
+                                            <sl-details
+                                              summary="How to fully disable the hook locally"
+                                              style="margin-top: var(--sl-spacing-small);"
+                                            >
+                                              <div class="meta-line">
+                                                Re-onboard without approvals:
+                                                <code
+                                                  >preloop agents offboard
+                                                  &lt;agent&gt;</code
+                                                >
+                                                then
+                                                <code
+                                                  >preloop agents onboard
+                                                  &lt;agent&gt;</code
+                                                >
+                                                without
+                                                <code>--approvals</code>. Or
+                                                remove the hook entry by hand:
+                                                delete the Preloop PreToolUse
+                                                entry from
+                                                <code
+                                                  >~/.claude/settings.json</code
+                                                >
+                                                (Claude Code), or the Preloop
+                                                entries in
+                                                <code
+                                                  >~/.cursor/hooks.json</code
+                                                >
+                                                (Cursor) /
+                                                <code>~/.codex/hooks.json</code>
+                                                (Codex CLI).
+                                              </div>
+                                            </sl-details>`
+                                        : html`This agent is started by you, so
+                                          there is no Preloop hook on a machine
+                                          to remove.`
+                                    }
                                   </sl-alert>
                                 `
                               : nothing

@@ -134,6 +134,24 @@ describe('getAgentControlState', () => {
       expect(hint.helptext).to.contain('cannot talk to it');
     });
 
+    it('says who starts a custom agent instead of naming a missing plugin', () => {
+      const hint = getAgentControlInstallHint({
+        ...baseAgent,
+        display_name: 'Researcher',
+        agent_kind: 'custom',
+        session_source_type: 'custom',
+        control_state: 'unsupported',
+        control_enabled: false,
+        control_capabilities: [],
+      });
+
+      expect(hint.supported).to.equal(false);
+      expect(hint.command).to.equal(null);
+      expect(hint.helptext).to.equal(
+        'Custom agents are started by you, so Preloop can watch this one but cannot talk to it.'
+      );
+    });
+
     it('still offers the command when a supported runtime never enrolled', () => {
       // The server reports `unsupported` both for a runtime that has no plugin
       // and for one that has never been enrolled. Claude Code is the second

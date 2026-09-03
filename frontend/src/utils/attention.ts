@@ -1,6 +1,7 @@
 import type { BudgetPolicy } from '../api';
 import type {
   AccountGatewayUsageSummaryResponse,
+  GatewayUsageByModel,
   GatewayUsageSearchResultItem,
   ManagedAgentSummary,
   RuntimeSessionSummary,
@@ -11,6 +12,7 @@ import {
   parseUTCDate,
 } from './date';
 import { sessionBelongsToAgent } from './agent-display';
+import { isCliOnboardableAgentKind } from './agent-kinds';
 import { shellQuote } from './shell';
 
 /**
@@ -21,7 +23,13 @@ import { shellQuote } from './shell';
 export type AttentionKind =
   'approval' | 'agent' | 'flow' | 'model' | 'budget' | 'pricing';
 
-export type AttentionSeverity = 'critical' | 'warning';
+/**
+ * `low` is for things that are worth naming once and are usually fine: a model
+ * priced at $0 is either a promotion or a mistake, and only its owner knows
+ * which. Low items sort last and stay off the Overview strip while anything
+ * louder is open.
+ */
+export type AttentionSeverity = 'critical' | 'warning' | 'low';
 
 export interface AttentionItemAction {
   label: string;
@@ -65,6 +73,12 @@ export interface AttentionAgentReason {
   /** Shown as a copyable command line when present. */
   command?: string;
   action?: { label: string; href: string };
+  /**
+   * When set, the row offers a danger-outline Remove for this agent. Used for
+   * kinds the CLI cannot onboard, where "remove it if it is gone" is the
+   * instruction rather than a command to run.
+   */
+  removeAgent?: { id: string; name: string };
 }
 
 /** The numbers behind a budget item. */
@@ -88,6 +102,8 @@ export interface AttentionEvidence {
   agentReasons?: AttentionAgentReason[];
   modelFailures?: AttentionModelFailure[];
   unpricedModels?: AttentionUnpricedModel[];
+  /** Models that do have a price, and that price is zero. */
+  zeroPricedModels?: AttentionUnpricedModel[];
   /** True for the "no provider price list is loaded at all" shape. */
   catalogMissing?: boolean;
   unpricedRequests?: number;
@@ -113,6 +129,12 @@ export interface AttentionItem {
   fingerprint: string;
   /** Approvals are never dismissable: somebody is waiting on an answer. */
   dismissable: boolean;
+  /**
+   * When set, the row offers this single button instead of the Dismiss menu.
+   * Used where there is really only one answer ("Expected"), so acknowledging
+   * costs one click instead of a menu.
+   */
+  quickDismiss?: { label: string; reason: 'expected' | 'snoozed' | 'fixed' };
   evidence?: AttentionEvidence;
 }
 
@@ -346,13 +368,29 @@ function agentItems(
     // is not a fault: neither ever reaches this list.
     if (agent.onboarding_state === 'incomplete') {
       reasons.push('Not connected');
-      evidence.push({
-        text: 'Onboarding never completed. Onboard it on the machine it runs on, or remove it.',
-        command: `preloop agents onboard ${shellQuote(
-          agent.display_name || agent.id
-        )}`,
-        action: { label: 'Open agent', href: agentHref },
-      });
+      // `agent_kind` is what the product is; older rows only carry the
+      // transport they connected with, which is the same token for every kind
+      // the CLI onboards.
+      if (
+        isCliOnboardableAgentKind(agent.agent_kind || agent.session_source_type)
+      ) {
+        evidence.push({
+          text: 'Onboarding never completed. Onboard it on the machine it runs on, or remove it.',
+          command: `preloop agents onboard ${shellQuote(
+            agent.display_name || agent.id
+          )}`,
+          action: { label: 'Open agent', href: agentHref },
+        });
+      } else {
+        // A custom or SDK-integrated agent is not something the CLI can find
+        // on a machine, so the onboarding command would fail. What its owner
+        // can do is start it, remove it, or say it is expected.
+        evidence.push({
+          text: 'Custom agents are started by you. Start it where it runs, remove it if it is gone, or dismiss this if it is expected.',
+          action: { label: 'Open agent', href: agentHref },
+          removeAgent: { id: agent.id, name: agent.display_name || agent.id },
+        });
+      }
     }
     const latestSession = latestSessionForAgent(agent, sessions);
     const failedRequests = latestSession?.failed_requests || 0;
@@ -672,25 +710,89 @@ function budgetItems(policies: BudgetPolicy[]): AttentionItem[] {
   return items;
 }
 
+function unpricedModelOf(model: GatewayUsageByModel): AttentionUnpricedModel {
+  return {
+    alias: model.model_alias || model.provider_name || 'Unknown model',
+    provider: model.provider_name || '',
+    requests: model.request_count,
+    tokens: model.token_usage?.total_tokens || 0,
+    lastRequestAt: model.last_request_at || null,
+    aiModelId: model.ai_model_id || null,
+  };
+}
+
 /**
- * A model that served requests but cost nothing is a model nobody can price.
- * The summary's aggregate `unpriced_requests` says how many; `usage_by_model`
+ * A model with no price at all: requests it served carry no cost, not a cost
+ * of zero. The summary's aggregate `unpriced_requests` says how many; this
  * says which, which is the part an operator can act on.
+ *
+ * `unpriced_request_count` distinguishes "nobody knows what this costs" from
+ * "this is free", which `estimated_cost === 0` cannot. Servers older than
+ * wave 8 do not send it, so there the two collapse back into one warning
+ * rather than disappearing.
  */
 function unpricedModelsOf(
   usageSummary: AccountGatewayUsageSummaryResponse
 ): AttentionUnpricedModel[] {
   return (usageSummary.usage_by_model || [])
-    .filter((model) => model.request_count > 0 && !model.estimated_cost)
-    .map((model) => ({
-      alias: model.model_alias || model.provider_name || 'Unknown model',
-      provider: model.provider_name || '',
-      requests: model.request_count,
-      tokens: model.token_usage?.total_tokens || 0,
-      lastRequestAt: model.last_request_at || null,
-      aiModelId: model.ai_model_id || null,
-    }))
+    .filter((model) => {
+      if (model.request_count <= 0) return false;
+      if (model.unpriced_request_count === undefined) {
+        return !model.estimated_cost;
+      }
+      return model.unpriced_request_count > 0;
+    })
+    .map(unpricedModelOf)
     .sort((left, right) => right.requests - left.requests);
+}
+
+/**
+ * A model that is priced, at zero. Either somebody is on a promotion or an
+ * override has a typo in it; the console cannot tell, so it asks once.
+ */
+function zeroPricedModelsOf(
+  usageSummary: AccountGatewayUsageSummaryResponse
+): AttentionUnpricedModel[] {
+  return (usageSummary.usage_by_model || [])
+    .filter((model) => (model.zero_priced_request_count || 0) > 0)
+    .map(unpricedModelOf)
+    .sort((left, right) => right.requests - left.requests);
+}
+
+/**
+ * "3 models priced at $0" - low tone, one click to accept. Kept separate from
+ * the unpriced item because the fix is different: an unpriced model needs a
+ * price, a zero-priced model needs somebody to confirm the zero.
+ */
+function zeroPricedItem(
+  usageSummary: AccountGatewayUsageSummaryResponse
+): AttentionItem[] {
+  const models = zeroPricedModelsOf(usageSummary);
+  if (models.length === 0) {
+    return [];
+  }
+  return [
+    {
+      id: 'pricing:zero-priced',
+      kind: 'pricing',
+      severity: 'low',
+      title: `${models.length} model${
+        models.length === 1 ? '' : 's'
+      } priced at $0`,
+      detail: 'Promo or mistake?',
+      href: PRICING_HREF,
+      at: models[0].lastRequestAt,
+      action: { label: 'Review prices', href: PRICING_HREF },
+      // A newly zero-priced model reopens the question; the same set does not.
+      fingerprint: `zero:${models
+        .map((model) => model.alias)
+        .sort()
+        .join(',')}`,
+      dismissable: true,
+      quickDismiss: { label: 'Expected', reason: 'expected' },
+      evidence: { zeroPricedModels: models },
+    },
+  ];
 }
 
 function pricingItems(
@@ -700,6 +802,7 @@ function pricingItems(
   if (!usageSummary) {
     return [];
   }
+  const zeroPriced = zeroPricedItem(usageSummary);
   const catalog = usageSummary.price_catalog;
   const fetchedAt = catalog?.fetched_at || null;
   const modelCount = catalog?.model_count ?? null;
@@ -718,6 +821,7 @@ function pricingItems(
   // Shape 1: nothing can be priced because no provider price list is loaded.
   if (catalogMissing && unpricedRequests > 0) {
     return [
+      ...zeroPriced,
       {
         id: 'pricing:catalog',
         kind: 'pricing',
@@ -743,6 +847,7 @@ function pricingItems(
   // Shape 2: a catalog is loaded but some models are not in it.
   if (unpricedModels.length > 0) {
     return [
+      ...zeroPriced,
       {
         id: 'pricing:catalog',
         kind: 'pricing',
@@ -771,6 +876,7 @@ function pricingItems(
   // Neither shape applies but the catalog itself has gone stale.
   if (catalog && stale && fetchedAt) {
     return [
+      ...zeroPriced,
       {
         id: 'pricing:catalog',
         kind: 'pricing',
@@ -789,14 +895,23 @@ function pricingItems(
       },
     ];
   }
-  return [];
+  return zeroPriced;
 }
 
-/** Critical first, then most recent first; items without a timestamp last. */
+const SEVERITY_RANK: Record<AttentionSeverity, number> = {
+  critical: 0,
+  warning: 1,
+  low: 2,
+};
+
+/**
+ * Critical first, then warnings, then low; within a tone, most recent first,
+ * items without a timestamp last.
+ */
 export function sortAttentionItems(items: AttentionItem[]): AttentionItem[] {
   return [...items].sort((left, right) => {
     if (left.severity !== right.severity) {
-      return left.severity === 'critical' ? -1 : 1;
+      return SEVERITY_RANK[left.severity] - SEVERITY_RANK[right.severity];
     }
     const leftAt = left.at ? timestampOf(left.at) : null;
     const rightAt = right.at ? timestampOf(right.at) : null;

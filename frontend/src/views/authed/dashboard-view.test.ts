@@ -45,9 +45,12 @@ describe('DashboardView', () => {
   let budgetPoliciesResponse: any[];
   /** Set by a test that wants to hold the secondary pass open. */
   let aiModelsGate: Promise<void> | null;
+  /** null means RBAC is off, so every permission check passes. */
+  let mePermissions: string[] | null;
 
   beforeEach(() => {
     aiModelsGate = null;
+    mePermissions = null;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
@@ -428,7 +431,7 @@ describe('DashboardView', () => {
             email: 'tester@example.com',
             email_verified: true,
             is_superuser: false,
-            permissions: null,
+            permissions: mePermissions,
           });
         }
 
@@ -678,6 +681,37 @@ describe('DashboardView', () => {
     expect(usageContent).to.contain('Cost details');
   });
 
+  /** A usage summary whose only oddity is a model that costs nothing. */
+  const zeroPricedSummary = (): any => ({
+    total_requests: 12,
+    successful_requests: 12,
+    failed_requests: 0,
+    token_usage: { prompt_tokens: 4, completion_tokens: 4, total_tokens: 40 },
+    estimated_cost: 0,
+    unpriced_requests: 0,
+    requests_by_day: [],
+    price_catalog: { fetched_at: new Date().toISOString(), model_count: 120 },
+    usage_by_model: [
+      {
+        ai_model_id: 'model-2',
+        model_alias: 'local/qwen-3-coder',
+        provider_name: 'ollama',
+        request_count: 12,
+        token_usage: {
+          prompt_tokens: 4,
+          completion_tokens: 4,
+          total_tokens: 40,
+        },
+        estimated_cost: 0,
+        unpriced_request_count: 0,
+        zero_priced_request_count: 12,
+        last_request_at: new Date(Date.now() - 60_000).toISOString(),
+      },
+    ],
+    usage_by_flow: [],
+    usage_by_session: [],
+  });
+
   it('surfaces pending approvals in the attention strip', async () => {
     const element = await mountDashboard();
     await waitUntil(
@@ -751,6 +785,70 @@ describe('DashboardView', () => {
     const first = element['attentionItems'][0];
     expect(chips[0].getAttribute('href')).to.equal(
       `/console/attention#item-${encodeURIComponent(first.id)}`
+    );
+  });
+
+  // Wave 8: a model priced at $0 is a question. It never takes a slot from
+  // something that is actually wrong.
+  it('keeps zero-priced models out of the strip while warnings are open', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
+      'dashboard did not finish loading'
+    );
+    element['attentionInputs'] = {
+      approvals: [
+        {
+          id: 'approval-1',
+          tool_name: 'refund_order',
+          status: 'pending',
+          requested_at: new Date(Date.now() - 60_000).toISOString(),
+        },
+      ],
+      usageSummary: zeroPricedSummary(),
+    } as any;
+    await element.updateComplete;
+
+    const strip = element.shadowRoot?.querySelector(
+      '.attention-strip'
+    ) as HTMLElement;
+    expect(strip.classList.contains('low-only')).to.be.false;
+    expect(strip.textContent).to.contain('need attention');
+    expect(strip.textContent).to.not.contain('priced at $0');
+    // The count is what the strip shows, not what the page derived.
+    expect(strip.textContent!.replace(/\s+/g, ' ')).to.contain(
+      '1 need attention'
+    );
+  });
+
+  it('shows a zero-priced model on its own, without the amber tone', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
+      'dashboard did not finish loading'
+    );
+    element['attentionInputs'] = {
+      usageSummary: zeroPricedSummary(),
+    } as any;
+    await element.updateComplete;
+
+    const strip = element.shadowRoot?.querySelector(
+      '.attention-strip'
+    ) as HTMLElement;
+    expect(strip, 'the attention strip').to.exist;
+    expect(strip.classList.contains('low-only')).to.be.true;
+    expect(strip.textContent).to.contain('worth a look');
+    expect(strip.textContent).to.contain('1 model priced at $0');
+    expect(strip.querySelector('sl-badge')?.getAttribute('variant')).to.equal(
+      'neutral'
     );
   });
 
@@ -935,6 +1033,91 @@ describe('DashboardView', () => {
       );
     });
 
+    // Wave 8: spend reaches a person through the agents they own, which is
+    // the only link the gateway records between a request and a human.
+    it("attributes an owned agent's tokens and spend to its owner", async () => {
+      agentsResponse = {
+        ...agentsResponse,
+        items: agentsResponse.items.map((agent: any) => ({
+          ...agent,
+          owner_user_id: 'user-1',
+          owner_username: 'ada',
+        })),
+      };
+      const element = await mountLoaded();
+      element['accountUsers'] = [
+        {
+          id: 'user-1',
+          username: 'ada',
+          full_name: 'Ada Lovelace',
+          is_active: true,
+          last_login: '2026-03-07T09:00:00Z',
+          roles: [{ name: 'Admin' }],
+        },
+        {
+          id: 'user-2',
+          username: 'grace',
+          full_name: null,
+          is_active: true,
+          last_login: null,
+          roles: [],
+        },
+      ] as any;
+      await element.updateComplete;
+
+      const rows = element['inventoryUserRows'];
+      expect(rows.map((row: any) => row.name)).to.eql([
+        'Ada Lovelace',
+        'grace',
+      ]);
+      expect(rows[0].role).to.equal('Admin');
+      expect(rows[0].agentsOwned).to.equal(1);
+      expect(rows[0].tokens).to.equal(15);
+      expect(rows[0].cost).to.equal(4.2);
+      // Nobody's agent, nobody's spend: a zero here is true, not missing.
+      expect(rows[1].agentsOwned).to.equal(0);
+      expect(rows[1].cost).to.equal(0);
+    });
+
+    it('shows the Users tab only where user management is on', async () => {
+      const element = await mountLoaded();
+      const inventory = element.shadowRoot!.querySelector('inventory-card')!;
+      expect((inventory as any).showUsers).to.be.false;
+
+      element['userManagementEnabled'] = true;
+      await element.updateComplete;
+      await (inventory as any).updateComplete;
+      expect((inventory as any).showUsers).to.be.true;
+    });
+
+    // Wave 8: the tab is a list of people, and the API behind it answers only
+    // to view_users. Without that permission the tab would open on an error,
+    // so it is not offered at all.
+    it('hides the Users tab from a reader without view_users', async () => {
+      mePermissions = ['view_agents', 'view_flows'];
+      const element = await mountLoaded();
+      element['userManagementEnabled'] = true;
+      await element.updateComplete;
+      const inventory = element.shadowRoot!.querySelector('inventory-card')!;
+      await (inventory as any).updateComplete;
+      expect((inventory as any).showUsers).to.be.false;
+      expect(
+        [...inventory.shadowRoot!.querySelectorAll('sl-tab')].map((tab) =>
+          tab.getAttribute('panel')
+        )
+      ).to.not.contain('users');
+    });
+
+    it('shows the Users tab to a reader with view_users', async () => {
+      mePermissions = ['view_agents', 'view_users'];
+      const element = await mountLoaded();
+      element['userManagementEnabled'] = true;
+      await element.updateComplete;
+      const inventory = element.shadowRoot!.querySelector('inventory-card')!;
+      await (inventory as any).updateComplete;
+      expect((inventory as any).showUsers).to.be.true;
+    });
+
     it('hides next steps when every step is already done', async () => {
       const element = await mountLoaded();
 
@@ -942,6 +1125,42 @@ describe('DashboardView', () => {
       expect(element['nextSteps'].every((step: any) => step.done)).to.be.true;
       expect(element.shadowRoot?.querySelector('.next-steps-card')).to.not
         .exist;
+    });
+
+    // Wave 8: the checklist reads four separate fetches. Before they land
+    // every step looks undone, so a finished account used to watch the card
+    // appear and vanish on every refresh.
+    it('does not flash next steps while the page is still loading', async () => {
+      localStorage.setItem('dashboard_next_steps_all_done', 'true');
+      const element = await mountDashboard();
+
+      // Mid-load: agents, policies and tools have not answered yet.
+      expect(element['loading'] || element['fetchingMCPAndTools']).to.be.true;
+      expect(
+        element.shadowRoot?.querySelector('.next-steps-card'),
+        'no card during loading'
+      ).to.not.exist;
+
+      await waitUntil(
+        () =>
+          !element['loading'] &&
+          !element['fetchingAgents'] &&
+          !element['fetchingBudget'] &&
+          !element['fetchingMCPAndTools'],
+        'dashboard did not finish loading'
+      );
+      await element.updateComplete;
+      expect(element.shadowRoot?.querySelector('.next-steps-card')).to.not
+        .exist;
+    });
+
+    it('remembers that the checklist is finished', async () => {
+      localStorage.removeItem('dashboard_next_steps_all_done');
+      await mountLoaded();
+
+      expect(localStorage.getItem('dashboard_next_steps_all_done')).to.equal(
+        'true'
+      );
     });
 
     it('lists the open steps for a new account, with the done ones ticked', async () => {

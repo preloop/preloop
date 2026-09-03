@@ -172,6 +172,94 @@ describe('usage-card', () => {
     ).to.equal(2);
   });
 
+  it('projects where the period lands and colours it by the limit crossed', async () => {
+    // Half the window gone with $60 spent lands on $120: under the $200 soft
+    // limit, so the line is quiet.
+    const halfWay = {
+      period_start: new Date(Date.now() - 6 * 86400000).toISOString(),
+      period_end: new Date(Date.now() + 6 * 86400000).toISOString(),
+      current_spend_usd: 60,
+    };
+    const element = await renderCard({
+      policies: [policyFixture(halfWay)],
+    });
+    const forecast = element.shadowRoot!.querySelector('.budget-forecast')!;
+    expect(forecast.textContent!.replace(/\s+/g, ' ').trim()).to.contain(
+      'On track for $120.00 by'
+    );
+    expect(forecast.classList.contains('warning')).to.be.false;
+    expect(forecast.classList.contains('danger')).to.be.false;
+    // The operator can check the arithmetic without leaving the card.
+    expect(forecast.getAttribute('title')).to.contain(
+      '$60.00 spent in the first 50%'
+    );
+
+    const amber = await renderCard({
+      policies: [
+        policyFixture({ ...halfWay, soft_limit_usd: 100, hard_limit_usd: 300 }),
+      ],
+    });
+    expect(
+      amber
+        .shadowRoot!.querySelector('.budget-forecast')!
+        .classList.contains('warning')
+    ).to.be.true;
+
+    const red = await renderCard({
+      policies: [
+        policyFixture({ ...halfWay, soft_limit_usd: 100, hard_limit_usd: 110 }),
+      ],
+    });
+    expect(
+      red
+        .shadowRoot!.querySelector('.budget-forecast')!
+        .classList.contains('danger')
+    ).to.be.true;
+  });
+
+  it('stays quiet until a tenth of the period has passed', async () => {
+    const element = await renderCard({
+      policies: [
+        policyFixture({
+          period_start: new Date(Date.now() - 3600000).toISOString(),
+          period_end: new Date(Date.now() + 99 * 3600000).toISOString(),
+          current_spend_usd: 60,
+        }),
+      ],
+    });
+    expect(element.shadowRoot!.querySelector('.budget-forecast')).to.be.null;
+  });
+
+  it("names the end of a daily budget on the reader's clock", async () => {
+    // The server cuts days in UTC, so the window ends at a UTC midnight: that
+    // is midnight for a reader in UTC and some other hour of their day
+    // everywhere else. Either way the sentence never names tomorrow's date.
+    const end = new Date();
+    end.setUTCHours(24, 0, 0, 0);
+    const expected =
+      end.getHours() === 0 && end.getMinutes() === 0 && end.getSeconds() === 0
+        ? 'midnight'
+        : end.toLocaleTimeString(undefined, {
+            hour: 'numeric',
+            minute: '2-digit',
+          });
+    const element = await renderCard({
+      policies: [
+        policyFixture({
+          period: 'daily',
+          period_start: new Date(Date.now() - 24 * 3600000).toISOString(),
+          period_end: end.toISOString(),
+          current_spend_usd: 6,
+        }),
+      ],
+    });
+    expect(
+      element
+        .shadowRoot!.querySelector('.budget-forecast')!
+        .textContent!.replace(/\s+/g, ' ')
+    ).to.contain(`by ${expected}`);
+  });
+
   it('renders the legacy account budget as a monthly row', async () => {
     const element = await renderCard({
       summary: summaryFixture({

@@ -21,11 +21,13 @@ import {
   getFeatures,
   getUserProfile,
   hasPermission,
+  removeAccountAgent,
   restoreAttentionItem,
   type AttentionDismissal,
   type BudgetPolicy,
   type UserPermissions,
 } from '../../api';
+import { confirmDialog } from '../../components/confirm-dialog';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import type {
@@ -46,6 +48,7 @@ import {
   type AttentionKind,
   type DismissedAttentionItem,
 } from '../../utils/attention';
+import { REMOVE_AGENT_CONSEQUENCE } from '../../utils/agent-display';
 import { loadAttentionInputs } from '../../utils/attention-data';
 import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
 import {
@@ -239,6 +242,11 @@ export class AttentionView extends AuthedElement {
 
       .severity-dot.critical {
         background: var(--sl-color-danger-600);
+      }
+
+      /* Low tone: worth naming once, not worth an amber dot. */
+      .severity-dot.low {
+        background: var(--sl-color-neutral-400);
       }
 
       .row-body {
@@ -706,6 +714,42 @@ export class AttentionView extends AuthedElement {
     );
   }
 
+  /** Removing an agent is the same permission the agent page checks. */
+  private get canRemoveAgents(): boolean {
+    return hasPermission(this.permissions, 'manage_agents');
+  }
+
+  /**
+   * The Remove offered next to "start it where it runs": one confirmation
+   * naming the agent and its consequence, then the same DELETE the agent page
+   * uses, then a refetch so the row leaves the inbox.
+   */
+  private async removeAgent(
+    item: AttentionItem,
+    agent: { id: string; name: string }
+  ): Promise<void> {
+    const confirmed = await confirmDialog({
+      title: 'Remove agent',
+      message: `Remove ${agent.name} from the managed agents list?`,
+      detail: REMOVE_AGENT_CONSEQUENCE,
+      confirmLabel: 'Remove agent',
+      variant: 'danger',
+    });
+    if (!confirmed) {
+      return;
+    }
+    this.busyItemId = item.id;
+    this.dismissError = null;
+    try {
+      await removeAccountAgent(agent.id);
+      await this.fetchAll();
+    } catch {
+      this.dismissError = 'Could not remove that agent. Try again.';
+    } finally {
+      this.busyItemId = null;
+    }
+  }
+
   /**
    * Approvals are never dismissable, and a server without the endpoint gets no
    * controls at all rather than buttons that fail.
@@ -713,6 +757,20 @@ export class AttentionView extends AuthedElement {
   private renderDismiss(item: AttentionItem) {
     if (!this.canWriteDismissals || !item.dismissable) {
       return nothing;
+    }
+    // Where the answer is only ever "yes, that is expected", a menu is one
+    // click too many.
+    if (item.quickDismiss) {
+      return html`
+        <sl-button
+          size="small"
+          data-testid="quick-dismiss"
+          ?loading=${this.busyItemId === item.id}
+          @click=${() =>
+            void this.dismiss(item, item.quickDismiss?.reason || 'expected')}
+          >${item.quickDismiss.label}</sl-button
+        >
+      `;
     }
     return html`
       <sl-dropdown class="dismiss-dropdown" hoist>
@@ -846,11 +904,31 @@ export class AttentionView extends AuthedElement {
             <div class="evidence-line">${reason.text}</div>
             ${reason.command ? this.renderCommand(reason.command) : nothing}
             ${
-              reason.action
+              reason.action || reason.removeAgent
                 ? html`<div class="evidence-actions">
-                    <sl-button size="small" href=${reason.action.href}
-                      >${reason.action.label}</sl-button
-                    >
+                    ${
+                      reason.action
+                        ? html`<sl-button
+                            size="small"
+                            href=${reason.action.href}
+                            >${reason.action.label}</sl-button
+                          >`
+                        : nothing
+                    }
+                    ${
+                      reason.removeAgent && this.canRemoveAgents
+                        ? html`<sl-button
+                            size="small"
+                            variant="danger"
+                            outline
+                            data-testid="remove-agent"
+                            ?loading=${this.busyItemId === item.id}
+                            @click=${() =>
+                              this.removeAgent(item, reason.removeAgent!)}
+                            >Remove</sl-button
+                          >`
+                        : nothing
+                    }
                   </div>`
                 : nothing
             }
@@ -920,7 +998,10 @@ export class AttentionView extends AuthedElement {
   }
 
   private renderPricingEvidence(item: AttentionItem) {
-    const models = item.evidence?.unpricedModels || [];
+    const zeroPriced = item.evidence?.zeroPricedModels || [];
+    const models = zeroPriced.length
+      ? zeroPriced
+      : item.evidence?.unpricedModels || [];
     const catalogMissing = item.evidence?.catalogMissing === true;
     // A column of "n/a" is a column of nothing: the gateway summary only
     // carries a last-request time for some breakdowns.
@@ -931,6 +1012,14 @@ export class AttentionView extends AuthedElement {
           ? html`<div class="evidence-line">
               Load a catalog or add price overrides on the Cost page, and past
               usage is costed from then on.
+            </div>`
+          : nothing
+      }
+      ${
+        zeroPriced.length > 0
+          ? html`<div class="evidence-line">
+              These models have a price and it is $0, so their usage adds
+              nothing to spend. Promo or mistake?
             </div>`
           : nothing
       }
@@ -993,10 +1082,10 @@ export class AttentionView extends AuthedElement {
                           <a
                             href=${
                               model.aiModelId
-                                ? `/console/ai-models/${model.aiModelId}`
+                                ? `/console/ai-models/${model.aiModelId}?pricing=edit`
                                 : '/console/cost?panel=pricing'
                             }
-                            >Set price</a
+                            >${zeroPriced.length > 0 ? 'Edit price' : 'Set price'}</a
                           >
                         </td>
                       </tr>
@@ -1075,6 +1164,7 @@ export class AttentionView extends AuthedElement {
       evidence.agentReasons?.length ||
       evidence.modelFailures?.length ||
       evidence.unpricedModels?.length ||
+      evidence.zeroPricedModels?.length ||
       evidence.catalogMissing ||
       evidence.budget
     );

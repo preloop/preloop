@@ -2,6 +2,7 @@ import uuid
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 from pytest_mock import MockerFixture
 
@@ -13,6 +14,11 @@ from preloop.schemas.ai_model import (
     AvailableModelsResponse,
 )
 from preloop.models.models.account import Account
+from preloop.schemas.ai_model_pricing import AIModelPrice, AIModelPricingResponse
+from preloop.services.ai_model_pricing import (
+    PriceFetchUnavailableError,
+    PriceFetchUnsupportedError,
+)
 
 from tests.conftest import maybe_await
 
@@ -582,3 +588,78 @@ async def test_available_models_typed_key_wins_over_subscription_oauth_model(
     assert result.models == ["claude-fable-5-1-20260901"]
     assert mock_discovery.call_args.args[1] == "sk-ant-typed"
     mock_crud.resolve_listing_secret.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_ai_model_pricing_returns_the_effective_price(
+    mock_account: Account, mocker: MockerFixture
+):
+    """The pricing endpoint answers for the account's own model only."""
+    model_id = uuid.uuid4()
+    db_model = MagicMock()
+    db_model.id = model_id
+    db_model.account_id = mock_account.account_id
+    mock_crud = mocker.patch(
+        "preloop.api.endpoints.ai_models.crud_ai_model", new_callable=MagicMock
+    )
+    mock_crud.get.return_value = db_model
+    resolved = AIModelPricingResponse(
+        ai_model_id=str(model_id),
+        source="catalog",
+        price=AIModelPrice(input_per_1m=3.0, output_per_1m=15.0),
+        catalog_key="openrouter/anthropic/claude-sonnet-4",
+        fetch_supported=True,
+        fetch_provider_label="OpenRouter",
+    )
+    mocker.patch(
+        "preloop.api.endpoints.ai_models.get_effective_pricing", return_value=resolved
+    )
+
+    result = await maybe_await(
+        ai_models.get_ai_model_pricing(
+            model_id=model_id, db=MagicMock(), current_user=mock_account
+        )
+    )
+
+    assert result.source == "catalog"
+    assert result.price.input_per_1m == 3.0
+
+
+@pytest.mark.asyncio
+async def test_fetch_ai_model_pricing_maps_provider_failures(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A provider with no price list is a 400; one that cannot answer is a 502."""
+    model_id = uuid.uuid4()
+    db_model = MagicMock()
+    db_model.id = model_id
+    db_model.account_id = mock_account.account_id
+    mock_crud = mocker.patch(
+        "preloop.api.endpoints.ai_models.crud_ai_model", new_callable=MagicMock
+    )
+    mock_crud.get.return_value = db_model
+
+    mocker.patch(
+        "preloop.api.endpoints.ai_models.fetch_provider_pricing",
+        side_effect=PriceFetchUnsupportedError("Anthropic does not publish prices"),
+    )
+    with pytest.raises(HTTPException) as unsupported:
+        await maybe_await(
+            ai_models.fetch_ai_model_pricing(
+                model_id=model_id, db=MagicMock(), current_user=mock_account
+            )
+        )
+    assert unsupported.value.status_code == 400
+    assert "Anthropic" in unsupported.value.detail
+
+    mocker.patch(
+        "preloop.api.endpoints.ai_models.fetch_provider_pricing",
+        side_effect=PriceFetchUnavailableError("price list unreachable"),
+    )
+    with pytest.raises(HTTPException) as unavailable:
+        await maybe_await(
+            ai_models.fetch_ai_model_pricing(
+                model_id=model_id, db=MagicMock(), current_user=mock_account
+            )
+        )
+    assert unavailable.value.status_code == 502

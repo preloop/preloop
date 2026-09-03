@@ -243,6 +243,14 @@ export interface GatewayUsageByModel {
   token_usage: GatewayTokenUsage;
   estimated_cost: number;
   last_request_at?: string | null;
+  /**
+   * Requests this model served that carry no cost at all, and requests it
+   * served at exactly $0. Optional: servers older than wave 8 omit both, and
+   * the console falls back to `estimated_cost` alone there.
+   */
+  unpriced_request_count?: number;
+  zero_priced_request_count?: number;
+  failed_request_count?: number;
 }
 
 export interface GatewayUsageByFlow {
@@ -1033,6 +1041,46 @@ export interface PriceCatalogInfo {
   source_url?: string | null;
   fetched_at?: string | null;
   model_count?: number | null;
+}
+
+/** One price in USD per million tokens, as providers publish them. */
+export interface AIModelPrice {
+  input_per_1m?: number | null;
+  output_per_1m?: number | null;
+  cached_input_per_1m?: number | null;
+  blended_per_1m?: number | null;
+  request_price?: number | null;
+}
+
+export type AIModelPricingSource =
+  'override' | 'model_config' | 'catalog' | 'none';
+
+/** What one model actually costs this account, and where that came from. */
+export interface AIModelPricingResponse {
+  ai_model_id: string;
+  model_alias?: string | null;
+  provider_name?: string | null;
+  source: AIModelPricingSource;
+  price: AIModelPrice;
+  currency: string;
+  override_id?: string | null;
+  effective_from?: string | null;
+  effective_until?: string | null;
+  catalog_key?: string | null;
+  /** True when the provider publishes a price list Preloop can read. */
+  fetch_supported: boolean;
+  fetch_provider_label?: string | null;
+}
+
+/** A price read from the provider for confirmation. Nothing is saved. */
+export interface AIModelPriceQuote {
+  ai_model_id: string;
+  provider_name?: string | null;
+  source_url: string;
+  model_key: string;
+  price: AIModelPrice;
+  currency: string;
+  fetched_at: string;
 }
 
 export interface ModelPriceOverride {
