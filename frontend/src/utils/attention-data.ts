@@ -87,12 +87,6 @@ export interface LoadAttentionInputsOptions {
   now?: Date;
   /** Skip the budget policies call when billing is off (it 403s). */
   includeBudgetPolicies?: boolean;
-  /**
-   * Skip the usage-summary-with-breakdown call. Overview already fetches
-   * that in wave 2; a second copy blocked first paint and doubled the
-   * expensive aggregate. The Attention page leaves this unset.
-   */
-  skipUsageSummary?: boolean;
 }
 
 /**
@@ -144,13 +138,13 @@ export async function loadAttentionInputs(
       ? Promise.resolve([] as BudgetPolicy[])
       : getBudgetPolicies(),
     // The breakdown is what turns "336 requests unpriced" into "these seven
-    // models have no price", which is the part somebody can act on.
-    options.skipUsageSummary
-      ? Promise.resolve(null)
-      : getAccountGatewayUsageSummary({
-          startDate: usageStart,
-          includeBreakdown: true,
-        }),
+    // models have no price", which is the part somebody can act on. Always
+    // a fixed ATTENTION_QUERY.usageWindowDays window so Overview and
+    // /console/attention agree; do not reuse the dashboard's selected range.
+    getAccountGatewayUsageSummary({
+      startDate: usageStart,
+      includeBreakdown: true,
+    }),
     getAttentionDismissals(),
     // An override is a price, including one of $0. Without this the console
     // asks for a price somebody set a month ago. A 403 on an account without

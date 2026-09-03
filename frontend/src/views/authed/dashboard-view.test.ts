@@ -31,8 +31,8 @@ describe('DashboardView', () => {
   /** Set by a test that wants to hold the secondary pass open. */
   let aiModelsGate: Promise<void> | null;
   /**
-   * Holds the Overview's wave-2 breakdown call in flight. Attention no
-   * longer asks for its own copy.
+   * Holds the Overview's wave-2 breakdown call in flight. Attention also
+   * asks for a 30-day copy after first paint.
    */
   let breakdownGate: Promise<void> | null;
   let breakdownCalls = 0;
@@ -565,7 +565,8 @@ describe('DashboardView', () => {
         !element['fetchingAgents'] &&
         !element['fetchingBudget'] &&
         !element['fetchingAudit'] &&
-        !element['fetchingMCPAndTools'],
+        !element['fetchingMCPAndTools'] &&
+        element['attentionInputs'] != null,
       'dashboard did not finish loading'
     );
 
@@ -579,19 +580,18 @@ describe('DashboardView', () => {
         url.startsWith('/api/v1/account/gateway-usage/summary')
       )
     ).to.be.true;
-    // Two for the cards (summary + breakdown upgrade) and one for the prior
-    // window behind the Usage delta. Attention reuses wave 2's breakdown
-    // instead of asking for a fourth.
+    // Two for the cards (summary + breakdown upgrade), one for the prior
+    // window behind the Usage delta, and one 30-day breakdown for attention.
     expect(
       urls.filter((url) =>
         url.startsWith('/api/v1/account/gateway-usage/summary')
       ).length
-    ).to.equal(3);
+    ).to.equal(4);
     expect(urls.some((url) => url.includes('include_breakdown=false'))).to.be
       .true;
     expect(
       urls.filter((url) => url.includes('include_breakdown=true')).length
-    ).to.equal(1);
+    ).to.equal(2);
     expect(
       urls.filter((url) => url.startsWith('/api/v1/agents')).length
     ).to.equal(2);

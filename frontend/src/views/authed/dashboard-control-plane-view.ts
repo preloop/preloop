@@ -334,11 +334,6 @@ export class DashboardView extends AuthedElement {
    * /console/attention.
    */
   @state() private attentionInputs: AttentionInputs | null = null;
-  /**
-   * Wave 2's usage breakdown, kept so attention can reuse it whether the
-   * loader or the breakdown finishes first.
-   */
-  private pendingAttentionUsageSummary: AttentionInputs['usageSummary'] = null;
   @state()
   private approvalStats = {
     total: 0,
@@ -1867,7 +1862,9 @@ export class DashboardView extends AuthedElement {
       this.saveDashboardCache();
 
       // After the fold, not during wave 1: attention used to fetch its own
-      // usage breakdown in parallel and first paint waited for it.
+      // usage breakdown in parallel and first paint waited for it. The
+      // loader still uses a fixed 30-day window so the strip matches
+      // /console/attention; wave 2's selected range is a different query.
       void this.refreshAttentionInputs();
 
       // Wave 2 is slow (full session breakdown + audit/tools). On a live
@@ -2066,13 +2063,6 @@ export class DashboardView extends AuthedElement {
         return;
       }
       this.gatewaySummary = detailed;
-      this.pendingAttentionUsageSummary = detailed;
-      if (this.attentionInputs) {
-        this.attentionInputs = {
-          ...this.attentionInputs,
-          usageSummary: detailed,
-        };
-      }
     } catch (error) {
       console.error('Failed to load gateway breakdown for top models', error);
     } finally {
@@ -2301,18 +2291,13 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
-   * Same loader, same parameters as the Attention page, except the usage
-   * breakdown: Overview already fetches that in wave 2. Starts after the
-   * first paint so a slow attention input never holds up the cards above
-   * the fold.
+   * Same loader, same parameters as the Attention page, including the
+   * fixed 30-day usage breakdown. Starts after the first paint so a slow
+   * attention input never holds up the cards above the fold.
    */
   private async refreshAttentionInputs(): Promise<void> {
     try {
-      const inputs = await loadAttentionInputs({ skipUsageSummary: true });
-      this.attentionInputs = {
-        ...inputs,
-        usageSummary: this.pendingAttentionUsageSummary ?? inputs.usageSummary,
-      };
+      this.attentionInputs = await loadAttentionInputs();
       this.saveDashboardCache();
     } catch (error) {
       console.error('Failed to load attention inputs', error);

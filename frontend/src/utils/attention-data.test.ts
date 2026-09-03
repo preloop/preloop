@@ -249,15 +249,4 @@ describe('loadAttentionInputs', () => {
       requestedUrls().some((url) => url.startsWith('/api/v1/budget/policies'))
     ).to.be.false;
   });
-
-  it('skips the usage-summary breakdown when the Overview already fetches it', async () => {
-    const inputs = await loadAttentionInputs({ skipUsageSummary: true });
-    expect(
-      requestedUrls().some((url) =>
-        url.startsWith('/api/v1/account/gateway-usage/summary')
-      )
-    ).to.be.false;
-    expect(inputs.usageSummary).to.equal(null);
-    expect(inputs.approvals).to.have.length(1);
-  });
 });
