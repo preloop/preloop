@@ -20,6 +20,7 @@ describe('BudgetPolicyEditor', () => {
   const stubBillingFetch = (opts?: {
     failModels?: boolean;
     policies?: unknown[];
+    users?: Array<{ id: string; email: string; username?: string }>;
   }) => {
     fetchStub.callsFake(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -40,7 +41,12 @@ describe('BudgetPolicyEditor', () => {
         }
         if (url.includes('/api/v1/users?')) {
           return new Response(
-            JSON.stringify({ users: [], total: 0, skip: 0, limit: 100 }),
+            JSON.stringify({
+              users: opts?.users || [],
+              total: opts?.users?.length || 0,
+              skip: 0,
+              limit: 100,
+            }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           );
         }
@@ -73,6 +79,26 @@ describe('BudgetPolicyEditor', () => {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
+        }
+        if (url.includes('/api/v1/budget/policies') && method === 'POST') {
+          const body = JSON.parse(String(init?.body || '{}'));
+          return new Response(
+            JSON.stringify({
+              id: 'policy-new',
+              subject_type: body.subject_type || 'global',
+              subject_id: body.subject_id || null,
+              model_alias: null,
+              period: body.period || 'monthly',
+              hard_limit_usd: body.hard_limit_usd,
+              soft_limit_usd: body.soft_limit_usd,
+              notify_on_soft: body.notify_on_soft,
+              notify_on_hard: body.notify_on_hard,
+              notification_user_ids: body.notification_user_ids,
+              notification_team_ids: body.notification_team_ids,
+              notification_emails: body.notification_emails,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
         }
         if (url.includes('/api/v1/budget/policies') && method === 'GET') {
           return new Response(JSON.stringify(opts?.policies || []), {
@@ -461,5 +487,99 @@ describe('BudgetPolicyEditor', () => {
       element.shadowRoot?.textContent?.includes('Hard $150.00')
     );
     expect(element.shadowRoot?.textContent).to.include('Hard $150.00');
+  });
+
+  async function fillHardLimitAndSave(element: BudgetPolicyEditor) {
+    await waitUntil(
+      () => Boolean(element.shadowRoot?.textContent?.includes('Save limit')),
+      'add-limit form did not open'
+    );
+    const hardLimitInput = element.shadowRoot?.querySelector(
+      'sl-input[label="Hard limit (USD)"]'
+    ) as HTMLInputElement | null;
+    expect(hardLimitInput).to.exist;
+    hardLimitInput!.value = '10';
+    hardLimitInput!.dispatchEvent(new Event('sl-input', { bubbles: true }));
+    await element.updateComplete;
+    await waitUntil(
+      () =>
+        Boolean(
+          (element as unknown as { subjectsLoaded: boolean }).subjectsLoaded
+        ),
+      'subject lists did not finish loading'
+    );
+    element.shadowRoot
+      ?.querySelector('sl-button[variant="primary"]')
+      ?.dispatchEvent(new Event('click', { bubbles: true, composed: true }));
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some(
+          (call) =>
+            String(call.args[0]).includes('/api/v1/budget/policies') &&
+            call.args[1]?.method === 'POST'
+        )
+    );
+    const createCall = fetchStub
+      .getCalls()
+      .find(
+        (call) =>
+          String(call.args[0]).includes('/api/v1/budget/policies') &&
+          call.args[1]?.method === 'POST'
+      );
+    return JSON.parse(String(createCall?.args[1]?.body));
+  }
+
+  it('does not POST a null notification user id when /me has no id', async () => {
+    stubBillingFetch();
+    const element = await mountEditor();
+    (
+      element.shadowRoot!.querySelector(
+        'sl-button[variant="primary"]'
+      ) as HTMLElement
+    ).click();
+    const body = await fillHardLimitAndSave(element);
+    expect(body.notification_user_ids).to.equal(null);
+    expect(body.hard_limit_usd).to.equal(10);
+  });
+
+  it('defaults notify recipients to the current user from the users list', async () => {
+    stubBillingFetch({
+      users: [
+        {
+          id: 'owner-user-id',
+          email: 'owner@example.com',
+          username: 'owner',
+        },
+      ],
+    });
+    const element = await mountEditor();
+    (
+      element.shadowRoot!.querySelector(
+        'sl-button[variant="primary"]'
+      ) as HTMLElement
+    ).click();
+    const body = await fillHardLimitAndSave(element);
+    expect(body.notification_user_ids).to.deep.equal(['owner-user-id']);
+  });
+
+  it('matches the current user by email case-insensitively', async () => {
+    stubBillingFetch({
+      users: [
+        {
+          id: 'owner-user-id',
+          email: 'Owner@Example.com',
+          username: 'owner',
+        },
+      ],
+    });
+    const element = await mountEditor();
+    (
+      element.shadowRoot!.querySelector(
+        'sl-button[variant="primary"]'
+      ) as HTMLElement
+    ).click();
+    const body = await fillHardLimitAndSave(element);
+    expect(body.notification_user_ids).to.deep.equal(['owner-user-id']);
   });
 });

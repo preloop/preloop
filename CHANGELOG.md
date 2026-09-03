@@ -81,6 +81,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Spending-limit save no longer posts a null notify user**: `/auth/users/me`
+  has no `id`, so the limits editor used to send `notification_user_ids: [null]`
+  and the API rejected the create. Recipients now come from the users list
+  (matched by email, case-insensitive) or are omitted. Overlay clicks no
+  longer close the limits dialog, so opening the notify dropdowns does not
+  dismiss it.
 - **Overview first paint no longer waits on the attention usage breakdown**:
   the shared attention loader used to fetch ``include_breakdown=true`` in
   parallel with wave 1, and the page waited for it before drawing. Attention

@@ -357,13 +357,16 @@ export class BudgetPolicyEditor extends LitElement {
       this.agents = agentsResponse.items || [];
       this.availableUsers = (usersRes as UserListResponse).users || [];
       this.teams = teamsResponse.teams || [];
+      // /auth/users/me has no `id` (AuthUserResponse). Using userProfile.id
+      // anyway posted `[null]` and the API 422'd on UUID validation.
+      const selfId = this.currentUserNotifyId(userProfile);
       if (
-        userProfile &&
+        selfId &&
         this.newNotifyUserIds.length === 0 &&
         this.newNotifyTeamIds.length === 0 &&
         this.newCustomEmails.length === 0
       ) {
-        this.newNotifyUserIds = [userProfile.id];
+        this.newNotifyUserIds = [selfId];
       }
       this.subjectsLoaded = true;
     } catch (e) {
@@ -437,9 +440,9 @@ export class BudgetPolicyEditor extends LitElement {
       policy.soft_limit_usd != null ? String(policy.soft_limit_usd) : '';
     this.newNotifySoft = policy.notify_on_soft;
     this.newNotifyHard = policy.notify_on_hard;
-    this.newNotifyUserIds = [...(policy.notification_user_ids || [])];
-    this.newNotifyTeamIds = [...(policy.notification_team_ids || [])];
-    this.newCustomEmails = [...(policy.notification_emails || [])];
+    this.newNotifyUserIds = this.compactIds(policy.notification_user_ids || []);
+    this.newNotifyTeamIds = this.compactIds(policy.notification_team_ids || []);
+    this.newCustomEmails = this.compactIds(policy.notification_emails || []);
     this.step = 'form';
     void this.ensureSubjectsLoaded();
   }
@@ -452,23 +455,50 @@ export class BudgetPolicyEditor extends LitElement {
     this.resetForm();
   }
 
+  /**
+   * `/auth/users/me` does not include `id`. Prefer a real string, then the
+   * account user list matched by email (case-insensitive), otherwise leave
+   * recipients empty rather than posting `[null]`.
+   */
+  private currentUserNotifyId(
+    userProfile: { id?: unknown; email?: string } | null
+  ): string | undefined {
+    if (typeof userProfile?.id === 'string' && userProfile.id.length > 0) {
+      return userProfile.id;
+    }
+    const email = userProfile?.email;
+    if (!email) {
+      return undefined;
+    }
+    const needle = email.toLowerCase();
+    return this.availableUsers.find(
+      (user) => user.email?.toLowerCase() === needle
+    )?.id;
+  }
+
+  private compactIds(ids: Array<string | null | undefined>): string[] {
+    return ids.filter(
+      (id): id is string => typeof id === 'string' && id.length > 0
+    );
+  }
+
   private buildNotifyPayload() {
+    const userIds = this.compactIds(this.newNotifyUserIds);
+    const teamIds = this.compactIds(this.newNotifyTeamIds);
+    const emails = this.compactIds(this.newCustomEmails);
     return {
-      notification_user_ids:
-        this.newNotifyUserIds.length > 0 ? this.newNotifyUserIds : null,
-      notification_team_ids:
-        this.newNotifyTeamIds.length > 0 ? this.newNotifyTeamIds : null,
-      notification_emails:
-        this.newCustomEmails.length > 0 ? this.newCustomEmails : null,
+      notification_user_ids: userIds.length > 0 ? userIds : null,
+      notification_team_ids: teamIds.length > 0 ? teamIds : null,
+      notification_emails: emails.length > 0 ? emails : null,
     };
   }
 
   private handleNotifyRecipientsChange(
     event: CustomEvent<NotifyRecipientsValue>
   ) {
-    this.newNotifyUserIds = event.detail.userIds;
-    this.newNotifyTeamIds = event.detail.teamIds;
-    this.newCustomEmails = event.detail.customEmails;
+    this.newNotifyUserIds = this.compactIds(event.detail.userIds);
+    this.newNotifyTeamIds = this.compactIds(event.detail.teamIds);
+    this.newCustomEmails = this.compactIds(event.detail.customEmails);
   }
 
   /** Inline validation, so a typo never reaches the server as a 422. */
