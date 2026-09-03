@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -720,11 +721,49 @@ func TestStopForegroundOnInterruptKillsJobAndUnregisters(t *testing.T) {
 	t.Fatal("interrupt must send unregister")
 }
 
+func TestHelperSleepJob(t *testing.T) {
+	if os.Getenv("PRELOOP_HELPER_SLEEP_JOB") != "1" {
+		t.Skip("spawned by TestRunnerFgInterruptDuringBackoffKillsJob")
+	}
+	path := os.Getenv("PRELOOP_HELPER_PID_PATH")
+	if path == "" {
+		t.Fatal("PRELOOP_HELPER_PID_PATH is required")
+	}
+	if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Second)
+}
+
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		// Signal(0) is not implemented on Windows (the GitHub CLI job
+		// failed with "leased job did not start" for that reason).
+		out, err := exec.Command(
+			"tasklist",
+			"/FI",
+			"PID eq "+strconv.Itoa(pid),
+			"/FO",
+			"CSV",
+			"/NH",
+		).CombinedOutput()
+		if err != nil {
+			return false
+		}
+		return strings.Contains(string(out), `"`+strconv.Itoa(pid)+`"`)
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
+}
+
 func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 	testenv.SetTempHome(t)
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("needs sh to start a job the test can observe without racing exec.Cmd")
-	}
 	oldMin, oldMax := runnerReconnectMin, runnerReconnectMax
 	runnerReconnectMin = 2 * time.Second
 	runnerReconnectMax = 2 * time.Second
@@ -738,8 +777,13 @@ func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 		// Pid file instead of sharing *exec.Cmd: the runner calls Start/Wait
 		// on that Cmd, and -race flags unsynchronized reads of Process /
 		// ProcessState from the test goroutine (GitLab test:unit:cli).
-		quoted := strconv.Quote(pidPath)
-		return exec.Command("sh", "-c", "echo $$ >"+quoted+"; exec sleep 30")
+		cmd := exec.Command(os.Args[0], "-test.run=^TestHelperSleepJob$", "--")
+		cmd.Env = append(
+			os.Environ(),
+			"PRELOOP_HELPER_SLEEP_JOB=1",
+			"PRELOOP_HELPER_PID_PATH="+pidPath,
+		)
+		return cmd
 	}
 	readJobPID := func() int {
 		raw, err := os.ReadFile(pidPath)
@@ -752,19 +796,9 @@ func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 		}
 		return pid
 	}
-	jobAlive := func(pid int) bool {
-		if pid <= 0 {
-			return false
-		}
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			return false
-		}
-		return proc.Signal(syscall.Signal(0)) == nil
-	}
 	t.Cleanup(func() {
 		runnerHasDocker, newRunnerJobCmd = oldDocker, oldCmd
-		if pid := readJobPID(); jobAlive(pid) {
+		if pid := readJobPID(); processAlive(pid) {
 			proc, err := os.FindProcess(pid)
 			if err == nil {
 				_ = proc.Kill()
@@ -843,12 +877,12 @@ func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		jobPID = readJobPID()
-		if jobAlive(jobPID) {
+		if processAlive(jobPID) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !jobAlive(jobPID) {
+	if !processAlive(jobPID) {
 		interrupt <- os.Interrupt
 		t.Fatal("leased job did not start")
 	}
@@ -872,7 +906,7 @@ func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 	}
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if unregistered.Load() && !jobAlive(jobPID) {
+		if unregistered.Load() && !processAlive(jobPID) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -880,7 +914,7 @@ func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 	if !unregistered.Load() {
 		t.Fatal("interrupt during backoff must unregister")
 	}
-	if jobAlive(jobPID) {
+	if processAlive(jobPID) {
 		t.Fatal("interrupt during backoff must kill the in-flight job")
 	}
 }
