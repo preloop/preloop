@@ -186,7 +186,11 @@ export function flowTriggerSummary(
     return { label, title: `${label} · ${next}` };
   }
   const types = (flow.trigger_event_types || [])
-    .map((type) => humaniseToken(String(type)))
+    .map((type) => String(type))
+    // A webhook flow whose only event type is "webhook" would read
+    // "Webhook - Webhook"; say a thing once.
+    .filter((type) => type.toLowerCase() !== String(source).toLowerCase())
+    .map((type) => humaniseToken(type))
     .filter(Boolean);
   if (source === 'webhook') {
     const label = types.length ? `Webhook · ${types.join(', ')}` : 'Webhook';
@@ -366,6 +370,20 @@ export class FlowsView extends LitElement {
           display: none;
         }
       }
+      /* Phones: the filters take the full width one after another, and the
+         switcher goes away. Below this width a seven-column table cannot be
+         read, so cards are the only view on offer and a switcher that could
+         not honour a click would be a lie. Matches
+         LIST_TO_CARDS_BREAKPOINT. */
+      @media (max-width: 640px) {
+        .filters sl-input,
+        .filters sl-select {
+          flex: 1 1 100%;
+        }
+        .view-switcher-group sl-button-group {
+          display: none;
+        }
+      }
 
       /* --- List view --- */
       /* Fixed layout so the columns come from the colgroup and not from the
@@ -374,7 +392,7 @@ export class FlowsView extends LitElement {
       .flows-table {
         table-layout: fixed;
         width: 100%;
-        min-width: 1080px;
+        min-width: 1120px;
       }
       .table-scroll {
         overflow-x: auto;
@@ -382,7 +400,7 @@ export class FlowsView extends LitElement {
       }
       .flows-table th,
       .flows-table td {
-        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+        padding: var(--sl-spacing-small);
         vertical-align: middle;
         min-width: 0;
         overflow: hidden;
@@ -406,24 +424,36 @@ export class FlowsView extends LitElement {
       .actions-cell resource-actions::part(container) {
         overflow: visible;
       }
+      /* The two columns that carry words get the room; the counters are
+         sized to their widest plausible number and nothing more. A flow
+         called "Release Sentinel db-migration" must be readable without a
+         tooltip, which is what the first screenshot round got wrong. */
+      .col-flow {
+        width: 25%;
+      }
       .col-trigger {
-        width: 20%;
+        width: 14%;
       }
       .col-status {
-        width: 110px;
+        width: 96px;
       }
       .col-last-run {
-        width: 26%;
+        width: 23%;
       }
       .col-runs,
       .col-failed {
-        width: 90px;
+        width: 84px;
       }
       .col-cost {
-        width: 110px;
+        width: 96px;
       }
       .col-actions {
         width: 72px;
+      }
+      /* First and last columns keep the card's own gutter. */
+      .flows-table th:first-child .sort-button,
+      .flows-table td:first-child {
+        padding-left: var(--sl-spacing-medium);
       }
       .sort-button {
         display: flex;
@@ -439,7 +469,7 @@ export class FlowsView extends LitElement {
         letter-spacing: 0.04em;
         text-transform: uppercase;
         color: var(--sl-color-neutral-600);
-        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+        padding: var(--sl-spacing-small);
       }
       th.numeric .sort-button {
         justify-content: flex-end;
@@ -503,17 +533,31 @@ export class FlowsView extends LitElement {
       .muted-cell {
         color: var(--console-meta-color);
       }
+      /* Counters read as a column of digits, so they need less air than a
+         sentence does; the width they give back goes to the names. */
       .flows-table td.numeric,
-      .flows-table th.numeric {
+      .flows-table th.numeric,
+      .flows-table th.numeric .sort-button {
         text-align: right;
         font-variant-numeric: tabular-nums;
         white-space: nowrap;
+        padding-left: var(--sl-spacing-x-small);
+        padding-right: var(--sl-spacing-x-small);
       }
       .last-run {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .last-run-line {
         display: flex;
         align-items: center;
         gap: var(--sl-spacing-x-small);
         min-width: 0;
+      }
+      .last-run-line .status-chip {
+        flex-shrink: 0;
       }
       .last-run .meta {
         color: var(--console-meta-color);
@@ -592,11 +636,15 @@ export class FlowsView extends LitElement {
       .card-actions {
         flex-shrink: 0;
       }
+      /* A fixed height keeps the meta rows and footers of a row of cards on
+         the same line. 5.75rem was cut for a three-line clamp; the clamp is
+         two lines plus the toggle, so the rest was a dead band under every
+         description. */
       .flow-description {
         color: var(--console-meta-color);
         margin-bottom: 12px;
         font-size: var(--console-text-meta);
-        height: 5.75rem;
+        height: 4rem;
         overflow: hidden;
       }
       .flow-description-text {
@@ -1387,7 +1435,7 @@ export class FlowsView extends LitElement {
         <form class="filters" @submit=${(e: Event) => e.preventDefault()}>
           <sl-input
             class="search-input"
-            placeholder="Search name, preset, trigger"
+            placeholder="Search flows"
             clearable
             .value=${this.filters.query}
             @sl-input=${(event: Event) => {
@@ -1670,19 +1718,24 @@ export class FlowsView extends LitElement {
       >`;
     }
     const duration = executionDurationText(run);
+    // Two lines, like the Flow cell: the outcome and what the run was about
+    // on top, when and how long underneath. On one line the subject was the
+    // only thing that could give way, and it did, down to "s.".
     return html`
       <a
         class="last-run"
         href=${`/console/flows/executions/${run.id}`}
         style="text-decoration: none; color: inherit;"
       >
-        <sl-badge
-          class="status-chip"
-          pill
-          variant=${this.getStatusVariant(run.status)}
-          >${this.statusLabel(run.status)}</sl-badge
-        >
-        ${renderExecutionSubject(run)}
+        <span class="last-run-line">
+          <sl-badge
+            class="status-chip"
+            pill
+            variant=${this.getStatusVariant(run.status)}
+            >${this.statusLabel(run.status)}</sl-badge
+          >
+          ${renderExecutionSubject(run)}
+        </span>
         <span class="meta" title=${formatLocalDateTime(run.start_time)}
           >${formatRelativeTime(run.start_time, undefined, {
             maxRelativeDays: 30,
