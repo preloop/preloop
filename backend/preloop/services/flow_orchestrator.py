@@ -3,7 +3,7 @@ import uuid
 import json
 import asyncio
 import shlex
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import re
@@ -282,6 +282,44 @@ If it did not complete, state that plainly: write /workspace/result.json as {{"s
 --- OUTPUT TAIL OF PREVIOUS RUN (each line quoted with "> ") ---
 {quoted_tail}
 --- END OUTPUT TAIL ---"""
+
+
+# Bounds for a per-flow timeout budget. The floor keeps a typo from making a
+# flow unrunnable (a container needs longer than a few seconds just to pull an
+# image and clone), and the ceiling keeps a runaway run from holding a worker
+# slot and an agent Job for more than a day.
+FLOW_TIMEOUT_SECONDS_MIN = 60
+FLOW_TIMEOUT_SECONDS_MAX = 86400
+
+
+@dataclass(frozen=True)
+class TimeoutBudget:
+    """The wall-clock budget one flow execution is allowed to spend.
+
+    ``source`` is ``"flow"`` when the flow carries its own
+    ``timeout_seconds`` and ``"default"`` when the global setting applies. It
+    exists so the failure message can name the budget an operator has to
+    change, which the flat "Execution timed out after 3600 seconds" could
+    not: on staging every one of the 7 timeouts sat exactly on the global
+    ceiling, which told nobody whether the run was stuck or simply long.
+    """
+
+    seconds: int
+    source: str
+
+    def timeout_message(self) -> str:
+        """Operator-facing failure message naming the budget that expired."""
+        if self.source == "flow":
+            return (
+                f"Execution timed out after {self.seconds} seconds "
+                f"(this flow's timeout budget). Raise timeout_seconds on the "
+                "flow if the work genuinely needs longer."
+            )
+        return (
+            f"Execution timed out after {self.seconds} seconds (the default "
+            "timeout budget). Set timeout_seconds on the flow to give it a "
+            "budget of its own."
+        )
 
 
 def _make_json_serializable(obj: Any) -> Any:
@@ -2836,6 +2874,35 @@ class FlowExecutionOrchestrator:
             except Exception as cleanup_error:
                 logger.warning(f"Error during nudge executor cleanup: {cleanup_error}")
 
+    def _execution_timeout_budget(self) -> TimeoutBudget:
+        """Resolve the wall-clock budget for this execution.
+
+        A flow that carries ``timeout_seconds`` sets its own budget; every
+        other flow keeps the global default. The value is clamped so that a
+        bad number cannot make a flow unrunnable or let one hold a worker
+        slot indefinitely.
+        """
+        default_seconds = int(settings.flow_execution_max_wait_seconds)
+        configured = getattr(self.flow, "timeout_seconds", None)
+        if configured is None:
+            return TimeoutBudget(seconds=default_seconds, source="default")
+        try:
+            seconds = int(configured)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Flow {getattr(self.flow, 'id', None)} has a non-numeric "
+                f"timeout_seconds ({configured!r}); using the default budget"
+            )
+            return TimeoutBudget(seconds=default_seconds, source="default")
+        clamped = max(FLOW_TIMEOUT_SECONDS_MIN, min(FLOW_TIMEOUT_SECONDS_MAX, seconds))
+        if clamped != seconds:
+            logger.warning(
+                f"Flow {getattr(self.flow, 'id', None)} timeout_seconds "
+                f"{seconds} is outside [{FLOW_TIMEOUT_SECONDS_MIN}, "
+                f"{FLOW_TIMEOUT_SECONDS_MAX}]; clamped to {clamped}"
+            )
+        return TimeoutBudget(seconds=clamped, source="flow")
+
     async def _monitor_agent_execution(
         self, session_reference: str, agent_executor: Any
     ) -> Dict[str, Any]:
@@ -2850,8 +2917,14 @@ class FlowExecutionOrchestrator:
             Dict with execution results including status, output, errors
         """
         logger.info(f"Monitoring agent execution {session_reference}")
+        timeout_budget = self._execution_timeout_budget()
         self.execution_logger.log_milestone(
-            "agent_monitoring_started", {"session_reference": session_reference}
+            "agent_monitoring_started",
+            {
+                "session_reference": session_reference,
+                "timeout_seconds": timeout_budget.seconds,
+                "timeout_source": timeout_budget.source,
+            },
         )
 
         try:
@@ -2863,8 +2936,9 @@ class FlowExecutionOrchestrator:
                 self._stream_logs_to_nats(agent_executor, session_reference)
             )
 
-            # Poll agent status until completion
-            max_wait_time = max(30, int(settings.flow_execution_max_wait_seconds))
+            # Poll agent status until completion, bounded by this flow's
+            # timeout budget (flow.timeout_seconds, else the global default).
+            max_wait_time = timeout_budget.seconds
             poll_interval = 5  # Check status every 5 seconds
             elapsed = 0
             consecutive_failures = 0
@@ -3232,12 +3306,18 @@ class FlowExecutionOrchestrator:
             logger.warning(
                 f"Agent execution {session_reference} timed out after {max_wait_time}s"
             )
-            self.execution_logger.log_milestone("agent_execution_timeout")
+            self.execution_logger.log_milestone(
+                "agent_execution_timeout",
+                {
+                    "timeout_seconds": timeout_budget.seconds,
+                    "timeout_source": timeout_budget.source,
+                },
+            )
             await agent_executor.stop(session_reference)
 
             return {
                 "status": "FAILED",
-                "error_message": f"Execution timed out after {max_wait_time} seconds",
+                "error_message": timeout_budget.timeout_message(),
                 "actions_taken": self.execution_logger.get_actions_taken(),
                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
                 # A timed-out eval run may still have written result.json;

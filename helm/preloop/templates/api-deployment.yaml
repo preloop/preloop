@@ -147,6 +147,8 @@ spec:
               value: {{ .Values.flowExecution.workerEnabled | default false | quote }}
             - name: FLOW_EXECUTION_CLAIM_STALE_SECONDS
               value: {{ .Values.flowExecution.claimStaleSeconds | default 120 | quote }}
+            - name: FLOW_EXECUTION_MAX_WAIT_SECONDS
+              value: {{ .Values.flowExecution.maxWaitSeconds | default 3600 | quote }}
             - name: FLOW_COMPLETION_NUDGE_ENABLED
               value: {{ .Values.flowExecution.completionNudge.enabled | default true | quote }}
             - name: FLOW_COMPLETION_NUDGE_TIMEOUT_SECONDS

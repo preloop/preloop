@@ -853,4 +853,8 @@ git_clone_config:
   target_branch: null
   create_pull_request: false
 trigger_config: null
+# A PR review reads a diff and writes comments. When it has not finished in
+# half an hour it is stuck on a tool or a loop, not still thinking, and the
+# author is waiting: fail it early rather than hold the slot for an hour.
+timeout_seconds: 1800
 is_preset: true

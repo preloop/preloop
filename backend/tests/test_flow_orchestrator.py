@@ -6,17 +6,21 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from preloop.config import settings
 from preloop.services.flow_orchestrator import (
     AGENT_EXEC_START_MARKER,
     COMPLETION_NUDGE_MARKER,
     COMPLETION_NUDGE_RESULT_MARKER,
     COMPLETION_NUDGE_UNSUPPORTED_MARKER,
+    FLOW_TIMEOUT_SECONDS_MAX,
+    FLOW_TIMEOUT_SECONDS_MIN,
     FLOW_AUDIT_SUCCESS_INSTRUCTION,
     FLOW_EVAL_SUCCESS_INSTRUCTION,
     FLOW_FAILURE_REPORT_PREFIX,
     FLOW_SUCCESS_INSTRUCTION,
     FLOW_SUCCESS_SENTINEL,
     FlowExecutionOrchestrator,
+    TimeoutBudget,
     _build_confirmation_nudge_prompt,
     _failure_report_in_log_lines,
     _result_artifact_confirmation,
@@ -3171,3 +3175,156 @@ class TestWiderCompletionSignalFallback:
 
         assert result["status"] == "FAILED"
         assert _milestones(orchestrator, "completion_signal_accepted") == []
+
+
+class TestPerFlowTimeoutBudget:
+    """Item 3: each flow may own its wall-clock budget."""
+
+    def _orchestrator(self, mock_nats_client, event_data, timeout_seconds):
+        orchestrator = FlowExecutionOrchestrator(
+            db=MagicMock(),
+            flow_id=uuid4(),
+            trigger_event_data=event_data,
+            nats_client=mock_nats_client,
+        )
+        orchestrator.flow = MagicMock(id=uuid4(), timeout_seconds=timeout_seconds)
+        orchestrator._agent_exec_started = True
+        orchestrator.execution_log = type("ExecutionLogStub", (), {"id": uuid4()})()
+        orchestrator._sync_runtime_tool_activity_metrics = AsyncMock(return_value=None)
+        return orchestrator
+
+    def test_flow_without_a_budget_uses_the_deployment_default(
+        self, mock_nats_client, event_data
+    ):
+        orchestrator = self._orchestrator(mock_nats_client, event_data, None)
+
+        budget = orchestrator._execution_timeout_budget()
+
+        assert budget.seconds == settings.flow_execution_max_wait_seconds
+        assert budget.source == "default"
+
+    def test_flow_budget_wins(self, mock_nats_client, event_data):
+        orchestrator = self._orchestrator(mock_nats_client, event_data, 1800)
+
+        budget = orchestrator._execution_timeout_budget()
+
+        assert budget.seconds == 1800
+        assert budget.source == "flow"
+
+    @pytest.mark.parametrize(
+        "configured,expected",
+        [(1, FLOW_TIMEOUT_SECONDS_MIN), (10**9, FLOW_TIMEOUT_SECONDS_MAX)],
+    )
+    def test_out_of_range_budgets_are_clamped(
+        self, mock_nats_client, event_data, configured, expected
+    ):
+        """A typo must not make a flow unrunnable, and a runaway value must
+        not hold a worker slot for a week."""
+        orchestrator = self._orchestrator(mock_nats_client, event_data, configured)
+
+        assert orchestrator._execution_timeout_budget().seconds == expected
+
+    def test_garbage_budget_falls_back_to_the_default(
+        self, mock_nats_client, event_data
+    ):
+        orchestrator = self._orchestrator(mock_nats_client, event_data, "soon")
+
+        budget = orchestrator._execution_timeout_budget()
+
+        assert budget.seconds == settings.flow_execution_max_wait_seconds
+        assert budget.source == "default"
+
+    @pytest.mark.asyncio
+    async def test_monitor_stops_the_agent_at_the_flow_budget(
+        self, mock_nats_client, event_data
+    ):
+        """The budget is enforced, and the message names it so an operator
+        can tell 'stuck' from 'needs more time' without reading the code."""
+        executor = _confirmation_executor(monitor_status=AgentStatus.RUNNING)
+        orchestrator = self._orchestrator(mock_nats_client, event_data, 60)
+
+        with patch(
+            "preloop.services.flow_orchestrator.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            result = await orchestrator._monitor_agent_execution("session-1", executor)
+
+        assert result["status"] == "FAILED"
+        assert "60 seconds" in result["error_message"]
+        assert "this flow's timeout budget" in result["error_message"]
+        executor.stop.assert_awaited_once_with("session-1")
+        started = _milestones(orchestrator, "agent_monitoring_started")
+        assert started[0]["details"]["timeout_seconds"] == 60
+        assert started[0]["details"]["timeout_source"] == "flow"
+        timed_out = _milestones(orchestrator, "agent_execution_timeout")
+        assert timed_out[0]["details"] == {
+            "timeout_seconds": 60,
+            "timeout_source": "flow",
+        }
+
+    def test_timeout_messages_stay_in_the_timeout_category(self):
+        """The failure-category classifier keys off this sentence."""
+        from preloop.services.flow_failure_category import derive_failure_category
+
+        for source in ("flow", "default"):
+            message = TimeoutBudget(seconds=1800, source=source).timeout_message()
+            assert (
+                derive_failure_category(status="FAILED", error_message=message)
+                == "timeout"
+            )
+            assert "1800" in message
+            assert "timeout_seconds" in message
+            assert "—" not in message
+
+
+class TestFlowTimeoutSecondsField:
+    """The API/schema surface of the budget."""
+
+    def test_schema_accepts_a_budget(self):
+        flow_in = FlowCreate(
+            name="Budgeted flow",
+            prompt_template="do the thing",
+            agent_type="codex",
+            agent_config={},
+            timeout_seconds=1800,
+        )
+        assert flow_in.timeout_seconds == 1800
+
+    def test_schema_defaults_to_unset(self):
+        flow_in = FlowCreate(
+            name="Default flow",
+            prompt_template="do the thing",
+            agent_type="codex",
+            agent_config={},
+        )
+        assert flow_in.timeout_seconds is None
+
+    @pytest.mark.parametrize("bad", [0, 59, 86401])
+    def test_schema_rejects_out_of_range_budgets(self, bad):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            FlowCreate(
+                name="Bad flow",
+                prompt_template="do the thing",
+                agent_type="codex",
+                agent_config={},
+                timeout_seconds=bad,
+            )
+
+    def test_budget_persists_through_the_crud_layer(
+        self, db_session: Session, test_account: Account
+    ):
+        flow_in = FlowCreate(
+            name="Persisted budget flow",
+            prompt_template="do the thing",
+            agent_type="codex",
+            agent_config={},
+            timeout_seconds=7200,
+            account_id=test_account.id,
+        )
+        flow = crud_flow.create(
+            db=db_session, flow_in=flow_in, account_id=test_account.id
+        )
+
+        assert flow.timeout_seconds == 7200

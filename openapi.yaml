@@ -12610,6 +12610,17 @@ components:
             lease to a matching `preloop runner` instead of hosted compute. If no
             matching runner is online the job queues for 15 minutes then FAILS. A
             trigger-time `--runner` / `_runner` override takes precedence.
+        timeout_seconds:
+          anyOf:
+          - type: integer
+            maximum: 86400.0
+            minimum: 60.0
+          - type: 'null'
+          title: Timeout Seconds
+          description: Wall-clock budget for one execution of this flow, in seconds.
+            Leave unset to use the deployment default (3600). A run that exceeds the
+            budget is stopped and fails with the timeout category, and the failure
+            message names the budget that expired.
       type: object
       required:
       - name
@@ -13118,6 +13129,17 @@ components:
             lease to a matching `preloop runner` instead of hosted compute. If no
             matching runner is online the job queues for 15 minutes then FAILS. A
             trigger-time `--runner` / `_runner` override takes precedence.
+        timeout_seconds:
+          anyOf:
+          - type: integer
+            maximum: 86400.0
+            minimum: 60.0
+          - type: 'null'
+          title: Timeout Seconds
+          description: Wall-clock budget for one execution of this flow, in seconds.
+            Leave unset to use the deployment default (3600). A run that exceeds the
+            budget is stopped and fails with the timeout category, and the failure
+            message names the budget that expired.
         id:
           anyOf:
           - type: string
@@ -13325,6 +13347,17 @@ components:
             lease to a matching `preloop runner` instead of hosted compute. If no
             matching runner is online the job queues for 15 minutes then FAILS. A
             trigger-time `--runner` / `_runner` override takes precedence.
+        timeout_seconds:
+          anyOf:
+          - type: integer
+            maximum: 86400.0
+            minimum: 60.0
+          - type: 'null'
+          title: Timeout Seconds
+          description: Wall-clock budget for one execution of this flow, in seconds.
+            Leave unset to use the deployment default (3600). A run that exceeds the
+            budget is stopped and fails with the timeout category, and the failure
+            message names the budget that expired.
       type: object
       title: FlowUpdate
     GatewayBudgetSummary:

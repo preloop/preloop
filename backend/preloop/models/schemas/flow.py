@@ -455,6 +455,17 @@ class FlowBase(BaseModel):
             "precedence."
         ),
     )
+    timeout_seconds: Optional[int] = Field(
+        default=None,
+        ge=60,
+        le=86400,
+        description=(
+            "Wall-clock budget for one execution of this flow, in seconds. "
+            "Leave unset to use the deployment default (3600). A run that "
+            "exceeds the budget is stopped and fails with the timeout "
+            "category, and the failure message names the budget that expired."
+        ),
+    )
 
     @field_validator("trigger_project_ids", mode="before")
     @classmethod

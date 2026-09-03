@@ -131,6 +131,8 @@ spec:
               value: {{ $.Values.flowExecution.claimStaleSeconds | default 120 | quote }}
             - name: FLOW_EXECUTION_RECLAIM_INTERVAL_SECONDS
               value: {{ $.Values.flowExecution.reclaimIntervalSeconds | default 30 | quote }}
+            - name: FLOW_EXECUTION_MAX_WAIT_SECONDS
+              value: {{ $.Values.flowExecution.maxWaitSeconds | default 3600 | quote }}
             - name: FLOW_COMPLETION_NUDGE_ENABLED
               value: {{ $.Values.flowExecution.completionNudge.enabled | default true | quote }}
             - name: FLOW_COMPLETION_NUDGE_TIMEOUT_SECONDS
