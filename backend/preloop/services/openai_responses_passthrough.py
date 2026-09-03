@@ -54,7 +54,11 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
 
 from preloop.services.context_optimization import tool_choice_named_tool
-from preloop.services.litellm_routing import is_openrouter_model, to_litellm_model
+from preloop.services.litellm_routing import (
+    OPENAI_COMPATIBLE_PROVIDERS,
+    is_openrouter_model,
+    to_litellm_model,
+)
 
 # Responses ingress modes, stored on ``AIModel.meta_data.gateway.responses_api``.
 PASSTHROUGH_MODE_AUTO = "auto"
@@ -62,6 +66,13 @@ PASSTHROUGH_MODE_NATIVE = "native"
 PASSTHROUGH_MODE_TRANSCODE = "transcode"
 PASSTHROUGH_MODES = frozenset(
     {PASSTHROUGH_MODE_AUTO, PASSTHROUGH_MODE_NATIVE, PASSTHROUGH_MODE_TRANSCODE}
+)
+
+# BYOK OpenAI plus operator-configured OpenAI-compatible endpoints. Providers
+# LiteLLM maps onto ``openai/`` for chat completions (notably ``qwen``) are
+# not Responses-capable and must not be treated as such.
+_RESPONSES_PASSTHROUGH_PROVIDERS = (
+    frozenset({"openai", "openai-codex"}) | OPENAI_COMPATIBLE_PROVIDERS
 )
 
 # Where an OpenAI BYOK model with no explicit endpoint sends Responses traffic.
@@ -114,13 +125,12 @@ def responses_passthrough_mode(ai_model: Any) -> str:
 def is_openai_shaped_upstream(ai_model: Any) -> bool:
     """Whether this model's traffic terminates at an OpenAI-shaped HTTP API.
 
-    The test is deliberately the same one LiteLLM routing already makes: a
-    model whose LiteLLM string is ``openai/<id>`` is exactly a model LiteLLM
-    would drive through its generic OpenAI adapter against ``api_base``. That
-    covers provider ``openai`` (BYOK, api.openai.com), ``openai-compatible``,
-    ``custom``, and any unknown provider name that carries its own endpoint.
-    It excludes Anthropic, Gemini, Bedrock, and anything whose identifier
-    pins a different LiteLLM provider prefix.
+    Native ``/responses`` forwarding is only for providers that actually
+    speak OpenAI's HTTP API: BYOK ``openai`` / ``openai-codex``, and
+    operator-configured ``openai-compatible`` / ``custom`` endpoints.
+    Providers LiteLLM maps onto the ``openai/`` prefix for chat completions
+    (notably ``qwen``) are not Responses-capable. An empty ``api_endpoint``
+    on those rows would otherwise POST their key to api.openai.com.
 
     OpenRouter is excluded on purpose: its LiteLLM adapter carries the usage
     accounting and app-attribution behaviour the cost pipeline depends on
@@ -134,6 +144,13 @@ def is_openai_shaped_upstream(ai_model: Any) -> bool:
     """
     if is_openrouter_model(ai_model):
         return False
+    provider = (getattr(ai_model, "provider_name", None) or "").strip().lower()
+    if provider not in _RESPONSES_PASSTHROUGH_PROVIDERS:
+        return False
+    if provider in OPENAI_COMPATIBLE_PROVIDERS:
+        endpoint = getattr(ai_model, "api_endpoint", None)
+        if not (isinstance(endpoint, str) and endpoint.strip()):
+            return False
     try:
         litellm_model = to_litellm_model(ai_model)
     except Exception:

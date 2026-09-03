@@ -203,38 +203,51 @@ atexit.register(_GATEWAY_STARTED_EMIT_EXECUTOR.shutdown, wait=False)
 # new TLS handshake; reuse keeps the connection warm. One slot per passthrough
 # so an upstream-specific timeout or a client reset cannot disturb the other.
 class _PassthroughClientSlot:
-    """Lazily built, process-level httpx client shared across requests."""
+    """Lazily built, process-level httpx client(s) shared across requests.
+
+    Clients are keyed by TLS verify setting because ``verify`` is a
+    ``httpx.Client`` constructor option, not a per-request kwarg. A
+    private-CA custom upstream must not share a trust store with
+    api.openai.com.
+    """
+
+    _DEFAULT_VERIFY = object()
 
     def __init__(self, timeout_seconds: float) -> None:
         self._timeout_seconds = timeout_seconds
-        self._client: Optional[httpx.Client] = None
+        self._clients: Dict[Any, httpx.Client] = {}
         self._lock = threading.Lock()
 
-    def get(self) -> httpx.Client:
-        """Return the shared client, building it on first use."""
-        client = self._client
+    def get(self, *, verify: Optional[bool | str] = None) -> httpx.Client:
+        """Return the shared client for this verify setting, building on first use."""
+        key: Any = self._DEFAULT_VERIFY if verify is None else verify
+        client = self._clients.get(key)
         if client is not None and not client.is_closed:
             return client
         with self._lock:
-            client = self._client
+            client = self._clients.get(key)
             if client is None or client.is_closed:
-                client = httpx.Client(
-                    timeout=self._timeout_seconds,
-                    limits=httpx.Limits(
+                kwargs: Dict[str, Any] = {
+                    "timeout": self._timeout_seconds,
+                    "limits": httpx.Limits(
                         max_keepalive_connections=20,
                         max_connections=40,
                     ),
-                )
-                self._client = client
+                }
+                if verify is not None:
+                    kwargs["verify"] = verify
+                client = httpx.Client(**kwargs)
+                self._clients[key] = client
             return client
 
     def close(self) -> None:
-        """Close and forget the shared client (interpreter exit, tests)."""
+        """Close and forget every shared client (interpreter exit, tests)."""
         with self._lock:
-            client = self._client
-            self._client = None
-            if client is not None and not client.is_closed:
-                client.close()
+            clients = list(self._clients.values())
+            self._clients.clear()
+            for client in clients:
+                if client is not None and not client.is_closed:
+                    client.close()
 
 
 _ANTHROPIC_PASSTHROUGH_CLIENT_SLOT = _PassthroughClientSlot(
@@ -255,9 +268,20 @@ def _close_anthropic_passthrough_http_client() -> None:
     _ANTHROPIC_PASSTHROUGH_CLIENT_SLOT.close()
 
 
-def _openai_passthrough_http_client() -> httpx.Client:
-    """Return the process-level OpenAI Responses passthrough httpx client."""
-    return _OPENAI_PASSTHROUGH_CLIENT_SLOT.get()
+def _openai_passthrough_http_client(
+    ai_model: Optional[AIModel] = None,
+) -> httpx.Client:
+    """Return the process-level OpenAI Responses passthrough httpx client.
+
+    ``verify`` belongs on the client, not on ``post`` / ``build_request``.
+    Custom upstreams (those with ``api_endpoint``) inherit the operator's
+    ``PRELOOP_SSL_VERIFY`` / CA-bundle setting; api.openai.com keeps the
+    default public trust store.
+    """
+    verify = None
+    if ai_model is not None and getattr(ai_model, "api_endpoint", None):
+        verify = ssl_verify_setting()
+    return _OPENAI_PASSTHROUGH_CLIENT_SLOT.get(verify=verify)
 
 
 def _close_openai_passthrough_http_client() -> None:
@@ -5054,23 +5078,6 @@ class OpenAIGatewayService:
         }
         return responses_passthrough_url(ai_model), headers, body
 
-    def _openai_passthrough_request_kwargs(self, ai_model: AIModel) -> Dict[str, Any]:
-        """Per-request httpx kwargs for the passthrough (private-CA support).
-
-        Custom OpenAI-compatible upstreams are exactly the deployments that
-        run behind a private CA, and ``apply_preloop_client_headers`` already
-        honours ``SSL_CERT_FILE`` / ``REQUESTS_CA_BUNDLE`` / ``PRELOOP_SSL_VERIFY``
-        for them on the LiteLLM path. The passthrough must not be the one
-        path that ignores the operator's trust store.
-        """
-        if not getattr(ai_model, "api_endpoint", None):
-            # api.openai.com: keep the default public trust store.
-            return {}
-        verify = ssl_verify_setting()
-        if verify is None:
-            return {}
-        return {"verify": verify}
-
     @staticmethod
     def _openai_passthrough_upstream_error(
         status_code: int, body_text: str
@@ -5160,11 +5167,10 @@ class OpenAIGatewayService:
 
         def _attempt() -> Optional[Dict[str, Any]]:
             try:
-                response = _openai_passthrough_http_client().post(
+                response = _openai_passthrough_http_client(ai_model).post(
                     url,
                     headers=headers,
                     json=body,
-                    **self._openai_passthrough_request_kwargs(ai_model),
                 )
             except httpx.HTTPError as exc:
                 raise ModelGatewayAPIError(
@@ -5224,14 +5230,13 @@ class OpenAIGatewayService:
         )
 
         def _attempt() -> Optional[httpx.Response]:
-            client = _openai_passthrough_http_client()
+            client = _openai_passthrough_http_client(ai_model)
             try:
                 request = client.build_request(
                     "POST",
                     url,
                     headers=headers,
                     json=body,
-                    **self._openai_passthrough_request_kwargs(ai_model),
                 )
                 response = client.send(request, stream=True)
             except httpx.HTTPError as exc:

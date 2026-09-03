@@ -35,7 +35,10 @@ from preloop.models.crud import crud_ai_model, crud_api_key
 from preloop.models.models.api_usage import ApiUsage
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
-from preloop.services.openai_gateway import OpenAIGatewayService
+from preloop.services.openai_gateway import (
+    OpenAIGatewayService,
+    _PassthroughClientSlot,
+)
 from preloop.services.openai_responses_passthrough import (
     CAPABILITY_CACHE_TTL_SECONDS,
     DEFAULT_OPENAI_BASE_URL,
@@ -112,7 +115,7 @@ class TestRoutingMode:
 
 
 class TestUpstreamShape:
-    """Only upstreams LiteLLM would drive as ``openai/<id>`` can go native."""
+    """Only BYOK OpenAI and configured OpenAI-compatible endpoints go native."""
 
     def test_openai_byok_is_openai_shaped(self):
         model = _model(
@@ -145,6 +148,39 @@ class TestUpstreamShape:
             provider_name="openrouter",
             model_identifier="anthropic/claude-sonnet-4",
             api_endpoint="https://openrouter.ai/api/v1",
+        )
+        assert is_openai_shaped_upstream(model) is False
+
+    def test_openai_codex_is_openai_shaped(self):
+        model = _model(
+            provider_name="openai-codex",
+            model_identifier="gpt-5.1-codex",
+            api_endpoint=None,
+        )
+        assert is_openai_shaped_upstream(model) is True
+
+    def test_qwen_is_not_openai_shaped_even_without_an_endpoint(self):
+        """Qwen maps to openai/ in LiteLLM; DashScope is not Responses."""
+        model = _model(
+            provider_name="qwen",
+            model_identifier="qwen-plus",
+            api_endpoint=None,
+        )
+        assert is_openai_shaped_upstream(model) is False
+
+    def test_qwen_with_an_endpoint_is_still_not_openai_shaped(self):
+        model = _model(
+            provider_name="qwen",
+            model_identifier="qwen-plus",
+            api_endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+        assert is_openai_shaped_upstream(model) is False
+
+    def test_custom_without_an_endpoint_is_not_openai_shaped(self):
+        model = _model(
+            provider_name="custom",
+            model_identifier="whatever",
+            api_endpoint=None,
         )
         assert is_openai_shaped_upstream(model) is False
 
@@ -732,17 +768,27 @@ def test_native_stream_relays_upstream_sse_verbatim(db_session, test_user):
     service = _service(db_session, test_user)
 
     sse_chunks = [
-        'event: response.created\ndata: {"type":"response.created","response":'
-        '{"id":"resp_stream_1","status":"in_progress"}}\n\n',
-        "event: response.reasoning_summary_text.delta\n"
-        'data: {"type":"response.reasoning_summary_text.delta","delta":"Hmm"}\n\n',
-        "event: response.output_text.delta\n"
-        'data: {"type":"response.output_text.delta","delta":"Hello "}\n\n',
-        "event: response.output_text.delta\n"
-        'data: {"type":"response.output_text.delta","delta":"from Zen"}\n\n',
-        'event: response.completed\ndata: {"type":"response.completed","response":'
-        '{"id":"resp_stream_1","status":"completed","usage":'
-        '{"input_tokens":9,"output_tokens":4,"total_tokens":13}}}\n\n',
+        (
+            'event: response.created\ndata: {"type":"response.created","response":'
+            '{"id":"resp_stream_1","status":"in_progress"}}\n\n'
+        ),
+        (
+            "event: response.reasoning_summary_text.delta\n"
+            'data: {"type":"response.reasoning_summary_text.delta","delta":"Hmm"}\n\n'
+        ),
+        (
+            "event: response.output_text.delta\n"
+            'data: {"type":"response.output_text.delta","delta":"Hello "}\n\n'
+        ),
+        (
+            "event: response.output_text.delta\n"
+            'data: {"type":"response.output_text.delta","delta":"from Zen"}\n\n'
+        ),
+        (
+            'event: response.completed\ndata: {"type":"response.completed","response":'
+            '{"id":"resp_stream_1","status":"completed","usage":'
+            '{"input_tokens":9,"output_tokens":4,"total_tokens":13}}}\n\n'
+        ),
     ]
 
     upstream_response = MagicMock()
@@ -900,3 +946,66 @@ def test_upstream_response_object_without_output_text_still_yields_text(
         == "direct"
     )
     assert OpenAIGatewayService._responses_payload_output_text({}) == ""
+
+
+class _HttpxLikeClient:
+    """httpx.Client.post rejects ``verify``; MagicMock would swallow it."""
+
+    def __init__(self) -> None:
+        self.posted: list = []
+
+    def post(self, url, headers=None, json=None, **kwargs):
+        if "verify" in kwargs:
+            raise TypeError("Client.post() got an unexpected keyword argument 'verify'")
+        self.posted.append({"url": url, "json": json, "headers": headers})
+        return _json_response(200, _upstream_responses_object())
+
+
+def test_passthrough_does_not_pass_verify_as_a_request_kwarg(monkeypatch):
+    """Private-CA operators set PRELOOP_SSL_VERIFY; httpx only accepts it on init."""
+    monkeypatch.setenv("PRELOOP_SSL_VERIFY", "false")
+    service = OpenAIGatewayService.__new__(OpenAIGatewayService)
+    client = _HttpxLikeClient()
+    model = _model()
+    url = f"{ZEN_BASE_URL}/responses"
+    headers = {"Authorization": "Bearer zen-secret"}
+    body = {"model": ZEN_MODEL_ID, "input": "hi"}
+
+    with (
+        patch.object(
+            service,
+            "_prepare_openai_responses_passthrough",
+            return_value=(url, headers, body),
+        ),
+        patch.object(
+            service,
+            "_run_with_upstream_retries",
+            side_effect=lambda _provider, attempt: attempt(),
+        ),
+        patch.object(service, "_capture_rate_limit_headers"),
+        _patch_passthrough_client(client),
+    ):
+        result = service._create_openai_responses_passthrough(model, {"input": "hi"})
+
+    assert result["id"] == "resp_native_1"
+    assert client.posted
+    assert client.posted[0]["url"] == url
+
+
+def test_passthrough_client_slot_applies_verify_on_construction(monkeypatch):
+    captured: dict = {}
+    built = MagicMock()
+    built.is_closed = False
+
+    def fake_client(**kwargs):
+        captured.update(kwargs)
+        return built
+
+    monkeypatch.setattr("preloop.services.openai_gateway.httpx.Client", fake_client)
+    slot = _PassthroughClientSlot(1.0)
+    try:
+        got = slot.get(verify=False)
+    finally:
+        slot.close()
+    assert got is built
+    assert captured["verify"] is False
