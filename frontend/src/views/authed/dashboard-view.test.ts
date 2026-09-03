@@ -1032,6 +1032,42 @@ describe('DashboardView', () => {
         .exist;
     });
 
+    // Wave 8: the checklist reads four separate fetches. Before they land
+    // every step looks undone, so a finished account used to watch the card
+    // appear and vanish on every refresh.
+    it('does not flash next steps while the page is still loading', async () => {
+      localStorage.setItem('dashboard_next_steps_all_done', 'true');
+      const element = await mountDashboard();
+
+      // Mid-load: agents, policies and tools have not answered yet.
+      expect(element['loading'] || element['fetchingMCPAndTools']).to.be.true;
+      expect(
+        element.shadowRoot?.querySelector('.next-steps-card'),
+        'no card during loading'
+      ).to.not.exist;
+
+      await waitUntil(
+        () =>
+          !element['loading'] &&
+          !element['fetchingAgents'] &&
+          !element['fetchingBudget'] &&
+          !element['fetchingMCPAndTools'],
+        'dashboard did not finish loading'
+      );
+      await element.updateComplete;
+      expect(element.shadowRoot?.querySelector('.next-steps-card')).to.not
+        .exist;
+    });
+
+    it('remembers that the checklist is finished', async () => {
+      localStorage.removeItem('dashboard_next_steps_all_done');
+      await mountLoaded();
+
+      expect(localStorage.getItem('dashboard_next_steps_all_done')).to.equal(
+        'true'
+      );
+    });
+
     it('lists the open steps for a new account, with the done ones ticked', async () => {
       budgetPoliciesResponse = [];
       toolsResponse = toolsResponse.map((tool: any) => ({

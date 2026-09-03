@@ -158,6 +158,15 @@ interface TopModelSubjectGroup {
 
 export const NEXT_STEPS_DISMISSED_KEY = 'dashboard_next_steps_dismissed';
 
+/**
+ * What the last completed load concluded about the checklist. The card is
+ * derived from four separate fetches; before they land, every step looks
+ * undone, which is how a finished account saw "Next steps" flash back on
+ * every refresh. Remembering the answer means the page can stay quiet until
+ * it knows better.
+ */
+export const NEXT_STEPS_DONE_KEY = 'dashboard_next_steps_all_done';
+
 /** The wire formats the model gateway speaks, as URL prefixes. */
 type GatewayFormat = '/openai/v1' | '/anthropic/v1' | '/google/v1';
 
@@ -229,6 +238,8 @@ export class DashboardView extends AuthedElement {
   @state() private welcomeCardDismissed = false;
   @state() private nextStepsDismissed = false;
   @state() private userManagementEnabled = false;
+  /** True once the feature flags have answered, either way. */
+  @state() private featuresResolved = false;
   /** Rate-limited requests for the gateway row; null when the call failed. */
   @state() private rateLimitReport: AccountRateLimitReportResponse | null =
     null;
@@ -1214,6 +1225,8 @@ export class DashboardView extends AuthedElement {
       this.isEnterprise = false;
       this.userManagementEnabled = false;
       return null;
+    } finally {
+      this.featuresResolved = true;
     }
   }
 
@@ -1344,6 +1357,38 @@ export class DashboardView extends AuthedElement {
       localStorage.getItem('dashboard_welcome_dismissed') === 'true';
     this.nextStepsDismissed =
       localStorage.getItem(NEXT_STEPS_DISMISSED_KEY) === 'true';
+  }
+
+  /**
+   * True once agents, budget policies, tools and the feature flags have all
+   * answered. Until then the checklist has nothing to read.
+   */
+  private get nextStepsInputsResolved(): boolean {
+    return (
+      !this.loading &&
+      !this.fetchingAgents &&
+      !this.fetchingBudget &&
+      !this.fetchingMCPAndTools &&
+      this.featuresResolved
+    );
+  }
+
+  /** `null` when no load has ever finished on this browser. */
+  private readCoreStepsDone(): boolean | null {
+    try {
+      const stored = localStorage.getItem(NEXT_STEPS_DONE_KEY);
+      return stored === null ? null : stored === 'true';
+    } catch {
+      return null;
+    }
+  }
+
+  private rememberCoreStepsDone(done: boolean): void {
+    try {
+      localStorage.setItem(NEXT_STEPS_DONE_KEY, done ? 'true' : 'false');
+    } catch {
+      // Private mode: the card behaves as it did before, one refresh late.
+    }
   }
 
   private dismissNextSteps(): void {
@@ -2299,8 +2344,19 @@ export class DashboardView extends AuthedElement {
     if (this.nextStepsDismissed) {
       return nothing;
     }
+    const remembered = this.readCoreStepsDone();
+    if (!this.nextStepsInputsResolved && remembered !== false) {
+      // Either this browser has never seen a finished load, or the last one
+      // said the checklist was done. Both cases stay quiet until the four
+      // fetches land, instead of drawing an empty checklist for a second.
+      return nothing;
+    }
     const steps = this.nextSteps;
-    if (steps.every((step) => step.done || step.optional)) {
+    const allDone = steps.every((step) => step.done || step.optional);
+    if (this.nextStepsInputsResolved) {
+      this.rememberCoreStepsDone(allDone);
+    }
+    if (allDone) {
       return nothing;
     }
 
