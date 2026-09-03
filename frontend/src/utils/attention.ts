@@ -34,6 +34,10 @@ export interface AttentionFailedRun {
   startedAt: string | null;
   durationText: string;
   errorMessage: string;
+  /** What the run was about. Without it, a flow that failed six times shows
+      six rows that differ only by a timestamp. */
+  subject?: string | null;
+  subjectUrl?: string | null;
 }
 
 /** One gateway failure behind a model item's count. */
@@ -163,6 +167,9 @@ export interface AttentionFlowExecution {
   end_time?: string | null;
   /** Already returned by the API; the console never showed it until wave 3. */
   error_message?: string | null;
+  /** Also already returned; shown in the evidence table since wave 4. */
+  trigger_subject?: string | null;
+  trigger_subject_url?: string | null;
 }
 
 export interface AttentionInputs {
@@ -478,6 +485,8 @@ function flowItems(
           ? formatDurationBetween(startedAt, run.end_time, now)
           : '',
         errorMessage: (run.error_message || '').trim(),
+        subject: run.trigger_subject || null,
+        subjectUrl: run.trigger_subject_url || null,
       };
     });
 

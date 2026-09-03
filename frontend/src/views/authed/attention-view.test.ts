@@ -347,6 +347,57 @@ describe('AttentionView', () => {
     expect(row.querySelector('.row-evidence')).to.not.exist;
   });
 
+  it('says what each failed run was about, linked to it (wave 4)', async () => {
+    executionsResponse = [
+      {
+        id: 'execution-1',
+        flow_id: 'flow-1',
+        flow_name: 'PR Reviewer',
+        status: 'FAILED',
+        start_time: new Date(Date.now() - 3_600_000).toISOString(),
+        end_time: new Date(Date.now() - 3_500_000).toISOString(),
+        error_message: 'Failed to start agent Job: (409) Conflict',
+        trigger_subject: 'spacecode/preloop-ios !17 · Merge Request Updated',
+        trigger_subject_url:
+          'https://gitlab.com/spacecode/preloop-ios/-/merge_requests/17',
+      },
+      {
+        id: 'execution-2',
+        flow_id: 'flow-1',
+        flow_name: 'PR Reviewer',
+        status: 'FAILED',
+        start_time: new Date(Date.now() - 7_200_000).toISOString(),
+        error_message: 'Failed to start agent Job: (409) Conflict',
+      },
+    ];
+    const el = await mount();
+
+    const evidence = el.shadowRoot!.querySelector('#flows .row-evidence')!;
+    const headers = Array.from(evidence.querySelectorAll('th')).map((th) =>
+      (th.textContent || '').trim()
+    );
+    // Subject leads: two failures of one flow differ by what they ran on.
+    expect(headers.slice(0, 3)).to.eql(['Subject', 'Started', 'Duration']);
+
+    const rows = Array.from(evidence.querySelectorAll('tbody tr'));
+    const first = rows[0].querySelector('.subject-cell')!;
+    const link = first.querySelector('a')!;
+    expect(link.textContent).to.contain('spacecode/preloop-ios !17');
+    expect(link.getAttribute('href')).to.equal(
+      'https://gitlab.com/spacecode/preloop-ios/-/merge_requests/17'
+    );
+    expect(link.getAttribute('target')).to.equal('_blank');
+
+    // A run with no derivable subject still gets a handle, in meta register.
+    const second = rows[1].querySelector('.subject-cell')!;
+    expect(second.textContent!.trim()).to.equal('executio');
+    expect(
+      second
+        .querySelector('.execution-subject')!
+        .classList.contains('is-fallback')
+    ).to.be.true;
+  });
+
   it('dismisses a row with a reason and lists it under Dismissed', async () => {
     const el = await mount();
 

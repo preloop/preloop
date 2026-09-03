@@ -595,7 +595,7 @@ export class AgentsView extends LitElement {
         cursor: pointer;
       }
       .agent-row:hover td {
-        background: var(--sl-color-neutral-100);
+        background: var(--console-hover-tint);
       }
       .agent-identity {
         display: flex;
@@ -628,14 +628,14 @@ export class AgentsView extends LitElement {
         text-decoration: underline;
       }
       .row-subtitle {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
       .muted-cell {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
       .agents-table td.numeric,
       .agents-table th.numeric {
@@ -652,13 +652,18 @@ export class AgentsView extends LitElement {
         display: flex;
         justify-content: flex-end;
       }
-      /* Shoelace badges are solid by default; the outline variant marks a
-         softer state (recently active) without stealing attention from a
-         live one. */
+      /* "Recently active" is real but not live: a fainter tint of the same
+         tone. No border, because nothing inside a card gets a box (wave 4);
+         the -700 ink reads on both themes because Shoelace inverts the
+         scale in dark. */
       .status-chip.outline::part(base) {
-        background-color: transparent;
-        color: var(--sl-color-success-700);
-        border-color: var(--sl-color-success-500);
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-success-500) 8%,
+          transparent
+        );
+        color: var(--sl-color-success-800);
+        border-width: 0;
       }
       .canvas-last-seen {
         font-weight: 600;
@@ -673,12 +678,6 @@ export class AgentsView extends LitElement {
         overflow: hidden;
         clip: rect(0 0 0 0);
         white-space: nowrap;
-      }
-      @media (prefers-color-scheme: dark) {
-        .status-chip.outline::part(base) {
-          color: var(--sl-color-success-400);
-          border-color: var(--sl-color-success-600);
-        }
       }
       .deploy-grid {
         display: grid;
@@ -811,11 +810,18 @@ export class AgentsView extends LitElement {
         justify-content: flex-end;
         flex-shrink: 0;
       }
+      /* One tinted band, mixed from a single token so it is a pale tint in
+         light and a dim one in dark instead of an inverted solid block. */
       .agent-control-strip {
-        border: 1px solid var(--sl-color-primary-200);
+        border: 1px solid
+          color-mix(in srgb, var(--sl-color-primary-500) 25%, transparent);
         border-radius: var(--sl-border-radius-medium);
         padding: var(--sl-spacing-small);
-        background: var(--sl-color-primary-50);
+        background: color-mix(
+          in srgb,
+          var(--sl-color-primary-500) 8%,
+          transparent
+        );
         display: flex;
         justify-content: space-between;
         gap: var(--sl-spacing-small);
@@ -841,11 +847,9 @@ export class AgentsView extends LitElement {
         overflow: hidden;
       }
       .empty-state {
-        border: 1px dashed var(--sl-color-neutral-300);
-        border-radius: var(--sl-border-radius-medium);
         padding: var(--sl-spacing-large);
         color: var(--sl-color-neutral-600);
-        background: var(--sl-color-neutral-0);
+        background: transparent;
       }
       :host(:host-context(.sl-theme-dark)) .title-row {
         border-color: var(--sl-color-neutral-800);
@@ -1025,10 +1029,7 @@ export class AgentsView extends LitElement {
       .gateway-label {
         position: absolute;
         top: calc(100% + 12px);
-        background-color: var(
-          --sl-panel-background-color,
-          var(--sl-color-neutral-0)
-        );
+        background-color: var(--console-surface);
         padding: 4px 12px;
         border-radius: 20px;
         font-weight: bold;
@@ -1086,12 +1087,8 @@ export class AgentsView extends LitElement {
         left: 20px;
         bottom: 20px;
         z-index: 20;
-        background: color-mix(
-          in srgb,
-          var(--sl-panel-background-color) 92%,
-          transparent
-        );
-        border: 1px solid var(--sl-color-neutral-200);
+        background: color-mix(in srgb, var(--console-surface) 92%, transparent);
+        border: 1px solid var(--console-hairline);
         border-radius: var(--sl-border-radius-medium);
         padding: 10px 12px;
         font-size: 0.8rem;
@@ -1122,11 +1119,11 @@ export class AgentsView extends LitElement {
         display: flex;
         flex-direction: row;
         gap: 8px;
-        background: var(--sl-panel-background-color, var(--sl-color-neutral-0));
+        background: var(--console-surface-raised);
         padding: 8px;
         border-radius: var(--sl-border-radius-large);
-        box-shadow: var(--sl-shadow-large);
-        border: 1px solid var(--sl-color-neutral-200);
+        box-shadow: var(--console-raised-shadow);
+        border: 1px solid var(--console-hairline);
       }
       .connection-line {
         position: absolute;
@@ -3042,7 +3039,7 @@ export class AgentsView extends LitElement {
         ${
           showValidationBadge
             ? html`<sl-badge
-                class="validation-badge"
+                class="chip validation-badge"
                 variant="${this.getLiveValidationVariant(agent)}"
                 pill
               >
@@ -3052,22 +3049,23 @@ export class AgentsView extends LitElement {
         }
         ${
           agent.owner_username
-            ? html`<sl-badge variant="neutral" pill title="Owner">
-                <sl-icon
-                  name="person"
-                  style="margin-right: 3px; opacity: 0.7;"
-                ></sl-icon
+            ? html`<sl-badge
+                class="tag-chip"
+                variant="neutral"
+                pill
+                title="Owner"
+              >
+                <sl-icon name="person"></sl-icon
                 >${agent.owner_username}</sl-badge
               >`
             : null
         }
         ${tags.map(
           ([key, value]) => html`
-            <sl-badge variant="neutral" pill>
-              <span style="opacity: 0.7">${key}</span>${
+            <sl-badge class="tag-chip" variant="neutral" pill>
+              <sl-icon name="tag"></sl-icon>${key}${
                 value && value !== 'true'
-                  ? html`<span style="opacity: 0.4; margin: 0 4px;">=</span
-                      >${value}`
+                  ? html`<span class="tag-chip-value">=${value}</span>`
                   : ''
               }
             </sl-badge>
@@ -3680,7 +3678,7 @@ export class AgentsView extends LitElement {
                     style="background: var(--sl-color-neutral-100); padding: 8px 12px; border-radius: var(--sl-border-radius-medium); margin-bottom: 12px; font-size: 0.85rem;"
                   >
                     <div
-                      style="font-weight: 600; font-size: 0.75rem; text-transform: uppercase; color: var(--sl-color-neutral-500); margin-bottom: 4px;"
+                      style="font-weight: 600; font-size: 0.75rem; text-transform: uppercase; color: var(--console-meta-color); margin-bottom: 4px;"
                     >
                       Latest from ${liveActivity.lastMessageSource || 'Agent'}
                     </div>
@@ -4053,7 +4051,7 @@ export class AgentsView extends LitElement {
                             }
                           </div>
                           <div
-                            style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-500); margin-bottom: 8px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; word-break: break-word;"
+                            style="font-size: var(--sl-font-size-small); color: var(--console-meta-color); margin-bottom: 8px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; word-break: break-word;"
                             title="${
                               isFlow
                                 ? flowNode?.description || ''

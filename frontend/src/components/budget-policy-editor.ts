@@ -142,7 +142,7 @@ export class BudgetPolicyEditor extends LitElement {
         display: flex;
         align-items: center;
         gap: var(--sl-spacing-2x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         font-weight: var(--sl-font-weight-semibold);
         letter-spacing: 0.04em;
@@ -156,7 +156,7 @@ export class BudgetPolicyEditor extends LitElement {
         padding: var(--sl-spacing-x-small) 0;
       }
       .limit-row + .limit-row {
-        border-top: 1px solid var(--sl-color-neutral-100);
+        border-top: 1px solid var(--console-hairline);
       }
       .row-main {
         display: flex;
@@ -171,6 +171,22 @@ export class BudgetPolicyEditor extends LitElement {
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      /* The soft chip recipe from console-styles.css, repeated here because
+         this editor is not inside a console view's scope: a period is a
+         label on a row, so it is a tint and not a filled pill. */
+      sl-badge.chip::part(base) {
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-neutral-500) 16%,
+          transparent
+        );
+        border-width: 0;
+        color: var(--sl-color-neutral-800);
+        font-size: 0.75rem;
+        font-weight: 500;
+        line-height: 1.4;
+        padding: 2px 8px;
+      }
       .row-limits {
         color: var(--sl-color-neutral-600);
         font-size: var(--sl-font-size-small);
@@ -182,7 +198,7 @@ export class BudgetPolicyEditor extends LitElement {
         flex-shrink: 0;
       }
       .row-notify {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         flex-shrink: 0;
       }
       .empty {
@@ -588,7 +604,7 @@ export class BudgetPolicyEditor extends LitElement {
       <div class="limit-row">
         <div class="row-main">
           <span class="row-name">${this.policyRowName(policy)}</span>
-          <sl-badge variant="neutral" pill
+          <sl-badge class="chip" variant="neutral" pill
             >${PERIOD_LABELS[policy.period] || policy.period}</sl-badge
           >
           <span class="row-limits"

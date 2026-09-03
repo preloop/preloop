@@ -48,6 +48,10 @@ import {
 } from '../../utils/attention';
 import { loadAttentionInputs } from '../../utils/attention-data';
 import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
+import {
+  executionSubjectCss,
+  renderExecutionSubject,
+} from '../../utils/execution-subject';
 
 /** Rows in a section this small are open on arrival; longer lists start shut. */
 const AUTO_EXPAND_MAX_ROWS = 3;
@@ -107,6 +111,7 @@ export class AttentionView extends AuthedElement {
 
   static styles = [
     unsafeCSS(consoleStyles),
+    unsafeCSS(executionSubjectCss),
     css`
       :host {
         display: block;
@@ -121,8 +126,8 @@ export class AttentionView extends AuthedElement {
 
       .chip {
         align-items: center;
-        background: var(--sl-color-neutral-0);
-        border: 1px solid var(--sl-color-neutral-200);
+        background: var(--console-surface);
+        border: 1px solid var(--console-hairline);
         border-radius: var(--sl-border-radius-pill);
         color: var(--sl-color-neutral-800);
         cursor: pointer;
@@ -134,12 +139,12 @@ export class AttentionView extends AuthedElement {
       }
 
       .chip.empty {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         cursor: default;
       }
 
       .chip sl-icon {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       .sections {
@@ -161,7 +166,7 @@ export class AttentionView extends AuthedElement {
       }
 
       .attention-row + .attention-row {
-        border-top: 1px solid var(--sl-color-neutral-100);
+        border-top: 1px solid var(--console-hairline);
       }
 
       /* A jump from the Overview strip has to land somewhere visible. The tint
@@ -172,7 +177,11 @@ export class AttentionView extends AuthedElement {
 
       @keyframes row-highlight {
         0% {
-          background: var(--sl-color-primary-100);
+          background: color-mix(
+            in srgb,
+            var(--sl-color-primary-500) 18%,
+            transparent
+          );
         }
         100% {
           background: transparent;
@@ -182,7 +191,11 @@ export class AttentionView extends AuthedElement {
       @media (prefers-reduced-motion: reduce) {
         .attention-row.highlighted {
           animation: none;
-          background: var(--sl-color-primary-50);
+          background: color-mix(
+            in srgb,
+            var(--sl-color-primary-500) 12%,
+            transparent
+          );
         }
       }
 
@@ -196,7 +209,7 @@ export class AttentionView extends AuthedElement {
         align-items: center;
         background: none;
         border: none;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         cursor: pointer;
         display: flex;
         flex-shrink: 0;
@@ -245,7 +258,7 @@ export class AttentionView extends AuthedElement {
       }
 
       .row-detail {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--console-text-meta);
         font-variant-numeric: tabular-nums;
       }
@@ -283,7 +296,7 @@ export class AttentionView extends AuthedElement {
       }
 
       .evidence-table th {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-weight: 500;
         padding: 2px var(--sl-spacing-x-small) 2px 0;
         text-align: left;
@@ -299,7 +312,7 @@ export class AttentionView extends AuthedElement {
       }
 
       .evidence-table td a {
-        color: var(--sl-color-primary-700);
+        color: var(--console-link-color);
         text-decoration: none;
       }
 
@@ -307,10 +320,49 @@ export class AttentionView extends AuthedElement {
         text-align: right;
       }
 
+      /* The subject is what the reader scans this table for, so it gets the
+         body colour while the timings stay in the -700 register. */
+      .evidence-table .subject-cell {
+        color: var(--console-body-color);
+      }
+
+      .runs-table .subject-cell {
+        width: 30%;
+      }
+      .runs-table .started-cell {
+        width: 18%;
+      }
+      .runs-table .duration-cell {
+        width: 12%;
+      }
+      .runs-table .open-cell {
+        width: 60px;
+      }
+
+      /* On a phone the five columns collide and every one of them is cut off
+         mid-word. Duration and the error text are the ones to drop: the error
+         is repeated in full above the table as "most common", and the run is
+         one tap away. Subject and when it ran stay, and the subject takes the
+         width the other two gave up. */
+      @media (max-width: 700px) {
+        .runs-table .duration-cell,
+        .runs-table .error-cell {
+          display: none;
+        }
+        .runs-table .subject-cell {
+          width: 58%;
+        }
+        .runs-table .started-cell {
+          width: 22%;
+        }
+      }
+
+      /* The one filled block allowed inside a card body: a command to copy,
+         on the page colour, no border. */
       .evidence-command {
         align-items: center;
-        background: var(--sl-color-neutral-50);
-        border: 1px solid var(--sl-color-neutral-200);
+        background: var(--console-page);
+        border: none;
         border-radius: var(--sl-border-radius-medium);
         display: flex;
         gap: var(--sl-spacing-x-small);
@@ -361,7 +413,7 @@ export class AttentionView extends AuthedElement {
       }
 
       .dismissed-row + .dismissed-row {
-        border-top: 1px solid var(--sl-color-neutral-100);
+        border-top: 1px solid var(--console-hairline);
       }
 
       .all-clear {
@@ -379,7 +431,7 @@ export class AttentionView extends AuthedElement {
       }
 
       .updated-at {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
       }
 
@@ -714,31 +766,47 @@ export class AttentionView extends AuthedElement {
             </div>`
           : nothing
       }
-      <table class="evidence-table">
+      <table class="evidence-table runs-table">
         <thead>
           <tr>
-            <th style="width: 22%">Started</th>
-            <th style="width: 14%">Duration</th>
-            <th>Error</th>
-            <th style="width: 60px"></th>
+            <!-- Subject first: six failures of one flow differ by what they
+                 ran on, not by when they ran. Column widths live in the
+                 stylesheet, not in style attributes, so the narrow layout
+                 below can widen the subject. -->
+            <th class="subject-cell">Subject</th>
+            <th class="started-cell">Started</th>
+            <th class="duration-cell">Duration</th>
+            <th class="error-cell">Error</th>
+            <th class="open-cell"></th>
           </tr>
         </thead>
         <tbody>
           ${runs.map(
             (run) => html`
               <tr>
+                <td class="subject-cell">
+                  ${renderExecutionSubject({
+                    id: run.id,
+                    trigger_subject: run.subject,
+                    trigger_subject_url: run.subjectUrl,
+                  })}
+                </td>
                 <td
+                  class="started-cell"
                   title=${
                     run.startedAt ? formatLocalDateTime(run.startedAt) : nothing
                   }
                 >
                   ${run.startedAt ? formatRelativeTime(run.startedAt) : 'n/a'}
                 </td>
-                <td>${run.durationText || 'n/a'}</td>
-                <td class="mono" title=${run.errorMessage || nothing}>
+                <td class="duration-cell">${run.durationText || 'n/a'}</td>
+                <td
+                  class="mono error-cell"
+                  title=${run.errorMessage || nothing}
+                >
                   ${run.errorMessage || 'No error message recorded'}
                 </td>
-                <td>
+                <td class="open-cell">
                   <a href="/console/flows/executions/${run.id}">Open run</a>
                 </td>
               </tr>
@@ -1068,6 +1136,9 @@ export class AttentionView extends AuthedElement {
           <div class="section-title">
             <sl-icon name=${meta.icon}></sl-icon>
             ${meta.plural}
+            <!-- A section count stays a solid pill (wave 4): it is a
+                 badge on a heading, not a state on a row. The page's own
+                 .chip class is the filter strip, so it is not used here. -->
             <sl-badge variant="neutral" pill>${items.length}</sl-badge>
           </div>
         </div>

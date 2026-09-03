@@ -71,6 +71,10 @@ import type {
 import { parseUTCDate } from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
 import {
+  executionSubjectCss,
+  renderExecutionSubject,
+} from '../../utils/execution-subject';
+import {
   TOP_MODEL_GROUP_PREVIEW_LIMIT,
   TOP_MODEL_SESSION_PREVIEW_LIMIT,
   compareByUsageMetric,
@@ -127,6 +131,11 @@ interface FlowExecution {
   start_time: string;
   end_time: string | null;
   error_message: string | null;
+  /** What the run was about, derived from the trigger when it was created.
+      Five runs of one flow are otherwise indistinguishable on this card. */
+  trigger_subject?: string | null;
+  trigger_subject_url?: string | null;
+  trigger_event_details?: Record<string, unknown> | null;
 }
 
 interface ApprovalRequest {
@@ -269,9 +278,15 @@ export class DashboardView extends AuthedElement {
   private refreshTimer: number | null = null;
   private refreshInFlight = false;
 
-  /** Start time plus, when known, how long the run took or has been going. */
+  /**
+   * When the run started and how long it took, in the meta register.
+   *
+   * Relative ("3h ago"), because on this card the question is "is this
+   * recent?", not "what o'clock was it?"; the exact time is in the title
+   * attribute and on the execution page.
+   */
   private executionSecondaryText(exec: FlowExecution): string {
-    const started = this.formatDate(exec.start_time);
+    const started = this.formatRelativeTime(exec.start_time);
     const duration = executionDurationText(exec);
     return duration ? `${started} · ${duration}` : started;
   }
@@ -328,7 +343,7 @@ export class DashboardView extends AuthedElement {
         line-height: 1.2;
       }
       .hero-stat-label {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--console-text-meta);
       }
       .hero-stat:hover .hero-stat-label {
@@ -359,7 +374,7 @@ export class DashboardView extends AuthedElement {
         padding: var(--sl-spacing-x-small) 0;
       }
       .plane-row + .plane-row {
-        border-top: 1px solid var(--sl-color-neutral-100);
+        border-top: 1px solid var(--console-hairline);
       }
       .plane-name-cell {
         align-items: center;
@@ -421,7 +436,7 @@ export class DashboardView extends AuthedElement {
         padding: 1px 4px;
       }
       .plane-docs {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         display: flex;
       }
       .plane-stats {
@@ -432,11 +447,11 @@ export class DashboardView extends AuthedElement {
         white-space: nowrap;
       }
       .plane-quiet {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
       .gateway-header-meta {
         align-items: center;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         display: flex;
         font-size: var(--console-text-meta);
         gap: var(--sl-spacing-x-small);
@@ -452,10 +467,13 @@ export class DashboardView extends AuthedElement {
         gap: var(--sl-spacing-small);
         padding: var(--sl-spacing-x-small) 0;
       }
+      /* The one exception to "no filled box inside a card": a command you
+         are meant to select and copy is a block of input, and it takes the
+         page colour so it reads as recessed rather than raised. */
       .connect-command {
         align-items: center;
-        background: var(--sl-color-neutral-50);
-        border: 1px solid var(--sl-color-neutral-200);
+        background: var(--console-page);
+        border: none;
         border-radius: var(--sl-border-radius-medium);
         display: flex;
         gap: var(--sl-spacing-2x-small);
@@ -470,15 +488,15 @@ export class DashboardView extends AuthedElement {
          never falls to a second row. */
       .attention-strip {
         align-items: center;
-        /* A translucent mix of one warning token reads as a pale tint in light
-           and a dim tint in dark, instead of the inverted-scale solid band. */
+        /* A translucent mix of one warning token over the card surface reads
+           as a tinted band in both themes, instead of an orange block. */
         background: color-mix(
           in srgb,
-          var(--sl-color-warning-500) 12%,
-          var(--sl-color-neutral-0)
+          var(--sl-color-warning-500) 10%,
+          var(--console-surface)
         );
         border: 1px solid
-          color-mix(in srgb, var(--sl-color-warning-500) 40%, transparent);
+          color-mix(in srgb, var(--sl-color-warning-500) 35%, transparent);
         border-radius: var(--sl-border-radius-medium);
         display: flex;
         flex-wrap: nowrap;
@@ -515,19 +533,28 @@ export class DashboardView extends AuthedElement {
         min-width: 0;
       }
       /* Quiet amber: the strip behind them is already the alarm, so the
-         chips read as labels rather than as five more warnings. */
+         chips read as labels rather than as five more warnings. Soft chip
+         recipe, one tone at 16% with no border. */
       .attention-chip-link sl-badge::part(base) {
         align-items: center;
-        background-color: var(--sl-color-warning-100);
-        border-color: var(--sl-color-warning-200);
-        color: var(--sl-color-warning-900);
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-warning-500) 16%,
+          transparent
+        );
+        border-width: 0;
+        color: var(--sl-color-warning-800);
         display: flex;
         gap: var(--sl-spacing-3x-small);
         max-width: 100%;
         min-width: 0;
       }
       .attention-chip-link:hover sl-badge::part(base) {
-        background-color: var(--sl-color-warning-200);
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-warning-500) 26%,
+          transparent
+        );
       }
       /* min-width lets the label shrink inside the badge, so a long one ends
          in an ellipsis instead of being cut mid-word by the strip. */
@@ -579,23 +606,23 @@ export class DashboardView extends AuthedElement {
         color: var(--sl-color-success-600);
       }
       .next-step.done .next-step-label {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         text-decoration: line-through;
       }
       .updated-at {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
         font-weight: var(--sl-font-weight-normal);
       }
       .capsule-eyebrow {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         font-weight: 600;
         letter-spacing: 0.04em;
         text-transform: uppercase;
       }
       .range-note {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
         font-weight: var(--sl-font-weight-normal);
         font-variant-numeric: tabular-nums;
@@ -631,7 +658,7 @@ export class DashboardView extends AuthedElement {
         left: var(--budget-soft-position, 0%);
         width: 2px;
         background: var(--sl-color-warning-600);
-        box-shadow: 0 0 0 1px var(--sl-color-neutral-0);
+        box-shadow: 0 0 0 1px var(--console-surface);
       }
       .budget-hard-marker {
         position: absolute;
@@ -654,7 +681,7 @@ export class DashboardView extends AuthedElement {
         user-select: none;
       }
       .expand-icon {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         flex-shrink: 0;
         margin-top: 2px;
         transition: transform 0.2s ease;
@@ -682,7 +709,7 @@ export class DashboardView extends AuthedElement {
         white-space: nowrap;
       }
       .agent-meta-line {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         overflow: hidden;
         text-overflow: ellipsis;
@@ -704,7 +731,7 @@ export class DashboardView extends AuthedElement {
         margin-left: auto;
       }
       .expandable-content {
-        border-left: 2px solid var(--sl-color-neutral-200);
+        border-left: 2px solid var(--console-hairline);
         display: flex;
         flex-direction: column;
         gap: 4px;
@@ -734,7 +761,7 @@ export class DashboardView extends AuthedElement {
         margin-top: 2px;
       }
       .expandable-subheader-metric {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         flex-shrink: 0;
         font-size: var(--sl-font-size-x-small);
         margin-left: auto;
@@ -759,7 +786,7 @@ export class DashboardView extends AuthedElement {
         white-space: nowrap;
       }
       .nested-session-metric {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         flex-shrink: 0;
         font-size: var(--sl-font-size-x-small);
       }
@@ -959,9 +986,47 @@ export class DashboardView extends AuthedElement {
     `,
 
     unsafeCSS(consoleStyles),
+    unsafeCSS(executionSubjectCss),
     css`
       :host {
         display: block;
+      }
+
+      /* Subject then timing on one line. The subject is body text and gets
+         the room (min-width: 0 lets it ellipsise instead of pushing the
+         timing off the row); the timing never wraps away from it. */
+      .execution-line {
+        align-items: baseline;
+        display: flex;
+        font-size: var(--console-text-body);
+        gap: 6px;
+        min-width: 0;
+      }
+      .execution-line .item-secondary {
+        flex: 0 0 auto;
+      }
+
+      /* On a phone the timing is wide enough to squeeze the subject down to
+         "s..", which tells nobody anything. Give the subject the row and let
+         the timing sit under it; the middot only separates them on one line. */
+      @media (max-width: 600px) {
+        .execution-line {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 0;
+        }
+        .execution-line .line-sep {
+          display: none;
+        }
+        /* The status chip and View button take 175px of a 326px row, which
+           leaves the subject 150px. Below the fold of a phone they can have
+           their own line and the subject can have the width. */
+        .executions-list .item-card {
+          flex-wrap: wrap;
+        }
+        .executions-list .item-info {
+          flex-basis: 100%;
+        }
       }
 
       .deploy-grid {
@@ -1233,11 +1298,12 @@ export class DashboardView extends AuthedElement {
       /* One centered line in a 72px box. An empty card used to take as much
          vertical space as a full one, so a quiet account looked like a broken
          one. */
+      /* No dashed box: an empty list is a line of text inside the card it
+         belongs to, not a placeholder card of its own. */
       .empty-state {
         align-items: center;
-        background: var(--sl-color-neutral-0);
-        border: 1px dashed var(--sl-color-neutral-300);
-        border-radius: var(--sl-border-radius-medium);
+        background: transparent;
+        border: none;
         display: flex;
         gap: var(--sl-spacing-small);
         justify-content: center;
@@ -2968,7 +3034,7 @@ export class DashboardView extends AuthedElement {
           Recent Flow Executions
           ${
             this.failedFlowExecutions.length > 0
-              ? html`<sl-badge class="chip" variant="neutral" pill
+              ? html`<sl-badge class="chip solid" variant="neutral" pill
                   >${this.failedFlowExecutions.length} failed</sl-badge
                 >`
               : ''
@@ -2987,7 +3053,7 @@ export class DashboardView extends AuthedElement {
                 </div>
               `
             : html`
-                <div class="item-list">
+                <div class="item-list executions-list">
                   ${this.recentFlowExecutions.slice(0, 5).map(
                     (exec) => html`
                       <div class="item-card">
@@ -3004,13 +3070,28 @@ export class DashboardView extends AuthedElement {
                                 >`
                               : ''
                           }
-                          <span class="item-secondary"
-                            >${this.executionSecondaryText(exec)}</span
-                          >
+                          <!-- What this run was about, then when it ran. The
+                               subject is the only thing that differs between
+                               five runs of the same flow, so it leads the
+                               line in body weight and the timing follows it
+                               in meta. -->
+                          <span class="execution-line">
+                            ${renderExecutionSubject(exec)}
+                            <span
+                              class="item-secondary"
+                              title=${this.formatDate(exec.start_time)}
+                              ><span class="line-sep">· </span
+                              >${this.executionSecondaryText(exec)}</span
+                            >
+                          </span>
                         </div>
                         <div class="item-actions">
                           <sl-badge
-                            class="chip"
+                            class="chip ${
+                              this.getStatusColor(exec.status) === 'danger'
+                                ? 'solid'
+                                : ''
+                            }"
                             pill
                             variant=${this.getStatusColor(exec.status)}
                             >${exec.status}</sl-badge
@@ -3093,7 +3174,9 @@ export class DashboardView extends AuthedElement {
                   >
                     ${item.model_alias || item.provider_name || item.endpoint}
                   </a>
-                  <sl-badge variant="danger">${item.status_code}</sl-badge>
+                  <sl-badge class="chip" pill variant="danger"
+                    >${item.status_code}</sl-badge
+                  >
                 </div>
                 <div class="row-meta">
                   <span>
@@ -3135,6 +3218,8 @@ export class DashboardView extends AuthedElement {
                     ${group.primary_event.action.replace(/_/g, ' ')}
                   </span>
                   <sl-badge
+                    class="chip"
+                    pill
                     variant=${
                       group.outcome === 'budget_denied' ? 'warning' : 'danger'
                     }
@@ -3449,7 +3534,7 @@ export class DashboardView extends AuthedElement {
                     </span>
                   </div>
                   <div
-                    style="display: flex; justify-content: space-between; align-items: center; font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-500);"
+                    style="display: flex; justify-content: space-between; align-items: center; font-size: var(--sl-font-size-x-small); color: var(--console-meta-color);"
                   >
                     <span>${item.provider_name || 'provider unknown'}</span>
                     <span

@@ -29,6 +29,11 @@ import {
   formatUTCDateTime,
 } from '../../utils/date';
 import { RUNNING_STATUSES, executionDurationText } from '../../utils/execution';
+import {
+  executionSubjectCss,
+  isSubjectFallback,
+  renderExecutionSubject,
+} from '../../utils/execution-subject';
 import '../../components/preloop-gateway-event.ts';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -103,9 +108,17 @@ export class FlowExecutionView extends LitElement {
   static styles = [
     reducedMotionStyles,
     unsafeCSS(consoleStyles),
+    unsafeCSS(executionSubjectCss),
     css`
       :host {
         display: block;
+      }
+      /* Body size, not meta: this line says what the run was about, and on
+         this page that is second in importance only to the flow name. */
+      .execution-subject-line {
+        font-size: var(--console-text-body);
+        margin-top: var(--sl-spacing-2x-small);
+        max-width: 100%;
       }
       .summary-grid {
         display: grid;
@@ -1963,6 +1976,16 @@ export class FlowExecutionView extends LitElement {
             }
           </div>
         </div>
+        <!-- The title is the flow name, which every run of it shares. What
+             this particular run was about goes directly under it, linked to
+             the pull request or issue it came from. -->
+        ${
+          this.execution && !isSubjectFallback(this.execution)
+            ? html`<div slot="description" class="execution-subject-line">
+                ${renderExecutionSubject(this.execution)}
+              </div>`
+            : ''
+        }
         <div
           slot="main-column"
           style="display: flex; justify-content: flex-end; flex: 1; min-width: 0; gap: 8px;"
@@ -2005,6 +2028,12 @@ export class FlowExecutionView extends LitElement {
               </div>
               <div class="summary-value">
                 <sl-badge
+                  class="chip ${
+                    this.getStatusVariant(this.execution.status) === 'danger'
+                      ? 'solid'
+                      : ''
+                  }"
+                  pill
                   variant=${this.getStatusVariant(this.execution.status)}
                   >${this.execution.status}</sl-badge
                 >

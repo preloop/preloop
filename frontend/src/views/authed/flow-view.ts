@@ -18,6 +18,10 @@ import {
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { parseUTCDate, formatLocalDateTime } from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
+import {
+  executionSubjectCss,
+  renderExecutionSubject,
+} from '../../utils/execution-subject';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
@@ -69,12 +73,25 @@ export class FlowView extends LitElement {
   static styles = [
     consoleDialogStyles,
     unsafeCSS(consoleStyles),
+    unsafeCSS(executionSubjectCss),
     css`
       :host {
         display: block;
         padding: var(--sl-spacing-large);
         max-width: 80rem;
         margin: 0 auto;
+      }
+      /* The subject column takes the slack: fixed layout plus a zero max
+         width makes the cell shrink to its share and ellipsise inside it,
+         instead of a long repo name widening the whole table. */
+      .executions-table {
+        table-layout: fixed;
+      }
+      .executions-table .subject-cell {
+        max-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       /* Flow-specific styles */
       .form-grid {
@@ -815,41 +832,38 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
               this.recentExecutions.length === 0
                 ? html`<p>No executions yet. Click "Test Run" to start one.</p>`
                 : html`
-                    <table style="width: 100%; border-collapse: collapse;">
+                    <table class="styled-table executions-table">
                       <thead>
                         <tr>
-                          <th style="text-align: left; padding: 8px;">
-                            Status
-                          </th>
-                          <th style="text-align: left; padding: 8px;">
-                            Started
-                          </th>
-                          <th style="text-align: left; padding: 8px;">
-                            Duration
-                          </th>
-                          <th style="text-align: left; padding: 8px;">
-                            Actions
-                          </th>
+                          <th>Subject</th>
+                          <th>Status</th>
+                          <th>Started</th>
+                          <th>Duration</th>
+                          <th>Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         ${this.recentExecutions.map(
                           (exec) => html`
                             <tr>
-                              <td style="padding: 8px;">
+                              <!-- Every row on this page is the same flow, so
+                                   the subject is the only column that says
+                                   which run is which. -->
+                              <td class="subject-cell">
+                                ${renderExecutionSubject(exec)}
+                              </td>
+                              <td>
                                 <sl-badge
+                                  class="chip"
+                                  pill
                                   variant=${this.getStatusVariant(exec.status)}
                                 >
                                   ${exec.status}
                                 </sl-badge>
                               </td>
-                              <td style="padding: 8px;">
-                                ${formatLocalDateTime(exec.start_time)}
-                              </td>
-                              <td style="padding: 8px;">
-                                ${executionDurationText(exec) || '—'}
-                              </td>
-                              <td style="padding: 8px;">
+                              <td>${formatLocalDateTime(exec.start_time)}</td>
+                              <td>${executionDurationText(exec) || 'n/a'}</td>
+                              <td>
                                 <sl-button
                                   size="small"
                                   href="/console/flows/executions/${exec.id}"

@@ -658,6 +658,10 @@ describe('DashboardView', () => {
       // The pill keeps danger; the header count does not.
       const pill = row.querySelector('sl-badge.chip') as HTMLElement;
       expect(pill.getAttribute('variant')).to.equal('danger');
+      // The two survivors of the solid pill (wave 4): a failed run and a
+      // section header count. Everything else is a soft tint.
+      expect(pill.classList.contains('solid'), 'failed run pill is solid').to.be
+        .true;
       const executionsHeader = [
         ...(element.shadowRoot?.querySelectorAll('.chart-header') || []),
       ].find((header) =>
@@ -666,6 +670,150 @@ describe('DashboardView', () => {
       const headerChip = executionsHeader?.querySelector('sl-badge.chip');
       expect(headerChip, 'header count chip').to.exist;
       expect(headerChip?.getAttribute('variant')).to.equal('neutral');
+      expect(headerChip?.classList.contains('solid')).to.be.true;
+    });
+  });
+
+  describe('Recent Flow Executions surfaces (wave 4)', () => {
+    it('gives the rows no box of their own, only a hairline between them', async () => {
+      flowExecutionsResponse = [
+        {
+          id: 'execution-1',
+          flow_id: 'flow-1',
+          flow_name: 'Refund Assistant',
+          status: 'COMPLETED',
+          start_time: '2026-03-07T10:00:00Z',
+          end_time: '2026-03-07T10:03:00Z',
+        },
+        {
+          id: 'execution-2',
+          flow_id: 'flow-1',
+          flow_name: 'Refund Assistant',
+          status: 'COMPLETED',
+          start_time: '2026-03-07T09:00:00Z',
+          end_time: '2026-03-07T09:02:00Z',
+        },
+      ];
+
+      const element = await mountDashboard();
+      // The ladder lives on the document in the app; pin the hairline here so
+      // the separator has a colour to compute.
+      element.style.setProperty('--console-hairline', 'rgb(10, 11, 12)');
+      await waitUntil(
+        () => !element['loading'],
+        'dashboard did not finish loading'
+      );
+      await element.updateComplete;
+
+      const rows = [
+        ...(element.shadowRoot?.querySelectorAll('.item-card') || []),
+      ] as HTMLElement[];
+      expect(rows.length, 'execution rows').to.be.at.least(2);
+
+      // Depth limit is two: page, then card. A row inside a card may not
+      // paint a third surface, so it has no fill, no radius and no shadow.
+      for (const row of rows) {
+        const style = getComputedStyle(row);
+        expect(style.backgroundColor, 'row fill').to.equal('rgba(0, 0, 0, 0)');
+        expect(style.borderRadius).to.equal('0px');
+        expect(style.boxShadow).to.equal('none');
+      }
+
+      // Structure comes from a hairline instead.
+      const second = getComputedStyle(rows[1]);
+      expect(second.borderTopWidth).to.equal('1px');
+      expect(second.borderTopColor).to.equal('rgb(10, 11, 12)');
+      expect(getComputedStyle(rows[0]).borderTopWidth).to.equal('0px');
+    });
+  });
+
+  describe('Recent Flow Executions subjects (wave 4)', () => {
+    it('says what each run was about and links to it', async () => {
+      flowExecutionsResponse = [
+        {
+          id: 'execution-1',
+          flow_id: 'flow-1',
+          flow_name: 'PR Reviewer',
+          status: 'SUCCEEDED',
+          start_time: '2026-03-07T10:00:00Z',
+          end_time: '2026-03-07T10:03:00Z',
+          trigger_subject: 'spacecode/preloop-ios !17 · Merge Request Updated',
+          trigger_subject_url:
+            'https://gitlab.com/spacecode/preloop-ios/-/merge_requests/17',
+        },
+        {
+          id: 'execution-2',
+          flow_id: 'flow-1',
+          flow_name: 'PR Reviewer',
+          status: 'SUCCEEDED',
+          start_time: '2026-03-07T09:00:00Z',
+          end_time: '2026-03-07T09:02:00Z',
+          trigger_subject: 'Scheduled · Daily at 09:00 (Europe/Berlin)',
+        },
+      ];
+
+      const element = await mountDashboard();
+      await waitUntil(
+        () => !element['loading'],
+        'dashboard did not finish loading'
+      );
+      await element.updateComplete;
+
+      const rows = [
+        ...(element.shadowRoot?.querySelectorAll('.item-card') || []),
+      ] as HTMLElement[];
+
+      // Both rows carry the same flow name; the subject is what tells them
+      // apart, so it has to be on the row and not only on the detail page.
+      const link = rows[0].querySelector('a.execution-subject-link')!;
+      expect(link.getAttribute('href')).to.equal(
+        'https://gitlab.com/spacecode/preloop-ios/-/merge_requests/17'
+      );
+      expect(link.getAttribute('target')).to.equal('_blank');
+      expect(link.getAttribute('rel')).to.equal('noopener noreferrer');
+      expect(link.textContent).to.contain('spacecode/preloop-ios !17');
+      expect(link.querySelector('sl-icon')?.getAttribute('name')).to.equal(
+        'box-arrow-up-right'
+      );
+
+      // A subject with nothing to open is plain text, not a dead link.
+      const second = rows[1].querySelector('.execution-subject')!;
+      expect(second.tagName).to.equal('SPAN');
+      expect(second.textContent).to.contain('Daily at 09:00');
+
+      // The timing follows the subject, in the meta register, relative.
+      const meta = rows[0].querySelector('.item-secondary') as HTMLElement;
+      expect(meta.textContent!.replace(/\s+/g, ' ').trim()).to.match(
+        /^· \d+[mhd] ago · 3m 0s$/
+      );
+      expect(getComputedStyle(meta).fontSize).to.equal('13px');
+      expect(
+        getComputedStyle(rows[0].querySelector('.execution-subject')!).fontSize
+      ).to.equal('14px');
+    });
+
+    it('falls back to a short id for runs that predate subjects', async () => {
+      flowExecutionsResponse = [
+        {
+          id: 'dee1da93-6d1e-4c0e-9f3a-2b1d0c4e5f60',
+          flow_id: 'flow-1',
+          flow_name: 'PR Reviewer',
+          status: 'SUCCEEDED',
+          start_time: '2026-03-07T10:00:00Z',
+          end_time: '2026-03-07T10:03:00Z',
+        },
+      ];
+
+      const element = await mountDashboard();
+      await waitUntil(
+        () => !element['loading'],
+        'dashboard did not finish loading'
+      );
+      await element.updateComplete;
+
+      const subject = element.shadowRoot!.querySelector('.execution-subject')!;
+      expect(subject.textContent).to.equal('dee1da93');
+      expect(subject.classList.contains('is-fallback')).to.be.true;
     });
   });
 

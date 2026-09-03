@@ -130,6 +130,8 @@ export class ConsoleShell extends LitElement {
         height: 100%;
       }
 
+      /* The sidebar is a card-level surface next to the page, separated by
+         a hairline rather than by a second gray step. */
       .sidebar {
         width: 250px;
         flex-shrink: 0;
@@ -138,7 +140,8 @@ export class ConsoleShell extends LitElement {
         transition:
           width 0.2s ease,
           transform 0.25s ease;
-        background-color: var(--sl-color-neutral-100);
+        background-color: var(--console-surface);
+        border-right: 1px solid var(--console-hairline);
         z-index: 100;
       }
 
@@ -148,6 +151,7 @@ export class ConsoleShell extends LitElement {
         min-width: 0;
         overflow: hidden;
         padding: 0;
+        border-right-width: 0;
       }
 
       .sidebar-wrapper {
@@ -198,12 +202,12 @@ export class ConsoleShell extends LitElement {
       }
 
       .sign-out-menu sl-menu-item::part(base) {
-        background-color: var(--sl-color-neutral-100);
-        color: var(--sl-color-primary-500);
+        background-color: transparent;
+        color: var(--console-link-color);
       }
 
       .sign-out-menu sl-menu-item:hover::part(base) {
-        background-color: var(--sl-color-neutral-100);
+        background-color: var(--console-hover-tint);
         color: var(--sl-color-primary-700);
       }
 
@@ -212,20 +216,21 @@ export class ConsoleShell extends LitElement {
         display: grid;
         grid-template-rows: auto auto 1fr; /* Header, bypass banner, content */
         overflow-y: hidden;
-        background-color: var(--sl-color-neutral-50);
+        background-color: var(--console-page);
       }
 
-      /* Page is tinted, cards are not: the one change that gives the console
-         depth without a single shadow, glow or gradient. Slotted views inherit
-         the console's compact type scale and tabular figures from here, so a
-         new page matches its neighbours without opting in. */
+      /* The page is the bottom rung of the ladder and every card sits one
+         step above it, in both themes (styles/console-surfaces.css). Slotted
+         views inherit the console's compact type scale and tabular figures
+         from here, so a new page matches its neighbours without opting in. */
       .main-content {
         overflow-y: auto;
         padding: 1rem 2rem 2rem 2rem;
         display: flex;
         flex-direction: column;
         align-items: center;
-        background-color: var(--sl-color-neutral-50);
+        background-color: var(--console-page);
+        color: var(--console-body-color);
         font-size: var(--console-text-body);
         font-variant-numeric: tabular-nums;
       }
@@ -257,7 +262,7 @@ export class ConsoleShell extends LitElement {
       .logo {
         margin-left: 2px;
         padding: 1rem;
-        background-color: var(--sl-color-neutral-100);
+        background-color: transparent;
         display: flex;
         align-items: center;
       }
@@ -273,7 +278,7 @@ export class ConsoleShell extends LitElement {
       sl-menu {
         flex-grow: 1;
         border-width: 0;
-        background-color: var(--sl-color-neutral-100);
+        background-color: transparent;
         padding: 0;
         margin-left: -2px;
       }
@@ -281,7 +286,7 @@ export class ConsoleShell extends LitElement {
       sl-details::part(base) {
         width: 100%;
         border-width: 0;
-        background-color: var(--sl-color-neutral-100);
+        background-color: transparent;
       }
 
       sl-details::part(content) {
@@ -299,12 +304,19 @@ export class ConsoleShell extends LitElement {
       }
 
       .sidebar-link:hover {
-        background-color: var(--sl-color-neutral-200);
+        background-color: var(--console-hover-tint);
       }
 
       /* Style the anchor, not ::part — Shoelace shadow styles override ::part rules */
+      /* A translucent mix of one primary token is the same tint in both
+         themes; a named step (primary-50) is the palest blue in light and the
+         darkest navy in dark, which is how the active item became a block. */
       .sidebar-link.active {
-        background-color: var(--sl-color-primary-50);
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-primary-500) 14%,
+          transparent
+        );
         border-left-color: var(--sl-color-primary-600);
       }
 

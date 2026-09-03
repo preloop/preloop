@@ -293,6 +293,10 @@ describe('AgentsView', () => {
     const chip = el.shadowRoot?.querySelector('tbody sl-badge.status-chip');
     expect(chip?.textContent?.trim()).to.equal('Active now');
     expect(chip?.getAttribute('variant')).to.equal('success');
+    // Wave 4: a state is a tint. The class carries the soft recipe; only a
+    // header count or a failed run opts back into a solid pill.
+    expect(chip?.classList.contains('solid'), 'row state is a solid pill').to.be
+      .false;
 
     const numeric = el.shadowRoot?.querySelectorAll('tbody td.numeric');
     expect(numeric?.[0].textContent?.trim()).to.equal((1234).toLocaleString());
@@ -486,6 +490,7 @@ describe('AgentsView', () => {
     );
     expect(chip?.textContent?.trim()).to.equal('Live check failed');
     expect(chip?.getAttribute('variant')).to.equal('warning');
+    expect(chip?.classList.contains('solid')).to.be.false;
   });
 
   it('suppresses the validation badge when the live check passed', async () => {
