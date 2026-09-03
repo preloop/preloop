@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from preloop.agents.base import AgentExecutionResult, AgentStatus
-from preloop.agents.container import ContainerAgentExecutor
+from preloop.agents.container import ContainerAgentExecutor, _validated_git_ref
 
 pytestmark = pytest.mark.asyncio
 
@@ -1270,6 +1270,37 @@ class TestGitCloneCredentialsNotInUrl:
         assert command.index("credential.helper") < command.index("git clone")
 
 
+class TestValidatedGitRef:
+    """Branch names interpolated into origin/<ref>..HEAD must match git rules."""
+
+    @pytest.mark.parametrize(
+        "name",
+        ["main", "preloop/fix", "preloop/issue-353", "feat/foo-bar_1.2"],
+    )
+    def test_accepts_normal_names(self, name):
+        assert _validated_git_ref(name) == name
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "foo..bar",
+            "-d",
+            "preloop/fix.",
+            "foo~1",
+            "foo^2",
+            "foo:bar",
+            ".hidden",
+            "feat/.dot",
+            "heads/foo.lock",
+            "/abs",
+            "trailing/",
+            "a//b",
+        ],
+    )
+    def test_rejects_git_forbidden_names(self, name):
+        assert _validated_git_ref(name) is None
+
+
 class TestGitApiTokensNotInScript:
     """The PR/MR creation curls used to interpolate the raw token into the
     generated shell script (issue #173).
@@ -1365,6 +1396,26 @@ class TestGitApiTokensNotInScript:
         context["_git_target_branch"] = "feat/x; rm -rf /"
         commands = container_executor._prepare_git_post_execution_commands(context)
         assert commands == ""
+
+    @pytest.mark.parametrize(
+        "unsafe",
+        ["foo..bar", "-d", "preloop/fix.", "foo~1", "foo^2", "foo:bar"],
+    )
+    def test_git_forbidden_target_ref_skips_post_execution(
+        self, container_executor, unsafe
+    ):
+        context = self._context()
+        context["_git_target_branch"] = unsafe
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert commands == ""
+        assert f"origin/{unsafe}" not in commands
+
+    def test_unsafe_source_branch_skips_post_execution(self, container_executor):
+        context = self._context()
+        context["_git_source_branch"] = "foo..bar"
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert commands == ""
+        assert "origin/preloop/fix" not in commands
 
 
 class TestLogScrubbing:

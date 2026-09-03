@@ -37,19 +37,28 @@ from preloop.utils.workspace_seed import (
 logger = logging.getLogger(__name__)
 
 # Git ref names interpolated into generated shell (origin/<branch>..HEAD).
-# Reject anything that would need quoting so we never splice shlex.quote
-# into the middle of a token (origin/'feat/x').
-_SAFE_GIT_REF = re.compile(r"^[A-Za-z0-9._/\-]+$")
+# Charset is unquoted-shell-safe so we never splice shlex.quote into the
+# middle of a token (origin/'feat/x'). Extra checks below match git's
+# own refname rules: no ``..``, leading ``-``, trailing ``.``, or
+# ``~``/``^``/``:`` (the last three are already outside the charset).
+_SAFE_GIT_REF_CHARS = re.compile(r"^[A-Za-z0-9._/\-]+$")
 
 
 def _validated_git_ref(name: Optional[str]) -> Optional[str]:
-    """Return ``name`` when it is a safe git ref, otherwise None."""
+    """Return ``name`` when it is a safe git branch/ref, otherwise None."""
 
     if not name or not isinstance(name, str):
         return None
-    if _SAFE_GIT_REF.fullmatch(name):
-        return name
-    return None
+    if not _SAFE_GIT_REF_CHARS.fullmatch(name):
+        return None
+    if name.startswith("-") or name.startswith("/") or name.endswith("."):
+        return None
+    if name.endswith("/") or ".." in name or "//" in name:
+        return None
+    for part in name.split("/"):
+        if not part or part.startswith(".") or part.endswith(".lock"):
+            return None
+    return name
 
 
 # Path inside the agent container where eval/observe flows write their
@@ -2536,13 +2545,21 @@ echo "========================================="
                 return ""
 
             safe_target = _validated_git_ref(target_branch)
-            safe_source = _validated_git_ref(source_branch) or "main"
             if not safe_target:
                 self.logger.warning(
                     "Skipping post-execution git: unsafe target branch %r",
                     target_branch,
                 )
                 return ""
+            safe_source = _validated_git_ref(source_branch)
+            if source_branch and safe_source is None:
+                self.logger.warning(
+                    "Skipping post-execution git: unsafe source branch %r",
+                    source_branch,
+                )
+                return ""
+            if safe_source is None:
+                safe_source = "main"
 
             post_commands = []
 
