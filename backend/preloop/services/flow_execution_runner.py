@@ -92,6 +92,12 @@ async def resume_existing_execution(
             result=agent_result.get("result"),
             end_time=datetime.now(timezone.utc),
         )
+        # The worker that finishes a run owns its teardown, even though it did
+        # not mint the credential: close the runtime session and revoke every
+        # runtime token of this execution. The worker that started the run left
+        # both alive on purpose, because the agent was still using them.
+        orchestrator._sync_runtime_session(ended_at=datetime.now(timezone.utc))
+        orchestrator._revoke_execution_runtime_tokens()
         logger.info(
             "Resumed execution %s completed with status %s",
             orchestrator.execution_log.id,

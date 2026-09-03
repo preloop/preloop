@@ -173,11 +173,13 @@ async def test_resume_marks_failed_when_no_agent_session():
     db = MagicMock()
     execution = _make_execution(agent_session_reference=None)
     with patch.object(execution_recovery.crud_flow_execution, "update") as update_mock:
-        await svc._resume_execution_monitoring(db, execution, None)
+        with patch.object(execution_recovery, "_retire_runtime_credentials") as retire:
+            await svc._resume_execution_monitoring(db, execution, None)
     update_mock.assert_called_once()
     update_data = update_mock.call_args.kwargs["obj_in"]
     assert update_data.status == "FAILED"
     db.commit.assert_called_once()
+    retire.assert_called_once_with(db, execution)
 
 
 @pytest.mark.asyncio
@@ -195,11 +197,13 @@ async def test_resume_marks_failed_when_container_failed():
             "preloop.agents.create_executor_for_execution", return_value=agent_executor
         ),
         patch.object(execution_recovery.crud_flow_execution, "update") as update_mock,
+        patch.object(execution_recovery, "_retire_runtime_credentials") as retire,
     ):
         await svc._resume_execution_monitoring(db, execution, None)
     update_mock.assert_called_once()
     assert update_mock.call_args.kwargs["obj_in"].status == "FAILED"
     agent_executor.aclose.assert_awaited_once()
+    retire.assert_called_once_with(db, execution)
 
 
 @pytest.mark.asyncio
@@ -217,9 +221,11 @@ async def test_resume_marks_succeeded_when_container_succeeded():
             "preloop.agents.create_executor_for_execution", return_value=agent_executor
         ),
         patch.object(execution_recovery.crud_flow_execution, "update") as update_mock,
+        patch.object(execution_recovery, "_retire_runtime_credentials") as retire,
     ):
         await svc._resume_execution_monitoring(db, execution, None)
     assert update_mock.call_args.kwargs["obj_in"].status == "SUCCEEDED"
+    retire.assert_called_once_with(db, execution)
 
 
 @pytest.mark.asyncio
@@ -234,12 +240,14 @@ async def test_resume_marks_failed_when_status_check_raises():
             side_effect=RuntimeError("docker down"),
         ),
         patch.object(execution_recovery.crud_flow_execution, "update") as update_mock,
+        patch.object(execution_recovery, "_retire_runtime_credentials") as retire,
     ):
         await svc._resume_execution_monitoring(db, execution, None)
     update_mock.assert_called_once()
     update_data = update_mock.call_args.kwargs["obj_in"]
     assert update_data.status == "FAILED"
     assert "docker down" in update_data.error_message
+    retire.assert_not_called()
 
 
 @pytest.mark.asyncio
