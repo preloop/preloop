@@ -23,6 +23,9 @@ def _create_gateway_model(db_session, account_id, model_alias: str = "gemini-2.5
                     "enabled": True,
                     "model_alias": model_alias,
                     "provider_adapter": "preloop",
+                    # These tests mock litellm.completion. Auto native
+                    # /responses would POST the dummy key to api.openai.com.
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,

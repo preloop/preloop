@@ -496,6 +496,10 @@ def _create_gateway_model(db_session: Any, account_id: str, alias: str) -> Any:
                     "enabled": True,
                     "model_alias": alias,
                     "provider_adapter": "preloop",
+                    # These cases stub ``litellm.completion``, so the Responses
+                    # ingress is pinned to the chat-completions transcode
+                    # rather than the native passthrough (issue #159).
+                    "responses_api": "transcode",
                 },
                 "pricing": {
                     "input_price_per_1k": 0.01,

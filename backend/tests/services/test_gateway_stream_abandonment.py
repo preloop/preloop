@@ -43,6 +43,11 @@ def _create_gateway_model(db_session, account_id, alias: str) -> Any:
                     "enabled": True,
                     "model_alias": alias,
                     "provider_adapter": "preloop",
+                    # Abandonment accounting is asserted against the
+                    # chat-completions transcode (the upstream here is a
+                    # LiteLLM chunk iterator), so pin the Responses ingress
+                    # to it rather than the native passthrough (issue #159).
+                    "responses_api": "transcode",
                 },
                 "pricing": {
                     "input_price_per_1k": 0.01,
