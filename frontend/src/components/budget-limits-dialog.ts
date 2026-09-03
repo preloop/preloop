@@ -44,11 +44,21 @@ export class BudgetLimitsDialog extends LitElement {
     }
   };
 
+  /**
+   * Nested `sl-select` / `sl-dropdown` popups (and the inner "Delete limit"
+   * dialog) also fire `sl-hide`. Stop those from looking like this dialog
+   * closed. Do not capture-stop on the host: that runs before the event
+   * reaches a nested dialog's own `@sl-hide`, so Escape on "Delete limit"
+   * would never clear `pendingDeleteId`.
+   */
   private handleHide(event: Event) {
-    if (event.target !== event.currentTarget) return;
+    if (event.target !== event.currentTarget) {
+      event.stopPropagation();
+      return;
+    }
     this.open = false;
     this.dispatchEvent(
-      new CustomEvent('sl-hide', { bubbles: true, composed: true })
+      new CustomEvent('budget-limits-hide', { bubbles: true, composed: true })
     );
   }
 
