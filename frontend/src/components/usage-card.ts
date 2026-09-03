@@ -14,6 +14,7 @@ import './time-range-select.ts';
 import type { BudgetPolicy } from '../api';
 import type { AccountGatewayUsageSummaryResponse } from '../types';
 import { budgetTrackStyles, renderBudgetTrack } from '../styles/budget-track';
+import { budgetForecast, forecastEndLabel } from '../utils/budget-forecast';
 
 export type UsageUnit = 'tokens' | 'dollars';
 
@@ -228,6 +229,20 @@ export class UsageCard extends LitElement {
       .muted {
         color: var(--sl-color-neutral-500);
         font-size: 0.8125rem;
+      }
+
+      .budget-forecast {
+        font-size: 0.8125rem;
+        color: var(--sl-color-neutral-500);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .budget-forecast.warning {
+        color: var(--sl-color-warning-700);
+      }
+
+      .budget-forecast.danger {
+        color: var(--sl-color-danger-700);
       }
 
       .more-limits {
@@ -553,11 +568,42 @@ export class UsageCard extends LitElement {
     return window ? `${base} · ${window}` : base;
   }
 
+  /**
+   * Straight-line projection for a budget row, or nothing when the period is
+   * too young to project from. The tone follows the limit the forecast
+   * crosses, so a row that is calm today can still read as amber.
+   */
+  private renderForecast(policy: {
+    period: string;
+    spend: number;
+    softLimit: number;
+    hardLimit: number;
+    periodStart?: string | null;
+    periodEnd?: string | null;
+  }) {
+    const forecast = budgetForecast(policy);
+    if (!forecast) return nothing;
+    const percent = Math.round(forecast.elapsedFraction * 100);
+    return html`
+      <div
+        class="budget-forecast ${forecast.tone}"
+        title=${`Straight line from ${this.formatCurrency(
+          policy.spend
+        )} spent in the first ${percent}% of the period.`}
+      >
+        On track for ${this.formatCurrency(forecast.amount)} by
+        ${forecastEndLabel(policy.period, forecast.end)}
+      </div>
+    `;
+  }
+
   private renderBudgetRow(
     label: string,
+    period: string,
     spend: number,
     softLimit: number,
-    hardLimit: number
+    hardLimit: number,
+    bounds: { start?: string | null; end?: string | null } = {}
   ) {
     const denominator = hardLimit || softLimit;
     return html`
@@ -583,6 +629,14 @@ export class UsageCard extends LitElement {
               })
             : nothing
         }
+        ${this.renderForecast({
+          period,
+          spend,
+          softLimit,
+          hardLimit,
+          periodStart: bounds.start,
+          periodEnd: bounds.end,
+        })}
       </div>
     `;
   }
@@ -602,9 +656,11 @@ export class UsageCard extends LitElement {
     const rows = globals.map((policy) =>
       this.renderBudgetRow(
         this.periodLabel(policy.period),
+        policy.period,
         policy.current_spend_usd || 0,
         policy.soft_limit_usd || 0,
-        policy.hard_limit_usd || 0
+        policy.hard_limit_usd || 0,
+        { start: policy.period_start, end: policy.period_end }
       )
     );
 
@@ -612,6 +668,7 @@ export class UsageCard extends LitElement {
       rows.unshift(
         this.renderBudgetRow(
           this.periodLabel('monthly'),
+          'monthly',
           this.summary?.budget?.current_spend_usd || 0,
           this.summary?.budget?.soft_limit_usd || 0,
           legacyLimit
