@@ -1159,6 +1159,42 @@ describe('DashboardView', () => {
       );
     });
 
+    it('ages the Updated label instead of freezing it at "just now"', async () => {
+      const element = await mountLoaded();
+      const label = () =>
+        (
+          element.shadowRoot?.querySelector('view-header .updated-at')
+            ?.textContent || ''
+        ).trim();
+      expect(label()).to.equal('Updated just now');
+
+      // The page has been open for four minutes and nothing has changed.
+      element['lastUpdatedAt'] = new Date(Date.now() - 4 * 60000).toISOString();
+      element['updatedTick'] += 1;
+      await element.updateComplete;
+      expect(label()).to.equal('Updated 4m ago');
+      expect(
+        element.shadowRoot
+          ?.querySelector('view-header .updated-at')
+          ?.getAttribute('title')
+      ).to.not.equal('Not loaded yet');
+    });
+
+    it('takes its turn when an event lands during a refresh', async () => {
+      const element = await mountLoaded();
+      // A socket event arriving mid-refresh used to be dropped, leaving the
+      // header claiming numbers older than the event that announced them.
+      element['refreshInFlight'] = true;
+      element['initialLoadTime'] = Date.now() - 60000;
+      element['lastUpdatedAt'] = new Date(Date.now() - 60000).toISOString();
+      element['scheduleRefresh']();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(element['refreshTimer']).to.not.equal(null);
+      element['refreshInFlight'] = false;
+      window.clearTimeout(element['refreshTimer'] as number);
+      element['refreshTimer'] = null;
+    });
+
     it('opens the budget dialog when the feed asks for it', async () => {
       const element = await mountLoaded();
 

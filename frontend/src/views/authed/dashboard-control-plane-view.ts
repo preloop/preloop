@@ -264,6 +264,16 @@ export class DashboardView extends AuthedElement {
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
   private refreshInFlight = false;
+  /**
+   * Makes "Updated just now" age.
+   *
+   * The label is a relative time, and a relative time that only recomputes
+   * when its data changes is a lie by the second minute: a page left open
+   * over lunch claimed the numbers under it were a minute old. Bumping this
+   * every 30s re-renders the header and nothing else.
+   */
+  @state() private updatedTick = 0;
+  private updatedTimer: number | null = null;
 
   private formatDate(dateStr: string | null | undefined): string {
     if (!dateStr) return '';
@@ -1161,6 +1171,9 @@ export class DashboardView extends AuthedElement {
     this.loadCachedDashboardData();
     void this.fetchDashboardData();
     this.connectRealtime();
+    this.updatedTimer = window.setInterval(() => {
+      if (this.lastUpdatedAt) this.updatedTick += 1;
+    }, 30000);
   }
 
   private async fetchAdminStatus() {
@@ -1194,6 +1207,10 @@ export class DashboardView extends AuthedElement {
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
+    }
+    if (this.updatedTimer !== null) {
+      window.clearInterval(this.updatedTimer);
+      this.updatedTimer = null;
     }
   }
 
@@ -1374,6 +1391,17 @@ export class DashboardView extends AuthedElement {
     }
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = null;
+      if (this.refreshInFlight) {
+        // A fetch is already running and will return data from before this
+        // event; dropping the event here is what left "Updated 4m ago" on
+        // a page that had just been told something changed. Wait for the
+        // one in flight to land, then take our turn.
+        this.refreshTimer = window.setTimeout(() => {
+          this.refreshTimer = null;
+          void this.fetchDashboardData({ preserveLoadingState: true });
+        }, 1000);
+        return;
+      }
       void this.fetchDashboardData({ preserveLoadingState: true });
     }, 250);
   }
@@ -2933,7 +2961,14 @@ export class DashboardView extends AuthedElement {
 
     return html`
       <view-header headerText="Overview" width="extra-wide">
-        <span slot="meta" class="updated-at"
+        <span
+          slot="meta"
+          class="updated-at"
+          title=${
+            this.lastUpdatedAt
+              ? parseUTCDate(this.lastUpdatedAt).toLocaleString()
+              : 'Not loaded yet'
+          }
           >Updated ${this.formatLastUpdatedLabel()}</span
         >
       </view-header>

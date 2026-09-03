@@ -79,6 +79,25 @@ export interface InventoryModelRow {
  * card's "58 failed" and the failures card under it.
  */
 
+/**
+ * The model alias without the provider it is already sitting next to.
+ *
+ * Gateway aliases are conventionally `provider/model`, and the table prints
+ * the provider in the very next column, so the prefix costs half the width
+ * of the name it qualifies: at 1440 the cell read "deepseek/deepse...".
+ * Only an exact provider match is dropped, and only on a separator, so
+ * "anthropic/claude-sonnet-4" served by OpenRouter keeps its prefix.
+ */
+export function modelAliasLabel(alias: string, provider: string): string {
+  const name = (alias || '').trim();
+  const match = name.match(/^([^/:]+)[/:](.+)$/);
+  if (!match) return name;
+  const key = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const prefix = key(match[1]);
+  if (!prefix || prefix !== key(provider || '')) return name;
+  return match[2];
+}
+
 export interface InventoryToolRow {
   name: string;
   server: string;
@@ -770,13 +789,16 @@ export class InventoryCard extends LitElement {
     const rows = this.sortedAgents.slice(0, this.rowLimit);
     return html`
       <table class="inventory-table">
+        <!-- Same trade as the Models tab: an alias is 24 characters and a
+             count is five, so the counts give up the four points that stop
+             "deepseek/deepseek-v4-pro" reading as "deepseek/deepse...". -->
         <colgroup>
           <col style="width: 28%" />
-          <col style="width: 22%" />
-          <col style="width: 12%" />
-          <col style="width: 12%" />
-          <col style="width: 12%" />
-          <col style="width: 14%" />
+          <col style="width: 27%" />
+          <col style="width: 11%" />
+          <col style="width: 11%" />
+          <col style="width: 10%" />
+          <col style="width: 13%" />
         </colgroup>
         <thead>
           <tr>
@@ -923,12 +945,16 @@ export class InventoryCard extends LitElement {
     const rows = this.sortedModels.slice(0, this.rowLimit);
     return html`
       <table class="inventory-table">
+        <!-- The name is the row, so it gets the room: three counts of five
+             characters each fit in 12% at any width this card is used at,
+             and what is left over goes to the alias rather than to the
+             gutters beside "1.2k". -->
         <colgroup>
-          <col style="width: 34%" />
-          <col style="width: 24%" />
-          <col style="width: 14%" />
-          <col style="width: 14%" />
-          <col style="width: 14%" />
+          <col style="width: 42%" />
+          <col style="width: 22%" />
+          <col style="width: 12%" />
+          <col style="width: 12%" />
+          <col style="width: 12%" />
         </colgroup>
         <thead>
           <tr>
@@ -949,17 +975,23 @@ export class InventoryCard extends LitElement {
                     (row) => `${row.id || row.alias}`,
                     (row) => html`
                       <tr>
-                        <td class="identity-cell">
+                        <td class="identity-cell" title=${row.alias}>
                           <span class="identity">
                             ${
                               row.id
                                 ? html`<a
                                     class="row-name"
                                     href="/console/ai-models/${row.id}"
-                                    >${row.alias}</a
+                                    >${modelAliasLabel(
+                                      row.alias,
+                                      row.provider
+                                    )}</a
                                   >`
                                 : html`<span class="row-name"
-                                    >${row.alias}</span
+                                    >${modelAliasLabel(
+                                      row.alias,
+                                      row.provider
+                                    )}</span
                                   >`
                             }
                           </span>
