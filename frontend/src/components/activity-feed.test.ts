@@ -280,7 +280,7 @@ describe('activity-feed', () => {
       ).to.equal(null);
     });
 
-    it('names who called a tool and links to that session', () => {
+    it('leads a tool line with the caller and links to that session', () => {
       const event = feedEventFromAuditGroup(
         auditGroup(
           'tool_call',
@@ -290,17 +290,42 @@ describe('activity-feed', () => {
             details: {
               runtime_principal_name: 'Pull Request Reviewer',
               runtime_session_id: 'sess-7',
+              mcp_server_name: 'gitlab',
             },
           },
           'allow'
         )
       );
       expect(event?.text).to.equal(
-        'get_pull_request ran · Pull Request Reviewer'
+        'Pull Request Reviewer ran get_pull_request'
       );
       expect(event?.tone).to.equal('neutral');
       expect(event?.href).to.equal(
         '/console/runtime-sessions?sessionId=sess-7'
+      );
+      expect(event?.kind).to.equal('tool');
+      const labels = (event?.fields || []).map((item) => item.label);
+      expect(labels).to.include('Tool');
+      expect(labels).to.include('Server');
+    });
+
+    it('says what happened to a tool call, caller first', () => {
+      const shape = (outcome: string) =>
+        feedEventFromAuditGroup(
+          auditGroup(
+            'tool_call',
+            {
+              id: `t-${outcome}`,
+              resource_id: 'Bash',
+              details: { managed_agent_name: 'Claude Code' },
+            },
+            outcome
+          )
+        );
+      expect(shape('failed')?.text).to.equal('Claude Code failed to run Bash');
+      expect(shape('deny')?.text).to.equal('Claude Code was blocked from Bash');
+      expect(shape('require_approval')?.text).to.equal(
+        'Claude Code needs approval for Bash'
       );
     });
 
@@ -342,7 +367,7 @@ describe('activity-feed', () => {
         html`<activity-feed></activity-feed>`
       );
       await waitUntil(() => rowText(el).length === 2, 'timeline rows appear');
-      expect(rowText(el)[0]).to.contain('Bash failed');
+      expect(rowText(el)[0]).to.contain('failed to run Bash');
       expect(rowText(el)[1]).to.contain('Hermes started a session');
       restore();
       localStorage.removeItem('accessToken');
@@ -399,7 +424,7 @@ describe('activity-feed', () => {
         html`<activity-feed></activity-feed>`
       );
       await waitUntil(() => rowText(el).length === 2, 'rows survive');
-      expect(rowText(el).join(' ')).to.contain('Bash failed');
+      expect(rowText(el).join(' ')).to.contain('failed to run Bash');
       restore();
       localStorage.removeItem('accessToken');
     });
@@ -466,9 +491,18 @@ describe('activity-feed', () => {
       expect(rowText(el).length).to.equal(1);
       expect(rowText(el)[0]).to.contain('Merge Request Reviewer failed');
       expect(rowText(el)[0]).to.contain('spacecode/preloop-ios !17');
-      expect(
-        el.shadowRoot?.querySelector('a.row-text')?.getAttribute('href')
-      ).to.equal('/console/flows/executions/exec-1');
+      // The line opens the row; the run is one click further in, in the body.
+      el.shadowRoot!.querySelector<HTMLButtonElement>(
+        'button.row-text'
+      )!.click();
+      await el.updateComplete;
+      const open = Array.from(
+        el.shadowRoot!.querySelectorAll<HTMLAnchorElement>('.row-actions a')
+      );
+      expect(open[0].textContent!.trim()).to.equal('Open run');
+      expect(open[0].getAttribute('href')).to.equal(
+        '/console/flows/executions/exec-1'
+      );
     });
 
     it('keeps the newest 30 rows and no more', async () => {
@@ -506,8 +540,152 @@ describe('activity-feed', () => {
       el.shadowRoot!.querySelector<HTMLButtonElement>(
         'button.row-text'
       )!.click();
+      await el.updateComplete;
+      const action = el.shadowRoot!.querySelector<HTMLButtonElement>(
+        '.row-actions button'
+      )!;
+      expect(action.textContent!.trim()).to.equal('Change limits');
+      action.click();
       expect(opened).to.equal(true);
       expect(rowText(el)[0]).to.contain('Daily budget hard limit reached');
+      // A budget line has no audit event of its own to open.
+      expect(el.shadowRoot!.querySelector('.row-actions a')).to.equal(null);
+    });
+
+    it('expands one row at a time, with the fields for its kind', async () => {
+      localStorage.setItem('accessToken', 'test-token');
+      const { restore } = stubFetch([
+        [
+          auditGroup(
+            'tool_call',
+            {
+              id: 'expand-1',
+              resource_id: 'Bash',
+              details: {
+                managed_agent_name: 'Claude Code',
+                mcp_server_name: 'shell',
+                runtime_session_id: 'sess-12',
+                duration_ms: 1400,
+              },
+              timestamp: NOW,
+            },
+            'failed'
+          ),
+          auditGroup(
+            'approval_approved',
+            {
+              id: 'expand-2',
+              resource_id: 'req-3',
+              details: { tool_name: 'Bash', comment: 'fine by me' },
+              timestamp: new Date(Date.now() - 60000).toISOString(),
+            },
+            'approved'
+          ),
+        ],
+      ]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(() => rowText(el).length === 2, 'two rows');
+      const toggles = () =>
+        Array.from(
+          el.shadowRoot!.querySelectorAll<HTMLButtonElement>('button.row-text')
+        );
+      expect(
+        toggles().every((btn) => btn.getAttribute('aria-expanded') === 'false')
+      ).to.equal(true);
+      expect(el.shadowRoot!.querySelector('.row-body')).to.equal(null);
+
+      toggles()[0].click();
+      await el.updateComplete;
+      expect(toggles()[0].getAttribute('aria-expanded')).to.equal('true');
+      const body = el.shadowRoot!.querySelector('.row-body')!;
+      expect(body.id).to.equal(toggles()[0].getAttribute('aria-controls'));
+      const labels = Array.from(body.querySelectorAll('dt')).map((dt) =>
+        dt.textContent!.trim()
+      );
+      expect(labels).to.include('When');
+      expect(labels).to.include('Tool');
+      expect(labels).to.include('Server');
+      expect(labels).to.include('Session');
+      const links = Array.from(
+        body.querySelectorAll<HTMLAnchorElement>('.row-actions a')
+      );
+      expect(links.map((link) => link.textContent!.trim())).to.deep.equal([
+        'Open session',
+        'Open in audit',
+      ]);
+      expect(links[1].getAttribute('href')).to.equal(
+        '/console/audit?event=expand-1'
+      );
+
+      // One at a time: opening the approval closes the tool call.
+      toggles()[1].click();
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelectorAll('.row-body').length).to.equal(1);
+      expect(toggles()[0].getAttribute('aria-expanded')).to.equal('false');
+      const approval = el.shadowRoot!.querySelector('.row-body')!;
+      const approvalLabels = Array.from(approval.querySelectorAll('dt')).map(
+        (dt) => dt.textContent!.trim()
+      );
+      expect(approvalLabels).to.include('Decision');
+      expect(approvalLabels).to.include('Comment');
+      expect(approval.textContent).to.contain('fine by me');
+
+      // Clicking the open row again closes it.
+      toggles()[1].click();
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelector('.row-body')).to.equal(null);
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('folds a run of identical tool lines into one counted row', async () => {
+      localStorage.setItem('accessToken', 'test-token');
+      const repeated = Array.from({ length: 4 }, (_, index) =>
+        auditGroup(
+          'tool_call',
+          {
+            id: `fold-${index}`,
+            resource_id: 'update_pull_request',
+            details: { runtime_principal_name: 'Pull Request Reviewer' },
+            timestamp: new Date(Date.now() - index * 1000).toISOString(),
+          },
+          'allow'
+        )
+      );
+      const { restore } = stubFetch([
+        [
+          ...repeated,
+          auditGroup(
+            'tool_call',
+            {
+              id: 'other',
+              resource_id: 'get_pull_request',
+              details: { runtime_principal_name: 'Pull Request Reviewer' },
+              timestamp: new Date(Date.now() - 9000).toISOString(),
+            },
+            'allow'
+          ),
+        ],
+      ]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(() => rowText(el).length === 2, 'four lines become one');
+      expect(rowText(el)[0]).to.contain(
+        'Pull Request Reviewer ran update_pull_request'
+      );
+      expect(rowText(el)[0]).to.contain('×4');
+      expect(rowText(el)[1]).to.contain('get_pull_request');
+      // Expanding a folded row lists every occurrence.
+      el.shadowRoot!.querySelector<HTMLButtonElement>(
+        'button.row-text'
+      )!.click();
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelectorAll('.occurrence').length).to.equal(4);
+      restore();
+      localStorage.removeItem('accessToken');
     });
 
     it('says so when there is nothing, and always offers the audit page', async () => {
