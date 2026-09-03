@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_for_user
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud import (
     crud_account,
     crud_ai_model,
@@ -2431,16 +2432,20 @@ async def list_account_runtime_sessions(
     offset: int = Query(0, ge=0),
 ):
     """List runtime sessions for the current account."""
-    return RuntimeSessionExplorerService(db).list_account_sessions(
-        account=account,
-        query=query,
-        session_source_type=session_source_type,
-        status=status,
-        start_date=start_date,
-        end_date=end_date,
-        limit=limit,
-        offset=offset,
-        background_tasks=background_tasks,
+    # Off the loop on purpose: the console polls this path, and a saturated
+    # pool must not stall the liveness probe. See preloop.api.loop_safety.
+    return await run_db_off_loop(
+        lambda: RuntimeSessionExplorerService(db).list_account_sessions(
+            account=account,
+            query=query,
+            session_source_type=session_source_type,
+            status=status,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+            background_tasks=background_tasks,
+        )
     )
 
 
@@ -2458,11 +2463,13 @@ async def get_account_runtime_session_detail(
     end_date: Optional[datetime] = Query(None),
 ):
     """Return one runtime session detail summary without heavy arrays."""
-    return RuntimeSessionExplorerService(db).get_account_session_detail(
-        account=account,
-        runtime_session_id=runtime_session_id,
-        start_date=start_date,
-        end_date=end_date,
+    return await run_db_off_loop(
+        lambda: RuntimeSessionExplorerService(db).get_account_session_detail(
+            account=account,
+            runtime_session_id=runtime_session_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
     )
 
 
@@ -2483,14 +2490,16 @@ async def get_account_session_interactions(
     interaction_offset: int = Query(0, ge=0),
 ):
     """Paginated search across captured interactions for this session."""
-    return RuntimeSessionExplorerService(db).get_account_session_interactions(
-        account=account,
-        runtime_session_id=runtime_session_id,
-        interaction_query=interaction_query,
-        start_date=start_date,
-        end_date=end_date,
-        interaction_limit=interaction_limit,
-        interaction_offset=interaction_offset,
+    return await run_db_off_loop(
+        lambda: RuntimeSessionExplorerService(db).get_account_session_interactions(
+            account=account,
+            runtime_session_id=runtime_session_id,
+            interaction_query=interaction_query,
+            start_date=start_date,
+            end_date=end_date,
+            interaction_limit=interaction_limit,
+            interaction_offset=interaction_offset,
+        )
     )
 
 
@@ -2506,9 +2515,11 @@ async def get_account_session_activity_timeline(
     db: Session = Depends(get_db_session),
 ):
     """Activity timeline overview for this session."""
-    return RuntimeSessionExplorerService(db).get_account_session_activity_timeline(
-        account=account,
-        runtime_session_id=runtime_session_id,
+    return await run_db_off_loop(
+        lambda: RuntimeSessionExplorerService(db).get_account_session_activity_timeline(
+            account=account,
+            runtime_session_id=runtime_session_id,
+        )
     )
 
 
@@ -2592,57 +2603,61 @@ async def list_account_runtime_session_requests(
     """
     from preloop.models.crud.api_usage import crud_api_usage
 
-    session = crud_runtime_session.get_account_session(
-        db, account_id=str(account.id), runtime_session_id=runtime_session_id
-    )
-    if session is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Runtime session not found"
+    def _query() -> RuntimeSessionRequestListResponse:
+        session = crud_runtime_session.get_account_session(
+            db, account_id=str(account.id), runtime_session_id=runtime_session_id
         )
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Runtime session not found",
+            )
 
-    rows = crud_api_usage.list_session_request_rows(
-        db,
-        account_id=account.id,
-        runtime_session_id=runtime_session_id,
-        limit=limit,
-        offset=offset,
-        failed_only=failed_only,
-        event_ids=event_ids,
-    )
-    total = crud_api_usage.count_session_request_rows(
-        db,
-        account_id=account.id,
-        runtime_session_id=runtime_session_id,
-        failed_only=failed_only,
-        event_ids=event_ids,
-    )
-    failed_count = crud_api_usage.count_session_request_rows(
-        db,
-        account_id=account.id,
-        runtime_session_id=runtime_session_id,
-        failed_only=True,
-    )
-    items = [_request_row_to_item(row) for row in rows]
-    # The cache rollup spans the whole session, not the current page, so the
-    # summary block is stable while the user pages or filters the list.
-    cache_summary = summarize_session_cache(
-        crud_api_usage.list_session_cache_rows(
+        rows = crud_api_usage.list_session_request_rows(
             db,
             account_id=account.id,
             runtime_session_id=runtime_session_id,
+            limit=limit,
+            offset=offset,
+            failed_only=failed_only,
+            event_ids=event_ids,
         )
-    )
-    next_offset = offset + len(items)
-    return RuntimeSessionRequestListResponse(
-        items=items,
-        total=total,
-        failed_count=failed_count,
-        limit=limit,
-        offset=offset,
-        next_offset=next_offset if next_offset < total else None,
-        has_more=next_offset < total,
-        cache_summary=RuntimeSessionCacheSummary(**cache_summary.as_dict()),
-    )
+        total = crud_api_usage.count_session_request_rows(
+            db,
+            account_id=account.id,
+            runtime_session_id=runtime_session_id,
+            failed_only=failed_only,
+            event_ids=event_ids,
+        )
+        failed_count = crud_api_usage.count_session_request_rows(
+            db,
+            account_id=account.id,
+            runtime_session_id=runtime_session_id,
+            failed_only=True,
+        )
+        items = [_request_row_to_item(row) for row in rows]
+        # The cache rollup spans the whole session, not the current page, so
+        # the summary block is stable while the user pages or filters the list.
+        cache_summary = summarize_session_cache(
+            crud_api_usage.list_session_cache_rows(
+                db,
+                account_id=account.id,
+                runtime_session_id=runtime_session_id,
+            )
+        )
+        next_offset = offset + len(items)
+        return RuntimeSessionRequestListResponse(
+            items=items,
+            total=total,
+            failed_count=failed_count,
+            limit=limit,
+            offset=offset,
+            next_offset=next_offset if next_offset < total else None,
+            has_more=next_offset < total,
+            cache_summary=RuntimeSessionCacheSummary(**cache_summary.as_dict()),
+        )
+
+    return await run_db_off_loop(_query)
 
 
 @router.post(
@@ -2678,55 +2693,61 @@ async def get_account_runtime_session_gateway_events(
     metadata_only: bool = Query(False),
 ) -> dict[str, Any]:
     """Return one compact page of stored gateway event metadata for a session."""
-    session = crud_runtime_session.get_account_session(
-        db, account_id=str(account.id), runtime_session_id=runtime_session_id
-    )
-    if session is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Runtime session not found"
-        )
-
     from preloop.models.crud.runtime_session_activity import (
         crud_runtime_session_activity,
     )
 
-    rows = crud_runtime_session_activity.list_model_gateway_calls_for_session(
-        db,
-        account_id=account.id,
-        runtime_session_id=runtime_session_id,
-        tail=tail,
-        limit=limit,
-        offset=offset,
-        metadata_only=metadata_only,
-    )
-    total = crud_runtime_session_activity.count_model_gateway_calls_for_session(
-        db,
-        account_id=account.id,
-        runtime_session_id=runtime_session_id,
-    )
-    page_limit = min(tail, 200) if tail else min(limit, 5000 if metadata_only else 100)
+    def _query() -> dict[str, Any]:
+        session = crud_runtime_session.get_account_session(
+            db, account_id=str(account.id), runtime_session_id=runtime_session_id
+        )
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Runtime session not found",
+            )
 
-    events = [
-        {
-            "id": str(row.id),
-            "timestamp": row.timestamp.isoformat() if row.timestamp else None,
-            "type": row.activity_type,
-            "payload": row.metadata_,
+        rows = crud_runtime_session_activity.list_model_gateway_calls_for_session(
+            db,
+            account_id=account.id,
+            runtime_session_id=runtime_session_id,
+            tail=tail,
+            limit=limit,
+            offset=offset,
+            metadata_only=metadata_only,
+        )
+        total = crud_runtime_session_activity.count_model_gateway_calls_for_session(
+            db,
+            account_id=account.id,
+            runtime_session_id=runtime_session_id,
+        )
+        page_limit = (
+            min(tail, 200) if tail else min(limit, 5000 if metadata_only else 100)
+        )
+
+        events = [
+            {
+                "id": str(row.id),
+                "timestamp": row.timestamp.isoformat() if row.timestamp else None,
+                "type": row.activity_type,
+                "payload": row.metadata_,
+            }
+            for row in rows
+        ]
+        next_offset = offset + len(events)
+        return {
+            "source": "database",
+            "logs": events,
+            "pagination": {
+                "limit": page_limit,
+                "offset": offset,
+                "next_offset": next_offset if next_offset < total else None,
+                "total": total,
+                "has_more": next_offset < total,
+            },
         }
-        for row in rows
-    ]
-    next_offset = offset + len(events)
-    return {
-        "source": "database",
-        "logs": events,
-        "pagination": {
-            "limit": page_limit,
-            "offset": offset,
-            "next_offset": next_offset if next_offset < total else None,
-            "total": total,
-            "has_more": next_offset < total,
-        },
-    }
+
+    return await run_db_off_loop(_query)
 
 
 @router.get(
@@ -2741,37 +2762,43 @@ async def get_account_runtime_session_gateway_event_detail(
     db: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
     """Return the raw, massive stored gateway event JSON detail for one runtime session activity."""
-    session = crud_runtime_session.get_account_session(
-        db, account_id=str(account.id), runtime_session_id=runtime_session_id
-    )
-    if session is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Runtime session not found"
-        )
-
     from preloop.models.crud.runtime_session_activity import (
         crud_runtime_session_activity,
     )
 
-    activity = crud_runtime_session_activity.get_model_gateway_call_for_session(
-        db,
-        account_id=account.id,
-        runtime_session_id=runtime_session_id,
-        activity_id=activity_id,
-    )
+    def _query() -> dict[str, Any]:
+        session = crud_runtime_session.get_account_session(
+            db, account_id=str(account.id), runtime_session_id=runtime_session_id
+        )
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Runtime session not found",
+            )
 
-    if activity is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Runtime session activity not found",
+        activity = crud_runtime_session_activity.get_model_gateway_call_for_session(
+            db,
+            account_id=account.id,
+            runtime_session_id=runtime_session_id,
+            activity_id=activity_id,
         )
 
-    return {
-        "id": str(activity.id),
-        "timestamp": activity.timestamp.isoformat() if activity.timestamp else None,
-        "type": activity.activity_type,
-        "payload": activity.metadata_,
-    }
+        if activity is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Runtime session activity not found",
+            )
+
+        return {
+            "id": str(activity.id),
+            "timestamp": (
+                activity.timestamp.isoformat() if activity.timestamp else None
+            ),
+            "type": activity.activity_type,
+            "payload": activity.metadata_,
+        }
+
+    return await run_db_off_loop(_query)
 
 
 @router.post(
@@ -3023,26 +3050,29 @@ async def get_dashboard_telemetry(
     now = datetime.now(timezone.utc)
     day_ago = now - timedelta(days=1)
 
-    active_sessions = crud_runtime_session.count_active_sessions(
-        db, account_id=str(account.id)
-    )
+    def _query() -> DashboardTelemetryResponse:
+        active_sessions = crud_runtime_session.count_active_sessions(
+            db, account_id=str(account.id)
+        )
 
-    usage_stats = crud_api_usage.get_dashboard_usage_stats(
-        db, account_id=str(account.id), since=day_ago
-    )
+        usage_stats = crud_api_usage.get_dashboard_usage_stats(
+            db, account_id=str(account.id), since=day_ago
+        )
 
-    cost = usage_stats.get("estimated_cost", 0.0)
-    total_calls = usage_stats.get("total_calls", 0)
-    success_calls = usage_stats.get("success_calls", 0)
+        cost = usage_stats.get("estimated_cost", 0.0)
+        total_calls = usage_stats.get("total_calls", 0)
+        success_calls = usage_stats.get("success_calls", 0)
 
-    success_rate = (success_calls / total_calls * 100.0) if total_calls > 0 else 0.0
+        success_rate = (success_calls / total_calls * 100.0) if total_calls > 0 else 0.0
 
-    return DashboardTelemetryResponse(
-        active_agents=active_sessions,
-        total_tool_calls=total_calls,
-        daily_cost=cost,
-        success_rate=success_rate,
-    )
+        return DashboardTelemetryResponse(
+            active_agents=active_sessions,
+            total_tool_calls=total_calls,
+            daily_cost=cost,
+            success_rate=success_rate,
+        )
+
+    return await run_db_off_loop(_query)
 
 
 # ---------------------------------------------------------------------------
@@ -3182,15 +3212,21 @@ async def list_attention_dismissals(
     Expired snoozes are excluded and garbage-collected here, so "hidden until"
     never quietly becomes "hidden forever".
     """
-    crud_attention_dismissal.purge_expired_for_account(db, account_id=account.id)
-    dismissals = crud_attention_dismissal.get_active_for_account(
-        db, account_id=account.id
-    )
-    usernames = _resolve_dismissal_usernames(db, dismissals)
-    return AttentionDismissalListResponse(
-        items=[_dismissal_response(dismissal, usernames) for dismissal in dismissals],
-        total=len(dismissals),
-    )
+
+    def _query() -> AttentionDismissalListResponse:
+        crud_attention_dismissal.purge_expired_for_account(db, account_id=account.id)
+        dismissals = crud_attention_dismissal.get_active_for_account(
+            db, account_id=account.id
+        )
+        usernames = _resolve_dismissal_usernames(db, dismissals)
+        return AttentionDismissalListResponse(
+            items=[
+                _dismissal_response(dismissal, usernames) for dismissal in dismissals
+            ],
+            total=len(dismissals),
+        )
+
+    return await run_db_off_loop(_query)
 
 
 @router.put(
