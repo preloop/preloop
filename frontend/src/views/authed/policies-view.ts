@@ -45,6 +45,7 @@ import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import { consoleDialogStyles } from '../../styles/console-dialog';
 
 // Types for tool access rules
 interface ToolAccessRule {
@@ -291,6 +292,7 @@ export class PoliciesView extends LitElement {
   @state() private _versionToRollback: PolicyVersion | null = null;
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {

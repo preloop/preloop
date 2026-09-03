@@ -15,6 +15,7 @@ import '@shoelace-style/shoelace/dist/components/switch/switch.js';
 import './approval-workflow-dialog';
 import type { ApprovalWorkflow } from './tool-card';
 import type { AccessRule } from '../api';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 export interface RuleFormData {
   action: 'allow' | 'deny' | 'require_approval';
@@ -75,262 +76,265 @@ export class ToolRuleEditor extends LitElement {
     return this.features['advanced_approvals'] === true;
   }
 
-  static styles = css`
-    :host {
-      display: block;
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      :host {
+        display: block;
+      }
 
-    /* Ensure dialog panel is fully opaque */
-    sl-dialog {
-      --sl-panel-background-color: var(--sl-color-neutral-0);
-      --sl-overlay-background-color: hsl(240 3.8% 46.1% / 33%);
-    }
+      /* Ensure dialog panel is fully opaque */
+      sl-dialog {
+        --sl-panel-background-color: var(--sl-color-neutral-0);
+        --sl-overlay-background-color: hsl(240 3.8% 46.1% / 33%);
+      }
 
-    sl-dialog::part(panel) {
-      background-color: var(--sl-color-neutral-0, #fff);
-      opacity: 1;
-    }
+      sl-dialog::part(panel) {
+        background-color: var(--sl-color-neutral-0, #fff);
+        opacity: 1;
+      }
 
-    sl-dialog::part(overlay) {
-      background-color: hsl(240 3.8% 46.1% / 33%);
-    }
+      sl-dialog::part(overlay) {
+        background-color: hsl(240 3.8% 46.1% / 33%);
+      }
 
-    sl-dialog::part(body) {
-      background-color: var(--sl-color-neutral-0, #fff);
-    }
+      sl-dialog::part(body) {
+        background-color: var(--sl-color-neutral-0, #fff);
+      }
 
-    .form-group {
-      margin-bottom: var(--sl-spacing-medium);
-    }
+      .form-group {
+        margin-bottom: var(--sl-spacing-medium);
+      }
 
-    .form-group label {
-      display: block;
-      font-size: var(--sl-font-size-small);
-      font-weight: var(--sl-font-weight-semibold);
-      color: var(--sl-color-neutral-700);
-      margin-bottom: var(--sl-spacing-x-small);
-    }
+      .form-group label {
+        display: block;
+        font-size: var(--sl-font-size-small);
+        font-weight: var(--sl-font-weight-semibold);
+        color: var(--sl-color-neutral-700);
+        margin-bottom: var(--sl-spacing-x-small);
+      }
 
-    .form-group .hint {
-      font-size: var(--sl-font-size-x-small);
-      color: var(--sl-color-neutral-500);
-      margin-top: var(--sl-spacing-2x-small);
-    }
+      .form-group .hint {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-500);
+        margin-top: var(--sl-spacing-2x-small);
+      }
 
-    .action-cards {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: var(--sl-spacing-small);
-    }
+      .action-cards {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: var(--sl-spacing-small);
+      }
 
-    .action-card {
-      border: 2px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      padding: var(--sl-spacing-medium);
-      cursor: pointer;
-      text-align: center;
-      transition: all 0.15s ease;
-      background: var(--sl-color-neutral-0);
-    }
+      .action-card {
+        border: 2px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        padding: var(--sl-spacing-medium);
+        cursor: pointer;
+        text-align: center;
+        transition: all 0.15s ease;
+        background: var(--sl-color-neutral-0);
+      }
 
-    .action-card:hover {
-      border-color: var(--sl-color-neutral-400);
-    }
+      .action-card:hover {
+        border-color: var(--sl-color-neutral-400);
+      }
 
-    .action-card.selected {
-      border-color: var(--sl-color-primary-600);
-      background: var(--sl-color-primary-50);
-    }
+      .action-card.selected {
+        border-color: var(--sl-color-primary-600);
+        background: var(--sl-color-primary-50);
+      }
 
-    .action-card.deny.selected {
-      border-color: var(--sl-color-danger-600);
-      background: var(--sl-color-danger-50);
-    }
+      .action-card.deny.selected {
+        border-color: var(--sl-color-danger-600);
+        background: var(--sl-color-danger-50);
+      }
 
-    .action-card.approval.selected {
-      border-color: var(--sl-color-primary-600);
-      background: var(--sl-color-primary-50);
-    }
+      .action-card.approval.selected {
+        border-color: var(--sl-color-primary-600);
+        background: var(--sl-color-primary-50);
+      }
 
-    .action-card .action-icon {
-      font-size: 1.5rem;
-      margin-bottom: var(--sl-spacing-x-small);
-    }
+      .action-card .action-icon {
+        font-size: 1.5rem;
+        margin-bottom: var(--sl-spacing-x-small);
+      }
 
-    .action-card .action-label {
-      font-weight: var(--sl-font-weight-semibold);
-      font-size: var(--sl-font-size-small);
-    }
+      .action-card .action-label {
+        font-weight: var(--sl-font-weight-semibold);
+        font-size: var(--sl-font-size-small);
+      }
 
-    .action-card .action-desc {
-      font-size: var(--sl-font-size-x-small);
-      color: var(--sl-color-neutral-500);
-      margin-top: var(--sl-spacing-2x-small);
-    }
+      .action-card .action-desc {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-500);
+        margin-top: var(--sl-spacing-2x-small);
+      }
 
-    .condition-section {
-      background: var(--sl-color-neutral-50);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      padding: var(--sl-spacing-medium);
-    }
+      .condition-section {
+        background: var(--sl-color-neutral-50);
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        padding: var(--sl-spacing-medium);
+      }
 
-    .simple-condition {
-      display: grid;
-      grid-template-columns: minmax(140px, 3fr) minmax(100px, 2fr) minmax(
-          80px,
-          2fr
-        );
-      gap: var(--sl-spacing-small);
-      align-items: end;
-    }
+      .simple-condition {
+        display: grid;
+        grid-template-columns: minmax(140px, 3fr) minmax(100px, 2fr) minmax(
+            80px,
+            2fr
+          );
+        gap: var(--sl-spacing-small);
+        align-items: end;
+      }
 
-    /* Make parameter select dropdown wider than the trigger */
-    .param-select::part(listbox) {
-      min-width: 220px;
-    }
+      /* Make parameter select dropdown wider than the trigger */
+      .param-select::part(listbox) {
+        min-width: 220px;
+      }
 
-    /* Multi-condition row with delete button */
-    .condition-row {
-      display: flex;
-      align-items: end;
-      gap: var(--sl-spacing-x-small);
-    }
+      /* Multi-condition row with delete button */
+      .condition-row {
+        display: flex;
+        align-items: end;
+        gap: var(--sl-spacing-x-small);
+      }
 
-    .condition-row .simple-condition {
-      flex: 1;
-    }
+      .condition-row .simple-condition {
+        flex: 1;
+      }
 
-    .condition-row sl-icon-button {
-      margin-bottom: 4px;
-    }
+      .condition-row sl-icon-button {
+        margin-bottom: 4px;
+      }
 
-    .condition-join {
-      display: flex;
-      align-items: center;
-      gap: var(--sl-spacing-small);
-      margin: var(--sl-spacing-x-small) 0;
-      font-size: var(--sl-font-size-x-small);
-      color: var(--sl-color-neutral-600);
-    }
+      .condition-join {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+        margin: var(--sl-spacing-x-small) 0;
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-600);
+      }
 
-    .condition-join .join-line {
-      flex: 1;
-      height: 1px;
-      background: var(--sl-color-neutral-300);
-    }
+      .condition-join .join-line {
+        flex: 1;
+        height: 1px;
+        background: var(--sl-color-neutral-300);
+      }
 
-    .join-toggle {
-      cursor: pointer;
-      padding: 2px 8px;
-      border-radius: var(--sl-border-radius-pill);
-      background: var(--sl-color-neutral-200);
-      font-weight: var(--sl-font-weight-semibold);
-      user-select: none;
-      transition: background 0.1s ease;
-    }
+      .join-toggle {
+        cursor: pointer;
+        padding: 2px 8px;
+        border-radius: var(--sl-border-radius-pill);
+        background: var(--sl-color-neutral-200);
+        font-weight: var(--sl-font-weight-semibold);
+        user-select: none;
+        transition: background 0.1s ease;
+      }
 
-    .join-toggle:hover {
-      background: var(--sl-color-neutral-300);
-    }
+      .join-toggle:hover {
+        background: var(--sl-color-neutral-300);
+      }
 
-    .condition-actions {
-      display: flex;
-      align-items: center;
-      gap: var(--sl-spacing-small);
-      margin-top: var(--sl-spacing-small);
-    }
+      .condition-actions {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+        margin-top: var(--sl-spacing-small);
+      }
 
-    .cel-toggle {
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: var(--sl-spacing-x-small);
-      font-size: var(--sl-font-size-x-small);
-      color: var(--sl-color-neutral-600);
-    }
+      .cel-toggle {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-x-small);
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-600);
+      }
 
-    .dialog-footer {
-      display: flex;
-      justify-content: flex-end;
-      gap: var(--sl-spacing-small);
-      margin-top: var(--sl-spacing-medium);
-    }
+      .dialog-footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: var(--sl-spacing-small);
+        margin-top: var(--sl-spacing-medium);
+      }
 
-    .cel-help {
-      margin-top: var(--sl-spacing-small);
-      font-size: var(--sl-font-size-x-small);
-      color: var(--sl-color-neutral-600);
-    }
+      .cel-help {
+        margin-top: var(--sl-spacing-small);
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-600);
+      }
 
-    .cel-help code {
-      background: var(--sl-color-neutral-100);
-      padding: 0.1em 0.3em;
-      border-radius: 3px;
-      font-size: 0.9em;
-    }
+      .cel-help code {
+        background: var(--sl-color-neutral-100);
+        padding: 0.1em 0.3em;
+        border-radius: 3px;
+        font-size: 0.9em;
+      }
 
-    .args-list {
-      margin-top: var(--sl-spacing-x-small);
-      display: flex;
-      flex-wrap: wrap;
-      gap: var(--sl-spacing-2x-small);
-    }
+      .args-list {
+        margin-top: var(--sl-spacing-x-small);
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-2x-small);
+      }
 
-    /* Approval workflow section */
-    .approval-section {
-      background: var(--sl-color-neutral-50);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      padding: var(--sl-spacing-medium);
-    }
+      /* Approval workflow section */
+      .approval-section {
+        background: var(--sl-color-neutral-50);
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        padding: var(--sl-spacing-medium);
+      }
 
-    .approval-mode-cards {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: var(--sl-spacing-small);
-      margin-bottom: var(--sl-spacing-medium);
-    }
+      .approval-mode-cards {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: var(--sl-spacing-small);
+        margin-bottom: var(--sl-spacing-medium);
+      }
 
-    .approval-mode-card {
-      border: 2px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      padding: var(--sl-spacing-small) var(--sl-spacing-medium);
-      cursor: pointer;
-      text-align: center;
-      transition: all 0.15s ease;
-      background: var(--sl-color-neutral-0);
-    }
+      .approval-mode-card {
+        border: 2px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+        cursor: pointer;
+        text-align: center;
+        transition: all 0.15s ease;
+        background: var(--sl-color-neutral-0);
+      }
 
-    .approval-mode-card:hover {
-      border-color: var(--sl-color-neutral-400);
-    }
+      .approval-mode-card:hover {
+        border-color: var(--sl-color-neutral-400);
+      }
 
-    .approval-mode-card.selected {
-      border-color: var(--sl-color-primary-600);
-      background: var(--sl-color-primary-50);
-    }
+      .approval-mode-card.selected {
+        border-color: var(--sl-color-primary-600);
+        background: var(--sl-color-primary-50);
+      }
 
-    .approval-mode-card .mode-icon {
-      font-size: 1.2rem;
-      margin-bottom: 2px;
-    }
+      .approval-mode-card .mode-icon {
+        font-size: 1.2rem;
+        margin-bottom: 2px;
+      }
 
-    .approval-mode-card .mode-label {
-      font-weight: var(--sl-font-weight-semibold);
-      font-size: var(--sl-font-size-small);
-    }
+      .approval-mode-card .mode-label {
+        font-weight: var(--sl-font-weight-semibold);
+        font-size: var(--sl-font-size-small);
+      }
 
-    .workflow-select-row {
-      display: flex;
-      align-items: end;
-      gap: var(--sl-spacing-small);
-    }
+      .workflow-select-row {
+        display: flex;
+        align-items: end;
+        gap: var(--sl-spacing-small);
+      }
 
-    .workflow-select-row sl-select {
-      flex: 1;
-    }
-  `;
+      .workflow-select-row sl-select {
+        flex: 1;
+      }
+    `,
+  ];
 
   updated(changedProperties: Map<string, any>) {
     if (changedProperties.has('open') && this.open) {

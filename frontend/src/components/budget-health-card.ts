@@ -5,6 +5,7 @@ import type {
   AccountGatewayUsageSummaryResponse,
   ManagedAgentSummary,
 } from '../types';
+import { budgetTrackStyles } from '../styles/budget-track';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -30,159 +31,117 @@ export class BudgetHealthCard extends LitElement {
   @property({ type: String }) timeRange = 'month';
   @property({ type: Boolean }) showRangeSelector = false;
 
-  static styles = css`
-    :host {
-      display: block;
-      width: 100%;
-    }
+  static styles = [
+    budgetTrackStyles,
+    css`
+      :host {
+        display: block;
+        width: 100%;
+      }
 
-    .content-card {
-      width: 100%;
-    }
+      .content-card {
+        width: 100%;
+      }
 
-    .content-card::part(base) {
-      width: 100%;
-    }
+      .content-card::part(base) {
+        width: 100%;
+      }
 
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: var(--sl-spacing-small);
-    }
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+      }
 
-    .title {
-      display: flex;
-      align-items: center;
-      gap: var(--sl-spacing-2x-small);
-      font-weight: 600;
-    }
+      .title {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-2x-small);
+        font-weight: 600;
+      }
 
-    select {
-      background: transparent;
-      border: none;
-      color: var(--sl-color-neutral-600);
-      cursor: pointer;
-      font-size: var(--sl-font-size-small);
-      outline: none;
-    }
+      select {
+        background: transparent;
+        border: none;
+        color: var(--sl-color-neutral-600);
+        cursor: pointer;
+        font-size: var(--sl-font-size-small);
+        outline: none;
+      }
 
-    .content {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-medium);
-    }
+      .content {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-medium);
+      }
 
-    .rows {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-small);
-    }
+      .rows {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-small);
+      }
 
-    .budget-row {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
+      .budget-row {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
 
-    .row-header,
-    .row-footer {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: var(--sl-spacing-small);
-    }
+      .row-header,
+      .row-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+      }
 
-    .row-header {
-      font-size: var(--sl-font-size-small);
-    }
+      .row-header {
+        font-size: var(--sl-font-size-small);
+      }
 
-    .row-label {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      min-width: 0;
-      color: var(--sl-color-neutral-800);
-    }
+      .row-label {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        min-width: 0;
+        color: var(--sl-color-neutral-800);
+      }
 
-    .row-value {
-      font-weight: 500;
-      text-align: right;
-      white-space: nowrap;
-    }
+      .row-value {
+        font-weight: 500;
+        text-align: right;
+        white-space: nowrap;
+      }
 
-    .row-footer {
-      color: var(--sl-color-neutral-500);
-      font-size: var(--sl-font-size-x-small);
-    }
+      .row-footer {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-x-small);
+      }
 
-    .budget-track {
-      position: relative;
-      height: 6px;
-      border-radius: 999px;
-      background: var(--sl-color-neutral-200);
-      overflow: hidden;
-    }
+      .title.exceeded {
+        color: var(--sl-color-danger-700);
+      }
 
-    .budget-track-fill {
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      left: var(--budget-fill-left, 0%);
-      width: var(--budget-fill-width, 0%);
-      background: var(--sl-color-success-600);
-    }
+      .row-value.exceeded {
+        color: var(--sl-color-danger-700);
+      }
 
-    .title.exceeded {
-      color: var(--sl-color-danger-700);
-    }
+      .row-footer .limit-status {
+        color: var(--sl-color-danger-700);
+        font-weight: var(--sl-font-weight-semibold);
+      }
 
-    .row-value.exceeded {
-      color: var(--sl-color-danger-700);
-    }
+      .empty {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+      }
 
-    .row-footer .limit-status {
-      color: var(--sl-color-danger-700);
-      font-weight: var(--sl-font-weight-semibold);
-    }
-
-    .budget-track-fill.warning {
-      background: var(--sl-color-warning-600);
-    }
-
-    .budget-track-fill.danger {
-      background: var(--sl-color-danger-600);
-    }
-
-    .budget-soft-marker {
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      left: var(--budget-soft-position, 0%);
-      width: 2px;
-      background: var(--sl-color-warning-600);
-      box-shadow: 0 0 0 1px var(--sl-color-neutral-0);
-    }
-
-    .budget-hard-marker {
-      position: absolute;
-      top: 0;
-      right: 0;
-      bottom: 0;
-      width: 2px;
-      background: var(--sl-color-danger-600);
-      box-shadow: 0 0 0 1px var(--sl-color-neutral-0);
-    }
-
-    .empty {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-    }
-
-    sl-button {
-      width: 100%;
-    }
-  `;
+      sl-button {
+        width: 100%;
+      }
+    `,
+  ];
 
   private formatCurrency(value?: number | null): string {
     const amount = Number(value || 0);

@@ -27,6 +27,7 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import '../../components/view-header.ts';
 import '../../components/permission-denied';
+import { showToast } from '../../components/confirm-dialog';
 
 // Types
 interface AuditLog {
@@ -87,6 +88,20 @@ const EVENT_TYPE_OPTIONS = [
   { value: 'config:flow', label: 'Flow Changes' },
 ];
 
+/**
+ * How far back a `?event=` link is allowed to look for its event.
+ *
+ * There is no endpoint that fetches one audit event by id, so the only way
+ * to find out when an event happened is to walk the timeline. Four pages of
+ * 200 is a thousand events: minutes on a busy account, weeks on a quiet one.
+ * Once the event is found, its day becomes the date filter, so the operator
+ * lands on a page whose filter bar explains itself.
+ */
+const DEEP_LINK_PAGE_SIZE = 200;
+const DEEP_LINK_PAGES = 4;
+/** The fixed console header, which a scrolled-to row must clear. */
+const HEADER_OFFSET_PX = 60;
+
 // Outcome filter options
 const OUTCOME_OPTIONS = [
   { value: 'allow', label: 'Allowed' },
@@ -121,6 +136,13 @@ export class AuditView extends AuthedElement {
 
   // Expanded groups (correlation_id or primary event id -> expanded)
   @state() private _expandedGroups = new Set<string>();
+
+  // The event a `?event=` link asked for: expanded, scrolled to and marked
+  // once the list it lives in has loaded.
+  private _deepLinkEventId: string | null = null;
+  private _deepLinkPending = false;
+  @state() private _highlightedKey: string | null = null;
+  private _highlightTimer: number | null = null;
 
   // Users for display
   @state() private _users: User[] = [];
@@ -157,6 +179,11 @@ export class AuditView extends AuthedElement {
     if (maxCost) {
       this._maxCost = maxCost;
     }
+    const event = params.get('event');
+    if (event) {
+      this._deepLinkEventId = event;
+      this._deepLinkPending = true;
+    }
 
     this._loadUsers();
     this._loadTimeline();
@@ -176,6 +203,10 @@ export class AuditView extends AuthedElement {
     if (this._livePulseTimer !== null) {
       window.clearTimeout(this._livePulseTimer);
       this._livePulseTimer = null;
+    }
+    if (this._highlightTimer !== null) {
+      window.clearTimeout(this._highlightTimer);
+      this._highlightTimer = null;
     }
   }
 
@@ -230,26 +261,35 @@ export class AuditView extends AuthedElement {
     }
   }
 
+  /** The current filters as query parameters, for any window into them. */
+  private _timelineParams(skip: number, limit: number): URLSearchParams {
+    const params = new URLSearchParams();
+    params.set('skip', String(skip));
+    params.set('limit', String(limit));
+    for (const t of this._eventTypeFilters) {
+      params.append('event_type', t);
+    }
+    for (const o of this._outcomeFilters) {
+      params.append('outcome', o);
+    }
+    if (this._toolNameFilter) params.set('tool_name', this._toolNameFilter);
+    if (this._startDate)
+      params.set('start_date', new Date(this._startDate).toISOString());
+    if (this._endDate)
+      params.set('end_date', new Date(this._endDate).toISOString());
+    if (this._minCost) params.set('min_cost', this._minCost);
+    if (this._maxCost) params.set('max_cost', this._maxCost);
+    return params;
+  }
+
   private async _loadTimeline() {
     this._loading = true;
     this._permissionError = null;
     try {
-      const params = new URLSearchParams();
-      params.set('skip', String(this._page * this._pageSize));
-      params.set('limit', String(this._pageSize));
-      for (const t of this._eventTypeFilters) {
-        params.append('event_type', t);
-      }
-      for (const o of this._outcomeFilters) {
-        params.append('outcome', o);
-      }
-      if (this._toolNameFilter) params.set('tool_name', this._toolNameFilter);
-      if (this._startDate)
-        params.set('start_date', new Date(this._startDate).toISOString());
-      if (this._endDate)
-        params.set('end_date', new Date(this._endDate).toISOString());
-      if (this._minCost) params.set('min_cost', this._minCost);
-      if (this._maxCost) params.set('max_cost', this._maxCost);
+      const params = this._timelineParams(
+        this._page * this._pageSize,
+        this._pageSize
+      );
 
       const res = await fetchWithAuth(`/api/v1/audit-logs/grouped?${params}`);
       if (res.status === 403) {
@@ -268,6 +308,127 @@ export class AuditView extends AuthedElement {
     } finally {
       this._loading = false;
     }
+    if (this._deepLinkPending) {
+      await this._resolveDeepLink();
+    }
+  }
+
+  // ── Deep link (?event=) ────────────────────────────────────────────
+
+  /** A group is "the event" if the id is its own, its correlation or a sub. */
+  private _groupForEvent(id: string, groups: AuditGroup[]): AuditGroup | null {
+    return (
+      groups.find(
+        (group) =>
+          group.primary_event.id === id ||
+          group.correlation_id === id ||
+          group.sub_events.some((sub) => sub.id === id)
+      ) || null
+    );
+  }
+
+  /**
+   * Open the event a link asked for, wherever it is.
+   *
+   * On the page in front of us: expand, scroll, mark. Older than that: walk
+   * back through the timeline to find when it happened, set that day as the
+   * date filter and load again, so the event is on the first page and the
+   * filter bar says why. Not there at all: one toast, and the page stays a
+   * normal audit page rather than an error.
+   */
+  private async _resolveDeepLink(): Promise<void> {
+    const id = this._deepLinkEventId;
+    if (!id || !this._deepLinkPending) return;
+    const here = this._groupForEvent(id, this._groups);
+    if (here) {
+      this._deepLinkPending = false;
+      this._revealGroup(here);
+      return;
+    }
+    this._deepLinkPending = false;
+    const when = await this._findEventTime(id);
+    if (!when) {
+      showToast('Event not in the current range', 'warning');
+      return;
+    }
+    const day = new Date(when);
+    const next = new Date(day.getTime() + 24 * 3600 * 1000);
+    this._startDate = day.toISOString().slice(0, 10);
+    this._endDate = next.toISOString().slice(0, 10);
+    this._page = 0;
+    this._deepLinkPending = true;
+    await this._loadTimeline();
+    if (this._deepLinkPending) {
+      this._deepLinkPending = false;
+      showToast('Event not in the current range', 'warning');
+    }
+  }
+
+  /** Walks the timeline for an id and answers with when it happened. */
+  private async _findEventTime(id: string): Promise<string | null> {
+    for (let page = 0; page < DEEP_LINK_PAGES; page += 1) {
+      try {
+        const params = this._timelineParams(
+          page * DEEP_LINK_PAGE_SIZE,
+          DEEP_LINK_PAGE_SIZE
+        );
+        const res = await fetchWithAuth(`/api/v1/audit-logs/grouped?${params}`);
+        if (!res.ok) return null;
+        const data: GroupedResponse = await res.json();
+        const groups = data.groups || [];
+        const group = this._groupForEvent(id, groups);
+        if (group) {
+          const sub = group.sub_events.find((each) => each.id === id);
+          return sub?.timestamp || group.primary_event.timestamp;
+        }
+        if (groups.length < DEEP_LINK_PAGE_SIZE) return null;
+      } catch (e) {
+        console.error('Failed to look for a linked audit event:', e);
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /** Expand it, bring it into view, and say which one it was for a moment. */
+  private _revealGroup(group: AuditGroup): void {
+    const key = this._getGroupKey(group);
+    const next = new Set(this._expandedGroups);
+    next.add(key);
+    this._expandedGroups = next;
+    this._highlightedKey = key;
+    void this.updateComplete.then(() => {
+      const row = this.renderRoot?.querySelector(
+        `[data-group-key="${CSS.escape(key)}"]`
+      );
+      if (!row) return;
+      // The head of the row, not its middle: an expanded group runs for
+      // several screens, and centring one lands on a field list belonging to
+      // a row the operator can no longer see the title of. The offset clears
+      // the fixed console header.
+      const top =
+        row.getBoundingClientRect().top +
+        window.scrollY -
+        (HEADER_OFFSET_PX + 12);
+      window.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' });
+    });
+    if (this._highlightTimer !== null) {
+      window.clearTimeout(this._highlightTimer);
+    }
+    // Long enough to find with the eye, short enough not to become a state.
+    this._highlightTimer = window.setTimeout(() => {
+      this._highlightedKey = null;
+      this._highlightTimer = null;
+    }, 2500);
+  }
+
+  /** The link that opens this row for someone else. */
+  private _copyRowLink(group: AuditGroup): void {
+    const url = `${window.location.origin}/console/audit?event=${encodeURIComponent(
+      group.primary_event.id
+    )}`;
+    void navigator.clipboard?.writeText?.(url);
+    showToast('Link copied', 'success');
   }
 
   private _applyFilters() {
@@ -1069,7 +1230,10 @@ export class AuditView extends AuthedElement {
 
     return html`
       <div
-        class="timeline-group ${isToolCall ? 'tool-call' : 'standalone'}"
+        class="timeline-group ${isToolCall ? 'tool-call' : 'standalone'} ${
+          this._highlightedKey === key ? 'linked' : ''
+        }"
+        data-group-key=${key}
         style="--group-color: ${borderColor}"
       >
         <div
@@ -1101,6 +1265,19 @@ export class AuditView extends AuthedElement {
               <span class="timestamp"
                 >${this._formatTimestamp(event.timestamp)}</span
               >
+            </sl-tooltip>
+            <sl-tooltip content="Copy a link to this event">
+              <button
+                class="copy-link"
+                type="button"
+                aria-label="Copy link to this event"
+                @click=${(e: Event) => {
+                  e.stopPropagation();
+                  this._copyRowLink(group);
+                }}
+              >
+                <sl-icon name="link-45deg"></sl-icon>
+              </button>
             </sl-tooltip>
             ${
               canExpand
@@ -1500,6 +1677,32 @@ export class AuditView extends AuthedElement {
       }
       .timeline-group:hover {
         background: var(--sl-color-neutral-50);
+      }
+
+      /* The row a link asked for, said once. A tint and a ring for a couple
+         of seconds; after that it is an ordinary row, because "the one you
+         followed" is not a state worth keeping on screen. */
+      .timeline-group.linked {
+        background: color-mix(
+          in srgb,
+          var(--sl-color-primary-500) 10%,
+          transparent
+        );
+        box-shadow: 0 0 0 1px var(--sl-color-primary-400);
+      }
+
+      .copy-link {
+        background: none;
+        border: none;
+        color: var(--sl-color-neutral-400);
+        cursor: pointer;
+        display: inline-flex;
+        font-size: 0.85rem;
+        padding: 2px;
+      }
+
+      .copy-link:hover {
+        color: var(--console-link-color);
       }
 
       /* ── Primary row ───────────────────────── */

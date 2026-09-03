@@ -23,6 +23,7 @@ spec:
       labels:
         {{- include "preloop.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: preloop-sync-monitor
+        app: preloop-sync-monitor
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

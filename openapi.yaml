@@ -2465,6 +2465,111 @@ paths:
                 $ref: '#/components/schemas/AvatarResponse'
       security:
       - bearerAuth: []
+  /api/v1/attention/dismissals:
+    get:
+      tags:
+      - Account
+      summary: List Attention Dismissals
+      description: 'List the console attention items this account has silenced.
+
+
+        Reading is open to any member of the account: the console needs this list
+
+        to render the inbox at all, and a member who cannot see it would be shown
+
+        items their colleagues have already dealt with.
+
+
+        Expired snoozes are excluded and garbage-collected here, so "hidden until"
+
+        never quietly becomes "hidden forever".'
+      operationId: list_attention_dismissals_api_v1_attention_dismissals_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttentionDismissalListResponse'
+      security:
+      - bearerAuth: []
+  /api/v1/attention/dismissals/{item_id}:
+    put:
+      tags:
+      - Account
+      summary: Upsert Attention Dismissal
+      description: 'Silence one attention item until its fingerprint changes.
+
+
+        ``item_id`` is the console''s stable id for the item (``<kind>:<entity
+
+        id>``), and the body''s ``fingerprint`` is why it was showing. Dismissing
+
+        an item that has already been dismissed replaces the row, which is how an
+
+        item that came back with a new fingerprint gets silenced again.
+
+
+        Writing takes ``manage_agents``: an operator who may reconfigure the fleet
+
+        may also declare that one of its states is expected.'
+      operationId: upsert_attention_dismissal_api_v1_attention_dismissals__item_id__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 255
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttentionDismissalUpsertRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttentionDismissalResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Account
+      summary: Delete Attention Dismissal
+      description: Restore a silenced item so it shows in the inbox again.
+      operationId: delete_attention_dismissal_api_v1_attention_dismissals__item_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 255
+          title: Item Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/account/deletion-request:
     post:
       tags:
@@ -5995,6 +6100,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/ai-models/{model_id}/pricing:
+    get:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Get AI Model Pricing
+      description: Return the effective price for one model and where it came from.
+      operationId: get_ai_model_pricing_api_v1_ai_models__model_id__pricing_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelPricingResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/ai-models/{model_id}/pricing/fetch:
+    post:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Fetch AI Model Pricing From Provider
+      description: 'Read this model''s published price from its provider, without
+        saving it.
+
+
+        A price decides what every past and future request cost, so it is never
+
+        written by a fetch: the numbers come back for a person to confirm, and
+
+        saving one stays with the price override endpoints.'
+      operationId: fetch_ai_model_pricing_api_v1_ai_models__model_id__pricing_fetch_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelPriceQuote'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/ai-models/sync:
     post:
       tags:
@@ -9208,6 +9383,151 @@ components:
       - token_usage
       title: AIModelGatewayUsageSummaryResponse
       description: Gateway usage summary for one durable AI model.
+    AIModelPrice:
+      properties:
+        input_per_1m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Input Per 1M
+          description: Price of a million input tokens, in USD.
+        output_per_1m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Output Per 1M
+          description: Price of a million output tokens, in USD.
+        cached_input_per_1m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cached Input Per 1M
+          description: Price of a million cached input tokens, in USD. Absent when
+            the source says nothing about caching, which is not the same as free.
+        blended_per_1m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Blended Per 1M
+          description: Single price applied to every token, in USD per million. Set
+            by overrides that do not separate input from output.
+        request_price:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Request Price
+          description: Flat price added per request, in USD.
+      type: object
+      title: AIModelPrice
+      description: One price, in USD per million tokens.
+    AIModelPriceQuote:
+      properties:
+        ai_model_id:
+          type: string
+          title: Ai Model Id
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        source_url:
+          type: string
+          title: Source Url
+        model_key:
+          type: string
+          title: Model Key
+          description: The provider's own identifier for the model.
+        price:
+          $ref: '#/components/schemas/AIModelPrice'
+        currency:
+          type: string
+          title: Currency
+          default: USD
+        fetched_at:
+          type: string
+          format: date-time
+          title: Fetched At
+      type: object
+      required:
+      - ai_model_id
+      - source_url
+      - model_key
+      - price
+      - fetched_at
+      title: AIModelPriceQuote
+      description: A price read from the provider, for confirmation. Nothing is saved.
+    AIModelPricingResponse:
+      properties:
+        ai_model_id:
+          type: string
+          title: Ai Model Id
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        source:
+          type: string
+          enum:
+          - override
+          - model_config
+          - catalog
+          - none
+          title: Source
+          description: 'override: an account price override. model_config: pricing
+            configured on the model itself. catalog: the bundled or live provider
+            price list. none: nothing prices this model, so its requests land unpriced.'
+        price:
+          $ref: '#/components/schemas/AIModelPrice'
+        currency:
+          type: string
+          title: Currency
+          default: USD
+        override_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Override Id
+        effective_from:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Effective From
+        effective_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Effective Until
+        catalog_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Catalog Key
+          description: The price list entry that matched, when the source is the catalog.
+        fetch_supported:
+          type: boolean
+          title: Fetch Supported
+          description: True when this provider publishes prices Preloop can read.
+          default: false
+        fetch_provider_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fetch Provider Label
+          description: Provider name to show when a price fetch is not offered.
+      type: object
+      required:
+      - ai_model_id
+      - source
+      title: AIModelPricingResponse
+      description: The price this account is actually charged for one model, and why.
     AIModelRead:
       properties:
         id:
@@ -11362,6 +11682,97 @@ components:
       type: object
       title: ApprovalWorkflowUpdate
       description: Schema for updating approval workflow.
+    AttentionDismissalListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/AttentionDismissalResponse'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+          default: 0
+      type: object
+      title: AttentionDismissalListResponse
+      description: Every dismissal in force for the account.
+    AttentionDismissalResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        item_id:
+          type: string
+          title: Item Id
+        fingerprint:
+          type: string
+          title: Fingerprint
+        reason:
+          type: string
+          title: Reason
+        snooze_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Snooze Until
+        dismissed_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Dismissed By User Id
+        dismissed_by_username:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dismissed By Username
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - item_id
+      - fingerprint
+      - reason
+      - created_at
+      title: AttentionDismissalResponse
+      description: One dismissal that is still in force.
+    AttentionDismissalUpsertRequest:
+      properties:
+        fingerprint:
+          type: string
+          maxLength: 4096
+          title: Fingerprint
+          description: Why the item is showing (latest failed run id, unpriced model
+            aliases, agent onboarding and validation state). The item comes back when
+            this changes.
+        reason:
+          type: string
+          enum:
+          - expected
+          - snoozed
+          - fixed
+          title: Reason
+          description: 'expected: this is how the account is configured. snoozed:
+            hide it for snooze_days. fixed: it has been dealt with.'
+        snooze_days:
+          anyOf:
+          - type: integer
+            maximum: 90.0
+            minimum: 1.0
+          - type: 'null'
+          title: Snooze Days
+          description: Required for reason='snoozed'; ignored otherwise.
+      type: object
+      required:
+      - fingerprint
+      - reason
+      title: AttentionDismissalUpsertRequest
+      description: Body of ``PUT /attention/dismissals/{item_id}``.
     AuthUserCreate:
       properties:
         username:
@@ -11624,6 +12035,26 @@ components:
       description: Response after avatar upload or deletion.
     BatchExecutionListItem:
       properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+          description: Alias of the model that served most of this execution's gateway
+            requests. Null when the execution has no attributable gateway usage.
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+          description: Provider behind ``model_alias``, when recorded
+        models_used:
+          items:
+            $ref: '#/components/schemas/ExecutionModelUsage'
+          type: array
+          title: Models Used
+          description: Every distinct model alias this execution used with its request
+            count, most used first.
         id:
           type: string
           format: uuid
@@ -12444,6 +12875,28 @@ components:
       - data
       title: EmbeddingRawResponse
       description: Response model for the raw embeddings endpoint.
+    ExecutionModelUsage:
+      properties:
+        model_alias:
+          type: string
+          title: Model Alias
+          description: Gateway model alias, e.g. 'openai/gpt-5'
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+          description: Provider that served the requests, when recorded
+        request_count:
+          type: integer
+          title: Request Count
+          description: Gateway requests this execution sent to that alias
+          default: 0
+      type: object
+      required:
+      - model_alias
+      title: ExecutionModelUsage
+      description: One model alias that served requests during an execution.
     FlowCreate:
       properties:
         name:
@@ -12635,6 +13088,26 @@ components:
       title: FlowExecutionCommand
     FlowExecutionListResponse:
       properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+          description: Alias of the model that served most of this execution's gateway
+            requests. Null when the execution has no attributable gateway usage.
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+          description: Provider behind ``model_alias``, when recorded
+        models_used:
+          items:
+            $ref: '#/components/schemas/ExecutionModelUsage'
+          type: array
+          title: Models Used
+          description: Every distinct model alias this execution used with its request
+            count, most used first.
         id:
           type: string
           format: uuid
@@ -12740,6 +13213,26 @@ components:
       description: Lightweight flow execution row for list views.
     FlowExecutionResponse:
       properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+          description: Alias of the model that served most of this execution's gateway
+            requests. Null when the execution has no attributable gateway usage.
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+          description: Provider behind ``model_alias``, when recorded
+        models_used:
+          items:
+            $ref: '#/components/schemas/ExecutionModelUsage'
+          type: array
+          title: Models Used
+          description: Every distinct model alias this execution used with its request
+            count, most used first.
         flow_id:
           type: string
           format: uuid
@@ -13508,6 +14001,24 @@ components:
           type: number
           title: Estimated Cost
           default: 0.0
+        unpriced_request_count:
+          type: integer
+          title: Unpriced Request Count
+          description: Requests that consumed tokens and carried no price at all,
+            so their cost is missing from every total.
+          default: 0
+        zero_priced_request_count:
+          type: integer
+          title: Zero Priced Request Count
+          description: Requests a price was applied to and the price was exactly zero.
+            Free tier, a promotion, or a price entered wrongly; unlike an unpriced
+            request, nothing is missing from the total.
+          default: 0
+        failed_request_count:
+          type: integer
+          title: Failed Request Count
+          description: Requests the gateway answered with a 4xx or 5xx status.
+          default: 0
         last_request_at:
           anyOf:
           - type: string

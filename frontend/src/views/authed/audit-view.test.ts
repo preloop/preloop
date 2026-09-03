@@ -414,6 +414,154 @@ describe('AuditView', () => {
     document.body.removeChild(element);
   });
 
+  describe('the ?event= deep link', () => {
+    let restoreUrl: () => void;
+
+    function openWith(query: string): AuditView {
+      const before = window.location.pathname + window.location.search;
+      window.history.replaceState({}, '', `/console/audit${query}`);
+      restoreUrl = () => window.history.replaceState({}, '', before);
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      return element;
+    }
+
+    afterEach(() => {
+      restoreUrl?.();
+      for (const alert of Array.from(document.querySelectorAll('sl-alert'))) {
+        alert.remove();
+      }
+    });
+
+    it('expands, marks and holds the event the link asked for', async () => {
+      // The id is a sub-event: the row that answers for it is its group.
+      const element = openWith('?event=audit-3');
+      await waitUntil(() => !(element as any)._loading, 'did not load');
+      await element.updateComplete;
+
+      const group = element.shadowRoot?.querySelector(
+        '[data-group-key="corr-1"]'
+      ) as HTMLElement;
+      expect(group, 'the linked group renders').to.exist;
+      expect(group.classList.contains('linked')).to.equal(true);
+      expect((group.textContent || '').replace(/\s+/g, ' ')).to.contain(
+        'Policy: Allow'
+      );
+      // Nothing else is opened on the operator's behalf.
+      expect((element as any)._expandedGroups.size).to.equal(1);
+      element.remove();
+    });
+
+    it('finds an older event and narrows the range to the day it happened', async () => {
+      const older = {
+        correlation_id: null,
+        outcome: 'executed',
+        primary_event: {
+          id: 'audit-old',
+          account_id: 'account-1',
+          user_id: 'user-1',
+          action: 'tool_call',
+          resource_type: 'tool',
+          resource_id: 'deploy',
+          status: 'executed',
+          ip_address: null,
+          user_agent: null,
+          timestamp: '2026-03-04T09:30:00Z',
+          details: { tool_name: 'deploy', duration_ms: 12 },
+        },
+        sub_events: [],
+      };
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url === '/api/v1/users') {
+          return new Response('[]', { status: 200 });
+        }
+        const body = (groups: unknown[]) =>
+          new Response(
+            JSON.stringify({
+              groups,
+              total: groups.length,
+              skip: 0,
+              limit: 50,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        // The walk back through the timeline finds when it happened.
+        if (url.includes('limit=200')) return body([older]);
+        // The reload, once the day is known, puts it on the first page.
+        if (url.includes('start_date=')) return body([older]);
+        return body([]);
+      });
+
+      const element = openWith('?event=audit-old');
+      await waitUntil(
+        () =>
+          !!element.shadowRoot?.querySelector('[data-group-key="audit-old"]'),
+        'the older event was never reached'
+      );
+      await element.updateComplete;
+      expect((element as any)._startDate).to.equal('2026-03-04');
+      expect((element as any)._endDate).to.equal('2026-03-05');
+      const group = element.shadowRoot?.querySelector(
+        '[data-group-key="audit-old"]'
+      ) as HTMLElement;
+      expect(group.classList.contains('linked')).to.equal(true);
+      element.remove();
+    });
+
+    it('says so, once, when the event is nowhere in range', async () => {
+      const element = openWith('?event=audit-missing');
+      await waitUntil(
+        () => !!document.querySelector('sl-alert'),
+        'no toast for a missing event'
+      );
+      expect(document.querySelector('sl-alert')?.textContent).to.contain(
+        'Event not in the current range'
+      );
+      // The page is still a working audit page, not an error page.
+      expect(
+        element.shadowRoot?.querySelectorAll('.timeline-group').length
+      ).to.be.greaterThan(0);
+      element.remove();
+    });
+
+    it('copies a link that opens the row it was copied from', async () => {
+      const written: string[] = [];
+      const original = navigator.clipboard;
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          writeText: async (text: string) => {
+            written.push(text);
+          },
+        },
+      });
+
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(() => !(element as any)._loading, 'did not load');
+      await element.updateComplete;
+
+      const buttons = Array.from(
+        element.shadowRoot?.querySelectorAll('.copy-link') || []
+      ) as HTMLButtonElement[];
+      expect(buttons.length).to.be.greaterThan(0);
+      buttons[1].click();
+      await element.updateComplete;
+      expect(written[0]).to.equal(
+        `${window.location.origin}/console/audit?event=audit-2`
+      );
+      // Copying a link is not opening a row.
+      expect((element as any)._expandedGroups.size).to.equal(0);
+
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: original,
+      });
+      element.remove();
+    });
+  });
+
   it('subscribes to the audit websocket topic and refreshes on live events', async () => {
     const element = document.createElement('audit-view') as AuditView;
     document.body.appendChild(element);

@@ -477,6 +477,9 @@ class ModelGatewayUsageService:
                 total_tokens=row["total_tokens"],
             ),
             estimated_cost=row["estimated_cost"],
+            unpriced_request_count=row.get("unpriced_request_count") or 0,
+            zero_priced_request_count=row.get("zero_priced_request_count") or 0,
+            failed_request_count=row.get("failed_request_count") or 0,
             last_request_at=row.get("last_request_at"),
         )
 

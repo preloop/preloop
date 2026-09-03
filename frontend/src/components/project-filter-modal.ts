@@ -11,23 +11,27 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
 import '@shoelace-style/shoelace/dist/components/radio-button/radio-button.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 @customElement('project-filter-modal')
 export class ProjectFilterModal extends LitElement {
-  static styles = css`
-    sl-tree {
-      max-height: 300px;
-      overflow-y: auto;
-    }
-    .filter-section {
-      margin-bottom: var(--sl-spacing-medium);
-    }
-    .filter-label {
-      font-weight: var(--sl-font-weight-semibold);
-      margin-bottom: var(--sl-spacing-x-small);
-      display: block;
-    }
-  `;
+  static styles = [
+    consoleDialogStyles,
+    css`
+      sl-tree {
+        max-height: 300px;
+        overflow-y: auto;
+      }
+      .filter-section {
+        margin-bottom: var(--sl-spacing-medium);
+      }
+      .filter-label {
+        font-weight: var(--sl-font-weight-semibold);
+        margin-bottom: var(--sl-spacing-x-small);
+        display: block;
+      }
+    `,
+  ];
 
   @property({ type: Boolean }) isOpen = false;
   @property({ type: Array }) organizations: Organization[] = [];

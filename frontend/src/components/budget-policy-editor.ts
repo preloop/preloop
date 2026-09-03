@@ -15,20 +15,68 @@ import {
   fetchWithAuth,
 } from '../api.js';
 import type { User, UserListResponse, Team } from '../types.js';
+import { budgetTrackStyles, renderBudgetTrack } from '../styles/budget-track';
 import './notify-recipients-field.ts';
 import type { NotifyRecipientsValue } from './notify-recipients-field.ts';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
-
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
-import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '@shoelace-style/shoelace/dist/components/switch/switch.js';
+import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
+import '@shoelace-style/shoelace/dist/components/radio-button/radio-button.js';
+import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
+import '@shoelace-style/shoelace/dist/components/menu/menu.js';
+import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
+import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
+import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
+/** List groups, in display order. Rendered only when they hold a limit. */
+const SUBJECT_GROUPS: {
+  types: string[];
+  label: string;
+  icon: string;
+}[] = [
+  { types: ['global', 'account'], label: 'Global', icon: 'globe' },
+  { types: ['managed_agent'], label: 'Agents', icon: 'robot' },
+  { types: ['ai_model'], label: 'Models', icon: 'cpu' },
+  { types: ['user'], label: 'Users', icon: 'person' },
+  { types: ['team'], label: 'Teams', icon: 'people' },
+  { types: ['api_key'], label: 'API keys', icon: 'key' },
+];
+
+const PERIOD_LABELS: Record<string, string> = {
+  hourly: 'Hourly',
+  daily: 'Daily',
+  weekly: 'Weekly',
+  monthly: 'Monthly',
+  yearly: 'Yearly',
+  all_time: 'All time',
+};
+
+const SCOPE_CHOICES: { value: string; label: string }[] = [
+  { value: 'global', label: 'Global' },
+  { value: 'managed_agent', label: 'Agent' },
+  { value: 'ai_model', label: 'Model' },
+  { value: 'user', label: 'User' },
+];
+
+/** Above this many options the subject picker grows a search box. */
+const SUBJECT_SEARCH_THRESHOLD = 8;
+
+/**
+ * Two steps in one component: a grouped list of the limits that exist, and a
+ * form that replaces the list while an operator writes one. Embedded scoped
+ * (agent, model, API key detail pages) it shows a flat list for that subject
+ * only, which is why the public API stays `subjectType` / `subjectId` /
+ * `billingEnabled` plus the `budget-policies-changed` event.
+ */
 @customElement('budget-policy-editor')
 export class BudgetPolicyEditor extends LitElement {
   @property({ type: String }) subjectType?: string;
@@ -37,9 +85,11 @@ export class BudgetPolicyEditor extends LitElement {
   @property({ type: Boolean }) billingEnabled = false;
 
   @state() private policies: BudgetPolicy[] = [];
-  @state() private showAddForm = false;
+  @state() private step: 'list' | 'form' = 'list';
   @state() private editingPolicyId: string | null = null;
   @state() private error = '';
+  @state() private formError = '';
+  @state() private pendingDeleteId: string | null = null;
 
   @state() private models: AIModel[] = [];
   @state() private agents: ManagedAgentSummary[] = [];
@@ -51,8 +101,9 @@ export class BudgetPolicyEditor extends LitElement {
   @state() private subjectsLoaded = false;
   @state() private features: Record<string, boolean> = {};
   @state() private availableUsers: User[] = [];
+  @state() private subjectFilter = '';
 
-  // New Policy Form State
+  // Form state
   @state() private newSubjectType = 'global';
   @state() private newSubjectId = 'global';
   @state() private newPeriod = 'monthly';
@@ -64,90 +115,145 @@ export class BudgetPolicyEditor extends LitElement {
   @state() private newNotifyTeamIds: string[] = [];
   @state() private newCustomEmails: string[] = [];
 
-  static styles = css`
-    :host {
-      display: block;
-      font-family: var(--sl-font-sans);
-    }
-    .policy-list {
-      margin-top: var(--sl-spacing-medium);
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-small);
-    }
-    .policy-item {
-      padding: var(--sl-spacing-small) var(--sl-spacing-medium);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      background: var(--sl-panel-background-color);
-      color: var(--sl-color-neutral-900);
-    }
-    .form-container {
-      margin-top: var(--sl-spacing-medium);
-      padding: var(--sl-spacing-medium);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      background: var(--sl-panel-background-color);
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-medium);
-    }
-    .form-row {
-      display: flex;
-      gap: var(--sl-spacing-medium);
-    }
-    .form-row > * {
-      flex: 1;
-    }
-    .form-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: var(--sl-spacing-small);
-      margin-top: var(--sl-spacing-small);
-    }
-    .checkbox-group {
-      display: flex;
-      gap: var(--sl-spacing-medium);
-      align-items: center;
-    }
-    .policy-actions {
-      display: flex;
-      align-items: center;
-      gap: var(--sl-spacing-2x-small);
-    }
-    .readonly-field {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-3x-small);
-      flex: 1;
-    }
-    .readonly-label {
-      font-size: var(--sl-font-size-small);
-      font-weight: var(--sl-font-weight-semibold);
-      color: var(--sl-color-neutral-700);
-    }
-    .readonly-value {
-      font-size: var(--sl-font-size-small);
-      color: var(--sl-color-neutral-900);
-    }
-    .meta-text {
-      font-size: var(--sl-font-size-small);
-      color: var(--sl-color-neutral-500);
-      margin-top: var(--sl-spacing-3x-small);
-    }
-    .loading-state {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: var(--sl-spacing-small);
-      padding: var(--sl-spacing-large);
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-    }
-  `;
+  static styles = [
+    consoleDialogStyles,
+    budgetTrackStyles,
+    css`
+      :host {
+        display: block;
+        font-family: var(--sl-font-sans);
+        color: var(--sl-color-neutral-900);
+      }
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+      }
+      h4 {
+        margin: 0;
+        font-size: var(--sl-font-size-large);
+        font-weight: var(--sl-font-weight-semibold);
+      }
+      .group {
+        margin-top: var(--sl-spacing-medium);
+      }
+      .group-label {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-2x-small);
+        color: var(--console-meta-color);
+        font-size: var(--sl-font-size-x-small);
+        font-weight: var(--sl-font-weight-semibold);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        margin-bottom: var(--sl-spacing-2x-small);
+      }
+      .limit-row {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+        padding: var(--sl-spacing-x-small) 0;
+      }
+      .limit-row + .limit-row {
+        border-top: 1px solid var(--console-hairline);
+      }
+      .row-main {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-2x-small);
+        min-width: 0;
+      }
+      .row-name {
+        font-weight: var(--sl-font-weight-semibold);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      /* The soft chip recipe from console-styles.css, repeated here because
+         this editor is not inside a console view's scope: a period is a
+         label on a row, so it is a tint and not a filled pill. */
+      sl-badge.chip::part(base) {
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-neutral-500) 16%,
+          transparent
+        );
+        border-width: 0;
+        color: var(--sl-color-neutral-800);
+        font-size: 0.75rem;
+        font-weight: 500;
+        line-height: 1.4;
+        padding: 2px 8px;
+      }
+      .row-limits {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        font-variant-numeric: tabular-nums;
+      }
+      .row-meter {
+        margin-left: auto;
+        width: 96px;
+        flex-shrink: 0;
+      }
+      .row-notify {
+        color: var(--console-meta-color);
+        flex-shrink: 0;
+      }
+      .empty {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        margin: var(--sl-spacing-medium) 0;
+      }
+      .form {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-medium);
+      }
+      .form-top {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+      }
+      .back-button::part(base) {
+        padding-left: 0;
+      }
+      .form-row {
+        display: flex;
+        gap: var(--sl-spacing-medium);
+      }
+      .form-row > * {
+        flex: 1;
+      }
+      .switch-row {
+        display: flex;
+        gap: var(--sl-spacing-large);
+        align-items: center;
+      }
+      .field-error {
+        color: var(--sl-color-danger-700);
+        font-size: var(--sl-font-size-small);
+      }
+      .form-actions {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+      }
+      .form-actions .spacer {
+        margin-left: auto;
+      }
+      .loading-state {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--sl-spacing-small);
+        padding: var(--sl-spacing-large);
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+      }
+    `,
+  ];
 
   async connectedCallback() {
     super.connectedCallback();
@@ -179,7 +285,7 @@ export class BudgetPolicyEditor extends LitElement {
     if (this.subjectType) {
       return false;
     }
-    if (this.showAddForm) {
+    if (this.step === 'form') {
       return true;
     }
     return this.policies.some(
@@ -216,6 +322,10 @@ export class BudgetPolicyEditor extends LitElement {
     if (type === 'user') {
       const user = this.availableUsers.find((u) => u.id === id);
       return user ? user.username || user.email || user.id : id;
+    }
+    if (type === 'team') {
+      const team = this.teams.find((t) => t.id === id);
+      return team ? team.name || team.id : id;
     }
     return id;
   }
@@ -293,21 +403,31 @@ export class BudgetPolicyEditor extends LitElement {
     try {
       await deleteBudgetPolicy(id);
       if (this.editingPolicyId === id) {
-        this.cancelForm();
+        this.showList();
       }
       this.policies = this.policies.filter((policy) => policy.id !== id);
       this.dispatchPoliciesChanged();
     } catch (e: any) {
-      this.error = 'Failed to delete policy.';
+      this.error = 'Failed to delete limit.';
     } finally {
+      this.pendingDeleteId = null;
       this.saving = false;
     }
   }
 
+  private startAdd() {
+    this.resetForm();
+    this.editingPolicyId = null;
+    this.error = '';
+    this.formError = '';
+    this.step = 'form';
+    void this.ensureSubjectsLoaded();
+  }
+
   private startEdit(policy: BudgetPolicy) {
-    this.showAddForm = false;
     this.editingPolicyId = policy.id;
     this.error = '';
+    this.formError = '';
     this.newSubjectType = policy.subject_type;
     this.newSubjectId = policy.subject_id || 'global';
     this.newPeriod = policy.period;
@@ -320,13 +440,16 @@ export class BudgetPolicyEditor extends LitElement {
     this.newNotifyUserIds = [...(policy.notification_user_ids || [])];
     this.newNotifyTeamIds = [...(policy.notification_team_ids || [])];
     this.newCustomEmails = [...(policy.notification_emails || [])];
+    this.step = 'form';
+    void this.ensureSubjectsLoaded();
   }
 
-  private cancelForm() {
-    this.showAddForm = false;
+  private showList() {
+    this.step = 'list';
     this.editingPolicyId = null;
+    this.formError = '';
+    this.subjectFilter = '';
     this.resetForm();
-    this.error = '';
   }
 
   private buildNotifyPayload() {
@@ -348,12 +471,43 @@ export class BudgetPolicyEditor extends LitElement {
     this.newCustomEmails = event.detail.customEmails;
   }
 
+  /** Inline validation, so a typo never reaches the server as a 422. */
+  private validate(soft: number | null, hard: number | null): string {
+    if (soft === null && hard === null) {
+      return 'Set a soft limit, a hard limit, or both.';
+    }
+    if (soft !== null && soft <= 0) {
+      return 'The soft limit must be greater than zero.';
+    }
+    if (hard !== null && hard <= 0) {
+      return 'The hard limit must be greater than zero.';
+    }
+    if (soft !== null && hard !== null && soft > hard) {
+      return 'The soft limit must be at or below the hard limit.';
+    }
+    if (
+      !this.subjectType &&
+      this.newSubjectType !== 'global' &&
+      !this.newSubjectId
+    ) {
+      return 'Choose what this limit applies to.';
+    }
+    return '';
+  }
+
   private async handleSave() {
-    this.error = '';
-    this.saving = true;
-    const notifyPayload = this.buildNotifyPayload();
     const hardLimit = this.newHardLimit ? parseFloat(this.newHardLimit) : null;
     const softLimit = this.newSoftLimit ? parseFloat(this.newSoftLimit) : null;
+    const validationError = this.validate(softLimit, hardLimit);
+    if (validationError) {
+      this.formError = validationError;
+      return;
+    }
+
+    this.error = '';
+    this.formError = '';
+    this.saving = true;
+    const notifyPayload = this.buildNotifyPayload();
 
     try {
       if (this.editingPolicyId) {
@@ -367,7 +521,7 @@ export class BudgetPolicyEditor extends LitElement {
         this.policies = this.policies.map((policy) =>
           policy.id === updated.id ? updated : policy
         );
-        this.cancelForm();
+        this.showList();
         this.dispatchPoliciesChanged();
         return;
       }
@@ -388,55 +542,14 @@ export class BudgetPolicyEditor extends LitElement {
 
       const created = await createBudgetPolicy(payload);
       this.policies = [...this.policies, created];
-      this.cancelForm();
+      this.showList();
       this.dispatchPoliciesChanged();
     } catch (err: any) {
-      this.error =
-        'Failed to save policy. ' + (err instanceof Error ? err.message : '');
+      this.formError =
+        'Failed to save limit. ' + (err instanceof Error ? err.message : '');
     } finally {
       this.saving = false;
     }
-  }
-
-  private get isFormOpen(): boolean {
-    return this.showAddForm || this.editingPolicyId !== null;
-  }
-
-  private get editingPolicy(): BudgetPolicy | undefined {
-    return this.policies.find((policy) => policy.id === this.editingPolicyId);
-  }
-
-  private renderScopeSummary(policy?: BudgetPolicy) {
-    const subjectType = policy?.subject_type || this.newSubjectType;
-    const subjectId = policy?.subject_id || this.newSubjectId;
-    const scopeLabel =
-      subjectType === 'global'
-        ? 'Global (Account-wide)'
-        : subjectType === 'ai_model'
-          ? 'AI Model'
-          : subjectType === 'managed_agent'
-            ? 'Agent'
-            : subjectType === 'user'
-              ? 'User'
-              : subjectType;
-    return html`
-      <div class="form-row">
-        <div class="readonly-field">
-          <span class="readonly-label">Target Scope</span>
-          <span class="readonly-value">${scopeLabel}</span>
-        </div>
-        ${
-          subjectType !== 'global' && subjectId
-            ? html`<div class="readonly-field">
-                <span class="readonly-label">Subject</span>
-                <span class="readonly-value"
-                  >${this.getSubjectName(subjectType, subjectId)}</span
-                >
-              </div>`
-            : html`<div style="flex: 1"></div>`
-        }
-      </div>
-    `;
   }
 
   private resetForm() {
@@ -452,21 +565,421 @@ export class BudgetPolicyEditor extends LitElement {
     this.newCustomEmails = [];
   }
 
-  private formatNotifySummary(policy: BudgetPolicy): string {
-    const parts: string[] = [];
-    const userCount = policy.notification_user_ids?.length || 0;
-    const teamCount = policy.notification_team_ids?.length || 0;
-    const emailCount = policy.notification_emails?.length || 0;
-    if (userCount > 0) {
-      parts.push(`${userCount} user${userCount === 1 ? '' : 's'}`);
+  private formatCurrency(value: number): string {
+    const amount = Number(value || 0);
+    if (amount > 0 && amount < 0.01) return `$${amount.toFixed(4)}`;
+    return `$${amount.toFixed(2)}`;
+  }
+
+  private recipientCount(policy: BudgetPolicy): number {
+    return (
+      (policy.notification_user_ids?.length || 0) +
+      (policy.notification_team_ids?.length || 0) +
+      (policy.notification_emails?.length || 0)
+    );
+  }
+
+  private policyRowName(policy: BudgetPolicy): string {
+    if (policy.subject_type === 'global' || policy.subject_type === 'account') {
+      return 'Global';
     }
-    if (teamCount > 0) {
-      parts.push(`${teamCount} team${teamCount === 1 ? '' : 's'}`);
+    if (!policy.subject_id) {
+      return policy.subject_type.replace(/_/g, ' ');
     }
-    if (emailCount > 0) {
-      parts.push(`${emailCount} email${emailCount === 1 ? '' : 's'}`);
+    return this.getSubjectName(policy.subject_type, policy.subject_id);
+  }
+
+  private renderPolicyRow(policy: BudgetPolicy) {
+    const soft = policy.soft_limit_usd || 0;
+    const hard = policy.hard_limit_usd || 0;
+    const spend = policy.current_spend_usd || 0;
+    const limits = [
+      soft > 0 ? `Soft ${this.formatCurrency(soft)}` : null,
+      hard > 0 ? `Hard ${this.formatCurrency(hard)}` : null,
+    ].filter(Boolean);
+    const notifies = policy.notify_on_soft || policy.notify_on_hard;
+    const recipients = this.recipientCount(policy);
+
+    return html`
+      <div class="limit-row">
+        <div class="row-main">
+          <span class="row-name">${this.policyRowName(policy)}</span>
+          <sl-badge class="chip" variant="neutral" pill
+            >${PERIOD_LABELS[policy.period] || policy.period}</sl-badge
+          >
+          <span class="row-limits"
+            >${limits.length ? limits.join(' · ') : 'No limit set'}</span
+          >
+        </div>
+        <div class="row-meter">
+          ${renderBudgetTrack({
+            spend,
+            softLimit: soft,
+            hardLimit: hard,
+            label: `${this.policyRowName(policy)} limit`,
+          })}
+        </div>
+        ${
+          notifies
+            ? html`<sl-tooltip
+                content=${
+                  recipients > 0
+                    ? `Notifies ${recipients} recipient${recipients === 1 ? '' : 's'}`
+                    : 'Notifications on, no recipients yet'
+                }
+              >
+                <sl-icon class="row-notify" name="bell"></sl-icon>
+              </sl-tooltip>`
+            : nothing
+        }
+        <sl-dropdown hoist>
+          <sl-icon-button
+            slot="trigger"
+            name="three-dots-vertical"
+            label="Limit actions"
+            ?disabled=${this.saving}
+          ></sl-icon-button>
+          <sl-menu>
+            <sl-menu-item @click=${() => this.startEdit(policy)}>
+              <sl-icon slot="prefix" name="pencil"></sl-icon>
+              Edit
+            </sl-menu-item>
+            <sl-menu-item @click=${() => (this.pendingDeleteId = policy.id)}>
+              <sl-icon slot="prefix" name="trash"></sl-icon>
+              Delete
+            </sl-menu-item>
+          </sl-menu>
+        </sl-dropdown>
+      </div>
+    `;
+  }
+
+  private renderList() {
+    if (this.loadingPolicies) {
+      return html`
+        <div class="loading-state" role="status" aria-live="polite">
+          <sl-spinner></sl-spinner>
+          Loading limits…
+        </div>
+      `;
     }
-    return parts.length > 0 ? parts.join(', ') : 'None';
+
+    if (this.policies.length === 0) {
+      return html`
+        <div class="empty">
+          No limits yet. Start with a global monthly hard limit.
+        </div>
+      `;
+    }
+
+    // Scoped embeds already filter to one subject, so grouping would print a
+    // single header over a single list.
+    if (this.subjectType) {
+      return html`<div class="group">
+        ${this.policies.map((policy) => this.renderPolicyRow(policy))}
+      </div>`;
+    }
+
+    const seen = new Set<string>();
+    const groups = SUBJECT_GROUPS.map((group) => {
+      const policies = this.policies.filter((policy) =>
+        group.types.includes(policy.subject_type)
+      );
+      policies.forEach((policy) => seen.add(policy.id));
+      return { ...group, policies };
+    }).filter((group) => group.policies.length > 0);
+
+    const other = this.policies.filter((policy) => !seen.has(policy.id));
+    if (other.length > 0) {
+      groups.push({
+        types: [],
+        label: 'Other',
+        icon: 'sliders',
+        policies: other,
+      });
+    }
+
+    return html`
+      ${groups.map(
+        (group) => html`
+          <div class="group">
+            <div class="group-label">
+              <sl-icon name=${group.icon}></sl-icon>
+              ${group.label}
+            </div>
+            ${group.policies.map((policy) => this.renderPolicyRow(policy))}
+          </div>
+        `
+      )}
+    `;
+  }
+
+  private subjectOptions(): { value: string; label: string }[] {
+    if (this.newSubjectType === 'ai_model') {
+      return this.models.map((m) => ({ value: m.id, label: m.alias || m.id }));
+    }
+    if (this.newSubjectType === 'managed_agent') {
+      return this.agents.map((a) => ({
+        value: a.id,
+        label: a.display_name || a.id,
+      }));
+    }
+    if (this.newSubjectType === 'user') {
+      return this.availableUsers.map((u) => ({
+        value: u.id,
+        label: u.username || u.email || u.id,
+      }));
+    }
+    return [];
+  }
+
+  private renderSubjectField() {
+    const options = this.subjectOptions();
+    const filter = this.subjectFilter.trim().toLowerCase();
+    const visible = filter
+      ? options.filter((option) => option.label.toLowerCase().includes(filter))
+      : options;
+    const searchable = options.length > SUBJECT_SEARCH_THRESHOLD;
+    const label =
+      this.newSubjectType === 'ai_model'
+        ? 'Model'
+        : this.newSubjectType === 'managed_agent'
+          ? 'Agent'
+          : 'User';
+
+    return html`
+      <div>
+        ${
+          searchable
+            ? html`<sl-input
+                size="small"
+                clearable
+                placeholder=${`Search ${label.toLowerCase()}s`}
+                aria-label=${`Search ${label.toLowerCase()}s`}
+                .value=${this.subjectFilter}
+                @sl-input=${(e: any) => (this.subjectFilter = e.target.value)}
+                style="margin-bottom: var(--sl-spacing-2x-small);"
+              >
+                <sl-icon slot="prefix" name="search"></sl-icon>
+              </sl-input>`
+            : nothing
+        }
+        <sl-select
+          label=${label}
+          value=${this.newSubjectId}
+          hoist
+          ?disabled=${this.loadingSubjects || this.editingPolicyId !== null}
+          help-text=${
+            this.newSubjectType === 'user'
+              ? 'Enforces across all agents owned by this user'
+              : ''
+          }
+          @sl-change=${(e: any) => (this.newSubjectId = e.target.value)}
+        >
+          ${visible.map(
+            (option) =>
+              html`<sl-option value=${option.value}>${option.label}</sl-option>`
+          )}
+        </sl-select>
+      </div>
+    `;
+  }
+
+  private renderForm() {
+    const editing = this.editingPolicyId !== null;
+
+    return html`
+      <div class="form">
+        <div class="form-top">
+          <sl-button
+            class="back-button"
+            variant="text"
+            size="small"
+            @click=${this.showList}
+          >
+            ← Limits
+          </sl-button>
+          <h4 id="budget-policy-editor-title">
+            ${editing ? 'Edit limit' : 'New limit'}
+          </h4>
+        </div>
+
+        ${
+          this.subjectType
+            ? nothing
+            : html`
+                <sl-radio-group
+                  label="Scope"
+                  value=${this.newSubjectType}
+                  @sl-change=${(e: any) => {
+                    this.newSubjectType = e.target.value;
+                    this.newSubjectId =
+                      this.newSubjectType === 'global' ? 'global' : '';
+                    this.subjectFilter = '';
+                  }}
+                >
+                  ${SCOPE_CHOICES.map(
+                    (choice) => html`
+                      <sl-radio-button
+                        size="small"
+                        value=${choice.value}
+                        ?disabled=${editing}
+                        >${choice.label}</sl-radio-button
+                      >
+                    `
+                  )}
+                </sl-radio-group>
+                ${
+                  this.newSubjectType === 'global'
+                    ? nothing
+                    : this.renderSubjectField()
+                }
+              `
+        }
+
+        <sl-select
+          label="Period"
+          value=${this.newPeriod}
+          hoist
+          ?disabled=${editing}
+          @sl-change=${(e: any) => (this.newPeriod = e.target.value)}
+        >
+          ${Object.entries(PERIOD_LABELS).map(
+            ([value, label]) =>
+              html`<sl-option value=${value}>${label}</sl-option>`
+          )}
+        </sl-select>
+
+        <div class="form-row">
+          <sl-input
+            label="Soft limit (USD)"
+            type="number"
+            step="0.0001"
+            inputmode="decimal"
+            help-text="Notifies recipients"
+            .value=${this.newSoftLimit}
+            @sl-input=${(e: any) => (this.newSoftLimit = e.target.value)}
+          ></sl-input>
+          <sl-input
+            label="Hard limit (USD)"
+            type="number"
+            step="0.0001"
+            inputmode="decimal"
+            help-text="Blocks further model calls"
+            .value=${this.newHardLimit}
+            @sl-input=${(e: any) => (this.newHardLimit = e.target.value)}
+          ></sl-input>
+        </div>
+
+        ${
+          this.formError
+            ? html`<div class="field-error" role="alert">
+                ${this.formError}
+              </div>`
+            : nothing
+        }
+
+        <div class="switch-row">
+          <sl-switch
+            ?checked=${this.newNotifySoft}
+            @sl-change=${(e: any) => (this.newNotifySoft = e.target.checked)}
+          >
+            Notify on soft
+          </sl-switch>
+          <sl-switch
+            ?checked=${this.newNotifyHard}
+            @sl-change=${(e: any) => (this.newNotifyHard = e.target.checked)}
+          >
+            Notify on hard
+          </sl-switch>
+        </div>
+
+        ${
+          this.newNotifySoft || this.newNotifyHard
+            ? html`
+                <notify-recipients-field
+                  .users=${this.availableUsers}
+                  .teams=${this.teams}
+                  .userIds=${this.newNotifyUserIds}
+                  .teamIds=${this.newNotifyTeamIds}
+                  .customEmails=${this.newCustomEmails}
+                  help-text="Recipients are notified via their email and mobile app preferences. Add custom emails when needed."
+                  @notify-recipients-change=${this.handleNotifyRecipientsChange}
+                ></notify-recipients-field>
+              `
+            : nothing
+        }
+
+        <div class="form-actions">
+          ${
+            editing
+              ? html`<sl-button
+                  variant="danger"
+                  outline
+                  size="small"
+                  ?disabled=${this.saving}
+                  @click=${() => (this.pendingDeleteId = this.editingPolicyId)}
+                >
+                  Delete
+                </sl-button>`
+              : nothing
+          }
+          <span class="spacer"></span>
+          <sl-button
+            size="small"
+            ?disabled=${this.saving}
+            @click=${this.showList}
+            >Cancel</sl-button
+          >
+          <sl-button
+            variant="primary"
+            size="small"
+            ?loading=${this.saving}
+            ?disabled=${this.saving}
+            @click=${this.handleSave}
+          >
+            Save limit
+          </sl-button>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderDeleteConfirm() {
+    const policy = this.policies.find(
+      (candidate) => candidate.id === this.pendingDeleteId
+    );
+    return html`
+      <sl-dialog
+        label="Delete limit"
+        ?open=${this.pendingDeleteId !== null}
+        @sl-hide=${() => (this.pendingDeleteId = null)}
+      >
+        Delete the ${policy ? this.policyRowName(policy) : ''}
+        ${
+          policy
+            ? (PERIOD_LABELS[policy.period] || policy.period).toLowerCase()
+            : ''
+        }
+        limit? Spending will no longer be capped for that scope.
+        <div slot="footer">
+          <sl-button
+            size="small"
+            @click=${() => (this.pendingDeleteId = null)}
+            ?disabled=${this.saving}
+            >Cancel</sl-button
+          >
+          <sl-button
+            variant="danger"
+            size="small"
+            ?loading=${this.saving}
+            @click=${() =>
+              this.pendingDeleteId && this.handleDelete(this.pendingDeleteId)}
+            >Delete limit</sl-button
+          >
+        </div>
+      </sl-dialog>
+    `;
   }
 
   render() {
@@ -485,35 +998,23 @@ export class BudgetPolicyEditor extends LitElement {
 
     return html`
       <div role="region" aria-labelledby="budget-policy-editor-title">
-        <div
-          style="display: flex; justify-content: space-between; align-items: center;"
-        >
-          <h4
-            id="budget-policy-editor-title"
-            style="margin: 0; font-size: var(--sl-font-size-large); font-weight: var(--sl-font-weight-semibold); color: var(--sl-color-neutral-900);"
-          >
-            Budget Policies
-          </h4>
-          ${
-            !this.isFormOpen
-              ? html`
+        ${
+          this.step === 'list'
+            ? html`
+                <div class="header">
+                  <h4 id="budget-policy-editor-title">Limits</h4>
                   <sl-button
                     size="small"
                     variant="primary"
-                    @click=${() => {
-                      this.cancelForm();
-                      this.showAddForm = true;
-                      void this.ensureSubjectsLoaded();
-                    }}
+                    @click=${this.startAdd}
                   >
                     <sl-icon slot="prefix" name="plus"></sl-icon>
-                    Add Policy
+                    Add limit
                   </sl-button>
-                `
-              : ''
-          }
-        </div>
-
+                </div>
+              `
+            : nothing
+        }
         ${
           this.error
             ? html`
@@ -528,334 +1029,10 @@ export class BudgetPolicyEditor extends LitElement {
                   ${this.error}
                 </sl-alert>
               `
-            : ''
+            : nothing
         }
-
-        <div class="policy-list">
-          ${
-            this.loadingPolicies
-              ? html`
-                  <div class="loading-state" role="status" aria-live="polite">
-                    <sl-spinner></sl-spinner>
-                    Loading policies…
-                  </div>
-                `
-              : this.policies.length === 0 && !this.isFormOpen
-                ? html`<div
-                    style="color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-small);"
-                  >
-                    No budget policies configured.
-                  </div>`
-                : this.policies.map(
-                    (p) => html`
-                      <div class="policy-item">
-                        <div>
-                          <strong style="color: var(--sl-color-neutral-900);"
-                            >${
-                              p.period.charAt(0).toUpperCase() +
-                              p.period.slice(1)
-                            }</strong
-                          >
-                          ${
-                            !this.subjectType
-                              ? html`
-                                  <sl-badge
-                                    variant="neutral"
-                                    style="margin-left: 8px;"
-                                  >
-                                    ${
-                                      p.subject_type === 'global'
-                                        ? 'Global'
-                                        : p.subject_type === 'ai_model'
-                                          ? 'Model'
-                                          : p.subject_type === 'managed_agent'
-                                            ? 'Agent'
-                                            : p.subject_type === 'user'
-                                              ? 'User'
-                                              : p.subject_type
-                                    }
-                                  </sl-badge>
-                                  <span
-                                    style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600); margin-left: 4px;"
-                                  >
-                                    ${
-                                      p.subject_type !== 'global' &&
-                                      p.subject_id
-                                        ? this.getSubjectName(
-                                            p.subject_type,
-                                            p.subject_id
-                                          )
-                                        : ''
-                                    }
-                                  </span>
-                                `
-                              : ''
-                          }
-                          <br />
-                          <span
-                            style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-700);"
-                            >Limit:</span
-                          >
-                          ${
-                            p.hard_limit_usd
-                              ? html`<span
-                                  style="font-size: var(--sl-font-size-small);"
-                                  >Hard: $${p.hard_limit_usd.toFixed(2)}</span
-                                >`
-                              : html`<span
-                                  style="font-size: var(--sl-font-size-small);"
-                                  >No Hard Limit</span
-                                >`
-                          }
-                          ${
-                            p.soft_limit_usd
-                              ? html`<span
-                                  style="font-size: var(--sl-font-size-small);"
-                                  >| Soft: $${p.soft_limit_usd.toFixed(2)}</span
-                                >`
-                              : ''
-                          }
-                          ${
-                            this.features?.['billing']
-                              ? html`
-                                  <div class="meta-text">
-                                    Notify: ${this.formatNotifySummary(p)}
-                                  </div>
-                                `
-                              : ''
-                          }
-                        </div>
-                        <div class="policy-actions">
-                          <sl-icon-button
-                            name="pencil"
-                            label="Edit policy"
-                            ?disabled=${this.saving}
-                            @click=${() => this.startEdit(p)}
-                          ></sl-icon-button>
-                          <sl-icon-button
-                            name="trash"
-                            label="Delete policy"
-                            style="color: var(--sl-color-danger-600);"
-                            ?disabled=${this.saving}
-                            @click=${() => this.handleDelete(p.id)}
-                          ></sl-icon-button>
-                        </div>
-                      </div>
-                    `
-                  )
-          }
-        </div>
-
-        ${
-          this.isFormOpen
-            ? html`
-                <div class="form-container">
-                  ${
-                    this.editingPolicyId
-                      ? html`
-                          ${this.renderScopeSummary(this.editingPolicy)}
-                          <div class="readonly-field">
-                            <span class="readonly-label">Period</span>
-                            <span class="readonly-value"
-                              >${
-                                this.editingPolicy?.period
-                                  ? this.editingPolicy.period
-                                      .charAt(0)
-                                      .toUpperCase() +
-                                    this.editingPolicy.period.slice(1)
-                                  : this.newPeriod
-                              }</span
-                            >
-                          </div>
-                        `
-                      : !this.subjectType
-                        ? html`
-                            <div class="form-row">
-                              <sl-select
-                                label="Target Scope"
-                                value=${this.newSubjectType}
-                                @sl-change=${(e: any) => {
-                                  this.newSubjectType = e.target.value;
-                                  this.newSubjectId =
-                                    this.newSubjectType === 'global'
-                                      ? 'global'
-                                      : '';
-                                }}
-                              >
-                                <sl-option value="global"
-                                  >Global (Account-wide)</sl-option
-                                >
-                                <sl-option value="ai_model">AI Model</sl-option>
-                                <sl-option value="managed_agent"
-                                  >Agent</sl-option
-                                >
-                                <sl-option value="user">User</sl-option>
-                              </sl-select>
-
-                              ${
-                                this.newSubjectType === 'ai_model'
-                                  ? html`
-                                      <sl-select
-                                        label="Select Model"
-                                        value=${this.newSubjectId}
-                                        @sl-change=${(e: any) =>
-                                          (this.newSubjectId = e.target.value)}
-                                        ?disabled=${this.loadingSubjects}
-                                      >
-                                        ${this.models.map(
-                                          (m) =>
-                                            html`<sl-option value=${m.id}
-                                              >${m.alias || m.id}</sl-option
-                                            >`
-                                        )}
-                                      </sl-select>
-                                    `
-                                  : this.newSubjectType === 'managed_agent'
-                                    ? html`
-                                        <sl-select
-                                          label="Select Agent"
-                                          value=${this.newSubjectId}
-                                          @sl-change=${(e: any) =>
-                                            (this.newSubjectId =
-                                              e.target.value)}
-                                          ?disabled=${this.loadingSubjects}
-                                        >
-                                          ${this.agents.map(
-                                            (a) =>
-                                              html`<sl-option value=${a.id}
-                                                >${a.display_name || a.id}</sl-option
-                                              >`
-                                          )}
-                                        </sl-select>
-                                      `
-                                    : this.newSubjectType === 'user'
-                                      ? html`
-                                          <sl-select
-                                            label="Select User"
-                                            value=${this.newSubjectId}
-                                            @sl-change=${(e: any) =>
-                                              (this.newSubjectId =
-                                                e.target.value)}
-                                            ?disabled=${this.loadingSubjects}
-                                            help-text="Enforces across all agents owned by this user"
-                                          >
-                                            ${this.availableUsers.map(
-                                              (u) =>
-                                                html`<sl-option value=${u.id}
-                                                  >${
-                                                    u.username ||
-                                                    u.email ||
-                                                    u.id
-                                                  }</sl-option
-                                                >`
-                                            )}
-                                          </sl-select>
-                                        `
-                                      : html`<div style="flex: 1"></div>`
-                              }
-                            </div>
-                            <sl-select
-                              label="Period"
-                              value=${this.newPeriod}
-                              @sl-change=${(e: any) =>
-                                (this.newPeriod = e.target.value)}
-                            >
-                              <sl-option value="hourly">Hourly</sl-option>
-                              <sl-option value="daily">Daily</sl-option>
-                              <sl-option value="weekly">Weekly</sl-option>
-                              <sl-option value="monthly">Monthly</sl-option>
-                              <sl-option value="yearly">Yearly</sl-option>
-                              <sl-option value="all_time">All Time</sl-option>
-                            </sl-select>
-                          `
-                        : html`
-                            <sl-select
-                              label="Period"
-                              value=${this.newPeriod}
-                              @sl-change=${(e: any) =>
-                                (this.newPeriod = e.target.value)}
-                            >
-                              <sl-option value="hourly">Hourly</sl-option>
-                              <sl-option value="daily">Daily</sl-option>
-                              <sl-option value="weekly">Weekly</sl-option>
-                              <sl-option value="monthly">Monthly</sl-option>
-                              <sl-option value="yearly">Yearly</sl-option>
-                              <sl-option value="all_time">All Time</sl-option>
-                            </sl-select>
-                          `
-                  }
-
-                  <div class="form-row">
-                    <sl-input
-                      label="Hard Limit (USD)"
-                      type="number"
-                      step="0.0001"
-                      .value=${this.newHardLimit}
-                      @sl-input=${(e: any) =>
-                        (this.newHardLimit = e.target.value)}
-                    ></sl-input>
-                    <sl-input
-                      label="Soft Limit (USD)"
-                      type="number"
-                      step="0.0001"
-                      .value=${this.newSoftLimit}
-                      @sl-input=${(e: any) =>
-                        (this.newSoftLimit = e.target.value)}
-                    ></sl-input>
-                  </div>
-
-                  ${
-                    this.features?.['billing']
-                      ? html`
-                          <notify-recipients-field
-                            .users=${this.availableUsers}
-                            .teams=${this.teams}
-                            .userIds=${this.newNotifyUserIds}
-                            .teamIds=${this.newNotifyTeamIds}
-                            .customEmails=${this.newCustomEmails}
-                            help-text="Recipients are notified via their email and mobile app preferences. Add custom emails when needed."
-                            @notify-recipients-change=${this.handleNotifyRecipientsChange}
-                          ></notify-recipients-field>
-
-                          <div class="checkbox-group">
-                            <sl-checkbox
-                              ?checked=${this.newNotifySoft}
-                              @sl-change=${(e: any) =>
-                                (this.newNotifySoft = e.target.checked)}
-                            >
-                              Send email on Soft Limit
-                            </sl-checkbox>
-                            <sl-checkbox
-                              ?checked=${this.newNotifyHard}
-                              @sl-change=${(e: any) =>
-                                (this.newNotifyHard = e.target.checked)}
-                            >
-                              Send email on Hard Limit
-                            </sl-checkbox>
-                          </div>
-                        `
-                      : ''
-                  }
-
-                  <div class="form-actions">
-                    <sl-button
-                      @click=${this.cancelForm}
-                      ?disabled=${this.saving}
-                      >Cancel</sl-button
-                    >
-                    <sl-button
-                      variant="primary"
-                      @click=${this.handleSave}
-                      ?loading=${this.saving}
-                      ?disabled=${this.saving}
-                    >
-                      ${this.editingPolicyId ? 'Update Policy' : 'Save Policy'}
-                    </sl-button>
-                  </div>
-                </div>
-              `
-            : ''
-        }
+        ${this.step === 'list' ? this.renderList() : this.renderForm()}
+        ${this.renderDeleteConfirm()}
       </div>
     `;
   }

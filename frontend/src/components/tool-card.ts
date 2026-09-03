@@ -24,6 +24,7 @@ import '@shoelace-style/shoelace/dist/components/radio-button/radio-button.js';
 import '@shoelace-style/shoelace/dist/components/radio/radio.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import '@shoelace-style/shoelace/dist/components/range/range.js';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 // Preloop badge SVG
 const preloopBadgeSvg = `<svg width="20px" height="18px" viewBox="0 0 1024 914" version="1.1" xmlns="http://www.w3.org/2000/svg">
@@ -485,210 +486,213 @@ export class ToolCard extends LitElement {
     }
   }
 
-  static styles = css`
-    sl-card.tool-card.unsupported .card-content,
-    sl-card.tool-card.unsupported .tool-controls {
-      opacity: 0.5;
-      pointer-events: none;
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      sl-card.tool-card.unsupported .card-content,
+      sl-card.tool-card.unsupported .tool-controls {
+        opacity: 0.5;
+        pointer-events: none;
+      }
 
-    .unsupported-hint {
-      display: flex;
-      align-items: center;
-      gap: var(--sl-spacing-2x-small);
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-x-small);
-      line-height: 1.3;
-    }
+      .unsupported-hint {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-2x-small);
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-x-small);
+        line-height: 1.3;
+      }
 
-    .unsupported-link {
-      color: var(--sl-color-primary-600);
-      text-decoration: none;
-      font-weight: 500;
-    }
+      .unsupported-link {
+        color: var(--sl-color-primary-600);
+        text-decoration: none;
+        font-weight: 500;
+      }
 
-    .unsupported-link:hover {
-      text-decoration: underline;
-    }
+      .unsupported-link:hover {
+        text-decoration: underline;
+      }
 
-    :host {
-      width: 100%;
-      min-width: 0;
-      box-sizing: border-box;
-    }
+      :host {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+      }
 
-    .tool-card {
-      width: 100%;
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-    }
+      .tool-card {
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
 
-    .tool-header {
-      margin-bottom: var(--sl-spacing-medium);
-    }
+      .tool-header {
+        margin-bottom: var(--sl-spacing-medium);
+      }
 
-    .tool-name {
-      font-size: var(--sl-font-size-large);
-      font-weight: var(--sl-font-weight-semibold);
-      margin: 0 0 var(--sl-spacing-2x-small) 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
+      .tool-name {
+        font-size: var(--sl-font-size-large);
+        font-weight: var(--sl-font-weight-semibold);
+        margin: 0 0 var(--sl-spacing-2x-small) 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
 
-    .tool-source {
-      font-size: var(--sl-font-size-x-small);
-      color: var(--sl-color-neutral-600);
-      margin: 0;
-    }
+      .tool-source {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-600);
+        margin: 0;
+      }
 
-    .tool-description {
-      font-size: var(--sl-font-size-small);
-      color: var(--sl-color-neutral-700);
-      line-height: 1.5;
-      margin: 0;
-      height: 4.5em;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      display: -webkit-box;
-      -webkit-line-clamp: 3;
-      -webkit-box-orient: vertical;
-    }
+      .tool-description {
+        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-700);
+        line-height: 1.5;
+        margin: 0;
+        height: 4.5em;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+      }
 
-    sl-card {
-      height: 100%;
-    }
+      sl-card {
+        height: 100%;
+      }
 
-    sl-card::part(footer) {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-small);
-      padding: var(--sl-spacing-medium);
-      border-top: 1px solid var(--sl-color-neutral-200);
-    }
+      sl-card::part(footer) {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-small);
+        padding: var(--sl-spacing-medium);
+        border-top: 1px solid var(--sl-color-neutral-200);
+      }
 
-    .control-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
+      .control-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
 
-    .control-label {
-      font-size: var(--sl-font-size-small);
-      color: var(--sl-color-neutral-700);
-      display: flex;
-      align-items: center;
-      gap: var(--sl-spacing-2x-small);
-    }
+      .control-label {
+        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-700);
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-2x-small);
+      }
 
-    .preloop-icon {
-      width: 16px;
-      height: 14px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      opacity: 0.7;
-    }
+      .preloop-icon {
+        width: 16px;
+        height: 14px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0.7;
+      }
 
-    .approval-section {
-      margin-top: var(--sl-spacing-medium);
-    }
+      .approval-section {
+        margin-top: var(--sl-spacing-medium);
+      }
 
-    .policy-selector {
-      display: flex;
-      align-items: center;
-      gap: var(--sl-spacing-x-small);
-      margin-top: var(--sl-spacing-small);
-      padding-left: var(--sl-spacing-small);
-    }
+      .policy-selector {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-x-small);
+        margin-top: var(--sl-spacing-small);
+        padding-left: var(--sl-spacing-small);
+      }
 
-    .policy-selector sl-select {
-      flex: 1;
-    }
+      .policy-selector sl-select {
+        flex: 1;
+      }
 
-    .dialog-content {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-medium);
-    }
+      .dialog-content {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-medium);
+      }
 
-    .policy-list {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-small);
-      max-height: 300px;
-      overflow-y: auto;
-    }
+      .policy-list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-small);
+        max-height: 300px;
+        overflow-y: auto;
+      }
 
-    .policy-item {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: var(--sl-spacing-small);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: 4px;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
+      .policy-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: var(--sl-spacing-small);
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
 
-    .policy-item:hover {
-      border-color: var(--sl-color-primary-600);
-      background: var(--sl-color-primary-50);
-    }
+      .policy-item:hover {
+        border-color: var(--sl-color-primary-600);
+        background: var(--sl-color-primary-50);
+      }
 
-    .policy-item.selected {
-      border-color: var(--sl-color-primary-600);
-      background: var(--sl-color-primary-100);
-    }
+      .policy-item.selected {
+        border-color: var(--sl-color-primary-600);
+        background: var(--sl-color-primary-100);
+      }
 
-    .policy-info {
-      flex: 1;
-    }
+      .policy-info {
+        flex: 1;
+      }
 
-    .policy-name {
-      font-weight: var(--sl-font-weight-semibold);
-      margin: 0 0 var(--sl-spacing-2x-small) 0;
-    }
+      .policy-name {
+        font-weight: var(--sl-font-weight-semibold);
+        margin: 0 0 var(--sl-spacing-2x-small) 0;
+      }
 
-    .policy-meta {
-      font-size: var(--sl-font-size-x-small);
-      color: var(--sl-color-neutral-600);
-    }
+      .policy-meta {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-600);
+      }
 
-    .form-field {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-2x-small);
-    }
+      .form-field {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-2x-small);
+      }
 
-    .form-label {
-      font-size: var(--sl-font-size-small);
-      font-weight: var(--sl-font-weight-semibold);
-    }
+      .form-label {
+        font-size: var(--sl-font-size-small);
+        font-weight: var(--sl-font-weight-semibold);
+      }
 
-    .dialog-section {
-      border-top: 1px solid var(--sl-color-neutral-200);
-      padding-top: var(--sl-spacing-medium);
-    }
+      .dialog-section {
+        border-top: 1px solid var(--sl-color-neutral-200);
+        padding-top: var(--sl-spacing-medium);
+      }
 
-    .default-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: var(--sl-spacing-2x-small);
-      padding: 2px 8px;
-      background: var(--sl-color-primary-100);
-      border-radius: 4px;
-      font-size: var(--sl-font-size-x-small);
-      font-weight: var(--sl-font-weight-semibold);
-      margin-left: var(--sl-spacing-x-small);
-    }
+      .default-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--sl-spacing-2x-small);
+        padding: 2px 8px;
+        background: var(--sl-color-primary-100);
+        border-radius: 4px;
+        font-size: var(--sl-font-size-x-small);
+        font-weight: var(--sl-font-weight-semibold);
+        margin-left: var(--sl-spacing-x-small);
+      }
 
-    .policy-actions {
-      display: flex;
-      gap: var(--sl-spacing-2x-small);
-    }
-  `;
+      .policy-actions {
+        display: flex;
+        gap: var(--sl-spacing-2x-small);
+      }
+    `,
+  ];
 
   private handleEnabledToggle() {
     this.dispatchEvent(

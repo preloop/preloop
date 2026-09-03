@@ -24,6 +24,7 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '../../../components/add-ai-model-modal';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
 import consoleStyles from '../../../styles/console-styles.css?inline';
+import { consoleDialogStyles } from '../../../styles/console-dialog';
 
 @customElement('ai-models-view')
 export class AIModelsView extends LitElement {
@@ -70,6 +71,7 @@ export class AIModelsView extends LitElement {
   private refreshInFlight = false;
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       table {

@@ -6,6 +6,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/switch/switch.js';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 export interface MCPServer {
   id: string;
@@ -27,93 +28,96 @@ export class MCPServerCard extends LitElement {
   @state()
   private isConfirmingDelete = false;
 
-  static styles = css`
-    :host {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      :host {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
 
-    .server-card {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-    }
+      .server-card {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
 
-    .card-content {
-      padding-bottom: var(--sl-spacing-small);
-    }
+      .card-content {
+        padding-bottom: var(--sl-spacing-small);
+      }
 
-    .server-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: var(--sl-spacing-small);
-    }
+      .server-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: var(--sl-spacing-small);
+      }
 
-    .server-name {
-      font-size: var(--sl-font-size-large);
-      font-weight: var(--sl-font-weight-semibold);
-      margin: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
+      .server-name {
+        font-size: var(--sl-font-size-large);
+        font-weight: var(--sl-font-weight-semibold);
+        margin: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
 
-    .server-url {
-      font-size: var(--sl-font-size-x-small);
-      color: var(--sl-color-neutral-600);
-      margin: 0 0 var(--sl-spacing-x-small) 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-family: monospace;
-    }
+      .server-url {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-600);
+        margin: 0 0 var(--sl-spacing-x-small) 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: monospace;
+      }
 
-    .server-meta {
-      font-size: var(--sl-font-size-x-small);
-      color: var(--sl-color-neutral-700);
-      margin-top: var(--sl-spacing-2x-small);
-    }
+      .server-meta {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-700);
+        margin-top: var(--sl-spacing-2x-small);
+      }
 
-    sl-card::part(footer) {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-small);
-      padding: var(--sl-spacing-medium);
-      border-top: 1px solid var(--sl-color-neutral-200);
-    }
+      sl-card::part(footer) {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-small);
+        padding: var(--sl-spacing-medium);
+        border-top: 1px solid var(--sl-color-neutral-200);
+      }
 
-    .footer-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
+      .footer-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
 
-    .footer-actions {
-      display: flex;
-      gap: var(--sl-spacing-x-small);
-      flex: 1;
-    }
+      .footer-actions {
+        display: flex;
+        gap: var(--sl-spacing-x-small);
+        flex: 1;
+      }
 
-    sl-button {
-      flex: 1;
-    }
+      sl-button {
+        flex: 1;
+      }
 
-    .enable-control {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: var(--sl-font-size-small);
-      color: var(--sl-color-neutral-700);
-      margin-bottom: var(--sl-spacing-medium);
-      padding-top: var(--sl-spacing-2x-small);
-    }
+      .enable-control {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-700);
+        margin-bottom: var(--sl-spacing-medium);
+        padding-top: var(--sl-spacing-2x-small);
+      }
 
-    sl-card {
-      height: 100%;
-    }
-  `;
+      sl-card {
+        height: 100%;
+      }
+    `,
+  ];
 
   private requestDeleteConfirmation() {
     this.isConfirmingDelete = true;

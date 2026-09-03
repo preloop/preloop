@@ -44,6 +44,16 @@ from preloop.schemas.gateway_usage import (
     AccountGatewayUsageSearchResponse,
     AccountRuntimeSessionListResponse,
 )
+from preloop.schemas.ai_model_pricing import (
+    AIModelPriceQuote,
+    AIModelPricingResponse,
+)
+from preloop.services.ai_model_pricing import (
+    PriceFetchUnavailableError,
+    PriceFetchUnsupportedError,
+    fetch_provider_pricing,
+    get_effective_pricing,
+)
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 from preloop.utils.permissions import require_permission
@@ -294,6 +304,60 @@ def delete_ai_model(
 
     # No content returned for HTTP 204
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/ai-models/{model_id}/pricing",
+    response_model=AIModelPricingResponse,
+    summary="Get AI Model Pricing",
+    tags=["AI Models"],
+)
+@require_permission("view_ai_models")
+def get_ai_model_pricing(
+    model_id: uuid.UUID,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelPricingResponse:
+    """Return the effective price for one model and where it came from."""
+    db_model = _get_account_ai_model(
+        db=db, model_id=model_id, current_user=current_user
+    )
+    return get_effective_pricing(
+        db, account_id=current_user.account_id, ai_model=db_model
+    )
+
+
+@router.post(
+    "/ai-models/{model_id}/pricing/fetch",
+    response_model=AIModelPriceQuote,
+    summary="Fetch AI Model Pricing From Provider",
+    tags=["AI Models"],
+)
+@require_permission("edit_ai_models")
+def fetch_ai_model_pricing(
+    model_id: uuid.UUID,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelPriceQuote:
+    """Read this model's published price from its provider, without saving it.
+
+    A price decides what every past and future request cost, so it is never
+    written by a fetch: the numbers come back for a person to confirm, and
+    saving one stays with the price override endpoints.
+    """
+    db_model = _get_account_ai_model(
+        db=db, model_id=model_id, current_user=current_user
+    )
+    try:
+        return fetch_provider_pricing(db_model)
+    except PriceFetchUnsupportedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except PriceFetchUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+        ) from exc
 
 
 @router.post(

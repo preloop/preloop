@@ -1,12 +1,7 @@
 import { expect } from '@open-wc/testing';
 
 import type { AccountGatewayUsageSummaryResponse } from '../types';
-import {
-  compareByUsageMetric,
-  mergeGatewaySummaryPreservingBreakdown,
-  previewWindow,
-  usageSortValue,
-} from './top-models-overview';
+import { mergeGatewaySummaryPreservingBreakdown } from './gateway-summary';
 
 function summary(
   overrides: Partial<AccountGatewayUsageSummaryResponse> = {}
@@ -129,36 +124,5 @@ describe('mergeGatewaySummaryPreservingBreakdown', () => {
 
     const merged = mergeGatewaySummaryPreservingBreakdown(previous, incoming);
     expect(merged).to.equal(incoming);
-  });
-});
-
-describe('previewWindow', () => {
-  it('returns the first N items and the overflow count when collapsed', () => {
-    const { visible, overflow } = previewWindow([1, 2, 3, 4, 5], 4, false);
-    expect(visible).to.deep.equal([1, 2, 3, 4]);
-    expect(overflow).to.equal(1);
-  });
-
-  it('returns every item when expanded', () => {
-    const { visible, overflow } = previewWindow([1, 2, 3, 4, 5], 4, true);
-    expect(visible).to.deep.equal([1, 2, 3, 4, 5]);
-    expect(overflow).to.equal(1);
-  });
-
-  it('has no overflow when the list fits the limit', () => {
-    const { visible, overflow } = previewWindow(['a', 'b'], 4, false);
-    expect(visible).to.deep.equal(['a', 'b']);
-    expect(overflow).to.equal(0);
-  });
-});
-
-describe('usageSortValue / compareByUsageMetric', () => {
-  it('sorts spend by estimated_cost and usage by request count', () => {
-    const cheap = { estimated_cost: 1, request_count: 50 };
-    const pricey = { estimated_cost: 9, request_count: 2 };
-    expect(usageSortValue(cheap, 'spend')).to.equal(1);
-    expect(usageSortValue(pricey, 'usage')).to.equal(2);
-    expect(compareByUsageMetric(cheap, pricey, 'spend')).to.be.greaterThan(0);
-    expect(compareByUsageMetric(cheap, pricey, 'usage')).to.be.lessThan(0);
   });
 });

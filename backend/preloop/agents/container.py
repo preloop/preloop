@@ -30,6 +30,7 @@ from preloop.utils.git_credentials import (
     GitCredential,
     build_credential_env,
     build_credential_setup_shell,
+    build_push_auth_setup_shell,
     credential_username,
     git_token_env_var,
     needs_http_path_scoping,
@@ -2797,8 +2798,11 @@ echo "========================================="
                 self.logger.debug("No git_clone_config in execution context")
                 return ""
 
-            # Check for repositories - if they exist, we should have cloned them
-            repositories = git_config.get("repositories", [])
+            # Match clone: empty repositories still falls back to the trigger
+            # project, otherwise post-exec would skip a repo that was cloned.
+            repositories = self._resolve_git_clone_repositories(
+                execution_context, git_config
+            )
             if not repositories:
                 self.logger.debug("No repositories in git_clone_config")
                 return ""
@@ -2828,16 +2832,11 @@ echo "========================================="
                     # Relative path - prepend /workspace/
                     full_path = f"/workspace/{clone_path}"
 
-                # Get tracker info for PR/MR creation
-                tracker_id = repo_config.get("tracker_id")
-                git_credentials_map = execution_context.get("git_credentials_map", {})
-                tracker_creds = git_credentials_map.get(tracker_id)
-
-                if not tracker_creds:
-                    continue
-
-                tracker_type = tracker_creds.get("tracker_type")
-                token = tracker_creds.get("token")
+                # Resolve the tracker token the same way clone does, so a
+                # missing tracker_id still finds the trigger-project token.
+                token, tracker_type = self._resolve_repository_token(
+                    repo_config, execution_context
+                )
 
                 # The REST API token is passed through the environment rather
                 # than interpolated into the script, so it cannot leak via the
@@ -2849,7 +2848,23 @@ echo "========================================="
                         execution_context, idx, token
                     )
 
-                # Commands to check for commits and push
+                trigger_data = execution_context.get("trigger_event_data", {})
+                repo_url = self._resolve_repository_clone_url(
+                    repo_config, idx, execution_context, trigger_data
+                )
+                host_kind = (
+                    tracker_host_kind(strip_url_credentials(repo_url))
+                    if repo_url
+                    else None
+                )
+                username = credential_username(host_kind, tracker_type)
+                push_auth = build_push_auth_setup_shell(
+                    token_ref=token_ref, username=username
+                )
+
+                # Commands to check for commits and push. Persist a bundle
+                # under /workspace/evidence *before* push so a failed push
+                # still leaves a recoverable artifact in the log stream.
                 # Note: Directory is guaranteed to exist because git clone validation would have failed earlier
                 repo_post_commands = [
                     f"cd {full_path}",
@@ -2857,6 +2872,18 @@ echo "========================================="
                     f'COMMIT_COUNT=$(git rev-list --count {source_branch}..{target_branch} 2>/dev/null || echo "0")',
                     'if [ "$COMMIT_COUNT" -gt "0" ]; then',
                     f'  echo "Found $COMMIT_COUNT commits on {target_branch}, pushing..."',
+                    f"  mkdir -p {EVIDENCE_DIR_PATH}",
+                    f"  git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
+                    f"  git log -1 --format='%H %s' >> {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
+                    f"  git format-patch --stdout {source_branch}..HEAD > {EVIDENCE_DIR_PATH}/branch.patch 2>/dev/null || true",
+                    (
+                        f"  git bundle create {EVIDENCE_DIR_PATH}/branch.bundle "
+                        f"{source_branch}..HEAD 2>/dev/null "
+                        f"|| git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD "
+                        f"2>/dev/null || true"
+                    ),
+                    f'  echo "Wrote git recovery artifacts under {EVIDENCE_DIR_PATH}"',
+                    push_auth,
                     f"  git push origin {target_branch}",
                 ]
 
