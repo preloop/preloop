@@ -10,6 +10,7 @@ from preloop.api.endpoints.runners import (
     job_for_runner_replay,
     runner_needs_lease_token,
 )
+from preloop.services.websocket_manager import WebSocketManager
 
 
 def test_parse_runner_execution_id_ignores_malformed_values() -> None:
@@ -153,3 +154,12 @@ def test_heartbeat_ack_omits_job_when_idle() -> None:
     runner = SimpleNamespace(pending_job=None, reported_status=None)
 
     assert job_for_heartbeat_ack(MagicMock(), runner) is None
+
+
+def test_runners_topic_is_subscribable() -> None:
+    assert WebSocketManager.normalize_topic("runners") == "runners"
+    assert WebSocketManager.resolve_topic({"type": "runner_updated"}) == "runners"
+    assert (
+        WebSocketManager.resolve_topic({"topic": "runners", "type": "runner_updated"})
+        == "runners"
+    )

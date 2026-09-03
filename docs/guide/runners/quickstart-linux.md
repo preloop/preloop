@@ -58,7 +58,12 @@ preloop runner fg --labels local --name $(hostname)
 You should see `Runner <name> (<id>) connecting...` then
 `Connected. Waiting for jobs.` The runner registers itself on first run
 and stores its identity in `~/.preloop/runner.json`; restarts resume the
-same runner. Ctrl-C unregisters cleanly.
+same runner. If the WebSocket drops (proxy idle timeout, laptop sleep,
+control-plane restart), the process reconnects with backoff instead of
+exiting; a job already running in Docker keeps going and reports
+complete on the new socket. The console Runners page updates online/offline
+status over the account websocket without a refresh. Ctrl-C unregisters
+cleanly.
 
 ## 4. Route a flow to the runner
 

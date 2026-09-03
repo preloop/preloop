@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,7 +29,18 @@ import (
 const (
 	runnerStateFile      = "runner.json"
 	runnerHeartbeatEvery = 15 * time.Second
+	runnerPingWait       = 5 * time.Second
 )
+
+var (
+	runnerReconnectMin = time.Second
+	runnerReconnectMax = 30 * time.Second
+	runnerReadWait     = 45 * time.Second
+)
+
+// runnerFatalError stops the process (auth/server rejection). Transport
+// drops reconnect instead.
+type runnerFatalError struct{ error }
 
 var runnerCmd = &cobra.Command{
 	Use:   "runner",
@@ -185,21 +197,192 @@ type leasedJobOutcome struct {
 	lines       []string
 }
 
+func nextRunnerBackoff(current time.Duration) time.Duration {
+	next := current * 2
+	if next > runnerReconnectMax {
+		return runnerReconnectMax
+	}
+	if next < runnerReconnectMin {
+		return runnerReconnectMin
+	}
+	return next
+}
+
+func waitOrInterrupt(interrupt <-chan os.Signal, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-interrupt:
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func dialRunnerWebsocket(wsURL, token string) (*websocket.Conn, error) {
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{
+		"User-Agent":     []string{"preloop-cli-runner"},
+		"X-Runner-Token": []string{token},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+func writeJobOutcome(conn *websocket.Conn, outcome leasedJobOutcome) error {
+	if conn == nil {
+		return nil
+	}
+	if len(outcome.lines) > 0 {
+		if err := conn.WriteJSON(map[string]any{
+			"type":         "logs",
+			"execution_id": outcome.executionID,
+			"lines":        outcome.lines,
+		}); err != nil {
+			return err
+		}
+	}
+	return conn.WriteJSON(map[string]any{
+		"type":         "complete",
+		"execution_id": outcome.executionID,
+		"status":       outcome.status,
+		"error":        outcome.errMsg,
+	})
+}
+
+func rememberOutcome(dst **leasedJobOutcome, outcome leasedJobOutcome) {
+	if dst == nil {
+		return
+	}
+	copy := outcome
+	*dst = &copy
+}
+
+func applyJobOutcome(
+	conn *websocket.Conn,
+	outcome leasedJobOutcome,
+	runningCmd **exec.Cmd,
+	runningExecID *string,
+	jobDone *<-chan leasedJobOutcome,
+	halt *bool,
+	halted *atomic.Bool,
+	lastComplete **leasedJobOutcome,
+) {
+	rememberOutcome(lastComplete, outcome)
+	_ = writeJobOutcome(conn, outcome)
+	if runningCmd != nil {
+		*runningCmd = nil
+	}
+	if runningExecID != nil {
+		*runningExecID = ""
+	}
+	if jobDone != nil {
+		*jobDone = nil
+	}
+	if halt != nil {
+		*halt = false
+	}
+	if halted != nil {
+		halted.Store(false)
+	}
+}
+
+func flushPendingOutcome(
+	conn *websocket.Conn,
+	jobDone *<-chan leasedJobOutcome,
+	runningCmd **exec.Cmd,
+	runningExecID *string,
+	halt *bool,
+	halted *atomic.Bool,
+	lastComplete **leasedJobOutcome,
+) {
+	if jobDone == nil || *jobDone == nil {
+		return
+	}
+	select {
+	case outcome := <-*jobDone:
+		applyJobOutcome(
+			conn, outcome, runningCmd, runningExecID, jobDone, halt, halted, lastComplete,
+		)
+	default:
+	}
+}
+
 func runnerForegroundLoop(state *runnerState, interrupt <-chan os.Signal, out io.Writer) error {
 	wsURL, err := runnerWebsocketURL(state.ID)
 	if err != nil {
 		return err
 	}
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{
-		"User-Agent":     []string{"preloop-cli-runner"},
-		"X-Runner-Token": []string{state.Token},
-	})
-	if err != nil {
-		return fmt.Errorf("runner websocket: %w", err)
-	}
-	defer conn.Close() //nolint:errcheck
 
-	fmt.Fprintf(out, "Connected. Waiting for jobs.\n")
+	halt := false
+	halted := &atomic.Bool{}
+	var runningCmd *exec.Cmd
+	var runningExecID string
+	var jobDone <-chan leasedJobOutcome
+	var lastComplete *leasedJobOutcome
+	backoff := runnerReconnectMin
+	connectedOnce := false
+
+	for {
+		conn, err := dialRunnerWebsocket(wsURL, state.Token)
+		if err != nil {
+			fmt.Fprintf(out, "Connection failed (%v). Retrying in %s...\n", err, backoff)
+			if !waitOrInterrupt(interrupt, backoff) {
+				return nil
+			}
+			backoff = nextRunnerBackoff(backoff)
+			continue
+		}
+		if connectedOnce {
+			fmt.Fprintf(out, "Reconnected. Waiting for jobs.\n")
+		} else {
+			fmt.Fprintf(out, "Connected. Waiting for jobs.\n")
+			connectedOnce = true
+		}
+		backoff = runnerReconnectMin
+		err = runRunnerSession(
+			conn,
+			interrupt,
+			out,
+			&runningCmd,
+			&runningExecID,
+			&jobDone,
+			&halt,
+			halted,
+			&lastComplete,
+		)
+		_ = conn.Close()
+		if err == nil {
+			return nil
+		}
+		var fatal *runnerFatalError
+		if errors.As(err, &fatal) {
+			return err
+		}
+		fmt.Fprintf(out, "Connection lost (%v). Reconnecting in %s...\n", err, backoff)
+		if !waitOrInterrupt(interrupt, backoff) {
+			return nil
+		}
+		backoff = nextRunnerBackoff(backoff)
+	}
+}
+
+func runRunnerSession(
+	conn *websocket.Conn,
+	interrupt <-chan os.Signal,
+	out io.Writer,
+	runningCmd **exec.Cmd,
+	runningExecID *string,
+	jobDone *<-chan leasedJobOutcome,
+	halt *bool,
+	halted *atomic.Bool,
+	lastComplete **leasedJobOutcome,
+) error {
+	_ = conn.SetReadDeadline(time.Now().Add(runnerReadWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(runnerReadWait))
+	})
 
 	incoming := make(chan runnerWSMessage, 8)
 	readErr := make(chan error, 1)
@@ -210,23 +393,23 @@ func runnerForegroundLoop(state *runnerState, interrupt <-chan os.Signal, out io
 				readErr <- err
 				return
 			}
+			_ = conn.SetReadDeadline(time.Now().Add(runnerReadWait))
 			incoming <- msg
 		}
 	}()
 
-	halt := false
-	halted := &atomic.Bool{}
-	var runningCmd *exec.Cmd
-	var runningExecID string
-	var jobDone <-chan leasedJobOutcome
-	ticker := time.NewTicker(runnerHeartbeatEvery)
-	defer ticker.Stop()
+	flushPendingOutcome(
+		conn, jobDone, runningCmd, runningExecID, halt, halted, lastComplete,
+	)
 
 	killRunning := func() {
-		if !requestJobHalt(halted, runningCmd) {
-			halt = false
+		if !requestJobHalt(halted, *runningCmd) {
+			*halt = false
 		}
 	}
+
+	ticker := time.NewTicker(runnerHeartbeatEvery)
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -236,39 +419,24 @@ func runnerForegroundLoop(state *runnerState, interrupt <-chan os.Signal, out io
 			_ = conn.WriteJSON(map[string]any{"type": "unregister"})
 			return nil
 		case <-ticker.C:
+			_ = conn.WriteControl(
+				websocket.PingMessage, nil, time.Now().Add(runnerPingWait),
+			)
 			if err := conn.WriteJSON(map[string]any{"type": "heartbeat"}); err != nil {
 				return fmt.Errorf("heartbeat: %w", err)
 			}
 		case err := <-readErr:
-			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				return nil
-			}
 			return fmt.Errorf("runner read: %w", err)
-		case outcome := <-jobDone:
-			if len(outcome.lines) > 0 {
-				_ = conn.WriteJSON(map[string]any{
-					"type":         "logs",
-					"execution_id": outcome.executionID,
-					"lines":        outcome.lines,
-				})
-			}
-			_ = conn.WriteJSON(map[string]any{
-				"type":         "complete",
-				"execution_id": outcome.executionID,
-				"status":       outcome.status,
-				"error":        outcome.errMsg,
-			})
-			runningCmd = nil
-			runningExecID = ""
-			jobDone = nil
-			halt = false
-			halted.Store(false)
+		case outcome := <-*jobDone:
+			applyJobOutcome(
+				conn, outcome, runningCmd, runningExecID, jobDone, halt, halted, lastComplete,
+			)
 		case msg := <-incoming:
 			if msg.Error != "" {
-				return fmt.Errorf("runner server: %s", msg.Error)
+				return &runnerFatalError{fmt.Errorf("runner server: %s", msg.Error)}
 			}
 			if msg.Halt || msg.Type == "halt" {
-				halt = true
+				*halt = true
 				fmt.Fprintf(out, "Halt received for %s\n", msg.HaltExecutionID)
 				killRunning()
 				continue
@@ -276,17 +444,25 @@ func runnerForegroundLoop(state *runnerState, interrupt <-chan os.Signal, out io
 			if msg.Job == nil {
 				continue
 			}
-			if runningExecID != "" {
-				fmt.Fprintf(out, "Ignoring job while %s is running\n", runningExecID)
+			jobID, _ := msg.Job["execution_id"].(string)
+			if lastComplete != nil && *lastComplete != nil &&
+				jobID != "" && (*lastComplete).executionID == jobID {
+				_ = writeJobOutcome(conn, **lastComplete)
 				continue
 			}
-			if err := beginLeasedJob(conn, msg.Job, halt, out, &runningCmd, &runningExecID, &jobDone, halted); err != nil {
-				fmt.Fprintf(out, "Job error: %v\n", err)
-				runningCmd = nil
-				runningExecID = ""
-				jobDone = nil
+			if *runningExecID != "" {
+				fmt.Fprintf(out, "Ignoring job while %s is running\n", *runningExecID)
+				continue
 			}
-			halt = false
+			if err := beginLeasedJob(
+				conn, msg.Job, *halt, out, runningCmd, runningExecID, jobDone, halted, lastComplete,
+			); err != nil {
+				fmt.Fprintf(out, "Job error: %v\n", err)
+				*runningCmd = nil
+				*runningExecID = ""
+				*jobDone = nil
+			}
+			*halt = false
 		}
 	}
 }
@@ -300,6 +476,7 @@ func beginLeasedJob(
 	runningExecID *string,
 	jobDone *<-chan leasedJobOutcome,
 	halted *atomic.Bool,
+	lastComplete **leasedJobOutcome,
 ) error {
 	executionID, _ := job["execution_id"].(string)
 	if executionID == "" {
@@ -320,43 +497,35 @@ func beginLeasedJob(
 		"lines":        []string{"runner leased job " + executionID},
 	})
 	if alreadyHalted {
-		return conn.WriteJSON(map[string]any{
-			"type":         "complete",
-			"execution_id": executionID,
-			"status":       "STOPPED",
-		})
+		outcome := leasedJobOutcome{executionID: executionID, status: "STOPPED"}
+		rememberOutcome(lastComplete, outcome)
+		return writeJobOutcome(conn, outcome)
 	}
 
 	image := runnerImageFromJob(job)
 	dockerOK := image != "" && dockerAvailable()
 	if reason := leasedJobFailureReason(job, dockerOK); reason != "" {
-		_ = conn.WriteJSON(map[string]any{
-			"type":         "logs",
-			"execution_id": executionID,
-			"lines":        []string{reason},
-		})
-		return conn.WriteJSON(map[string]any{
-			"type":         "complete",
-			"execution_id": executionID,
-			"status":       "FAILED",
-			"error":        reason,
-		})
+		outcome := leasedJobOutcome{
+			executionID: executionID,
+			status:      "FAILED",
+			errMsg:      reason,
+			lines:       []string{reason},
+		}
+		rememberOutcome(lastComplete, outcome)
+		return writeJobOutcome(conn, outcome)
 	}
 
 	apiURL, err := runnerControlPlaneURL()
 	if err != nil {
 		reason := "PRELOOP_URL could not be resolved: " + err.Error()
-		_ = conn.WriteJSON(map[string]any{
-			"type":         "logs",
-			"execution_id": executionID,
-			"lines":        []string{reason},
-		})
-		return conn.WriteJSON(map[string]any{
-			"type":         "complete",
-			"execution_id": executionID,
-			"status":       "FAILED",
-			"error":        reason,
-		})
+		outcome := leasedJobOutcome{
+			executionID: executionID,
+			status:      "FAILED",
+			errMsg:      reason,
+			lines:       []string{reason},
+		}
+		rememberOutcome(lastComplete, outcome)
+		return writeJobOutcome(conn, outcome)
 	}
 
 	env := runnerJobEnv(job, apiURL)
@@ -366,12 +535,13 @@ func beginLeasedJob(
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 	if err := cmd.Start(); err != nil {
-		return conn.WriteJSON(map[string]any{
-			"type":         "complete",
-			"execution_id": executionID,
-			"status":       "FAILED",
-			"error":        err.Error(),
-		})
+		outcome := leasedJobOutcome{
+			executionID: executionID,
+			status:      "FAILED",
+			errMsg:      err.Error(),
+		}
+		rememberOutcome(lastComplete, outcome)
+		return writeJobOutcome(conn, outcome)
 	}
 	*runningCmd = cmd
 	*runningExecID = executionID

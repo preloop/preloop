@@ -25,7 +25,11 @@ from preloop.models.crud.flow_runner import crud_flow_runner
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.flow_runner import FlowRunner
 from preloop.models.models.user import User
-from preloop.services.runner_service import hash_runner_token, mint_runner_token
+from preloop.services.runner_service import (
+    emit_runner_updated,
+    hash_runner_token,
+    mint_runner_token,
+)
 from preloop.utils.permissions import require_permission
 
 router = APIRouter()
@@ -79,6 +83,7 @@ def register_runner(
         db.add(existing)
         db.commit()
         db.refresh(existing)
+        emit_runner_updated(existing)
         return schemas.RunnerRegisterResponse(
             **_to_response(existing, db).model_dump(), token=token
         )
@@ -102,6 +107,7 @@ def register_runner(
             "halt_requested": False,
         },
     )
+    emit_runner_updated(row)
     return schemas.RunnerRegisterResponse(
         **_to_response(row, db).model_dump(), token=token
     )
@@ -259,6 +265,7 @@ async def runner_ws(
     crud_flow_runner.touch_heartbeat(db, runner, status="online")
     hello: Dict[str, Any] = {"type": "hello", "runner_id": runner_key}
     db.refresh(runner)
+    emit_runner_updated(runner)
     if runner.pending_job:
         hello["job"] = job_for_runner_replay(
             db, pending_job=runner.pending_job, mint_token=True
@@ -343,6 +350,7 @@ async def runner_ws(
                 runner.halt_requested = False
                 db.add(runner)
                 db.commit()
+                emit_runner_updated(runner)
                 await websocket.send_json({"type": "ack"})
                 break
 
@@ -372,6 +380,7 @@ async def runner_ws(
                     )
                 db.add(runner)
                 db.commit()
+                emit_runner_updated(runner)
                 await websocket.send_json({"type": "ack"})
                 continue
 
@@ -385,6 +394,7 @@ async def runner_ws(
             row.status = "offline"
             db.add(row)
             db.commit()
+            emit_runner_updated(row)
 
 
 async def push_job_to_runner(runner_id: UUID, job: Dict[str, Any]) -> bool:
