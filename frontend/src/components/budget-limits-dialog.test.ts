@@ -1,4 +1,5 @@
 import { expect, fixture, html, oneEvent } from '@open-wc/testing';
+import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import './budget-limits-dialog.ts';
 import type { BudgetLimitsDialog } from './budget-limits-dialog';
 
@@ -120,5 +121,32 @@ describe('budget-limits-dialog', () => {
 
     expect(element.open).to.be.true;
     expect(parentSawHide).to.be.false;
+  });
+
+  it('lets a nested dialog sl-hide handler run', async () => {
+    const element = await fixture<BudgetLimitsDialog>(
+      html`<budget-limits-dialog open></budget-limits-dialog>`
+    );
+    await element.updateComplete;
+    const editor = element.shadowRoot!.querySelector('budget-policy-editor')!;
+    const nested = document.createElement('sl-dialog');
+    let nestedHideRan = false;
+    nested.addEventListener('sl-hide', () => {
+      nestedHideRan = true;
+    });
+    editor.appendChild(nested);
+
+    let outerHide = false;
+    element.addEventListener('budget-limits-hide', () => {
+      outerHide = true;
+    });
+    nested.dispatchEvent(
+      new CustomEvent('sl-hide', { bubbles: true, composed: true })
+    );
+    await element.updateComplete;
+
+    expect(nestedHideRan).to.be.true;
+    expect(element.open).to.be.true;
+    expect(outerHide).to.be.false;
   });
 });

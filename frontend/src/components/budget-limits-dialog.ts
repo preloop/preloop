@@ -32,18 +32,6 @@ export class BudgetLimitsDialog extends LitElement {
     `,
   ];
 
-  connectedCallback() {
-    super.connectedCallback();
-    this.addEventListener('sl-hide', this.containNestedHide, true);
-    this.addEventListener('sl-after-hide', this.containNestedHide, true);
-  }
-
-  disconnectedCallback() {
-    this.removeEventListener('sl-hide', this.containNestedHide, true);
-    this.removeEventListener('sl-after-hide', this.containNestedHide, true);
-    super.disconnectedCallback();
-  }
-
   /**
    * Overlay clicks are too easy to hit while filling the form. Hoisted
    * selects (notify recipients, period, scope) portal outside the panel, so
@@ -57,23 +45,12 @@ export class BudgetLimitsDialog extends LitElement {
   };
 
   /**
-   * `sl-select` / `sl-dropdown` fire `sl-hide` when their popup closes.
-   * That event is composed and used to bubble out to Overview / Attention,
-   * which listen for `sl-hide` on this host and set `open` false. Picking
-   * Daily or an agent then closed the whole dialog. Stop those here; the
-   * real dialog hide still reaches `handleHide`.
+   * Nested `sl-select` / `sl-dropdown` popups (and the inner "Delete limit"
+   * dialog) also fire `sl-hide`. Stop those from looking like this dialog
+   * closed. Do not capture-stop on the host: that runs before the event
+   * reaches a nested dialog's own `@sl-hide`, so Escape on "Delete limit"
+   * would never clear `pendingDeleteId`.
    */
-  private containNestedHide = (event: Event) => {
-    if (event.target === this) {
-      return;
-    }
-    const dialog = this.renderRoot.querySelector('sl-dialog');
-    if (event.composedPath()[0] === dialog) {
-      return;
-    }
-    event.stopPropagation();
-  };
-
   private handleHide(event: Event) {
     if (event.target !== event.currentTarget) {
       event.stopPropagation();
