@@ -1229,6 +1229,30 @@ export interface AIModelGatewayUsageSummaryResponse {
   usage_by_session: GatewayUsageBySession[];
 }
 
+export interface AIModelOverviewItem {
+  ai_model_id: string;
+  model_name: string;
+  provider_name: string;
+  model_identifier: string;
+  model_alias: string | null;
+  is_default: boolean;
+  total_requests: number;
+  successful_requests: number;
+  failed_requests: number;
+  token_usage: GatewayTokenUsage;
+  estimated_cost: number;
+  unpriced_request_count: number;
+  active_session_count: number;
+  last_request_at: string | null;
+  pricing_source: 'override' | 'model_config' | 'catalog' | 'none';
+}
+
+export interface AIModelsOverviewResponse {
+  period_start: string;
+  period_end: string;
+  models: AIModelOverviewItem[];
+}
+
 export interface ApiKeyGatewayUsageSummaryResponse {
   api_key_id: string;
   period_start: string;

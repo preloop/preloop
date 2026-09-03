@@ -4,15 +4,11 @@ import { when } from 'lit/directives/when.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
   getAIModels,
-  getAIModelGatewayUsageSummary,
-  getAIModelRuntimeSessions,
+  getAIModelsOverview,
   updateAIModel,
   deleteAIModel,
 } from '../../../api';
-import type {
-  AIModel,
-  AIModelGatewayUsageSummaryResponse,
-} from '../../../types';
+import type { AIModel, AIModelOverviewItem } from '../../../types';
 
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -23,6 +19,7 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '../../../components/add-ai-model-modal';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
+import { formatRelativeTime } from '../../../utils/date';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
 
@@ -58,13 +55,7 @@ export class AIModelsView extends LitElement {
   private modelToDelete: AIModel | null = null;
 
   @state()
-  private modelOverview = new Map<
-    string,
-    {
-      summary: AIModelGatewayUsageSummaryResponse;
-      activeSessions: number;
-    }
-  >();
+  private modelOverview = new Map<string, AIModelOverviewItem>();
 
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
@@ -292,27 +283,17 @@ export class AIModelsView extends LitElement {
     }
     this.error = null;
     try {
-      this.models = await getAIModels();
-      const overviewEntries = await Promise.all(
-        this.models.map(async (model) => {
-          const [summary, sessions] = await Promise.all([
-            getAIModelGatewayUsageSummary(model.id, this.getOverviewParams()),
-            getAIModelRuntimeSessions(model.id, {
-              ...this.getOverviewParams(),
-              status: 'active',
-              limit: 100,
-            }),
-          ]);
-          return [
-            model.id,
-            {
-              summary,
-              activeSessions: sessions.total,
-            },
-          ] as const;
-        })
+      // One request for the page, whatever the fleet size. The per-model
+      // endpoints stay for the detail view: a burst of them is what emptied
+      // the API connection pool on 2026-09-03.
+      const [models, overview] = await Promise.all([
+        getAIModels(),
+        getAIModelsOverview(this.getOverviewParams()),
+      ]);
+      this.models = models;
+      this.modelOverview = new Map(
+        overview.models.map((item) => [item.ai_model_id, item])
       );
-      this.modelOverview = new Map(overviewEntries);
     } catch (error) {
       this.error =
         error instanceof Error ? error.message : 'Failed to fetch AI models';
@@ -341,34 +322,34 @@ export class AIModelsView extends LitElement {
 
   private get fleetRequestCount(): number {
     return [...this.modelOverview.values()].reduce(
-      (total, item) => total + item.summary.total_requests,
+      (total, item) => total + item.total_requests,
       0
     );
   }
 
   private get fleetSpend(): number {
     return [...this.modelOverview.values()].reduce(
-      (total, item) => total + item.summary.estimated_cost,
+      (total, item) => total + item.estimated_cost,
       0
     );
   }
 
   private get activeFleetSessions(): number {
     return [...this.modelOverview.values()].reduce(
-      (total, item) => total + item.activeSessions,
+      (total, item) => total + item.active_session_count,
       0
     );
   }
 
   private get activeModelsCount(): number {
     return [...this.modelOverview.values()].filter(
-      (item) => item.summary.total_requests > 0
+      (item) => item.total_requests > 0
     ).length;
   }
 
   private get modelsNeedingAttentionCount(): number {
     return [...this.modelOverview.values()].filter(
-      (item) => item.summary.failed_requests > 0
+      (item) => item.failed_requests > 0
     ).length;
   }
 
@@ -386,10 +367,10 @@ export class AIModelsView extends LitElement {
 
   private getHealthVariant(modelId: string): 'success' | 'warning' | 'neutral' {
     const overview = this.getModelOverview(modelId);
-    if (!overview || overview.summary.total_requests === 0) {
+    if (!overview || overview.total_requests === 0) {
       return 'neutral';
     }
-    if (overview.summary.failed_requests > 0) {
+    if (overview.failed_requests > 0) {
       return 'warning';
     }
     return 'success';
@@ -397,13 +378,33 @@ export class AIModelsView extends LitElement {
 
   private getHealthLabel(modelId: string): string {
     const overview = this.getModelOverview(modelId);
-    if (!overview || overview.summary.total_requests === 0) {
+    if (!overview || overview.total_requests === 0) {
       return 'Idle';
     }
-    if (overview.summary.failed_requests > 0) {
+    if (overview.failed_requests > 0) {
       return 'Attention';
     }
     return 'Healthy';
+  }
+
+  private getPricingSourceLabel(modelId: string): string {
+    switch (this.getModelOverview(modelId)?.pricing_source) {
+      case 'override':
+        return 'Priced by account override';
+      case 'model_config':
+        return 'Priced by model config';
+      case 'catalog':
+        return 'Priced from catalog';
+      default:
+        return 'No price set';
+    }
+  }
+
+  private getLastRequestLabel(modelId: string): string | null {
+    const lastRequestAt = this.getModelOverview(modelId)?.last_request_at;
+    return lastRequestAt
+      ? `Last request ${formatRelativeTime(lastRequestAt)}`
+      : null;
   }
 
   private getGatewayAlias(model: AIModel): string | null {
@@ -615,6 +616,9 @@ export class AIModelsView extends LitElement {
                           <div class="cell-secondary">
                             ${this.getModelKindLabel(model)}
                           </div>
+                          <div class="cell-secondary">
+                            ${this.getPricingSourceLabel(model.id)}
+                          </div>
                         </div>
                       </td>
                       <td>
@@ -627,12 +631,13 @@ export class AIModelsView extends LitElement {
                               ${this.getHealthLabel(model.id)}
                             </sl-badge>
                             ${
-                              this.getModelOverview(model.id)?.activeSessions
+                              this.getModelOverview(model.id)
+                                ?.active_session_count
                                 ? html`
                                     <sl-badge variant="primary" pill>
                                       ${this.formatNumber(
                                         this.getModelOverview(model.id)
-                                          ?.activeSessions
+                                          ?.active_session_count
                                       )}
                                       active sessions
                                     </sl-badge>
@@ -642,13 +647,12 @@ export class AIModelsView extends LitElement {
                           </div>
                           <div class="cell-secondary">
                             ${this.formatNumber(
-                              this.getModelOverview(model.id)?.summary
-                                .successful_requests
+                              this.getModelOverview(model.id)
+                                ?.successful_requests
                             )}
                             successful ·
                             ${this.formatNumber(
-                              this.getModelOverview(model.id)?.summary
-                                .failed_requests
+                              this.getModelOverview(model.id)?.failed_requests
                             )}
                             failed
                           </div>
@@ -658,22 +662,27 @@ export class AIModelsView extends LitElement {
                         <div class="cell-stack">
                           <div class="cell-primary">
                             ${this.formatNumber(
-                              this.getModelOverview(model.id)?.summary
-                                .total_requests
+                              this.getModelOverview(model.id)?.total_requests
                             )}
                             requests
                           </div>
                           <div class="cell-secondary">
                             ${this.formatNumber(
-                              this.getModelOverview(model.id)?.summary
-                                .token_usage.total_tokens
+                              this.getModelOverview(model.id)?.token_usage
+                                .total_tokens
                             )}
                             tokens ·
                             ${this.formatCurrency(
-                              this.getModelOverview(model.id)?.summary
-                                .estimated_cost
+                              this.getModelOverview(model.id)?.estimated_cost
                             )}
                           </div>
+                          ${
+                            this.getLastRequestLabel(model.id)
+                              ? html`<div class="cell-secondary">
+                                  ${this.getLastRequestLabel(model.id)}
+                                </div>`
+                              : null
+                          }
                         </div>
                       </td>
                       <td>

@@ -414,6 +414,49 @@ class AIModelCatalogSyncResponse(BaseModel):
     dry_run: bool = False
 
 
+class AIModelOverviewItem(BaseModel):
+    """One row of the Models page: what this model did in the window."""
+
+    ai_model_id: str
+    model_name: str
+    provider_name: str
+    model_identifier: str
+    model_alias: Optional[str] = Field(
+        None, description="Gateway alias clients call this model by, if configured"
+    )
+    is_default: bool = False
+    total_requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    token_usage: GatewayTokenUsage = Field(default_factory=GatewayTokenUsage)
+    estimated_cost: float = 0.0
+    unpriced_request_count: int = Field(
+        0, description="Requests with tokens but no price to apply"
+    )
+    active_session_count: int = Field(
+        0, description="Runtime sessions still open that used this model"
+    )
+    last_request_at: Optional[datetime] = Field(
+        None, description="Timestamp of the most recent gateway request"
+    )
+    pricing_source: Literal["override", "model_config", "catalog", "none"] = Field(
+        "none", description="Where this model's effective price comes from"
+    )
+
+
+class AIModelsOverviewResponse(BaseModel):
+    """Batch answer for the Models page and the dashboard inventory tab.
+
+    Replaces one request per model per panel with a single response, so
+    opening the page costs a fixed number of queries no matter how many
+    models an account has configured.
+    """
+
+    period_start: datetime
+    period_end: datetime
+    models: List[AIModelOverviewItem] = Field(default_factory=list)
+
+
 class AIModelGatewayUsageSummaryResponse(BaseModel):
     """Gateway usage summary for one durable AI model."""
 

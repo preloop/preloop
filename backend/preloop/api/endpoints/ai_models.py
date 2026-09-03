@@ -25,7 +25,9 @@ from preloop.schemas.ai_model import (
     AIModelCreate,
     AIModelCredentialExportResponse,
     AIModelGatewayUsageSummaryResponse,
+    AIModelOverviewItem,
     AIModelRead,
+    AIModelsOverviewResponse,
     AIModelUpdate,
     AvailableModelsRequest,
     AvailableModelsResponse,
@@ -35,7 +37,7 @@ from preloop.services.secret_service import (
     CredentialRefreshError,
     get_secret_service,
 )
-from preloop.models.crud import crud_ai_model
+from preloop.models.crud import crud_ai_model, crud_api_usage, crud_runtime_session
 from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.user import User
@@ -43,6 +45,7 @@ from preloop.models.models.ai_model import AIModel
 from preloop.schemas.gateway_usage import (
     AccountGatewayUsageSearchResponse,
     AccountRuntimeSessionListResponse,
+    GatewayTokenUsage,
 )
 from preloop.schemas.ai_model_pricing import (
     AIModelPriceQuote,
@@ -53,8 +56,12 @@ from preloop.services.ai_model_pricing import (
     PriceFetchUnsupportedError,
     fetch_provider_pricing,
     get_effective_pricing,
+    get_effective_pricing_bulk,
 )
-from preloop.services.model_gateway_usage import ModelGatewayUsageService
+from preloop.services.model_gateway_usage import (
+    ModelGatewayUsageService,
+    normalize_usage_period,
+)
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 from preloop.utils.permissions import require_permission
 from preloop.services.ai_model_provider import (
@@ -82,6 +89,68 @@ def _get_account_ai_model(
             status_code=status.HTTP_404_NOT_FOUND, detail="AI Model not found"
         )
     return db_model
+
+
+def _gateway_alias(ai_model: AIModel) -> Optional[str]:
+    """Return the gateway alias clients call this model by, if configured."""
+    meta_data = ai_model.meta_data if isinstance(ai_model.meta_data, dict) else {}
+    gateway = meta_data.get("gateway")
+    if isinstance(gateway, dict):
+        alias = gateway.get("model_alias")
+        if isinstance(alias, str) and alias.strip():
+            return alias.strip()
+    return None
+
+
+def _collapse_usage_by_model(usage_rows: List[Dict]) -> Dict[str, Dict]:
+    """Sum the per-alias usage groups into one total per model.
+
+    ``get_gateway_usage_by_model`` groups by (model, alias, provider), so a
+    model renamed at the gateway comes back as several rows. The Models page
+    shows one row per configured model, so the aliases are added together.
+
+    Args:
+        usage_rows: Grouped rows as returned by the usage CRUD.
+
+    Returns:
+        Mapping of model id to summed counters, with the latest
+        ``last_request_at`` across that model's aliases.
+    """
+    totals: Dict[str, Dict] = {}
+    for row in usage_rows:
+        model_id = row.get("ai_model_id")
+        if not model_id:
+            continue
+        total = totals.setdefault(
+            model_id,
+            {
+                "request_count": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "estimated_cost": 0.0,
+                "unpriced_request_count": 0,
+                "failed_request_count": 0,
+                "last_request_at": None,
+            },
+        )
+        for key in (
+            "request_count",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "estimated_cost",
+            "unpriced_request_count",
+            "failed_request_count",
+        ):
+            total[key] += row.get(key) or 0
+        last_request_at = row.get("last_request_at")
+        if last_request_at is not None and (
+            total["last_request_at"] is None
+            or last_request_at > total["last_request_at"]
+        ):
+            total["last_request_at"] = last_request_at
+    return totals
 
 
 def _get_current_account(*, db: Session, current_user: User) -> Account:
@@ -136,6 +205,96 @@ def list_ai_models(
     """List all AI Models associated with the authenticated user's account."""
     models = crud_ai_model.get_by_account(db=db, account_id=current_user.account_id)
     return models
+
+
+@router.get(
+    "/ai-models/overview",
+    response_model=AIModelsOverviewResponse,
+    summary="Get AI Models Overview",
+    tags=["AI Models"],
+)
+@require_permission("view_ai_models")
+def get_ai_models_overview(
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelsOverviewResponse:
+    """Return usage, active sessions and price source for every model."""
+    # Declared before ``/ai-models/{model_id}`` so the literal path wins the
+    # route match.
+    #
+    # Answers the whole page in a fixed number of queries: the models, one
+    # grouped usage aggregate, one grouped active-session count and one read
+    # of the account's price overrides. The per-model summary, runtime-session,
+    # interaction and pricing endpoints stay for the detail page, where they
+    # are asked for one model at a time.
+    period_start, period_end = normalize_usage_period(start_date, end_date)
+    account_id = str(current_user.account_id)
+    models = crud_ai_model.get_by_account(db=db, account_id=current_user.account_id)
+    if not models:
+        return AIModelsOverviewResponse(
+            period_start=period_start, period_end=period_end, models=[]
+        )
+
+    model_ids = [str(model.id) for model in models]
+    # ``limit=None``: this is a total per model, and a request-count-ordered
+    # truncation would silently zero the quietest models on the page.
+    usage_rows = crud_api_usage.get_gateway_usage_by_model(
+        db,
+        account_id=account_id,
+        start_date=period_start,
+        end_date=period_end,
+        ai_model_ids=model_ids,
+        limit=None,
+    )
+    usage_by_model = _collapse_usage_by_model(usage_rows)
+    active_sessions = crud_runtime_session.count_active_sessions_by_model(
+        db,
+        account_id=account_id,
+        ai_model_ids=model_ids,
+        start_date=period_start,
+        end_date=period_end,
+    )
+    pricing = get_effective_pricing_bulk(
+        db, account_id=current_user.account_id, ai_models=models
+    )
+
+    items: List[AIModelOverviewItem] = []
+    for model in models:
+        model_id = str(model.id)
+        usage = usage_by_model.get(model_id)
+        requests = usage["request_count"] if usage else 0
+        failed = usage["failed_request_count"] if usage else 0
+        items.append(
+            AIModelOverviewItem(
+                ai_model_id=model_id,
+                model_name=model.name,
+                provider_name=model.provider_name,
+                model_identifier=model.model_identifier,
+                model_alias=_gateway_alias(model),
+                is_default=bool(model.is_default),
+                total_requests=requests,
+                successful_requests=max(requests - failed, 0),
+                failed_requests=failed,
+                token_usage=GatewayTokenUsage(
+                    prompt_tokens=usage["prompt_tokens"] if usage else 0,
+                    completion_tokens=usage["completion_tokens"] if usage else 0,
+                    total_tokens=usage["total_tokens"] if usage else 0,
+                ),
+                estimated_cost=usage["estimated_cost"] if usage else 0.0,
+                unpriced_request_count=usage["unpriced_request_count"] if usage else 0,
+                active_session_count=active_sessions.get(model_id, 0),
+                last_request_at=usage["last_request_at"] if usage else None,
+                pricing_source=(
+                    pricing[model_id].source if model_id in pricing else "none"
+                ),
+            )
+        )
+
+    return AIModelsOverviewResponse(
+        period_start=period_start, period_end=period_end, models=items
+    )
 
 
 @router.get(

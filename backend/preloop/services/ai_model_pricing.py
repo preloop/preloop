@@ -12,12 +12,12 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from sqlalchemy.orm import Session
 
-from preloop.models.crud import crud_model_price_override
 from preloop.models.models.ai_model import AIModel
+from preloop.models.models.model_price_override import ModelPriceOverride
 from preloop.schemas.ai_model_pricing import (
     AIModelPrice,
     AIModelPriceQuote,
@@ -28,7 +28,10 @@ from preloop.services.model_pricing import (
     _get_configured_pricing,
     _iter_litellm_model_candidates,
 )
-from preloop.services.pricing_overrides import resolve_pricing_override
+from preloop.services.pricing_overrides import (
+    resolve_active_override_row,
+    resolve_pricing_overrides_bulk,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -185,17 +188,15 @@ def _has_any_price(price: AIModelPrice) -> bool:
     )
 
 
-def get_effective_pricing(
-    db: Session,
-    *,
-    account_id: Union[uuid.UUID, str],
+def _pricing_response(
     ai_model: AIModel,
+    override_row: Optional[ModelPriceOverride],
 ) -> AIModelPricingResponse:
-    """Return the price this account is charged for one model, and its source.
+    """Build the pricing answer for one model from an already-resolved override.
 
-    The resolution order is the gateway's own (override, then pricing
-    configured on the model, then the catalog), so the card cannot claim a
-    price the cost estimator would not use.
+    Everything after the override lookup is in-process (model config, then
+    litellm's price map), so this function never touches the database. That is
+    what lets the batch endpoint price a whole page from one override query.
     """
     alias = _model_alias(ai_model)
     base = {
@@ -206,27 +207,18 @@ def get_effective_pricing(
         "fetch_provider_label": provider_label(ai_model.provider_name),
     }
 
-    override = resolve_pricing_override(
-        db, account_id=account_id, ai_model=ai_model, requested_alias=alias
-    )
-    if override:
-        price = _price_from_configured(dict(override))
+    if override_row is not None:
+        override = dict(override_row.to_pricing_dict())
+        price = _price_from_configured(override)
         if _has_any_price(price):
-            override_row = None
-            override_id = override.get("id")
-            if override_id:
-                try:
-                    override_row = crud_model_price_override.get(db, id=override_id)
-                except Exception:  # noqa: BLE001 - display detail only
-                    logger.debug("Override row lookup failed", exc_info=True)
             return AIModelPricingResponse(
                 **base,
                 source="override",
                 price=price,
                 currency=str(override.get("currency") or "USD"),
-                override_id=str(override_id) if override_id else None,
-                effective_from=getattr(override_row, "effective_from", None),
-                effective_until=getattr(override_row, "effective_until", None),
+                override_id=str(override_row.id),
+                effective_from=override_row.effective_from,
+                effective_until=override_row.effective_until,
             )
 
     configured = _get_configured_pricing(ai_model)
@@ -251,6 +243,58 @@ def get_effective_pricing(
         )
 
     return AIModelPricingResponse(**base, source="none")
+
+
+def get_effective_pricing(
+    db: Session,
+    *,
+    account_id: Union[uuid.UUID, str],
+    ai_model: AIModel,
+) -> AIModelPricingResponse:
+    """Return the price this account is charged for one model, and its source.
+
+    The resolution order is the gateway's own (override, then pricing
+    configured on the model, then the catalog), so the card cannot claim a
+    price the cost estimator would not use.
+    """
+    return _pricing_response(
+        ai_model,
+        resolve_active_override_row(
+            db,
+            account_id=account_id,
+            ai_model=ai_model,
+            requested_alias=_model_alias(ai_model),
+        ),
+    )
+
+
+def get_effective_pricing_bulk(
+    db: Session,
+    *,
+    account_id: Union[uuid.UUID, str],
+    ai_models: Sequence[AIModel],
+) -> Dict[str, AIModelPricingResponse]:
+    """Price many models with one override query, not one lookup per model.
+
+    Same answers as calling :func:`get_effective_pricing` per model; the
+    difference is that the console's Models page no longer costs one request
+    and one pooled connection per row.
+
+    Args:
+        db: Database session.
+        account_id: Account scope for override resolution.
+        ai_models: Models to price.
+
+    Returns:
+        Mapping of model id (as a string) to its pricing answer.
+    """
+    overrides = resolve_pricing_overrides_bulk(
+        db, account_id=account_id, ai_models=ai_models
+    )
+    return {
+        str(ai_model.id): _pricing_response(ai_model, overrides.get(str(ai_model.id)))
+        for ai_model in ai_models
+    }
 
 
 def _openrouter_candidates(ai_model: AIModel) -> List[str]:

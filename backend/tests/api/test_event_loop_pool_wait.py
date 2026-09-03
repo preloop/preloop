@@ -57,6 +57,7 @@ PING_BUDGET_SECONDS = 1.0
 # database work explicitly.
 CONSOLE_HOT_PATHS: tuple[tuple[str, str], ...] = (
     ("GET", "/api/v1/ai-models"),
+    ("GET", "/api/v1/ai-models/overview"),
     ("GET", "/api/v1/ai-models/{model_id}"),
     ("GET", "/api/v1/ai-models/{model_id}/summary"),
     ("GET", "/api/v1/ai-models/{model_id}/runtime-sessions"),
