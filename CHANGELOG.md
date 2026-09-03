@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-flow timeout budget**: `timeout_seconds` on a flow (create/update
+  API, preset YAML, 60..86400 seconds) sets the wall-clock budget for one
+  execution; unset keeps the deployment default
+  (`FLOW_EXECUTION_MAX_WAIT_SECONDS`, 3600). A run that overruns it fails
+  with a message that names the budget that expired, so a stuck run is
+  distinguishable from work that legitimately needs longer. The PR reviewer
+  preset ships with 1800 and the release security audit with 7200.
+- **In-place completion nudge**: when an agent exits cleanly without
+  confirming completion, its own container now reminds it once, on the same
+  harness session and workspace, to write `result.json` and print the
+  completion sentinel. The reminder runs before any push or PR creation and
+  can never repeat a side effect, is bounded to one round
+  (`FLOW_COMPLETION_NUDGE_TIMEOUT_SECONDS`, default 300; disable fleet-wide
+  with `FLOW_COMPLETION_NUDGE_ENABLED=false`), and appears on the execution
+  timeline as `completion_nudge`. Runs that used to fail as "exited 0 but
+  did not produce the success sentinel", the largest failure class on
+  staging, now mostly confirm themselves. For runtimes that cannot resume a
+  session (Gemini, Aider, OpenHands, remote runners) a written
+  `/workspace/result.json` is accepted as the completion signal instead.
 - **`preloop agents refresh` (alias `sync`), `preloop models sync`, and `POST /api/v1/ai-models/sync`**: refresh rewrites managed model sections of onboarded agent configs from the account catalog; models sync (and the endpoint) pull newly released provider models into that catalog using stored credentials.
 - **Opt-in scheduled model-catalog sync**: `MODEL_CATALOG_SYNC_SCHEDULED_ENABLED` (default false; helm `config.modelCatalogSync.*`) runs the same discovery as `preloop models sync` for every account, attributing audit events to the `model-catalog-sync` system actor.
 - **`preloop usage hook` accepts harness-agnostic events**: stdin is
