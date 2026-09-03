@@ -608,6 +608,36 @@ describe('FlowExecutionView', () => {
       ).to.equal('exec-1');
     });
 
+    it('adds a Failure item to the strip only when the run has a category', async () => {
+      const element = await load('exec-1');
+      const labelsOf = () =>
+        Array.from(
+          element
+            .shadowRoot!.querySelector('[data-testid="summary-strip"]')!
+            .querySelectorAll('.strip-label')
+        ).map((label) => (label.textContent || '').trim());
+
+      // A run with no category: the strip is the row it always was.
+      expect(labelsOf()).to.not.contain('Failure');
+
+      (element as any).execution = {
+        ...(element as any).execution,
+        status: 'FAILED',
+        failure_category: 'model_quota',
+      };
+      await element.updateComplete;
+
+      expect(labelsOf()).to.contain('Failure');
+      const chip = element.shadowRoot!.querySelector(
+        '[data-testid="strip-failure-category"] sl-badge'
+      )!;
+      expect(chip.textContent!.trim()).to.equal('Model quota');
+      expect(chip.getAttribute('variant')).to.equal('neutral');
+      expect(chip.closest('sl-tooltip')!.getAttribute('content')).to.contain(
+        'quota'
+      );
+    });
+
     it('names the model that served the run in the strip', async () => {
       const element = await load('exec-1');
 

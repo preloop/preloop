@@ -51,6 +51,7 @@ import {
 import { REMOVE_AGENT_CONSEQUENCE } from '../../utils/agent-display';
 import { loadAttentionInputs } from '../../utils/attention-data';
 import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
+import { renderFailureCategoryChip } from '../../utils/failure-category';
 import {
   executionSubjectCss,
   renderExecutionSubject,
@@ -347,6 +348,23 @@ export class AttentionView extends AuthedElement {
         width: 60px;
       }
 
+      /* The category column takes its width from the subject, which has the
+         most to give: a chip needs a fixed amount and a truncated chip says
+         nothing. Overflow stays visible so the tooltip's chip is not clipped. */
+      .runs-table .category-cell {
+        overflow: visible;
+        width: 18%;
+      }
+      .runs-table.has-category .subject-cell {
+        width: 22%;
+      }
+      .runs-table.has-category .started-cell {
+        width: 15%;
+      }
+      .runs-table.has-category .duration-cell {
+        width: 10%;
+      }
+
       /* On a phone the five columns collide and every one of them is cut off
          mid-word. Duration and the error text are the ones to drop: the error
          is repeated in full above the table as "most common", and the run is
@@ -362,6 +380,18 @@ export class AttentionView extends AuthedElement {
         }
         .runs-table .started-cell {
           width: 22%;
+        }
+        /* The category survives the narrow layout: it is the shortest
+           statement of why the run failed, and it is what the error column
+           would have said in more words. */
+        .runs-table.has-category .subject-cell {
+          width: 40%;
+        }
+        .runs-table.has-category .started-cell {
+          width: 20%;
+        }
+        .runs-table.has-category .category-cell {
+          width: 34%;
         }
       }
 
@@ -815,6 +845,9 @@ export class AttentionView extends AuthedElement {
     const runs = item.evidence?.failedRuns || [];
     const common = item.evidence?.mostCommonError;
     const flowId = item.evidence?.flowId;
+    // The column exists only when the server categorises failures. A column of
+    // blanks against an older server would say "we do not know" five times.
+    const showCategory = runs.some((run) => Boolean(run.failureCategory));
     return html`
       ${
         common
@@ -824,7 +857,9 @@ export class AttentionView extends AuthedElement {
             </div>`
           : nothing
       }
-      <table class="evidence-table runs-table">
+      <table
+        class="evidence-table runs-table ${showCategory ? 'has-category' : ''}"
+      >
         <thead>
           <tr>
             <!-- Subject first: six failures of one flow differ by what they
@@ -834,6 +869,11 @@ export class AttentionView extends AuthedElement {
             <th class="subject-cell">Subject</th>
             <th class="started-cell">Started</th>
             <th class="duration-cell">Duration</th>
+            ${
+              showCategory
+                ? html`<th class="category-cell">Category</th>`
+                : nothing
+            }
             <th class="error-cell">Error</th>
             <th class="open-cell"></th>
           </tr>
@@ -858,6 +898,13 @@ export class AttentionView extends AuthedElement {
                   ${run.startedAt ? formatRelativeTime(run.startedAt) : 'n/a'}
                 </td>
                 <td class="duration-cell">${run.durationText || 'n/a'}</td>
+                ${
+                  showCategory
+                    ? html`<td class="category-cell">
+                        ${renderFailureCategoryChip(run.failureCategory)}
+                      </td>`
+                    : nothing
+                }
                 <td
                   class="mono error-cell"
                   title=${run.errorMessage || nothing}

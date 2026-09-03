@@ -289,6 +289,99 @@ describe('deriveAttentionItems', () => {
       expect(merge.href).to.equal('/console/flows/executions/exec-3');
     });
 
+    it('says what a count of failures is made of', () => {
+      const items = derive({
+        executions: [
+          {
+            id: 'exec-1',
+            flow_id: 'flow-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: daysAgo(2),
+            end_time: minutesAgo(2 * 24 * 60 - 1),
+            failure_category: 'model_transient',
+          },
+          {
+            id: 'exec-2',
+            flow_id: 'flow-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: daysAgo(3),
+            failure_category: 'model_transient',
+          },
+          {
+            id: 'exec-3',
+            flow_id: 'flow-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: daysAgo(4),
+            failure_category: 'no_confirmation',
+          },
+        ],
+      });
+
+      expect(items[0].detail).to.equal(
+        '3 failed: 2 model transient, 1 no confirmation · latest 2d ago · 1m 0s'
+      );
+      expect(
+        items[0].evidence?.failedRuns?.map((run) => run.failureCategory)
+      ).to.deep.equal([
+        'model_transient',
+        'model_transient',
+        'no_confirmation',
+      ]);
+    });
+
+    it('names the category of a single failure without counting it', () => {
+      const items = derive({
+        executions: [
+          {
+            id: 'exec-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: minutesAgo(90),
+            end_time: minutesAgo(88),
+            failure_category: 'runner_conflict',
+          },
+        ],
+      });
+
+      expect(items[0].detail).to.equal(
+        'Failed: runner conflict · 1h ago · 2m 0s'
+      );
+    });
+
+    it('keeps the old wording when the server does not categorise', () => {
+      const items = derive({
+        executions: [
+          {
+            id: 'exec-1',
+            flow_id: 'flow-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: daysAgo(2),
+            end_time: minutesAgo(2 * 24 * 60 - 1),
+          },
+          {
+            id: 'exec-2',
+            flow_id: 'flow-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: daysAgo(3),
+          },
+        ],
+      });
+
+      expect(items[0].detail).to.equal(
+        '2 failed runs in 3d · latest 2d ago · 1m 0s'
+      );
+      expect(
+        items[0].evidence?.failedRuns?.every(
+          (run) => run.failureCategory === null
+        )
+      ).to.be.true;
+    });
+
     it('ignores succeeded runs and anything older than 7 days', () => {
       const items = derive({
         executions: [

@@ -21,6 +21,7 @@ import {
   renderExecutionSubject,
   type ExecutionSubjectSource,
 } from '../utils/execution-subject';
+import { renderFailureCategoryChip } from '../utils/failure-category';
 import { renderAgentIcon } from '../utils/agent-icons';
 import type { AgentStatusChip } from '../utils/agent-display';
 
@@ -35,6 +36,8 @@ export interface InventoryFlowRun extends ExecutionSubjectSource {
   status: string;
   start_time: string;
   end_time?: string | null;
+  /** Which layer broke the run (#361); absent unless the run failed. */
+  failure_category?: string | null;
 }
 
 export interface InventoryAgentRow {
@@ -464,6 +467,7 @@ export class InventoryCard extends LitElement {
          the only part allowed to grow, and the chip and the clock never
          steal from it. */
       .last-run sl-badge,
+      .last-run sl-tooltip,
       .last-run .meta {
         flex-shrink: 0;
       }
@@ -962,6 +966,9 @@ export class InventoryCard extends LitElement {
         <sl-badge class="chip" pill variant=${this.statusVariant(run.status)}
           >${this.statusLabel(run.status)}</sl-badge
         >
+        <!-- The category sits with the status it qualifies, before the
+             subject, so "Failed · runner conflict" reads as one statement. -->
+        ${renderFailureCategoryChip(run.failure_category)}
         ${renderExecutionSubject(run)}
         <span class="meta" title=${this.absolute(run.start_time)}
           >${this.relative(run.start_time)}${

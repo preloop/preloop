@@ -5,6 +5,8 @@ import { repeat } from 'lit/directives/repeat.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
+import '@shoelace-style/shoelace/dist/components/badge/badge.js';
+import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
 import { fetchWithAuth } from '../api';
 import { showToast } from './confirm-dialog';
@@ -15,6 +17,10 @@ import {
 } from '../services/unified-websocket-manager';
 import { parseUTCDate, formatRelativeTime } from '../utils/date';
 import { executionDurationText } from '../utils/execution';
+import {
+  failureCategoryLabel,
+  renderFailureCategoryChip,
+} from '../utils/failure-category';
 import {
   executionSubjectCss,
   renderExecutionSubject,
@@ -80,6 +86,11 @@ export interface FeedEvent {
   entity?: string;
   fields?: FeedField[];
   /**
+   * Which layer broke a failed run (#361). Only failed run rows carry it, and
+   * only from servers that derive it; the row reads the same without it.
+   */
+  failureCategory?: string | null;
+  /**
    * Rows that say exactly this, one after another, fold into one row with a
    * count. Only tool calls set it: a busy minute is twelve identical
    * `ran update_pull_request` lines, which is one fact, not twelve.
@@ -104,6 +115,7 @@ export interface FeedContext {
     status?: string;
     start_time?: string;
     end_time?: string | null;
+    failure_category?: string | null;
   })[];
   users?: { id: string; username?: string | null; full_name?: string | null }[];
   budgetPolicies?: {
@@ -833,7 +845,35 @@ export function feedEventFromRealtime(
       };
     }
     if (status === 'FAILED' || status === 'TIMEOUT' || status === 'ERROR') {
-      return { ...base, tone: 'danger', text: `${name} failed` };
+      // The realtime payload carries the category when the server derives it;
+      // the executions the page already holds are the fallback for a socket
+      // message that predates the field.
+      const failureCategory =
+        firstString(payload, ['failure_category']) ||
+        known?.failure_category ||
+        null;
+      // The open row says it next to the status it qualifies, above the error
+      // text it summarises.
+      const fields = [...(base.fields || [])];
+      const failureField = field(
+        'Failure',
+        failureCategoryLabel(failureCategory)
+      );
+      if (failureField) {
+        const afterStatus = fields.findIndex((item) => item.label === 'Status');
+        fields.splice(
+          afterStatus === -1 ? fields.length : afterStatus + 1,
+          0,
+          failureField
+        );
+      }
+      return {
+        ...base,
+        tone: 'danger',
+        text: `${name} failed`,
+        failureCategory,
+        fields,
+      };
     }
     if (status === 'RUNNING') {
       return { ...base, tone: 'neutral', text: `${name} started` };
@@ -1854,6 +1894,11 @@ export class ActivityFeed extends LitElement {
                 ? html`<span class="sep">·</span>
                     ${renderExecutionSubject(event.subject)}`
                 : nothing
+            }
+            ${
+              /* "A flow failed" is the same line whatever broke; the chip is
+                 the shortest way to say which layer did. */
+              renderFailureCategoryChip(event.failureCategory)
             }
             ${
               event.trail

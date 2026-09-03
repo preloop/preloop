@@ -159,6 +159,53 @@ describe('activity-feed', () => {
       );
     });
 
+    it('carries the failure category of a failed run', () => {
+      const event = feedEventFromRealtime('flow_executions', {
+        execution_id: 'exec-3',
+        type: 'status_update',
+        timestamp: NOW,
+        payload: {
+          status: 'FAILED',
+          flow_name: 'Pull Request Reviewer',
+          failure_category: 'model_transient',
+        },
+      });
+      expect(event?.failureCategory).to.equal('model_transient');
+      const labels = (event?.fields || []).map((field) => field.label);
+      // Beside the status it qualifies, above the error text it summarises.
+      expect(labels.indexOf('Failure')).to.equal(labels.indexOf('Status') + 1);
+      expect(
+        (event?.fields || []).find((field) => field.label === 'Failure')?.value
+      ).to.equal('model transient');
+    });
+
+    it('falls back to the executions the page holds, and to nothing', () => {
+      const fromContext = feedEventFromRealtime(
+        'flow_executions',
+        {
+          execution_id: 'exec-1',
+          type: 'status_update',
+          timestamp: NOW,
+          payload: { status: 'FAILED', flow_name: 'PR Reviewer' },
+        },
+        {
+          executions: [{ id: 'exec-1', failure_category: 'runner_conflict' }],
+        }
+      );
+      expect(fromContext?.failureCategory).to.equal('runner_conflict');
+
+      const older = feedEventFromRealtime('flow_executions', {
+        execution_id: 'exec-2',
+        type: 'status_update',
+        timestamp: NOW,
+        payload: { status: 'FAILED', flow_name: 'PR Reviewer' },
+      });
+      expect(older?.failureCategory).to.equal(null);
+      expect((older?.fields || []).map((field) => field.label)).to.not.contain(
+        'Failure'
+      );
+    });
+
     it('carries the duration of a run that succeeded', () => {
       const end = new Date(Date.now() - 1000);
       const start = new Date(end.getTime() - 187000);
@@ -346,6 +393,37 @@ describe('activity-feed', () => {
   });
 
   describe('the card', () => {
+    it('chips the failure category onto a failed run row', async () => {
+      const el = await feed();
+      el.ingest('flow_executions', {
+        execution_id: 'exec-1',
+        flow_id: 'flow-1',
+        type: 'status_update',
+        timestamp: NOW,
+        payload: { status: 'FAILED', failure_category: 'no_confirmation' },
+      });
+      await el.updateComplete;
+
+      const chip = el.shadowRoot!.querySelector('.row sl-badge')!;
+      expect(chip.textContent!.trim()).to.equal('No confirmation');
+      expect(chip.getAttribute('variant')).to.equal('neutral');
+      expect(rowText(el)[0]).to.contain('Merge Request Reviewer failed');
+    });
+
+    it('leaves the row alone when no category came with it', async () => {
+      const el = await feed();
+      el.ingest('flow_executions', {
+        execution_id: 'exec-1',
+        flow_id: 'flow-1',
+        type: 'status_update',
+        timestamp: NOW,
+        payload: { status: 'FAILED' },
+      });
+      await el.updateComplete;
+
+      expect(el.shadowRoot!.querySelector('.row sl-badge')).to.not.exist;
+    });
+
     it('fills from the audit timeline, newest first', async () => {
       localStorage.setItem('accessToken', 'test-token');
       const { restore } = stubFetch([

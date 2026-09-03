@@ -11,6 +11,10 @@ import {
   formatRelativeTime,
   parseUTCDate,
 } from './date';
+import {
+  failureCategoryBreakdown,
+  failureCategoryLabel,
+} from './failure-category';
 import { sessionBelongsToAgent } from './agent-display';
 import { isCliOnboardableAgentKind } from './agent-kinds';
 import { shellQuote } from './shell';
@@ -47,6 +51,12 @@ export interface AttentionFailedRun {
       six rows that differ only by a timestamp. */
   subject?: string | null;
   subjectUrl?: string | null;
+  /**
+   * Which layer broke, as the server categorised it (#361). Absent on servers
+   * that do not derive it, in which case the evidence table drops the column
+   * rather than showing a row of blanks.
+   */
+  failureCategory?: string | null;
 }
 
 /** One gateway failure behind a model item's count. */
@@ -193,6 +203,8 @@ export interface AttentionFlowExecution {
   /** Also already returned; shown in the evidence table since wave 4. */
   trigger_subject?: string | null;
   trigger_subject_url?: string | null;
+  /** One of the closed failure vocabulary (#361), on failed runs only. */
+  failure_category?: string | null;
 }
 
 export interface AttentionInputs {
@@ -493,17 +505,27 @@ function flowItems(
       maxRelativeDays: Infinity,
       withSuffix: false,
     });
+    // What the count is made of: "5 failed: 3 model transient, 2 no
+    // confirmation" is a different morning than "5 failed: 5 runner conflict".
+    // Empty on servers that do not categorise, and the sentence falls back to
+    // the count it had before.
+    const breakdown = failureCategoryBreakdown(
+      runs.map((run) => run.failure_category)
+    );
+    const singleCategory = failureCategoryLabel(latest.failure_category);
     const detail =
       runs.length === 1
         ? joinReasons([
-            'Failed',
+            singleCategory ? `Failed: ${singleCategory}` : 'Failed',
             formatRelativeTime(latestStart, now),
             duration,
           ])
         : joinReasons([
-            `${runs.length} failed runs in ${
-              span === 'just now' ? '1m' : span
-            }`,
+            breakdown
+              ? `${runs.length} failed: ${breakdown}`
+              : `${runs.length} failed runs in ${
+                  span === 'just now' ? '1m' : span
+                }`,
             `latest ${formatRelativeTime(latestStart, now)}`,
             duration,
           ]);
@@ -528,6 +550,7 @@ function flowItems(
         errorMessage: (run.error_message || '').trim(),
         subject: run.trigger_subject || null,
         subjectUrl: run.trigger_subject_url || null,
+        failureCategory: run.failure_category || null,
       };
     });
 

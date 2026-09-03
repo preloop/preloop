@@ -269,6 +269,37 @@ describe('inventory-card', () => {
     expect(empty.shadowRoot?.textContent).to.contain('No run in range');
   });
 
+  it('says which layer broke the last run when the server categorised it', async () => {
+    const el = await card({
+      flowRows: [
+        flowRow({
+          lastRun: {
+            id: 'exec-9',
+            status: 'FAILED',
+            start_time: new Date(Date.now() - 300000).toISOString(),
+            end_time: new Date(Date.now() - 290000).toISOString(),
+            failure_category: 'runner_conflict',
+          },
+        }),
+      ],
+    });
+    await showTab(el, 'flows');
+
+    const chips = Array.from(
+      el.shadowRoot!.querySelectorAll('.last-run sl-badge')
+    ).map((chip) => (chip.textContent || '').trim());
+    expect(chips).to.eql(['Failed', 'Runner conflict']);
+
+    // Nothing extra on a server that does not derive the category.
+    const plain = await card();
+    await showTab(plain, 'flows');
+    expect(
+      Array.from(plain.shadowRoot!.querySelectorAll('.last-run sl-badge')).map(
+        (chip) => (chip.textContent || '').trim()
+      )
+    ).to.eql(['Succeeded']);
+  });
+
   it('says the counts came off the last 100 runs when they did', async () => {
     const el = await card({ flowRunsCapped: true });
     await showTab(el, 'flows');

@@ -152,6 +152,8 @@ interface FlowExecution {
   trigger_subject?: string | null;
   trigger_subject_url?: string | null;
   trigger_event_details?: Record<string, unknown> | null;
+  /** Which layer broke a failed run (#361); absent on older servers. */
+  failure_category?: string | null;
 }
 
 interface ApprovalRequest {
@@ -3008,6 +3010,7 @@ export class DashboardView extends AuthedElement {
               trigger_subject: counted.last.trigger_subject,
               trigger_subject_url: counted.last.trigger_subject_url,
               trigger_event_details: counted.last.trigger_event_details,
+              failure_category: counted.last.failure_category,
             }
           : null,
         runs: counted?.runs ?? 0,
