@@ -278,14 +278,17 @@ describe('DashboardView', () => {
       },
     ];
     flowsResponse = [{ id: 'flow-1', name: 'Refund Assistant' }];
+    // Relative, not a fixed date: the Inventory Flows tab counts the runs the
+    // page range contains, so a run pinned to a calendar day leaves the range
+    // as soon as the clock moves past it.
     flowExecutionsResponse = [
       {
         id: 'execution-1',
         flow_id: 'flow-1',
         flow_name: 'Refund Assistant',
         status: 'FAILED',
-        start_time: '2026-03-07T10:00:00Z',
-        end_time: '2026-03-07T10:03:00Z',
+        start_time: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+        end_time: new Date(Date.now() - 2 * 3600 * 1000 + 180000).toISOString(),
         error_message: 'Provider timeout',
       },
     ];
@@ -1122,6 +1125,81 @@ describe('DashboardView', () => {
         'verify_refund_eligibility (builtin)',
         'refund_order (Example MCP Server)',
       ]);
+    });
+
+    it('counts flow runs in the range the $ est. column already covers', async () => {
+      // Two runs of the same flow: one this morning, one last quarter. The
+      // spend column is range-scoped, so the run counts beside it must be.
+      flowExecutionsResponse = [
+        {
+          id: 'execution-1',
+          flow_id: 'flow-1',
+          flow_name: 'Refund Assistant',
+          status: 'FAILED',
+          start_time: new Date(Date.now() - 3600 * 1000).toISOString(),
+          end_time: null,
+          error_message: 'Provider timeout',
+        },
+        {
+          id: 'execution-old',
+          flow_id: 'flow-1',
+          flow_name: 'Refund Assistant',
+          status: 'FAILED',
+          start_time: new Date(Date.now() - 120 * 86400000).toISOString(),
+          end_time: null,
+          error_message: 'Ancient history',
+        },
+      ];
+      const element = await mountLoaded();
+
+      const flows = element['inventoryFlowRows'];
+      expect(flows[0].runs).to.equal(1);
+      expect(flows[0].failed).to.equal(1);
+      expect(flows[0].lastRun.id).to.equal('execution-1');
+      expect(element['flowRunsCapped']).to.be.false;
+      const inventory = element.shadowRoot?.querySelector(
+        'inventory-card'
+      ) as any;
+      expect(inventory.flowRunsCapped).to.be.false;
+    });
+
+    it('leaves a flow whose runs all predate the range at zero', async () => {
+      flowExecutionsResponse = [
+        {
+          id: 'execution-old',
+          flow_id: 'flow-1',
+          flow_name: 'Refund Assistant',
+          status: 'SUCCEEDED',
+          start_time: new Date(Date.now() - 120 * 86400000).toISOString(),
+          end_time: null,
+          error_message: null,
+        },
+      ];
+      const element = await mountLoaded();
+
+      const flows = element['inventoryFlowRows'];
+      expect(flows.length).to.equal(1);
+      expect(flows[0].runs).to.equal(0);
+      expect(flows[0].lastRun).to.equal(null);
+    });
+
+    it('flags the 100-run cap when the page never reached the range floor', async () => {
+      flowExecutionsResponse = Array.from({ length: 100 }, (_, index) => ({
+        id: `execution-${index}`,
+        flow_id: 'flow-1',
+        flow_name: 'Refund Assistant',
+        status: index === 0 ? 'FAILED' : 'SUCCEEDED',
+        start_time: new Date(Date.now() - (index + 1) * 60000).toISOString(),
+        end_time: null,
+        error_message: null,
+      }));
+      const element = await mountLoaded();
+
+      expect(element['flowRunsCapped']).to.be.true;
+      const inventory = element.shadowRoot?.querySelector(
+        'inventory-card'
+      ) as any;
+      expect(inventory.flowRunsCapped).to.be.true;
     });
 
     it('hands the feed the context it needs to name things', async () => {
