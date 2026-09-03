@@ -61,6 +61,12 @@ spec:
               value: {{ .Values.environment.debug | quote }}
             - name: MODEL_GATEWAY_CAPTURE_CONTENT
               value: {{ .Values.environment.modelGatewayCaptureContent | quote }}
+            - name: MODEL_GATEWAY_UPSTREAM_RETRY_MAX_ATTEMPTS
+              value: {{ .Values.environment.modelGatewayUpstreamRetry.maxAttempts | default 3 | quote }}
+            - name: MODEL_GATEWAY_UPSTREAM_RETRY_BASE_SECONDS
+              value: {{ .Values.environment.modelGatewayUpstreamRetry.baseSeconds | default 0.2 | quote }}
+            - name: MODEL_GATEWAY_UPSTREAM_RETRY_AFTER_CAP_SECONDS
+              value: {{ .Values.environment.modelGatewayUpstreamRetry.retryAfterCapSeconds | default 8 | quote }}
             {{- include "preloop.databaseUrlEnv" . | nindent 12 }}
             - name: DATABASE_POOL_SIZE
               value: {{ .Values.database.pool.gateway.size | quote }}

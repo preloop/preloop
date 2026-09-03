@@ -8,6 +8,10 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import crud_flow_execution
+from preloop.services.flow_failure_category import (
+    FAILURE_CATEGORY_RUNNER_ERROR,
+    derive_failure_category,
+)
 from preloop.sync.services.event_bus import get_nats_client
 from .flow_orchestrator import FlowExecutionOrchestrator
 
@@ -185,6 +189,9 @@ class ExecutionRecoveryService:
             update_data = FlowExecutionUpdate(
                 status="FAILED",
                 error_message="Execution interrupted during startup (pod restart)",
+                # The run never reached a provider or an agent: the runtime
+                # lost it, so it is a runner failure, not an agent one.
+                failure_category=FAILURE_CATEGORY_RUNNER_ERROR,
                 end_time=datetime.now(timezone.utc),
             )
             crud_flow_execution.update(db, db_obj=execution, obj_in=update_data)
@@ -234,6 +241,7 @@ class ExecutionRecoveryService:
                         update_data = FlowExecutionUpdate(
                             status="FAILED",
                             error_message=f"Container was {status.value} on recovery (likely cleaned up during deploy)",
+                            failure_category=FAILURE_CATEGORY_RUNNER_ERROR,
                             end_time=datetime.now(timezone.utc),
                         )
                         crud_flow_execution.update(
@@ -269,6 +277,7 @@ class ExecutionRecoveryService:
             update_data = FlowExecutionUpdate(
                 status="FAILED",
                 error_message=f"Container check failed during recovery: {check_error_message}",
+                failure_category=FAILURE_CATEGORY_RUNNER_ERROR,
                 end_time=datetime.now(timezone.utc),
             )
             crud_flow_execution.update(db, db_obj=execution, obj_in=update_data)
@@ -349,6 +358,11 @@ class ExecutionRecoveryService:
                 update_data = FlowExecutionUpdate(
                     status="FAILED",
                     error_message=f"Resumed monitoring failed: {str(e)}",
+                    failure_category=derive_failure_category(
+                        status="FAILED",
+                        error_message=error_message,
+                        exception=e,
+                    ),
                     end_time=datetime.now(timezone.utc),
                 )
                 crud_flow_execution.update(

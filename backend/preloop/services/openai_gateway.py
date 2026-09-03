@@ -327,12 +327,59 @@ class ModelGatewayBackend(Protocol):
 
 
 # Bounded retries for transient 502 / provider_unavailable /
-# upstream_disconnect / MidStreamFallbackError. 1 initial + 2 retries.
+# upstream_disconnect / MidStreamFallbackError. Default 1 initial + 2 retries.
 # Not LiteLLM Router fallbacks; those would require a model list.
+#
+# The values are settings (MODEL_GATEWAY_UPSTREAM_RETRY_*) read through the
+# helpers below rather than module constants, so an operator can tune or
+# disable the retries without a redeploy of new code. The module-level names
+# remain as the DEFAULTS the settings carry.
 _UPSTREAM_RETRY_MAX_ATTEMPTS = 3
 _UPSTREAM_RETRY_BASE_SECONDS = 0.2
 # Cap provider Retry-After so a 429 hint cannot stall the gateway.
 _UPSTREAM_RETRY_AFTER_CAP_SECONDS = 8.0
+
+
+def _upstream_retry_max_attempts() -> int:
+    """Configured attempt budget for one upstream call (never below 1)."""
+    return max(
+        1,
+        int(
+            getattr(
+                settings,
+                "model_gateway_upstream_retry_max_attempts",
+                _UPSTREAM_RETRY_MAX_ATTEMPTS,
+            )
+        ),
+    )
+
+
+def _upstream_retry_base_seconds() -> float:
+    """Configured backoff base for upstream retries."""
+    return max(
+        0.0,
+        float(
+            getattr(
+                settings,
+                "model_gateway_upstream_retry_base_seconds",
+                _UPSTREAM_RETRY_BASE_SECONDS,
+            )
+        ),
+    )
+
+
+def _upstream_retry_after_cap_seconds() -> float:
+    """Configured ceiling for a provider Retry-After hint."""
+    return max(
+        0.0,
+        float(
+            getattr(
+                settings,
+                "model_gateway_upstream_retry_after_cap_seconds",
+                _UPSTREAM_RETRY_AFTER_CAP_SECONDS,
+            )
+        ),
+    )
 
 
 def _upstream_retry_after_hint_seconds(exc: Exception) -> Optional[int]:
@@ -360,12 +407,13 @@ def _upstream_retry_delay_seconds(
     Returns:
         Seconds to wait before the next attempt.
     """
-    backoff = (_UPSTREAM_RETRY_BASE_SECONDS * (2**attempt)) + random.uniform(
-        0, _UPSTREAM_RETRY_BASE_SECONDS
-    )
+    base = _upstream_retry_base_seconds()
+    backoff = (base * (2**attempt)) + random.uniform(0, base)
     if retry_after_seconds is None:
         return backoff
-    hinted = min(float(max(retry_after_seconds, 0)), _UPSTREAM_RETRY_AFTER_CAP_SECONDS)
+    hinted = min(
+        float(max(retry_after_seconds, 0)), _upstream_retry_after_cap_seconds()
+    )
     return max(backoff, hinted)
 
 
@@ -607,6 +655,13 @@ class OpenAIGatewayService:
         # (then cleared) by _record_gateway_request. Only ever holds values
         # parsed from a real provider response (#136).
         self._last_rate_limit_snapshot: Optional[RateLimitSnapshot] = None
+        # How many times the upstream call for THIS request had to be
+        # retried after a transient provider failure. Accumulated by
+        # _run_with_upstream_retries (a request can run more than one
+        # upstream operation: the completion handshake and the stream open),
+        # consumed and cleared by _record_gateway_request so the number
+        # cannot leak onto the next request served by this instance.
+        self._last_upstream_retry_count: int = 0
         # Per-request memo of the authorized model-id set for this principal.
         # Computed once from the account inventory on first use so listing,
         # alias resolution, and default selection all consume the same set.
@@ -4977,16 +5032,25 @@ class OpenAIGatewayService:
             ModelGatewayAPIError: When retries are exhausted or the error
                 is not retryable.
         """
+        max_attempts = _upstream_retry_max_attempts()
         last_exc: Optional[Exception] = None
-        for attempt in range(_UPSTREAM_RETRY_MAX_ATTEMPTS):
+        for attempt in range(max_attempts):
             try:
-                return operation()
+                result = operation()
+                # Count the retries that got us here, not the attempts: 0
+                # means "worked first time". Recorded on the usage row and
+                # surfaced on the gateway event as `retried`, so a run that
+                # survived a flaky provider is visible instead of merely
+                # slow.
+                if attempt:
+                    self._last_upstream_retry_count += attempt
+                return result
             except Exception as exc:
                 last_exc = exc
-                if (
-                    attempt >= _UPSTREAM_RETRY_MAX_ATTEMPTS - 1
-                    or not is_retryable_upstream_failure(exc)
+                if attempt >= max_attempts - 1 or not is_retryable_upstream_failure(
+                    exc
                 ):
+                    self._last_upstream_retry_count += attempt
                     break
                 delay = _upstream_retry_delay_seconds(
                     attempt,
@@ -4996,7 +5060,7 @@ class OpenAIGatewayService:
                     "Retrying gateway upstream call after transient failure "
                     "(attempt %s/%s, delay=%.2fs, error=%s)",
                     attempt + 1,
-                    _UPSTREAM_RETRY_MAX_ATTEMPTS,
+                    max_attempts,
                     delay,
                     exc,
                 )
@@ -6817,6 +6881,9 @@ class OpenAIGatewayService:
         # from leaking onto a later request served by this instance (#136).
         rate_limit_snapshot = self._last_rate_limit_snapshot
         self._last_rate_limit_snapshot = None
+        # Same consume-and-clear discipline for the upstream retry count.
+        upstream_retries = self._last_upstream_retry_count
+        self._last_upstream_retry_count = 0
         rate_limit_meta: Optional[Dict[str, Any]] = (
             rate_limit_snapshot.to_meta() if rate_limit_snapshot else None
         )
@@ -6902,6 +6969,10 @@ class OpenAIGatewayService:
                 "gateway_attempt": gateway_attempt,
                 "is_retry": is_retry,
                 "retry_of_api_usage_id": retry_of_api_usage_id,
+                # Retries the GATEWAY made inside this one request after a
+                # transient upstream failure. Distinct from gateway_attempt /
+                # is_retry, which describe the CLIENT resending a request.
+                "upstream_retries": upstream_retries,
                 "usage_estimated": usage_estimated or None,
                 "api_equivalent_cost": api_equivalent_cost,
                 "context_optimization": (

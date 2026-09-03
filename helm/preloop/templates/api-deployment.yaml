@@ -147,6 +147,10 @@ spec:
               value: {{ .Values.flowExecution.workerEnabled | default false | quote }}
             - name: FLOW_EXECUTION_CLAIM_STALE_SECONDS
               value: {{ .Values.flowExecution.claimStaleSeconds | default 120 | quote }}
+            - name: AGENT_JOB_CREATE_MAX_ATTEMPTS
+              value: {{ .Values.flowExecution.agentJobCreate.maxAttempts | default 3 | quote }}
+            - name: AGENT_JOB_CREATE_RETRY_BASE_SECONDS
+              value: {{ .Values.flowExecution.agentJobCreate.retryBaseSeconds | default 0.5 | quote }}
             {{- if $.Values.sentry.enabled }}
             - name: SENTRY_DSN
               valueFrom:

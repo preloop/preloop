@@ -21,6 +21,7 @@ from preloop.services.flow_orchestrator import (
     _success_instruction_for_prompt,
 )
 from preloop.agents.base import AgentStatus, AgentExecutionResult
+from preloop.agents.container import AGENT_SESSION_SUFFIX_KEY, kubernetes_job_name
 from preloop.models.models import Flow, Account
 from preloop.models.models.user import User
 from preloop.models.schemas.flow import FlowCreate
@@ -2638,6 +2639,14 @@ class TestConfirmationNudge:
         # Token ceiling forwarded for runtimes that honor model parameters.
         assert nudge_context["model_parameters"]["max_output_tokens"] == 4096
         assert "original task prompt" in nudge_context["prompt"]
+        # The nudge is a SECOND session for the same execution, started while
+        # the original agent Job is still around (it lingers until its TTL).
+        # Without its own session name it can only ever fail with a 409 name
+        # conflict on Kubernetes.
+        assert nudge_context[AGENT_SESSION_SUFFIX_KEY] == "nudge"
+        assert kubernetes_job_name(
+            "exec-1", session_suffix=nudge_context[AGENT_SESSION_SUFFIX_KEY]
+        ) != kubernetes_job_name("exec-1")
         # The original context object is untouched.
         assert orchestrator._execution_context["git_clone_config"] is not None
 

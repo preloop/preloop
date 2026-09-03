@@ -208,3 +208,92 @@ def test_call_litellm_caps_large_retry_after_on_transient_429():
         result = _call(service, ai_model)
     assert result == {"ok": True}
     sleep.assert_called_once_with(_UPSTREAM_RETRY_AFTER_CAP_SECONDS)
+
+
+def test_retry_count_is_zero_when_the_call_works_first_time():
+    service, ai_model, backend = _service_and_model()
+    backend.completion.return_value = {"ok": True}
+    _call(service, ai_model)
+    assert service._last_upstream_retry_count == 0
+
+
+def test_retry_count_is_recorded_for_a_rescued_call():
+    """A run rescued from a flaky provider must be visible, not just slow."""
+    service, ai_model, backend = _service_and_model()
+    backend.completion.side_effect = [
+        _MidStreamFallbackError(_FOUNDER_502),
+        {"ok": True},
+    ]
+    with patch("preloop.services.openai_gateway._sleep_before_upstream_retry"):
+        _call(service, ai_model)
+    assert service._last_upstream_retry_count == 1
+
+
+def test_retry_count_is_recorded_when_retries_are_exhausted():
+    """The failing case is exactly where the retry count matters most."""
+    service, ai_model, backend = _service_and_model()
+    backend.completion.side_effect = _MidStreamFallbackError(_FOUNDER_502)
+    with patch("preloop.services.openai_gateway._sleep_before_upstream_retry"):
+        with pytest.raises(ModelGatewayAPIError):
+            _call(service, ai_model)
+    assert service._last_upstream_retry_count == 2
+
+
+def test_retry_count_is_not_charged_to_a_later_request():
+    """Consume-and-clear: a stale count must not leak onto the next call."""
+    service, ai_model, backend = _service_and_model()
+    backend.completion.side_effect = [
+        _MidStreamFallbackError(_FOUNDER_502),
+        {"ok": True},
+    ]
+    with patch("preloop.services.openai_gateway._sleep_before_upstream_retry"):
+        _call(service, ai_model)
+    assert service._last_upstream_retry_count == 1
+
+    # Simulate the usage row being written (which consumes the counter).
+    service._last_upstream_retry_count = 0
+
+    backend.completion.side_effect = None
+    backend.completion.return_value = {"ok": True}
+    _call(service, ai_model)
+    assert service._last_upstream_retry_count == 0
+
+
+def test_attempt_budget_is_configurable(monkeypatch):
+    """Operators can widen or disable the retry budget without a deploy."""
+    service, ai_model, backend = _service_and_model()
+    monkeypatch.setattr(
+        "preloop.services.openai_gateway.settings."
+        "model_gateway_upstream_retry_max_attempts",
+        1,
+        raising=False,
+    )
+    backend.completion.side_effect = _MidStreamFallbackError(_FOUNDER_502)
+    with patch("preloop.services.openai_gateway._sleep_before_upstream_retry") as sleep:
+        with pytest.raises(ModelGatewayAPIError):
+            _call(service, ai_model)
+    assert backend.completion.call_count == 1
+    sleep.assert_not_called()
+
+
+def test_backoff_base_is_configurable(monkeypatch):
+    monkeypatch.setattr(
+        "preloop.services.openai_gateway.settings."
+        "model_gateway_upstream_retry_base_seconds",
+        1.0,
+        raising=False,
+    )
+    with patch("preloop.services.openai_gateway.random.uniform", return_value=0.0):
+        assert _upstream_retry_delay_seconds(0) == 1.0
+        assert _upstream_retry_delay_seconds(1) == 2.0
+
+
+def test_retry_after_cap_is_configurable(monkeypatch):
+    monkeypatch.setattr(
+        "preloop.services.openai_gateway.settings."
+        "model_gateway_upstream_retry_after_cap_seconds",
+        2.0,
+        raising=False,
+    )
+    with patch("preloop.services.openai_gateway.random.uniform", return_value=0.0):
+        assert _upstream_retry_delay_seconds(0, retry_after_seconds=600) == 2.0

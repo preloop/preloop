@@ -131,6 +131,10 @@ spec:
               value: {{ $.Values.flowExecution.claimStaleSeconds | default 120 | quote }}
             - name: FLOW_EXECUTION_RECLAIM_INTERVAL_SECONDS
               value: {{ $.Values.flowExecution.reclaimIntervalSeconds | default 30 | quote }}
+            - name: AGENT_JOB_CREATE_MAX_ATTEMPTS
+              value: {{ $.Values.flowExecution.agentJobCreate.maxAttempts | default 3 | quote }}
+            - name: AGENT_JOB_CREATE_RETRY_BASE_SECONDS
+              value: {{ $.Values.flowExecution.agentJobCreate.retryBaseSeconds | default 0.5 | quote }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:

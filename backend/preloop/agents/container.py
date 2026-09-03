@@ -1,11 +1,14 @@
 """Container-based agent executor for Docker and Kubernetes."""
 
+import asyncio
 import base64
 import binascii
 import io
 import json
 import logging
 import os
+import random
+import re
 import shlex
 import tarfile
 from typing import Any, Dict, Optional
@@ -13,7 +16,14 @@ from typing import Any, Dict, Optional
 import aiodocker
 from aiodocker.exceptions import DockerError
 
+from preloop.config import settings
+from preloop.services.flow_failure_category import (
+    FAILURE_CATEGORY_RUNNER_CONFLICT,
+    FAILURE_CATEGORY_RUNNER_ERROR,
+)
+
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
+from .errors import AgentStartError
 from .failure_analysis import analyze_agent_failure
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.utils.git_credentials import (
@@ -75,6 +85,76 @@ ARTIFACT_STREAM_LINE_PREFIX = "PRELOOP_ARTIFACT_"
 # Environment variable carrying the original (unwrapped) agent script when the
 # Kubernetes artifact-emission wrapper is applied.
 K8S_INNER_SCRIPT_ENV = "PRELOOP_INNER_SCRIPT"
+
+# Key under which the orchestrator names the SESSION (not the execution) that
+# is being started. One execution can legitimately start several agent
+# sessions — attempt 2 of the transient-failure retry, the completion
+# confirmation nudge — and each needs its own Kubernetes Job. Without a
+# discriminator every session of one execution asks the API server for the
+# same Job name, and the second one fails with 409 AlreadyExists while the
+# first Job is still around (it lingers for AGENT_JOB_TTL_SECONDS after it
+# finishes). That is the staging "Failed to start agent Job: (409) Conflict"
+# signature.
+AGENT_SESSION_SUFFIX_KEY = "agent_session_suffix"
+
+# Kubernetes object names must be DNS-1123 labels: <=63 chars, lowercase
+# alphanumeric and '-', starting and ending alphanumeric.
+K8S_NAME_MAX_LENGTH = 63
+_K8S_NAME_INVALID_RE = re.compile(r"[^a-z0-9-]+")
+
+# Bounded wait for a leftover finished Job to actually disappear after a
+# delete, before the name can be reused.
+_JOB_DELETE_POLL_INTERVAL_SECONDS = 0.5
+_JOB_DELETE_MAX_WAIT_SECONDS = 15.0
+
+
+def kubernetes_job_name(
+    execution_id: str, *, session_suffix: Optional[str] = None
+) -> str:
+    """Build the DNS-1123 Job name for one agent session of an execution.
+
+    The execution id stays the readable core of the name (operators grep for
+    it), and the optional session suffix keeps a retry attempt or the
+    confirmation nudge from colliding with the Job of the session before it.
+
+    Args:
+        execution_id: Flow execution UUID (string).
+        session_suffix: Short discriminator for this session within the
+            execution (``"a2"``, ``"nudge"``). None/empty keeps the historic
+            ``agent-<execution_id>`` name, so an in-flight first attempt is
+            still found by its stored session reference across a deploy.
+
+    Returns:
+        A valid Kubernetes Job name.
+    """
+    base = f"agent-{execution_id}".replace("_", "-").lower()
+    suffix = (session_suffix or "").replace("_", "-").lower()
+    suffix = _K8S_NAME_INVALID_RE.sub("", suffix)
+    if suffix:
+        base = f"{base[: K8S_NAME_MAX_LENGTH - len(suffix) - 1]}-{suffix}"
+    base = _K8S_NAME_INVALID_RE.sub("", base)[:K8S_NAME_MAX_LENGTH]
+    return base.strip("-")
+
+
+def _job_create_retry_delay_seconds(attempt: int) -> float:
+    """Jittered exponential backoff before re-attempting a Job creation.
+
+    Args:
+        attempt: Zero-based index of the attempt that just failed.
+
+    Returns:
+        Seconds to wait. Jitter matters here because the collisions this
+        guards against are caused by *concurrent* actors (two dispatchers,
+        a reclaiming worker): a fixed backoff would keep them in lockstep.
+    """
+    base = max(0.0, float(settings.agent_job_create_retry_base_seconds))
+    return (base * (2**attempt)) + random.uniform(0, base)
+
+
+async def _sleep_before_job_create_retry(seconds: float) -> None:
+    """Sleep hook tests can patch without slowing the suite."""
+    await asyncio.sleep(seconds)
+
 
 # Wrapper applied to Kubernetes agent scripts. Runs the unchanged agent script
 # in a CHILD shell (so its own `trap ... EXIT` and `exit $rc` cannot skip the
@@ -414,8 +494,14 @@ class ContainerAgentExecutor(AgentExecutor):
         execution_id = execution_context["execution_id"]
         flow_id = execution_context["flow_id"]
 
-        # Generate unique job name (K8s names must be DNS-1123 compliant)
-        job_name = f"agent-{execution_id}".replace("_", "-").lower()
+        # Job name: execution id plus the per-session discriminator, so a
+        # retry attempt or the confirmation nudge never asks for the name a
+        # previous session of this execution already owns (see
+        # AGENT_SESSION_SUFFIX_KEY).
+        job_name = kubernetes_job_name(
+            execution_id,
+            session_suffix=execution_context.get(AGENT_SESSION_SUFFIX_KEY),
+        )
 
         # Prepare environment variables
         # Start with agent-specific env if provided by any subclass.
@@ -633,23 +719,218 @@ class ContainerAgentExecutor(AgentExecutor):
             ),
         )
 
+        return await self._create_kubernetes_job(
+            job, job_name=job_name, execution_id=execution_id
+        )
+
+    async def _create_kubernetes_job(
+        self, job: Any, *, job_name: str, execution_id: str
+    ) -> str:
+        """Create the agent Job, tolerating conflicts and API-server blips.
+
+        Two failure shapes must not kill a flow execution:
+
+        * **409 AlreadyExists.** Either another actor already created the Job
+          for this exact session (a duplicate dispatch, a worker reclaiming a
+          lease) — in which case the existing Job IS our agent and is adopted
+          instead of started twice — or a Job of the same name from an
+          earlier, already-finished session is still lingering inside its
+          TTL, in which case it is deleted (background propagation, so its
+          pods go with it) and the name reused.
+        * **429 / 5xx from the API server.** A transient control-plane
+          failure; retried with jittered backoff.
+
+        Anything else (403, invalid manifest, quota) is terminal and raised
+        immediately — retrying it only delays a failure the user must see.
+
+        Args:
+            job: The V1Job body to create.
+            job_name: Name on the body, used for conflict resolution.
+            execution_id: Owning flow execution (for logs and the ownership
+                check on an existing Job).
+
+        Returns:
+            The Job name (the agent session reference).
+
+        Raises:
+            AgentStartError: When the Job could not be created within the
+                configured attempts, or the failure was terminal.
+        """
+        max_attempts = max(1, int(settings.agent_job_create_max_attempts))
+        last_error: Optional[ApiException] = None
+
+        for attempt in range(max_attempts):
+            try:
+                await self._k8s_batch_api.create_namespaced_job(
+                    namespace=self.agent_namespace, body=job
+                )
+                self.logger.info(
+                    f"Started Kubernetes Job {job_name} in namespace "
+                    f"{self.agent_namespace} for execution {execution_id}"
+                )
+                return job_name
+            except ApiException as e:
+                last_error = e
+                if e.status == 409:
+                    adopted = await self._resolve_job_name_conflict(
+                        job_name=job_name, execution_id=execution_id
+                    )
+                    if adopted:
+                        self.logger.warning(
+                            f"Adopted pre-existing Kubernetes Job {job_name} for "
+                            f"execution {execution_id} instead of starting a "
+                            "duplicate agent"
+                        )
+                        return job_name
+                elif not self._is_retryable_job_api_error(e):
+                    self.logger.error(
+                        f"Failed to create Kubernetes Job for execution "
+                        f"{execution_id}: {e}"
+                    )
+                    raise AgentStartError(
+                        f"Failed to start agent Job: {e}",
+                        category=FAILURE_CATEGORY_RUNNER_ERROR,
+                    ) from e
+
+                if attempt >= max_attempts - 1:
+                    break
+
+                delay = _job_create_retry_delay_seconds(attempt)
+                self.logger.warning(
+                    "Retrying Kubernetes Job creation for execution %s after "
+                    "HTTP %s (attempt %s/%s, delay=%.2fs)",
+                    execution_id,
+                    e.status,
+                    attempt + 1,
+                    max_attempts,
+                    delay,
+                )
+                await _sleep_before_job_create_retry(delay)
+
+        assert last_error is not None
+        self.logger.error(
+            f"Failed to create Kubernetes Job for execution {execution_id} after "
+            f"{max_attempts} attempts: {last_error}"
+        )
+        raise AgentStartError(
+            f"Failed to start agent Job: {last_error}",
+            category=(
+                FAILURE_CATEGORY_RUNNER_CONFLICT
+                if last_error.status == 409
+                else FAILURE_CATEGORY_RUNNER_ERROR
+            ),
+            retryable=True,
+        ) from last_error
+
+    @staticmethod
+    def _is_retryable_job_api_error(error: "ApiException") -> bool:
+        """Whether a Job-create API error is worth another attempt."""
+        status = getattr(error, "status", None)
         try:
-            # Create the Job
-            await self._k8s_batch_api.create_namespaced_job(
-                namespace=self.agent_namespace, body=job
+            status = int(status)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        return status == 429 or 500 <= status < 600
+
+    async def _resolve_job_name_conflict(
+        self, *, job_name: str, execution_id: str
+    ) -> bool:
+        """Adopt or clear the Job that owns a conflicting name.
+
+        Args:
+            job_name: Name that came back 409 AlreadyExists.
+            execution_id: Execution the caller is starting.
+
+        Returns:
+            True when the existing Job is a live agent for this execution and
+            was adopted (the caller must NOT create anything). False when the
+            name was freed (or the Job vanished) and creation should be
+            retried.
+
+        Raises:
+            AgentStartError: When the conflicting Job belongs to a different
+                execution — deleting or adopting it would corrupt an
+                unrelated run, so this fails loudly instead.
+        """
+        try:
+            existing = await self._k8s_batch_api.read_namespaced_job(
+                name=job_name, namespace=self.agent_namespace
+            )
+        except ApiException as read_error:
+            if read_error.status == 404:
+                # Raced with the owner's own cleanup: the name is free again.
+                return False
+            self.logger.warning(
+                f"Could not read conflicting Job {job_name}: {read_error}"
+            )
+            return False
+
+        labels = getattr(getattr(existing, "metadata", None), "labels", None) or {}
+        owner = labels.get("preloop.execution_id")
+        if owner and str(owner) != str(execution_id):
+            raise AgentStartError(
+                f"Failed to start agent Job: name {job_name} is already used by "
+                f"execution {owner}",
+                category=FAILURE_CATEGORY_RUNNER_CONFLICT,
             )
 
-            self.logger.info(
-                f"Started Kubernetes Job {job_name} in namespace {self.agent_namespace} "
-                f"for execution {execution_id}"
-            )
-            return job_name
+        if self._job_is_live(existing):
+            return True
 
-        except ApiException as e:
-            self.logger.error(
-                f"Failed to create Kubernetes Job for execution {execution_id}: {e}"
+        self.logger.info(
+            f"Deleting finished leftover Job {job_name} so execution "
+            f"{execution_id} can reuse the name"
+        )
+        try:
+            await self._k8s_batch_api.delete_namespaced_job(
+                name=job_name,
+                namespace=self.agent_namespace,
+                # Background propagation removes the Job's pods with it;
+                # without it the orphaned pods keep the name's resources
+                # (and their logs) around.
+                propagation_policy="Background",
             )
-            raise RuntimeError(f"Failed to start agent Job: {e}")
+        except ApiException as delete_error:
+            if delete_error.status != 404:
+                self.logger.warning(
+                    f"Could not delete leftover Job {job_name}: {delete_error}"
+                )
+                return False
+
+        await self._wait_for_job_deletion(job_name)
+        return False
+
+    @staticmethod
+    def _job_is_live(job: Any) -> bool:
+        """Whether a Job still has (or may still get) a running pod."""
+        status = getattr(job, "status", None)
+        if status is None:
+            # No status yet means the Job was only just created.
+            return True
+        if getattr(status, "active", None):
+            return True
+        if getattr(status, "succeeded", None) or getattr(status, "failed", None):
+            return False
+        # Created but not yet scheduled: no counters, no completion time.
+        return getattr(status, "completion_time", None) is None
+
+    async def _wait_for_job_deletion(self, job_name: str) -> None:
+        """Poll until a deleted Job is gone, bounded by a hard deadline."""
+        waited = 0.0
+        while waited < _JOB_DELETE_MAX_WAIT_SECONDS:
+            try:
+                await self._k8s_batch_api.read_namespaced_job(
+                    name=job_name, namespace=self.agent_namespace
+                )
+            except ApiException as e:
+                if e.status == 404:
+                    return
+            await _sleep_before_job_create_retry(_JOB_DELETE_POLL_INTERVAL_SECONDS)
+            waited += _JOB_DELETE_POLL_INTERVAL_SECONDS
+        self.logger.warning(
+            f"Leftover Job {job_name} still present after "
+            f"{_JOB_DELETE_MAX_WAIT_SECONDS}s; retrying creation anyway"
+        )
 
     async def get_status(self, session_reference: str) -> AgentStatus:
         """

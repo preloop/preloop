@@ -780,6 +780,27 @@ def test_flow_execution_list_schema_excludes_detail_payloads():
     assert "result" not in fields
 
 
+def test_flow_execution_schemas_expose_failure_category():
+    """Failures must be groupable from the list view, not only readable.
+
+    The category is the only field that lets a console (or an operator with
+    curl) answer "what is breaking?" without parsing a hundred free-text
+    error messages, so it has to be on the lightweight list row too.
+    """
+    assert "failure_category" in schemas.FlowExecutionListResponse.model_fields
+    assert "failure_category" in schemas.FlowExecutionResponse.model_fields
+
+
+def test_lightweight_execution_list_loads_the_failure_category():
+    """The column must be in load_only, or the list lazy-loads it per row."""
+    import inspect
+
+    from preloop.models.crud.flow_execution import CRUDFlowExecution
+
+    source = inspect.getsource(CRUDFlowExecution.get_multi)
+    assert "FlowExecution.failure_category" in source
+
+
 @pytest.mark.asyncio
 async def test_read_flow_executions_filters_and_caps_limit(
     mock_account: Account, mocker: MockerFixture

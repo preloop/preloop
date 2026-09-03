@@ -11650,6 +11650,14 @@ components:
           - type: string
           - type: 'null'
           title: Error Message
+        failure_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Failure Category
+          description: Coarse machine-readable failure class for terminal executions
+            (runner_conflict, model_transient, agent_error, ...). Null when the execution
+            succeeded, is still running, or predates the field.
         retry_of_execution_id:
           anyOf:
           - type: string
@@ -12653,6 +12661,14 @@ components:
           - type: string
           - type: 'null'
           title: Error Message
+        failure_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Failure Category
+          description: Coarse machine-readable failure class for terminal executions
+            (runner_conflict, model_transient, agent_error, ...). Null when the execution
+            succeeded, is still running, or predates the field.
         retry_of_execution_id:
           anyOf:
           - type: string
@@ -12811,6 +12827,16 @@ components:
           - type: 'null'
           title: Error Message
           description: Error message if the execution failed
+        failure_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Failure Category
+          description: 'Coarse machine-readable reason a terminal execution did not
+            succeed: one of runner_conflict, runner_error, model_transient, model_auth,
+            model_quota, model_config, no_confirmation, tool_error, agent_error, timeout,
+            cancelled, unknown. Null for successful or still-running executions, and
+            for executions that predate this field.'
         retry_of_execution_id:
           anyOf:
           - type: string
