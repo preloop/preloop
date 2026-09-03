@@ -961,7 +961,7 @@ def register_default_tools(server: DynamicMCPServer):
     # Tool 3: update_issue
     server.register_default_tool(
         name="update_issue",
-        description="Update an existing issue",
+        description="Update an existing issue. Pass add_reaction (e.g. eyes) to ack pickup on GitHub without changing other fields.",
         input_schema={
             "type": "object",
             "properties": {
@@ -993,6 +993,14 @@ def register_default_tools(server: DynamicMCPServer):
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "New labels list",
+                },
+                "add_reaction": {
+                    "type": "string",
+                    "description": "GitHub issue reaction to add (eyes, +1, heart, ...)",
+                },
+                "remove_reaction": {
+                    "type": "string",
+                    "description": "GitHub issue reaction to remove",
                 },
             },
             "required": ["issue"],

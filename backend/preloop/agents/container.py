@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import re
 import shlex
 import tarfile
 from typing import Any, Dict, Optional
@@ -34,6 +35,31 @@ from preloop.utils.workspace_seed import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Git ref names interpolated into generated shell (origin/<branch>..HEAD).
+# Charset is unquoted-shell-safe so we never splice shlex.quote into the
+# middle of a token (origin/'feat/x'). Extra checks below match git's
+# own refname rules: no ``..``, leading ``-``, trailing ``.``, or
+# ``~``/``^``/``:`` (the last three are already outside the charset).
+_SAFE_GIT_REF_CHARS = re.compile(r"^[A-Za-z0-9._/\-]+$")
+
+
+def _validated_git_ref(name: Optional[str]) -> Optional[str]:
+    """Return ``name`` when it is a safe git branch/ref, otherwise None."""
+
+    if not name or not isinstance(name, str):
+        return None
+    if not _SAFE_GIT_REF_CHARS.fullmatch(name):
+        return None
+    if name.startswith("-") or name.startswith("/") or name.endswith("."):
+        return None
+    if name.endswith("/") or ".." in name or "//" in name:
+        return None
+    for part in name.split("/"):
+        if not part or part.startswith(".") or part.endswith(".lock"):
+            return None
+    return name
+
 
 # Path inside the agent container where eval/observe flows write their
 # structured result report (see backend/presets/003-observe-eval.yaml).
@@ -1977,17 +2003,31 @@ class ContainerAgentExecutor(AgentExecutor):
         source_branch = git_config.get("source_branch") or None
         target_branch = git_config.get("target_branch") or None
         trigger_data = execution_context.get("trigger_event_data", {})
+        resume = trigger_data.get("_resume") if isinstance(trigger_data, dict) else None
+        resume_branch = None
+        if isinstance(resume, dict):
+            resume_branch = resume.get("source_branch") or None
 
-        if not source_branch:
-            source_branch = self._extract_source_branch_from_trigger(trigger_data)
-        if not source_branch:
-            source_branch = "main"
+        if resume_branch:
+            # Clone and push the same PR branch so a comment restart continues
+            # the existing review, not a new branch off main.
+            source_branch = resume_branch
+            target_branch = resume_branch
+            self.logger.info(
+                "Resume clone: using existing PR branch %s as source and target",
+                resume_branch,
+            )
+        else:
+            if not source_branch:
+                source_branch = self._extract_source_branch_from_trigger(trigger_data)
+            if not source_branch:
+                source_branch = "main"
 
-        if not target_branch:
-            flow_name = execution_context.get("flow_name", "flow")
-            execution_id = execution_context.get("execution_id", "exec")
-            safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
-            target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
+            if not target_branch:
+                flow_name = execution_context.get("flow_name", "flow")
+                execution_id = execution_context.get("execution_id", "exec")
+                safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
+                target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
 
         commit_sha = self._extract_commit_sha_from_trigger(trigger_data)
         if commit_sha:
@@ -2504,6 +2544,23 @@ echo "========================================="
             if not target_branch:
                 return ""
 
+            safe_target = _validated_git_ref(target_branch)
+            if not safe_target:
+                self.logger.warning(
+                    "Skipping post-execution git: unsafe target branch %r",
+                    target_branch,
+                )
+                return ""
+            safe_source = _validated_git_ref(source_branch)
+            if source_branch and safe_source is None:
+                self.logger.warning(
+                    "Skipping post-execution git: unsafe source branch %r",
+                    source_branch,
+                )
+                return ""
+            if safe_source is None:
+                safe_source = "main"
+
             post_commands = []
 
             for idx, repo_config in enumerate(repositories):
@@ -2552,23 +2609,26 @@ echo "========================================="
                 # Note: Directory is guaranteed to exist because git clone validation would have failed earlier
                 repo_post_commands = [
                     f"cd {full_path}",
-                    # Check if there are any commits on target branch vs source
-                    f'COMMIT_COUNT=$(git rev-list --count {source_branch}..{target_branch} 2>/dev/null || echo "0")',
+                    # Resume clones source==target, so origin/<branch>..HEAD
+                    # still counts local commits the branch-vs-branch range
+                    # would miss. Branch names are validated above; do not
+                    # shlex.quote mid-token (that yields origin/'feat/x').
+                    f'COMMIT_COUNT=$(git rev-list --count origin/{safe_target}..HEAD 2>/dev/null || git rev-list --count {safe_source}..{safe_target} 2>/dev/null || echo "0")',
                     'if [ "$COMMIT_COUNT" -gt "0" ]; then',
-                    f'  echo "Found $COMMIT_COUNT commits on {target_branch}, pushing..."',
+                    f'  echo "Found $COMMIT_COUNT commits on {safe_target}, pushing..."',
                     f"  mkdir -p {EVIDENCE_DIR_PATH}",
                     f"  git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
                     f"  git log -1 --format='%H %s' >> {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
-                    f"  git format-patch --stdout {source_branch}..HEAD > {EVIDENCE_DIR_PATH}/branch.patch 2>/dev/null || true",
+                    f"  git format-patch --stdout {safe_source}..HEAD > {EVIDENCE_DIR_PATH}/branch.patch 2>/dev/null || true",
                     (
                         f"  git bundle create {EVIDENCE_DIR_PATH}/branch.bundle "
-                        f"{source_branch}..HEAD 2>/dev/null "
+                        f"{safe_source}..HEAD 2>/dev/null "
                         f"|| git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD "
                         f"2>/dev/null || true"
                     ),
                     f'  echo "Wrote git recovery artifacts under {EVIDENCE_DIR_PATH}"',
                     push_auth,
-                    f"  git push origin {target_branch}",
+                    f"  git push origin {safe_target}",
                 ]
 
                 # Add PR/MR creation if enabled
@@ -3001,6 +3061,22 @@ MREOF
                 self.logger.info(f"Extracted GitHub PR fetch ref: {ref}")
                 return ref
 
+            issue = payload.get("issue")
+            if (
+                isinstance(issue, dict)
+                and isinstance(issue.get("pull_request"), dict)
+                and issue.get("number") is not None
+            ):
+                ref = f"pull/{issue['number']}/head"
+                self.logger.info(f"Extracted GitHub PR comment fetch ref: {ref}")
+                return ref
+
+            mr = payload.get("merge_request")
+            if isinstance(mr, dict) and mr.get("iid") is not None:
+                ref = f"refs/merge-requests/{mr['iid']}/head"
+                self.logger.info(f"Extracted GitLab MR note fetch ref: {ref}")
+                return ref
+
             return None
         except Exception as e:
             self.logger.debug(f"Error extracting merge request ref from trigger: {e}")
@@ -3075,6 +3151,15 @@ MREOF
             if isinstance(obj_attrs, dict) and obj_attrs.get("source_branch"):
                 branch = obj_attrs["source_branch"]
                 self.logger.info(f"Extracted source branch from GitLab MR: {branch}")
+                return branch
+
+            # GitLab note on an MR
+            mr = payload.get("merge_request")
+            if isinstance(mr, dict) and mr.get("source_branch"):
+                branch = mr["source_branch"]
+                self.logger.info(
+                    f"Extracted source branch from GitLab MR note: {branch}"
+                )
                 return branch
 
             return None
