@@ -671,6 +671,37 @@ describe('DashboardView', () => {
     expect(usageContent).to.contain('Cost details');
   });
 
+  /** A usage summary whose only oddity is a model that costs nothing. */
+  const zeroPricedSummary = (): any => ({
+    total_requests: 12,
+    successful_requests: 12,
+    failed_requests: 0,
+    token_usage: { prompt_tokens: 4, completion_tokens: 4, total_tokens: 40 },
+    estimated_cost: 0,
+    unpriced_requests: 0,
+    requests_by_day: [],
+    price_catalog: { fetched_at: new Date().toISOString(), model_count: 120 },
+    usage_by_model: [
+      {
+        ai_model_id: 'model-2',
+        model_alias: 'local/qwen-3-coder',
+        provider_name: 'ollama',
+        request_count: 12,
+        token_usage: {
+          prompt_tokens: 4,
+          completion_tokens: 4,
+          total_tokens: 40,
+        },
+        estimated_cost: 0,
+        unpriced_request_count: 0,
+        zero_priced_request_count: 12,
+        last_request_at: new Date(Date.now() - 60_000).toISOString(),
+      },
+    ],
+    usage_by_flow: [],
+    usage_by_session: [],
+  });
+
   it('surfaces pending approvals in the attention strip', async () => {
     const element = await mountDashboard();
     await waitUntil(
@@ -744,6 +775,70 @@ describe('DashboardView', () => {
     const first = element['attentionItems'][0];
     expect(chips[0].getAttribute('href')).to.equal(
       `/console/attention#item-${encodeURIComponent(first.id)}`
+    );
+  });
+
+  // Wave 8: a model priced at $0 is a question. It never takes a slot from
+  // something that is actually wrong.
+  it('keeps zero-priced models out of the strip while warnings are open', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
+      'dashboard did not finish loading'
+    );
+    element['attentionInputs'] = {
+      approvals: [
+        {
+          id: 'approval-1',
+          tool_name: 'refund_order',
+          status: 'pending',
+          requested_at: new Date(Date.now() - 60_000).toISOString(),
+        },
+      ],
+      usageSummary: zeroPricedSummary(),
+    } as any;
+    await element.updateComplete;
+
+    const strip = element.shadowRoot?.querySelector(
+      '.attention-strip'
+    ) as HTMLElement;
+    expect(strip.classList.contains('low-only')).to.be.false;
+    expect(strip.textContent).to.contain('need attention');
+    expect(strip.textContent).to.not.contain('priced at $0');
+    // The count is what the strip shows, not what the page derived.
+    expect(strip.textContent!.replace(/\s+/g, ' ')).to.contain(
+      '1 need attention'
+    );
+  });
+
+  it('shows a zero-priced model on its own, without the amber tone', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
+      'dashboard did not finish loading'
+    );
+    element['attentionInputs'] = {
+      usageSummary: zeroPricedSummary(),
+    } as any;
+    await element.updateComplete;
+
+    const strip = element.shadowRoot?.querySelector(
+      '.attention-strip'
+    ) as HTMLElement;
+    expect(strip, 'the attention strip').to.exist;
+    expect(strip.classList.contains('low-only')).to.be.true;
+    expect(strip.textContent).to.contain('worth a look');
+    expect(strip.textContent).to.contain('1 model priced at $0');
+    expect(strip.querySelector('sl-badge')?.getAttribute('variant')).to.equal(
+      'neutral'
     );
   });
 

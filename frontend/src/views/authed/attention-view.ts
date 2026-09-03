@@ -244,6 +244,11 @@ export class AttentionView extends AuthedElement {
         background: var(--sl-color-danger-600);
       }
 
+      /* Low tone: worth naming once, not worth an amber dot. */
+      .severity-dot.low {
+        background: var(--sl-color-neutral-400);
+      }
+
       .row-body {
         display: flex;
         flex-direction: column;
@@ -753,6 +758,20 @@ export class AttentionView extends AuthedElement {
     if (!this.canWriteDismissals || !item.dismissable) {
       return nothing;
     }
+    // Where the answer is only ever "yes, that is expected", a menu is one
+    // click too many.
+    if (item.quickDismiss) {
+      return html`
+        <sl-button
+          size="small"
+          data-testid="quick-dismiss"
+          ?loading=${this.busyItemId === item.id}
+          @click=${() =>
+            void this.dismiss(item, item.quickDismiss?.reason || 'expected')}
+          >${item.quickDismiss.label}</sl-button
+        >
+      `;
+    }
     return html`
       <sl-dropdown class="dismiss-dropdown" hoist>
         <sl-button
@@ -979,7 +998,10 @@ export class AttentionView extends AuthedElement {
   }
 
   private renderPricingEvidence(item: AttentionItem) {
-    const models = item.evidence?.unpricedModels || [];
+    const zeroPriced = item.evidence?.zeroPricedModels || [];
+    const models = zeroPriced.length
+      ? zeroPriced
+      : item.evidence?.unpricedModels || [];
     const catalogMissing = item.evidence?.catalogMissing === true;
     // A column of "n/a" is a column of nothing: the gateway summary only
     // carries a last-request time for some breakdowns.
@@ -990,6 +1012,14 @@ export class AttentionView extends AuthedElement {
           ? html`<div class="evidence-line">
               Load a catalog or add price overrides on the Cost page, and past
               usage is costed from then on.
+            </div>`
+          : nothing
+      }
+      ${
+        zeroPriced.length > 0
+          ? html`<div class="evidence-line">
+              These models have a price and it is $0, so their usage adds
+              nothing to spend. Promo or mistake?
             </div>`
           : nothing
       }
@@ -1052,10 +1082,10 @@ export class AttentionView extends AuthedElement {
                           <a
                             href=${
                               model.aiModelId
-                                ? `/console/ai-models/${model.aiModelId}`
+                                ? `/console/ai-models/${model.aiModelId}?pricing=edit`
                                 : '/console/cost?panel=pricing'
                             }
-                            >Set price</a
+                            >${zeroPriced.length > 0 ? 'Edit price' : 'Set price'}</a
                           >
                         </td>
                       </tr>
@@ -1134,6 +1164,7 @@ export class AttentionView extends AuthedElement {
       evidence.agentReasons?.length ||
       evidence.modelFailures?.length ||
       evidence.unpricedModels?.length ||
+      evidence.zeroPricedModels?.length ||
       evidence.catalogMissing ||
       evidence.budget
     );

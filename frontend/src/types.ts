@@ -243,6 +243,14 @@ export interface GatewayUsageByModel {
   token_usage: GatewayTokenUsage;
   estimated_cost: number;
   last_request_at?: string | null;
+  /**
+   * Requests this model served that carry no cost at all, and requests it
+   * served at exactly $0. Optional: servers older than wave 8 omit both, and
+   * the console falls back to `estimated_cost` alone there.
+   */
+  unpriced_request_count?: number;
+  zero_priced_request_count?: number;
+  failed_request_count?: number;
 }
 
 export interface GatewayUsageByFlow {

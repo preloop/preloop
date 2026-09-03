@@ -219,10 +219,13 @@ describe('attention count parity', () => {
     await dashboard.updateComplete;
 
     // Wave 6 removed the hero counter; the amber strip is the only place
-    // the Overview states the count, so parity is measured there.
+    // the Overview states the count, so parity is measured there. Wave 8
+    // added low-tone items, which the strip holds back while anything louder
+    // is open; this fixture has none, so the two counts still match exactly.
     const stripCount = dashboard
       .shadowRoot!.querySelector('.attention-strip-count')!
-      .textContent!.trim()
+      .textContent!.replace(/\s+/g, ' ')
+      .trim()
       .replace(' need attention', '');
 
     const page = (await fixture(

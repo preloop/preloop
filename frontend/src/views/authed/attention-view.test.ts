@@ -20,6 +20,7 @@ describe('AttentionView', () => {
   let rejectPolicies = false;
   let permissions: string[] | null = null;
   let agentsResponse: any[];
+  let usageByModel: any[];
   let agentDeletes: string[];
   let dismissalWrites: { url: string; method: string; body: any }[];
 
@@ -38,6 +39,7 @@ describe('AttentionView', () => {
     dismissalsResponse = [];
     dismissalWrites = [];
     agentsResponse = [];
+    usageByModel = [];
     agentDeletes = [];
     window.location.hash = '';
 
@@ -144,7 +146,11 @@ describe('AttentionView', () => {
             },
             estimated_cost: 0,
             requests_by_day: [],
-            usage_by_model: [],
+            price_catalog: {
+              fetched_at: new Date().toISOString(),
+              model_count: 120,
+            },
+            usage_by_model: usageByModel,
             usage_by_flow: [],
             usage_by_session: [],
           });
@@ -614,5 +620,81 @@ describe('AttentionView', () => {
     const el = await mount();
     expect(text(el)).to.contain('Nothing needs you right now.');
     expect(el.shadowRoot!.querySelector('sl-card[id]')).to.not.exist;
+  });
+
+  // Wave 8: a $0 price is a question with one sensible answer, so the row
+  // offers that answer directly instead of a menu.
+  it('dismisses a zero-priced model in one click', async () => {
+    permissions = ['manage_agents'];
+    usageByModel = [
+      {
+        ai_model_id: 'model-2',
+        model_alias: 'local/qwen-3-coder',
+        provider_name: 'ollama',
+        request_count: 12,
+        token_usage: {
+          prompt_tokens: 4,
+          completion_tokens: 4,
+          total_tokens: 40,
+        },
+        estimated_cost: 0,
+        unpriced_request_count: 0,
+        zero_priced_request_count: 12,
+        last_request_at: new Date(Date.now() - 60_000).toISOString(),
+      },
+    ];
+    const el = await mount();
+
+    const row = el.shadowRoot!.querySelector(
+      '[data-item-id="pricing:zero-priced"]'
+    ) as HTMLElement;
+    expect(row, 'zero-priced row').to.exist;
+    expect(row.textContent!.replace(/\s+/g, ' ')).to.contain(
+      '1 model priced at $0'
+    );
+    expect(row.querySelector('.severity-dot')!.classList.contains('low')).to.be
+      .true;
+    expect(row.querySelector('sl-dropdown'), 'no dismiss menu').to.not.exist;
+
+    const quick = row.querySelector(
+      '[data-testid="quick-dismiss"]'
+    ) as HTMLElement;
+    expect(quick.textContent!.trim()).to.equal('Expected');
+    quick.click();
+    await waitUntil(() => dismissalWrites.length > 0, 'dismissal written');
+
+    expect(dismissalWrites[0].method).to.equal('PUT');
+    expect(dismissalWrites[0].url).to.contain('pricing%3Azero-priced');
+    expect(dismissalWrites[0].body.reason).to.equal('expected');
+  });
+
+  it('links a zero-priced model to its pricing editor', async () => {
+    usageByModel = [
+      {
+        ai_model_id: 'model-2',
+        model_alias: 'local/qwen-3-coder',
+        provider_name: 'ollama',
+        request_count: 12,
+        token_usage: {
+          prompt_tokens: 4,
+          completion_tokens: 4,
+          total_tokens: 40,
+        },
+        estimated_cost: 0,
+        unpriced_request_count: 0,
+        zero_priced_request_count: 12,
+        last_request_at: new Date(Date.now() - 60_000).toISOString(),
+      },
+    ];
+    const el = await mount();
+
+    const row = el.shadowRoot!.querySelector(
+      '[data-item-id="pricing:zero-priced"]'
+    ) as HTMLElement;
+    const link = row.querySelector(
+      'a[href="/console/ai-models/model-2?pricing=edit"]'
+    ) as HTMLAnchorElement;
+    expect(link, 'edit price link').to.exist;
+    expect(link.textContent!.trim()).to.equal('Edit price');
   });
 });

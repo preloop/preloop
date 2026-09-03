@@ -502,6 +502,17 @@ export class DashboardView extends AuthedElement {
       .attention-strip-all:hover {
         text-decoration: underline;
       }
+      /* Nothing is wrong, one thing is worth a look: same line, no amber. */
+      .attention-strip.low-only {
+        background: var(--console-surface);
+        border-color: var(--sl-color-neutral-200);
+      }
+      .attention-strip.low-only .attention-strip-icon {
+        color: var(--sl-color-neutral-500);
+      }
+      .attention-strip.low-only .attention-strip-count {
+        color: var(--sl-color-neutral-700);
+      }
       /* Next steps: a checklist, not a wizard. */
       .next-steps-list {
         display: flex;
@@ -2468,21 +2479,28 @@ export class DashboardView extends AuthedElement {
    * first, and it costs one line instead of a card.
    */
   private renderAttentionStrip() {
-    const items = this.attentionItems;
+    const all = this.attentionItems;
+    // Low-tone items (a model priced at $0) are a question, not a problem.
+    // They never take a slot from something that is actually wrong, so the
+    // strip shows them only when nothing louder is open.
+    const loud = all.filter((item) => item.severity !== 'low');
+    const lowOnly = loud.length === 0;
+    const items = lowOnly ? all : loud;
     if (items.length === 0) {
       return nothing;
     }
     const visible = items.slice(0, 3);
 
     return html`
-      <div class="attention-strip">
+      <div class="attention-strip ${lowOnly ? 'low-only' : ''}">
         <sl-icon
           class="attention-strip-icon"
-          name="exclamation-triangle"
+          name=${lowOnly ? 'info-circle' : 'exclamation-triangle'}
           aria-hidden="true"
         ></sl-icon>
         <span class="attention-strip-count"
-          >${this.formatNumber(items.length)} need attention</span
+          >${this.formatNumber(items.length)}
+          ${lowOnly ? 'worth a look' : 'need attention'}</span
         >
         <div class="attention-strip-items">
           ${repeat(
@@ -2493,7 +2511,11 @@ export class DashboardView extends AuthedElement {
                 class="attention-chip-link"
                 href=${attentionItemAnchor(item.id)}
               >
-                <sl-badge class="chip" variant="warning" pill>
+                <sl-badge
+                  class="chip"
+                  variant=${lowOnly ? 'neutral' : 'warning'}
+                  pill
+                >
                   <sl-icon
                     name=${ATTENTION_KIND_META[item.kind].icon}
                     aria-hidden="true"
