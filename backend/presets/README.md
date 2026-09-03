@@ -39,8 +39,22 @@ allowed_mcp_tools:
 # the allowlist. Name-only entries are the legacy shape and mean
 # Preloop builtins on preloop-mcp.
 git_clone_config: null
+timeout_seconds: 1800          # Optional per-flow wall-clock budget
 is_preset: true
 ```
+
+### `timeout_seconds`
+
+Optional. The wall-clock budget for one execution of the flow, in seconds,
+between 60 and 86400. Omit it (or set `null`) to use the deployment default
+from `FLOW_EXECUTION_MAX_WAIT_SECONDS`, which is 3600.
+
+Set it when the preset's work has a shape the default does not fit: a review
+that should finish in minutes benefits from a short budget (a run that
+overruns it is stuck, and failing early frees the slot and tells the author),
+while a long audit needs a longer one (the default was cutting genuine runs
+off mid-scan). When a run exceeds its budget the failure message names the
+budget that expired, so an operator can tell "stuck" from "needs more time".
 
 > **Note:** Use `trigger_event_types` (plural, array) not the legacy
 > `trigger_event_type` (singular). The singular form is ignored by the
