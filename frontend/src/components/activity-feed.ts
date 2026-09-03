@@ -7,6 +7,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
 
 import { fetchWithAuth } from '../api';
+import { showToast } from './confirm-dialog';
 import consoleStyles from '../styles/console-styles.css?inline';
 import {
   ConnectionState,
@@ -1671,13 +1672,7 @@ export class ActivityFeed extends LitElement {
 
   private copy(value: string, message: string): void {
     void navigator.clipboard?.writeText?.(value);
-    this.dispatchEvent(
-      new CustomEvent('show-toast', {
-        bubbles: true,
-        composed: true,
-        detail: { message },
-      })
-    );
+    showToast(message, 'success');
   }
 
   /**
