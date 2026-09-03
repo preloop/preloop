@@ -56,6 +56,7 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 
 import type { ToolWithRules } from '../../components/tools-editor-component';
 import type { GatewayUsageByTool } from '../../types';
+import { consoleDialogStyles } from '../../styles/console-dialog';
 
 interface StarterPolicyDiffChange {
   path: string;
@@ -127,6 +128,7 @@ export class ToolsView extends LitElement {
   @state() private editingPolicy: ApprovalWorkflow | null = null;
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       mcp-setup-dialog {

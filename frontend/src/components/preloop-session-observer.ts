@@ -33,6 +33,7 @@ import {
 import type {
   AIModel,
   FlowGatewayEvent,
+  ManagedAgentSummary,
   RuntimeSessionInteractionSummary,
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
@@ -55,9 +56,11 @@ import {
 } from '../utils/session-observer';
 import { reducedMotionStyles } from '../styles/reduced-motion';
 import './session-chat-view';
+import './talk-button';
 import './session-list-panel';
 import './session-replay-panel';
 import './session-request-timeline';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 type SessionInput = RuntimeSessionSummary | Record<string, unknown>;
 type EventPageState = {
@@ -176,6 +179,17 @@ export class PreloopSessionObserver extends LitElement {
   /** Optional override for the sidebar's no-sessions message. */
   @property({ type: String })
   emptyText = '';
+
+  /**
+   * The agent whose sessions these are, when the host view knows it.
+   *
+   * The widget is read-only by design: the Conversation tab shows what was
+   * said, and typing happens in the talk window. Given the agent, the toolbar
+   * can offer Talk about the session on screen; without it, the button would
+   * have nothing to open, so it is simply not rendered.
+   */
+  @property({ attribute: false })
+  talkAgent: ManagedAgentSummary | null = null;
 
   @state()
   private observedSessions: ObservedSession[] = [];
@@ -336,6 +350,7 @@ export class PreloopSessionObserver extends LitElement {
   private livePulseTimer: number | null = null;
 
   static styles = [
+    consoleDialogStyles,
     reducedMotionStyles,
     css`
       :host {
@@ -439,6 +454,15 @@ export class PreloopSessionObserver extends LitElement {
         justify-content: space-between;
       }
 
+      /*
+       * The control row is a group, not a spread: with Talk added it wraps at
+       * 1440, and space-between would strand the leftover buttons at opposite
+       * ends of the second line.
+       */
+      .mode-row {
+        justify-content: flex-end;
+      }
+
       .content {
         display: flex;
         flex-direction: column;
@@ -476,6 +500,14 @@ export class PreloopSessionObserver extends LitElement {
         border-radius: 999px;
         height: 7px;
         width: 7px;
+      }
+
+      /* Zero sessions: a slim pill instead of a toolbar of dead controls. */
+      .toolbar-waiting {
+        background: transparent;
+        border: none;
+        justify-content: flex-start;
+        padding: 0;
       }
 
       .live-indicator.pulsing {
@@ -1487,7 +1519,9 @@ export class PreloopSessionObserver extends LitElement {
       label: string;
       icon: string | null;
     }> = [
-      { mode: 'conversation', label: 'Chat', icon: 'chat-left-text' },
+      // "Chat" implied you could type here. This tab reads a session; the
+      // talk window is where a conversation happens.
+      { mode: 'conversation', label: 'Conversation', icon: 'chat-left-text' },
       { mode: 'timeline', label: 'Transcript', icon: 'list-ul' },
       { mode: 'replay', label: 'Replay', icon: 'play-circle' },
     ];
@@ -1581,7 +1615,7 @@ export class PreloopSessionObserver extends LitElement {
       <div class="optimize-hint" role="note">
         <div class="optimize-hint-body">
           <strong>${ledger}</strong> Optimize finds where they went and suggests
-          cuts — you verify each one by replaying the session, without touching
+          cuts. You verify each one by replaying the session, without touching
           your agent. →
           <a
             class="optimize-hint-link"
@@ -1610,7 +1644,7 @@ export class PreloopSessionObserver extends LitElement {
    */
   private get replayEmptyText(): string {
     if (this.scope === 'managed_agent' && this.observedSessions.length === 0) {
-      return 'No sessions yet for this agent. Its first gateway call will appear here live.';
+      return 'The first gateway call from this agent will appear here.';
     }
     return 'Select a session to follow it live or replay it.';
   }
@@ -1649,6 +1683,22 @@ export class PreloopSessionObserver extends LitElement {
 
   private renderToolbar() {
     const session = this.activeSession;
+
+    // With no sessions there is nothing to follow, pause, replay, filter or
+    // refresh, so the full toolbar is six controls that all do nothing. Show
+    // only that we are listening, and reveal the toolbar when the first
+    // session arrives.
+    if (this.observedSessions.length === 0) {
+      return html`
+        <div class="toolbar toolbar-waiting">
+          <span class="live-indicator pulsing" title="Realtime session updates">
+            <span class="live-dot"></span>
+            Live · waiting for first session
+          </span>
+        </div>
+      `;
+    }
+
     return html`
       <div class="toolbar">
         <div>
@@ -1731,6 +1781,7 @@ export class PreloopSessionObserver extends LitElement {
             <sl-icon slot="prefix" name="list-columns-reverse"></sl-icon>
             Requests
           </sl-button>
+          ${this.renderTalkButton()}
           <sl-button size="small" @click=${() => this.reloadActiveSession()}>
             Refresh
           </sl-button>
@@ -1751,6 +1802,23 @@ export class PreloopSessionObserver extends LitElement {
         </div>
       </div>
     `;
+  }
+
+  /**
+   * Talk about the session the operator is reading, so the window opens on
+   * the same conversation rather than on whatever is newest.
+   */
+  private renderTalkButton() {
+    if (!this.talkAgent) return nothing;
+    const session = this.activeSession;
+    return html`<talk-button
+      .agent=${this.talkAgent}
+      .session=${
+        session?.canLoadEvents && session.id ? { id: session.id } : null
+      }
+      source-context="session-widget"
+      compact
+    ></talk-button>`;
   }
 
   render() {
@@ -2021,7 +2089,7 @@ export class PreloopSessionObserver extends LitElement {
                             ?selected=${session.id === this.activeSessionId}
                           >
                             ${session.title}${
-                              session.subtitle ? ` — ${session.subtitle}` : ''
+                              session.subtitle ? ` · ${session.subtitle}` : ''
                             }
                           </option>
                         `

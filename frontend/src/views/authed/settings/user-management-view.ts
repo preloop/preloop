@@ -25,6 +25,7 @@ import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
 import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import { consoleDialogStyles } from '../../../styles/console-dialog';
 
 @customElement('user-management-view')
 export class UserManagementView extends LitElement {
@@ -61,130 +62,133 @@ export class UserManagementView extends LitElement {
   @state()
   private editUser: Partial<UserUpdate> = {};
 
-  static styles = css`
-    :host {
-      display: block;
-      padding: 2rem;
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      :host {
+        display: block;
+        padding: 2rem;
+      }
 
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 2rem;
-    }
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+      }
 
-    h1 {
-      margin: 0;
-      font-size: 1.5rem;
-      font-weight: 600;
-    }
+      h1 {
+        margin: 0;
+        font-size: 1.5rem;
+        font-weight: 600;
+      }
 
-    .users-grid {
-      display: grid;
-      gap: 1rem;
-    }
+      .users-grid {
+        display: grid;
+        gap: 1rem;
+      }
 
-    sl-card {
-      width: 100%;
-    }
+      sl-card {
+        width: 100%;
+      }
 
-    .user-card-content {
-      display: grid;
-      grid-template-columns: auto 1fr auto;
-      gap: 1rem;
-      align-items: center;
-    }
+      .user-card-content {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 1rem;
+        align-items: center;
+      }
 
-    .user-icon {
-      font-size: 2rem;
-      width: 48px;
-      height: 48px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: var(--sl-color-primary-50);
-      border-radius: 50%;
-      color: var(--sl-color-primary-600);
-    }
+      .user-icon {
+        font-size: 2rem;
+        width: 48px;
+        height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--sl-color-primary-50);
+        border-radius: 50%;
+        color: var(--sl-color-primary-600);
+      }
 
-    .user-details {
-      flex: 1;
-    }
+      .user-details {
+        flex: 1;
+      }
 
-    .user-name {
-      font-weight: 600;
-      font-size: 1rem;
-      margin: 0 0 0.25rem 0;
-    }
+      .user-name {
+        font-weight: 600;
+        font-size: 1rem;
+        margin: 0 0 0.25rem 0;
+      }
 
-    .user-email {
-      color: var(--sl-color-neutral-600);
-      font-size: 0.875rem;
-      margin: 0 0 0.5rem 0;
-    }
+      .user-email {
+        color: var(--sl-color-neutral-600);
+        font-size: 0.875rem;
+        margin: 0 0 0.5rem 0;
+      }
 
-    .user-meta {
-      display: flex;
-      gap: 0.5rem;
-      flex-wrap: wrap;
-    }
+      .user-meta {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
 
-    .user-roles {
-      display: flex;
-      gap: 0.5rem;
-      align-items: center;
-      flex-wrap: wrap;
-      margin-top: 0.5rem;
-    }
+      .user-roles {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-top: 0.5rem;
+      }
 
-    .user-roles strong {
-      font-size: 0.875rem;
-      color: var(--sl-color-neutral-600);
-    }
+      .user-roles strong {
+        font-size: 0.875rem;
+        color: var(--sl-color-neutral-600);
+      }
 
-    .user-actions {
-      display: flex;
-      gap: 0.5rem;
-    }
+      .user-actions {
+        display: flex;
+        gap: 0.5rem;
+      }
 
-    .form-grid {
-      display: grid;
-      gap: 1rem;
-    }
+      .form-grid {
+        display: grid;
+        gap: 1rem;
+      }
 
-    .role-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-      max-height: 300px;
-      overflow-y: auto;
-    }
+      .role-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        max-height: 300px;
+        overflow-y: auto;
+      }
 
-    .role-item {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.5rem;
-      border-radius: 4px;
-      background: var(--sl-color-neutral-50);
-    }
+      .role-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem;
+        border-radius: 4px;
+        background: var(--sl-color-neutral-50);
+      }
 
-    .error {
-      color: var(--sl-color-danger-600);
-      background: var(--sl-color-danger-50);
-      padding: 1rem;
-      border-radius: 4px;
-      margin-bottom: 1rem;
-    }
+      .error {
+        color: var(--sl-color-danger-600);
+        background: var(--sl-color-danger-50);
+        padding: 1rem;
+        border-radius: 4px;
+        margin-bottom: 1rem;
+      }
 
-    .loading {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      padding: 4rem;
-    }
-  `;
+      .loading {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 4rem;
+      }
+    `,
+  ];
 
   @state()
   private featureEnabled = true;

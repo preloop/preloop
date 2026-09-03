@@ -73,16 +73,34 @@ export function formatUTCDateTime(dateTimeString: string): string {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} UTC`;
 }
 
+export interface RelativeTimeOptions {
+  /**
+   * How long a timestamp stays relative. Past this many days the absolute
+   * date is shown instead, because "just now" next to "213d ago" reads worse
+   * than "just now" next to a date. Lists that mix fresh and stale rows
+   * (agents "Last seen") use 30; pages that are entirely relative, like
+   * /console/attention, pass Infinity.
+   */
+  maxRelativeDays?: number;
+  /** Append " ago". Off for phrasings that supply their own word ("pending 7w"). */
+  withSuffix?: boolean;
+}
+
 /**
- * Calculates relative time from now (e.g., "2m ago", "3h ago", "5d ago").
+ * Calculates relative time from now (e.g., "2m ago", "3h ago", "5d ago",
+ * "7w ago").
  *
  * @param dateTimeString - Datetime string from backend
- * @returns Relative time string
+ * @param now - Instant to measure against
+ * @param options - Relative window and suffix, see RelativeTimeOptions
+ * @returns Relative time string, or the local date past the relative window
  */
 export function formatRelativeTime(
   dateTimeString: string,
-  now: Date = new Date()
+  now: Date = new Date(),
+  options: RelativeTimeOptions = {}
 ): string {
+  const { maxRelativeDays = 7, withSuffix = true } = options;
   const date = parseUTCDate(dateTimeString);
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60000);
@@ -90,10 +108,16 @@ export function formatRelativeTime(
   const diffDays = Math.floor(diffMs / 86400000);
 
   if (diffMins < 1) return 'just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  if (diffDays >= maxRelativeDays) return date.toLocaleDateString();
+
+  const suffix = withSuffix ? ' ago' : '';
+  if (diffMins < 60) return `${diffMins}m${suffix}`;
+  if (diffHours < 24) return `${diffHours}h${suffix}`;
+  if (diffDays < 30) return `${diffDays}d${suffix}`;
+
+  const diffWeeks = Math.floor(diffDays / 7);
+  if (diffWeeks < 52) return `${diffWeeks}w${suffix}`;
+  return `${Math.floor(diffDays / 365)}y${suffix}`;
 }
 
 /**

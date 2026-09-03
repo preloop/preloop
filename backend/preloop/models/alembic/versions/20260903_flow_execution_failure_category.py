@@ -1,7 +1,7 @@
 """Add failure_category to flow_execution.
 
 Revision ID: 20260903_failure_category
-Revises: 20260830_user_avatar
+Revises: 20260902_attention_dismiss
 Create Date: 2026-09-03
 
 Terminal executions already carry a free-text error_message, which is fine for
@@ -25,7 +25,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "20260903_failure_category"
-down_revision = "20260830_user_avatar"
+down_revision = "20260902_attention_dismiss"
 branch_labels = None
 depends_on = None
 

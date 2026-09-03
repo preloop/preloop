@@ -420,6 +420,19 @@ def _fetch_openrouter_price_map() -> Optional[Dict[str, Any]]:
     return _openrouter_cache.get(_download_openrouter_price_map)
 
 
+def fetch_openrouter_price_map() -> Optional[Dict[str, Any]]:
+    """Return OpenRouter's published prices, keyed ``openrouter/<model id>``.
+
+    The public read used by the model page's "Fetch from provider": it shares
+    the same cache and failure backoff as the gateway's own lookups, so a
+    button nobody stops pressing cannot turn into a stream of upstream calls.
+
+    Returns:
+        The price map, or None when the download failed or a backoff is on.
+    """
+    return _fetch_openrouter_price_map()
+
+
 def lookup_model_price_now(candidates: List[str]) -> Optional[str]:
     """Try to price the given model candidates from the live upstream map.
 

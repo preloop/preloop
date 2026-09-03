@@ -14,6 +14,14 @@ from pydantic import (
     model_validator,
 )
 
+from preloop.utils.schedule_text import (
+    WEEKDAYS,
+    describe_cron,
+    describe_daily,
+    describe_interval,
+    describe_weekly,
+)
+
 
 class GitCloneRepository(BaseModel):
     """Configuration for a single repository to clone."""
@@ -100,18 +108,9 @@ MAX_SCHEDULE_INTERVAL = timedelta(days=366)
 _SCHEDULE_CHECK_MAX_TICKS = 200
 
 
-# Canonical weekday order for weekly schedules (APScheduler abbreviations).
-WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+# Canonical weekday order for weekly schedules (APScheduler abbreviations),
+# re-exported from the renderer so the order and the labels come from one place.
 Weekday = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-_WEEKDAY_LABELS = {
-    "mon": "Mon",
-    "tue": "Tue",
-    "wed": "Wed",
-    "thu": "Thu",
-    "fri": "Fri",
-    "sat": "Sat",
-    "sun": "Sun",
-}
 _TIME_OF_DAY_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 
@@ -225,7 +224,7 @@ class CronSchedule(ScheduleBase):
             raise ValueError(f"Invalid cron expression '{self.expr}': {e}")
 
     def describe(self) -> str:
-        return f"Cron '{self.expr}' ({self.timezone})"
+        return describe_cron(self.expr, self.timezone)
 
 
 class IntervalSchedule(ScheduleBase):
@@ -265,8 +264,7 @@ class IntervalSchedule(ScheduleBase):
         return IntervalTrigger(**{self.unit: self.every}, timezone=self.timezone)
 
     def describe(self) -> str:
-        unit = self.unit[:-1] if self.every == 1 else self.unit
-        return f"Every {self.every} {unit}"
+        return describe_interval(self.every, self.unit)
 
 
 class DailySchedule(ScheduleBase):
@@ -291,7 +289,7 @@ class DailySchedule(ScheduleBase):
         return CronTrigger(hour=int(hour), minute=int(minute), timezone=self.timezone)
 
     def describe(self) -> str:
-        return f"Daily at {self.at} ({self.timezone})"
+        return describe_daily(self.at, self.timezone)
 
 
 class WeeklySchedule(ScheduleBase):
@@ -330,8 +328,7 @@ class WeeklySchedule(ScheduleBase):
         )
 
     def describe(self) -> str:
-        days = ", ".join(_WEEKDAY_LABELS[d] for d in self.days)
-        return f"Weekly on {days} at {self.at} ({self.timezone})"
+        return describe_weekly(self.days, self.at, self.timezone)
 
 
 # Discriminated union over all supported schedule forms. The friendly

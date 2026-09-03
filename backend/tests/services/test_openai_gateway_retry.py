@@ -259,6 +259,51 @@ def test_retry_count_is_not_charged_to_a_later_request():
     assert service._last_upstream_retry_count == 0
 
 
+def test_stale_retry_count_is_cleared_when_a_request_starts():
+    """A request that died before its usage row must not tax the next one.
+
+    ``_record_gateway_request`` consumes and clears the count, but a terminal
+    upstream error can escape the handler before the row is written. The next
+    request re-arms the counter itself, so the leak cannot survive it.
+    """
+    service, _ai_model, _backend = _service_and_model()
+    service._last_upstream_retry_count = 3  # previous request never recorded
+
+    with pytest.raises(ModelGatewayAPIError):
+        # Rejected right after the request starts; no upstream call at all.
+        service.create_chat_completion({"model": "gpt-5", "stream": True})
+
+    assert service._last_upstream_retry_count == 0
+
+
+def test_stale_retry_count_is_cleared_when_a_stream_request_starts():
+    """Same for the streaming entry point."""
+    service, _ai_model, _backend = _service_and_model()
+    service._last_upstream_retry_count = 3
+
+    with pytest.raises(ModelGatewayAPIError):
+        # Fails while resolving the model, still after the reset.
+        service.stream_chat_completion({"model": "gpt-5", "messages": []})
+
+    assert service._last_upstream_retry_count == 0
+
+
+def test_every_request_entry_point_rearms_the_retry_count():
+    """A new entry point that forgets the reset re-opens the leak."""
+    import inspect
+
+    for name in (
+        "create_chat_completion",
+        "create_response",
+        "create_message",
+        "stream_chat_completion",
+        "stream_response",
+        "stream_message",
+    ):
+        source = inspect.getsource(getattr(OpenAIGatewayService, name))
+        assert "_begin_request_accounting()" in source, name
+
+
 def test_attempt_budget_is_configurable(monkeypatch):
     """Operators can widen or disable the retry budget without a deploy."""
     service, ai_model, backend = _service_and_model()

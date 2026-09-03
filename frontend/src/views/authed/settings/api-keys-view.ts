@@ -38,6 +38,7 @@ import {
   serializeScopedToolRules,
   type ScopedToolRules,
 } from '../../../utils/scoped-governance';
+import { consoleDialogStyles } from '../../../styles/console-dialog';
 
 interface GovernanceToolDefinition {
   name: string;
@@ -759,6 +760,7 @@ export class ApiKeysView extends LitElement {
   }
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       .loading-indicator {

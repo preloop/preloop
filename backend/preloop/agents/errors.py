@@ -22,9 +22,12 @@ class AgentStartError(RuntimeError):
             collision, ``runner_error`` for anything else that stopped the
             Job/container from being created). ``None`` leaves the
             orchestrator's text-based derivation in charge.
-        retryable: True when another attempt at the SAME start could
-            plausibly succeed. Informational: the bounded retry lives inside
-            the runner, so an error that escapes has already been retried.
+
+    There is deliberately no ``retryable`` flag. The only bounded retry of a
+    Job/container start lives inside the runner, so an error that escapes has
+    already exhausted it; the flow-level retry is scoped to the "agent process
+    died" policy and never re-runs a start failure. A flag nothing reads would
+    only suggest otherwise.
     """
 
     def __init__(
@@ -32,8 +35,6 @@ class AgentStartError(RuntimeError):
         message: str,
         *,
         category: Optional[str] = None,
-        retryable: bool = False,
     ) -> None:
         super().__init__(message)
         self.category = category
-        self.retryable = retryable

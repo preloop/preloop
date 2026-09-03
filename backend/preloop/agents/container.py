@@ -30,6 +30,7 @@ from preloop.utils.git_credentials import (
     GitCredential,
     build_credential_env,
     build_credential_setup_shell,
+    build_push_auth_setup_shell,
     credential_username,
     git_token_env_var,
     needs_http_path_scoping,
@@ -43,6 +44,31 @@ from preloop.utils.workspace_seed import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Git ref names interpolated into generated shell (origin/<branch>..HEAD).
+# Charset is unquoted-shell-safe so we never splice shlex.quote into the
+# middle of a token (origin/'feat/x'). Extra checks below match git's
+# own refname rules: no ``..``, leading ``-``, trailing ``.``, or
+# ``~``/``^``/``:`` (the last three are already outside the charset).
+_SAFE_GIT_REF_CHARS = re.compile(r"^[A-Za-z0-9._/\-]+$")
+
+
+def _validated_git_ref(name: Optional[str]) -> Optional[str]:
+    """Return ``name`` when it is a safe git branch/ref, otherwise None."""
+
+    if not name or not isinstance(name, str):
+        return None
+    if not _SAFE_GIT_REF_CHARS.fullmatch(name):
+        return None
+    if name.startswith("-") or name.startswith("/") or name.endswith("."):
+        return None
+    if name.endswith("/") or ".." in name or "//" in name:
+        return None
+    for part in name.split("/"):
+        if not part or part.startswith(".") or part.endswith(".lock"):
+            return None
+    return name
+
 
 # Path inside the agent container where eval/observe flows write their
 # structured result report (see backend/presets/003-observe-eval.yaml).
@@ -771,9 +797,19 @@ class ContainerAgentExecutor(AgentExecutor):
                 return job_name
             except ApiException as e:
                 last_error = e
+                # Whether a create can still follow this attempt. Everything
+                # that is only a *precondition* for another create - deleting
+                # a finished leftover to free its name - is gated on it: with
+                # AGENT_JOB_CREATE_MAX_ATTEMPTS=1 nothing would recreate the
+                # Job, so deleting would throw away the leftover's logs and
+                # still fail the run. Adoption is not gated: it returns a
+                # started agent without needing another attempt.
+                can_retry = attempt < max_attempts - 1
                 if e.status == 409:
                     adopted = await self._resolve_job_name_conflict(
-                        job_name=job_name, execution_id=execution_id
+                        job_name=job_name,
+                        execution_id=execution_id,
+                        may_delete=can_retry,
                     )
                     if adopted:
                         self.logger.warning(
@@ -792,7 +828,7 @@ class ContainerAgentExecutor(AgentExecutor):
                         category=FAILURE_CATEGORY_RUNNER_ERROR,
                     ) from e
 
-                if attempt >= max_attempts - 1:
+                if not can_retry:
                     break
 
                 delay = _job_create_retry_delay_seconds(attempt)
@@ -819,7 +855,6 @@ class ContainerAgentExecutor(AgentExecutor):
                 if last_error.status == 409
                 else FAILURE_CATEGORY_RUNNER_ERROR
             ),
-            retryable=True,
         ) from last_error
 
     @staticmethod
@@ -833,24 +868,28 @@ class ContainerAgentExecutor(AgentExecutor):
         return status == 429 or 500 <= status < 600
 
     async def _resolve_job_name_conflict(
-        self, *, job_name: str, execution_id: str
+        self, *, job_name: str, execution_id: str, may_delete: bool = True
     ) -> bool:
         """Adopt or clear the Job that owns a conflicting name.
 
         Args:
             job_name: Name that came back 409 AlreadyExists.
             execution_id: Execution the caller is starting.
+            may_delete: Whether a finished leftover may be deleted to free
+                its name. False when no create attempt remains, in which case
+                the leftover (and its logs) is left in place: deleting it
+                would help nobody and destroy the evidence.
 
         Returns:
             True when the existing Job is a live agent for this execution and
             was adopted (the caller must NOT create anything). False when the
             name was freed (or the Job vanished) and creation should be
-            retried.
+            retried, and when a leftover was deliberately left in place.
 
         Raises:
-            AgentStartError: When the conflicting Job belongs to a different
-                execution — deleting or adopting it would corrupt an
-                unrelated run, so this fails loudly instead.
+            AgentStartError: When the conflicting Job does not provably
+                belong to this execution. Deleting or adopting it would
+                corrupt an unrelated run, so this fails loudly instead.
         """
         try:
             existing = await self._k8s_batch_api.read_namespaced_job(
@@ -865,9 +904,21 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             return False
 
+        # Fail closed on ownership: this guard is the only thing standing
+        # between a name collision and someone else's agent being adopted or
+        # deleted. Every Preloop job-creation path sets the label, so a
+        # missing one means the Job is not ours to touch (an operator's, a
+        # foreign tool's, or a label stripped after creation) - unknown
+        # ownership is treated exactly like foreign ownership.
         labels = getattr(getattr(existing, "metadata", None), "labels", None) or {}
         owner = labels.get("preloop.execution_id")
-        if owner and str(owner) != str(execution_id):
+        if not owner:
+            raise AgentStartError(
+                f"Failed to start agent Job: name {job_name} is already used by "
+                "a Job with no preloop.execution_id label (unknown owner)",
+                category=FAILURE_CATEGORY_RUNNER_CONFLICT,
+            )
+        if str(owner) != str(execution_id):
             raise AgentStartError(
                 f"Failed to start agent Job: name {job_name} is already used by "
                 f"execution {owner}",
@@ -876,6 +927,16 @@ class ContainerAgentExecutor(AgentExecutor):
 
         if self._job_is_live(existing):
             return True
+
+        if not may_delete:
+            # Last attempt: nothing would recreate the Job, so deleting the
+            # leftover would only cost its logs. Fail on the 409 instead.
+            self.logger.warning(
+                f"Leaving finished leftover Job {job_name} in place for "
+                f"execution {execution_id}: no creation attempt remains "
+                "(AGENT_JOB_CREATE_MAX_ATTEMPTS)"
+            )
+            return False
 
         self.logger.info(
             f"Deleting finished leftover Job {job_name} so execution "
@@ -2257,17 +2318,31 @@ class ContainerAgentExecutor(AgentExecutor):
         source_branch = git_config.get("source_branch") or None
         target_branch = git_config.get("target_branch") or None
         trigger_data = execution_context.get("trigger_event_data", {})
+        resume = trigger_data.get("_resume") if isinstance(trigger_data, dict) else None
+        resume_branch = None
+        if isinstance(resume, dict):
+            resume_branch = resume.get("source_branch") or None
 
-        if not source_branch:
-            source_branch = self._extract_source_branch_from_trigger(trigger_data)
-        if not source_branch:
-            source_branch = "main"
+        if resume_branch:
+            # Clone and push the same PR branch so a comment restart continues
+            # the existing review, not a new branch off main.
+            source_branch = resume_branch
+            target_branch = resume_branch
+            self.logger.info(
+                "Resume clone: using existing PR branch %s as source and target",
+                resume_branch,
+            )
+        else:
+            if not source_branch:
+                source_branch = self._extract_source_branch_from_trigger(trigger_data)
+            if not source_branch:
+                source_branch = "main"
 
-        if not target_branch:
-            flow_name = execution_context.get("flow_name", "flow")
-            execution_id = execution_context.get("execution_id", "exec")
-            safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
-            target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
+            if not target_branch:
+                flow_name = execution_context.get("flow_name", "flow")
+                execution_id = execution_context.get("execution_id", "exec")
+                safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
+                target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
 
         commit_sha = self._extract_commit_sha_from_trigger(trigger_data)
         if commit_sha:
@@ -2762,8 +2837,11 @@ echo "========================================="
                 self.logger.debug("No git_clone_config in execution context")
                 return ""
 
-            # Check for repositories - if they exist, we should have cloned them
-            repositories = git_config.get("repositories", [])
+            # Match clone: empty repositories still falls back to the trigger
+            # project, otherwise post-exec would skip a repo that was cloned.
+            repositories = self._resolve_git_clone_repositories(
+                execution_context, git_config
+            )
             if not repositories:
                 self.logger.debug("No repositories in git_clone_config")
                 return ""
@@ -2781,6 +2859,23 @@ echo "========================================="
             if not target_branch:
                 return ""
 
+            safe_target = _validated_git_ref(target_branch)
+            if not safe_target:
+                self.logger.warning(
+                    "Skipping post-execution git: unsafe target branch %r",
+                    target_branch,
+                )
+                return ""
+            safe_source = _validated_git_ref(source_branch)
+            if source_branch and safe_source is None:
+                self.logger.warning(
+                    "Skipping post-execution git: unsafe source branch %r",
+                    source_branch,
+                )
+                return ""
+            if safe_source is None:
+                safe_source = "main"
+
             post_commands = []
 
             for idx, repo_config in enumerate(repositories):
@@ -2793,16 +2888,11 @@ echo "========================================="
                     # Relative path - prepend /workspace/
                     full_path = f"/workspace/{clone_path}"
 
-                # Get tracker info for PR/MR creation
-                tracker_id = repo_config.get("tracker_id")
-                git_credentials_map = execution_context.get("git_credentials_map", {})
-                tracker_creds = git_credentials_map.get(tracker_id)
-
-                if not tracker_creds:
-                    continue
-
-                tracker_type = tracker_creds.get("tracker_type")
-                token = tracker_creds.get("token")
+                # Resolve the tracker token the same way clone does, so a
+                # missing tracker_id still finds the trigger-project token.
+                token, tracker_type = self._resolve_repository_token(
+                    repo_config, execution_context
+                )
 
                 # The REST API token is passed through the environment rather
                 # than interpolated into the script, so it cannot leak via the
@@ -2814,15 +2904,46 @@ echo "========================================="
                         execution_context, idx, token
                     )
 
-                # Commands to check for commits and push
+                trigger_data = execution_context.get("trigger_event_data", {})
+                repo_url = self._resolve_repository_clone_url(
+                    repo_config, idx, execution_context, trigger_data
+                )
+                host_kind = (
+                    tracker_host_kind(strip_url_credentials(repo_url))
+                    if repo_url
+                    else None
+                )
+                username = credential_username(host_kind, tracker_type)
+                push_auth = build_push_auth_setup_shell(
+                    token_ref=token_ref, username=username
+                )
+
+                # Commands to check for commits and push. Persist a bundle
+                # under /workspace/evidence *before* push so a failed push
+                # still leaves a recoverable artifact in the log stream.
                 # Note: Directory is guaranteed to exist because git clone validation would have failed earlier
                 repo_post_commands = [
                     f"cd {full_path}",
-                    # Check if there are any commits on target branch vs source
-                    f'COMMIT_COUNT=$(git rev-list --count {source_branch}..{target_branch} 2>/dev/null || echo "0")',
+                    # Resume clones source==target, so origin/<branch>..HEAD
+                    # still counts local commits the branch-vs-branch range
+                    # would miss. Branch names are validated above; do not
+                    # shlex.quote mid-token (that yields origin/'feat/x').
+                    f'COMMIT_COUNT=$(git rev-list --count origin/{safe_target}..HEAD 2>/dev/null || git rev-list --count {safe_source}..{safe_target} 2>/dev/null || echo "0")',
                     'if [ "$COMMIT_COUNT" -gt "0" ]; then',
-                    f'  echo "Found $COMMIT_COUNT commits on {target_branch}, pushing..."',
-                    f"  git push origin {target_branch}",
+                    f'  echo "Found $COMMIT_COUNT commits on {safe_target}, pushing..."',
+                    f"  mkdir -p {EVIDENCE_DIR_PATH}",
+                    f"  git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
+                    f"  git log -1 --format='%H %s' >> {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
+                    f"  git format-patch --stdout {safe_source}..HEAD > {EVIDENCE_DIR_PATH}/branch.patch 2>/dev/null || true",
+                    (
+                        f"  git bundle create {EVIDENCE_DIR_PATH}/branch.bundle "
+                        f"{safe_source}..HEAD 2>/dev/null "
+                        f"|| git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD "
+                        f"2>/dev/null || true"
+                    ),
+                    f'  echo "Wrote git recovery artifacts under {EVIDENCE_DIR_PATH}"',
+                    push_auth,
+                    f"  git push origin {safe_target}",
                 ]
 
                 # Add PR/MR creation if enabled
@@ -3255,6 +3376,22 @@ MREOF
                 self.logger.info(f"Extracted GitHub PR fetch ref: {ref}")
                 return ref
 
+            issue = payload.get("issue")
+            if (
+                isinstance(issue, dict)
+                and isinstance(issue.get("pull_request"), dict)
+                and issue.get("number") is not None
+            ):
+                ref = f"pull/{issue['number']}/head"
+                self.logger.info(f"Extracted GitHub PR comment fetch ref: {ref}")
+                return ref
+
+            mr = payload.get("merge_request")
+            if isinstance(mr, dict) and mr.get("iid") is not None:
+                ref = f"refs/merge-requests/{mr['iid']}/head"
+                self.logger.info(f"Extracted GitLab MR note fetch ref: {ref}")
+                return ref
+
             return None
         except Exception as e:
             self.logger.debug(f"Error extracting merge request ref from trigger: {e}")
@@ -3329,6 +3466,15 @@ MREOF
             if isinstance(obj_attrs, dict) and obj_attrs.get("source_branch"):
                 branch = obj_attrs["source_branch"]
                 self.logger.info(f"Extracted source branch from GitLab MR: {branch}")
+                return branch
+
+            # GitLab note on an MR
+            mr = payload.get("merge_request")
+            if isinstance(mr, dict) and mr.get("source_branch"):
+                branch = mr["source_branch"]
+                self.logger.info(
+                    f"Extracted source branch from GitLab MR note: {branch}"
+                )
                 return branch
 
             return None

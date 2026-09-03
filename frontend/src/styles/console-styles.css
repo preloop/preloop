@@ -1,9 +1,41 @@
+/* =====================================================================
+   Console surface tokens (wave 2).
+
+   One place decides the console's compact scale so a new view matches its
+   neighbours by importing this file instead of inventing sizes. Colour is
+   never spelled out here: every value is a Shoelace token, so the dark theme
+   derives from the same declarations.
+   ===================================================================== */
+:host {
+    --console-text-h1: 1.625rem; /* 26px */
+    --console-text-card-title: 0.9375rem; /* 15px */
+    --console-text-body: 0.875rem; /* 14px */
+    --console-text-meta: 0.8125rem; /* 13px */
+    --console-text-eyebrow: 0.6875rem; /* 11px */
+    --console-stat-value: 1.375rem; /* 22px */
+}
+
 a {
-    color: var(--sl-color-primary-600);
+    color: var(--console-link-color);
     text-decoration: none;
 }
 a:hover {
     text-decoration: underline;
+}
+
+/* Every interactive thing in the console answers the keyboard the same way. */
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible,
+sl-button:focus-visible,
+sl-icon-button:focus-visible,
+sl-badge:focus-visible,
+.row:focus-visible,
+.item-card:focus-visible {
+    outline: 2px solid var(--sl-color-primary-500);
+    outline-offset: 2px;
+    border-radius: var(--sl-border-radius-small);
 }
 .column-layout {
     display: grid;
@@ -18,14 +50,20 @@ a:hover {
     } */
 }
 
-/* Dashboard-specific layout with responsive 2-column ratio */
+/* Dashboard-specific layout with responsive 2-column ratio.
+
+   The side column is a rail: from 1200px up it sits beside the main column,
+   sticks under the shell header and is never taller than what the operator
+   can see (see .side-column below and the Overview's own sheet). Below that
+   it is a plain stack. 1200 rather than 1400 because the rail needs about
+   290px to hold the Usage card, which it has from 1200 up. */
 .column-layout.dashboard {
     grid-template-columns: 1fr; /* Default: stacked */
 }
 
-@media (min-width: 1400px) {
+@media (min-width: 1200px) {
     .column-layout.dashboard {
-        grid-template-columns: 2fr 1fr; /* Above 1400px: proportional columns */
+        grid-template-columns: 2fr 1fr; /* Above 1200px: proportional columns */
     }
 }
 
@@ -89,10 +127,13 @@ a:hover {
     padding: var(--sl-spacing-x-large);
 }
 
+/* The page title is the quietest thing that can still read as a title: at
+   1.75rem/700 it was louder than any number on the page it introduces. */
 .header h1 {
     text-align: left;
-    font-size: 1.75rem;
+    font-size: var(--console-text-h1);
     font-weight: 600;
+    letter-spacing: -0.01em;
     color: var(--sl-color-neutral-900);
     margin: 0;
 }
@@ -120,8 +161,167 @@ a:hover {
     padding: 0;
 }
 
+/* Cards read as one quiet surface: no gray header band, a hairline rule
+   under the title, so content (not chrome) carries the hierarchy. */
 sl-card::part(header) {
-    background-color: var(--sl-color-neutral-100);
+    background-color: transparent;
+    border-bottom: 1px solid var(--console-hairline);
+    padding: var(--sl-spacing-medium);
+    font-size: var(--console-text-card-title);
+    font-weight: 600;
+}
+
+/* A card is one step up from the page, and that step is the whole story.
+   Light adds a hairline and the smallest shadow; dark adds neither, because
+   a lighter panel already reads as raised and a border around it reads as a
+   box. Both come from the ladder (styles/console-surfaces.css), never from a
+   neutral step named here. */
+sl-card::part(base),
+.content-card::part(base) {
+    background-color: var(--console-surface);
+    border: var(--console-card-border);
+    border-radius: var(--console-card-radius);
+    box-shadow: var(--console-card-shadow);
+}
+
+/* Card title, section eyebrow, meta: the three sizes below body text. */
+.card-title,
+.section-title {
+    font-size: var(--console-text-card-title);
+    font-weight: 600;
+}
+
+.eyebrow {
+    color: var(--console-meta-color);
+    font-size: var(--console-text-eyebrow);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.meta {
+    color: var(--console-meta-color);
+    font-size: var(--console-text-meta);
+}
+
+/* Numbers line up column-wise wherever they appear. */
+.row-value,
+.tool-count-value,
+.metric-value,
+.summary-value,
+.stat-value,
+.meta {
+    font-variant-numeric: tabular-nums;
+}
+
+/* =====================================================================
+   Chips. One recipe for every status pill in the console (agents list,
+   agent detail, attention, overview cards, executions), so "RUNNING" on
+   one page and "Active now" on another are the same object.
+   ===================================================================== */
+sl-badge[pill]::part(base),
+sl-badge.chip::part(base) {
+    border-width: 0;
+    font-size: 0.75rem; /* 12px */
+    font-weight: 500;
+    line-height: 1.4;
+    padding: 2px 8px;
+}
+
+/* A state is a tint, not a paint (wave 4). Soft chips: 16% of the tone over
+   whatever surface they sit on, no border, one ink step for the text. The
+   Shoelace dark theme inverts every scale, so the same token is a dark ink on
+   the light theme and a light ink on the dark one: one declaration, both.
+   Solid pills survive in exactly two places, and both opt in with .solid:
+   the count badge in a section header and the danger pill on a failed run.
+   The ink is the -800 step, not -700: on a 16% tint -700 measures 4.4:1 for
+   amber and green in the light theme, and 12px text needs 4.5. */
+sl-badge.chip:not(.solid)::part(base),
+sl-badge.status-chip:not(.solid)::part(base) {
+    background-color: color-mix(
+        in srgb,
+        var(--sl-color-neutral-500) 16%,
+        transparent
+    );
+    color: var(--sl-color-neutral-800);
+    border-width: 0;
+}
+
+sl-badge.chip[variant='primary']:not(.solid)::part(base),
+sl-badge.status-chip[variant='primary']:not(.solid)::part(base) {
+    background-color: color-mix(
+        in srgb,
+        var(--sl-color-primary-500) 16%,
+        transparent
+    );
+    color: var(--sl-color-primary-800);
+}
+
+sl-badge.chip[variant='success']:not(.solid)::part(base),
+sl-badge.status-chip[variant='success']:not(.solid)::part(base) {
+    background-color: color-mix(
+        in srgb,
+        var(--sl-color-success-500) 16%,
+        transparent
+    );
+    color: var(--sl-color-success-800);
+}
+
+sl-badge.chip[variant='warning']:not(.solid)::part(base),
+sl-badge.status-chip[variant='warning']:not(.solid)::part(base) {
+    background-color: color-mix(
+        in srgb,
+        var(--sl-color-warning-500) 16%,
+        transparent
+    );
+    color: var(--sl-color-warning-800);
+}
+
+sl-badge.chip[variant='danger']:not(.solid)::part(base),
+sl-badge.status-chip[variant='danger']:not(.solid)::part(base) {
+    background-color: color-mix(
+        in srgb,
+        var(--sl-color-danger-500) 16%,
+        transparent
+    );
+    color: var(--sl-color-danger-800);
+}
+
+/* Default buttons take their face from the ladder: Shoelace's white in
+   light, nothing but a 14% white hairline in dark, where a filled button
+   would be darker than the card behind it. */
+sl-button[variant='default']:not([disabled])::part(base) {
+    background-color: var(--console-button-face);
+    border-color: var(--console-button-border);
+}
+
+sl-button[variant='default']:not([disabled])::part(base):hover {
+    background-color: var(--console-button-face-hover);
+    border-color: var(--console-button-border-hover);
+}
+
+/* Tags are labels, not states, and a label needs no box at all: an icon and
+   the word, in meta colour. */
+sl-badge.chip-tag::part(base),
+sl-badge.tag-chip::part(base) {
+    background-color: transparent;
+    border-width: 0;
+    padding: 2px 0;
+    color: var(--console-meta-color);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+sl-badge.chip-tag sl-icon,
+sl-badge.tag-chip sl-icon {
+    font-size: 13px;
+    vertical-align: -2px;
+}
+
+/* `team=platform`: the key names the label, the value qualifies it. */
+.tag-chip-value {
+    opacity: 0.7;
 }
 
 .styled-table {
@@ -134,20 +334,28 @@ sl-card::part(header) {
 .styled-table td {
   padding: var(--sl-spacing-medium);
   text-align: left;
-  border-bottom: 1px solid var(--sl-color-neutral-200);
+  border-bottom: 1px solid var(--console-hairline);
 }
 
 .styled-table th {
-    background-color: var(--sl-color-neutral-100);
+    /* No gray header band: a filled strip inside a card is one box too many.
+       The hairline under the row and the semibold label are the header. */
+    background-color: transparent;
     font-weight: var(--sl-font-weight-semibold);
+    color: var(--console-meta-color);
 }
 
 .styled-table tr {
-    border-bottom: 1px solid var(--sl-color-neutral-200);
+    border-bottom: 1px solid var(--console-hairline);
 }
 
 .styled-table tr:last-child td {
     border-bottom: none;
+}
+
+/* Rows react to the pointer everywhere, at one weight. */
+.styled-table tbody tr:hover {
+    background-color: var(--console-hover-tint);
 }
 
 .styled-table th:last-child:not(:only-child), .styled-table td:last-child:not(:only-child) {
@@ -196,18 +404,23 @@ sl-dialog.large::part(panel) {
 .item-list {
     display: flex;
     flex-direction: column;
-    gap: var(--sl-spacing-small);
+    /* Rows are separated by hairlines, not by gaps between filled boxes. */
+    gap: 0;
 }
 
+/* Depth limit: two. A row inside a card has no surface of its own - no fill,
+   no border, no radius, no left rule. What separates one row from the next is
+   a hairline, and what ranks the lines inside it is weight and size. */
 .item-card {
     display: flex;
     justify-content: space-between;
     align-items: center;
     gap: var(--sl-spacing-small);
-    padding: var(--sl-spacing-small);
-    background: var(--sl-color-neutral-50);
-    border-radius: var(--sl-border-radius-medium);
-    border-left: 3px solid var(--sl-color-neutral-300);
+    padding: var(--sl-spacing-small) 0;
+}
+
+.item-card + .item-card {
+    border-top: 1px solid var(--console-hairline);
 }
 
 /* Action group (status tag, links, dismiss). Must never be compressed or
@@ -221,15 +434,14 @@ sl-dialog.large::part(panel) {
     margin-left: auto;
 }
 
-.item-card.warning {
-    background: var(--sl-color-warning-50);
-    border-left-color: var(--sl-color-warning-600);
+/* Pointer feedback is transient, so it may tint; a resting row may not. */
+.item-card:hover {
+    background: var(--console-hover-tint);
 }
 
-.item-card.danger {
-    background: var(--sl-color-danger-50);
-    border-left-color: var(--sl-color-danger-600);
-}
+/* A row is never tinted by its state: the status pill is the one place a
+   list row is allowed to be red or amber. A card of five runs where two
+   failed used to read as a wall of red for two facts. */
 
 .item-info {
     display: flex;
@@ -249,34 +461,39 @@ sl-dialog.large::part(panel) {
 }
 
 .item-secondary {
-    font-size: var(--sl-font-size-small);
-    color: var(--sl-color-neutral-600);
+    font-size: var(--console-text-meta);
+    color: var(--console-meta-color);
+    font-variant-numeric: tabular-nums;
 }
 
 .item-error {
-    font-size: var(--sl-font-size-small);
-    color: var(--sl-color-danger-700);
-    font-style: italic;
-    /* Break inside long URLs and paths rather than overflowing the row, and
-       cap the message at three lines so one error cannot dominate the card. */
-    overflow-wrap: anywhere;
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
+    font-size: var(--console-text-meta);
+    color: var(--sl-color-neutral-600);
+    /* One line, ellipsised, full text in the title: the message is evidence
+       for the pill next to it, not the headline of the row. */
+    white-space: nowrap;
     overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Empty state */
+/* One centered line in a 72px box: an empty list should say what is missing
+   in the space of a row, not in the space of a full card. */
 .empty-state {
-    text-align: center;
-    padding: var(--sl-spacing-large);
+    align-items: center;
     color: var(--sl-color-neutral-600);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 72px;
+    padding: var(--sl-spacing-medium);
+    text-align: center;
 }
 
 .empty-state sl-icon {
-    font-size: 3rem;
+    font-size: 1.5rem;
     color: var(--sl-color-neutral-400);
-    margin-bottom: var(--sl-spacing-small);
+    margin-bottom: var(--sl-spacing-2x-small);
 }
 
 /* Chart/Card header */
@@ -294,7 +511,7 @@ sl-dialog.large::part(panel) {
 }
 
 .header-action-link {
-    color: var(--sl-color-primary-600);
+    color: var(--console-link-color);
     text-decoration: none;
     font-size: var(--sl-font-size-small);
     font-weight: 500;
@@ -317,7 +534,7 @@ sl-dialog.large::part(panel) {
     justify-content: space-between;
     align-items: center;
     padding: var(--sl-spacing-small) 0;
-    border-bottom: 1px solid var(--sl-color-neutral-200);
+    border-bottom: 1px solid var(--console-hairline);
 }
 
 .summary-item:last-child {
@@ -359,14 +576,14 @@ sl-dialog.large::part(panel) {
 }
 
 .stat-label {
-    font-size: var(--sl-font-size-small);
-    color: var(--sl-color-neutral-600);
+    font-size: var(--console-text-meta);
+    color: var(--console-meta-color);
     margin-top: var(--sl-spacing-x-small);
 }
 
 .stat-subtext {
-    font-size: var(--sl-font-size-x-small);
-    color: var(--sl-color-neutral-500);
+    font-size: var(--console-text-meta);
+    color: var(--console-meta-color);
     margin-top: var(--sl-spacing-2x-small);
 }
 

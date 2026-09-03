@@ -11,6 +11,7 @@ conditional flow triggering based on author, labels, assignee, etc.
 from typing import Dict, Any, List, Optional, Tuple
 
 from preloop.models.models.flow_execution import TRIGGER_SUBJECT_KEY
+from preloop.utils.schedule_text import describe_schedule_config
 
 
 def gitlab_label_delta(payload: Optional[dict]) -> Tuple[List[str], List[str]]:
@@ -246,7 +247,10 @@ def normalize_event_type(
                         # This matches user expectation that "PR Updated" includes new commits
                         normalized = "pull_request_updated"
                     elif action == "closed":
-                        normalized = "pull_request_closed"
+                        if payload.get("pull_request", {}).get("merged"):
+                            normalized = "pull_request_merged"
+                        else:
+                            normalized = "pull_request_closed"
                     elif action == "reopened":
                         normalized = "pull_request_reopened"
                     elif action == "review_requested":
@@ -403,6 +407,48 @@ def _jira_subject(payload: Dict[str, Any]) -> Dict[str, Any]:
     return parts
 
 
+def describe_schedule(schedule: Any) -> Optional[str]:
+    """Render a stored schedule config as the phrase the flow editor shows.
+
+    The scheduler persists ``schedule_config.model_dump()`` in the trigger
+    payload, so this reads the plain dict. The words themselves come from
+    ``preloop.utils.schedule_text``, the same renderer
+    ``ScheduleConfig.describe()`` uses, so a new or changed schedule form
+    cannot read one way in the editor and another in the executions list.
+    That module is a leaf: reading the dict here does not have to import
+    ``preloop.models.schemas.flow`` (which pulls in the models package and
+    would make this module part of an import cycle).
+
+    Args:
+        schedule: The stored schedule config dict (any of the four forms), or
+            the legacy ``{"cron": ...}`` shape.
+
+    Returns:
+        A phrase such as "Daily at 09:00 (Europe/Berlin)", or None when the
+        config is missing or in a shape this function does not know.
+    """
+    return describe_schedule_config(schedule)
+
+
+def _manual_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Subject for a run a person started, rather than an event.
+
+    A manual run has no repo and no reference, so the identifying fact is
+    who started it. Without a name the subject is the label alone, which is
+    still better than the execution id the console would otherwise show.
+    """
+    who = event_data.get("triggered_by")
+    who = str(who).strip() if who else ""
+    label = "Manual Test Run" if event_data.get("test_mode") else "Manual Run"
+    parts: Dict[str, Any] = {"event": label}
+    if who:
+        parts["actor"] = who
+        parts["text"] = f"{label} by {who}"
+    else:
+        parts["text"] = label
+    return parts
+
+
 def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Build a compact, human-readable subject for a flow execution.
 
@@ -435,6 +481,24 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
     payload = event_data.get("payload")
     if not isinstance(payload, dict):
         payload = {}
+
+    # A scheduled run and a manual run carry no repo and no reference, so
+    # they render their own line: the label plus the one fact that tells two
+    # runs of the same flow apart (which schedule, or which person).
+    if source == "schedule":
+        described = describe_schedule(payload.get("schedule"))
+        parts = {"event": "Scheduled"}
+        if described:
+            parts["schedule"] = described
+            parts["text"] = f"Scheduled · {described}"
+        else:
+            parts["text"] = "Scheduled"
+        return parts
+
+    if source in ("manual", "api", "console") or (
+        not source and (event_data.get("test_mode") or event_data.get("triggered_by"))
+    ):
+        return _manual_subject(event_data)
 
     if source == "github":
         parts = _github_subject(payload)
@@ -588,6 +652,16 @@ def extract_filter_fields(
                 "detailed_merge_status"
             )
 
+        if payload.get("object_kind") == "build" or payload.get("build_name"):
+            if payload.get("build_name"):
+                filter_fields["build_name"] = payload.get("build_name")
+            if payload.get("build_status"):
+                filter_fields["build_status"] = payload.get("build_status")
+            if payload.get("build_stage"):
+                filter_fields["build_stage"] = payload.get("build_stage")
+            if payload.get("ref"):
+                filter_fields["ref"] = payload.get("ref")
+
     elif tracker_type_lower == "github":
         # GitHub structure varies by event type
         action = payload.get("action")
@@ -630,6 +704,8 @@ def extract_filter_fields(
 
             # State
             filter_fields["state"] = issue.get("state")
+            if issue.get("state_reason"):
+                filter_fields["state_reason"] = issue.get("state_reason")
 
         # Extract from pull_request object
         elif "pull_request" in payload:
@@ -693,6 +769,18 @@ def extract_filter_fields(
         # Sender (who triggered the event)
         sender = payload.get("sender", {})
         filter_fields["sender"] = sender.get("login")
+
+        deployment = payload.get("deployment") or {}
+        deployment_status = payload.get("deployment_status") or {}
+        if deployment or deployment_status:
+            environment = deployment_status.get("environment") or deployment.get(
+                "environment"
+            )
+            if environment:
+                filter_fields["environment"] = environment
+            dep_state = deployment_status.get("state")
+            if dep_state:
+                filter_fields["state"] = dep_state
 
     elif tracker_type_lower == "jira":
         # Jira webhook structure

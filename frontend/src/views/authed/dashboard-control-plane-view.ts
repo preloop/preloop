@@ -8,11 +8,11 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/progress-bar/progress-bar.js';
-import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
-import '../../components/agent-talk-composer.ts';
 import '../../components/mcp-setup-dialog.ts';
-import '../../components/budget-policy-editor.ts';
-import '../../components/budget-health-card.ts';
+import '../../components/budget-limits-dialog.ts';
+import '../../components/activity-feed.ts';
+import '../../components/inventory-card.ts';
+import '../../components/usage-card.ts';
 import '../../components/view-header.ts';
 import {
   AuthedElement,
@@ -21,7 +21,9 @@ import {
   getAccountAgents,
   getAccountGatewayUsageSearch,
   getAccountGatewayUsageSummary,
+  getAccountRateLimitReport,
   getAccountRuntimeSessions,
+  getApiKeys,
   getBudgetPolicies,
   BudgetPolicy,
   getFlowExecutions,
@@ -33,6 +35,8 @@ import {
   getUsers,
   getFeatures,
   getUserProfile,
+  hasPermission,
+  type UserPermissions,
 } from '../../api';
 import '../../components/preloop-invite-dialog';
 import '../../components/preloop-flow-form';
@@ -40,37 +44,59 @@ import '../../components/add-ai-model-modal';
 import '../../components/preloop-deploy-wizard';
 import { isSaaS } from '../../brand-config';
 import { normalizeObservedSession } from '../../utils/session-observer';
-import { renderAgentIcon } from '../../utils/agent-icons';
+import { getAgentStatusChip } from '../../utils/agent-display';
 import {
-  getAgentSourceLabel,
-  renderAgentIdentityBadges,
-} from '../../utils/agent-display';
+  attentionItemAnchor,
+  ATTENTION_KIND_META,
+  deriveAttentionItems,
+  type AttentionInputs,
+  type AttentionItem,
+} from '../../utils/attention';
+import { loadAttentionInputs } from '../../utils/attention-data';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import type {
   AccountGatewayUsageSummaryResponse,
+  AccountRateLimitReportResponse,
+  GatewayUsageByModel,
   GatewayUsageBySession,
+  GatewayUsageByTool,
   GatewayUsageSearchResultItem,
   ManagedAgentSummary,
   RuntimeSessionSummary,
   AIModel,
 } from '../../types';
 import { parseUTCDate } from '../../utils/date';
-import { executionDurationText } from '../../utils/execution';
-import {
-  TOP_MODEL_GROUP_PREVIEW_LIMIT,
-  TOP_MODEL_SESSION_PREVIEW_LIMIT,
-  compareByUsageMetric,
-  mergeGatewaySummaryPreservingBreakdown,
-  previewWindow,
-} from '../../utils/top-models-overview';
-import { getAgentControlState } from '../../utils/agent-control';
+import { executionSubjectCss } from '../../utils/execution-subject';
+import { mergeGatewaySummaryPreservingBreakdown } from '../../utils/gateway-summary';
 import {
   pickDefaultModel,
   selectableModels,
 } from '../../utils/ai-model-selection';
 import type { Tool } from '../../components/tool-card';
+import type {
+  InventoryAgentRow,
+  InventoryFlowRow,
+  InventoryModelRow,
+  InventoryToolRow,
+  InventoryUserRow,
+} from '../../components/inventory-card';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
+
+/**
+ * A user as the admin list returns them: the shared `User` type predates
+ * roles being carried on the list, and the Inventory only reads four fields.
+ */
+interface AccountUser {
+  id: string;
+  username?: string | null;
+  email?: string | null;
+  full_name?: string | null;
+  is_active?: boolean;
+  last_login?: string | null;
+  roles?: Array<{ name?: string | null }> | null;
+  inherited_roles?: Array<{ name?: string | null }> | null;
+}
 
 interface AuditEvent {
   id: string;
@@ -105,6 +131,16 @@ interface MCPServer {
   status: string;
 }
 
+/**
+ * The server's maximum page for `/flows/executions` (the endpoint clamps
+ * `limit` to 100 and takes no start date). The Inventory Flows tab derives its
+ * run and failure counts from this one page, so when the page comes back full
+ * and its oldest row is still inside the range there may be in-range runs the
+ * page never saw — which the card says in the cell title rather than printing
+ * a capped number as if it were the range.
+ */
+const FLOW_EXECUTIONS_PAGE_SIZE = 100;
+
 interface FlowExecution {
   id: string;
   flow_id: string;
@@ -113,6 +149,11 @@ interface FlowExecution {
   start_time: string;
   end_time: string | null;
   error_message: string | null;
+  /** What the run was about, derived from the trigger when it was created.
+      Five runs of one flow are otherwise indistinguishable on this card. */
+  trigger_subject?: string | null;
+  trigger_subject_url?: string | null;
+  trigger_event_details?: Record<string, unknown> | null;
 }
 
 interface ApprovalRequest {
@@ -122,6 +163,10 @@ interface ApprovalRequest {
   requested_at: string;
   resolved_at?: string | null;
   expires_at?: string | null;
+  summary?: string | null;
+  managed_agent_name?: string | null;
+  flow_name?: string | null;
+  is_question?: boolean;
 }
 
 interface UsageSessionSubject {
@@ -139,6 +184,30 @@ interface TopModelSubjectGroup {
   totalRequests: number;
 }
 
+export const NEXT_STEPS_DISMISSED_KEY = 'dashboard_next_steps_dismissed';
+
+/**
+ * What the last completed load concluded about the checklist. The card is
+ * derived from four separate fetches; before they land, every step looks
+ * undone, which is how a finished account saw "Next steps" flash back on
+ * every refresh. Remembering the answer means the page can stay quiet until
+ * it knows better.
+ */
+export const NEXT_STEPS_DONE_KEY = 'dashboard_next_steps_all_done';
+
+/** The wire formats the model gateway speaks, as URL prefixes. */
+type GatewayFormat = '/openai/v1' | '/anthropic/v1' | '/google/v1';
+
+interface NextStep {
+  /** Nice to have: never keeps the card alive on its own. */
+  optional?: boolean;
+  id: string;
+  label: string;
+  done: boolean;
+  href?: string;
+  onClick?: () => void;
+}
+
 interface DashboardMetric {
   label: string;
   value: string | number;
@@ -146,15 +215,6 @@ interface DashboardMetric {
   href?: string;
   tone?: 'primary' | 'neutral' | 'success' | 'warning' | 'danger';
 }
-
-type BudgetPolicyUsage = {
-  policy: BudgetPolicy;
-  spend: number;
-  hardLimit: number;
-  softLimit: number;
-  maxLimit: number;
-  percent: number;
-};
 
 @customElement('dashboard-view')
 export class DashboardView extends AuthedElement {
@@ -168,6 +228,9 @@ export class DashboardView extends AuthedElement {
   @state() private error: string | null = null;
   @state() private gatewaySummary: AccountGatewayUsageSummaryResponse | null =
     null;
+  /** The window before `gatewayTimeRange`, for the Usage card's delta. */
+  @state()
+  private priorGatewaySummary: AccountGatewayUsageSummaryResponse | null = null;
   @state() private runtimeSessions: RuntimeSessionSummary[] = [];
   @state() private managedAgents: ManagedAgentSummary[] = [];
   @state() private budgetAgents: ManagedAgentSummary[] = [];
@@ -177,7 +240,9 @@ export class DashboardView extends AuthedElement {
   @state() private totalIssues = 0;
   @state() private mcpServers: MCPServer[] = [];
   @state() private tools: Tool[] = [];
-  @state() private recentFlowExecutions: FlowExecution[] = [];
+  @state() private flowExecutions: FlowExecution[] = [];
+  /** Flow ids and names, so the Inventory lists flows that never ran. */
+  @state() private flows: Array<{ id: string; name: string }> = [];
   @state() private flowExecutionsCount = 0;
   @state() private failedExecutionsCount = 0;
   @state() private succeededFlowExecutionsCount = 0;
@@ -187,6 +252,16 @@ export class DashboardView extends AuthedElement {
   @state() private hasAIModels = false;
   @state() private aiModelsCount = 0;
   @state() private enabledUsersCount = 0;
+  /** Active users, kept for the Inventory's Users tab (Cloud/Enterprise). */
+  @state() private accountUsers: AccountUser[] = [];
+  /**
+   * This account's permissions, or null when RBAC is off (OSS, DISABLE_RBAC).
+   *
+   * `undefined` means the profile has not answered yet; both that and null
+   * read as unrestricted, the same way the shell treats them, so a slow or
+   * failed profile call never hides something the operator can use.
+   */
+  @state() private permissions: UserPermissions = undefined;
   @state() private toolCallsCount = 0;
   @state() private failedToolCallsCount = 0;
   @state() private totalFlowsCount = 0;
@@ -194,28 +269,22 @@ export class DashboardView extends AuthedElement {
   @state() private totalRuntimeSessionsCount = 0;
   @state() private gatewayTimeRange: 'day' | 'week' | 'month' | 'year' =
     'month';
-  @state() private budgetTimeRange: 'day' | 'week' | 'month' | 'year' = 'month';
-  @state() private budgetSummary: AccountGatewayUsageSummaryResponse | null =
-    null;
   @state() private fetchingBudget = false;
-  @state() private budgetSummariesByPeriod = new Map<
-    string,
-    AccountGatewayUsageSummaryResponse
-  >();
-  @state() private budgetPolicySummaries = new Map<
-    string,
-    AccountGatewayUsageSummaryResponse
-  >();
-  @state() private activeAgentsTimeRange: '5m' | '1h' | '1d' | '1w' | '1mo' =
-    '1d';
-  @state() private fetchingActiveAgents = false;
-  @state() private topModelsSortMetric: 'spend' | 'usage' = 'spend';
-  @state() private expandedOverviewGroups = new Set<string>();
-  @state() private expandedPreviewKeys = new Set<string>();
+  @state() private fetchingAgents = false;
   @state() private showSetupDialog = false;
   @state() private showBudgetDialog = false;
   @state() private welcomeCardDismissed = false;
-  @state() private gatewayMetricsExpanded = false;
+  @state() private nextStepsDismissed = false;
+  @state() private userManagementEnabled = false;
+  /** True once the feature flags have answered, either way. */
+  @state() private featuresResolved = false;
+  /** Rate-limited requests for the gateway row; null when the call failed. */
+  @state() private rateLimitReport: AccountRateLimitReportResponse | null =
+    null;
+  /** Active API keys for the card header; null when we could not count them. */
+  @state() private apiKeysCount: number | null = null;
+  /** Which wire format the model gateway row is showing a URL for. */
+  @state() private gatewayFormat: GatewayFormat = '/openai/v1';
 
   @state() private aiModels: AIModel[] = [];
   @state() private isInviteDialogOpen = false;
@@ -224,7 +293,14 @@ export class DashboardView extends AuthedElement {
   @state() private isAdmin = false;
 
   @state() private budgetPolicies: BudgetPolicy[] = [];
-  @state() private dismissedExecutions: string[] = [];
+  /**
+   * Inputs for the hero "need attention" count and the side card, fetched
+   * through the shared loader rather than reusing the cards' own data: the
+   * cards are scoped to what they display (five recent executions, approvals
+   * minus the expired ones), and reusing them made the Overview disagree with
+   * /console/attention.
+   */
+  @state() private attentionInputs: AttentionInputs | null = null;
   @state()
   private approvalStats = {
     total: 0,
@@ -237,23 +313,16 @@ export class DashboardView extends AuthedElement {
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
   private refreshInFlight = false;
-
-  private dismissExecution(id: string) {
-    if (!this.dismissedExecutions.includes(id)) {
-      this.dismissedExecutions = [...this.dismissedExecutions, id];
-      localStorage.setItem(
-        'dashboard_dismissed_executions',
-        JSON.stringify(this.dismissedExecutions)
-      );
-    }
-  }
-
-  /** Start time plus, when known, how long the run took or has been going. */
-  private executionSecondaryText(exec: FlowExecution): string {
-    const started = this.formatDate(exec.start_time);
-    const duration = executionDurationText(exec);
-    return duration ? `${started} · ${duration}` : started;
-  }
+  /**
+   * Makes "Updated just now" age.
+   *
+   * The label is a relative time, and a relative time that only recomputes
+   * when its data changes is a lie by the second minute: a page left open
+   * over lunch claimed the numbers under it were a minute old. Bumping this
+   * every 30s re-renders the header and nothing else.
+   */
+  @state() private updatedTick = 0;
+  private updatedTimer: number | null = null;
 
   private formatDate(dateStr: string | null | undefined): string {
     if (!dateStr) return '';
@@ -273,42 +342,272 @@ export class DashboardView extends AuthedElement {
   static styles = [
     reducedMotionStyles,
     css`
-      .tool-counts {
+      /* One row per plane: name, endpoint, what it did. */
+      .plane-row {
+        align-items: center;
+        column-gap: var(--sl-spacing-small);
+        display: grid;
+        grid-template-columns: minmax(120px, auto) minmax(0, 1fr) auto;
+        padding: var(--sl-spacing-x-small) 0;
+      }
+      .plane-row + .plane-row {
+        border-top: 1px solid var(--console-hairline);
+      }
+      .plane-name-cell {
+        align-items: center;
+        display: flex;
+        gap: var(--sl-spacing-x-small);
+      }
+      .plane-name {
+        color: var(--sl-color-neutral-900);
+        font-size: var(--console-text-body);
+      }
+      /* Neutral until the plane has served something. Never red: a failure is
+         a number on this row, not a broken gateway. */
+      .plane-dot {
+        background: var(--sl-color-neutral-300);
+        border-radius: 50%;
+        flex-shrink: 0;
+        height: 8px;
+        width: 8px;
+      }
+      .plane-dot.served {
+        background: var(--sl-color-success-600);
+      }
+      .plane-endpoint {
+        align-items: center;
+        display: flex;
+        gap: var(--sl-spacing-2x-small);
+        min-width: 0;
+      }
+      .plane-endpoint .server-endpoint {
+        display: flex;
+        font-family: var(--sl-font-mono);
+        font-size: var(--console-text-meta);
+        min-width: 0;
+        color: var(--sl-color-neutral-700);
+      }
+      /* The host gives way, the path stays: a middle ellipsis in two spans. */
+      .endpoint-head {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .endpoint-tail {
+        flex-shrink: 0;
+        white-space: nowrap;
+      }
+      /* Every pixel the chrome gives back is a pixel of hostname. */
+      .plane-endpoint sl-icon-button::part(base) {
+        padding: 2px;
+      }
+      .plane-endpoint .format-select {
+        background: transparent;
+        border: 1px solid var(--sl-color-neutral-300);
+        border-radius: var(--sl-border-radius-small);
+        color: var(--sl-color-primary-600);
+        cursor: pointer;
+        font-family: inherit;
+        font-size: var(--console-text-meta);
+        outline: none;
+        padding: 1px 4px;
+      }
+      .plane-docs {
+        color: var(--console-meta-color);
+        display: flex;
+      }
+      .plane-stats {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--console-text-meta);
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+        white-space: nowrap;
+      }
+      .plane-quiet {
+        color: var(--console-meta-color);
+      }
+      .gateway-header-meta {
+        align-items: center;
+        color: var(--console-meta-color);
+        display: flex;
+        font-size: var(--console-text-meta);
+        gap: var(--sl-spacing-x-small);
+      }
+      .gateway-header-meta > span + span::before {
+        content: '· ';
+      }
+      .connect-first {
+        align-items: center;
         display: flex;
         flex-wrap: wrap;
-        gap: var(--sl-spacing-2x-large);
-        margin-top: var(--sl-spacing-small);
-        justify-content: center;
-      }
-      .tool-count {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
+        font-size: var(--console-text-body);
         gap: var(--sl-spacing-small);
-        font-size: var(--sl-font-size-small);
+        padding: var(--sl-spacing-x-small) 0;
       }
-      .tool-count sl-icon {
-        font-size: 2.5rem;
+      /* The one exception to "no filled box inside a card": a command you
+         are meant to select and copy is a block of input, and it takes the
+         page colour so it reads as recessed rather than raised. */
+      .connect-command {
+        align-items: center;
+        background: var(--console-page);
+        border: none;
+        border-radius: var(--sl-border-radius-medium);
+        display: flex;
+        gap: var(--sl-spacing-2x-small);
+        padding: 0 var(--sl-spacing-2x-small) 0 var(--sl-spacing-x-small);
       }
-      .tool-count-value {
-        font-size: 1.5rem;
-        font-weight: 700;
+      .connect-command code {
+        font-family: var(--sl-font-mono);
+        font-size: 12px;
       }
-      .tool-count-label {
-        font-size: var(--sl-font-size-small);
-        color: var(--sl-color-neutral-600);
-        text-align: center;
+      /* One amber line above the page, or nothing. It stays one line: the
+         chips truncate before the strip is allowed to wrap, so "View all"
+         never falls to a second row. */
+      .attention-strip {
+        align-items: center;
+        /* A translucent mix of one warning token over the card surface reads
+           as a tinted band in both themes, instead of an orange block. */
+        background: color-mix(
+          in srgb,
+          var(--sl-color-warning-500) 10%,
+          var(--console-surface)
+        );
+        border: 1px solid
+          color-mix(in srgb, var(--sl-color-warning-500) 35%, transparent);
+        border-radius: var(--sl-border-radius-medium);
+        display: flex;
+        flex-wrap: nowrap;
+        gap: var(--sl-spacing-small);
+        padding: var(--sl-spacing-x-small) var(--sl-spacing-medium);
       }
-      .hover-underline:hover {
+      .attention-strip-icon {
+        color: var(--sl-color-warning-600);
+        flex-shrink: 0;
+        font-size: 18px;
+      }
+      .attention-strip-count {
+        color: var(--sl-color-warning-800);
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .attention-strip-items {
+        display: flex;
+        flex: 0 1 auto;
+        flex-wrap: nowrap;
+        gap: var(--sl-spacing-x-small);
+        min-width: 0;
+        overflow: hidden;
+      }
+      .attention-chip-link {
+        display: flex;
+        max-width: 26ch;
+        min-width: 0;
+        text-decoration: none;
+      }
+      .attention-chip-link sl-badge {
+        max-width: 100%;
+        min-width: 0;
+      }
+      /* Quiet amber: the strip behind them is already the alarm, so the
+         chips read as labels rather than as five more warnings. Soft chip
+         recipe, one tone at 16% with no border. */
+      .attention-chip-link sl-badge::part(base) {
+        align-items: center;
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-warning-500) 16%,
+          transparent
+        );
+        border-width: 0;
+        color: var(--sl-color-warning-800);
+        display: flex;
+        gap: var(--sl-spacing-3x-small);
+        max-width: 100%;
+        min-width: 0;
+      }
+      .attention-chip-link:hover sl-badge::part(base) {
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-warning-500) 26%,
+          transparent
+        );
+      }
+      /* min-width lets the label shrink inside the badge, so a long one ends
+         in an ellipsis instead of being cut mid-word by the strip. */
+      .attention-chip-text {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .attention-strip-all {
+        color: var(--sl-color-primary-700);
+        font-size: var(--console-text-meta);
+        margin-left: auto;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+      .attention-strip-all:hover {
         text-decoration: underline;
       }
-      .metrics-grid {
-        display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: var(--sl-spacing-large);
-        row-gap: var(--sl-spacing-2x-large);
-        align-items: start;
-        margin-bottom: var(--sl-spacing-2x-large);
+      /* Nothing is wrong, one thing is worth a look: same line, no amber. */
+      .attention-strip.low-only {
+        background: var(--console-surface);
+        border-color: var(--sl-color-neutral-200);
+      }
+      .attention-strip.low-only .attention-strip-icon {
+        color: var(--sl-color-neutral-500);
+      }
+      .attention-strip.low-only .attention-strip-count {
+        color: var(--sl-color-neutral-700);
+      }
+      /* Next steps: a checklist, not a wizard. */
+      .next-steps-list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-2x-small);
+      }
+      .next-step-link {
+        align-items: center;
+        background: none;
+        border: none;
+        color: var(--sl-color-neutral-900);
+        cursor: pointer;
+        display: flex;
+        font: inherit;
+        gap: var(--sl-spacing-x-small);
+        padding: var(--sl-spacing-2x-small) 0;
+        text-align: left;
+        text-decoration: none;
+        width: 100%;
+      }
+      .next-step-link:hover .next-step-label {
+        text-decoration: underline;
+      }
+      .next-step-mark {
+        color: var(--sl-color-neutral-400);
+        flex-shrink: 0;
+        font-size: 16px;
+      }
+      .next-step-mark.done {
+        color: var(--sl-color-success-600);
+      }
+      .next-step.done .next-step-label {
+        color: var(--console-meta-color);
+        text-decoration: line-through;
+      }
+      .updated-at {
+        color: var(--console-meta-color);
+        font-size: var(--sl-font-size-small);
+        font-weight: var(--sl-font-weight-normal);
+      }
+      .capsule-eyebrow {
+        color: var(--console-meta-color);
+        font-size: var(--sl-font-size-x-small);
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
       }
       .budget-track {
         position: relative;
@@ -341,7 +640,7 @@ export class DashboardView extends AuthedElement {
         left: var(--budget-soft-position, 0%);
         width: 2px;
         background: var(--sl-color-warning-600);
-        box-shadow: 0 0 0 1px var(--sl-color-neutral-0);
+        box-shadow: 0 0 0 1px var(--console-surface);
       }
       .budget-hard-marker {
         position: absolute;
@@ -350,128 +649,6 @@ export class DashboardView extends AuthedElement {
         bottom: 0;
         width: 2px;
         background: var(--sl-color-danger-600);
-      }
-      .expandable-group {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .expandable-header {
-        align-items: flex-start;
-        cursor: pointer;
-        display: flex;
-        gap: var(--sl-spacing-x-small);
-        user-select: none;
-      }
-      .expand-icon {
-        color: var(--sl-color-neutral-500);
-        flex-shrink: 0;
-        margin-top: 2px;
-        transition: transform 0.2s ease;
-      }
-      .expand-icon.open {
-        transform: rotate(90deg);
-      }
-      .expandable-leading {
-        align-items: flex-start;
-        display: flex;
-        flex: 1;
-        gap: var(--sl-spacing-small);
-        min-width: 0;
-      }
-      .expandable-identity {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-3x-small);
-        min-width: 0;
-      }
-      .expandable-identity .row-primary {
-        display: block;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .agent-meta-line {
-        color: var(--sl-color-neutral-500);
-        font-size: var(--sl-font-size-x-small);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .agent-identity-badges {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .agent-identity-badges sl-badge {
-        max-width: 100%;
-      }
-      .expandable-trailing {
-        align-items: center;
-        display: flex;
-        flex-shrink: 0;
-        gap: var(--sl-spacing-x-small);
-        margin-left: auto;
-      }
-      .expandable-content {
-        border-left: 2px solid var(--sl-color-neutral-200);
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        margin-left: calc(1rem + var(--sl-spacing-x-small));
-        padding-left: var(--sl-spacing-medium);
-      }
-      .expandable-subheader {
-        align-items: center;
-        cursor: pointer;
-        display: flex;
-        gap: var(--sl-spacing-x-small);
-        user-select: none;
-      }
-      .expandable-subheader .row-primary {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .overview-nested-groups {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-2x-small);
-        margin-top: var(--sl-spacing-2x-small);
-      }
-      .overview-see-more {
-        align-self: flex-start;
-        margin-top: 2px;
-      }
-      .expandable-subheader-metric {
-        color: var(--sl-color-neutral-500);
-        flex-shrink: 0;
-        font-size: var(--sl-font-size-x-small);
-        margin-left: auto;
-        white-space: nowrap;
-      }
-      .nested-session-list {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-      .nested-session-row {
-        align-items: center;
-        display: flex;
-        font-size: var(--sl-font-size-small);
-        gap: var(--sl-spacing-small);
-        justify-content: space-between;
-      }
-      .nested-session-row a {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .nested-session-metric {
-        color: var(--sl-color-neutral-500);
-        flex-shrink: 0;
-        font-size: var(--sl-font-size-x-small);
       }
       /* Compliance-specific styles */
       .compliance-progress {
@@ -519,6 +696,7 @@ export class DashboardView extends AuthedElement {
         min-width: 0;
       }
       .server-endpoint {
+        min-width: 0;
         font-family: monospace;
         font-size: var(--sl-font-size-small);
         color: var(--sl-color-neutral-900);
@@ -547,6 +725,32 @@ export class DashboardView extends AuthedElement {
       }
       .capsule-link:hover {
         text-decoration: underline;
+      }
+      /* Phone width: the capsule is a two-row block, not a pill. Row one
+         names the endpoint, row two is the thing you came to copy. Without
+         this the select and the URL pushed the copy button outside the card. */
+      @media (max-width: 640px) {
+        .card-header-with-action {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: var(--sl-spacing-2x-small);
+        }
+        .mcp-server-capsule {
+          border-radius: var(--sl-border-radius-medium);
+          column-gap: var(--sl-spacing-x-small);
+          flex-wrap: wrap;
+          row-gap: var(--sl-spacing-x-small);
+        }
+        .mcp-server-capsule > * {
+          min-width: 0;
+        }
+        /* Leaves room on the same row for the copy button that follows. */
+        .server-details {
+          flex: 1 1 calc(100% - 3rem);
+        }
+        .server-details select {
+          max-width: 8rem;
+        }
       }
       @media (min-width: 1024px) {
         .overview-layout {
@@ -642,6 +846,7 @@ export class DashboardView extends AuthedElement {
     `,
 
     unsafeCSS(consoleStyles),
+    unsafeCSS(executionSubjectCss),
     css`
       :host {
         display: block;
@@ -666,16 +871,54 @@ export class DashboardView extends AuthedElement {
         }
       }
 
-      .loading-container {
-        display: flex;
-        justify-content: center;
-        padding: var(--sl-spacing-2x-large);
-      }
-
+      /* Overview only: the cards are dense, so a large gap between them read
+         as "unrelated sections" and cost a scroll. */
       .dashboard-stack {
         display: flex;
         flex-direction: column;
-        gap: var(--sl-spacing-large);
+        gap: var(--sl-spacing-medium);
+      }
+
+      .main-column,
+      .side-column {
+        gap: var(--sl-spacing-medium);
+      }
+
+      /* The side column is a rail, not a stack that grows the page.
+         The .main-content element is the scroll port (console-shell), so a
+         sticky child of it sticks at the top of what the operator can see,
+         and a column that is exactly viewport-tall subtracts the header.
+
+         align-self: stretch makes the rail as tall as the row it shares
+         with the main column, so on a short page it stops at the main
+         column's foot instead of pushing the page down; the max-height
+         then caps it at one viewport. Usage keeps its natural height and
+         the feed takes what is left (flex: 1 1 0, so its own rows never
+         vote on how tall the column wants to be) and scrolls internally. */
+      @media (min-width: 1200px) {
+        .column-layout.dashboard > .side-column {
+          position: sticky;
+          top: var(--sl-spacing-medium);
+          align-self: stretch;
+          max-height: calc(
+            100dvh - var(--console-header-height) - var(--sl-spacing-medium) * 2
+          );
+        }
+
+        /* The floor is what makes the rail a list rather than a peephole:
+           at 240px the card showed three lines and an expanded row had to be
+           scrolled to be read. It is stated against the viewport as well as
+           in pixels so a short laptop window shrinks the feed instead of
+           pushing the Usage card off the rail. */
+        .column-layout.dashboard > .side-column > activity-feed {
+          flex: 1 1 0;
+          min-height: min(360px, 34dvh);
+          /* The rail is bounded and stretched above, so here (and only
+             here) the column decides the feed's height and the card's own
+             360px stop would only make the list shorter than the space it
+             has been given. */
+          --activity-feed-list-max-height: none;
+        }
       }
 
       .summary-grid,
@@ -717,7 +960,6 @@ export class DashboardView extends AuthedElement {
       .analytics-label,
       .analytics-subtext,
       .step-description,
-      .empty-state,
       .row-meta,
       .summary-item span:last-child,
       .capsule-hint {
@@ -852,7 +1094,6 @@ export class DashboardView extends AuthedElement {
         overflow-wrap: anywhere;
       }
 
-      .row-value,
       .summary-item strong {
         color: var(--sl-color-neutral-900);
         font-weight: 600;
@@ -906,24 +1147,9 @@ export class DashboardView extends AuthedElement {
         align-items: center;
       }
 
-      .empty-state {
-        border: 1px dashed var(--sl-color-neutral-300);
-        border-radius: var(--sl-border-radius-medium);
-        padding: var(--sl-spacing-large);
-        text-align: center;
-        background: var(--sl-color-neutral-0);
-      }
-
-      /* Failed flows: visible but calm — accent border only, no red wash */
-      .item-card.failed-execution {
-        background: var(--sl-color-neutral-50);
-        border-left-color: #ff5d5d;
-      }
-      .item-card.failed-execution .item-error {
-        color: #ff5d5d;
-        font-style: normal;
-      }
-
+      /* One centered line in a 72px box. An empty card used to take as much
+         vertical space as a full one, so a quiet account looked like a broken
+         one. */
       @media (max-width: 1200px) {
         .column-layout.dashboard {
           grid-template-columns: 1fr;
@@ -941,7 +1167,6 @@ export class DashboardView extends AuthedElement {
           flex-direction: column;
         }
 
-        .row-value,
         .summary-item strong {
           text-align: left;
         }
@@ -950,24 +1175,60 @@ export class DashboardView extends AuthedElement {
           grid-template-columns: 1fr;
         }
 
-        .metrics-grid {
-          grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
-          gap: var(--sl-spacing-medium);
-          row-gap: var(--sl-spacing-large);
+        /* Phone: the strip is allowed the second row it needs, and the chips
+           stop competing for one line of 390px. */
+        .attention-strip {
+          flex-wrap: wrap;
         }
 
-        .tool-count {
-          min-width: 0;
+        .attention-strip-items {
+          flex-wrap: wrap;
+          overflow: visible;
         }
 
-        .tool-count-value {
-          font-size: clamp(1rem, 7vw, 1.5rem);
-          overflow-wrap: anywhere;
+        .attention-chip-link {
+          max-width: 100%;
         }
 
-        .tool-count-label {
-          font-size: var(--sl-font-size-x-small);
-          line-height: 1.25;
+        .attention-strip-all {
+          margin-left: 0;
+        }
+
+        /* Phone: name and numbers on one line, endpoint and copy under it,
+           so a 390px row never squeezes the URL into three characters. */
+        .plane-row {
+          grid-template-columns: auto minmax(0, 1fr);
+          row-gap: var(--sl-spacing-2x-small);
+        }
+
+        .plane-name-cell {
+          grid-column: 1;
+          grid-row: 1;
+        }
+
+        /* "Model gateway" broken over two lines beside its numbers reads as
+           two rows; the numbers wrap instead. */
+        .plane-name {
+          white-space: nowrap;
+        }
+
+        .plane-stats {
+          grid-column: 2;
+          grid-row: 1;
+          white-space: normal;
+        }
+
+        .plane-endpoint {
+          grid-column: 1 / -1;
+          grid-row: 2;
+        }
+
+        /* A title and a dismiss button are a row at any width; stacking them
+           put the x on a line of its own. */
+        .next-steps-card .card-header-with-action {
+          align-items: center;
+          flex-direction: row;
+          justify-content: space-between;
         }
       }
     `,
@@ -980,28 +1241,55 @@ export class DashboardView extends AuthedElement {
     this.loadCachedDashboardData();
     void this.fetchDashboardData();
     this.connectRealtime();
+    this.updatedTimer = window.setInterval(() => {
+      if (this.lastUpdatedAt) this.updatedTick += 1;
+    }, 30000);
   }
 
   private async fetchAdminStatus() {
     try {
       const user = await getUserProfile();
       this.isAdmin = user?.is_superuser || false;
+      this.permissions = user?.permissions ?? null;
     } catch (error) {
       console.error('Failed to fetch user profile:', error);
       this.isAdmin = false;
+      this.permissions = null;
     }
+  }
+
+  /**
+   * Whether this account has teammates to show *and* this operator may see
+   * them.
+   *
+   * `GET /api/v1/users` requires `view_users`, which the system viewer role
+   * does not carry. Gating the tab on the licence flag alone put a Users tab
+   * in front of a viewer that answered "No teammates yet." after a swallowed
+   * 403 - a sentence about the account when the truth was about the reader.
+   * Without the permission there is no tab, which is what the sidebar already
+   * does with /console/settings/users.
+   */
+  private get canViewUsers(): boolean {
+    return (
+      this.userManagementEnabled &&
+      hasPermission(this.permissions, 'view_users')
+    );
   }
 
   private async fetchFeatures() {
     try {
       const res = await getFeatures();
       this.computeFeatureEnabled = !!res.features?.['compute'];
+      this.userManagementEnabled = !!res.features?.['user_management'];
       this.isEnterprise = Array.isArray(res.plugins) && res.plugins.length > 0;
       return res;
     } catch {
       this.computeFeatureEnabled = false;
       this.isEnterprise = false;
+      this.userManagementEnabled = false;
       return null;
+    } finally {
+      this.featuresResolved = true;
     }
   }
 
@@ -1011,6 +1299,10 @@ export class DashboardView extends AuthedElement {
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
+    }
+    if (this.updatedTimer !== null) {
+      window.clearInterval(this.updatedTimer);
+      this.updatedTimer = null;
     }
   }
 
@@ -1053,7 +1345,12 @@ export class DashboardView extends AuthedElement {
       this.totalIssues = data.totalIssues || 0;
       this.mcpServers = data.mcpServers || [];
       this.tools = data.tools || [];
-      this.recentFlowExecutions = data.recentFlowExecutions || [];
+      // Restored like `tools`: both arrive in the slow secondary pass, and
+      // the Inventory Models tab would otherwise sit on "No models yet · Add
+      // a model" for the length of that pass on every reload.
+      this.aiModels = data.aiModels || [];
+      this.flowExecutions = data.flowExecutions || [];
+      this.flows = data.flows || [];
       this.flowExecutionsCount = data.flowExecutionsCount || 0;
       this.failedExecutionsCount = data.failedExecutionsCount || 0;
       this.succeededFlowExecutionsCount =
@@ -1070,16 +1367,9 @@ export class DashboardView extends AuthedElement {
       this.hasAIModels = data.hasAIModels || false;
       if (data.lastUpdatedAt) this.lastUpdatedAt = data.lastUpdatedAt;
       this.approvalStats = data.approvalStats || this.approvalStats;
-      if (data.budgetSummary) this.budgetSummary = data.budgetSummary;
+      this.attentionInputs = data.attentionInputs || null;
       this.budgetPolicies = data.budgetPolicies || [];
       this.budgetAgents = data.budgetAgents || [];
-
-      if (data.budgetSummariesByPeriod) {
-        this.budgetSummariesByPeriod = new Map(data.budgetSummariesByPeriod);
-      }
-      if (data.budgetPolicySummaries) {
-        this.budgetPolicySummaries = new Map(data.budgetPolicySummaries);
-      }
 
       this.loading = false;
     } catch (e) {
@@ -1102,7 +1392,9 @@ export class DashboardView extends AuthedElement {
         totalIssues: this.totalIssues,
         mcpServers: this.mcpServers,
         tools: this.tools,
-        recentFlowExecutions: this.recentFlowExecutions,
+        aiModels: this.aiModels,
+        flowExecutions: this.flowExecutions,
+        flows: this.flows,
         flowExecutionsCount: this.flowExecutionsCount,
         failedExecutionsCount: this.failedExecutionsCount,
         succeededFlowExecutionsCount: this.succeededFlowExecutionsCount,
@@ -1118,13 +1410,9 @@ export class DashboardView extends AuthedElement {
         hasAIModels: this.hasAIModels,
         lastUpdatedAt: this.lastUpdatedAt,
         approvalStats: this.approvalStats,
-        budgetSummary: this.budgetSummary,
+        attentionInputs: this.attentionInputs,
         budgetPolicies: this.budgetPolicies,
         budgetAgents: this.budgetAgents,
-        budgetSummariesByPeriod: Array.from(
-          this.budgetSummariesByPeriod.entries()
-        ),
-        budgetPolicySummaries: Array.from(this.budgetPolicySummaries.entries()),
       };
       sessionStorage.setItem(key, JSON.stringify(cacheObj));
     } catch (e) {
@@ -1135,21 +1423,48 @@ export class DashboardView extends AuthedElement {
   private loadDismissedState(): void {
     this.welcomeCardDismissed =
       localStorage.getItem('dashboard_welcome_dismissed') === 'true';
-    this.gatewayMetricsExpanded =
-      localStorage.getItem('preloop_dashboard_metrics_expanded') === 'true';
+    this.nextStepsDismissed =
+      localStorage.getItem(NEXT_STEPS_DISMISSED_KEY) === 'true';
+  }
 
+  /**
+   * True once agents, budget policies, tools and the feature flags have all
+   * answered. Until then the checklist has nothing to read.
+   */
+  private get nextStepsInputsResolved(): boolean {
+    return (
+      !this.loading &&
+      !this.fetchingAgents &&
+      !this.fetchingBudget &&
+      !this.fetchingMCPAndTools &&
+      this.featuresResolved
+    );
+  }
+
+  /** `null` when no load has ever finished on this browser. */
+  private readCoreStepsDone(): boolean | null {
     try {
-      const dismissedExecsRaw = localStorage.getItem(
-        'dashboard_dismissed_executions'
-      );
-      if (dismissedExecsRaw) {
-        const parsed = JSON.parse(dismissedExecsRaw);
-        if (Array.isArray(parsed)) {
-          this.dismissedExecutions = parsed as string[];
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to parse dismissed executions from localStorage', e);
+      const stored = localStorage.getItem(NEXT_STEPS_DONE_KEY);
+      return stored === null ? null : stored === 'true';
+    } catch {
+      return null;
+    }
+  }
+
+  private rememberCoreStepsDone(done: boolean): void {
+    try {
+      localStorage.setItem(NEXT_STEPS_DONE_KEY, done ? 'true' : 'false');
+    } catch {
+      // Private mode: the card behaves as it did before, one refresh late.
+    }
+  }
+
+  private dismissNextSteps(): void {
+    this.nextStepsDismissed = true;
+    try {
+      localStorage.setItem(NEXT_STEPS_DISMISSED_KEY, 'true');
+    } catch {
+      // Private mode: the card stays hidden for this session only.
     }
   }
 
@@ -1161,14 +1476,6 @@ export class DashboardView extends AuthedElement {
     if (this.managedAgents.length > 0) {
       localStorage.setItem('dashboard_welcome_dismissed', 'true');
     }
-  }
-
-  private toggleGatewayMetrics(): void {
-    this.gatewayMetricsExpanded = !this.gatewayMetricsExpanded;
-    localStorage.setItem(
-      'preloop_dashboard_metrics_expanded',
-      String(this.gatewayMetricsExpanded)
-    );
   }
 
   private connectRealtime(): void {
@@ -1213,6 +1520,17 @@ export class DashboardView extends AuthedElement {
     }
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = null;
+      if (this.refreshInFlight) {
+        // A fetch is already running and will return data from before this
+        // event; dropping the event here is what left "Updated 4m ago" on
+        // a page that had just been told something changed. Wait for the
+        // one in flight to land, then take our turn.
+        this.refreshTimer = window.setTimeout(() => {
+          this.refreshTimer = null;
+          void this.fetchDashboardData({ preserveLoadingState: true });
+        }, 1000);
+        return;
+      }
       void this.fetchDashboardData({ preserveLoadingState: true });
     }, 250);
   }
@@ -1239,34 +1557,26 @@ export class DashboardView extends AuthedElement {
     return d.toISOString();
   }
 
-  private getActiveAgentsStartDate(): string | undefined {
-    const now = new Date();
-    if (this.activeAgentsTimeRange === '5m') {
-      const d = new Date(now);
-      d.setMinutes(d.getMinutes() - 5);
-      return d.toISOString();
-    }
-    if (this.activeAgentsTimeRange === '1h') {
-      const d = new Date(now);
-      d.setHours(d.getHours() - 1);
-      return d.toISOString();
-    }
-    if (this.activeAgentsTimeRange === '1d') {
-      const d = new Date(now);
-      d.setDate(d.getDate() - 1);
-      return d.toISOString();
-    }
-    if (this.activeAgentsTimeRange === '1w') {
-      const d = new Date(now);
-      d.setDate(d.getDate() - 7);
-      return d.toISOString();
-    }
-    if (this.activeAgentsTimeRange === '1mo') {
-      const d = new Date(now);
-      d.setMonth(d.getMonth() - 1);
-      return d.toISOString();
-    }
-    return undefined;
+  /** The same boundary as `getGatewayStartDate()`, as epoch milliseconds. */
+  private getGatewayStartMs(): number {
+    return new Date(this.getGatewayStartDate()).getTime();
+  }
+
+  /**
+   * The window immediately before the one on screen, same length. Computed
+   * from the current start date so the two summaries always cover equal spans
+   * (a month is not always 30 days).
+   */
+  private getPriorGatewayWindow(startDateStr: string): {
+    startDate: string;
+    endDate: string;
+  } {
+    const start = new Date(startDateStr).getTime();
+    const span = Date.now() - start;
+    return {
+      startDate: new Date(start - span).toISOString(),
+      endDate: new Date(start).toISOString(),
+    };
   }
 
   private applyAgentsList(
@@ -1280,71 +1590,27 @@ export class DashboardView extends AuthedElement {
     }
   }
 
-  private async fetchActiveAgentsData() {
-    this.fetchingActiveAgents = true;
-    try {
-      const startDateStr = this.getActiveAgentsStartDate();
-      const runtimeSessionsParams: {
-        status: 'all';
-        limit: number;
-        startDate?: string;
-      } = { status: 'all', limit: 100 };
-      if (startDateStr) {
-        runtimeSessionsParams.startDate = startDateStr;
-      }
-
-      const [runtimeSessions, managedAgents] = await Promise.all([
-        this.catchWith403Handling(
-          getAccountRuntimeSessions(runtimeSessionsParams),
-          { items: [] } as Awaited<ReturnType<typeof getAccountRuntimeSessions>>
-        ),
-        this.catchWith403Handling(
-          getAccountAgents({ status: 'all', limit: 100 }),
-          {
-            items: [],
-          } as Awaited<ReturnType<typeof getAccountAgents>>
-        ),
-      ]);
-
-      this.runtimeSessions = runtimeSessions.items || [];
-      this.totalRuntimeSessionsCount =
-        runtimeSessions.total ?? this.runtimeSessions.length;
-      this.applyAgentsList(managedAgents);
-      this.saveDashboardCache();
-    } catch (error) {
-      console.error('Failed to load active agents data', error);
-    } finally {
-      this.fetchingActiveAgents = false;
-    }
-  }
-
   private handleBudgetPoliciesChanged(
     event: CustomEvent<{ policies: BudgetPolicy[] }>
   ) {
     this.budgetPolicies = event.detail.policies;
   }
 
+  /**
+   * Budget policies and the agents that name their subjects. The spend the
+   * Usage card shows comes from the one gateway summary the page already
+   * fetches for `gatewayTimeRange`, plus each policy's period-aligned
+   * `current_spend_usd`, so there is no second summary request.
+   */
   private async fetchBudgetSummary(
     options: {
-      sharedGatewaySummary?: AccountGatewayUsageSummaryResponse | null;
       sharedAgents?: Awaited<ReturnType<typeof getAccountAgents>> | null;
       features?: Awaited<ReturnType<typeof getFeatures>> | null;
     } = {}
   ) {
     this.fetchingBudget = true;
     try {
-      const budgetStartDate = this.getBudgetStartDate(this.budgetTimeRange);
-      const canReuseGatewaySummary =
-        options.sharedGatewaySummary != null &&
-        this.gatewayTimeRange === this.budgetTimeRange;
-
-      const [budgetSummary, budgetAgents, featuresRes] = await Promise.all([
-        canReuseGatewaySummary
-          ? Promise.resolve(options.sharedGatewaySummary!)
-          : getAccountGatewayUsageSummary({
-              startDate: budgetStartDate,
-              includeBreakdown: false,
-            }).catch(() => null),
+      const [budgetAgents, featuresRes] = await Promise.all([
         options.sharedAgents
           ? Promise.resolve(options.sharedAgents)
           : this.managedAgents.length > 0
@@ -1366,13 +1632,8 @@ export class DashboardView extends AuthedElement {
         ? await getBudgetPolicies().catch(() => [] as BudgetPolicy[])
         : [];
 
-      this.budgetSummary = budgetSummary;
       this.budgetPolicies = Array.isArray(policies) ? policies : [];
       this.budgetAgents = budgetAgents.items || [];
-      // Prefer a single selected-window summary; policy.current_spend_usd
-      // (from getBudgetPolicies) drives per-policy spend in the card.
-      this.budgetSummariesByPeriod = new Map();
-      this.budgetPolicySummaries = new Map();
       this.saveDashboardCache();
     } finally {
       this.fetchingBudget = false;
@@ -1407,7 +1668,7 @@ export class DashboardView extends AuthedElement {
       this.fetchingGatewaySummary = true;
       this.fetchingRecentExecutions = true;
       this.fetchingApprovals = true;
-      this.fetchingActiveAgents = true;
+      this.fetchingAgents = true;
       this.fetchingBudget = true;
       this.fetchingAudit = true;
       this.fetchingMCPAndTools = true;
@@ -1416,6 +1677,7 @@ export class DashboardView extends AuthedElement {
     this.error = null;
 
     const startDateStr = this.getGatewayStartDate();
+    const attentionPromise = this.refreshAttentionInputs();
 
     try {
       // Wave 1 (above-the-fold): gateway metrics, budget, recent executions,
@@ -1434,6 +1696,21 @@ export class DashboardView extends AuthedElement {
         }),
         null
       );
+      const priorWindow = this.getPriorGatewayWindow(startDateStr);
+      const priorSummaryPromise = this.catchWith403Handling(
+        getAccountGatewayUsageSummary({
+          startDate: priorWindow.startDate,
+          endDate: priorWindow.endDate,
+          includeBreakdown: false,
+        }),
+        null
+      );
+      // One call, same window as the summary: without it the model row cannot
+      // say how many requests a provider throttled.
+      const rateLimitPromise = this.catchWith403Handling(
+        getAccountRateLimitReport({ startDate: startDateStr }),
+        null
+      );
       const featuresPromise = this.fetchFeatures();
       const adminPromise = this.fetchAdminStatus();
 
@@ -1447,17 +1724,35 @@ export class DashboardView extends AuthedElement {
         runtimeSessions,
         managedAgents,
         featuresRes,
+        priorGatewaySummary,
+        rateLimitReport,
       ] = await Promise.all([
         gatewaySummaryPromise,
-        this.catchWith403Handling(getAccountGatewayUsageSearch({ limit: 12 }), {
-          items: [],
-        } as Awaited<ReturnType<typeof getAccountGatewayUsageSearch>>),
-        this.catchWith403Handling(getFlows(), [] as any[]),
+        // The failures card shows a handful, and it should be the handful
+        // that happened in the range the page is showing: a full page of
+        // in-range calls is far likelier to contain the current failures
+        // than the last twelve calls of any age were.
         this.catchWith403Handling(
-          getFlowExecutions({ limit: 10 }),
+          getAccountGatewayUsageSearch({
+            limit: 100,
+            startDate: startDateStr,
+          }),
+          {
+            items: [],
+          } as Awaited<ReturnType<typeof getAccountGatewayUsageSearch>>
+        ),
+        this.catchWith403Handling(getFlows(), [] as any[]),
+        // The Inventory Flows tab needs a last run, a run count and a failure
+        // count for every flow in the account, so this reads the server's
+        // maximum page rather than the five rows the old card showed.
+        this.catchWith403Handling(
+          getFlowExecutions({ limit: FLOW_EXECUTIONS_PAGE_SIZE }),
           [] as FlowExecution[]
         ),
-        this.catchWith403Handling(this.fetchApprovalRequests('pending', 3), []),
+        this.catchWith403Handling(
+          this.fetchApprovalRequests('pending', 100),
+          []
+        ),
         this.catchWith403Handling(
           this.fetchApprovalRequests(undefined, 100),
           []
@@ -1466,7 +1761,7 @@ export class DashboardView extends AuthedElement {
           getAccountRuntimeSessions({
             status: 'all',
             limit: 100,
-            startDate: this.getActiveAgentsStartDate(),
+            startDate: startDateStr,
           }),
           {
             items: [],
@@ -1474,18 +1769,26 @@ export class DashboardView extends AuthedElement {
         ),
         agentsPromise,
         featuresPromise,
+        priorSummaryPromise,
+        rateLimitPromise,
       ]);
       await adminPromise;
+      this.rateLimitReport = rateLimitReport;
 
       this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
         this.gatewaySummary,
         gatewaySummary
       );
+      this.priorGatewaySummary = priorGatewaySummary;
       this.gatewayInteractions = gatewayInteractions.items || [];
       this.fetchingGatewaySummary = false;
 
       this.hasFlows = (flows || []).length > 0;
       this.totalFlowsCount = (flows || []).length;
+      this.flows = (flows || []).map((flow: { id: string; name?: string }) => ({
+        id: flow.id,
+        name: flow.name || 'Untitled flow',
+      }));
       const sortedFlowExecutions = [...(flowExecutions || [])].sort(
         (left, right) =>
           new Date(right.start_time).getTime() -
@@ -1499,7 +1802,7 @@ export class DashboardView extends AuthedElement {
         (execution) =>
           execution.status === 'SUCCEEDED' || execution.status === 'COMPLETED'
       ).length;
-      this.recentFlowExecutions = sortedFlowExecutions.slice(0, 5);
+      this.flowExecutions = sortedFlowExecutions;
       this.fetchingRecentExecutions = false;
 
       this.pendingApprovals = pendingApprovals.filter((approval) =>
@@ -1512,13 +1815,14 @@ export class DashboardView extends AuthedElement {
       this.totalRuntimeSessionsCount =
         runtimeSessions.total ?? this.runtimeSessions.length;
       this.applyAgentsList(managedAgents);
-      this.fetchingActiveAgents = false;
+      this.fetchingAgents = false;
 
       await this.fetchBudgetSummary({
-        sharedGatewaySummary: gatewaySummary,
         sharedAgents: managedAgents,
         features: featuresRes,
       });
+
+      await attentionPromise;
 
       this.lastUpdatedAt = new Date().toISOString();
       this.loading = false;
@@ -1528,7 +1832,7 @@ export class DashboardView extends AuthedElement {
       // websocket refresh only upgrade the top-models breakdown so the card
       // does not flash empty while the rest of the dashboard stays put.
       if (options.preserveLoadingState) {
-        void this.refreshTopModelsBreakdown(startDateStr).then(() =>
+        void this.refreshUsageBreakdown(startDateStr).then(() =>
           this.saveDashboardCache()
         );
       } else {
@@ -1543,7 +1847,7 @@ export class DashboardView extends AuthedElement {
       this.fetchingGatewaySummary = false;
       this.fetchingRecentExecutions = false;
       this.fetchingApprovals = false;
-      this.fetchingActiveAgents = false;
+      this.fetchingAgents = false;
       this.fetchingBudget = false;
       this.fetchingAudit = false;
       this.fetchingMCPAndTools = false;
@@ -1599,27 +1903,47 @@ export class DashboardView extends AuthedElement {
 
     const pTools = (async () => {
       try {
-        const [mcpServers, tools, aiModels, users] = await Promise.all([
-          this.catchWith403Handling(getMCPServers(), [] as MCPServer[]),
-          this.catchWith403Handling(getTools(), [] as Tool[]),
-          this.catchWith403Handling(getAIModels(), []),
-          this.catchWith403Handling(
-            isSaaS()
-              ? getUsers()
-              : Promise.resolve({
-                  users: [],
-                  total: 0,
-                  skip: 0,
-                  limit: 0,
-                }),
-            {
-              users: [],
-              total: 0,
-              skip: 0,
-              limit: 0,
-            }
-          ),
-        ]);
+        const [mcpServers, tools, aiModels, users, apiKeys] = await Promise.all(
+          [
+            this.catchWith403Handling(getMCPServers(), [] as MCPServer[]),
+            this.catchWith403Handling(getTools(), [] as Tool[]),
+            this.catchWith403Handling(getAIModels(), []),
+            this.catchWith403Handling(
+              // User management is a licensed feature, not a hosting model:
+              // a self-hosted Enterprise account has teammates too, and the
+              // Inventory's Users tab is gated on the same flag and on
+              // view_users. Both the flags and the profile have answered by
+              // the time this secondary fetch runs, so a reader without the
+              // permission does not spend a request on a certain 403.
+              hasPermission(this.permissions, 'view_users') &&
+                (isSaaS() || this.userManagementEnabled)
+                ? getUsers()
+                : Promise.resolve({
+                    users: [],
+                    total: 0,
+                    skip: 0,
+                    limit: 0,
+                  }),
+              {
+                users: [],
+                total: 0,
+                skip: 0,
+                limit: 0,
+              }
+            ),
+            // Already the api-keys page's endpoint; here it is only a count.
+            this.catchWith403Handling(getApiKeys(), null),
+          ]
+        );
+        // "Active" means usable: not revoked, not past its expiry.
+        this.apiKeysCount = apiKeys
+          ? apiKeys.filter(
+              (key) =>
+                key.activity_status !== 'revoked' &&
+                (!key.expires_at ||
+                  parseUTCDate(key.expires_at).getTime() > Date.now())
+            ).length
+          : null;
         this.mcpServers = mcpServers;
         this.tools = tools;
         this.aiModels = aiModels || [];
@@ -1638,6 +1962,11 @@ export class DashboardView extends AuthedElement {
         }
         this.hasAIModels = (aiModels || []).length > 0;
         this.aiModelsCount = Array.isArray(aiModels) ? aiModels.length : 0;
+        this.accountUsers = Array.isArray(users.users)
+          ? (users.users as AccountUser[]).filter(
+              (user) => user.is_active !== false
+            )
+          : [];
         this.enabledUsersCount = Array.isArray(users.users)
           ? users.users.filter((u: { is_active?: boolean }) => u.is_active)
               .length
@@ -1652,12 +1981,12 @@ export class DashboardView extends AuthedElement {
     await Promise.all([
       pAudit,
       pTools,
-      this.refreshTopModelsBreakdown(gatewayStartDate),
+      this.refreshUsageBreakdown(gatewayStartDate),
     ]);
     this.saveDashboardCache();
   }
 
-  private async refreshTopModelsBreakdown(gatewayStartDate: string) {
+  private async refreshUsageBreakdown(gatewayStartDate: string) {
     try {
       const detailed = await this.catchWith403Handling(
         getAccountGatewayUsageSummary({
@@ -1670,18 +1999,6 @@ export class DashboardView extends AuthedElement {
         return;
       }
       this.gatewaySummary = detailed;
-      if (
-        this.gatewayTimeRange === this.budgetTimeRange &&
-        this.budgetSummary
-      ) {
-        this.budgetSummary = {
-          ...this.budgetSummary,
-          usage_by_model: detailed.usage_by_model,
-          usage_by_flow: detailed.usage_by_flow,
-          usage_by_session: detailed.usage_by_session,
-          requests_by_day: detailed.requests_by_day,
-        };
-      }
     } catch (error) {
       console.error('Failed to load gateway breakdown for top models', error);
     }
@@ -1776,14 +2093,6 @@ export class DashboardView extends AuthedElement {
     );
   }
 
-  private get activeAgents(): ManagedAgentSummary[] {
-    return [...this.managedAgents].sort(
-      (left, right) =>
-        new Date(right.last_seen_at).getTime() -
-        new Date(left.last_seen_at).getTime()
-    );
-  }
-
   private get activeSessions(): RuntimeSessionSummary[] {
     return [...this.runtimeSessions]
       .filter((session) => session.id && (session.total_requests || 0) > 0)
@@ -1794,49 +2103,6 @@ export class DashboardView extends AuthedElement {
       });
   }
 
-  private getBudgetStartDate(range: 'day' | 'week' | 'month' | 'year'): string {
-    const now = new Date();
-    const start = new Date(now);
-    if (range === 'day') {
-      start.setDate(start.getDate() - 1);
-    } else if (range === 'week') {
-      start.setDate(start.getDate() - 7);
-    } else if (range === 'month') {
-      start.setMonth(start.getMonth() - 1);
-    } else if (range === 'year') {
-      start.setFullYear(start.getFullYear() - 1);
-    }
-    return start.toISOString();
-  }
-
-  private getBudgetPolicyStartDate(period: string): string | undefined {
-    const now = new Date();
-    const start = new Date(now);
-    if (period === 'hourly') {
-      start.setHours(start.getHours() - 1);
-    } else if (period === 'daily') {
-      start.setDate(start.getDate() - 1);
-    } else if (period === 'weekly') {
-      start.setDate(start.getDate() - 7);
-    } else if (period === 'monthly') {
-      start.setMonth(start.getMonth() - 1);
-    } else if (period === 'yearly') {
-      start.setFullYear(start.getFullYear() - 1);
-    } else {
-      return undefined;
-    }
-    return start.toISOString();
-  }
-
-  private timeRangeToBudgetPeriod(
-    range: 'day' | 'week' | 'month' | 'year'
-  ): string {
-    if (range === 'day') return 'daily';
-    if (range === 'week') return 'weekly';
-    if (range === 'year') return 'yearly';
-    return 'monthly';
-  }
-
   private get gatewayFailures(): GatewayUsageSearchResultItem[] {
     return this.gatewayInteractions.filter(
       (item) => item.outcome !== 'success'
@@ -1844,10 +2110,8 @@ export class DashboardView extends AuthedElement {
   }
 
   private get failedFlowExecutions(): FlowExecution[] {
-    return this.recentFlowExecutions.filter(
-      (execution) =>
-        execution.status === 'FAILED' &&
-        !this.dismissedExecutions.includes(execution.id)
+    return this.flowExecutions.filter(
+      (execution) => execution.status === 'FAILED'
     );
   }
 
@@ -1859,25 +2123,11 @@ export class DashboardView extends AuthedElement {
     return Intl.NumberFormat().format(value || 0);
   }
 
-  private formatPercent(numerator: number, denominator: number): string {
-    if (denominator <= 0) {
-      return '0%';
-    }
-    return `${((numerator / denominator) * 100).toFixed(1)}%`;
-  }
-
   private formatDateTime(value: string | null | undefined): string {
     if (!value) {
       return 'Never';
     }
     return parseUTCDate(value).toLocaleString();
-  }
-
-  private formatRuntimeSessionId(value: string | null | undefined): string {
-    if (!value) {
-      return 'Session';
-    }
-    return value.length > 8 ? value.substring(0, 8) : value;
   }
 
   private getSessionDisplayTitle(
@@ -1902,317 +2152,6 @@ export class DashboardView extends AuthedElement {
     return observed.canLoadEvents
       ? `/console/runtime-sessions?sessionId=${observed.id}`
       : '/console/runtime-sessions';
-  }
-
-  private renderNestedSessionRow(
-    session: GatewayUsageBySession | RuntimeSessionSummary,
-    metric: string
-  ) {
-    return html`
-      <div class="nested-session-row">
-        <a class="row-link" href=${this.getSessionDetailHref(session)}>
-          ${this.getSessionDisplayTitle(session)}
-        </a>
-        <span class="nested-session-metric">${metric}</span>
-      </div>
-    `;
-  }
-
-  private toggleOverviewGroup(groupId: string) {
-    const next = new Set(this.expandedOverviewGroups);
-    if (next.has(groupId)) {
-      next.delete(groupId);
-    } else {
-      next.add(groupId);
-    }
-    this.expandedOverviewGroups = next;
-  }
-
-  private isOverviewGroupExpanded(groupId: string): boolean {
-    return this.expandedOverviewGroups.has(groupId);
-  }
-
-  private togglePreviewKey(key: string) {
-    const next = new Set(this.expandedPreviewKeys);
-    if (next.has(key)) {
-      next.delete(key);
-    } else {
-      next.add(key);
-    }
-    this.expandedPreviewKeys = next;
-  }
-
-  private isPreviewExpanded(key: string): boolean {
-    return this.expandedPreviewKeys.has(key);
-  }
-
-  private renderSeeMoreControl(key: string, overflow: number) {
-    if (overflow <= 0) {
-      return nothing;
-    }
-    const expanded = this.isPreviewExpanded(key);
-    return html`
-      <sl-button
-        class="overview-see-more"
-        size="small"
-        variant="text"
-        @click=${(event: Event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          this.togglePreviewKey(key);
-        }}
-      >
-        ${expanded ? 'Show less' : `See ${overflow} more`}
-        <sl-icon
-          slot="suffix"
-          name=${expanded ? 'chevron-up' : 'chevron-down'}
-        ></sl-icon>
-      </sl-button>
-    `;
-  }
-
-  private nestedSessionRepeatKey(
-    session: GatewayUsageBySession | RuntimeSessionSummary
-  ): string {
-    if ('total_requests' in session) {
-      return session.id;
-    }
-    return (
-      session.runtime_session_id ||
-      session.flow_execution_id ||
-      session.session_source_id ||
-      `${session.model_alias}-${session.last_request_at}`
-    );
-  }
-
-  private renderCappedNestedSessions(
-    sessions: Array<GatewayUsageBySession | RuntimeSessionSummary>,
-    previewKey: string
-  ) {
-    const sorted = [...sessions].sort((left, right) =>
-      compareByUsageMetric(left, right, this.topModelsSortMetric)
-    );
-    const { visible, overflow } = previewWindow(
-      sorted,
-      TOP_MODEL_SESSION_PREVIEW_LIMIT,
-      this.isPreviewExpanded(previewKey)
-    );
-    return html`
-      <div class="nested-session-list">
-        ${repeat(
-          visible,
-          (session) => this.nestedSessionRepeatKey(session),
-          (session) =>
-            this.renderNestedSessionRow(
-              session,
-              `${this.formatNumber(
-                'total_requests' in session
-                  ? session.total_requests
-                  : session.request_count
-              )} req`
-            )
-        )}
-        ${this.renderSeeMoreControl(previewKey, overflow)}
-      </div>
-    `;
-  }
-
-  private renderExpandIcon(groupId: string) {
-    return html`
-      <sl-icon
-        class="expand-icon ${
-          this.isOverviewGroupExpanded(groupId) ? 'open' : ''
-        }"
-        name="chevron-right"
-      ></sl-icon>
-    `;
-  }
-
-  private renderFlowIcon(): ReturnType<typeof html> {
-    // flow.svg strokes with currentColor, so it adapts to light/dark on its
-    // own — do not apply the inverting .flow-icon filter here.
-    return html`<sl-icon
-      src="/images/flow.svg"
-      style="font-size: 1rem; color: var(--sl-color-neutral-600);"
-    ></sl-icon>`;
-  }
-
-  private renderExpandableSubGroup(
-    groupId: string,
-    name: string,
-    href: string | null,
-    summaryMetric: string,
-    content: ReturnType<typeof html>,
-    icon: ReturnType<typeof html> | null = null
-  ) {
-    const expanded = this.isOverviewGroupExpanded(groupId);
-    return html`
-      <div class="expandable-group">
-        <div
-          class="expandable-subheader"
-          @click=${() => this.toggleOverviewGroup(groupId)}
-        >
-          ${this.renderExpandIcon(groupId)}
-          ${
-            icon
-              ? html`<span
-                  class="group-icon"
-                  aria-hidden="true"
-                  style="display: inline-flex; align-items: center; margin-right: var(--sl-spacing-2x-small);"
-                  >${icon}</span
-                >`
-              : nothing
-          }
-          ${
-            href
-              ? html`<a
-                  class="row-link row-primary"
-                  href=${href}
-                  @click=${(event: Event) => event.stopPropagation()}
-                  >${name}</a
-                >`
-              : html`<span class="row-primary">${name}</span>`
-          }
-          <span class="expandable-subheader-metric">${summaryMetric}</span>
-        </div>
-        ${expanded ? html`<div class="expandable-content">${content}</div>` : nothing}
-      </div>
-    `;
-  }
-
-  private renderAgentExpandableGroup(
-    groupId: string,
-    agent: ManagedAgentSummary,
-    sessions: Array<GatewayUsageBySession | RuntimeSessionSummary>,
-    trailingMetric: string,
-    options: {
-      showTalkComposer?: boolean;
-      onAgentControlSent?: () => void;
-      nestedPreviewKey?: string;
-    } = {}
-  ) {
-    const expanded = this.isOverviewGroupExpanded(groupId);
-    const agentKind = agent.agent_kind || agent.session_source_type;
-    const showTalkComposer = options.showTalkComposer ?? false;
-
-    return html`
-      <div class="expandable-group">
-        <div
-          class="expandable-header"
-          @click=${() => this.toggleOverviewGroup(groupId)}
-        >
-          ${this.renderExpandIcon(groupId)}
-          <div class="expandable-leading">
-            ${renderAgentIcon(
-              agentKind,
-              'font-size: 1.25rem; color: var(--sl-color-neutral-800); flex-shrink: 0;'
-            )}
-            <div class="expandable-identity">
-              <a
-                class="row-link row-primary"
-                href=${`/console/agents/${agent.id}`}
-                @click=${(event: Event) => event.stopPropagation()}
-              >
-                ${agent.display_name || 'Agent'}
-              </a>
-              <div class="agent-meta-line">
-                ${getAgentSourceLabel(agentKind)}${
-                  agent.session_source_id ? ` · ${agent.session_source_id}` : ''
-                }
-              </div>
-              ${renderAgentIdentityBadges(agent)}
-            </div>
-          </div>
-          <div
-            class="expandable-trailing"
-            @click=${(event: Event) => event.stopPropagation()}
-          >
-            ${
-              showTalkComposer && getAgentControlState(agent).visible
-                ? html`
-                    <agent-talk-composer
-                      .agent=${agent}
-                      .sessions=${sessions}
-                      sourceContext="dashboard-active-agents"
-                      compact
-                      @agent-control-sent=${() =>
-                        options.onAgentControlSent?.()}
-                    ></agent-talk-composer>
-                  `
-                : null
-            }
-            <span class="row-value">${trailingMetric}</span>
-          </div>
-        </div>
-        ${
-          expanded
-            ? html`
-                <div class="expandable-content">
-                  ${
-                    sessions.length > 0
-                      ? options.nestedPreviewKey
-                        ? this.renderCappedNestedSessions(
-                            sessions,
-                            options.nestedPreviewKey
-                          )
-                        : html`
-                            <div class="nested-session-list">
-                              ${sessions.map((session) =>
-                                this.renderNestedSessionRow(
-                                  session,
-                                  `${this.formatNumber(
-                                    'total_requests' in session
-                                      ? session.total_requests
-                                      : session.request_count
-                                  )} req`
-                                )
-                              )}
-                            </div>
-                          `
-                      : html`<div class="nested-session-metric">
-                          No recent sessions
-                        </div>`
-                  }
-                </div>
-              `
-            : nothing
-        }
-      </div>
-    `;
-  }
-
-  private renderActiveAgentGroup(
-    agent: ManagedAgentSummary,
-    sessions: RuntimeSessionSummary[]
-  ) {
-    return this.renderAgentExpandableGroup(
-      `active-agent:${agent.id}`,
-      agent,
-      sessions,
-      `${this.formatCurrency(agent.estimated_cost)} · ${this.formatRelativeTime(agent.last_seen_at)}`,
-      {
-        showTalkComposer: true,
-        onAgentControlSent: () => this.fetchActiveAgentsData(),
-      }
-    );
-  }
-
-  private renderCollapsibleGroup(
-    groupId: string,
-    name: string,
-    href: string | null,
-    summaryMetric: string,
-    content: ReturnType<typeof html>,
-    icon: ReturnType<typeof html> | null = null
-  ) {
-    return this.renderExpandableSubGroup(
-      groupId,
-      name,
-      href,
-      summaryMetric,
-      content,
-      icon
-    );
   }
 
   private formatRelativeTime(value: string | null | undefined): string {
@@ -2243,351 +2182,120 @@ export class DashboardView extends AuthedElement {
       this.fetchingGatewaySummary ||
       this.fetchingRecentExecutions ||
       this.fetchingBudget ||
-      this.fetchingActiveAgents
+      this.fetchingAgents
     ) {
       return 'Loading…';
     }
     return 'Never';
   }
 
+  /**
+   * Chip colour is a taxonomy, not decoration: success means finished or
+   * live, danger means failed. A run that is still going is a state, so it
+   * is neutral; amber is reserved for things asking for a human.
+   */
   private getStatusColor(status: string): string {
     switch (status.toLowerCase()) {
       case 'active':
       case 'succeeded':
+      case 'completed':
       case 'approved':
         return 'success';
       case 'failed':
       case 'error':
       case 'declined':
         return 'danger';
-      case 'running':
-      case 'pending':
-        return 'warning';
       default:
         return 'neutral';
     }
   }
 
+  /**
+   * The same derivation the Attention page uses, over data this view already
+   * fetches, so the hero count, the side card and /console/attention can never
+   * disagree.
+   */
+  private get attentionItems(): AttentionItem[] {
+    if (!this.attentionInputs) {
+      return [];
+    }
+    return deriveAttentionItems(this.attentionInputs).items;
+  }
+
+  /**
+   * Same loader, same parameters as the Attention page. Runs alongside the
+   * dashboard fetch rather than inside it so a slow attention input never
+   * holds up the cards above the fold.
+   */
+  private async refreshAttentionInputs(): Promise<void> {
+    try {
+      this.attentionInputs = await loadAttentionInputs();
+      this.saveDashboardCache();
+    } catch (error) {
+      console.error('Failed to load attention inputs', error);
+    }
+  }
+
+  private get gatewayRangeLabel(): string {
+    if (this.gatewayTimeRange === 'day') return '24h';
+    if (this.gatewayTimeRange === 'week') return '7d';
+    if (this.gatewayTimeRange === 'year') return '1y';
+    return '30d';
+  }
+
+  /** True once an agent talks to both the model gateway and the tool firewall. */
+  private get hasFullyOnboardedAgent(): boolean {
+    return this.managedAgents.some(
+      (agent) => agent.onboarding_state === 'fully_onboarded'
+    );
+  }
+
+  /**
+   * True when at least one tool is disabled or approval-gated. The next-step
+   * label ("Restrict a tool") matches this signal. Subject-scoped model lists
+   * and other Policies-page rules are not visible here.
+   */
+  private get hasToolPolicy(): boolean {
+    return this.tools.some(
+      (tool) => !tool.is_enabled || Boolean(tool.approval_workflow_id)
+    );
+  }
+
+  private get nextSteps(): NextStep[] {
+    const steps: NextStep[] = [
+      {
+        id: 'agent',
+        label: 'Onboard an agent',
+        done: this.managedAgents.length > 0 || this.totalAgentsCount > 0,
+        href: '/console/agents',
+      },
+      {
+        id: 'budget',
+        label: 'Set a spending limit',
+        done: this.budgetPolicies.length > 0,
+        onClick: () => (this.showBudgetDialog = true),
+      },
+      {
+        id: 'policy',
+        label: 'Restrict a tool',
+        done: this.hasToolPolicy,
+        href: '/console/policies',
+      },
+    ];
+    if (this.userManagementEnabled) {
+      steps.push({
+        id: 'invite',
+        optional: true,
+        label: 'Invite a teammate',
+        done: this.enabledUsersCount > 1,
+        href: '/console/settings/invitations',
+      });
+    }
+    return steps;
+  }
+
   private get enabledToolsCount(): number {
     return this.tools.filter((tool) => tool.is_enabled).length;
-  }
-
-  private get activeAgentsCount(): number {
-    return this.managedAgents.filter(
-      (agent) =>
-        agent.is_active_now ||
-        agent.activity_status === 'active_now' ||
-        agent.activity_status === 'recently_active'
-    ).length;
-  }
-
-  private get inactiveAgentsCount(): number {
-    return Math.max(0, this.totalAgentsCount - this.activeAgentsCount);
-  }
-
-  private get flowExecutionSuccessRate(): string {
-    return this.formatPercent(
-      this.succeededFlowExecutionsCount,
-      this.flowExecutionsCount
-    );
-  }
-
-  private get modelRequestSuccessRate(): string {
-    return this.formatPercent(
-      this.gatewaySummary?.successful_requests || 0,
-      this.gatewaySummary?.total_requests || 0
-    );
-  }
-
-  private get toolCallSuccessRate(): string {
-    return this.formatPercent(
-      this.toolCallsCount - this.failedToolCallsCount,
-      this.toolCallsCount
-    );
-  }
-
-  private get approvalRate(): string {
-    const decidedApprovals =
-      this.approvalStats.approved +
-      this.approvalStats.declined +
-      this.approvalStats.expired;
-    return this.formatPercent(this.approvalStats.approved, decidedApprovals);
-  }
-
-  private getGlobalPolicyUsage() {
-    return this.calculatePolicyUsages().find(
-      (u) =>
-        u.policy.subject_type === 'global' ||
-        u.policy.subject_type === 'account'
-    );
-  }
-
-  private getSelectedGlobalPolicyUsage(): BudgetPolicyUsage | undefined {
-    const selectedPeriod = this.timeRangeToBudgetPeriod(this.budgetTimeRange);
-    return this.calculatePolicyUsages().find(
-      (u) =>
-        (u.policy.subject_type === 'global' ||
-          u.policy.subject_type === 'account') &&
-        u.policy.period === selectedPeriod
-    );
-  }
-
-  private budgetVariant() {
-    const globalUsage =
-      this.getSelectedGlobalPolicyUsage() || this.getGlobalPolicyUsage();
-    if (globalUsage && globalUsage.maxLimit > 0) {
-      if (globalUsage.percent >= 100) return 'danger';
-      if (globalUsage.percent >= 80) return 'warning';
-      return 'success';
-    }
-
-    const budget = this.budgetSummary?.budget;
-    if (!budget) {
-      return 'neutral';
-    }
-    if (budget.hard_limit_exceeded) {
-      return 'danger';
-    }
-    if (budget.soft_limit_exceeded) {
-      return 'warning';
-    }
-    return 'success';
-  }
-
-  private budgetPercent(): number {
-    const globalUsage =
-      this.getSelectedGlobalPolicyUsage() || this.getGlobalPolicyUsage();
-    if (globalUsage && globalUsage.maxLimit > 0) {
-      return globalUsage.percent;
-    }
-
-    const budget = this.budgetSummary?.budget;
-    const limit = budget?.monthly_limit_usd || budget?.soft_limit_usd || 0;
-    if (!limit) {
-      return 0;
-    }
-    return Math.min(
-      100,
-      Math.round(((budget?.current_spend_usd || 0) / limit) * 100)
-    );
-  }
-
-  private calculatePolicyUsages(): BudgetPolicyUsage[] {
-    if (!this.budgetPolicies) return [];
-
-    return this.budgetPolicies
-      .map((policy) => {
-        const summary =
-          this.budgetPolicySummaries.get(policy.id) ||
-          this.budgetSummariesByPeriod.get(policy.period) ||
-          this.budgetSummary;
-        let spend = 0;
-        if (!summary) {
-          spend = 0;
-        } else if (
-          policy.subject_type === 'global' ||
-          policy.subject_type === 'account'
-        ) {
-          spend =
-            summary.budget?.current_spend_usd || summary.estimated_cost || 0;
-        } else if (policy.subject_type === 'ai_model') {
-          spend = summary.usage_by_model
-            .filter((m) => m.ai_model_id === policy.subject_id)
-            .reduce((acc, m) => acc + m.estimated_cost, 0);
-        } else if (policy.subject_type === 'managed_agent') {
-          const agent = this.getManagedAgentBySourceId(policy.subject_id);
-          const agentIds = new Set(
-            [policy.subject_id, agent?.id, agent?.session_source_id].filter(
-              Boolean
-            ) as string[]
-          );
-          if (this.budgetPolicySummaries.has(policy.id)) {
-            spend =
-              summary.estimated_cost || summary.budget?.current_spend_usd || 0;
-          } else {
-            spend = summary.usage_by_session
-              .filter(
-                (s) =>
-                  agentIds.has(s.session_source_id || '') ||
-                  agentIds.has(s.runtime_principal_id || '')
-              )
-              .reduce((acc, s) => acc + s.estimated_cost, 0);
-          }
-        } else if (policy.subject_type === 'flow') {
-          spend = summary.usage_by_flow
-            .filter((flow) => flow.flow_id === policy.subject_id)
-            .reduce((acc, flow) => acc + flow.estimated_cost, 0);
-        } else if (policy.subject_type === 'api_key') {
-          spend = summary.usage_by_session
-            .filter(
-              (session) =>
-                session.session_source_id === policy.subject_id ||
-                session.runtime_principal_id === policy.subject_id
-            )
-            .reduce((acc, session) => acc + session.estimated_cost, 0);
-        }
-
-        const hardLimit = policy.hard_limit_usd || 0;
-        const softLimit = policy.soft_limit_usd || 0;
-        const maxLimit = hardLimit || softLimit;
-        const percent =
-          maxLimit > 0
-            ? Math.min(100, Math.round((spend / maxLimit) * 100))
-            : 0;
-
-        return { policy, spend, hardLimit, softLimit, maxLimit, percent };
-      })
-      .sort((a, b) => {
-        const aGlobal =
-          a.policy.subject_type === 'global' ||
-          a.policy.subject_type === 'account';
-        const bGlobal =
-          b.policy.subject_type === 'global' ||
-          b.policy.subject_type === 'account';
-        if (aGlobal !== bGlobal) return aGlobal ? -1 : 1;
-        return b.percent - a.percent;
-      });
-  }
-
-  private getBudgetPolicyDisplayName(policy: BudgetPolicy): string {
-    const period = this.formatBudgetPeriod(policy.period);
-    if (policy.subject_type === 'global' || policy.subject_type === 'account') {
-      return `Global · ${period}`;
-    }
-    if (policy.subject_type === 'managed_agent') {
-      const agentName =
-        this.getManagedAgentBySourceId(policy.subject_id)?.display_name ||
-        'Managed agent';
-      return `${agentName} · ${period}`;
-    }
-    if (policy.subject_type === 'ai_model') {
-      return `${policy.model_alias || 'Model'} · ${period}`;
-    }
-    return `${policy.subject_type.replace(/_/g, ' ')} · ${period}`;
-  }
-
-  private formatBudgetPeriod(period: string): string {
-    if (period === 'hourly') return '1h';
-    if (period === 'daily') return '24h';
-    if (period === 'weekly') return '7d';
-    if (period === 'monthly') return '30d';
-    if (period === 'yearly') return '1y';
-    if (period === 'all_time') return 'all time';
-    return period;
-  }
-
-  private getBudgetPolicyIcon(policy: BudgetPolicy): string {
-    if (policy.subject_type === 'global' || policy.subject_type === 'account') {
-      return 'globe';
-    }
-    if (policy.subject_type === 'managed_agent') {
-      return 'robot';
-    }
-    if (policy.subject_type === 'ai_model') {
-      return 'cpu';
-    }
-    return 'sliders';
-  }
-
-  private renderBudgetLimitRow(
-    label: string,
-    icon: string,
-    spend: number,
-    softLimit: number,
-    hardLimit: number
-  ) {
-    const maxLimit = hardLimit || softLimit;
-    const fillPercent =
-      maxLimit > 0 ? Math.min(100, (spend / maxLimit) * 100) : 0;
-    const softPercent =
-      softLimit > 0 && maxLimit > 0
-        ? Math.min(100, (softLimit / maxLimit) * 100)
-        : 0;
-    const successFillPercent =
-      softLimit > 0 ? Math.min(fillPercent, softPercent) : fillPercent;
-    const warningFillPercent =
-      softLimit > 0 && fillPercent > softPercent
-        ? fillPercent - softPercent
-        : 0;
-    return html`
-      <div style="display: flex; flex-direction: column; gap: 4px;">
-        <div
-          style="display: flex; justify-content: space-between; font-size: var(--sl-font-size-small); align-items: center; gap: var(--sl-spacing-small);"
-        >
-          <span style="display: flex; align-items: center; gap: 4px;">
-            <sl-icon name=${icon}></sl-icon>
-            ${label}
-          </span>
-          <span style="font-weight: 500; text-align: right;">
-            ${this.formatCurrency(spend)}
-            ${
-              maxLimit > 0
-                ? html` / ${this.formatCurrency(maxLimit)}`
-                : html`<span
-                    style="color: var(--sl-color-neutral-500); font-weight: 400;"
-                  >
-                    spent</span
-                  >`
-            }
-          </span>
-        </div>
-        ${
-          maxLimit > 0
-            ? html`
-                <div class="budget-track">
-                  <div
-                    class="budget-track-fill success"
-                    style="--budget-fill-width: ${successFillPercent}%;"
-                  ></div>
-                  ${
-                    warningFillPercent > 0
-                      ? html`<div
-                          class="budget-track-fill warning"
-                          style="--budget-fill-left: ${softPercent}%; --budget-fill-width: ${warningFillPercent}%;"
-                        ></div>`
-                      : nothing
-                  }
-                  ${
-                    softLimit > 0 && hardLimit > 0 && softLimit < hardLimit
-                      ? html`<div
-                          class="budget-soft-marker"
-                          title=${`Soft limit ${this.formatCurrency(softLimit)}`}
-                          style="--budget-soft-position: ${softPercent}%;"
-                        ></div>`
-                      : nothing
-                  }
-                  ${
-                    hardLimit > 0
-                      ? html`<div
-                          class="budget-hard-marker"
-                          title=${`Hard limit ${this.formatCurrency(hardLimit)}`}
-                        ></div>`
-                      : nothing
-                  }
-                </div>
-                <div
-                  style="display: flex; justify-content: space-between; gap: var(--sl-spacing-small); color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-x-small);"
-                >
-                  <span>
-                    ${
-                      softLimit > 0
-                        ? html`Soft ${this.formatCurrency(softLimit)}`
-                        : nothing
-                    }
-                  </span>
-                  <span>
-                    ${
-                      hardLimit > 0
-                        ? html`Hard ${this.formatCurrency(hardLimit)}`
-                        : nothing
-                    }
-                  </span>
-                </div>
-              `
-            : nothing
-        }
-      </div>
-    `;
   }
 
   private getManagedAgentBySourceId(
@@ -2642,75 +2350,6 @@ export class DashboardView extends AuthedElement {
       }
     }
     return undefined;
-  }
-
-  private isFlowBackedUsageSession(session: GatewayUsageBySession): boolean {
-    return Boolean(
-      session.flow_execution_id ||
-      session.flow_id ||
-      session.session_source_type === 'flow_execution' ||
-      session.runtime_principal_type === 'flow_execution'
-    );
-  }
-
-  private isAgentBackedUsageSession(
-    session: GatewayUsageBySession,
-    agent?: ManagedAgentSummary
-  ): boolean {
-    return Boolean(
-      agent ||
-      session.agent_id ||
-      session.session_source_type === 'managed_agent' ||
-      session.runtime_principal_type === 'managed_agent'
-    );
-  }
-
-  private getUsageSessionSubject(
-    session: GatewayUsageBySession
-  ): UsageSessionSubject {
-    if (this.isFlowBackedUsageSession(session)) {
-      return {
-        kind: 'flow',
-        name: session.flow_name || session.runtime_principal_name || 'Flow',
-        href: session.flow_id
-          ? `/console/flows/${session.flow_id}`
-          : '/console/flows',
-      };
-    }
-
-    const agent = this.getManagedAgentForUsageSession(session);
-    if (this.isAgentBackedUsageSession(session, agent)) {
-      const agentId =
-        agent?.id ||
-        session.agent_id ||
-        (session.session_source_type === 'managed_agent'
-          ? session.session_source_id
-          : null) ||
-        (session.runtime_principal_type === 'managed_agent'
-          ? session.runtime_principal_id
-          : null);
-      return {
-        kind: 'agent',
-        name:
-          agent?.display_name ||
-          session.agent_name ||
-          session.runtime_principal_name ||
-          'Managed agent',
-        href: agentId ? `/console/agents/${agentId}` : '/console/agents',
-      };
-    }
-
-    return {
-      kind: 'session',
-      name: this.getSessionDisplayTitle(session),
-      href: session.runtime_session_id
-        ? `/console/runtime-sessions?sessionId=${session.runtime_session_id}`
-        : '/console/runtime-sessions',
-    };
-  }
-
-  private renderEmptyState(message: string) {
-    return html`<div class="empty-state">${message}</div>`;
   }
 
   private handleDeployAgentSuccess(event: CustomEvent): void {
@@ -2781,191 +2420,91 @@ export class DashboardView extends AuthedElement {
     `;
   }
 
-  private renderRecentFlowExecutionsCard() {
-    if (
-      this.fetchingRecentExecutions &&
-      this.recentFlowExecutions.length === 0
-    ) {
+  /**
+   * The four things a new account has to do, with their real state read from
+   * the same data the rest of the page uses. It disappears on its own when
+   * they are done, so nobody has to dismiss it to be rid of it.
+   */
+  private renderNextStepsCard() {
+    if (this.nextStepsDismissed) {
+      return nothing;
+    }
+    const remembered = this.readCoreStepsDone();
+    if (!this.nextStepsInputsResolved && remembered !== false) {
+      // Either this browser has never seen a finished load, or the last one
+      // said the checklist was done. Both cases stay quiet until the four
+      // fetches land, instead of drawing an empty checklist for a second.
+      return nothing;
+    }
+    const steps = this.nextSteps;
+    const allDone = steps.every((step) => step.done || step.optional);
+    if (this.nextStepsInputsResolved) {
+      this.rememberCoreStepsDone(allDone);
+    }
+    if (allDone) {
       return nothing;
     }
 
     return html`
-      <!-- Flow Executions -->
-      <sl-card>
-        <div slot="header" class="chart-header">
-          <sl-icon name="diagram-3"></sl-icon>
-          Recent Flow Executions
-          ${
-            this.failedFlowExecutions.length > 0
-              ? html`<sl-badge variant="danger"
-                  >${this.failedFlowExecutions.length} failed</sl-badge
-                >`
-              : ''
-          }
+      <sl-card class="content-card next-steps-card">
+        <div slot="header" class="card-header-with-action">
+          <div class="card-title">Next steps</div>
+          <sl-icon-button
+            name="x-lg"
+            label="Dismiss next steps"
+            @click=${this.dismissNextSteps}
+          ></sl-icon-button>
         </div>
-
-        ${
-          this.recentFlowExecutions.length === 0
-            ? html`
-                <div class="empty-state">
-                  <sl-icon name="inbox"></sl-icon>
-                  <p>
-                    No flow executions yet.
-                    <a href="/console/flows">Create a flow</a>
-                  </p>
-                </div>
-              `
-            : html`
-                <div class="item-list">
-                  ${this.recentFlowExecutions
-                    .filter(
-                      (exec) => !this.dismissedExecutions.includes(exec.id)
-                    )
-                    .slice(0, 5)
-                    .map(
-                      (exec) => html`
-                        <div
-                          class="item-card ${
-                            exec.status === 'FAILED' ? 'failed-execution' : ''
-                          }"
-                        >
-                          <div class="item-info">
-                            <span class="item-name"
-                              >${exec.flow_name || 'Unnamed Flow'}</span
-                            >
-                            ${
-                              exec.error_message
-                                ? html`<span
-                                    class="item-error"
-                                    title=${exec.error_message}
-                                    >${exec.error_message}</span
-                                  >`
-                                : ''
-                            }
-                            <span class="item-secondary"
-                              >${this.executionSecondaryText(exec)}</span
-                            >
-                          </div>
-                          <div class="item-actions">
-                            <sl-tag
-                              size="small"
-                              variant="${this.getStatusColor(exec.status)}"
-                            >
-                              ${exec.status}
-                            </sl-tag>
-                            <sl-button
-                              size="small"
-                              href="/console/flows/executions/${exec.id}"
-                            >
-                              View
-                            </sl-button>
-                            <sl-icon-button
-                              class="item-dismiss"
-                              name="x-lg"
-                              label="Dismiss execution ${
-                                exec.flow_name || 'Unnamed Flow'
-                              }"
-                              @click=${(e: Event) => {
-                                e.preventDefault();
-                                this.dismissExecution(exec.id);
-                              }}
-                            ></sl-icon-button>
-                          </div>
-                        </div>
-                      `
-                    )}
-                </div>
-
-                <div class="quick-actions">
-                  <sl-button size="small" href="/console/flows/executions">
-                    <sl-icon slot="prefix" name="list"></sl-icon>
-                    View All Executions
-                  </sl-button>
-                  <sl-button size="small" href="/console/flows">
-                    <sl-icon slot="prefix" name="plus-circle"></sl-icon>
-                    Create Flow
-                  </sl-button>
-                </div>
-              `
-        }
+        <div class="next-steps-list">
+          ${steps.map((step) => {
+            const label = html`
+              <sl-icon
+                class="next-step-mark ${step.done ? 'done' : ''}"
+                name=${step.done ? 'check-circle-fill' : 'circle'}
+                aria-hidden="true"
+              ></sl-icon>
+              <span class="next-step-label">${step.label}</span>
+            `;
+            return html`
+              <div class="next-step ${step.done ? 'done' : ''}">
+                ${
+                  step.href
+                    ? html`<a class="next-step-link" href=${step.href}
+                        >${label}</a
+                      >`
+                    : html`<button
+                        class="next-step-link"
+                        type="button"
+                        @click=${step.onClick}
+                      >
+                        ${label}
+                      </button>`
+                }
+              </div>
+            `;
+          })}
+        </div>
       </sl-card>
     `;
   }
-  private renderBudgetHealthCard() {
+  private renderUsageCard() {
     return html`
-      <budget-health-card
-        .summary=${this.budgetSummary}
+      <usage-card
+        .summary=${this.gatewaySummary}
+        .priorSummary=${this.priorGatewaySummary}
         .policies=${this.budgetPolicies}
-        .agents=${this.managedAgents.length > 0 ? this.managedAgents : this.budgetAgents}
-        .loading=${this.fetchingBudget}
-        .timeRange=${this.budgetTimeRange}
-        .showRangeSelector=${true}
-        configurable
+        .loading=${this.fetchingGatewaySummary || this.fetchingBudget}
+        .error=${this.error}
+        .timeRange=${this.gatewayTimeRange}
+        .toolCallsCount=${this.toolCallsCount}
         @range-change=${(event: CustomEvent<{ value: string }>) => {
-          this.budgetTimeRange = event.detail.value as any;
-          this.fetchBudgetSummary();
+          event.stopPropagation();
+          this.gatewayTimeRange = event.detail.value as
+            'day' | 'week' | 'month' | 'year';
+          void this.fetchDashboardData({ preserveLoadingState: true });
         }}
-        @configure=${() => (this.showBudgetDialog = true)}
-      ></budget-health-card>
-    `;
-  }
-
-  private renderBudgetHealthContent() {
-    const policyUsages = this.calculatePolicyUsages();
-    const selectedPeriod = this.timeRangeToBudgetPeriod(this.budgetTimeRange);
-    const selectedGlobalUsage = policyUsages.find(
-      (usage) =>
-        (usage.policy.subject_type === 'global' ||
-          usage.policy.subject_type === 'account') &&
-        usage.policy.period === selectedPeriod
-    );
-    const additionalUsages = selectedGlobalUsage
-      ? policyUsages.filter(
-          (usage) => usage.policy.id !== selectedGlobalUsage.policy.id
-        )
-      : policyUsages;
-    const globalSpend = this.budgetSummary?.budget?.current_spend_usd || 0;
-
-    return html`
-      <div
-        style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
-      >
-        <div
-          style="display: flex; flex-direction: column; gap: var(--sl-spacing-small);"
-        >
-          ${this.renderBudgetLimitRow(
-            `Global spend · ${this.formatBudgetPeriod(selectedPeriod)}`,
-            'globe',
-            globalSpend,
-            selectedGlobalUsage?.softLimit ||
-              this.budgetSummary?.budget?.soft_limit_usd ||
-              0,
-            selectedGlobalUsage?.hardLimit ||
-              this.budgetSummary?.budget?.monthly_limit_usd ||
-              0
-          )}
-          ${additionalUsages.map((usage) =>
-            this.renderBudgetLimitRow(
-              this.getBudgetPolicyDisplayName(usage.policy),
-              this.getBudgetPolicyIcon(usage.policy),
-              usage.spend,
-              usage.softLimit,
-              usage.hardLimit
-            )
-          )}
-        </div>
-        <div style="margin-top: var(--sl-spacing-small);">
-          <sl-button
-            size="small"
-            variant="default"
-            @click=${() => (this.showBudgetDialog = true)}
-            style="width: 100%;"
-          >
-            <sl-icon slot="prefix" name="gear"></sl-icon>
-            Configure Limits
-          </sl-button>
-        </div>
-      </div>
+        @configure-limits=${() => (this.showBudgetDialog = true)}
+      ></usage-card>
     `;
   }
 
@@ -2999,7 +2538,9 @@ export class DashboardView extends AuthedElement {
                   >
                     ${item.model_alias || item.provider_name || item.endpoint}
                   </a>
-                  <sl-badge variant="danger">${item.status_code}</sl-badge>
+                  <sl-badge class="chip" pill variant="danger"
+                    >${item.status_code}</sl-badge
+                  >
                 </div>
                 <div class="row-meta">
                   <span>
@@ -3041,6 +2582,8 @@ export class DashboardView extends AuthedElement {
                     ${group.primary_event.action.replace(/_/g, ' ')}
                   </span>
                   <sl-badge
+                    class="chip"
+                    pill
                     variant=${
                       group.outcome === 'budget_denied' ? 'warning' : 'danger'
                     }
@@ -3070,1020 +2613,585 @@ export class DashboardView extends AuthedElement {
     `;
   }
 
-  private collectTopModelSubjectGroups(
-    modelKey: string,
-    modelSessions: GatewayUsageBySession[]
-  ): TopModelSubjectGroup[] {
-    const agentGroups = new Map<
-      string,
-      { subject: UsageSessionSubject; sessions: GatewayUsageBySession[] }
-    >();
-    const flowGroups = new Map<
-      string,
-      { subject: UsageSessionSubject; sessions: GatewayUsageBySession[] }
-    >();
-    const otherSessions: GatewayUsageBySession[] = [];
-
-    modelSessions.forEach((session) => {
-      const subject = this.getUsageSessionSubject(session);
-      if (subject.kind === 'agent') {
-        const agent = this.getManagedAgentForUsageSession(session);
-        const key =
-          agent?.id ||
-          session.agent_id ||
-          session.runtime_session_id ||
-          session.session_source_id ||
-          session.runtime_principal_id ||
-          subject.href;
-        if (!agentGroups.has(key)) {
-          agentGroups.set(key, { subject, sessions: [] });
-        }
-        agentGroups.get(key)!.sessions.push(session);
-      } else if (subject.kind === 'flow') {
-        const key = session.flow_id || session.flow_name || subject.href;
-        if (!flowGroups.has(key)) {
-          flowGroups.set(key, { subject, sessions: [] });
-        }
-        flowGroups.get(key)!.sessions.push(session);
-      } else {
-        otherSessions.push(session);
-      }
-    });
-
-    const groups: TopModelSubjectGroup[] = [];
-    const pushGroup = (
-      kind: TopModelSubjectGroup['kind'],
-      groupId: string,
-      subject: UsageSessionSubject,
-      sessions: GatewayUsageBySession[]
-    ) => {
-      groups.push({
-        groupId,
-        kind,
-        subject,
-        sessions,
-        totalCost: sessions.reduce((acc, row) => acc + row.estimated_cost, 0),
-        totalRequests: sessions.reduce(
-          (acc, row) => acc + row.request_count,
-          0
-        ),
-      });
-    };
-
-    agentGroups.forEach(({ subject, sessions }, groupKey) => {
-      pushGroup(
-        'agent',
-        `top-model:${modelKey}:agent:${groupKey}`,
-        subject,
-        sessions
-      );
-    });
-    flowGroups.forEach(({ subject, sessions }, groupKey) => {
-      pushGroup(
-        'flow',
-        `top-model:${modelKey}:flow:${groupKey}`,
-        subject,
-        sessions
-      );
-    });
-    if (otherSessions.length > 0) {
-      pushGroup(
-        'other',
-        `top-model:${modelKey}:other`,
-        { kind: 'session', name: 'Other', href: '/console/runtime-sessions' },
-        otherSessions
-      );
-    }
-
-    groups.sort((left, right) =>
-      compareByUsageMetric(
-        {
-          estimated_cost: left.totalCost,
-          request_count: left.totalRequests,
-        },
-        {
-          estimated_cost: right.totalCost,
-          request_count: right.totalRequests,
-        },
-        this.topModelsSortMetric
-      )
-    );
-    return groups;
-  }
-
-  private renderTopModelSubjectGroup(group: TopModelSubjectGroup) {
-    const trailingMetric = `${this.formatCurrency(group.totalCost)} (${this.formatNumber(group.totalRequests)} req)`;
-    const nestedPreviewKey = `${group.groupId}:sessions`;
-    const nested = this.renderCappedNestedSessions(
-      group.sessions,
-      nestedPreviewKey
-    );
-
-    if (group.kind === 'agent') {
-      const agent = this.getManagedAgentForUsageSession(group.sessions[0]);
-      if (agent) {
-        return this.renderAgentExpandableGroup(
-          group.groupId,
-          agent,
-          group.sessions,
-          trailingMetric,
-          { nestedPreviewKey }
-        );
-      }
-    }
-
-    return this.renderCollapsibleGroup(
-      group.groupId,
-      group.subject.name,
-      group.kind === 'other' ? null : group.subject.href,
-      trailingMetric,
-      nested,
-      group.kind === 'flow' ? this.renderFlowIcon() : null
-    );
-  }
-
-  private renderTopModelsCard() {
-    const rawModels = this.gatewaySummary?.usage_by_model || [];
-    if (rawModels.length === 0) {
+  /**
+   * One amber line across the top of the page, above everything else, or
+   * nothing at all. The side card it replaces competed with Usage for the
+   * same column and was read after it; a strip is read first because it is
+   * first, and it costs one line instead of a card.
+   */
+  private renderAttentionStrip() {
+    const all = this.attentionItems;
+    // Low-tone items (a model priced at $0) are a question, not a problem.
+    // They never take a slot from something that is actually wrong, so the
+    // strip shows them only when nothing louder is open.
+    const loud = all.filter((item) => item.severity !== 'low');
+    const lowOnly = loud.length === 0;
+    const items = lowOnly ? all : loud;
+    if (items.length === 0) {
       return nothing;
     }
-
-    const aggregatedModels = new Map<string, any>();
-    rawModels.forEach((m) => {
-      const key = `${m.model_alias}-${m.provider_name}`;
-      if (!aggregatedModels.has(key)) {
-        aggregatedModels.set(key, { ...m });
-      } else {
-        const existing = aggregatedModels.get(key)!;
-        existing.request_count += m.request_count;
-        existing.estimated_cost += m.estimated_cost;
-        existing.prompt_tokens =
-          (existing.prompt_tokens || 0) + (m.prompt_tokens || 0);
-        existing.completion_tokens =
-          (existing.completion_tokens || 0) + (m.completion_tokens || 0);
-        if (m.ai_model_id && !existing.ai_model_id) {
-          existing.ai_model_id = m.ai_model_id;
-        }
-      }
-    });
-
-    const models = Array.from(aggregatedModels.values());
-    models.sort((a, b) => compareByUsageMetric(a, b, this.topModelsSortMetric));
-
-    const allSessions = this.gatewaySummary?.usage_by_session || [];
+    const visible = items.slice(0, 3);
 
     return html`
-      <sl-card class="content-card">
-        <div slot="header" class="card-header-with-action">
-          <div style="display: flex; align-items: center; gap: 4px;">
-            Top Models
-            <select
-              style="background: transparent; border: none; font-size: inherit; font-weight: inherit; font-family: inherit; color: inherit; cursor: pointer; outline: none; padding: 0;"
-              .value=${this.topModelsSortMetric}
-              @change=${(e: Event) => {
-                this.topModelsSortMetric = (e.target as HTMLSelectElement)
-                  .value as any;
-              }}
-            >
-              <option value="spend">by Spend</option>
-              <option value="usage">by Usage</option>
-            </select>
-          </div>
-          <div
-            style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-          >
-            <a href="/console/ai-models" class="header-action-link"
-              >Model fleet</a
-            >
-          </div>
-        </div>
-        <div class="list">
+      <div class="attention-strip ${lowOnly ? 'low-only' : ''}">
+        <sl-icon
+          class="attention-strip-icon"
+          name=${lowOnly ? 'info-circle' : 'exclamation-triangle'}
+          aria-hidden="true"
+        ></sl-icon>
+        <span class="attention-strip-count"
+          >${this.formatNumber(items.length)}
+          ${lowOnly ? 'worth a look' : 'need attention'}</span
+        >
+        <div class="attention-strip-items">
           ${repeat(
-            models.slice(0, 6),
-            (item) =>
-              `${item.ai_model_id}-${item.model_alias}-${item.provider_name}`,
-            (item) => {
-              const modelKey = `${item.ai_model_id}-${item.model_alias}-${item.provider_name}`;
-              const modelSessions = allSessions.filter(
-                (s) =>
-                  (s.ai_model_id &&
-                    item.ai_model_id &&
-                    s.ai_model_id === item.ai_model_id) ||
-                  (s.model_alias === item.model_alias &&
-                    (!s.provider_name ||
-                      !item.provider_name ||
-                      s.provider_name === item.provider_name))
-              );
-              const groups = this.collectTopModelSubjectGroups(
-                modelKey,
-                modelSessions
-              );
-              const groupsPreviewKey = `top-model-groups:${modelKey}`;
-              const { visible, overflow } = previewWindow(
-                groups,
-                TOP_MODEL_GROUP_PREVIEW_LIMIT,
-                this.isPreviewExpanded(groupsPreviewKey)
-              );
-
-              return html`
-                <div
-                  class="row"
-                  style="flex-direction: column; align-items: stretch; gap: var(--sl-spacing-2x-small);"
-                >
-                  <div
-                    style="display: flex; justify-content: space-between; align-items: center;"
-                  >
-                    <div
-                      style="display: flex; align-items: center; gap: var(--sl-spacing-2x-small); overflow: hidden;"
-                    >
-                      ${
-                        item.ai_model_id
-                          ? html`
-                              <a
-                                class="row-link row-primary"
-                                href=${`/console/ai-models/${item.ai_model_id}`}
-                                style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-                              >
-                                ${item.model_alias || 'Unknown model'}
-                              </a>
-                            `
-                          : html`
-                              <span
-                                class="row-primary"
-                                style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-                              >
-                                ${item.model_alias || 'Unknown model'}
-                              </span>
-                            `
-                      }
-                    </div>
-                    <span class="row-value">
-                      ${
-                        this.topModelsSortMetric === 'usage'
-                          ? `${this.formatNumber(item.request_count)} requests`
-                          : this.formatCurrency(item.estimated_cost)
-                      }
-                    </span>
-                  </div>
-                  <div
-                    style="display: flex; justify-content: space-between; align-items: center; font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-500);"
-                  >
-                    <span>${item.provider_name || 'provider unknown'}</span>
-                    <span
-                      >${
-                        this.topModelsSortMetric === 'spend'
-                          ? `${this.formatNumber(item.request_count)} requests`
-                          : this.formatCurrency(item.estimated_cost)
-                      }</span
-                    >
-                  </div>
-
-                  ${
-                    groups.length > 0
-                      ? html`
-                          <div class="overview-nested-groups">
-                            ${repeat(
-                              visible,
-                              (group) => group.groupId,
-                              (group) => this.renderTopModelSubjectGroup(group)
-                            )}
-                            ${this.renderSeeMoreControl(
-                              groupsPreviewKey,
-                              overflow
-                            )}
-                          </div>
-                        `
-                      : ''
-                  }
-                </div>
-              `;
-            }
-          )}
-        </div>
-      </sl-card>
-    `;
-  }
-
-  private renderSessionsAttentionCard() {
-    if (
-      this.fetchingGatewaySummary &&
-      (this.gatewaySummary?.usage_by_session || []).length === 0
-    ) {
-      return html`
-        <sl-card class="content-card">
-          <div slot="header" class="card-header-with-action">
-            Top sessions by usage
-          </div>
-          <div
-            class="loading-container"
-            style="padding: var(--sl-spacing-2x-large); display: flex; justify-content: center; align-items: center;"
-          >
-            <sl-spinner style="font-size: 1.5rem;"></sl-spinner>
-          </div>
-        </sl-card>
-      `;
-    }
-    const items = this.gatewaySummary?.usage_by_session || [];
-    if (!this.fetchingGatewaySummary && items.length === 0) {
-      return nothing;
-    }
-
-    return html`
-      <sl-card class="content-card">
-        <div slot="header" class="card-header-with-action">
-          Top sessions by usage
-          <div
-            style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-          >
-            <a href="/console/runtime-sessions" class="header-action-link"
-              >Model fleet</a
-            >
-          </div>
-        </div>
-        <div class="list">
-          ${repeat(
-            items.slice(0, 6),
-            (item) =>
-              item.runtime_session_id ||
-              `${item.session_source_type}-${item.session_source_id}-${item.model_alias}`,
+            visible,
+            (item) => item.id,
             (item) => html`
-              <div class="row">
-                <div class="row-main">
-                  <a
-                    class="row-link row-primary"
-                    href=${
-                      item.runtime_session_id
-                        ? `/console/runtime-sessions?sessionId=${item.runtime_session_id}`
-                        : '/console/runtime-sessions'
-                    }
-                  >
-                    ${this.getSessionDisplayTitle(item)}
-                  </a>
-                  <span class="row-value">
-                    ${this.formatCurrency(item.estimated_cost)}
-                  </span>
-                </div>
-                <div class="row-meta">
-                  <span>
-                    ${item.model_alias || item.provider_name || 'model unknown'}
-                  </span>
-                  <span>${this.formatDateTime(item.last_request_at)}</span>
-                </div>
-              </div>
-            `
-          )}
-        </div>
-      </sl-card>
-    `;
-  }
-
-  private sessionBelongsToAgent(
-    session: RuntimeSessionSummary,
-    agent: ManagedAgentSummary
-  ): boolean {
-    const base = agent.session_source_id;
-    const candidates = [
-      session.runtime_principal_id,
-      session.session_source_id,
-    ].filter((value): value is string => Boolean(value));
-    return candidates.some(
-      (id) =>
-        id === base ||
-        id === agent.id ||
-        (Boolean(base) &&
-          (id.startsWith(`${base}:`) || id.startsWith(`${base}-`)))
-    );
-  }
-
-  private renderActiveExecutionsCard() {
-    if (this.managedAgents.length === 0 && this.runtimeSessions.length === 0) {
-      return nothing;
-    }
-
-    const agentsWithSessions: Array<{
-      agent: (typeof this.activeAgents)[0];
-      sessions: typeof this.activeSessions;
-    }> = [];
-    const usedSessionIds = new Set<string>();
-
-    for (const agent of this.activeAgents) {
-      const sessions = this.activeSessions.filter((s) =>
-        this.sessionBelongsToAgent(s, agent)
-      );
-      if (sessions.length > 0) {
-        agentsWithSessions.push({ agent, sessions });
-      }
-      sessions.forEach((s) => usedSessionIds.add(s.id));
-    }
-
-    // Sort agents by last activity
-    agentsWithSessions.sort((a, b) => {
-      const aTime = a.agent.last_seen_at
-        ? new Date(a.agent.last_seen_at).getTime()
-        : 0;
-      const bTime = b.agent.last_seen_at
-        ? new Date(b.agent.last_seen_at).getTime()
-        : 0;
-      return bTime - aTime;
-    });
-
-    const unmatchedSessions = this.activeSessions.filter(
-      (s) => !usedSessionIds.has(s.id)
-    );
-
-    // Flow-execution sessions group under their flow; only sessions with no
-    // resolvable agent AND no flow remain as true "Other".
-    const flowGroupMap = new Map<
-      string,
-      {
-        name: string;
-        flowId: string | null;
-        sessions: typeof unmatchedSessions;
-      }
-    >();
-    const orphanSessions: typeof unmatchedSessions = [];
-    for (const s of unmatchedSessions) {
-      const isFlow = Boolean(
-        s.flow_id ||
-        s.flow_execution_id ||
-        s.runtime_principal_type === 'flow_execution' ||
-        s.session_source_type === 'flow_execution'
-      );
-      if (isFlow) {
-        const key = s.flow_id || s.flow_name || 'flow';
-        if (!flowGroupMap.has(key)) {
-          flowGroupMap.set(key, {
-            name: s.flow_name || s.runtime_principal_name || 'Flow',
-            flowId: s.flow_id || null,
-            sessions: [],
-          });
-        }
-        flowGroupMap.get(key)!.sessions.push(s);
-      } else {
-        orphanSessions.push(s);
-      }
-    }
-    const flowGroups = Array.from(flowGroupMap.values()).sort(
-      (a, b) => b.sessions.length - a.sessions.length
-    );
-    orphanSessions.sort((a, b) => {
-      const aTime =
-        a.last_activity_at || a.started_at
-          ? new Date(a.last_activity_at || a.started_at).getTime()
-          : 0;
-      const bTime =
-        b.last_activity_at || b.started_at
-          ? new Date(b.last_activity_at || b.started_at).getTime()
-          : 0;
-      return bTime - aTime;
-    });
-
-    const hasAnyExecutions =
-      agentsWithSessions.length > 0 ||
-      flowGroups.length > 0 ||
-      orphanSessions.length > 0;
-
-    return html`
-      <sl-card class="content-card">
-        <div slot="header" class="card-header-with-action">
-          <div
-            class="card-title"
-            style="display: flex; align-items: center; gap: var(--sl-spacing-2x-small);"
-          >
-            Active agents
-            ${
-              this.fetchingActiveAgents
-                ? html`<sl-spinner
-                    style="font-size: 1rem; width: 1rem; height: 1rem;"
-                  ></sl-spinner>`
-                : ''
-            }
-          </div>
-          <select
-            style="background: transparent; border: none; font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600); cursor: pointer; outline: none; margin-left: auto; margin-right: var(--sl-spacing-small);"
-            .value=${this.activeAgentsTimeRange}
-            @change=${(e: Event) => {
-              this.activeAgentsTimeRange = (e.target as HTMLSelectElement)
-                .value as any;
-              this.fetchActiveAgentsData();
-            }}
-          >
-            <option value="5m">5m</option>
-            <option value="1h">1h</option>
-            <option value="1d">1d</option>
-            <option value="1w">1w</option>
-            <option value="1mo">1mo</option>
-          </select>
-          <div
-            style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-          >
-            <a href="/console/runtime-sessions" class="header-action-link"
-              >View all</a
-            >
-          </div>
-        </div>
-        ${
-          this.fetchingActiveAgents && !hasAnyExecutions
-            ? html`<div
-                class="loading-container"
-                style="padding: var(--sl-spacing-small); display: flex; justify-content: center; align-items: center;"
+              <a
+                class="attention-chip-link"
+                href=${attentionItemAnchor(item.id)}
               >
-                <sl-spinner style="font-size: 1.5rem;"></sl-spinner>
-              </div>`
-            : html`
-                <div class="list">
-                  ${
-                    !hasAnyExecutions
-                      ? this.renderEmptyState('No active agents right now.')
-                      : ''
-                  }
-                  ${repeat(
-                    agentsWithSessions.slice(0, 8),
-                    (item) => item.agent.id,
-                    (item) => html`
-                      <div class="row">
-                        ${this.renderActiveAgentGroup(item.agent, item.sessions)}
-                      </div>
-                    `
-                  )}
-                  ${repeat(
-                    flowGroups.slice(0, 8),
-                    (group) => group.flowId || group.name,
-                    (group) => html`
-                      <div class="row">
-                        ${this.renderCollapsibleGroup(
-                          `active-agents:flow:${group.flowId || group.name}`,
-                          group.name,
-                          group.flowId
-                            ? `/console/flows/${group.flowId}`
-                            : '/console/flows',
-                          `${this.formatCurrency(
-                            group.sessions.reduce(
-                              (total, session) =>
-                                total + (session.estimated_cost || 0),
-                              0
-                            )
-                          )} · ${group.sessions.length} exec`,
-                          html`
-                            <div class="nested-session-list">
-                              ${group.sessions
-                                .slice(0, 8)
-                                .map((session) =>
-                                  this.renderNestedSessionRow(
-                                    session,
-                                    `${this.formatNumber(session.total_requests)} req`
-                                  )
-                                )}
-                            </div>
-                          `,
-                          this.renderFlowIcon()
-                        )}
-                      </div>
-                    `
-                  )}
-                  ${
-                    orphanSessions.length > 0
-                      ? html`
-                          <div class="row">
-                            ${this.renderCollapsibleGroup(
-                              'active-agents:other',
-                              'Other',
-                              null,
-                              `${this.formatCurrency(
-                                orphanSessions.reduce(
-                                  (total, session) =>
-                                    total + (session.estimated_cost || 0),
-                                  0
-                                )
-                              )} · ${orphanSessions.length} sessions`,
-                              html`
-                                <div class="nested-session-list">
-                                  ${orphanSessions
-                                    .slice(0, 8)
-                                    .map((session) =>
-                                      this.renderNestedSessionRow(
-                                        session,
-                                        `${this.formatNumber(session.total_requests)} req`
-                                      )
-                                    )}
-                                </div>
-                              `
-                            )}
-                          </div>
-                        `
-                      : ''
-                  }
-                </div>
-              `
-        }
-      </sl-card>
-    `;
-  }
-
-  private renderPendingApprovalsCard() {
-    if (this.pendingApprovals.length === 0) {
-      return nothing;
-    }
-
-    return html`
-      <sl-card class="content-card">
-        <div slot="header" class="card-header-with-action">
-          Pending approvals
-          <sl-badge variant="warning">${this.pendingApprovals.length}</sl-badge>
-        </div>
-        <div class="list">
-          ${repeat(
-            this.pendingApprovals,
-            (approval) => approval.id,
-            (approval) => html`
-              <div class="row">
-                <div class="row-main">
-                  <span class="row-primary">${approval.tool_name}</span>
-                  <sl-button
-                    size="small"
-                    href=${`/console/approval/${approval.id}`}
+                <sl-badge
+                  class="chip"
+                  variant=${lowOnly ? 'neutral' : 'warning'}
+                  pill
+                >
+                  <sl-icon
+                    name=${ATTENTION_KIND_META[item.kind].icon}
+                    aria-hidden="true"
+                  ></sl-icon>
+                  <span class="attention-chip-text"
+                    >${item.title} · ${item.detail}</span
                   >
-                    Review
-                  </sl-button>
-                </div>
-                <div class="row-meta">
-                  <span>${approval.status}</span>
-                  <span>${this.formatRelativeTime(approval.requested_at)}</span>
-                </div>
-              </div>
+                </sl-badge>
+              </a>
             `
           )}
         </div>
-      </sl-card>
-    `;
-  }
-
-  private renderMetricItem(metric: DashboardMetric) {
-    const iconColor =
-      metric.tone === 'danger'
-        ? 'var(--sl-color-danger-600)'
-        : metric.tone === 'warning'
-          ? 'var(--sl-color-warning-600)'
-          : metric.tone === 'success'
-            ? 'var(--sl-color-success-600)'
-            : metric.tone === 'primary'
-              ? 'var(--sl-color-primary-600)'
-              : 'var(--sl-color-neutral-400)';
-    const content = html`
-      ${
-        metric.icon.includes('/')
-          ? html`<sl-icon
-              src=${metric.icon}
-              style="color: ${iconColor};"
-            ></sl-icon>`
-          : html`<sl-icon
-              name=${metric.icon}
-              style="color: ${iconColor};"
-            ></sl-icon>`
-      }
-      <div class="tool-count-value">${metric.value}</div>
-      <div class="tool-count-label ${metric.href ? 'hover-underline' : ''}">
-        ${metric.label}
+        <a class="attention-strip-all" href="/console/attention"
+          >${
+            items.length > visible.length
+              ? html`+${this.formatNumber(items.length - visible.length)} more · `
+              : nothing
+          }View
+          all <span aria-hidden="true">→</span></a
+        >
       </div>
     `;
+  }
 
-    if (metric.href) {
-      return html`
-        <a
-          class="tool-count"
-          href=${metric.href}
-          style="color: inherit; text-decoration: none;"
-          >${content}</a
-        >
-      `;
+  private get modelGatewayUrl(): string {
+    return `${window.location.origin}${this.gatewayFormat}`;
+  }
+
+  private get toolFirewallUrl(): string {
+    return `${window.location.origin}/mcp`;
+  }
+
+  private copyEndpoint(url: string, message: string): void {
+    void navigator.clipboard.writeText(url);
+    this.dispatchEvent(
+      new CustomEvent('show-toast', {
+        bubbles: true,
+        composed: true,
+        detail: { message },
+      })
+    );
+  }
+
+  /**
+   * The host truncates and the path stays: a middle ellipsis without measuring
+   * anything, so a long staging hostname never hides `/openai/v1`.
+   */
+  /**
+   * The endpoint as a reader needs it: host first, path always.
+   *
+   * The scheme is dropped from the display (the copy button and the `title`
+   * carry the exact URL) because on a card this narrow it costs seven
+   * characters of hostname, and the path is what tells the two planes apart.
+   * The host truncates from its end, the path never does: a middle ellipsis
+   * in two spans, no width measuring.
+   */
+  private renderEndpoint(url: string) {
+    const withoutScheme = url.replace(/^https?:\/\//, '');
+    const separator = withoutScheme.indexOf('/');
+    const head =
+      separator === -1 ? withoutScheme : withoutScheme.slice(0, separator);
+    const tail = separator === -1 ? '' : withoutScheme.slice(separator);
+    return html`
+      <span class="server-endpoint" title=${url}>
+        <span class="endpoint-head">${head}</span
+        ><span class="endpoint-tail">${tail}</span>
+      </span>
+    `;
+  }
+
+  /**
+   * A dot, a plane, its endpoint and what it did. Green means the plane served
+   * something in this window; it is never red, because a failure is a number
+   * on the row and not a broken gateway.
+   */
+  private renderPlaneRow(options: {
+    name: string;
+    served: boolean;
+    url: string;
+    copyMessage: string;
+    docsHref: string;
+    docsLabel: string;
+    stats: string[];
+    formatSelect?: boolean;
+  }) {
+    return html`
+      <div class="plane-row">
+        <span class="plane-name-cell">
+          <span
+            class="plane-dot ${options.served ? 'served' : ''}"
+            aria-hidden="true"
+          ></span>
+          <span class="plane-name">${options.name}</span>
+        </span>
+        <span class="plane-endpoint">
+          ${
+            options.formatSelect
+              ? html`<select
+                  class="format-select"
+                  aria-label="Gateway API format"
+                  .value=${this.gatewayFormat}
+                  @change=${(event: Event) =>
+                    (this.gatewayFormat = (event.target as HTMLSelectElement)
+                      .value as GatewayFormat)}
+                >
+                  <option value="/openai/v1">OpenAI</option>
+                  <option value="/anthropic/v1">Anthropic</option>
+                  <option value="/google/v1">Gemini</option>
+                </select>`
+              : nothing
+          }
+          ${this.renderEndpoint(options.url)}
+          <sl-tooltip content="Copy URL">
+            <sl-icon-button
+              name="clipboard"
+              label="Copy URL"
+              @click=${() =>
+                this.copyEndpoint(options.url, options.copyMessage)}
+            ></sl-icon-button>
+          </sl-tooltip>
+          <sl-tooltip content=${options.docsLabel}>
+            <a class="plane-docs" href=${options.docsHref} target="_blank">
+              <sl-icon name="info-circle"></sl-icon>
+            </a>
+          </sl-tooltip>
+        </span>
+        <span class="plane-stats">
+          ${
+            options.served
+              ? options.stats.join(' · ')
+              : html`<span class="plane-quiet">No traffic yet</span>`
+          }
+        </span>
+      </div>
+    `;
+  }
+
+  /** Nothing is connected yet: one line and the command that changes that. */
+  private renderConnectFirstAgent() {
+    const command = 'preloop agents onboard';
+    return html`
+      <div class="connect-first">
+        <span>Connect your first agent</span>
+        <span class="connect-command">
+          <code>${command}</code>
+          <sl-tooltip content="Copy command">
+            <sl-icon-button
+              name="clipboard"
+              label="Copy command"
+              @click=${() => this.copyEndpoint(command, 'Command copied')}
+            ></sl-icon-button>
+          </sl-tooltip>
+        </span>
+        <a class="header-action-link" href="/console/agents">Onboard</a>
+      </div>
+    `;
+  }
+
+  /**
+   * Counts on the gateway rows follow the console rule: whole under 1000,
+   * compact above it (`13.9K`). The row has to hold two numbers and a path
+   * on a card that is a third of the window wide.
+   */
+  private formatCompactNumber(value: number | null | undefined): string {
+    const amount = Number(value || 0);
+    if (amount < 1000) {
+      return String(Math.round(amount));
+    }
+    return new Intl.NumberFormat(undefined, {
+      notation: 'compact',
+      maximumFractionDigits: 1,
+    }).format(amount);
+  }
+
+  private get modelGatewayStats(): string[] {
+    const requests = this.gatewaySummary?.total_requests || 0;
+    const failed = this.gatewaySummary?.failed_requests || 0;
+    const rateLimited =
+      this.rateLimitReport?.totals?.rate_limited_requests || 0;
+    // A zero we do not measure is worse than a figure we leave out.
+    const stats = [
+      `${this.formatCompactNumber(requests)} request${requests === 1 ? '' : 's'}`,
+    ];
+    if (failed > 0) stats.push(`${this.formatCompactNumber(failed)} failed`);
+    if (rateLimited > 0) {
+      stats.push(`${this.formatCompactNumber(rateLimited)} rate limited`);
+    }
+    return stats;
+  }
+
+  private get toolFirewallStats(): string[] {
+    const calls = this.toolCallsCount || 0;
+    const failed = this.failedToolCallsCount || 0;
+    const stats = [
+      `${this.formatCompactNumber(calls)} tool call${calls === 1 ? '' : 's'}`,
+    ];
+    if (failed > 0) stats.push(`${this.formatCompactNumber(failed)} failed`);
+    return stats;
+  }
+
+  /**
+   * What the gateway is doing, one row per plane. The five inventory counts
+   * that used to live here are the strip under the page title now: this card
+   * is about traffic, not about how many things exist.
+   */
+  private renderGatewayCard() {
+    const hasAgents = this.managedAgents.length > 0;
+    return html`
+      <sl-card class="content-card gateway-card">
+        <div slot="header" class="card-header-with-action">
+          <div class="chart-header">Gateway</div>
+          <div class="gateway-header-meta">
+            <span>${this.gatewayRangeLabel}</span>
+            ${
+              this.apiKeysCount !== null
+                ? html`<span
+                    >${this.formatNumber(this.apiKeysCount)} active API
+                    key${this.apiKeysCount === 1 ? '' : 's'}</span
+                  >`
+                : nothing
+            }
+            <a href="/console/settings/api-keys" class="header-action-link"
+              >Manage keys</a
+            >
+          </div>
+        </div>
+
+        ${
+          hasAgents
+            ? html`
+                ${this.renderPlaneRow({
+                  name: 'Model gateway',
+                  served: (this.gatewaySummary?.total_requests || 0) > 0,
+                  url: this.modelGatewayUrl,
+                  copyMessage: 'Model gateway URL copied',
+                  docsHref: 'https://docs.preloop.ai/guide/ai-proxy',
+                  docsLabel: 'Model gateway docs',
+                  stats: this.modelGatewayStats,
+                  formatSelect: true,
+                })}
+                ${this.renderPlaneRow({
+                  name: 'Tool firewall',
+                  served: (this.toolCallsCount || 0) > 0,
+                  url: this.toolFirewallUrl,
+                  copyMessage: 'Tool firewall URL copied',
+                  docsHref: 'https://docs.preloop.ai/guide/mcp-server',
+                  docsLabel: 'Tool firewall docs',
+                  stats: this.toolFirewallStats,
+                })}
+              `
+            : this.renderConnectFirstAgent()
+        }
+      </sl-card>
+    `;
+  }
+
+  /**
+   * The Inventory tabs read the page's existing fetches; none of them adds a
+   * request. Agents come from the agents list, their numbers from the gateway
+   * summary's per-session breakdown (the agents list totals are lifetime, the
+   * Inventory shows the page range). Flows come from the flows list joined to
+   * the executions the page already fetches. Models come from the AI models
+   * list joined to `usage_by_model`. Tools come from the tool catalogue joined
+   * to `usage_by_tool`.
+   */
+  private get inventoryAgentRows(): InventoryAgentRow[] {
+    const totals = new Map<
+      string,
+      { requests: number; tokens: number; cost: number }
+    >();
+    for (const session of this.gatewaySummary?.usage_by_session || []) {
+      const agent = this.getManagedAgentForUsageSession(session);
+      if (!agent) continue;
+      const running = totals.get(agent.id) || {
+        requests: 0,
+        tokens: 0,
+        cost: 0,
+      };
+      running.requests += session.request_count || 0;
+      running.tokens += session.token_usage?.total_tokens || 0;
+      running.cost += session.estimated_cost || 0;
+      totals.set(agent.id, running);
+    }
+    return this.managedAgents.map((agent) => {
+      const usage = totals.get(agent.id);
+      return {
+        id: agent.id,
+        name: agent.display_name,
+        kind: agent.agent_kind || agent.session_source_type || null,
+        status: getAgentStatusChip(agent),
+        modelAlias: agent.latest_model_alias || agent.configured_model_alias,
+        requests: usage?.requests ?? 0,
+        tokens: usage?.tokens ?? 0,
+        cost: usage?.cost ?? 0,
+        lastSeenAt: agent.last_seen_at || agent.last_activity_at || null,
+      };
+    });
+  }
+
+  /**
+   * Runs the page range contains, newest first. `$ est.` comes from the
+   * range-scoped gateway summary, so runs, failures and the last run are
+   * scoped the same way: one row of the table must not hold two time windows.
+   */
+  private get inRangeFlowExecutions(): FlowExecution[] {
+    const startMs = this.getGatewayStartMs();
+    return this.flowExecutions.filter((execution) => {
+      if (!execution.start_time) return false;
+      return parseUTCDate(execution.start_time).getTime() >= startMs;
+    });
+  }
+
+  /**
+   * True when the executions page came back full and its oldest row is still
+   * inside the range: the account ran more than one page inside the window, so
+   * the counts below are "from the most recent 100 runs", not "in the range".
+   */
+  private get flowRunsCapped(): boolean {
+    if (this.flowExecutions.length < FLOW_EXECUTIONS_PAGE_SIZE) return false;
+    const oldest = this.flowExecutions[this.flowExecutions.length - 1];
+    if (!oldest?.start_time) return false;
+    return (
+      parseUTCDate(oldest.start_time).getTime() >= this.getGatewayStartMs()
+    );
+  }
+
+  private get inventoryFlowRows(): InventoryFlowRow[] {
+    const costs = new Map<string, number>();
+    for (const flow of this.gatewaySummary?.usage_by_flow || []) {
+      if (flow.flow_id) {
+        costs.set(flow.flow_id, flow.estimated_cost || 0);
+      }
     }
 
-    return html`<div class="tool-count">${content}</div>`;
-  }
+    const runs = new Map<
+      string,
+      { runs: number; failed: number; last: FlowExecution | null }
+    >();
+    for (const execution of this.inRangeFlowExecutions) {
+      if (!execution.flow_id) continue;
+      const running = runs.get(execution.flow_id) || {
+        runs: 0,
+        failed: 0,
+        last: null,
+      };
+      running.runs += 1;
+      if (execution.status === 'FAILED') {
+        running.failed += 1;
+      }
+      // The list arrives newest first, so the first row wins.
+      running.last = running.last || execution;
+      runs.set(execution.flow_id, running);
+    }
 
-  private get gatewayMetrics(): DashboardMetric[] {
-    return [
-      {
-        label: 'agents',
-        value: this.formatNumber(this.totalAgentsCount),
-        icon: 'robot',
-        href: '/console/agents',
-        tone: 'primary',
-      },
-      {
-        label: 'flows',
-        value: this.formatNumber(this.totalFlowsCount),
-        icon: '/images/flow.svg',
-        href: '/console/flows',
-        tone: 'primary',
-      },
-      {
-        label: 'models',
-        value: this.formatNumber(this.aiModelsCount),
-        icon: 'cpu',
-        href: '/console/ai-models',
-        tone: 'primary',
-      },
-      {
-        label: 'tools',
-        value: this.formatNumber(this.enabledToolsCount),
-        icon: 'tools',
-        href: '/console/tools',
-        tone: 'primary',
-      },
-      {
-        label: 'approved requests',
-        value: this.formatNumber(this.approvalStats.approved),
-        icon: 'check-circle',
-        href: '/console/approvals?status=approved',
-        tone: 'success',
-      },
-      {
-        label: 'inactive agents',
-        value: this.formatNumber(this.inactiveAgentsCount),
-        icon: 'pause-circle',
-        href: '/console/agents',
-        tone: this.inactiveAgentsCount > 0 ? 'warning' : 'neutral',
-      },
-      {
-        label: 'flow executions',
-        value: this.formatNumber(this.flowExecutionsCount),
-        icon: 'play-circle',
-        href: '/console/flows/executions',
-        tone: 'primary',
-      },
-      {
-        label: 'model requests',
-        value: this.formatNumber(this.gatewaySummary?.total_requests || 0),
-        icon: 'activity',
-        href: '/console/audit?event_type=model_gateway_request',
-        tone: 'primary',
-      },
-      {
-        label: 'tool calls',
-        value: this.formatNumber(this.toolCallsCount),
-        icon: 'terminal',
-        href: '/console/audit?event_type=tool_call',
-        tone: 'primary',
-      },
-      {
-        label: 'declined requests',
-        value: this.formatNumber(this.approvalStats.declined),
-        icon: 'x-circle',
-        href: '/console/approvals?status=declined',
-        tone: this.approvalStats.declined > 0 ? 'danger' : 'neutral',
-      },
-      {
-        label: 'total runtime sessions',
-        value: this.formatNumber(this.totalRuntimeSessionsCount),
-        icon: 'collection',
-        href: '/console/runtime-sessions',
-        tone: 'primary',
-      },
-      {
-        label: 'failed executions',
-        value: this.formatNumber(this.failedExecutionsCount),
-        icon: 'exclamation-triangle',
-        href: '/console/flows/executions',
-        tone: this.failedExecutionsCount > 0 ? 'danger' : 'neutral',
-      },
-      {
-        label: 'failed requests',
-        value: this.formatNumber(this.gatewaySummary?.failed_requests || 0),
-        icon: 'exclamation-triangle',
-        href: '/console/audit?event_type=model_gateway_request&outcome=failed',
-        tone: this.gatewaySummary?.failed_requests ? 'danger' : 'neutral',
-      },
-      {
-        label: 'failed tool calls',
-        value: this.formatNumber(this.failedToolCallsCount),
-        icon: 'exclamation-octagon',
-        href: '/console/audit?event_type=tool_call&outcome=failed',
-        tone: this.failedToolCallsCount > 0 ? 'danger' : 'neutral',
-      },
-      {
-        label: 'timed out approval requests',
-        value: this.formatNumber(this.approvalStats.expired),
-        icon: 'clock',
-        href: '/console/approvals?status=expired',
-        tone: this.approvalStats.expired > 0 ? 'warning' : 'neutral',
-      },
-      {
-        label: 'total tokens',
-        value: this.formatNumber(
-          this.gatewaySummary?.token_usage.total_tokens || 0
-        ),
-        icon: 'braces',
-        href: '/console/api-usage',
-        tone: 'primary',
-      },
-      {
-        label: 'flow execution success rate',
-        value: this.flowExecutionSuccessRate,
-        icon: 'check-circle',
-        href: '/console/flows/executions',
-        tone: 'success',
-      },
-      {
-        label: 'model request success rate',
-        value: this.modelRequestSuccessRate,
-        icon: 'check-circle',
-        href: '/console/audit?event_type=model_gateway_request',
-        tone: 'success',
-      },
-      {
-        label: 'tool call success rate',
-        value: this.toolCallSuccessRate,
-        icon: 'check-circle',
-        href: '/console/audit?event_type=tool_call',
-        tone: 'success',
-      },
-      {
-        label: 'approval rate',
-        value: this.approvalRate,
-        icon: 'shield-check',
-        href: '/console/approvals',
-        tone: 'success',
-      },
-    ];
-  }
+    // Names for flows the list no longer holds come from every execution the
+    // page fetched, in range or not: a deleted flow's spend is in the summary
+    // and the row that carries it needs a name.
+    const names = new Map<string, string>();
+    for (const execution of this.flowExecutions) {
+      if (execution.flow_id && execution.flow_name) {
+        names.set(execution.flow_id, execution.flow_name);
+      }
+    }
 
-  private renderPreloopGatewayCard() {
-    const visibleMetrics = this.gatewayMetricsExpanded
-      ? this.gatewayMetrics
-      : this.gatewayMetrics.slice(0, 5);
+    const known = new Set(this.flows.map((flow) => flow.id));
+    const listed = this.flows.map((flow) => ({ id: flow.id, name: flow.name }));
+    // A run whose flow was deleted still has spend in the window; show it
+    // rather than losing the money. Only in-range spend or in-range runs earn
+    // the row, so a flow that was deleted before the window opened is gone.
+    for (const [flowId, name] of names) {
+      if (!known.has(flowId) && (costs.has(flowId) || runs.has(flowId))) {
+        listed.push({ id: flowId, name });
+      }
+    }
 
-    return html`
-      <!-- Preloop Gateway Status -->
-      <sl-card class="content-card">
-        <div slot="header" class="card-header-with-action">
-          <div class="chart-header">
-            <sl-icon
-              src="/assets/preloop-badge.svg"
-              slot="prefix"
-              class="mcp-icon"
-              alt="Gateway"
-            ></sl-icon>
-            Preloop Gateway
-            <sl-tooltip
-              content="Unified proxy for AI models and MCP tools with budget and access controls"
-            >
-              <sl-icon name="question-circle"></sl-icon>
-            </sl-tooltip>
-          </div>
-          <div
-            style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-          >
-            <a href="/console/settings/api-keys" class="header-action-link"
-              >Manage Keys</a
-            >
-          </div>
-        </div>
-
-        <div class="metrics-grid">
-          ${
-            this.fetchingGatewaySummary && !this.gatewaySummary
-              ? html`
-                  <div
-                    style="grid-column: 1 / -1; display: flex; justify-content: center; align-items: center; padding: var(--sl-spacing-2x-large);"
-                  >
-                    <sl-spinner style="font-size: 2rem;"></sl-spinner>
-                  </div>
-                `
-              : html`
-                  <div style="display: contents;">
-                    ${visibleMetrics.map((metric) =>
-                      this.renderMetricItem(metric)
-                    )}
-                  </div>
-                `
-          }
-        </div>
-        <div
-          style="display: flex; justify-content: center; margin-top: calc(-1 * var(--sl-spacing-medium)); margin-bottom: var(--sl-spacing-medium);"
-        >
-          <sl-button
-            size="small"
-            variant="text"
-            @click=${this.toggleGatewayMetrics}
-          >
-            ${
-              this.gatewayMetricsExpanded
-                ? 'Show less metrics'
-                : 'Show more metrics'
+    return listed.map((flow) => {
+      const counted = runs.get(flow.id);
+      return {
+        id: flow.id,
+        name: flow.name,
+        lastRun: counted?.last
+          ? {
+              id: counted.last.id,
+              status: counted.last.status,
+              start_time: counted.last.start_time,
+              end_time: counted.last.end_time,
+              trigger_subject: counted.last.trigger_subject,
+              trigger_subject_url: counted.last.trigger_subject_url,
+              trigger_event_details: counted.last.trigger_event_details,
             }
-            <sl-icon
-              slot="suffix"
-              name=${
-                this.gatewayMetricsExpanded ? 'chevron-up' : 'chevron-down'
-              }
-            ></sl-icon>
-          </sl-button>
-        </div>
+          : null,
+        runs: counted?.runs ?? 0,
+        failed: counted?.failed ?? 0,
+        cost: costs.get(flow.id) ?? 0,
+      };
+    });
+  }
 
-        <!-- AI Model Gateway Endpoint -->
-        <div
-          class="mcp-server-capsule"
-          style="margin-top: 0; margin-bottom: var(--sl-spacing-small);"
-        >
-          <div class="status-indicator"></div>
-          <sl-badge variant="primary" size="small" style="margin-right: -4px;"
-            >AI models</sl-badge
-          >
-          <div
-            class="server-details"
-            style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-          >
-            <span
-              style="font-size: var(--sl-font-size-x-small); font-weight: 600; color: var(--sl-color-neutral-500); text-transform: uppercase;"
-              >Format:</span
-            >
-            <select
-              aria-label="Gateway API Format"
-              style="background: transparent; border: 1px solid var(--sl-color-neutral-300); border-radius: var(--sl-border-radius-small); padding: 1px 6px; font-size: inherit; font-family: inherit; color: var(--sl-color-primary-600); cursor: pointer; outline: none; margin-right: var(--sl-spacing-2x-small);"
-              @change=${(e: Event) => {
-                const target = e.target as HTMLSelectElement;
-                const endpointSpan = target.parentElement?.querySelector(
-                  '.server-endpoint'
-                ) as HTMLElement;
-                if (endpointSpan) {
-                  endpointSpan.innerText = `${window.location.origin}${target.value}`;
-                }
-              }}
-            >
-              <option value="/openai/v1">OpenAI</option>
-              <option value="/anthropic/v1">Anthropic</option>
-              <option value="/google/v1">Gemini</option>
-            </select>
-            <span class="server-endpoint"
-              >${window.location.origin}/openai/v1</span
-            >
-            <a
-              href="https://docs.preloop.ai/guide/ai-proxy"
-              target="_blank"
-              style="display: flex; color: var(--sl-color-neutral-500); margin-left: auto;"
-            >
-              <sl-icon name="info-circle"></sl-icon>
-            </a>
-          </div>
-          <sl-tooltip content="Copy URL">
-            <sl-icon-button
-              name="clipboard"
-              style="font-size: 1rem;"
-              @click=${(e: Event) => {
-                const capsule = (e.target as HTMLElement).closest(
-                  '.mcp-server-capsule'
-                );
-                const url =
-                  capsule?.querySelector('.server-endpoint')?.textContent ||
-                  `${window.location.origin}/openai/v1`;
-                navigator.clipboard.writeText(url);
-                this.dispatchEvent(
-                  new CustomEvent('show-toast', {
-                    bubbles: true,
-                    composed: true,
-                    detail: { message: 'AI Gateway URL copied!' },
-                  })
-                );
-              }}
-            ></sl-icon-button>
-          </sl-tooltip>
-        </div>
+  private get inventoryModelRows(): InventoryModelRow[] {
+    const usage = new Map<string, GatewayUsageByModel>();
+    for (const model of this.gatewaySummary?.usage_by_model || []) {
+      const alias = model.model_alias || model.ai_model_id;
+      if (alias) {
+        usage.set(alias, model);
+      }
+    }
 
-        <!-- Built-in MCP Server Endpoint -->
-        <div class="mcp-server-capsule" style="margin-top: 0;">
-          <div class="status-indicator"></div>
-          <sl-badge variant="neutral" size="small" style="margin-right: -4px;"
-            >MCP tools</sl-badge
-          >
-          <div class="server-details">
-            <span class="server-endpoint">${window.location.origin}/mcp</span>
-            <a
-              href="https://docs.preloop.ai/guide/mcp-server"
-              target="_blank"
-              style="display: flex; color: var(--sl-color-neutral-500); margin-left: auto;"
-            >
-              <sl-icon name="info-circle"></sl-icon>
-            </a>
-          </div>
-          <sl-tooltip content="Copy URL">
-            <sl-icon-button
-              name="clipboard"
-              style="font-size: 1rem;"
-              @click=${() => {
-                navigator.clipboard.writeText(`${window.location.origin}/mcp`);
-                this.dispatchEvent(
-                  new CustomEvent('show-toast', {
-                    bubbles: true,
-                    composed: true,
-                    detail: { message: 'MCP URL copied!' },
-                  })
-                );
-              }}
-            ></sl-icon-button>
-          </sl-tooltip>
-        </div>
-      </sl-card>
+    const rows: InventoryModelRow[] = this.aiModels.map((model) => {
+      const used = usage.get(model.name);
+      usage.delete(model.name);
+      return {
+        id: model.id,
+        alias: model.name,
+        provider: model.provider_name || 'Unknown',
+        requests: used?.request_count ?? 0,
+        tokens: used?.token_usage?.total_tokens ?? 0,
+        cost: used?.estimated_cost ?? 0,
+      };
+    });
+
+    // Aliases the gateway served that are no longer in the models list.
+    for (const [alias, model] of usage) {
+      rows.push({
+        id: model.ai_model_id,
+        alias,
+        provider: model.provider_name || 'Unknown',
+        requests: model.request_count || 0,
+        tokens: model.token_usage?.total_tokens || 0,
+        cost: model.estimated_cost || 0,
+      });
+    }
+    return rows;
+  }
+
+  /**
+   * One row per active teammate. Spend reaches a person through the agents
+   * they own, which is the only link the gateway records between a request
+   * and a human; flows carry no owner at all, so there is no flows column.
+   */
+  private get inventoryUserRows(): InventoryUserRow[] {
+    const perAgent = new Map<string, { tokens: number; cost: number }>();
+    for (const session of this.gatewaySummary?.usage_by_session || []) {
+      const agent = this.getManagedAgentForUsageSession(session);
+      if (!agent) continue;
+      const running = perAgent.get(agent.id) || { tokens: 0, cost: 0 };
+      running.tokens += session.token_usage?.total_tokens || 0;
+      running.cost += session.estimated_cost || 0;
+      perAgent.set(agent.id, running);
+    }
+
+    const byOwner = new Map<
+      string,
+      { agents: number; tokens: number; cost: number }
+    >();
+    for (const agent of this.managedAgents) {
+      const ownerId = agent.owner_user_id;
+      if (!ownerId) continue;
+      const running = byOwner.get(ownerId) || { agents: 0, tokens: 0, cost: 0 };
+      running.agents += 1;
+      const usage = perAgent.get(agent.id);
+      running.tokens += usage?.tokens || 0;
+      running.cost += usage?.cost || 0;
+      byOwner.set(ownerId, running);
+    }
+
+    return this.accountUsers.map((user) => {
+      const owned = byOwner.get(user.id);
+      const roles = [...(user.roles || []), ...(user.inherited_roles || [])]
+        .map((role) => role?.name)
+        .filter((name): name is string => Boolean(name));
+      return {
+        id: user.id,
+        name: user.full_name || user.username || user.email || 'Unknown',
+        role: [...new Set(roles)].join(', '),
+        lastLoginAt: user.last_login || null,
+        agentsOwned: owned?.agents ?? 0,
+        tokens: owned?.tokens ?? 0,
+        cost: owned?.cost ?? 0,
+      };
+    });
+  }
+
+  private get inventoryToolRows(): InventoryToolRow[] {
+    const usage = new Map<string, GatewayUsageByTool>();
+    for (const tool of this.gatewaySummary?.usage_by_tool || []) {
+      usage.set(tool.tool_name, tool);
+    }
+    return this.tools
+      .filter((tool) => tool.is_enabled)
+      .map((tool) => {
+        const used = usage.get(tool.name);
+        return {
+          name: tool.name,
+          server: tool.source_name || 'Built in',
+          calls: used?.invocation_count ?? 0,
+          failed: used?.failed_invocations ?? 0,
+        };
+      });
+  }
+
+  /**
+   * One box for what the account has: the counts that used to sit in the
+   * stat strip now label its tabs, and the page range drives every column.
+   */
+  private renderInventoryCard() {
+    return html`
+      <inventory-card
+        .agentRows=${this.inventoryAgentRows}
+        .flowRows=${this.inventoryFlowRows}
+        .modelRows=${this.inventoryModelRows}
+        .toolRows=${this.inventoryToolRows}
+        .userRows=${this.inventoryUserRows}
+        .agentsTotal=${this.totalAgentsCount}
+        .flowsTotal=${this.totalFlowsCount}
+        .modelsTotal=${this.aiModelsCount}
+        .toolsTotal=${this.enabledToolsCount}
+        .usersTotal=${this.enabledUsersCount}
+        ?showUsers=${this.canViewUsers}
+        .rangeLabel=${this.gatewayRangeLabel}
+        .flowRunsCapped=${this.flowRunsCapped}
+        ?loading=${this.loading || this.fetchingMCPAndTools}
+      ></inventory-card>
+    `;
+  }
+
+  /** What just happened, live, with the audit page one click away. */
+  private renderActivityFeed() {
+    return html`
+      <activity-feed
+        .flows=${this.flows}
+        .agents=${this.managedAgents}
+        .executions=${this.flowExecutions}
+        .budgetPolicies=${this.budgetPolicies}
+        @open-budget-limits=${() => (this.showBudgetDialog = true)}
+      ></activity-feed>
     `;
   }
 
@@ -4107,9 +3215,16 @@ export class DashboardView extends AuthedElement {
 
     return html`
       <view-header headerText="Overview" width="extra-wide">
-        <div class="updated-at" slot="description">
-          Last updated ${this.formatLastUpdatedLabel()}
-        </div>
+        <span
+          slot="meta"
+          class="updated-at"
+          title=${
+            this.lastUpdatedAt
+              ? parseUTCDate(this.lastUpdatedAt).toLocaleString()
+              : 'Not loaded yet'
+          }
+          >Updated ${this.formatLastUpdatedLabel()}</span
+        >
       </view-header>
       <div class="extra-wide" style="margin-bottom: var(--sl-spacing-large);">
         ${
@@ -4117,18 +3232,17 @@ export class DashboardView extends AuthedElement {
             ? html`<sl-alert variant="danger" open>${this.error}</sl-alert>`
             : nothing
         }
-        ${this.renderWelcomeCard()}
+        ${this.renderAttentionStrip()} ${this.renderWelcomeCard()}
       </div>
 
       <div class="column-layout dashboard extra-wide">
         <div class="main-column">
           <div class="dashboard-stack">
-            ${this.renderPreloopGatewayCard()}
-            ${this.renderActiveExecutionsCard()}
-            ${this.renderRecentFlowExecutionsCard()}
+            ${this.renderGatewayCard()} ${this.renderNextStepsCard()}
+            ${this.renderInventoryCard()}
 
             <div
-              style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sl-spacing-large); margin-top: var(--sl-spacing-large);"
+              style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sl-spacing-medium);"
             >
               ${this.renderGatewayFailuresCard()}
               ${this.renderAuditExceptionsCard()}
@@ -4137,41 +3251,18 @@ export class DashboardView extends AuthedElement {
         </div>
 
         <div class="side-column">
-          ${this.renderPendingApprovalsCard()} ${this.renderBudgetHealthCard()}
-          ${this.renderTopModelsCard()}
+          ${this.renderUsageCard()} ${this.renderActivityFeed()}
         </div>
         <mcp-setup-dialog
           ?open=${this.showSetupDialog}
           @close=${() => (this.showSetupDialog = false)}
         ></mcp-setup-dialog>
-        <sl-dialog
-          label="Configure Budget Limits"
+        <budget-limits-dialog
           ?open=${this.showBudgetDialog}
-          @sl-after-hide=${(e: Event) => {
-            if (e.target === e.currentTarget) {
-              this.showBudgetDialog = false;
-            }
-          }}
-          style="--width: 600px;"
-        >
-          ${
-            this.showBudgetDialog
-              ? html`
-                  <p
-                    style="margin: 0 0 var(--sl-spacing-medium); color: var(--sl-color-neutral-500); font-size: 0.9rem;"
-                  >
-                    Spending limits for the account or individual agents. Soft
-                    limits notify you; hard limits stop further model calls
-                    through the gateway.
-                  </p>
-                  <budget-policy-editor
-                    billingEnabled
-                    @budget-policies-changed=${this.handleBudgetPoliciesChanged}
-                  ></budget-policy-editor>
-                `
-              : nothing
-          }
-        </sl-dialog>
+          billingEnabled
+          @sl-hide=${() => (this.showBudgetDialog = false)}
+          @budget-policies-changed=${this.handleBudgetPoliciesChanged}
+        ></budget-limits-dialog>
         <preloop-invite-dialog
           ?open=${this.isInviteDialogOpen}
           @close=${() => {

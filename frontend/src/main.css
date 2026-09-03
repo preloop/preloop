@@ -1,3 +1,8 @@
+/* The console surface ladder. It has to be declared at document level: the
+   dark theme is a class on <html>, and custom properties are the only thing
+   that crosses a shadow boundary on their own. */
+@import './styles/console-surfaces.css';
+
 body {
   margin: 0;
   font-family:

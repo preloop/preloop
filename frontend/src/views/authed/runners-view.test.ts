@@ -5,9 +5,11 @@ import '../../components/view-header.ts';
 import './runners-view';
 import type { RunnersView } from './runners-view';
 import { invalidateApiCaches } from '../../api';
+import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 
 describe('RunnersView', () => {
   let fetchStub: sinon.SinonStub;
+  let onRunnerMessage: ((message: unknown) => void) | undefined;
 
   function createFetchStub(runners: unknown[] = []) {
     return sinon
@@ -29,10 +31,17 @@ describe('RunnersView', () => {
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
+    onRunnerMessage = undefined;
+    sinon
+      .stub(unifiedWebSocketManager, 'subscribe')
+      .callsFake((_topic: string, callback: (message: unknown) => void) => {
+        onRunnerMessage = callback;
+        return () => undefined;
+      });
   });
 
   afterEach(() => {
-    fetchStub?.restore();
+    sinon.restore();
     localStorage.clear();
     invalidateApiCaches();
   });
@@ -88,5 +97,78 @@ describe('RunnersView', () => {
     expect(docs?.getAttribute('rel')).to.equal('noopener noreferrer');
     expect(docs?.getAttribute('target')).to.equal('_blank');
     expect(element.shadowRoot?.querySelector('.empty-command')).to.exist;
+  });
+
+  it('updates status from a runners websocket event without a refetch', async () => {
+    fetchStub = createFetchStub([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'office-mac',
+        hostname: 'mac.local',
+        os: 'darwin',
+        arch: 'arm64',
+        labels: ['local'],
+        status: 'offline',
+        last_heartbeat: '2026-08-17T10:00:00Z',
+        current_execution_id: null,
+        registered_by_email: 'ops@example.com',
+      },
+    ]);
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+    expect(element.shadowRoot?.textContent).to.contain('offline');
+
+    onRunnerMessage?.({
+      type: 'runner_updated',
+      payload: {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'office-mac',
+        status: 'online',
+        last_heartbeat: '2026-09-03T10:00:00Z',
+      },
+    });
+    await element.updateComplete;
+    expect(element.shadowRoot?.textContent).to.contain('online');
+    expect(
+      fetchStub.getCalls().filter((call) => {
+        const url = String(call.args[0]);
+        return url.includes('/api/v1/runners');
+      })
+    ).to.have.lengthOf(1);
+  });
+
+  it('shows registered-by email for a runner that arrives over websocket', async () => {
+    fetchStub = createFetchStub([]);
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+    expect(element.shadowRoot?.textContent).to.contain('No runners registered');
+
+    onRunnerMessage?.({
+      type: 'runner_updated',
+      payload: {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'office-mac',
+        hostname: 'mac.local',
+        os: 'darwin',
+        arch: 'arm64',
+        labels: ['local'],
+        status: 'online',
+        last_heartbeat: '2026-09-03T10:00:00Z',
+        registered_by_email: 'ops@example.com',
+      },
+    });
+    await element.updateComplete;
+    expect(element.shadowRoot?.textContent).to.contain('office-mac');
+    expect(element.shadowRoot?.textContent).to.contain('ops@example.com');
   });
 });

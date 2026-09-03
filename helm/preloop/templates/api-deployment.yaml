@@ -30,6 +30,7 @@ spec:
       labels:
         {{- include "preloop.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
+        app: api
     spec:
       # Long-lived MCP sessions/long-polls and websockets must be allowed to
       # drain before kubelet SIGKILLs the pod; the k8s default of 30s cuts

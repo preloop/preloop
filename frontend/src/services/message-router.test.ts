@@ -80,13 +80,17 @@ describe('MessageRouter', () => {
       });
     });
 
-    it('routes execution_completed to flow_executions topic', () => {
+    it('routes runner_updated to runners topic', () => {
       const received: unknown[] = [];
-      router.subscribe('flow_executions', (msg) => received.push(msg));
+      router.subscribe('runners', (msg) => received.push(msg));
 
-      router.route({ type: 'execution_completed', execution_id: 'e2' });
+      router.route({
+        type: 'runner_updated',
+        payload: { id: 'r1', status: 'online' },
+      });
 
       expect(received).to.have.lengthOf(1);
+      expect(received[0]).to.deep.include({ type: 'runner_updated' });
     });
 
     it('routes to wildcard subscribers', () => {

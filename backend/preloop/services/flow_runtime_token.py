@@ -9,9 +9,114 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from preloop.models.crud import crud_account, crud_api_key, crud_user
+from preloop.models.crud import (
+    crud_account,
+    crud_api_key,
+    crud_runtime_session,
+    crud_user,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def revoke_flow_runtime_tokens(
+    db: Session,
+    *,
+    account_id: Any,
+    execution_id: Any,
+    commit: bool = True,
+) -> int:
+    """Revoke every runtime token minted for one flow execution.
+
+    Revoking by execution rather than by key id is deliberate: an execution
+    that was interrupted and handed to another worker can own more than one
+    minted key, and the worker that finishes the run is not always the worker
+    that minted the key it is holding.
+
+    Args:
+        db: Active database session.
+        account_id: Account owning the execution.
+        execution_id: Flow execution whose credentials are being retired.
+        commit: Whether to commit the revocation.
+
+    Returns:
+        Number of keys deactivated.
+    """
+    if account_id is None or execution_id is None:
+        return 0
+    try:
+        revoked = crud_api_key.deactivate_runtime_keys_for_flow_execution(
+            db,
+            account_id=account_id,
+            execution_id=execution_id,
+            commit=commit,
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to revoke runtime tokens for flow execution %s: %s",
+            execution_id,
+            type(exc).__name__,
+            exc_info=True,
+        )
+        db.rollback()
+        return 0
+    if revoked:
+        # Outcome only: key ids are treated as sensitive by CodeQL.
+        logger.info(
+            "Revoked %d runtime token(s) for flow execution %s",
+            len(revoked),
+            execution_id,
+        )
+    return len(revoked)
+
+
+def end_flow_execution_runtime_session(
+    db: Session,
+    *,
+    account_id: Any,
+    execution_id: Any,
+    ended_at: Optional[datetime] = None,
+) -> bool:
+    """Close the runtime session of a flow execution if one is still open.
+
+    Only closes an existing session; it never creates one, because a code path
+    that is retiring an execution has no business opening a session that was
+    never started.
+
+    Args:
+        db: Active database session.
+        account_id: Account owning the execution.
+        execution_id: Flow execution whose session is being closed.
+        ended_at: End timestamp; defaults to now.
+
+    Returns:
+        True if a session was closed by this call.
+    """
+    if account_id is None or execution_id is None:
+        return False
+    try:
+        session = crud_runtime_session.get_by_source(
+            db,
+            account_id=account_id,
+            session_source_type="flow_execution",
+            session_source_id=str(execution_id),
+        )
+        if session is None or session.ended_at is not None:
+            return False
+        session.ended_at = ended_at or datetime.now(timezone.utc)
+        session.last_activity_at = session.ended_at
+        db.add(session)
+        db.commit()
+        return True
+    except Exception as exc:
+        logger.error(
+            "Failed to end runtime session for flow execution %s: %s",
+            execution_id,
+            type(exc).__name__,
+            exc_info=True,
+        )
+        db.rollback()
+        return False
 
 
 def create_flow_runtime_token(

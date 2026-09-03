@@ -6,6 +6,7 @@ import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
+import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
@@ -23,7 +24,9 @@ import '../../components/view-header.ts';
 import '../../components/preloop-agent-deployer.ts';
 import '../../components/preloop-deploy-wizard.ts';
 import '../../components/resource-actions.ts';
-import '../../components/agent-talk-composer.ts';
+import '../../components/talk-button.ts';
+import '../../components/confirm-dialog.ts';
+import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import {
   fetchWithAuth,
@@ -48,11 +51,16 @@ import { reducedMotionStyles } from '../../styles/reduced-motion';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { getAgentControlState } from '../../utils/agent-control';
 import { renderAgentIcon } from '../../utils/agent-icons';
+import { openTalkWindow } from '../../utils/talk-window';
 import {
+  REMOVE_AGENT_CONSEQUENCE,
   getAgentSourceLabel,
+  getAgentStatusChip,
   getSystemAgentTags,
   getVisibleAgentTags,
 } from '../../utils/agent-display';
+import { formatRelativeTime } from '../../utils/date';
+import { consoleDialogStyles } from '../../styles/console-dialog';
 
 const AVAILABLE_AGENT_KINDS = [
   { value: 'openclaw', label: 'OpenClaw' },
@@ -106,6 +114,122 @@ function persistAgentKinds(selected: string[]): void {
     localStorage.setItem(HIDDEN_AGENT_KINDS_KEY, JSON.stringify(hidden));
     localStorage.removeItem(LEGACY_AGENT_KINDS_KEY);
   } catch (e) {}
+}
+
+export type AgentsViewMode = 'list' | 'cards' | 'canvas';
+
+const VIEW_MODE_KEY = 'preloop.agents.view_mode';
+const AGENTS_VIEW_MODES: AgentsViewMode[] = ['list', 'cards', 'canvas'];
+
+/**
+ * The list is the default: a table answers "which agents do I have and are
+ * they healthy" at a glance, where cards and canvas answer "show me one" and
+ * "show me the topology". A previously persisted choice still wins.
+ */
+const DEFAULT_AGENTS_VIEW: AgentsViewMode = 'list';
+
+function loadInitialViewMode(): AgentsViewMode {
+  try {
+    const saved = localStorage.getItem(VIEW_MODE_KEY);
+    if (saved && (AGENTS_VIEW_MODES as string[]).includes(saved)) {
+      return saved as AgentsViewMode;
+    }
+  } catch (e) {}
+  return DEFAULT_AGENTS_VIEW;
+}
+
+/** Below this width the table cannot show its columns, so cards take over. */
+const LIST_TO_CARDS_BREAKPOINT = '(max-width: 640px)';
+
+export type AgentListSortKey =
+  'agent' | 'status' | 'owner' | 'model' | 'requests' | 'spend' | 'last_seen';
+
+export type SortDirection = 'asc' | 'desc';
+
+/** One normalized table row, covering both managed agents and flow nodes. */
+export interface AgentListRow {
+  id: string;
+  isFlow: boolean;
+  name: string;
+  kindLabel: string;
+  kind: string | null;
+  detailUrl: string;
+  statusLabel: string;
+  statusVariant: 'success' | 'neutral' | 'warning' | 'danger';
+  statusOutline: boolean;
+  /** Why a neutral partial-onboarding chip is not a problem; '' otherwise. */
+  statusTooltip: string;
+  owner: string;
+  modelLabel: string;
+  /** Full model text for the `title` attribute, since the cell truncates. */
+  modelTitle: string;
+  modelId: string | null;
+  modelGated: boolean;
+  requests: number;
+  spend: number;
+  lastSeen: string | null;
+  /** The original API item, so row actions keep working on the real object. */
+  source: any;
+}
+
+function timestampValue(value: string | null): number {
+  if (!value) return Number.NEGATIVE_INFINITY;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
+/** Sorts blank owners to the end of an ascending sort. */
+function ownerSortValue(row: AgentListRow): string {
+  return row.owner || '￿';
+}
+
+function compareRowsByKey(
+  a: AgentListRow,
+  b: AgentListRow,
+  key: AgentListSortKey
+): number {
+  switch (key) {
+    case 'agent':
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    case 'status':
+      return a.statusLabel.localeCompare(b.statusLabel, undefined, {
+        sensitivity: 'base',
+      });
+    case 'owner':
+      // Unassigned agents have no owner to alphabetise, so they sort after
+      // every named owner rather than landing at the top of an A-Z sort.
+      return ownerSortValue(a).localeCompare(ownerSortValue(b), undefined, {
+        sensitivity: 'base',
+      });
+    case 'model':
+      return a.modelLabel.localeCompare(b.modelLabel, undefined, {
+        sensitivity: 'base',
+      });
+    case 'requests':
+      return a.requests - b.requests;
+    case 'spend':
+      return a.spend - b.spend;
+    case 'last_seen':
+      return timestampValue(a.lastSeen) - timestampValue(b.lastSeen);
+  }
+}
+
+/**
+ * Sorts table rows without mutating the input. Ties fall back to the agent
+ * name so a re-sort on a column full of equal values (every Idle agent, every
+ * zero-spend agent) still produces a stable, readable order.
+ */
+export function sortAgentListRows(
+  rows: AgentListRow[],
+  key: AgentListSortKey,
+  direction: SortDirection
+): AgentListRow[] {
+  const factor = direction === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const primary = compareRowsByKey(a, b, key);
+    if (primary !== 0) return primary * factor;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
 }
 
 const CANVAS_LAYOUT_VERSION = 'polygon-rings-v1';
@@ -217,7 +341,15 @@ export class AgentsView extends LitElement {
   private hasAutoOpenedOnboarding = false;
 
   // Switcher state
-  @state() private currentView: 'cards' | 'canvas' = 'canvas';
+  @state() private currentView: AgentsViewMode = loadInitialViewMode();
+  @state() private sortKey: AgentListSortKey = 'last_seen';
+  @state() private sortDirection: SortDirection = 'desc';
+  /** True on phone-width viewports, where the table falls back to cards. */
+  @state() private narrowViewport = false;
+  private narrowViewportQuery: MediaQueryList | null = null;
+  private handleNarrowViewportChange = (event: MediaQueryListEvent) => {
+    this.narrowViewport = event.matches;
+  };
 
   // VM Provisioning state variables
   @state() private computeFeatureEnabled = false;
@@ -268,6 +400,7 @@ export class AgentsView extends LitElement {
   private refreshTimer: number | null = null;
 
   static styles = [
+    consoleDialogStyles,
     reducedMotionStyles,
     unsafeCSS(consoleStyles),
     css`
@@ -329,6 +462,14 @@ export class AgentsView extends LitElement {
       .view-switcher-group sl-radio-group {
         white-space: nowrap;
       }
+      /* Says how many rows the filters matched, right where the eye already
+         goes to switch views. */
+      .results-count {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
       .toolbar-divider {
         width: 1px;
         height: 32px;
@@ -346,9 +487,215 @@ export class AgentsView extends LitElement {
       }
       .cards {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        /* auto-fill, not auto-fit: two agents should stay two 320px cards, not
+           stretch into two half-screen banners. */
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
         gap: var(--sl-spacing-large);
         padding: 1rem 1rem 0 2rem;
+      }
+      /* --- List view --- */
+      .list-bounds {
+        width: 100%;
+        max-width: 80rem;
+        margin: 0 auto;
+        padding: 0 1rem 2rem 2rem;
+        box-sizing: border-box;
+      }
+      /* The table sizes itself from the colgroup, not from its content: an
+         agent named after a container hash used to push the kebab column past
+         the right edge of the card, where it was clipped and unclickable. */
+      .agents-table {
+        table-layout: fixed;
+        width: 100%;
+        /* Below this the eight columns cannot hold their content, so the card
+           scrolls sideways instead of hiding the actions. Agent keeps at least
+           180px at this width; the list falls back to cards under 640px. */
+        min-width: 1056px;
+      }
+      .table-scroll {
+        overflow-x: auto;
+        width: 100%;
+      }
+      .agents-table th,
+      .agents-table td {
+        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+        vertical-align: middle;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .agents-table th {
+        padding: 0;
+      }
+      /* The kebab column is measured from the button it holds, not guessed.
+         resource-actions renders one medium sl-button whose width is two
+         --sl-spacing-medium of label padding + a 1rem icon + a 1px border on
+         each side = 48px at the default tokens. The old column was 56px wide
+         with 16px of left padding and 12px of right padding, so its content
+         box was 28px: the button overflowed it by 20px and the component's
+         own overflow:hidden clipped that overflow off the left edge, which is
+         the "dotted actions button cut from the left" bug. 56px of content
+         plus 8px of padding on each side leaves the button its 48px and room
+         to grow before anything clips again. */
+      .agents-table th.actions-cell,
+      .agents-table td.actions-cell {
+        width: 72px;
+        text-align: right;
+        padding-left: var(--sl-spacing-x-small);
+        padding-right: var(--sl-spacing-x-small);
+        overflow: visible;
+      }
+      /* Belt and braces: even if a future token change makes the button wider
+         than its column, it stays whole and clickable by spilling into the
+         padding rather than being cut in half. */
+      .actions-cell resource-actions::part(container) {
+        overflow: visible;
+      }
+      /* Percentages for the text columns so wide screens give them the space,
+         pixels for the ones whose content has a known width. Agent takes what
+         is left. */
+      .col-status {
+        width: 150px;
+      }
+      .col-owner {
+        width: 13%;
+      }
+      .col-model {
+        width: 18%;
+      }
+      .col-requests {
+        width: 110px;
+      }
+      .col-spend {
+        width: 110px;
+      }
+      .col-last-seen {
+        width: 128px;
+      }
+      .col-actions {
+        width: 72px;
+      }
+      .sort-button {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        width: 100%;
+        background: none;
+        border: none;
+        cursor: pointer;
+        font: inherit;
+        font-weight: var(--sl-font-weight-semibold);
+        font-size: var(--sl-font-size-x-small);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--sl-color-neutral-600);
+        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+      }
+      th.numeric .sort-button {
+        justify-content: flex-end;
+      }
+      .sort-button:hover,
+      .sort-button:focus-visible {
+        color: var(--sl-color-neutral-900);
+      }
+      th.active .sort-button {
+        color: var(--sl-color-neutral-900);
+      }
+      .sort-caret {
+        font-size: 0.75em;
+        opacity: 0.55;
+      }
+      th.active .sort-caret {
+        opacity: 1;
+      }
+      .agent-row {
+        cursor: pointer;
+      }
+      .agent-row:hover td {
+        background: var(--console-hover-tint);
+      }
+      .agent-identity {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+        min-width: 180px;
+      }
+      .agent-identity-text {
+        min-width: 0;
+        overflow: hidden;
+      }
+      .row-icon {
+        width: 20px;
+        height: 20px;
+        flex-shrink: 0;
+      }
+      /* Names never wrap: a two-line name in one row and a one-line name in
+         the next made the whole table look ragged. */
+      .row-link {
+        color: var(--sl-color-primary-700);
+        display: block;
+        font-weight: var(--sl-font-weight-semibold);
+        overflow: hidden;
+        text-decoration: none;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .row-link:hover,
+      .row-link:focus-visible {
+        text-decoration: underline;
+      }
+      .row-subtitle {
+        color: var(--console-meta-color);
+        font-size: var(--sl-font-size-small);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .muted-cell {
+        color: var(--console-meta-color);
+      }
+      .agents-table td.numeric,
+      .agents-table th.numeric {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .model-cell {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .row-actions {
+        display: flex;
+        justify-content: flex-end;
+      }
+      /* "Recently active" is real but not live: a fainter tint of the same
+         tone. No border, because nothing inside a card gets a box (wave 4);
+         the -700 ink reads on both themes because Shoelace inverts the
+         scale in dark. */
+      .status-chip.outline::part(base) {
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-success-500) 8%,
+          transparent
+        );
+        color: var(--sl-color-success-800);
+        border-width: 0;
+      }
+      .canvas-last-seen {
+        font-weight: 600;
+      }
+      .metric-row .value.numeric {
+        font-variant-numeric: tabular-nums;
+      }
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
       }
       .deploy-grid {
         display: grid;
@@ -413,6 +760,16 @@ export class AgentsView extends LitElement {
         font-size: 1.15rem;
         letter-spacing: -0.01em;
       }
+      /* The card is clickable, but the title is a real anchor so cmd-click
+         and middle-click open the agent in a new tab (AG-B). */
+      a.agent-name {
+        color: inherit;
+        text-decoration: none;
+      }
+      a.agent-name:hover,
+      a.agent-name:focus-visible {
+        text-decoration: underline;
+      }
       .agent-meta {
         opacity: 0.7;
         font-size: var(--sl-font-size-small);
@@ -471,11 +828,18 @@ export class AgentsView extends LitElement {
         justify-content: flex-end;
         flex-shrink: 0;
       }
+      /* One tinted band, mixed from a single token so it is a pale tint in
+         light and a dim one in dark instead of an inverted solid block. */
       .agent-control-strip {
-        border: 1px solid var(--sl-color-primary-200);
+        border: 1px solid
+          color-mix(in srgb, var(--sl-color-primary-500) 25%, transparent);
         border-radius: var(--sl-border-radius-medium);
         padding: var(--sl-spacing-small);
-        background: var(--sl-color-primary-50);
+        background: color-mix(
+          in srgb,
+          var(--sl-color-primary-500) 8%,
+          transparent
+        );
         display: flex;
         justify-content: space-between;
         gap: var(--sl-spacing-small);
@@ -501,11 +865,9 @@ export class AgentsView extends LitElement {
         overflow: hidden;
       }
       .empty-state {
-        border: 1px dashed var(--sl-color-neutral-300);
-        border-radius: var(--sl-border-radius-medium);
         padding: var(--sl-spacing-large);
         color: var(--sl-color-neutral-600);
-        background: var(--sl-color-neutral-0);
+        background: transparent;
       }
       :host(:host-context(.sl-theme-dark)) .title-row {
         border-color: var(--sl-color-neutral-800);
@@ -685,10 +1047,7 @@ export class AgentsView extends LitElement {
       .gateway-label {
         position: absolute;
         top: calc(100% + 12px);
-        background-color: var(
-          --sl-panel-background-color,
-          var(--sl-color-neutral-0)
-        );
+        background-color: var(--console-surface);
         padding: 4px 12px;
         border-radius: 20px;
         font-weight: bold;
@@ -741,19 +1100,48 @@ export class AgentsView extends LitElement {
         transform: translateY(-4px);
         box-shadow: var(--sl-shadow-large);
       }
+      .canvas-legend {
+        position: absolute;
+        left: 20px;
+        bottom: 20px;
+        z-index: 20;
+        background: color-mix(in srgb, var(--console-surface) 92%, transparent);
+        border: 1px solid var(--console-hairline);
+        border-radius: var(--sl-border-radius-medium);
+        padding: 10px 12px;
+        font-size: 0.8rem;
+        color: var(--sl-color-neutral-700);
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        max-width: calc(100% - 40px);
+      }
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .legend-swatch {
+        display: inline-block;
+        width: 20px;
+        height: 0;
+        flex-shrink: 0;
+      }
+      /* Top-right, not bottom-right: at the bottom the zoom stack sat on top
+         of the nearest agent card and swallowed its clicks. */
       .controls-overlay {
         position: absolute;
-        bottom: 24px;
-        right: 24px;
+        top: 16px;
+        right: 16px;
         z-index: 20;
         display: flex;
-        flex-direction: column;
+        flex-direction: row;
         gap: 8px;
-        background: var(--sl-panel-background-color, var(--sl-color-neutral-0));
+        background: var(--console-surface-raised);
         padding: 8px;
         border-radius: var(--sl-border-radius-large);
-        box-shadow: var(--sl-shadow-large);
-        border: 1px solid var(--sl-color-neutral-200);
+        box-shadow: var(--console-raised-shadow);
+        border: 1px solid var(--console-hairline);
       }
       .connection-line {
         position: absolute;
@@ -790,11 +1178,16 @@ export class AgentsView extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
 
-    // Restore saved view preference
-    const savedView = localStorage.getItem('preloop.agents.view_mode');
-    if (savedView === 'cards' || savedView === 'canvas') {
-      this.currentView = savedView;
-    }
+    // Restore saved view preference (the default is applied at field init so
+    // the very first render already knows which view to paint).
+    this.currentView = loadInitialViewMode();
+
+    this.narrowViewportQuery = window.matchMedia(LIST_TO_CARDS_BREAKPOINT);
+    this.narrowViewport = this.narrowViewportQuery.matches;
+    this.narrowViewportQuery.addEventListener(
+      'change',
+      this.handleNarrowViewportChange
+    );
 
     // Restore saved node positions
     try {
@@ -854,10 +1247,13 @@ export class AgentsView extends LitElement {
 
   updated(changedProperties: Map<string, unknown>) {
     super.updated?.(changedProperties);
-    if (changedProperties.has('currentView')) {
+    if (
+      changedProperties.has('currentView') ||
+      changedProperties.has('narrowViewport')
+    ) {
       this.dispatchEvent(
         new CustomEvent('request-full-bleed', {
-          detail: this.currentView === 'canvas',
+          detail: this.effectiveView === 'canvas',
           bubbles: true,
           composed: true,
         })
@@ -865,9 +1261,25 @@ export class AgentsView extends LitElement {
     }
   }
 
+  /**
+   * The view actually painted. On phone widths a seven-column table would
+   * either scroll sideways or crush every cell, so `list` renders as cards.
+   */
+  private get effectiveView(): AgentsViewMode {
+    if (this.currentView === 'list' && this.narrowViewport) {
+      return 'cards';
+    }
+    return this.currentView;
+  }
+
   disconnectedCallback(): void {
     super.disconnectedCallback();
     this.unsubscribeRealtime?.();
+    this.narrowViewportQuery?.removeEventListener(
+      'change',
+      this.handleNarrowViewportChange
+    );
+    this.narrowViewportQuery = null;
     this.resizeObserver.disconnect();
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
@@ -1608,9 +2020,13 @@ export class AgentsView extends LitElement {
 
       const cardHalfW = CANVAS_CARD_HALF_WIDTH;
       const cardHalfH = CANVAS_CARD_HALF_HEIGHT;
-      const sideMargin = 56;
-      const topMargin = 44;
-      const bottomMargin = 44;
+      // Margins keep the outermost cards clear of the viewport edges and of
+      // the two overlays: the zoom controls at the top right and the legend
+      // at the bottom left. Without them the rightmost card was clipped by
+      // the container's `overflow: hidden`.
+      const sideMargin = 96;
+      const topMargin = 88;
+      const bottomMargin = 88;
 
       const paddedMinX = minX - (cardHalfW + sideMargin);
       const paddedMaxX = maxX + (cardHalfW + sideMargin);
@@ -1742,22 +2158,21 @@ export class AgentsView extends LitElement {
     return parsed.toLocaleString();
   }
 
-  private getLifecycleVariant(agent: ManagedAgentSummary): string {
-    if (agent.lifecycle_state === 'decommissioned') return 'danger';
-    if (agent.lifecycle_state === 'suspended') return 'warning';
-    if (agent.activity_status === 'active_now') return 'success';
-    if (agent.activity_status === 'recently_active') return 'primary';
-    if (agent.ended_at) return 'neutral';
-    return 'primary';
-  }
-
-  private getLifecycleLabel(agent: ManagedAgentSummary): string {
-    if (agent.lifecycle_state === 'decommissioned') return 'Decommissioned';
-    if (agent.lifecycle_state === 'suspended') return 'Paused';
-    if (agent.activity_status === 'active_now') return 'Active now';
-    if (agent.activity_status === 'recently_active') return 'Recently active';
-    if (agent.ended_at) return 'Ended';
-    return 'Idle';
+  /**
+   * Timestamps on this page read as "4d ago", with the exact instant on hover.
+   * A wall of absolute datetimes tells you nothing at a glance about which
+   * agent went quiet yesterday and which one went quiet in March.
+   */
+  private renderRelativeTimestamp(
+    value: string | null | undefined,
+    className = ''
+  ) {
+    if (!value) {
+      return html`<span class=${className} title="Never seen">Never</span>`;
+    }
+    return html`<span class=${className} title=${this.formatDateTime(value)}
+      >${formatRelativeTime(value)}</span
+    >`;
   }
 
   private getOnboardingVariant(agent: ManagedAgentSummary): string {
@@ -1810,9 +2225,9 @@ export class AgentsView extends LitElement {
     if (agent.live_validation_status === 'passed') return 'Live validated';
     if (agent.live_validation_status === 'failed') return 'Live check failed';
     if (agent.live_validation_status === 'throttled')
-      return 'Live check throttled — unverified';
+      return 'Live check throttled, unverified';
     if (agent.live_validation_status === 'upstream_unavailable')
-      return 'Upstream refused — unverified';
+      return 'Upstream refused, unverified';
     // ``not_run`` means the CLI was never invoked with ``--live-validate`` —
     // it's an opt-in step, not a check that's currently in flight.
     if (agent.live_validation_status === 'not_run') return 'Live check not run';
@@ -2144,12 +2559,14 @@ export class AgentsView extends LitElement {
   }
 
   private async removeAgent(agent: ManagedAgentSummary): Promise<void> {
-    if (
-      !window.confirm(
-        `Remove ${agent.display_name} from the managed agents list?\n\nThis also revokes the agent's Preloop credentials: if this agent is still onboarded on a machine, its gateway and MCP access will stop working until you run \`preloop agents onboard\` again. To disconnect cleanly, run \`preloop agents offboard\` on that machine instead.`
-      )
-    )
-      return;
+    const confirmed = await confirmDialog({
+      title: 'Remove agent',
+      message: `Remove ${agent.display_name} from the managed agents list?`,
+      detail: REMOVE_AGENT_CONSEQUENCE,
+      confirmLabel: 'Remove agent',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     this.actionAgentId = agent.id;
     try {
       await removeAccountAgent(agent.id);
@@ -2235,7 +2652,7 @@ export class AgentsView extends LitElement {
       (user) => user.username === trimmed || user.email === trimmed
     );
     if (!selected) {
-      window.alert('No user matched that username or email.');
+      showToast('No user matched that username or email.', 'warning');
       return;
     }
     void this.updateAgent(agent, { owner_user_id: selected.id });
@@ -2245,14 +2662,18 @@ export class AgentsView extends LitElement {
     agent: ManagedAgentSummary,
     lifecycleAction: 'suspend' | 'resume'
   ): Promise<void> {
-    const label = lifecycleAction === 'suspend' ? 'pause' : 'resume';
-    if (
-      !window.confirm(
-        `Are you sure you want to ${label} ${agent.display_name}?`
-      )
-    ) {
-      return;
-    }
+    const isSuspend = lifecycleAction === 'suspend';
+    const confirmed = await confirmDialog({
+      title: isSuspend ? 'Pause agent' : 'Resume agent',
+      message: isSuspend
+        ? `Pause ${agent.display_name}?`
+        : `Resume ${agent.display_name}?`,
+      detail: isSuspend
+        ? 'Requests are blocked while paused. Resume restores the agent without re-onboarding it.'
+        : 'The existing credentials start working again immediately.',
+      confirmLabel: isSuspend ? 'Pause' : 'Resume',
+    });
+    if (!confirmed) return;
     await this.updateAgent(agent, {
       lifecycle_action: lifecycleAction,
       reason:
@@ -2264,7 +2685,7 @@ export class AgentsView extends LitElement {
 
   // --- CANVAS VIEWPORT LOGIC ---
   private handleWheel(e: WheelEvent) {
-    if (this.currentView !== 'canvas') return;
+    if (this.effectiveView !== 'canvas') return;
     e.preventDefault();
     const zoomSensitivity = 0.001;
     const delta = -e.deltaY * zoomSensitivity;
@@ -2467,9 +2888,29 @@ export class AgentsView extends LitElement {
     }
   }
 
-  private setCurrentView(view: 'cards' | 'canvas') {
+  private setCurrentView(view: AgentsViewMode) {
     this.currentView = view;
-    localStorage.setItem('preloop.agents.view_mode', view);
+    try {
+      localStorage.setItem(VIEW_MODE_KEY, view);
+    } catch (e) {}
+  }
+
+  /**
+   * Clicking a header sorts by that column; clicking the active one flips the
+   * direction. Text columns start ascending (A first), numeric and time
+   * columns start descending (biggest and newest first), which is what an
+   * operator scanning for the busiest or most recent agent expects.
+   */
+  private toggleSort(key: AgentListSortKey) {
+    if (this.sortKey === key) {
+      this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
+      return;
+    }
+    this.sortKey = key;
+    this.sortDirection =
+      key === 'requests' || key === 'spend' || key === 'last_seen'
+        ? 'desc'
+        : 'asc';
   }
 
   // --- RENDERING ---
@@ -2483,7 +2924,10 @@ export class AgentsView extends LitElement {
     this.navigateToCardTarget(url);
   }
 
-  private getCardActions(item: any): ResourceAction[] {
+  private getCardActions(
+    item: any,
+    options: { includeTalk?: boolean } = {}
+  ): ResourceAction[] {
     const isFlow =
       'flow_status' in item || ('name' in item && !('display_name' in item));
     if (isFlow) {
@@ -2491,7 +2935,27 @@ export class AgentsView extends LitElement {
     }
 
     const agent = item as ManagedAgentSummary;
-    const actions: ResourceAction[] = [
+    const actions: ResourceAction[] = [];
+
+    // The table has no room for a Talk button per row, so the kebab carries it
+    // there. Cards and canvas nodes show the button itself and would otherwise
+    // offer the same action twice.
+    if (options.includeTalk && getAgentControlState(agent).visible) {
+      const control = getAgentControlState(agent);
+      actions.push({
+        id: 'talk',
+        label: 'Talk',
+        icon: 'chat-dots',
+        disabled: !control.enabled,
+        // Runs inside the menu item's click handler, so the window still opens
+        // on the user gesture.
+        onClick: () => {
+          openTalkWindow(agent, undefined, { sourceContext: 'agents-list' });
+        },
+      });
+    }
+
+    actions.push(
       {
         id: 'rename',
         label: 'Rename',
@@ -2505,8 +2969,8 @@ export class AgentsView extends LitElement {
         icon: 'tags',
         loading: this.actionAgentId === agent.id,
         onClick: () => this.promptEditAgentTags(agent),
-      },
-    ];
+      }
+    );
 
     if (this.featureFlags.user_management && this.availableUsers.length > 0) {
       actions.push({
@@ -2586,15 +3050,37 @@ export class AgentsView extends LitElement {
 
   private renderAgentIdentityBadges(agent: ManagedAgentSummary) {
     const tags = getVisibleAgentTags(agent.tags);
+    // Same taxonomy as the list rows and the detail header, so an agent never
+    // reads as two different things depending on which view you opened.
+    const status = getAgentStatusChip(agent);
+    // A failed live check is already the status; repeating it as a second
+    // badge just doubles the noise. Throttled and upstream-refused are not
+    // status (the agent may be perfectly healthy), so they still get a badge.
+    const showValidationBadge =
+      this.shouldShowValidationBadge(agent) &&
+      status.label !== 'Live check failed';
+    const statusChip = html`
+      <sl-badge
+        class="status-chip ${status.outline ? 'outline' : ''}"
+        variant="${status.variant}"
+        pill
+      >
+        ${status.label}
+      </sl-badge>
+    `;
     return html`
       <div class="identity-badges">
-        <sl-badge variant="${this.getLifecycleVariant(agent)}" pill>
-          ${this.getLifecycleLabel(agent)}
-        </sl-badge>
         ${
-          this.shouldShowValidationBadge(agent)
+          status.tooltip
+            ? html`<sl-tooltip content=${status.tooltip}
+                >${statusChip}</sl-tooltip
+              >`
+            : statusChip
+        }
+        ${
+          showValidationBadge
             ? html`<sl-badge
-                class="validation-badge"
+                class="chip validation-badge"
                 variant="${this.getLiveValidationVariant(agent)}"
                 pill
               >
@@ -2604,22 +3090,23 @@ export class AgentsView extends LitElement {
         }
         ${
           agent.owner_username
-            ? html`<sl-badge variant="neutral" pill title="Owner">
-                <sl-icon
-                  name="person"
-                  style="margin-right: 3px; opacity: 0.7;"
-                ></sl-icon
+            ? html`<sl-badge
+                class="tag-chip"
+                variant="neutral"
+                pill
+                title="Owner"
+              >
+                <sl-icon name="person"></sl-icon
                 >${agent.owner_username}</sl-badge
               >`
             : null
         }
         ${tags.map(
           ([key, value]) => html`
-            <sl-badge variant="neutral" pill>
-              <span style="opacity: 0.7">${key}</span>${
+            <sl-badge class="tag-chip" variant="neutral" pill>
+              <sl-icon name="tag"></sl-icon>${key}${
                 value && value !== 'true'
-                  ? html`<span style="opacity: 0.4; margin: 0 4px;">=</span
-                      >${value}`
+                  ? html`<span class="tag-chip-value">=${value}</span>`
                   : ''
               }
             </sl-badge>
@@ -2644,13 +3131,360 @@ export class AgentsView extends LitElement {
         @keydown=${(event: Event) => event.stopPropagation()}
         @pointerdown=${(event: Event) => event.stopPropagation()}
       >
-        <agent-talk-composer
+        <talk-button
           .agent=${agent}
-          .sessions=${[]}
-          sourceContext=${sourceContext}
+          source-context=${sourceContext}
           compact
-          @agent-control-sent=${() => this.loadAgents()}
-        ></agent-talk-composer>
+        ></talk-button>
+      </div>
+    `;
+  }
+
+  /** Model label + link target for one agent, shared by the list and cards. */
+  private getAgentModelPresentation(agent: ManagedAgentSummary): {
+    label: string;
+    title: string;
+    modelId: string | null;
+    gated: boolean;
+  } {
+    const modelId =
+      (agent as any).ai_model_id || agent.configured_model_id || null;
+    const alias =
+      agent.configured_model_alias ||
+      (agent as any).ai_model_name ||
+      agent.latest_model_alias ||
+      null;
+    if (modelId) {
+      const known = this.aiModels.find((model) => model.id === modelId);
+      // The column shows the alias alone. The catalog display name repeats the
+      // provider ("OpenClaw preloop/deepseek/deepseek-chat"), which truncated
+      // to the part every row has in common; the full name lives in `title`.
+      const label = alias || known?.model_identifier || known?.name || modelId;
+      const title = [label, known?.name, known?.model_identifier]
+        .filter((part): part is string => Boolean(part))
+        .filter((part, index, parts) => parts.indexOf(part) === index)
+        .join(' · ');
+      return { label, title, modelId, gated: true };
+    }
+    if (alias) {
+      return { label: alias, title: alias, modelId: null, gated: true };
+    }
+    return {
+      label: 'direct (not gated)',
+      title: 'Calls a provider directly, without a gateway credential',
+      modelId: null,
+      gated: false,
+    };
+  }
+
+  /**
+   * "11 agents", or "9 agents · 2 flows" when the query also matched flows.
+   * A count next to the view switcher answers "did my filter do anything"
+   * without counting rows by hand.
+   */
+  private get resultsLabel(): string {
+    if (this.loading && !this.agents) {
+      return '';
+    }
+    const items = this.getCanvasItems({ includeExiting: false });
+    const flows = items.filter(
+      (item: any) =>
+        'flow_status' in item || ('name' in item && !('display_name' in item))
+    ).length;
+    const agents = items.length - flows;
+    const parts = [`${agents} ${agents === 1 ? 'agent' : 'agents'}`];
+    if (flows > 0) {
+      parts.push(`${flows} ${flows === 1 ? 'flow' : 'flows'}`);
+    }
+    return parts.join(' · ');
+  }
+
+  /** Flattens agents and flow nodes into the rows the table renders. */
+  private getListRows(): AgentListRow[] {
+    return this.getCanvasItems({ includeExiting: false }).map((item: any) => {
+      const isFlow =
+        'flow_status' in item || ('name' in item && !('display_name' in item));
+      if (isFlow) {
+        const stats = item.execution_stats || {};
+        return {
+          id: item.id,
+          isFlow: true,
+          name: item.name || 'Unnamed flow',
+          kindLabel: 'Flow',
+          kind: 'flow',
+          detailUrl: `/console/flows/${encodeURIComponent(item.id)}`,
+          statusLabel: item.flow_status === 'active' ? 'Active' : 'Inactive',
+          statusTooltip: '',
+          statusVariant:
+            item.flow_status === 'active'
+              ? ('success' as const)
+              : ('neutral' as const),
+          statusOutline: false,
+          owner: item.owner_username || '',
+          modelLabel: item.ai_model_id ? item.ai_model_id : '',
+          modelTitle: item.ai_model_id ? item.ai_model_id : '',
+          modelId: item.ai_model_id || null,
+          modelGated: Boolean(item.ai_model_id),
+          requests: stats.total_execs || 0,
+          spend: stats.estimated_cost || 0,
+          lastSeen: stats.last_seen_at || null,
+          source: item,
+        };
+      }
+
+      const agent = item as ManagedAgentSummary;
+      const chip = getAgentStatusChip(agent);
+      const model = this.getAgentModelPresentation(agent);
+      const live = this.liveActivity[agent.id];
+      return {
+        id: agent.id,
+        isFlow: false,
+        name: agent.display_name,
+        kindLabel: this.getSourceLabel(
+          agent.agent_kind || agent.session_source_type
+        ),
+        kind: agent.agent_kind || agent.session_source_type,
+        detailUrl: `/console/agents/${encodeURIComponent(agent.id)}`,
+        statusLabel: chip.label,
+        statusVariant: chip.variant,
+        statusOutline: Boolean(chip.outline),
+        statusTooltip: chip.tooltip || '',
+        owner: agent.owner_username || agent.owner_email || '',
+        modelLabel: model.label,
+        modelTitle: model.title,
+        modelId: model.modelId,
+        modelGated: model.gated,
+        requests: agent.total_requests || 0,
+        spend: agent.estimated_cost || 0,
+        lastSeen: live?.lastActivityAt || agent.last_seen_at || null,
+        source: agent,
+      };
+    });
+  }
+
+  private renderSortableHeader(
+    key: AgentListSortKey,
+    label: string,
+    numeric = false
+  ) {
+    const active = this.sortKey === key;
+    const ariaSort = active
+      ? this.sortDirection === 'asc'
+        ? 'ascending'
+        : 'descending'
+      : 'none';
+    return html`
+      <th
+        class="sortable ${numeric ? 'numeric' : ''} ${active ? 'active' : ''}"
+        aria-sort=${ariaSort}
+        scope="col"
+      >
+        <button
+          type="button"
+          class="sort-button"
+          data-sort-key=${key}
+          @click=${() => this.toggleSort(key)}
+        >
+          <span>${label}</span>
+          <sl-icon
+            class="sort-caret"
+            name=${
+              active
+                ? this.sortDirection === 'asc'
+                  ? 'caret-up-fill'
+                  : 'caret-down-fill'
+                : 'chevron-expand'
+            }
+          ></sl-icon>
+        </button>
+      </th>
+    `;
+  }
+
+  private renderStatusChip(row: AgentListRow) {
+    const chip = html`
+      <sl-badge
+        class="status-chip ${row.statusOutline ? 'outline' : ''}"
+        variant=${row.statusVariant}
+        pill
+        >${row.statusLabel}</sl-badge
+      >
+    `;
+    // "MCP only" and "Gateway only" are configurations, not faults: the
+    // tooltip says which plane is in use so the neutral chip is not a riddle.
+    return row.statusTooltip
+      ? html`<sl-tooltip content=${row.statusTooltip}>${chip}</sl-tooltip>`
+      : chip;
+  }
+
+  private renderListRow(row: AgentListRow) {
+    const actions = this.getCardActions(row.source, { includeTalk: true });
+    return html`
+      <tr
+        class="agent-row"
+        @click=${(event: MouseEvent) => this.handleRowClick(event, row)}
+      >
+        <td class="agent-cell" title=${row.name}>
+          <div class="agent-identity">
+            ${
+              row.isFlow
+                ? html`<img
+                    src="/images/flow.svg"
+                    class="row-icon"
+                    alt=""
+                    aria-hidden="true"
+                  />`
+                : renderAgentIcon(
+                    row.kind,
+                    'font-size: 20px; color: var(--sl-color-neutral-700); flex-shrink: 0;'
+                  )
+            }
+            <div class="agent-identity-text">
+              <a class="row-link" href=${row.detailUrl}>${row.name}</a>
+              <div class="row-subtitle">${row.kindLabel}</div>
+            </div>
+          </div>
+        </td>
+        <td>${this.renderStatusChip(row)}</td>
+        <td class="muted-cell">${row.owner || 'Unassigned'}</td>
+        <td class="model-cell" title=${row.modelTitle || row.modelLabel}>
+          ${
+            row.modelId
+              ? html`<a
+                  class="row-link"
+                  href="/console/ai-models/${encodeURIComponent(row.modelId)}"
+                  >${row.modelLabel}</a
+                >`
+              : row.modelGated
+                ? html`<span>${row.modelLabel}</span>`
+                : html`<span class="muted-cell">${row.modelLabel}</span>`
+          }
+        </td>
+        <td class="numeric">${(row.requests || 0).toLocaleString()}</td>
+        <td class="numeric">${this.formatMoney(row.spend)}</td>
+        <td
+          class="muted-cell"
+          title=${row.lastSeen ? this.formatDateTime(row.lastSeen) : 'Never'}
+        >
+          ${
+            row.lastSeen
+              ? // A month of relative time: "23d ago" still reads as recent
+                // activity, "213d ago" is arithmetic, so that becomes a date.
+                formatRelativeTime(row.lastSeen, undefined, {
+                  maxRelativeDays: 30,
+                })
+              : 'Never'
+          }
+        </td>
+        <td class="actions-cell">
+          ${
+            actions.length
+              ? html`<div
+                  class="row-actions"
+                  @click=${(event: Event) => event.stopPropagation()}
+                  @keydown=${(event: Event) => event.stopPropagation()}
+                >
+                  <resource-actions
+                    .actions=${actions}
+                    menu-only
+                  ></resource-actions>
+                </div>`
+              : null
+          }
+        </td>
+      </tr>
+    `;
+  }
+
+  /**
+   * The whole row is clickable for convenience, but the name is a real anchor
+   * so cmd-click and middle-click open a tab. Let the browser handle those and
+   * any click that started inside a link, a button or the kebab menu.
+   */
+  private handleRowClick(event: MouseEvent, row: AgentListRow) {
+    if (event.defaultPrevented) return;
+    if (
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.button !== 0
+    ) {
+      return;
+    }
+    const path = event.composedPath();
+    for (const node of path) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (node.tagName === 'TR') break;
+      const tag = node.tagName.toLowerCase();
+      if (
+        tag === 'a' ||
+        tag === 'button' ||
+        tag === 'sl-button' ||
+        tag === 'sl-menu-item' ||
+        tag === 'resource-actions'
+      ) {
+        return;
+      }
+    }
+    this.navigateToCardTarget(row.detailUrl);
+  }
+
+  private renderListView() {
+    const rows = sortAgentListRows(
+      this.getListRows(),
+      this.sortKey,
+      this.sortDirection
+    );
+
+    if (rows.length === 0) {
+      return html`
+        <div class="list-bounds">
+          <div class="empty-state">
+            ${
+              this.loading
+                ? 'Loading agents...'
+                : 'No agents or flows found matching your query.'
+            }
+          </div>
+        </div>
+      `;
+    }
+
+    return html`
+      <div class="list-bounds">
+        <sl-card class="table-card">
+          <div class="table-scroll">
+            <table class="styled-table agents-table">
+              <colgroup>
+                <col class="col-agent" />
+                <col class="col-status" />
+                <col class="col-owner" />
+                <col class="col-model" />
+                <col class="col-requests" />
+                <col class="col-spend" />
+                <col class="col-last-seen" />
+                <col class="col-actions" />
+              </colgroup>
+              <thead>
+                <tr>
+                  ${this.renderSortableHeader('agent', 'Agent')}
+                  ${this.renderSortableHeader('status', 'Status')}
+                  ${this.renderSortableHeader('owner', 'Owner')}
+                  ${this.renderSortableHeader('model', 'Model')}
+                  ${this.renderSortableHeader('requests', 'Requests', true)}
+                  ${this.renderSortableHeader('spend', 'Spend (est.)', true)}
+                  ${this.renderSortableHeader('last_seen', 'Last seen')}
+                  <th class="actions-cell">
+                    <span class="visually-hidden">Actions</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows.map((row) => this.renderListRow(row))}
+              </tbody>
+            </table>
+          </div>
+        </sl-card>
       </div>
     `;
   }
@@ -2733,7 +3567,13 @@ export class AgentsView extends LitElement {
                     )
               }
               <div class="identity-stack">
-                <div class="agent-name">${displayName}</div>
+                <a
+                  class="agent-name"
+                  href=${detailUrl}
+                  @click=${(event: Event) => event.stopPropagation()}
+                  @pointerdown=${(event: Event) => event.stopPropagation()}
+                  >${displayName}</a
+                >
                 <div
                   class="agent-meta"
                   title="${sessionSourceId ? sessionSourceId : ''}"
@@ -2754,6 +3594,7 @@ export class AgentsView extends LitElement {
                   ? this.renderAgentTalkButton(agent, 'agents-card')
                   : html`
                       <sl-badge
+                        pill
                         variant=${
                           !isFlow
                             ? ''
@@ -2773,7 +3614,7 @@ export class AgentsView extends LitElement {
               }
               ${
                 liveTotal
-                  ? html`<sl-badge variant="primary"
+                  ? html`<sl-badge variant="success" pill
                       >Live ${liveTotal}</sl-badge
                     >`
                   : null
@@ -2852,7 +3693,7 @@ export class AgentsView extends LitElement {
             !isFlow && agent && this.isModelTrafficFailing(agent)
               ? html`
                   <div class="model-traffic-failing">
-                    Model traffic failing —
+                    Model traffic failing:
                     <a
                       href=${
                         agent.runtime_session_id
@@ -2876,7 +3717,7 @@ export class AgentsView extends LitElement {
                     style="background: var(--sl-color-neutral-100); padding: 8px 12px; border-radius: var(--sl-border-radius-medium); margin-bottom: 12px; font-size: 0.85rem;"
                   >
                     <div
-                      style="font-weight: 600; font-size: 0.75rem; text-transform: uppercase; color: var(--sl-color-neutral-500); margin-bottom: 4px;"
+                      style="font-weight: 600; font-size: 0.75rem; text-transform: uppercase; color: var(--console-meta-color); margin-bottom: 4px;"
                     >
                       Latest from ${liveActivity.lastMessageSource || 'Agent'}
                     </div>
@@ -2916,21 +3757,24 @@ export class AgentsView extends LitElement {
 
           <div class="metric-row">
             <span class="label">Estimated Cost</span>
-            <span class="value">${this.formatMoney(estimatedCost!)}</span>
+            <span class="value numeric"
+              >${this.formatMoney(estimatedCost!)}</span
+            >
           </div>
 
           <div class="metric-row">
             <span class="label">${isFlow ? 'Executions' : 'Requests'}</span>
-            <span class="value">${totalRequests}</span>
+            <span class="value numeric"
+              >${(totalRequests || 0).toLocaleString()}</span
+            >
           </div>
 
           <div class="metric-row">
             <span class="label">Last Seen</span>
-            <span class="value"
-              >${this.formatDateTime(
-                liveActivity?.lastActivityAt || lastSeen
-              )}</span
-            >
+            ${this.renderRelativeTimestamp(
+              liveActivity?.lastActivityAt || lastSeen,
+              'value'
+            )}
           </div>
         </div>
       </sl-card>
@@ -2996,20 +3840,27 @@ export class AgentsView extends LitElement {
             </sl-tooltip>
           </div>
 
-          <div
-            style="position: absolute; left: 20px; bottom: 20px; z-index: 20; background: color-mix(in srgb, var(--sl-panel-background-color) 92%, transparent); border: 1px solid var(--sl-color-neutral-200); border-radius: var(--sl-border-radius-medium); padding: 10px 12px; font-size: 0.8rem; color: var(--sl-color-neutral-700); display: flex; gap: 16px;"
-          >
-            <div style="display: flex; align-items: center; gap: 8px;">
+          <div class="canvas-legend">
+            <div class="legend-item">
               <span
-                style="display: inline-block; width: 20px; height: 0; border-top: 2px solid var(--sl-color-primary-500);"
+                class="legend-swatch"
+                style="border-top: 2px solid var(--sl-color-primary-500);"
               ></span>
               <span>Model traffic</span>
             </div>
-            <div style="display: flex; align-items: center; gap: 8px;">
+            <div class="legend-item">
               <span
-                style="display: inline-block; width: 20px; height: 0; border-top: 2px dashed var(--sl-color-warning-500);"
+                class="legend-swatch"
+                style="border-top: 2px dashed var(--sl-color-warning-500);"
               ></span>
               <span>Tool traffic</span>
+            </div>
+            <div class="legend-item">
+              <span
+                class="legend-swatch"
+                style="border-top: 2px dashed var(--sl-color-neutral-400); opacity: 0.7;"
+              ></span>
+              <span>Unmanaged (dashed gray)</span>
             </div>
           </div>
 
@@ -3228,18 +4079,18 @@ export class AgentsView extends LitElement {
                                     'agents-canvas'
                                   )
                                 : liveTotal > 0
-                                  ? html`<sl-badge variant="success" pulse
+                                  ? html`<sl-badge variant="success" pill pulse
                                       >Live</sl-badge
                                     >`
                                   : isFlow
-                                    ? html`<sl-badge variant="success"
+                                    ? html`<sl-badge variant="success" pill
                                         >Active</sl-badge
                                       >`
                                     : ''
                             }
                           </div>
                           <div
-                            style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-500); margin-bottom: 8px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; word-break: break-word;"
+                            style="font-size: var(--sl-font-size-small); color: var(--console-meta-color); margin-bottom: 8px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; word-break: break-word;"
                             title="${
                               isFlow
                                 ? flowNode?.description || ''
@@ -3263,7 +4114,7 @@ export class AgentsView extends LitElement {
                             this.isModelTrafficFailing(agent)
                               ? html`
                                   <div class="model-traffic-failing">
-                                    Model traffic failing —
+                                    Model traffic failing:
                                     <a
                                       href=${
                                         agent.runtime_session_id
@@ -3421,18 +4272,11 @@ export class AgentsView extends LitElement {
                                 style="opacity: 0.7; font-size: 0.75rem; text-transform: uppercase;"
                                 >Last Seen</span
                               >
-                              <span style="font-weight: 600;"
-                                >${new Date(
-                                  liveActivity?.lastActivityAt ||
-                                    (isFlow
-                                      ? lastSeenFlow
-                                      : agent?.last_seen_at) ||
-                                    0
-                                ).toLocaleTimeString([], {
-                                  hour: '2-digit',
-                                  minute: '2-digit',
-                                })}</span
-                              >
+                              ${this.renderRelativeTimestamp(
+                                liveActivity?.lastActivityAt ||
+                                  (isFlow ? lastSeenFlow : agent?.last_seen_at),
+                                'canvas-last-seen'
+                              )}
                             </div>
                           </div>
                         </sl-card>
@@ -3564,7 +4408,7 @@ export class AgentsView extends LitElement {
     return html`
       <div
         class="page ${
-          this.currentView === 'canvas' ? 'page-canvas-wrapper' : ''
+          this.effectiveView === 'canvas' ? 'page-canvas-wrapper' : ''
         }"
       >
         ${this.renderOnboardingDialog()}
@@ -3598,7 +4442,7 @@ export class AgentsView extends LitElement {
         <div class="content-bounds">
           <view-header
             headerText="Agents"
-            description="Agents connected to Preloop — their gateway credentials, MCP access, and live status. Onboard agents you already run with the CLI, or deploy new ones."
+            description="Agents connected to Preloop: their gateway credentials, MCP access, and live status. Onboard agents you already run with the CLI, or deploy new ones."
             width="extra-wide"
           >
             <div
@@ -3612,14 +4456,14 @@ export class AgentsView extends LitElement {
                 }}
               >
                 <sl-icon slot="prefix" name="cloud-arrow-up"></sl-icon>
-                Deploy Agent
+                Deploy new agent
               </sl-button>
               <sl-button
                 variant="primary"
                 @click=${() => (this.showOnboardingDialog = true)}
               >
                 <sl-icon slot="prefix" name="plus-lg"></sl-icon>
-                Onboard Agents
+                Onboard existing agent
               </sl-button>
             </div>
           </view-header>
@@ -3693,19 +4537,42 @@ export class AgentsView extends LitElement {
             </form>
 
             <div class="view-switcher-group">
-              <span class="toolbar-divider" aria-hidden="true"></span>
-              <sl-radio-group
-                value=${this.currentView}
-                @sl-change=${(e: any) => this.setCurrentView(e.target.value)}
-                size="small"
+              <span class="results-count" aria-live="polite"
+                >${this.resultsLabel}</span
               >
-                <sl-radio-button value="cards" title="Cards View">
-                  <sl-icon name="grid"></sl-icon>
-                </sl-radio-button>
-                <sl-radio-button value="canvas" title="Canvas View">
-                  <sl-icon name="share"></sl-icon>
-                </sl-radio-button>
-              </sl-radio-group>
+              <span class="toolbar-divider" aria-hidden="true"></span>
+              <sl-button-group label="Agents view">
+                ${[
+                  { value: 'list' as const, label: 'List', icon: 'list-ul' },
+                  {
+                    value: 'cards' as const,
+                    label: 'Cards',
+                    icon: 'grid-3x3-gap',
+                  },
+                  {
+                    value: 'canvas' as const,
+                    label: 'Canvas',
+                    icon: 'diagram-3',
+                  },
+                ].map(
+                  (option) => html`
+                    <sl-button
+                      size="small"
+                      data-view=${option.value}
+                      variant=${
+                        this.currentView === option.value
+                          ? 'primary'
+                          : 'default'
+                      }
+                      aria-pressed=${this.currentView === option.value}
+                      @click=${() => this.setCurrentView(option.value)}
+                    >
+                      <sl-icon slot="prefix" name=${option.icon}></sl-icon>
+                      ${option.label}
+                    </sl-button>
+                  `
+                )}
+              </sl-button-group>
             </div>
           </div>
           ${
@@ -3718,26 +4585,28 @@ export class AgentsView extends LitElement {
         </div>
 
         ${
-          this.currentView === 'canvas'
+          this.effectiveView === 'canvas'
             ? this.renderCanvas()
-            : html`
-                <div class="cards">
-                  ${
-                    (!this.agents ||
-                      (this.agents.items.length === 0 &&
-                        this.flows.length === 0)) &&
-                    !this.loading
-                      ? html`
-                          <div class="empty-state">
-                            No agents or flows found matching your query.
-                          </div>
-                        `
-                      : [...(this.agents?.items || []), ...this.flows].map(
-                          (item) => this.renderAgentCard(item)
-                        )
-                  }
-                </div>
-              `
+            : this.effectiveView === 'list'
+              ? this.renderListView()
+              : html`
+                  <div class="cards">
+                    ${
+                      (!this.agents ||
+                        (this.agents.items.length === 0 &&
+                          this.flows.length === 0)) &&
+                      !this.loading
+                        ? html`
+                            <div class="empty-state">
+                              No agents or flows found matching your query.
+                            </div>
+                          `
+                        : [...(this.agents?.items || []), ...this.flows].map(
+                            (item) => this.renderAgentCard(item)
+                          )
+                    }
+                  </div>
+                `
         }
       </div>
     `;

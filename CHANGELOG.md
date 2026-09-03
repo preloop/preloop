@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   staging, now mostly confirm themselves. For runtimes that cannot resume a
   session (Gemini, Aider, OpenHands, remote runners) a written
   `/workspace/result.json` is accepted as the completion signal instead.
+- **Issue-implementation pickup and PR-comment resume**: `update_issue` can add a GitHub reaction (eyes on pickup) with no other fields. Flow prompts can use `{{execution.url}}`. Opening a PR records its URL on the execution, so a human comment on that PR restarts the same flow on the same branch. Unmatched comments do not start a run. Native CLI `--resume` is a follow-up (#356).
 - **`preloop agents refresh` (alias `sync`), `preloop models sync`, and `POST /api/v1/ai-models/sync`**: refresh rewrites managed model sections of onboarded agent configs from the account catalog; models sync (and the endpoint) pull newly released provider models into that catalog using stored credentials.
 - **Opt-in scheduled model-catalog sync**: `MODEL_CATALOG_SYNC_SCHEDULED_ENABLED` (default false; helm `config.modelCatalogSync.*`) runs the same discovery as `preloop models sync` for every account, attributing audit events to the `model-catalog-sync` system actor.
 - **`preloop usage hook` accepts harness-agnostic events**: stdin is
@@ -38,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a stub).
 
 ### Changed
+
+- **GitHub merged PRs emit `pull_request_merged`**: a closed-and-merged pull request is no longer normalized as `pull_request_closed`. GitLab Job Hooks expose `build_name` / `build_status`, and GitHub issue close exposes `state_reason`, so flows can filter `deploy:staging` success and merge-completed closes. The event pickers list Job Event and Deployment.
+
+- **GitHub backend CI uses 8 pytest-split shards**: group 1 of 4 was the
+  wall-clock pole (~7-9m vs ~3-4.5m). Eight `duration_based_chunks` slices
+  split that first quarter in half. Coverage still combines before the 60%
+  floor.
 
 - **Blog posts can show a hero image**: `og_image` in frontmatter is
   rendered as a figure under the tags on the post, as a linked thumbnail
@@ -73,6 +81,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`preloop runner fg` reconnects when the control-plane WebSocket drops**: close 1006 (and other transport errors) no longer exit the process. The runner redials with backoff, keeps an in-flight Docker job, resends `complete`/`logs` on the new socket, and sends WebSocket pings alongside the JSON heartbeat. Ctrl-C still unregisters. Auth/`gone` errors stay fatal.
+- **Console Runners page updates live**: register, connect, disconnect, lease, and complete publish `runner_updated` on the account websocket (`runners` topic) so status changes without a manual refresh.
+
+- **Migration job now syncs global flow presets after alembic**: the
+  post-upgrade hook runs `scripts/sync_flow_presets.py --no-propagate`
+  in the same container so global presets stop drifting between deploys
+  without rewriting derived user flows.
+- **API and console pods carry `app:` labels**: the selector lived only
+  on Deployment metadata, so `kubectl -l app=api` found nothing. Extra
+  pod-template labels do not change `spec.selector.matchLabels`.
+- **Console nginx accepts avatar uploads over 1 MB**: `client_max_body_size`
+  now matches `gateway.proxy.bodySize` (default 32m). Oversized requests
+  used to 413 at nginx; the console now surfaces an HTML 413 as "Image
+  too large to upload." instead of a generic failure.
 - **Scorecard supply-chain job pulls from GHCR**: `ossf/scorecard-action`
   is pinned to v2.4.4 (`ghcr.io/ossf/scorecard-action`). v2.4.0 pulled
   `gcr.io/openssf/scorecard-action`, which now denies unauthenticated pulls

@@ -19,6 +19,7 @@ export const GITHUB_TRACKER_EVENTS: TrackerEventOption[] = [
   { name: 'Comment Updated', value: 'comment_updated' },
   { name: 'Push to Repository', value: 'push' },
   { name: 'Release Published', value: 'release' },
+  { name: 'Deployment', value: 'deployment' },
 ];
 
 export const GITLAB_TRACKER_EVENTS: TrackerEventOption[] = [
@@ -39,6 +40,8 @@ export const GITLAB_TRACKER_EVENTS: TrackerEventOption[] = [
   { name: 'Push to Repository', value: 'push' },
   { name: 'Tag Push', value: 'tag_push' },
   { name: 'Pipeline Event', value: 'pipeline' },
+  { name: 'Job Event', value: 'job' },
+  { name: 'Deployment', value: 'deployment' },
   { name: 'Release Published', value: 'release' },
 ];
 
