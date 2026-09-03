@@ -976,6 +976,17 @@ export interface AccountGatewayUsageSummaryResponse {
   usage_by_flow: GatewayUsageByFlow[];
   usage_by_session: GatewayUsageBySession[];
   usage_by_tool?: GatewayUsageByTool[];
+  /**
+   * Set when the server answered from a pre-aggregated rollup rather than the
+   * raw request rows, which is how a year of usage comes back in a second.
+   * A rollup is coarser than the rows behind it, so the card says where the
+   * number came from instead of implying it counted every request.
+   *
+   * Both spellings are read because neither is universal across deployments;
+   * absent on servers that do not roll up, and the label is then not shown.
+   */
+  from_rollup?: boolean | null;
+  source?: string | null;
 }
 
 export interface RateLimitTotals {

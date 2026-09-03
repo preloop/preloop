@@ -19,6 +19,10 @@ function daysAgo(days: number): string {
   return new Date(NOW.getTime() - days * 86400000).toISOString();
 }
 
+function daysFromNow(days: number): string {
+  return new Date(NOW.getTime() + days * 86400000).toISOString();
+}
+
 function agentFixture(overrides: Record<string, unknown> = {}): any {
   return {
     id: 'agent-1',
@@ -287,6 +291,99 @@ describe('deriveAttentionItems', () => {
         (item) => item.title === 'Merge Request Reviewer'
       )!;
       expect(merge.href).to.equal('/console/flows/executions/exec-3');
+    });
+
+    it('says what a count of failures is made of', () => {
+      const items = derive({
+        executions: [
+          {
+            id: 'exec-1',
+            flow_id: 'flow-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: daysAgo(2),
+            end_time: minutesAgo(2 * 24 * 60 - 1),
+            failure_category: 'model_transient',
+          },
+          {
+            id: 'exec-2',
+            flow_id: 'flow-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: daysAgo(3),
+            failure_category: 'model_transient',
+          },
+          {
+            id: 'exec-3',
+            flow_id: 'flow-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: daysAgo(4),
+            failure_category: 'no_confirmation',
+          },
+        ],
+      });
+
+      expect(items[0].detail).to.equal(
+        '3 failed: 2 model transient, 1 no confirmation · latest 2d ago · 1m 0s'
+      );
+      expect(
+        items[0].evidence?.failedRuns?.map((run) => run.failureCategory)
+      ).to.deep.equal([
+        'model_transient',
+        'model_transient',
+        'no_confirmation',
+      ]);
+    });
+
+    it('names the category of a single failure without counting it', () => {
+      const items = derive({
+        executions: [
+          {
+            id: 'exec-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: minutesAgo(90),
+            end_time: minutesAgo(88),
+            failure_category: 'runner_conflict',
+          },
+        ],
+      });
+
+      expect(items[0].detail).to.equal(
+        'Failed: runner conflict · 1h ago · 2m 0s'
+      );
+    });
+
+    it('keeps the old wording when the server does not categorise', () => {
+      const items = derive({
+        executions: [
+          {
+            id: 'exec-1',
+            flow_id: 'flow-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: daysAgo(2),
+            end_time: minutesAgo(2 * 24 * 60 - 1),
+          },
+          {
+            id: 'exec-2',
+            flow_id: 'flow-1',
+            flow_name: 'Pull Request Reviewer',
+            status: 'FAILED',
+            start_time: daysAgo(3),
+          },
+        ],
+      });
+
+      expect(items[0].detail).to.equal(
+        '2 failed runs in 3d · latest 2d ago · 1m 0s'
+      );
+      expect(
+        items[0].evidence?.failedRuns?.every(
+          (run) => run.failureCategory === null
+        )
+      ).to.be.true;
     });
 
     it('ignores succeeded runs and anything older than 7 days', () => {
@@ -662,6 +759,126 @@ describe('deriveAttentionItems', () => {
 
       expect(items).to.have.length(1);
       expect(items[0].title).to.equal('1 model without a price');
+    });
+
+    // The staging account has priced ox-alpha at $0 since July and the
+    // console kept asking for a price. An override is an answer.
+    it('treats an override as a price, including one of $0', () => {
+      const usageSummary = summary({
+        price_catalog: { fetched_at: daysAgo(1), model_count: 120 },
+        unpriced_requests: 5,
+        usage_by_model: [
+          {
+            ai_model_id: 'model-1',
+            model_alias: 'openrouter/stealth/ox-alpha',
+            provider_name: 'openrouter',
+            request_count: 5,
+            token_usage: {
+              prompt_tokens: 1,
+              completion_tokens: 1,
+              total_tokens: 900,
+            },
+            estimated_cost: 0,
+            last_request_at: minutesAgo(10),
+          },
+        ],
+      });
+
+      const zeroOverride = {
+        model_alias: 'stealth/ox-alpha',
+        ai_model_id: 'model-1',
+        is_active: true,
+        effective_from: daysAgo(30),
+        effective_until: null,
+      };
+      expect(derive({ usageSummary, priceOverrides: [zeroOverride] })).to.eql(
+        []
+      );
+
+      // An override that has been switched off, or has not started, or has
+      // already ended, prices nothing.
+      const inert = [
+        { ...zeroOverride, is_active: false },
+        { ...zeroOverride, effective_from: daysFromNow(3) },
+        { ...zeroOverride, effective_until: daysAgo(1) },
+      ];
+      for (const override of inert) {
+        const items = derive({ usageSummary, priceOverrides: [override] });
+        expect(
+          items.map((item) => item.title),
+          JSON.stringify(override)
+        ).to.eql(['1 model without a price']);
+      }
+    });
+
+    it('matches an override on the alias the gateway reports', () => {
+      const usageSummary = summary({
+        price_catalog: { fetched_at: daysAgo(1), model_count: 120 },
+        unpriced_requests: 5,
+        usage_by_model: [
+          {
+            ai_model_id: null,
+            model_alias: 'openrouter/ox-alpha',
+            provider_name: 'openrouter',
+            request_count: 5,
+            token_usage: {
+              prompt_tokens: 1,
+              completion_tokens: 1,
+              total_tokens: 900,
+            },
+            estimated_cost: 0,
+            last_request_at: minutesAgo(10),
+          },
+        ],
+      });
+
+      // The override names the model, the gateway prefixes the provider.
+      expect(
+        derive({
+          usageSummary,
+          priceOverrides: [{ model_alias: 'ox-alpha', is_active: true }],
+        })
+      ).to.eql([]);
+
+      // A different model is a different model.
+      expect(
+        derive({
+          usageSummary,
+          priceOverrides: [{ model_alias: 'ox-beta', is_active: true }],
+        }).map((item) => item.title)
+      ).to.eql(['1 model without a price']);
+    });
+
+    // On a server that counts unpriced requests per model, the server knows
+    // better than any guess the console can make from an override list.
+    it('defers to the server count when the server sends one', () => {
+      const items = derive({
+        usageSummary: summary({
+          price_catalog: { fetched_at: daysAgo(1), model_count: 120 },
+          unpriced_requests: 5,
+          usage_by_model: [
+            {
+              ai_model_id: 'model-1',
+              model_alias: 'stealth/ox-alpha',
+              provider_name: 'openrouter',
+              request_count: 5,
+              token_usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 900,
+              },
+              estimated_cost: 0,
+              unpriced_request_count: 5,
+              last_request_at: minutesAgo(10),
+            },
+          ],
+        }),
+        priceOverrides: [{ model_alias: 'stealth/ox-alpha', is_active: true }],
+      });
+
+      expect(items.map((item) => item.title)).to.eql([
+        '1 model without a price',
+      ]);
     });
 
     it('stays quiet for a fresh catalog with everything priced', () => {

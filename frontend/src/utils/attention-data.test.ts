@@ -82,6 +82,11 @@ describe('loadAttentionInputs', () => {
         if (url.startsWith('/api/v1/account/gateway-usage/summary')) {
           return json({ total_requests: 3 });
         }
+        if (url.startsWith('/api/v1/billing/cost/pricing-overrides')) {
+          return json([
+            { id: 'override-1', model_alias: 'ox-alpha', is_active: true },
+          ]);
+        }
         return json({ detail: `Unhandled ${url}` });
       });
   });
@@ -213,6 +218,29 @@ describe('loadAttentionInputs', () => {
     expect(inputs.dismissalsSupported).to.be.false;
     expect(inputs.dismissals).to.eql([]);
     expect(inputs.approvals).to.have.length(1);
+  });
+
+  it('reads the price overrides, so an override counts as a price', async () => {
+    const inputs = await loadAttentionInputs();
+
+    expect(
+      requestedUrls().some((url) =>
+        url.startsWith('/api/v1/billing/cost/pricing-overrides')
+      ),
+      'overrides requested'
+    ).to.be.true;
+    expect(
+      inputs.priceOverrides?.map((override) => override.model_alias)
+    ).to.eql(['ox-alpha']);
+  });
+
+  it('carries on without overrides when the account cannot read them', async () => {
+    // A 403 on an account without the feature, or a 404 on an older server.
+    failing = ['/api/v1/billing/cost/pricing-overrides'];
+    const inputs = await loadAttentionInputs();
+
+    expect(inputs.priceOverrides).to.eql([]);
+    expect(inputs.usageSummary?.total_requests).to.equal(3);
   });
 
   it('skips the budget call when billing is off', async () => {

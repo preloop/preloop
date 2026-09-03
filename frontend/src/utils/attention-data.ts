@@ -8,6 +8,7 @@ import {
   getAccountRuntimeSessions,
   getBudgetPolicies,
   getFlowExecutions,
+  getModelPriceOverrides,
   listApprovalRequests,
   type BudgetPolicy,
 } from '../api';
@@ -21,6 +22,7 @@ import type {
   AttentionApproval,
   AttentionFlowExecution,
   AttentionInputs,
+  AttentionPriceOverride,
 } from './attention';
 import { parseUTCDate } from './date';
 
@@ -113,6 +115,7 @@ export async function loadAttentionInputs(
     policies,
     summary,
     dismissals,
+    priceOverrides,
   ] = await Promise.allSettled([
     listApprovalRequests({
       status: 'pending',
@@ -141,6 +144,10 @@ export async function loadAttentionInputs(
       includeBreakdown: true,
     }),
     getAttentionDismissals(),
+    // An override is a price, including one of $0. Without this the console
+    // asks for a price somebody set a month ago. A 403 on an account without
+    // the feature drops the list, and the rules fall back to spend.
+    getModelPriceOverrides({ activeOnly: true }),
   ]);
 
   const dismissalList =
@@ -182,6 +189,11 @@ export async function loadAttentionInputs(
       summary.status === 'fulfilled'
         ? (summary.value as AccountGatewayUsageSummaryResponse)
         : null,
+    priceOverrides:
+      priceOverrides.status === 'fulfilled' &&
+      Array.isArray(priceOverrides.value)
+        ? (priceOverrides.value as AttentionPriceOverride[])
+        : [],
     dismissals: dismissalList,
     dismissalsSupported:
       dismissals.status === 'fulfilled' &&
