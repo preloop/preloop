@@ -216,6 +216,12 @@ export class InventoryCard extends LitElement {
   @property({ type: Boolean }) loading = false;
   /** The page range, already worded ("30d"), shown but not editable here. */
   @property({ type: String }) rangeLabel = '30d';
+  /**
+   * True when the run counts came off a full page of the most recent 100
+   * executions whose oldest row is still inside the range: they are then a
+   * floor, not the range's total, and every cell that shows one says so.
+   */
+  @property({ type: Boolean }) flowRunsCapped = false;
 
   @state() private tab: InventoryTab = 'agents';
   @state() private sorts: Record<InventoryTab, string> = {
@@ -860,9 +866,24 @@ export class InventoryCard extends LitElement {
     `;
   }
 
+  /**
+   * What a run count means. Uncapped it is the range, full stop; capped it is
+   * as much of the range as the last 100 runs of the account reached.
+   */
+  private get flowCountTitle(): string {
+    return this.flowRunsCapped
+      ? `In the last ${this.rangeLabel}, from the most recent 100 runs`
+      : `In the last ${this.rangeLabel}`;
+  }
+
   private renderLastRun(run: InventoryFlowRun | null) {
     if (!run) {
-      return html`<span class="muted">No run in range</span>`;
+      // "No run in range" is only true when the page saw the whole range.
+      return this.flowRunsCapped
+        ? html`<span class="muted" title=${this.flowCountTitle}
+            >No run in the most recent 100</span
+          >`
+        : html`<span class="muted">No run in range</span>`;
     }
     const duration = executionDurationText(run);
     return html`
@@ -920,14 +941,22 @@ export class InventoryCard extends LitElement {
                         <td class="secondary wide-cell">
                           ${this.renderLastRun(row.lastRun)}
                         </td>
-                        <td class="num" data-label="Runs">
+                        <td
+                          class="num"
+                          data-label="Runs"
+                          title=${this.flowCountTitle}
+                        >
                           <a
                             class="row-name"
                             href="/console/flows/executions?flow_id=${row.id}"
                             >${this.formatCompactNumber(row.runs)}</a
                           >
                         </td>
-                        <td class="num" data-label="Failed">
+                        <td
+                          class="num"
+                          data-label="Failed"
+                          title=${this.flowCountTitle}
+                        >
                           ${this.formatCompactNumber(row.failed)}
                         </td>
                         <td class="num">${this.formatCurrency(row.cost)}</td>

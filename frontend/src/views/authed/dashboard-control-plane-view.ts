@@ -113,6 +113,16 @@ interface MCPServer {
   status: string;
 }
 
+/**
+ * The server's maximum page for `/flows/executions` (the endpoint clamps
+ * `limit` to 100 and takes no start date). The Inventory Flows tab derives its
+ * run and failure counts from this one page, so when the page comes back full
+ * and its oldest row is still inside the range there may be in-range runs the
+ * page never saw — which the card says in the cell title rather than printing
+ * a capped number as if it were the range.
+ */
+const FLOW_EXECUTIONS_PAGE_SIZE = 100;
+
 interface FlowExecution {
   id: string;
   flow_id: string;
@@ -1258,6 +1268,10 @@ export class DashboardView extends AuthedElement {
       this.totalIssues = data.totalIssues || 0;
       this.mcpServers = data.mcpServers || [];
       this.tools = data.tools || [];
+      // Restored like `tools`: both arrive in the slow secondary pass, and
+      // the Inventory Models tab would otherwise sit on "No models yet · Add
+      // a model" for the length of that pass on every reload.
+      this.aiModels = data.aiModels || [];
       this.flowExecutions = data.flowExecutions || [];
       this.flows = data.flows || [];
       this.flowExecutionsCount = data.flowExecutionsCount || 0;
@@ -1301,6 +1315,7 @@ export class DashboardView extends AuthedElement {
         totalIssues: this.totalIssues,
         mcpServers: this.mcpServers,
         tools: this.tools,
+        aiModels: this.aiModels,
         flowExecutions: this.flowExecutions,
         flows: this.flows,
         flowExecutionsCount: this.flowExecutionsCount,
@@ -1431,6 +1446,11 @@ export class DashboardView extends AuthedElement {
     const d = new Date(now);
     d.setMonth(d.getMonth() - 1);
     return d.toISOString();
+  }
+
+  /** The same boundary as `getGatewayStartDate()`, as epoch milliseconds. */
+  private getGatewayStartMs(): number {
+    return new Date(this.getGatewayStartDate()).getTime();
   }
 
   /**
@@ -1617,7 +1637,7 @@ export class DashboardView extends AuthedElement {
         // count for every flow in the account, so this reads the server's
         // maximum page rather than the five rows the old card showed.
         this.catchWith403Handling(
-          getFlowExecutions({ limit: 100 }),
+          getFlowExecutions({ limit: FLOW_EXECUTIONS_PAGE_SIZE }),
           [] as FlowExecution[]
         ),
         this.catchWith403Handling(
@@ -2793,6 +2813,33 @@ export class DashboardView extends AuthedElement {
     });
   }
 
+  /**
+   * Runs the page range contains, newest first. `$ est.` comes from the
+   * range-scoped gateway summary, so runs, failures and the last run are
+   * scoped the same way: one row of the table must not hold two time windows.
+   */
+  private get inRangeFlowExecutions(): FlowExecution[] {
+    const startMs = this.getGatewayStartMs();
+    return this.flowExecutions.filter((execution) => {
+      if (!execution.start_time) return false;
+      return parseUTCDate(execution.start_time).getTime() >= startMs;
+    });
+  }
+
+  /**
+   * True when the executions page came back full and its oldest row is still
+   * inside the range: the account ran more than one page inside the window, so
+   * the counts below are "from the most recent 100 runs", not "in the range".
+   */
+  private get flowRunsCapped(): boolean {
+    if (this.flowExecutions.length < FLOW_EXECUTIONS_PAGE_SIZE) return false;
+    const oldest = this.flowExecutions[this.flowExecutions.length - 1];
+    if (!oldest?.start_time) return false;
+    return (
+      parseUTCDate(oldest.start_time).getTime() >= this.getGatewayStartMs()
+    );
+  }
+
   private get inventoryFlowRows(): InventoryFlowRow[] {
     const costs = new Map<string, number>();
     for (const flow of this.gatewaySummary?.usage_by_flow || []) {
@@ -2805,8 +2852,7 @@ export class DashboardView extends AuthedElement {
       string,
       { runs: number; failed: number; last: FlowExecution | null }
     >();
-    const names = new Map<string, string>();
-    for (const execution of this.flowExecutions) {
+    for (const execution of this.inRangeFlowExecutions) {
       if (!execution.flow_id) continue;
       const running = runs.get(execution.flow_id) || {
         runs: 0,
@@ -2820,7 +2866,14 @@ export class DashboardView extends AuthedElement {
       // The list arrives newest first, so the first row wins.
       running.last = running.last || execution;
       runs.set(execution.flow_id, running);
-      if (execution.flow_name) {
+    }
+
+    // Names for flows the list no longer holds come from every execution the
+    // page fetched, in range or not: a deleted flow's spend is in the summary
+    // and the row that carries it needs a name.
+    const names = new Map<string, string>();
+    for (const execution of this.flowExecutions) {
+      if (execution.flow_id && execution.flow_name) {
         names.set(execution.flow_id, execution.flow_name);
       }
     }
@@ -2828,9 +2881,10 @@ export class DashboardView extends AuthedElement {
     const known = new Set(this.flows.map((flow) => flow.id));
     const listed = this.flows.map((flow) => ({ id: flow.id, name: flow.name }));
     // A run whose flow was deleted still has spend in the window; show it
-    // rather than losing the money.
+    // rather than losing the money. Only in-range spend or in-range runs earn
+    // the row, so a flow that was deleted before the window opened is gone.
     for (const [flowId, name] of names) {
-      if (!known.has(flowId)) {
+      if (!known.has(flowId) && (costs.has(flowId) || runs.has(flowId))) {
         listed.push({ id: flowId, name });
       }
     }
@@ -2928,7 +2982,8 @@ export class DashboardView extends AuthedElement {
         .modelsTotal=${this.aiModelsCount}
         .toolsTotal=${this.enabledToolsCount}
         .rangeLabel=${this.gatewayRangeLabel}
-        ?loading=${this.loading && !this.gatewaySummary}
+        .flowRunsCapped=${this.flowRunsCapped}
+        ?loading=${this.loading || this.fetchingMCPAndTools}
       ></inventory-card>
     `;
   }
