@@ -520,6 +520,57 @@ describe('activity-feed', () => {
       expect(footer?.getAttribute('href')).to.equal('/console/audit');
     });
 
+    it('scrolls its list instead of growing the card', async () => {
+      const el = await feed();
+      for (let index = 0; index < FEED_CAP; index += 1) {
+        el.ingest('gateway_activity', {
+          type: 'model_gateway_call',
+          timestamp: new Date(Date.now() - index * 1000).toISOString(),
+          payload: {
+            api_usage_id: `scroll-${index}`,
+            status_code: 500,
+            model_alias: `model-${index}`,
+          },
+        });
+      }
+      await el.updateComplete;
+      const list = el.shadowRoot!.querySelector<HTMLElement>('.rows')!;
+      const styles = getComputedStyle(list);
+      expect(styles.overflowY).to.equal('auto');
+      expect(list.scrollHeight).to.be.greaterThan(list.clientHeight);
+    });
+
+    it('holds the read position when a row arrives above it', async () => {
+      const el = await feed();
+      // The rail hands the card a height; here the test does.
+      el.style.height = '200px';
+      for (let index = 0; index < 20; index += 1) {
+        el.ingest('gateway_activity', {
+          type: 'model_gateway_call',
+          timestamp: new Date(Date.now() - (index + 10) * 60000).toISOString(),
+          payload: {
+            api_usage_id: `hold-${index}`,
+            status_code: 500,
+            model_alias: `model-${index}`,
+          },
+        });
+      }
+      await el.updateComplete;
+      const list = el.shadowRoot!.querySelector<HTMLElement>('.rows')!;
+      list.scrollTop = 60;
+      const before = list.scrollTop;
+      expect(before).to.equal(60);
+      el.ingest('flow_executions', {
+        execution_id: 'exec-1',
+        flow_id: 'flow-1',
+        type: 'status_update',
+        timestamp: new Date().toISOString(),
+        payload: { status: 'FAILED' },
+      });
+      await el.updateComplete;
+      expect(list.scrollTop).to.be.greaterThan(before);
+    });
+
     it('gives each tone its own dot', async () => {
       const el = await feed();
       el.ingest('flow_executions', {

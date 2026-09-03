@@ -683,22 +683,46 @@ export class ActivityFeed extends LitElement {
   private seen = new Set<string>();
   /** Resolved (never rejected) once the user lookup has had its turn. */
   private usersReady: Promise<void> = Promise.resolve();
+  private scrollAnchor: { top: number; height: number } | null = null;
 
   static styles = [
     unsafeCSS(consoleStyles),
     unsafeCSS(executionSubjectCss),
     css`
+      /* The card is a column that fills whatever height it is given and
+         scrolls its list inside, so a busy hour never grows the page past
+         the column it lives in. The host is flex rather than block so a
+         parent can hand it a height with flex: 1; when nobody does, the
+         list's own max-height (below) keeps it civil. */
       :host {
-        display: block;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
         width: 100%;
       }
 
-      .content-card,
+      .content-card {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-height: 0;
+        width: 100%;
+      }
+
       .content-card::part(base) {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        min-height: 0;
         width: 100%;
       }
 
       .content-card::part(body) {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
         padding: 0;
       }
 
@@ -733,9 +757,39 @@ export class ActivityFeed extends LitElement {
         width: 6px;
       }
 
+      /* The list is the one thing that scrolls. Off the rail (below 1200px,
+         or anywhere else this card is used) it stops at 480px so it cannot
+         run away with the page either. */
       .rows {
         display: flex;
+        flex: 1 1 auto;
         flex-direction: column;
+        max-height: 480px;
+        min-height: 0;
+        overflow-y: auto;
+        scrollbar-width: thin;
+        overscroll-behavior: contain;
+      }
+
+      .rows::-webkit-scrollbar {
+        width: 8px;
+      }
+
+      .rows::-webkit-scrollbar-thumb {
+        background: var(--console-hairline);
+        border-radius: 4px;
+      }
+
+      @media (min-width: 1200px) {
+        /* On the rail the column decides the height, not the list. */
+        .rows {
+          max-height: none;
+        }
+      }
+
+      .footer,
+      .card-head {
+        flex: 0 0 auto;
       }
 
       .row {
@@ -1011,6 +1065,34 @@ export class ActivityFeed extends LitElement {
     } finally {
       this.loading = false;
     }
+  }
+
+  /**
+   * Keep the read position when a row arrives above it.
+   *
+   * A feed that scrolls itself is only usable if reading it is not
+   * interrupted: rows prepend, so everything below moves down by the height
+   * of the new row. Unless the list is already at the top (where the point
+   * is to see the newest row arrive), the scroll offset is corrected by
+   * exactly the height that was added.
+   */
+  protected willUpdate(changed: Map<string, unknown>): void {
+    if (!changed.has('events')) return;
+    const list = this.renderRoot?.querySelector<HTMLElement>('.rows');
+    this.scrollAnchor = list
+      ? { top: list.scrollTop, height: list.scrollHeight }
+      : null;
+  }
+
+  protected updated(changed: Map<string, unknown>): void {
+    if (!changed.has('events') || !this.scrollAnchor) return;
+    const anchor = this.scrollAnchor;
+    this.scrollAnchor = null;
+    if (anchor.top <= 0) return;
+    const list = this.renderRoot?.querySelector<HTMLElement>('.rows');
+    if (!list) return;
+    const added = list.scrollHeight - anchor.height;
+    if (added > 0) list.scrollTop = anchor.top + added;
   }
 
   /**

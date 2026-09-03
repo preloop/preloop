@@ -814,6 +814,33 @@ export class DashboardView extends AuthedElement {
         gap: var(--sl-spacing-medium);
       }
 
+      /* The side column is a rail, not a stack that grows the page.
+         The .main-content element is the scroll port (console-shell), so a
+         sticky child of it sticks at the top of what the operator can see,
+         and a column that is exactly viewport-tall subtracts the header.
+
+         align-self: stretch makes the rail as tall as the row it shares
+         with the main column, so on a short page it stops at the main
+         column's foot instead of pushing the page down; the max-height
+         then caps it at one viewport. Usage keeps its natural height and
+         the feed takes what is left (flex: 1 1 0, so its own rows never
+         vote on how tall the column wants to be) and scrolls internally. */
+      @media (min-width: 1200px) {
+        .column-layout.dashboard > .side-column {
+          position: sticky;
+          top: var(--sl-spacing-medium);
+          align-self: stretch;
+          max-height: calc(
+            100dvh - var(--console-header-height) - var(--sl-spacing-medium) * 2
+          );
+        }
+
+        .column-layout.dashboard > .side-column > activity-feed {
+          flex: 1 1 0;
+          min-height: 240px;
+        }
+      }
+
       .summary-grid,
       .control-plane-grid,
       .analytics-grid {

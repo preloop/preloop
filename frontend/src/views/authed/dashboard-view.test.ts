@@ -1134,6 +1134,31 @@ describe('DashboardView', () => {
       expect(feed.budgetPolicies.length).to.equal(3);
     });
 
+    it('makes the side column a sticky rail on a wide viewport', async () => {
+      const element = await mountLoaded();
+      const side = element.shadowRoot?.querySelector(
+        '.side-column'
+      ) as HTMLElement;
+      const feed = element.shadowRoot?.querySelector(
+        'activity-feed'
+      ) as HTMLElement;
+
+      // The rule is a media query, so it only holds on a wide test window.
+      if (window.innerWidth < 1200) return;
+      const column = getComputedStyle(side);
+      expect(column.position).to.equal('sticky');
+      // Exactly as tall as the viewport minus the shell header and the gap,
+      // never taller: the column is the page's floor for its cards.
+      expect(parseFloat(column.maxHeight)).to.be.at.most(window.innerHeight);
+      expect(parseFloat(column.maxHeight)).to.be.greaterThan(0);
+      const card = getComputedStyle(feed);
+      expect(card.flexGrow).to.equal('1');
+      expect(parseFloat(card.minHeight)).to.equal(240);
+      expect(side.getBoundingClientRect().height).to.be.at.most(
+        window.innerHeight
+      );
+    });
+
     it('opens the budget dialog when the feed asks for it', async () => {
       const element = await mountLoaded();
 

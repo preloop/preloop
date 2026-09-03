@@ -110,4 +110,11 @@
     /* Cards are 8px in both themes (Shoelace large), so a card corner is
        distinguishable from a chip corner without a border to help. */
     --console-card-radius: var(--sl-border-radius-large);
+
+    /* The console header sits above the scrolling content area, so a column
+       that wants to be exactly as tall as what the operator can see has to
+       subtract it. Measured on the shell at 1440x900 (58.6px); rounded up so
+       a sticky column keeps a hair of clearance rather than a hair of
+       overlap. Anything sticky inside `.main-content` uses this. */
+    --console-header-height: 60px;
 }
