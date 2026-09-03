@@ -33,6 +33,7 @@ import {
 import type {
   AIModel,
   FlowGatewayEvent,
+  ManagedAgentSummary,
   RuntimeSessionInteractionSummary,
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
@@ -55,6 +56,7 @@ import {
 } from '../utils/session-observer';
 import { reducedMotionStyles } from '../styles/reduced-motion';
 import './session-chat-view';
+import './talk-button';
 import './session-list-panel';
 import './session-replay-panel';
 import './session-request-timeline';
@@ -177,6 +179,17 @@ export class PreloopSessionObserver extends LitElement {
   /** Optional override for the sidebar's no-sessions message. */
   @property({ type: String })
   emptyText = '';
+
+  /**
+   * The agent whose sessions these are, when the host view knows it.
+   *
+   * The widget is read-only by design: the Conversation tab shows what was
+   * said, and typing happens in the talk window. Given the agent, the toolbar
+   * can offer Talk about the session on screen; without it, the button would
+   * have nothing to open, so it is simply not rendered.
+   */
+  @property({ attribute: false })
+  talkAgent: ManagedAgentSummary | null = null;
 
   @state()
   private observedSessions: ObservedSession[] = [];
@@ -439,6 +452,15 @@ export class PreloopSessionObserver extends LitElement {
         flex-wrap: wrap;
         gap: var(--sl-spacing-small);
         justify-content: space-between;
+      }
+
+      /*
+       * The control row is a group, not a spread: with Talk added it wraps at
+       * 1440, and space-between would strand the leftover buttons at opposite
+       * ends of the second line.
+       */
+      .mode-row {
+        justify-content: flex-end;
       }
 
       .content {
@@ -1497,7 +1519,9 @@ export class PreloopSessionObserver extends LitElement {
       label: string;
       icon: string | null;
     }> = [
-      { mode: 'conversation', label: 'Chat', icon: 'chat-left-text' },
+      // "Chat" implied you could type here. This tab reads a session; the
+      // talk window is where a conversation happens.
+      { mode: 'conversation', label: 'Conversation', icon: 'chat-left-text' },
       { mode: 'timeline', label: 'Transcript', icon: 'list-ul' },
       { mode: 'replay', label: 'Replay', icon: 'play-circle' },
     ];
@@ -1757,6 +1781,7 @@ export class PreloopSessionObserver extends LitElement {
             <sl-icon slot="prefix" name="list-columns-reverse"></sl-icon>
             Requests
           </sl-button>
+          ${this.renderTalkButton()}
           <sl-button size="small" @click=${() => this.reloadActiveSession()}>
             Refresh
           </sl-button>
@@ -1777,6 +1802,23 @@ export class PreloopSessionObserver extends LitElement {
         </div>
       </div>
     `;
+  }
+
+  /**
+   * Talk about the session the operator is reading, so the window opens on
+   * the same conversation rather than on whatever is newest.
+   */
+  private renderTalkButton() {
+    if (!this.talkAgent) return nothing;
+    const session = this.activeSession;
+    return html`<talk-button
+      .agent=${this.talkAgent}
+      .session=${
+        session?.canLoadEvents && session.id ? { id: session.id } : null
+      }
+      source-context="session-widget"
+      compact
+    ></talk-button>`;
   }
 
   render() {

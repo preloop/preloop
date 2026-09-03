@@ -1148,8 +1148,26 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
 
         Returns:
             One dict per (model, alias, provider) group with request counts,
-            token totals, and estimated cost.
+            token totals, estimated cost, how many of those requests carried no
+            price, how many were priced at exactly zero, how many failed, and
+            when the model was last called.
         """
+        # A request with no price and a request priced at zero look identical
+        # in a cost total and mean opposite things: the first is a hole in the
+        # price list, the second is a deliberate (or mistaken) $0. They are
+        # counted apart so the console can say which one it is.
+        #
+        # ``unpriced`` matches ``get_gateway_usage_summary`` exactly, so the
+        # per-model counts sum to the account total the same page shows.
+        unpriced_condition = and_(
+            ApiUsage.estimated_cost.is_(None),
+            ApiUsage.total_tokens > 0,
+        )
+        zero_priced_condition = and_(
+            ApiUsage.estimated_cost.isnot(None),
+            ApiUsage.estimated_cost == 0,
+            ApiUsage.total_tokens > 0,
+        )
         query = db.query(
             ApiUsage.ai_model_id,
             ApiUsage.model_alias,
@@ -1163,6 +1181,16 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
                 "estimated_cost"
             ),
+            func.coalesce(func.sum(case((unpriced_condition, 1), else_=0)), 0).label(
+                "unpriced_request_count"
+            ),
+            func.coalesce(func.sum(case((zero_priced_condition, 1), else_=0)), 0).label(
+                "zero_priced_request_count"
+            ),
+            func.coalesce(
+                func.sum(case((ApiUsage.status_code >= 400, 1), else_=0)), 0
+            ).label("failed_request_count"),
+            func.max(ApiUsage.timestamp).label("last_request_at"),
         ).filter(
             # Aggregate by model identity; aliases that share ai_model_id still
             # appear as separate groups when model_alias differs (intentional —
@@ -1214,6 +1242,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "completion_tokens": int(row.completion_tokens or 0),
                 "total_tokens": int(row.total_tokens or 0),
                 "estimated_cost": float(row.estimated_cost or 0.0),
+                "unpriced_request_count": int(row.unpriced_request_count or 0),
+                "zero_priced_request_count": int(row.zero_priced_request_count or 0),
+                "failed_request_count": int(row.failed_request_count or 0),
+                "last_request_at": row.last_request_at,
             }
             for row in rows
         ]
@@ -1595,6 +1627,96 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             }
             for row in rows
         ]
+
+    def get_models_used_for_executions(
+        self,
+        db: Session,
+        execution_ids: Sequence[Any],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Return the model aliases that served each execution, most used first.
+
+        The console shows "which model ran this" on the executions list and on
+        the execution page. The answer lives in the gateway usage rows, which
+        attach to an execution two ways, both of which must be counted:
+
+        * ``api_usage.flow_execution_id`` — the direct attribution the metrics
+          endpoint and the cost rollup already use.
+        * ``api_usage.runtime_session_id`` pointing at the runtime session the
+          execution owns (``session_source_type='flow_execution'`` and
+          ``session_source_id`` = the execution id). Agents that call the
+          gateway through a session reference that way, and those rows carry
+          no ``flow_execution_id``.
+
+        One query for the whole page (never one per row): callers pass every
+        execution id they are about to render and index the result by id.
+        Replay-validation traffic is excluded exactly as everywhere else, and
+        rows with no ``model_alias`` are skipped rather than reported as an
+        unnamed model.
+
+        Args:
+            db: Database session.
+            execution_ids: Execution ids to aggregate (str or UUID).
+
+        Returns:
+            ``{execution_id: [{"model_alias", "provider_name",
+            "request_count"}, ...]}`` ordered by request count descending then
+            alias, for the executions that have any named gateway usage.
+            Executions with none are absent from the mapping.
+        """
+        ids = [str(execution_id) for execution_id in execution_ids if execution_id]
+        if not ids:
+            return {}
+
+        # The execution an attributed row belongs to: its own
+        # flow_execution_id when set, else the execution id its runtime
+        # session was created for.
+        session_execution_id = case(
+            (
+                and_(
+                    RuntimeSession.session_source_type == "flow_execution",
+                    RuntimeSession.session_source_id.isnot(None),
+                ),
+                RuntimeSession.session_source_id,
+            ),
+            else_=None,
+        )
+        execution_key = func.coalesce(
+            cast(ApiUsage.flow_execution_id, String), session_execution_id
+        )
+
+        rows = (
+            db.query(
+                execution_key.label("execution_id"),
+                ApiUsage.model_alias.label("model_alias"),
+                func.max(ApiUsage.provider_name).label("provider_name"),
+                func.count(ApiUsage.id).label("request_count"),
+            )
+            .outerjoin(RuntimeSession, ApiUsage.runtime_session_id == RuntimeSession.id)
+            .filter(
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.model_alias.isnot(None),
+                execution_key.in_(ids),
+                exclude_replay_usage_condition(),
+            )
+            .group_by(execution_key, ApiUsage.model_alias)
+            .order_by(
+                execution_key,
+                func.count(ApiUsage.id).desc(),
+                ApiUsage.model_alias.asc(),
+            )
+            .all()
+        )
+
+        models_by_execution: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            models_by_execution.setdefault(str(row.execution_id), []).append(
+                {
+                    "model_alias": row.model_alias,
+                    "provider_name": row.provider_name,
+                    "request_count": int(row.request_count or 0),
+                }
+            )
+        return models_by_execution
 
     def get_gateway_usage_for_execution(
         self,

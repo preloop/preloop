@@ -9,6 +9,7 @@ from preloop.models.models.flow_execution import TRIGGER_SUBJECT_KEY
 from preloop.sync.event_normalizer import (
     SUBJECT_KEY,
     attach_trigger_subject,
+    describe_schedule,
     extract_trigger_subject,
     gitlab_label_delta,
     humanize_event_type,
@@ -189,6 +190,27 @@ class TestEventNormalization:
         }
         assert normalize_event_type("github", "issues", payload) == "issue_labeled"
 
+    def test_github_pr_merged_on_close(self):
+        """GitHub PR closed+merged is pull_request_merged, not closed."""
+        payload = {"action": "closed", "pull_request": {"merged": True, "number": 1}}
+        assert (
+            normalize_event_type("github", "pull_request", payload)
+            == "pull_request_merged"
+        )
+
+    def test_github_pr_closed_without_merge(self):
+        payload = {"action": "closed", "pull_request": {"merged": False, "number": 1}}
+        assert (
+            normalize_event_type("github", "pull_request", payload)
+            == "pull_request_closed"
+        )
+
+    def test_gitlab_job_hook(self):
+        assert normalize_event_type("gitlab", "Job Hook", {}) == "job"
+
+    def test_github_deployment_status(self):
+        assert normalize_event_type("github", "deployment_status", {}) == "deployment"
+
 
 class TestFilterFieldExtraction:
     """Test extraction of filter fields from webhook payloads."""
@@ -308,6 +330,44 @@ class TestFilterFieldExtraction:
 
         # Should be a single string, not a list
         assert fields["assignee"] == "single_assignee"
+
+    def test_github_issue_closed_exposes_state_reason(self):
+        payload = {
+            "action": "closed",
+            "issue": {
+                "state": "closed",
+                "state_reason": "completed",
+                "user": {"login": "octocat"},
+            },
+            "sender": {"login": "octocat"},
+        }
+        fields = extract_filter_fields("github", "issues", payload)
+        assert fields["state_reason"] == "completed"
+        assert fields["state"] == "closed"
+
+    def test_gitlab_job_hook_exposes_build_fields(self):
+        payload = {
+            "object_kind": "build",
+            "build_name": "deploy:staging",
+            "build_status": "success",
+            "build_stage": "deploy",
+            "ref": "main",
+        }
+        fields = extract_filter_fields("gitlab", "Job Hook", payload)
+        assert fields["build_name"] == "deploy:staging"
+        assert fields["build_status"] == "success"
+        assert fields["build_stage"] == "deploy"
+        assert fields["ref"] == "main"
+
+    def test_github_deployment_exposes_environment(self):
+        payload = {
+            "deployment": {"environment": "staging"},
+            "deployment_status": {"state": "success", "environment": "staging"},
+            "sender": {"login": "octocat"},
+        }
+        fields = extract_filter_fields("github", "deployment_status", payload)
+        assert fields["environment"] == "staging"
+        assert fields["state"] == "success"
 
 
 class TestFilterMatching:
@@ -492,6 +552,9 @@ class TestHumanizeEventType:
         assert humanize_event_type("pull_request_updated") == "Pull Request Updated"
         assert humanize_event_type("merge_request_merged") == "Merge Request Merged"
         assert humanize_event_type("push") == "Push to Repository"
+        assert humanize_event_type("job") == "Job Event"
+        assert humanize_event_type("deployment") == "Deployment"
+        assert humanize_event_type("pull_request_merged") == "Pull Request Merged"
 
     def test_unknown_event_type_falls_back_to_title_case(self):
         """Unknown/future event types still render readably, not as slugs."""
@@ -594,6 +657,73 @@ class TestExtractTriggerSubject:
         assert "Issue Updated" in subject["text"]
         assert "commit" not in subject
 
+    def test_github_issue_subject_carries_the_title(self):
+        """The issue title rides along so the console can show it on hover."""
+        subject = extract_trigger_subject(
+            {
+                "source": "github",
+                "type": "issue_opened",
+                "payload": GITHUB_ISSUE_OPENED,
+            }
+        )
+
+        assert subject["title"] == GITHUB_ISSUE_OPENED["issue"]["title"]
+        assert subject["repo"] == "octocat/Hello-World"
+        assert subject["reference"] == "#1"
+
+    def test_scheduled_run_names_its_schedule(self):
+        """Two scheduled runs differ by time, so the subject names the rule."""
+        subject = extract_trigger_subject(
+            {
+                "source": "schedule",
+                "type": "schedule",
+                "payload": {
+                    "schedule": {
+                        "type": "daily",
+                        "at": "09:00",
+                        "timezone": "Europe/Berlin",
+                    },
+                    "timezone": "Europe/Berlin",
+                    "scheduled_at": "2026-09-02T07:00:00+00:00",
+                },
+            }
+        )
+
+        assert subject["text"] == "Scheduled · Daily at 09:00 (Europe/Berlin)"
+        assert subject["event"] == "Scheduled"
+        assert subject["schedule"] == "Daily at 09:00 (Europe/Berlin)"
+
+    def test_scheduled_run_without_a_readable_config_says_scheduled(self):
+        """An unknown schedule shape still labels the row, never an id."""
+        subject = extract_trigger_subject(
+            {"source": "schedule", "type": "schedule", "payload": {"schedule": None}}
+        )
+
+        assert subject["text"] == "Scheduled"
+
+    def test_manual_run_names_the_person(self):
+        """A manual run has no repo or reference: who ran it is the subject."""
+        subject = extract_trigger_subject(
+            {"source": "manual", "type": None, "triggered_by": "Jane Doe"}
+        )
+
+        assert subject["text"] == "Manual Run by Jane Doe"
+        assert subject["actor"] == "Jane Doe"
+
+    def test_manual_test_run_names_the_person_too(self):
+        """The console's Run button sends test_mode; the person still shows."""
+        subject = extract_trigger_subject(
+            {"test_mode": True, "triggered_by": "jane.doe@example.com"}
+        )
+
+        assert subject["text"] == "Manual Test Run by jane.doe@example.com"
+
+    def test_manual_run_without_a_name_degrades_to_the_label(self):
+        """Older executions carry no triggered_by; the label alone is enough."""
+        subject = extract_trigger_subject({"source": "manual", "type": None})
+
+        assert subject["text"] == "Manual Run"
+
     def test_test_mode_overrides_event_label(self):
         """Manually triggered runs are labelled as such."""
         subject = extract_trigger_subject(
@@ -631,6 +761,55 @@ class TestExtractTriggerSubject:
         )
 
         assert subject["text"] == "Pull Request Updated"
+
+
+class TestDescribeSchedule:
+    """The stored schedule config renders the phrase the editor shows."""
+
+    def test_cron(self):
+        """Cron is the power option and shows its expression verbatim."""
+        assert (
+            describe_schedule({"type": "cron", "expr": "0 9 * * 1", "timezone": "UTC"})
+            == "Cron '0 9 * * 1' (UTC)"
+        )
+
+    def test_legacy_cron_shape(self):
+        """Early rows stored {"cron": ...} with no type discriminator."""
+        assert (
+            describe_schedule({"cron": "*/30 * * * *", "timezone": "UTC"})
+            == "Cron '*/30 * * * *' (UTC)"
+        )
+
+    def test_interval_singular_unit(self):
+        """'Every 1 hours' reads wrong, so the unit loses its plural."""
+        assert (
+            describe_schedule({"type": "interval", "every": 1, "unit": "hours"})
+            == "Every 1 hour"
+        )
+        assert (
+            describe_schedule({"type": "interval", "every": 6, "unit": "hours"})
+            == "Every 6 hours"
+        )
+
+    def test_weekly_uses_the_editor_day_labels(self):
+        """Weekly days read as Mon, Wed rather than mon, wed."""
+        assert (
+            describe_schedule(
+                {
+                    "type": "weekly",
+                    "days": ["mon", "wed"],
+                    "at": "18:30",
+                    "timezone": "UTC",
+                }
+            )
+            == "Weekly on Mon, Wed at 18:30 (UTC)"
+        )
+
+    def test_unknown_shapes_return_none(self):
+        """A shape this function does not know degrades to no description."""
+        assert describe_schedule(None) is None
+        assert describe_schedule({}) is None
+        assert describe_schedule({"type": "daily"}) is None
 
 
 class TestAttachTriggerSubject:

@@ -253,6 +253,12 @@ class ModelGatewayEventEmitter:
                 "gateway_attempt": meta_data.get("gateway_attempt"),
                 "is_retry": meta_data.get("is_retry"),
                 "retry_of_api_usage_id": meta_data.get("retry_of_api_usage_id"),
+                # Retries the gateway itself made against the provider inside
+                # this single request (mid-stream disconnect, 5xx, 429).
+                # 0 = the call succeeded first time. Lets the console show
+                # "recovered after N retries" instead of only a longer
+                # duration, and makes provider flakiness countable.
+                "retried": int(meta_data.get("upstream_retries") or 0),
                 "finish_reason": meta_data.get("finish_reason"),
                 "prompt_tokens": usage.prompt_tokens,
                 "completion_tokens": usage.completion_tokens,

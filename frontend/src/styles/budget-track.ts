@@ -39,7 +39,7 @@ export const budgetTrackStyles = css`
     left: var(--budget-soft-position, 0%);
     width: 2px;
     background: var(--sl-color-warning-600);
-    box-shadow: 0 0 0 1px var(--sl-color-neutral-0);
+    box-shadow: 0 0 0 1px var(--console-surface);
   }
 
   .budget-hard-marker {
@@ -49,7 +49,7 @@ export const budgetTrackStyles = css`
     bottom: 0;
     width: 2px;
     background: var(--sl-color-danger-600);
-    box-shadow: 0 0 0 1px var(--sl-color-neutral-0);
+    box-shadow: 0 0 0 1px var(--console-surface);
   }
 `;
 

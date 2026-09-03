@@ -92,4 +92,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert user_avatar.down_revision == "20260822_alias_collision_audit"
     dismissals = script.get_revision("20260902_attention_dismiss")
     assert dismissals.down_revision == "20260830_user_avatar"
-    assert script.get_heads() == ["20260902_attention_dismiss"]
+    failure_category = script.get_revision("20260903_failure_category")
+    assert failure_category.down_revision == "20260902_attention_dismiss"
+    assert script.get_heads() == ["20260903_failure_category"]

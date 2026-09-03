@@ -23,6 +23,7 @@ function agentFixture(overrides: Record<string, unknown> = {}): any {
   return {
     id: 'agent-1',
     display_name: 'Hermes',
+    agent_kind: 'hermes',
     session_source_id: 'hermes-principal',
     lifecycle_state: 'active',
     activity_status: 'idle',
@@ -547,6 +548,122 @@ describe('deriveAttentionItems', () => {
       expect(unpriced[0].requests).to.equal(2134);
     });
 
+    // Wave 8: the server now separates "no price" from "priced at zero", so a
+    // model that is genuinely free stops being reported as unpriced.
+    it('counts only models with unpriced requests when the server says so', () => {
+      const items = derive({
+        usageSummary: summary({
+          price_catalog: { fetched_at: daysAgo(1), model_count: 120 },
+          unpriced_requests: 30,
+          usage_by_model: [
+            {
+              ai_model_id: 'model-1',
+              model_alias: 'openrouter/stealth/ox-alpha',
+              provider_name: 'openrouter',
+              request_count: 30,
+              token_usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 900,
+              },
+              estimated_cost: 0,
+              unpriced_request_count: 30,
+              zero_priced_request_count: 0,
+              last_request_at: minutesAgo(10),
+            },
+            {
+              ai_model_id: 'model-2',
+              model_alias: 'local/qwen-3-coder',
+              provider_name: 'ollama',
+              request_count: 12,
+              token_usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 40,
+              },
+              estimated_cost: 0,
+              unpriced_request_count: 0,
+              zero_priced_request_count: 12,
+              last_request_at: minutesAgo(20),
+            },
+          ],
+        }),
+      });
+
+      const unpriced = items.find((item) => item.id === 'pricing:catalog');
+      expect(unpriced?.title).to.equal('1 model without a price');
+      expect(
+        (unpriced?.evidence?.unpricedModels || []).map((model) => model.alias)
+      ).to.eql(['openrouter/stealth/ox-alpha']);
+    });
+
+    it('raises a low-tone question about models priced at $0', () => {
+      const items = derive({
+        usageSummary: summary({
+          price_catalog: { fetched_at: daysAgo(1), model_count: 120 },
+          unpriced_requests: 0,
+          usage_by_model: [
+            {
+              ai_model_id: 'model-2',
+              model_alias: 'local/qwen-3-coder',
+              provider_name: 'ollama',
+              request_count: 12,
+              token_usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 40,
+              },
+              estimated_cost: 0,
+              unpriced_request_count: 0,
+              zero_priced_request_count: 12,
+              last_request_at: minutesAgo(20),
+            },
+          ],
+        }),
+      });
+
+      expect(items).to.have.length(1);
+      expect(items[0].id).to.equal('pricing:zero-priced');
+      expect(items[0].severity).to.equal('low');
+      expect(items[0].title).to.equal('1 model priced at $0');
+      expect(items[0].detail).to.equal('Promo or mistake?');
+      expect(items[0].quickDismiss).to.deep.equal({
+        label: 'Expected',
+        reason: 'expected',
+      });
+      expect(
+        (items[0].evidence?.zeroPricedModels || []).map((model) => model.alias)
+      ).to.eql(['local/qwen-3-coder']);
+    });
+
+    // Staging runs a server that predates the per-model counts.
+    it('falls back to a zero cost when the server sends no unpriced count', () => {
+      const items = derive({
+        usageSummary: summary({
+          price_catalog: { fetched_at: daysAgo(1), model_count: 120 },
+          unpriced_requests: 5,
+          usage_by_model: [
+            {
+              ai_model_id: 'model-1',
+              model_alias: 'openrouter/stealth/ox-alpha',
+              provider_name: 'openrouter',
+              request_count: 5,
+              token_usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 900,
+              },
+              estimated_cost: 0,
+              last_request_at: minutesAgo(10),
+            },
+          ],
+        }),
+      });
+
+      expect(items).to.have.length(1);
+      expect(items[0].title).to.equal('1 model without a price');
+    });
+
     it('stays quiet for a fresh catalog with everything priced', () => {
       const items = derive({
         usageSummary: summary({
@@ -604,11 +721,12 @@ describe('deriveAttentionItems', () => {
       expect(items[0].fingerprint).to.equal('run:run-3');
     });
 
-    it('gives an unconnected agent a sentence and the command that fixes it', () => {
+    it('gives an unconnected CLI agent a sentence and the command that fixes it', () => {
       const items = derive({
         agents: [
           agentFixture({
             display_name: 'Researcher',
+            agent_kind: 'claude_code',
             onboarding_state: 'incomplete',
           }),
         ],
@@ -618,12 +736,73 @@ describe('deriveAttentionItems', () => {
       expect(reasons).to.have.length(1);
       expect(reasons[0].text).to.contain('Onboarding never completed');
       expect(reasons[0].command).to.equal(
-        'preloop agents onboard "Researcher"'
+        "preloop agents onboard 'Researcher'"
       );
       expect(reasons[0].action).to.deep.equal({
         label: 'Open agent',
         href: '/console/agents/agent-1',
       });
+    });
+
+    it('quotes a display name so the copied command cannot run anything else', () => {
+      const items = derive({
+        agents: [
+          agentFixture({
+            display_name: `Researcher'; rm -rf / #`,
+            agent_kind: 'claude_code',
+            onboarding_state: 'incomplete',
+          }),
+        ],
+      });
+
+      const reasons = items[0].evidence?.agentReasons || [];
+      expect(reasons[0].command).to.equal(
+        `preloop agents onboard 'Researcher'\\''; rm -rf / #'`
+      );
+    });
+
+    it('tells a custom agent to start or remove it, with no CLI command', () => {
+      const items = derive({
+        agents: [
+          agentFixture({
+            id: 'agent-7',
+            display_name: 'Researcher',
+            agent_kind: 'custom',
+            onboarding_state: 'incomplete',
+          }),
+        ],
+      });
+
+      const reasons = items[0].evidence?.agentReasons || [];
+      expect(reasons).to.have.length(1);
+      expect(reasons[0].text).to.equal(
+        'Custom agents are started by you. Start it where it runs, remove it if it is gone, or dismiss this if it is expected.'
+      );
+      expect(reasons[0].command).to.equal(undefined);
+      expect(reasons[0].action).to.deep.equal({
+        label: 'Open agent',
+        href: '/console/agents/agent-7',
+      });
+      expect(reasons[0].removeAgent).to.deep.equal({
+        id: 'agent-7',
+        name: 'Researcher',
+      });
+    });
+
+    it('treats an unknown agent kind as not CLI onboardable', () => {
+      const items = derive({
+        agents: [
+          agentFixture({
+            display_name: 'LangGraph Researcher',
+            agent_kind: 'langgraph',
+            onboarding_state: 'incomplete',
+          }),
+        ],
+      });
+
+      const reasons = items[0].evidence?.agentReasons || [];
+      expect(reasons[0].command).to.equal(undefined);
+      expect(reasons[0].removeAgent?.name).to.equal('LangGraph Researcher');
     });
 
     it('keeps the last five gateway failures for a model', () => {

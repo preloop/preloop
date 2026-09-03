@@ -167,29 +167,32 @@ export function renderAgentIdentityBadges(
   agent: ManagedAgentSummary
 ): TemplateResult {
   const tags = getVisibleAgentTags(agent.tags);
+  // The state is a chip (a tint); the owner and the operator's tags are
+  // labels, so they get the boxless `tag-chip` treatment: an icon, the word,
+  // meta colour. A solid pill per tag turned an agent row into a paint chart.
   return html`
     <div class="agent-identity-badges">
-      <sl-badge variant="${getAgentLifecycleVariant(agent)}" pill>
+      <sl-badge class="chip" variant="${getAgentLifecycleVariant(agent)}" pill>
         ${getAgentLifecycleLabel(agent)}
       </sl-badge>
       ${
         agent.owner_username
-          ? html`<sl-badge variant="neutral" pill title="Owner">
-              <sl-icon
-                name="person"
-                style="margin-right: 3px; opacity: 0.7;"
-              ></sl-icon
-              >${agent.owner_username}</sl-badge
+          ? html`<sl-badge
+              class="tag-chip"
+              variant="neutral"
+              pill
+              title="Owner"
+            >
+              <sl-icon name="person"></sl-icon>${agent.owner_username}</sl-badge
             >`
           : null
       }
       ${tags.map(
         ([key, value]) => html`
-          <sl-badge variant="neutral" pill>
-            <span style="opacity: 0.7">${key}</span>${
+          <sl-badge class="tag-chip" variant="neutral" pill>
+            <sl-icon name="tag"></sl-icon>${key}${
               value && value !== 'true'
-                ? html`<span style="opacity: 0.4; margin: 0 4px;">=</span
-                    >${value}`
+                ? html`<span class="tag-chip-value">=${value}</span>`
                 : ''
             }
           </sl-badge>

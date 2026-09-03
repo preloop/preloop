@@ -10,11 +10,13 @@ import pytest
 from preloop.models.crud.flow_runner import crud_flow_runner, runner_matches_pool
 from preloop.services.runner_service import (
     DEFAULT_QUEUE_TIMEOUT,
+    emit_runner_updated,
     hash_runner_token,
     lease_job,
     mark_queued_or_fail,
     persistable_job_payload,
     resolve_runner_pool,
+    runner_console_payload,
 )
 
 
@@ -168,3 +170,82 @@ def test_lease_job_skips_locked_runner_and_claims_next(
     )
     assert result is next_runner
     assert next_runner.status == "busy"
+
+
+def test_runner_console_payload_omits_token() -> None:
+    runner_id = uuid4()
+    user_id = uuid4()
+    runner = SimpleNamespace(
+        id=runner_id,
+        name="box",
+        hostname="mac.local",
+        os="darwin",
+        arch="arm64",
+        labels=["local"],
+        status="online",
+        last_heartbeat=datetime(2026, 9, 3, tzinfo=timezone.utc),
+        current_execution_id=None,
+        registered_by_user_id=user_id,
+        token="runner-token",
+        token_hash="hashed",
+    )
+    payload = runner_console_payload(runner)
+    assert payload["id"] == str(runner_id)
+    assert payload["status"] == "online"
+    assert payload["labels"] == ["local"]
+    assert payload["registered_by_email"] is None
+    assert "token" not in payload
+    assert "token_hash" not in payload
+
+
+def test_emit_runner_updated_includes_registered_by_email(monkeypatch) -> None:
+    captured: dict = {}
+    monkeypatch.setattr(
+        "preloop.services.runner_service.emit_account_event",
+        lambda event: captured.update(event),
+    )
+    monkeypatch.setattr(
+        "preloop.services.runner_service.crud_user.get",
+        lambda db, id: SimpleNamespace(email="ops@example.com"),
+    )
+    runner = SimpleNamespace(
+        id=uuid4(),
+        account_id=uuid4(),
+        name="box",
+        hostname="mac.local",
+        os="darwin",
+        arch="arm64",
+        labels=["local"],
+        status="online",
+        last_heartbeat=datetime(2026, 9, 3, tzinfo=timezone.utc),
+        current_execution_id=None,
+        registered_by_user_id=uuid4(),
+    )
+    emit_runner_updated(runner, db=MagicMock())
+    assert captured["payload"]["registered_by_email"] == "ops@example.com"
+
+
+def test_emit_runner_updated_publishes_runners_topic(monkeypatch) -> None:
+    captured: dict = {}
+    monkeypatch.setattr(
+        "preloop.services.runner_service.emit_account_event",
+        lambda event: captured.update(event),
+    )
+    runner = SimpleNamespace(
+        id=uuid4(),
+        account_id=uuid4(),
+        name="box",
+        hostname="mac.local",
+        os="darwin",
+        arch="arm64",
+        labels=["local"],
+        status="online",
+        last_heartbeat=datetime(2026, 9, 3, tzinfo=timezone.utc),
+        current_execution_id=None,
+        registered_by_user_id=None,
+    )
+    emit_runner_updated(runner)
+    assert captured["topic"] == "runners"
+    assert captured["type"] == "runner_updated"
+    assert captured["payload"]["name"] == "box"
+    assert captured["payload"]["status"] == "online"

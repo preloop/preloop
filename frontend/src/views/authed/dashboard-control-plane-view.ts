@@ -8,12 +8,10 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/progress-bar/progress-bar.js';
-import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
-import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
-import '../../components/agent-talk-composer.ts';
 import '../../components/mcp-setup-dialog.ts';
 import '../../components/budget-limits-dialog.ts';
-import '../../components/time-range-select.ts';
+import '../../components/activity-feed.ts';
+import '../../components/inventory-card.ts';
 import '../../components/usage-card.ts';
 import '../../components/view-header.ts';
 import {
@@ -37,6 +35,8 @@ import {
   getUsers,
   getFeatures,
   getUserProfile,
+  hasPermission,
+  type UserPermissions,
 } from '../../api';
 import '../../components/preloop-invite-dialog';
 import '../../components/preloop-flow-form';
@@ -44,12 +44,7 @@ import '../../components/add-ai-model-modal';
 import '../../components/preloop-deploy-wizard';
 import { isSaaS } from '../../brand-config';
 import { normalizeObservedSession } from '../../utils/session-observer';
-import { renderAgentIcon } from '../../utils/agent-icons';
-import {
-  getAgentSourceLabel,
-  renderAgentIdentityBadges,
-  sessionBelongsToAgent,
-} from '../../utils/agent-display';
+import { getAgentStatusChip } from '../../utils/agent-display';
 import {
   attentionItemAnchor,
   ATTENTION_KIND_META,
@@ -62,29 +57,46 @@ import { unifiedWebSocketManager } from '../../services/unified-websocket-manage
 import type {
   AccountGatewayUsageSummaryResponse,
   AccountRateLimitReportResponse,
+  GatewayUsageByModel,
   GatewayUsageBySession,
+  GatewayUsageByTool,
   GatewayUsageSearchResultItem,
   ManagedAgentSummary,
   RuntimeSessionSummary,
   AIModel,
 } from '../../types';
 import { parseUTCDate } from '../../utils/date';
-import { executionDurationText } from '../../utils/execution';
-import {
-  TOP_MODEL_GROUP_PREVIEW_LIMIT,
-  TOP_MODEL_SESSION_PREVIEW_LIMIT,
-  compareByUsageMetric,
-  mergeGatewaySummaryPreservingBreakdown,
-  previewWindow,
-} from '../../utils/top-models-overview';
-import { getAgentControlState } from '../../utils/agent-control';
+import { executionSubjectCss } from '../../utils/execution-subject';
+import { mergeGatewaySummaryPreservingBreakdown } from '../../utils/gateway-summary';
 import {
   pickDefaultModel,
   selectableModels,
 } from '../../utils/ai-model-selection';
 import type { Tool } from '../../components/tool-card';
+import type {
+  InventoryAgentRow,
+  InventoryFlowRow,
+  InventoryModelRow,
+  InventoryToolRow,
+  InventoryUserRow,
+} from '../../components/inventory-card';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
+
+/**
+ * A user as the admin list returns them: the shared `User` type predates
+ * roles being carried on the list, and the Inventory only reads four fields.
+ */
+interface AccountUser {
+  id: string;
+  username?: string | null;
+  email?: string | null;
+  full_name?: string | null;
+  is_active?: boolean;
+  last_login?: string | null;
+  roles?: Array<{ name?: string | null }> | null;
+  inherited_roles?: Array<{ name?: string | null }> | null;
+}
 
 interface AuditEvent {
   id: string;
@@ -119,6 +131,16 @@ interface MCPServer {
   status: string;
 }
 
+/**
+ * The server's maximum page for `/flows/executions` (the endpoint clamps
+ * `limit` to 100 and takes no start date). The Inventory Flows tab derives its
+ * run and failure counts from this one page, so when the page comes back full
+ * and its oldest row is still inside the range there may be in-range runs the
+ * page never saw — which the card says in the cell title rather than printing
+ * a capped number as if it were the range.
+ */
+const FLOW_EXECUTIONS_PAGE_SIZE = 100;
+
 interface FlowExecution {
   id: string;
   flow_id: string;
@@ -127,6 +149,11 @@ interface FlowExecution {
   start_time: string;
   end_time: string | null;
   error_message: string | null;
+  /** What the run was about, derived from the trigger when it was created.
+      Five runs of one flow are otherwise indistinguishable on this card. */
+  trigger_subject?: string | null;
+  trigger_subject_url?: string | null;
+  trigger_event_details?: Record<string, unknown> | null;
 }
 
 interface ApprovalRequest {
@@ -158,6 +185,15 @@ interface TopModelSubjectGroup {
 }
 
 export const NEXT_STEPS_DISMISSED_KEY = 'dashboard_next_steps_dismissed';
+
+/**
+ * What the last completed load concluded about the checklist. The card is
+ * derived from four separate fetches; before they land, every step looks
+ * undone, which is how a finished account saw "Next steps" flash back on
+ * every refresh. Remembering the answer means the page can stay quiet until
+ * it knows better.
+ */
+export const NEXT_STEPS_DONE_KEY = 'dashboard_next_steps_all_done';
 
 /** The wire formats the model gateway speaks, as URL prefixes. */
 type GatewayFormat = '/openai/v1' | '/anthropic/v1' | '/google/v1';
@@ -204,7 +240,9 @@ export class DashboardView extends AuthedElement {
   @state() private totalIssues = 0;
   @state() private mcpServers: MCPServer[] = [];
   @state() private tools: Tool[] = [];
-  @state() private recentFlowExecutions: FlowExecution[] = [];
+  @state() private flowExecutions: FlowExecution[] = [];
+  /** Flow ids and names, so the Inventory lists flows that never ran. */
+  @state() private flows: Array<{ id: string; name: string }> = [];
   @state() private flowExecutionsCount = 0;
   @state() private failedExecutionsCount = 0;
   @state() private succeededFlowExecutionsCount = 0;
@@ -214,6 +252,16 @@ export class DashboardView extends AuthedElement {
   @state() private hasAIModels = false;
   @state() private aiModelsCount = 0;
   @state() private enabledUsersCount = 0;
+  /** Active users, kept for the Inventory's Users tab (Cloud/Enterprise). */
+  @state() private accountUsers: AccountUser[] = [];
+  /**
+   * This account's permissions, or null when RBAC is off (OSS, DISABLE_RBAC).
+   *
+   * `undefined` means the profile has not answered yet; both that and null
+   * read as unrestricted, the same way the shell treats them, so a slow or
+   * failed profile call never hides something the operator can use.
+   */
+  @state() private permissions: UserPermissions = undefined;
   @state() private toolCallsCount = 0;
   @state() private failedToolCallsCount = 0;
   @state() private totalFlowsCount = 0;
@@ -222,17 +270,14 @@ export class DashboardView extends AuthedElement {
   @state() private gatewayTimeRange: 'day' | 'week' | 'month' | 'year' =
     'month';
   @state() private fetchingBudget = false;
-  @state() private activeAgentsTimeRange: '5m' | '1h' | '1d' | '1w' | '1mo' =
-    '1d';
-  @state() private fetchingActiveAgents = false;
-  @state() private topModelsSortMetric: 'spend' | 'usage' = 'spend';
-  @state() private expandedOverviewGroups = new Set<string>();
-  @state() private expandedPreviewKeys = new Set<string>();
+  @state() private fetchingAgents = false;
   @state() private showSetupDialog = false;
   @state() private showBudgetDialog = false;
   @state() private welcomeCardDismissed = false;
   @state() private nextStepsDismissed = false;
   @state() private userManagementEnabled = false;
+  /** True once the feature flags have answered, either way. */
+  @state() private featuresResolved = false;
   /** Rate-limited requests for the gateway row; null when the call failed. */
   @state() private rateLimitReport: AccountRateLimitReportResponse | null =
     null;
@@ -268,13 +313,16 @@ export class DashboardView extends AuthedElement {
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
   private refreshInFlight = false;
-
-  /** Start time plus, when known, how long the run took or has been going. */
-  private executionSecondaryText(exec: FlowExecution): string {
-    const started = this.formatDate(exec.start_time);
-    const duration = executionDurationText(exec);
-    return duration ? `${started} · ${duration}` : started;
-  }
+  /**
+   * Makes "Updated just now" age.
+   *
+   * The label is a relative time, and a relative time that only recomputes
+   * when its data changes is a lie by the second minute: a page left open
+   * over lunch claimed the numbers under it were a minute old. Bumping this
+   * every 30s re-renders the header and nothing else.
+   */
+  @state() private updatedTick = 0;
+  private updatedTimer: number | null = null;
 
   private formatDate(dateStr: string | null | undefined): string {
     if (!dateStr) return '';
@@ -294,62 +342,6 @@ export class DashboardView extends AuthedElement {
   static styles = [
     reducedMotionStyles,
     css`
-      /* Five stats, left aligned, on one 64px row. They are counts, so they
-         are read across, not admired: icon and number on one line, the noun
-         under it in the meta register. */
-      .hero-stats {
-        align-items: flex-start;
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-2x-large);
-        margin-bottom: var(--sl-spacing-medium);
-        min-height: 64px;
-      }
-      .hero-stat {
-        color: inherit;
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        text-decoration: none;
-      }
-      .hero-stat-top {
-        align-items: center;
-        display: flex;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .hero-stat-icon {
-        color: var(--sl-color-neutral-400);
-        font-size: 18px;
-      }
-      .hero-stat-value {
-        font-size: var(--console-stat-value);
-        font-weight: 600;
-        font-variant-numeric: tabular-nums;
-        line-height: 1.2;
-      }
-      .hero-stat-label {
-        color: var(--sl-color-neutral-500);
-        font-size: var(--console-text-meta);
-      }
-      .hero-stat:hover .hero-stat-label {
-        text-decoration: underline;
-      }
-      /* The only stat allowed a colour is the one that asks for something. */
-      .hero-stat.tone-warning .hero-stat-icon,
-      .hero-stat.tone-warning .hero-stat-value {
-        color: var(--sl-color-warning-600);
-      }
-      .hero-stat.tone-success .hero-stat-icon {
-        color: var(--sl-color-success-600);
-      }
-      /* The strip sits under the H1, not inside a card: five counts and a
-         hairline, so the first card on the page is about what is happening
-         rather than about how many things exist. */
-      .hero-stats.stat-strip {
-        border-bottom: 1px solid var(--sl-color-neutral-200);
-        margin-bottom: var(--sl-spacing-medium);
-        padding-bottom: var(--sl-spacing-small);
-      }
       /* One row per plane: name, endpoint, what it did. */
       .plane-row {
         align-items: center;
@@ -359,7 +351,7 @@ export class DashboardView extends AuthedElement {
         padding: var(--sl-spacing-x-small) 0;
       }
       .plane-row + .plane-row {
-        border-top: 1px solid var(--sl-color-neutral-100);
+        border-top: 1px solid var(--console-hairline);
       }
       .plane-name-cell {
         align-items: center;
@@ -421,7 +413,7 @@ export class DashboardView extends AuthedElement {
         padding: 1px 4px;
       }
       .plane-docs {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         display: flex;
       }
       .plane-stats {
@@ -432,11 +424,11 @@ export class DashboardView extends AuthedElement {
         white-space: nowrap;
       }
       .plane-quiet {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
       .gateway-header-meta {
         align-items: center;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         display: flex;
         font-size: var(--console-text-meta);
         gap: var(--sl-spacing-x-small);
@@ -452,10 +444,13 @@ export class DashboardView extends AuthedElement {
         gap: var(--sl-spacing-small);
         padding: var(--sl-spacing-x-small) 0;
       }
+      /* The one exception to "no filled box inside a card": a command you
+         are meant to select and copy is a block of input, and it takes the
+         page colour so it reads as recessed rather than raised. */
       .connect-command {
         align-items: center;
-        background: var(--sl-color-neutral-50);
-        border: 1px solid var(--sl-color-neutral-200);
+        background: var(--console-page);
+        border: none;
         border-radius: var(--sl-border-radius-medium);
         display: flex;
         gap: var(--sl-spacing-2x-small);
@@ -470,15 +465,15 @@ export class DashboardView extends AuthedElement {
          never falls to a second row. */
       .attention-strip {
         align-items: center;
-        /* A translucent mix of one warning token reads as a pale tint in light
-           and a dim tint in dark, instead of the inverted-scale solid band. */
+        /* A translucent mix of one warning token over the card surface reads
+           as a tinted band in both themes, instead of an orange block. */
         background: color-mix(
           in srgb,
-          var(--sl-color-warning-500) 12%,
-          var(--sl-color-neutral-0)
+          var(--sl-color-warning-500) 10%,
+          var(--console-surface)
         );
         border: 1px solid
-          color-mix(in srgb, var(--sl-color-warning-500) 40%, transparent);
+          color-mix(in srgb, var(--sl-color-warning-500) 35%, transparent);
         border-radius: var(--sl-border-radius-medium);
         display: flex;
         flex-wrap: nowrap;
@@ -515,19 +510,28 @@ export class DashboardView extends AuthedElement {
         min-width: 0;
       }
       /* Quiet amber: the strip behind them is already the alarm, so the
-         chips read as labels rather than as five more warnings. */
+         chips read as labels rather than as five more warnings. Soft chip
+         recipe, one tone at 16% with no border. */
       .attention-chip-link sl-badge::part(base) {
         align-items: center;
-        background-color: var(--sl-color-warning-100);
-        border-color: var(--sl-color-warning-200);
-        color: var(--sl-color-warning-900);
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-warning-500) 16%,
+          transparent
+        );
+        border-width: 0;
+        color: var(--sl-color-warning-800);
         display: flex;
         gap: var(--sl-spacing-3x-small);
         max-width: 100%;
         min-width: 0;
       }
       .attention-chip-link:hover sl-badge::part(base) {
-        background-color: var(--sl-color-warning-200);
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-warning-500) 26%,
+          transparent
+        );
       }
       /* min-width lets the label shrink inside the badge, so a long one ends
          in an ellipsis instead of being cut mid-word by the strip. */
@@ -546,6 +550,17 @@ export class DashboardView extends AuthedElement {
       }
       .attention-strip-all:hover {
         text-decoration: underline;
+      }
+      /* Nothing is wrong, one thing is worth a look: same line, no amber. */
+      .attention-strip.low-only {
+        background: var(--console-surface);
+        border-color: var(--sl-color-neutral-200);
+      }
+      .attention-strip.low-only .attention-strip-icon {
+        color: var(--sl-color-neutral-500);
+      }
+      .attention-strip.low-only .attention-strip-count {
+        color: var(--sl-color-neutral-700);
       }
       /* Next steps: a checklist, not a wizard. */
       .next-steps-list {
@@ -579,26 +594,20 @@ export class DashboardView extends AuthedElement {
         color: var(--sl-color-success-600);
       }
       .next-step.done .next-step-label {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         text-decoration: line-through;
       }
       .updated-at {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
         font-weight: var(--sl-font-weight-normal);
       }
       .capsule-eyebrow {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         font-weight: 600;
         letter-spacing: 0.04em;
         text-transform: uppercase;
-      }
-      .range-note {
-        color: var(--sl-color-neutral-500);
-        font-size: var(--sl-font-size-small);
-        font-weight: var(--sl-font-weight-normal);
-        font-variant-numeric: tabular-nums;
       }
       .budget-track {
         position: relative;
@@ -631,7 +640,7 @@ export class DashboardView extends AuthedElement {
         left: var(--budget-soft-position, 0%);
         width: 2px;
         background: var(--sl-color-warning-600);
-        box-shadow: 0 0 0 1px var(--sl-color-neutral-0);
+        box-shadow: 0 0 0 1px var(--console-surface);
       }
       .budget-hard-marker {
         position: absolute;
@@ -640,128 +649,6 @@ export class DashboardView extends AuthedElement {
         bottom: 0;
         width: 2px;
         background: var(--sl-color-danger-600);
-      }
-      .expandable-group {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .expandable-header {
-        align-items: flex-start;
-        cursor: pointer;
-        display: flex;
-        gap: var(--sl-spacing-x-small);
-        user-select: none;
-      }
-      .expand-icon {
-        color: var(--sl-color-neutral-500);
-        flex-shrink: 0;
-        margin-top: 2px;
-        transition: transform 0.2s ease;
-      }
-      .expand-icon.open {
-        transform: rotate(90deg);
-      }
-      .expandable-leading {
-        align-items: flex-start;
-        display: flex;
-        flex: 1;
-        gap: var(--sl-spacing-small);
-        min-width: 0;
-      }
-      .expandable-identity {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-3x-small);
-        min-width: 0;
-      }
-      .expandable-identity .row-primary {
-        display: block;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .agent-meta-line {
-        color: var(--sl-color-neutral-500);
-        font-size: var(--sl-font-size-x-small);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .agent-identity-badges {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .agent-identity-badges sl-badge {
-        max-width: 100%;
-      }
-      .expandable-trailing {
-        align-items: center;
-        display: flex;
-        flex-shrink: 0;
-        gap: var(--sl-spacing-x-small);
-        margin-left: auto;
-      }
-      .expandable-content {
-        border-left: 2px solid var(--sl-color-neutral-200);
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        margin-left: calc(1rem + var(--sl-spacing-x-small));
-        padding-left: var(--sl-spacing-medium);
-      }
-      .expandable-subheader {
-        align-items: center;
-        cursor: pointer;
-        display: flex;
-        gap: var(--sl-spacing-x-small);
-        user-select: none;
-      }
-      .expandable-subheader .row-primary {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .overview-nested-groups {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-2x-small);
-        margin-top: var(--sl-spacing-2x-small);
-      }
-      .overview-see-more {
-        align-self: flex-start;
-        margin-top: 2px;
-      }
-      .expandable-subheader-metric {
-        color: var(--sl-color-neutral-500);
-        flex-shrink: 0;
-        font-size: var(--sl-font-size-x-small);
-        margin-left: auto;
-        white-space: nowrap;
-      }
-      .nested-session-list {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-      .nested-session-row {
-        align-items: center;
-        display: flex;
-        font-size: var(--sl-font-size-small);
-        gap: var(--sl-spacing-small);
-        justify-content: space-between;
-      }
-      .nested-session-row a {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .nested-session-metric {
-        color: var(--sl-color-neutral-500);
-        flex-shrink: 0;
-        font-size: var(--sl-font-size-x-small);
       }
       /* Compliance-specific styles */
       .compliance-progress {
@@ -959,6 +846,7 @@ export class DashboardView extends AuthedElement {
     `,
 
     unsafeCSS(consoleStyles),
+    unsafeCSS(executionSubjectCss),
     css`
       :host {
         display: block;
@@ -983,12 +871,6 @@ export class DashboardView extends AuthedElement {
         }
       }
 
-      .loading-container {
-        display: flex;
-        justify-content: center;
-        padding: var(--sl-spacing-2x-large);
-      }
-
       /* Overview only: the cards are dense, so a large gap between them read
          as "unrelated sections" and cost a scroll. */
       .dashboard-stack {
@@ -1000,6 +882,43 @@ export class DashboardView extends AuthedElement {
       .main-column,
       .side-column {
         gap: var(--sl-spacing-medium);
+      }
+
+      /* The side column is a rail, not a stack that grows the page.
+         The .main-content element is the scroll port (console-shell), so a
+         sticky child of it sticks at the top of what the operator can see,
+         and a column that is exactly viewport-tall subtracts the header.
+
+         align-self: stretch makes the rail as tall as the row it shares
+         with the main column, so on a short page it stops at the main
+         column's foot instead of pushing the page down; the max-height
+         then caps it at one viewport. Usage keeps its natural height and
+         the feed takes what is left (flex: 1 1 0, so its own rows never
+         vote on how tall the column wants to be) and scrolls internally. */
+      @media (min-width: 1200px) {
+        .column-layout.dashboard > .side-column {
+          position: sticky;
+          top: var(--sl-spacing-medium);
+          align-self: stretch;
+          max-height: calc(
+            100dvh - var(--console-header-height) - var(--sl-spacing-medium) * 2
+          );
+        }
+
+        /* The floor is what makes the rail a list rather than a peephole:
+           at 240px the card showed three lines and an expanded row had to be
+           scrolled to be read. It is stated against the viewport as well as
+           in pixels so a short laptop window shrinks the feed instead of
+           pushing the Usage card off the rail. */
+        .column-layout.dashboard > .side-column > activity-feed {
+          flex: 1 1 0;
+          min-height: min(360px, 34dvh);
+          /* The rail is bounded and stretched above, so here (and only
+             here) the column decides the feed's height and the card's own
+             360px stop would only make the list shorter than the space it
+             has been given. */
+          --activity-feed-list-max-height: none;
+        }
       }
 
       .summary-grid,
@@ -1041,7 +960,6 @@ export class DashboardView extends AuthedElement {
       .analytics-label,
       .analytics-subtext,
       .step-description,
-      .empty-state,
       .row-meta,
       .summary-item span:last-child,
       .capsule-hint {
@@ -1176,7 +1094,6 @@ export class DashboardView extends AuthedElement {
         overflow-wrap: anywhere;
       }
 
-      .row-value,
       .summary-item strong {
         color: var(--sl-color-neutral-900);
         font-weight: 600;
@@ -1233,29 +1150,6 @@ export class DashboardView extends AuthedElement {
       /* One centered line in a 72px box. An empty card used to take as much
          vertical space as a full one, so a quiet account looked like a broken
          one. */
-      .empty-state {
-        align-items: center;
-        background: var(--sl-color-neutral-0);
-        border: 1px dashed var(--sl-color-neutral-300);
-        border-radius: var(--sl-border-radius-medium);
-        display: flex;
-        gap: var(--sl-spacing-small);
-        justify-content: center;
-        min-height: 72px;
-        padding: var(--sl-spacing-medium);
-        text-align: center;
-      }
-
-      .empty-state sl-icon {
-        color: var(--sl-color-neutral-400);
-        flex-shrink: 0;
-        font-size: 1.25rem;
-      }
-
-      .empty-state p {
-        margin: 0;
-      }
-
       @media (max-width: 1200px) {
         .column-layout.dashboard {
           grid-template-columns: 1fr;
@@ -1273,22 +1167,12 @@ export class DashboardView extends AuthedElement {
           flex-direction: column;
         }
 
-        .row-value,
         .summary-item strong {
           text-align: left;
         }
 
         .analytics-grid {
           grid-template-columns: 1fr;
-        }
-
-        /* Phone: the five stats wrap into a grid rather than scrolling off
-           the card, and the strip becomes two rows. */
-        .hero-stats {
-          column-gap: var(--sl-spacing-large);
-          display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-          row-gap: var(--sl-spacing-medium);
         }
 
         /* Phone: the strip is allowed the second row it needs, and the chips
@@ -1357,16 +1241,39 @@ export class DashboardView extends AuthedElement {
     this.loadCachedDashboardData();
     void this.fetchDashboardData();
     this.connectRealtime();
+    this.updatedTimer = window.setInterval(() => {
+      if (this.lastUpdatedAt) this.updatedTick += 1;
+    }, 30000);
   }
 
   private async fetchAdminStatus() {
     try {
       const user = await getUserProfile();
       this.isAdmin = user?.is_superuser || false;
+      this.permissions = user?.permissions ?? null;
     } catch (error) {
       console.error('Failed to fetch user profile:', error);
       this.isAdmin = false;
+      this.permissions = null;
     }
+  }
+
+  /**
+   * Whether this account has teammates to show *and* this operator may see
+   * them.
+   *
+   * `GET /api/v1/users` requires `view_users`, which the system viewer role
+   * does not carry. Gating the tab on the licence flag alone put a Users tab
+   * in front of a viewer that answered "No teammates yet." after a swallowed
+   * 403 - a sentence about the account when the truth was about the reader.
+   * Without the permission there is no tab, which is what the sidebar already
+   * does with /console/settings/users.
+   */
+  private get canViewUsers(): boolean {
+    return (
+      this.userManagementEnabled &&
+      hasPermission(this.permissions, 'view_users')
+    );
   }
 
   private async fetchFeatures() {
@@ -1381,6 +1288,8 @@ export class DashboardView extends AuthedElement {
       this.isEnterprise = false;
       this.userManagementEnabled = false;
       return null;
+    } finally {
+      this.featuresResolved = true;
     }
   }
 
@@ -1390,6 +1299,10 @@ export class DashboardView extends AuthedElement {
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
+    }
+    if (this.updatedTimer !== null) {
+      window.clearInterval(this.updatedTimer);
+      this.updatedTimer = null;
     }
   }
 
@@ -1432,7 +1345,12 @@ export class DashboardView extends AuthedElement {
       this.totalIssues = data.totalIssues || 0;
       this.mcpServers = data.mcpServers || [];
       this.tools = data.tools || [];
-      this.recentFlowExecutions = data.recentFlowExecutions || [];
+      // Restored like `tools`: both arrive in the slow secondary pass, and
+      // the Inventory Models tab would otherwise sit on "No models yet · Add
+      // a model" for the length of that pass on every reload.
+      this.aiModels = data.aiModels || [];
+      this.flowExecutions = data.flowExecutions || [];
+      this.flows = data.flows || [];
       this.flowExecutionsCount = data.flowExecutionsCount || 0;
       this.failedExecutionsCount = data.failedExecutionsCount || 0;
       this.succeededFlowExecutionsCount =
@@ -1474,7 +1392,9 @@ export class DashboardView extends AuthedElement {
         totalIssues: this.totalIssues,
         mcpServers: this.mcpServers,
         tools: this.tools,
-        recentFlowExecutions: this.recentFlowExecutions,
+        aiModels: this.aiModels,
+        flowExecutions: this.flowExecutions,
+        flows: this.flows,
         flowExecutionsCount: this.flowExecutionsCount,
         failedExecutionsCount: this.failedExecutionsCount,
         succeededFlowExecutionsCount: this.succeededFlowExecutionsCount,
@@ -1505,6 +1425,38 @@ export class DashboardView extends AuthedElement {
       localStorage.getItem('dashboard_welcome_dismissed') === 'true';
     this.nextStepsDismissed =
       localStorage.getItem(NEXT_STEPS_DISMISSED_KEY) === 'true';
+  }
+
+  /**
+   * True once agents, budget policies, tools and the feature flags have all
+   * answered. Until then the checklist has nothing to read.
+   */
+  private get nextStepsInputsResolved(): boolean {
+    return (
+      !this.loading &&
+      !this.fetchingAgents &&
+      !this.fetchingBudget &&
+      !this.fetchingMCPAndTools &&
+      this.featuresResolved
+    );
+  }
+
+  /** `null` when no load has ever finished on this browser. */
+  private readCoreStepsDone(): boolean | null {
+    try {
+      const stored = localStorage.getItem(NEXT_STEPS_DONE_KEY);
+      return stored === null ? null : stored === 'true';
+    } catch {
+      return null;
+    }
+  }
+
+  private rememberCoreStepsDone(done: boolean): void {
+    try {
+      localStorage.setItem(NEXT_STEPS_DONE_KEY, done ? 'true' : 'false');
+    } catch {
+      // Private mode: the card behaves as it did before, one refresh late.
+    }
   }
 
   private dismissNextSteps(): void {
@@ -1568,6 +1520,17 @@ export class DashboardView extends AuthedElement {
     }
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = null;
+      if (this.refreshInFlight) {
+        // A fetch is already running and will return data from before this
+        // event; dropping the event here is what left "Updated 4m ago" on
+        // a page that had just been told something changed. Wait for the
+        // one in flight to land, then take our turn.
+        this.refreshTimer = window.setTimeout(() => {
+          this.refreshTimer = null;
+          void this.fetchDashboardData({ preserveLoadingState: true });
+        }, 1000);
+        return;
+      }
       void this.fetchDashboardData({ preserveLoadingState: true });
     }, 250);
   }
@@ -1594,6 +1557,11 @@ export class DashboardView extends AuthedElement {
     return d.toISOString();
   }
 
+  /** The same boundary as `getGatewayStartDate()`, as epoch milliseconds. */
+  private getGatewayStartMs(): number {
+    return new Date(this.getGatewayStartDate()).getTime();
+  }
+
   /**
    * The window immediately before the one on screen, same length. Computed
    * from the current start date so the two summaries always cover equal spans
@@ -1611,36 +1579,6 @@ export class DashboardView extends AuthedElement {
     };
   }
 
-  private getActiveAgentsStartDate(): string | undefined {
-    const now = new Date();
-    if (this.activeAgentsTimeRange === '5m') {
-      const d = new Date(now);
-      d.setMinutes(d.getMinutes() - 5);
-      return d.toISOString();
-    }
-    if (this.activeAgentsTimeRange === '1h') {
-      const d = new Date(now);
-      d.setHours(d.getHours() - 1);
-      return d.toISOString();
-    }
-    if (this.activeAgentsTimeRange === '1d') {
-      const d = new Date(now);
-      d.setDate(d.getDate() - 1);
-      return d.toISOString();
-    }
-    if (this.activeAgentsTimeRange === '1w') {
-      const d = new Date(now);
-      d.setDate(d.getDate() - 7);
-      return d.toISOString();
-    }
-    if (this.activeAgentsTimeRange === '1mo') {
-      const d = new Date(now);
-      d.setMonth(d.getMonth() - 1);
-      return d.toISOString();
-    }
-    return undefined;
-  }
-
   private applyAgentsList(
     managedAgents: Awaited<ReturnType<typeof getAccountAgents>>
   ): void {
@@ -1649,44 +1587,6 @@ export class DashboardView extends AuthedElement {
     this.totalAgentsCount = managedAgents.total ?? this.managedAgents.length;
     if (this.managedAgents.length > 0 && !this.welcomeCardDismissed) {
       this.dismissWelcomeCard();
-    }
-  }
-
-  private async fetchActiveAgentsData() {
-    this.fetchingActiveAgents = true;
-    try {
-      const startDateStr = this.getActiveAgentsStartDate();
-      const runtimeSessionsParams: {
-        status: 'all';
-        limit: number;
-        startDate?: string;
-      } = { status: 'all', limit: 100 };
-      if (startDateStr) {
-        runtimeSessionsParams.startDate = startDateStr;
-      }
-
-      const [runtimeSessions, managedAgents] = await Promise.all([
-        this.catchWith403Handling(
-          getAccountRuntimeSessions(runtimeSessionsParams),
-          { items: [] } as Awaited<ReturnType<typeof getAccountRuntimeSessions>>
-        ),
-        this.catchWith403Handling(
-          getAccountAgents({ status: 'all', limit: 100 }),
-          {
-            items: [],
-          } as Awaited<ReturnType<typeof getAccountAgents>>
-        ),
-      ]);
-
-      this.runtimeSessions = runtimeSessions.items || [];
-      this.totalRuntimeSessionsCount =
-        runtimeSessions.total ?? this.runtimeSessions.length;
-      this.applyAgentsList(managedAgents);
-      this.saveDashboardCache();
-    } catch (error) {
-      console.error('Failed to load active agents data', error);
-    } finally {
-      this.fetchingActiveAgents = false;
     }
   }
 
@@ -1768,7 +1668,7 @@ export class DashboardView extends AuthedElement {
       this.fetchingGatewaySummary = true;
       this.fetchingRecentExecutions = true;
       this.fetchingApprovals = true;
-      this.fetchingActiveAgents = true;
+      this.fetchingAgents = true;
       this.fetchingBudget = true;
       this.fetchingAudit = true;
       this.fetchingMCPAndTools = true;
@@ -1828,12 +1728,25 @@ export class DashboardView extends AuthedElement {
         rateLimitReport,
       ] = await Promise.all([
         gatewaySummaryPromise,
-        this.catchWith403Handling(getAccountGatewayUsageSearch({ limit: 12 }), {
-          items: [],
-        } as Awaited<ReturnType<typeof getAccountGatewayUsageSearch>>),
-        this.catchWith403Handling(getFlows(), [] as any[]),
+        // The failures card shows a handful, and it should be the handful
+        // that happened in the range the page is showing: a full page of
+        // in-range calls is far likelier to contain the current failures
+        // than the last twelve calls of any age were.
         this.catchWith403Handling(
-          getFlowExecutions({ limit: 10 }),
+          getAccountGatewayUsageSearch({
+            limit: 100,
+            startDate: startDateStr,
+          }),
+          {
+            items: [],
+          } as Awaited<ReturnType<typeof getAccountGatewayUsageSearch>>
+        ),
+        this.catchWith403Handling(getFlows(), [] as any[]),
+        // The Inventory Flows tab needs a last run, a run count and a failure
+        // count for every flow in the account, so this reads the server's
+        // maximum page rather than the five rows the old card showed.
+        this.catchWith403Handling(
+          getFlowExecutions({ limit: FLOW_EXECUTIONS_PAGE_SIZE }),
           [] as FlowExecution[]
         ),
         this.catchWith403Handling(
@@ -1848,7 +1761,7 @@ export class DashboardView extends AuthedElement {
           getAccountRuntimeSessions({
             status: 'all',
             limit: 100,
-            startDate: this.getActiveAgentsStartDate(),
+            startDate: startDateStr,
           }),
           {
             items: [],
@@ -1872,6 +1785,10 @@ export class DashboardView extends AuthedElement {
 
       this.hasFlows = (flows || []).length > 0;
       this.totalFlowsCount = (flows || []).length;
+      this.flows = (flows || []).map((flow: { id: string; name?: string }) => ({
+        id: flow.id,
+        name: flow.name || 'Untitled flow',
+      }));
       const sortedFlowExecutions = [...(flowExecutions || [])].sort(
         (left, right) =>
           new Date(right.start_time).getTime() -
@@ -1885,7 +1802,7 @@ export class DashboardView extends AuthedElement {
         (execution) =>
           execution.status === 'SUCCEEDED' || execution.status === 'COMPLETED'
       ).length;
-      this.recentFlowExecutions = sortedFlowExecutions.slice(0, 5);
+      this.flowExecutions = sortedFlowExecutions;
       this.fetchingRecentExecutions = false;
 
       this.pendingApprovals = pendingApprovals.filter((approval) =>
@@ -1898,7 +1815,7 @@ export class DashboardView extends AuthedElement {
       this.totalRuntimeSessionsCount =
         runtimeSessions.total ?? this.runtimeSessions.length;
       this.applyAgentsList(managedAgents);
-      this.fetchingActiveAgents = false;
+      this.fetchingAgents = false;
 
       await this.fetchBudgetSummary({
         sharedAgents: managedAgents,
@@ -1915,7 +1832,7 @@ export class DashboardView extends AuthedElement {
       // websocket refresh only upgrade the top-models breakdown so the card
       // does not flash empty while the rest of the dashboard stays put.
       if (options.preserveLoadingState) {
-        void this.refreshTopModelsBreakdown(startDateStr).then(() =>
+        void this.refreshUsageBreakdown(startDateStr).then(() =>
           this.saveDashboardCache()
         );
       } else {
@@ -1930,7 +1847,7 @@ export class DashboardView extends AuthedElement {
       this.fetchingGatewaySummary = false;
       this.fetchingRecentExecutions = false;
       this.fetchingApprovals = false;
-      this.fetchingActiveAgents = false;
+      this.fetchingAgents = false;
       this.fetchingBudget = false;
       this.fetchingAudit = false;
       this.fetchingMCPAndTools = false;
@@ -1992,7 +1909,14 @@ export class DashboardView extends AuthedElement {
             this.catchWith403Handling(getTools(), [] as Tool[]),
             this.catchWith403Handling(getAIModels(), []),
             this.catchWith403Handling(
-              isSaaS()
+              // User management is a licensed feature, not a hosting model:
+              // a self-hosted Enterprise account has teammates too, and the
+              // Inventory's Users tab is gated on the same flag and on
+              // view_users. Both the flags and the profile have answered by
+              // the time this secondary fetch runs, so a reader without the
+              // permission does not spend a request on a certain 403.
+              hasPermission(this.permissions, 'view_users') &&
+                (isSaaS() || this.userManagementEnabled)
                 ? getUsers()
                 : Promise.resolve({
                     users: [],
@@ -2038,6 +1962,11 @@ export class DashboardView extends AuthedElement {
         }
         this.hasAIModels = (aiModels || []).length > 0;
         this.aiModelsCount = Array.isArray(aiModels) ? aiModels.length : 0;
+        this.accountUsers = Array.isArray(users.users)
+          ? (users.users as AccountUser[]).filter(
+              (user) => user.is_active !== false
+            )
+          : [];
         this.enabledUsersCount = Array.isArray(users.users)
           ? users.users.filter((u: { is_active?: boolean }) => u.is_active)
               .length
@@ -2052,12 +1981,12 @@ export class DashboardView extends AuthedElement {
     await Promise.all([
       pAudit,
       pTools,
-      this.refreshTopModelsBreakdown(gatewayStartDate),
+      this.refreshUsageBreakdown(gatewayStartDate),
     ]);
     this.saveDashboardCache();
   }
 
-  private async refreshTopModelsBreakdown(gatewayStartDate: string) {
+  private async refreshUsageBreakdown(gatewayStartDate: string) {
     try {
       const detailed = await this.catchWith403Handling(
         getAccountGatewayUsageSummary({
@@ -2164,14 +2093,6 @@ export class DashboardView extends AuthedElement {
     );
   }
 
-  private get activeAgents(): ManagedAgentSummary[] {
-    return [...this.managedAgents].sort(
-      (left, right) =>
-        new Date(right.last_seen_at).getTime() -
-        new Date(left.last_seen_at).getTime()
-    );
-  }
-
   private get activeSessions(): RuntimeSessionSummary[] {
     return [...this.runtimeSessions]
       .filter((session) => session.id && (session.total_requests || 0) > 0)
@@ -2189,7 +2110,7 @@ export class DashboardView extends AuthedElement {
   }
 
   private get failedFlowExecutions(): FlowExecution[] {
-    return this.recentFlowExecutions.filter(
+    return this.flowExecutions.filter(
       (execution) => execution.status === 'FAILED'
     );
   }
@@ -2207,13 +2128,6 @@ export class DashboardView extends AuthedElement {
       return 'Never';
     }
     return parseUTCDate(value).toLocaleString();
-  }
-
-  private formatRuntimeSessionId(value: string | null | undefined): string {
-    if (!value) {
-      return 'Session';
-    }
-    return value.length > 8 ? value.substring(0, 8) : value;
   }
 
   private getSessionDisplayTitle(
@@ -2238,317 +2152,6 @@ export class DashboardView extends AuthedElement {
     return observed.canLoadEvents
       ? `/console/runtime-sessions?sessionId=${observed.id}`
       : '/console/runtime-sessions';
-  }
-
-  private renderNestedSessionRow(
-    session: GatewayUsageBySession | RuntimeSessionSummary,
-    metric: string
-  ) {
-    return html`
-      <div class="nested-session-row">
-        <a class="row-link" href=${this.getSessionDetailHref(session)}>
-          ${this.getSessionDisplayTitle(session)}
-        </a>
-        <span class="nested-session-metric">${metric}</span>
-      </div>
-    `;
-  }
-
-  private toggleOverviewGroup(groupId: string) {
-    const next = new Set(this.expandedOverviewGroups);
-    if (next.has(groupId)) {
-      next.delete(groupId);
-    } else {
-      next.add(groupId);
-    }
-    this.expandedOverviewGroups = next;
-  }
-
-  private isOverviewGroupExpanded(groupId: string): boolean {
-    return this.expandedOverviewGroups.has(groupId);
-  }
-
-  private togglePreviewKey(key: string) {
-    const next = new Set(this.expandedPreviewKeys);
-    if (next.has(key)) {
-      next.delete(key);
-    } else {
-      next.add(key);
-    }
-    this.expandedPreviewKeys = next;
-  }
-
-  private isPreviewExpanded(key: string): boolean {
-    return this.expandedPreviewKeys.has(key);
-  }
-
-  private renderSeeMoreControl(key: string, overflow: number) {
-    if (overflow <= 0) {
-      return nothing;
-    }
-    const expanded = this.isPreviewExpanded(key);
-    return html`
-      <sl-button
-        class="overview-see-more"
-        size="small"
-        variant="text"
-        @click=${(event: Event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          this.togglePreviewKey(key);
-        }}
-      >
-        ${expanded ? 'Show less' : `See ${overflow} more`}
-        <sl-icon
-          slot="suffix"
-          name=${expanded ? 'chevron-up' : 'chevron-down'}
-        ></sl-icon>
-      </sl-button>
-    `;
-  }
-
-  private nestedSessionRepeatKey(
-    session: GatewayUsageBySession | RuntimeSessionSummary
-  ): string {
-    if ('total_requests' in session) {
-      return session.id;
-    }
-    return (
-      session.runtime_session_id ||
-      session.flow_execution_id ||
-      session.session_source_id ||
-      `${session.model_alias}-${session.last_request_at}`
-    );
-  }
-
-  private renderCappedNestedSessions(
-    sessions: Array<GatewayUsageBySession | RuntimeSessionSummary>,
-    previewKey: string
-  ) {
-    const sorted = [...sessions].sort((left, right) =>
-      compareByUsageMetric(left, right, this.topModelsSortMetric)
-    );
-    const { visible, overflow } = previewWindow(
-      sorted,
-      TOP_MODEL_SESSION_PREVIEW_LIMIT,
-      this.isPreviewExpanded(previewKey)
-    );
-    return html`
-      <div class="nested-session-list">
-        ${repeat(
-          visible,
-          (session) => this.nestedSessionRepeatKey(session),
-          (session) =>
-            this.renderNestedSessionRow(
-              session,
-              `${this.formatNumber(
-                'total_requests' in session
-                  ? session.total_requests
-                  : session.request_count
-              )} req`
-            )
-        )}
-        ${this.renderSeeMoreControl(previewKey, overflow)}
-      </div>
-    `;
-  }
-
-  private renderExpandIcon(groupId: string) {
-    return html`
-      <sl-icon
-        class="expand-icon ${
-          this.isOverviewGroupExpanded(groupId) ? 'open' : ''
-        }"
-        name="chevron-right"
-      ></sl-icon>
-    `;
-  }
-
-  private renderFlowIcon(): ReturnType<typeof html> {
-    // flow.svg strokes with currentColor, so it adapts to light/dark on its
-    // own — do not apply the inverting .flow-icon filter here.
-    return html`<sl-icon
-      src="/images/flow.svg"
-      style="font-size: 1rem; color: var(--sl-color-neutral-600);"
-    ></sl-icon>`;
-  }
-
-  private renderExpandableSubGroup(
-    groupId: string,
-    name: string,
-    href: string | null,
-    summaryMetric: string,
-    content: ReturnType<typeof html>,
-    icon: ReturnType<typeof html> | null = null
-  ) {
-    const expanded = this.isOverviewGroupExpanded(groupId);
-    return html`
-      <div class="expandable-group">
-        <div
-          class="expandable-subheader"
-          @click=${() => this.toggleOverviewGroup(groupId)}
-        >
-          ${this.renderExpandIcon(groupId)}
-          ${
-            icon
-              ? html`<span
-                  class="group-icon"
-                  aria-hidden="true"
-                  style="display: inline-flex; align-items: center; margin-right: var(--sl-spacing-2x-small);"
-                  >${icon}</span
-                >`
-              : nothing
-          }
-          ${
-            href
-              ? html`<a
-                  class="row-link row-primary"
-                  href=${href}
-                  @click=${(event: Event) => event.stopPropagation()}
-                  >${name}</a
-                >`
-              : html`<span class="row-primary">${name}</span>`
-          }
-          <span class="expandable-subheader-metric">${summaryMetric}</span>
-        </div>
-        ${expanded ? html`<div class="expandable-content">${content}</div>` : nothing}
-      </div>
-    `;
-  }
-
-  private renderAgentExpandableGroup(
-    groupId: string,
-    agent: ManagedAgentSummary,
-    sessions: Array<GatewayUsageBySession | RuntimeSessionSummary>,
-    trailingMetric: string,
-    options: {
-      showTalkComposer?: boolean;
-      onAgentControlSent?: () => void;
-      nestedPreviewKey?: string;
-    } = {}
-  ) {
-    const expanded = this.isOverviewGroupExpanded(groupId);
-    const agentKind = agent.agent_kind || agent.session_source_type;
-    const showTalkComposer = options.showTalkComposer ?? false;
-
-    return html`
-      <div class="expandable-group">
-        <div
-          class="expandable-header"
-          @click=${() => this.toggleOverviewGroup(groupId)}
-        >
-          ${this.renderExpandIcon(groupId)}
-          <div class="expandable-leading">
-            ${renderAgentIcon(
-              agentKind,
-              'font-size: 1.25rem; color: var(--sl-color-neutral-800); flex-shrink: 0;'
-            )}
-            <div class="expandable-identity">
-              <a
-                class="row-link row-primary"
-                href=${`/console/agents/${agent.id}`}
-                @click=${(event: Event) => event.stopPropagation()}
-              >
-                ${agent.display_name || 'Agent'}
-              </a>
-              <div class="agent-meta-line">
-                ${getAgentSourceLabel(agentKind)}${
-                  agent.session_source_id ? ` · ${agent.session_source_id}` : ''
-                }
-              </div>
-              ${renderAgentIdentityBadges(agent)}
-            </div>
-          </div>
-          <div
-            class="expandable-trailing"
-            @click=${(event: Event) => event.stopPropagation()}
-          >
-            ${
-              showTalkComposer && getAgentControlState(agent).visible
-                ? html`
-                    <agent-talk-composer
-                      .agent=${agent}
-                      .sessions=${sessions}
-                      sourceContext="dashboard-active-agents"
-                      compact
-                      @agent-control-sent=${() =>
-                        options.onAgentControlSent?.()}
-                    ></agent-talk-composer>
-                  `
-                : null
-            }
-            <span class="row-value">${trailingMetric}</span>
-          </div>
-        </div>
-        ${
-          expanded
-            ? html`
-                <div class="expandable-content">
-                  ${
-                    sessions.length > 0
-                      ? options.nestedPreviewKey
-                        ? this.renderCappedNestedSessions(
-                            sessions,
-                            options.nestedPreviewKey
-                          )
-                        : html`
-                            <div class="nested-session-list">
-                              ${sessions.map((session) =>
-                                this.renderNestedSessionRow(
-                                  session,
-                                  `${this.formatNumber(
-                                    'total_requests' in session
-                                      ? session.total_requests
-                                      : session.request_count
-                                  )} req`
-                                )
-                              )}
-                            </div>
-                          `
-                      : html`<div class="nested-session-metric">
-                          No recent sessions
-                        </div>`
-                  }
-                </div>
-              `
-            : nothing
-        }
-      </div>
-    `;
-  }
-
-  private renderActiveAgentGroup(
-    agent: ManagedAgentSummary,
-    sessions: RuntimeSessionSummary[]
-  ) {
-    return this.renderAgentExpandableGroup(
-      `active-agent:${agent.id}`,
-      agent,
-      sessions,
-      `${this.formatCurrency(agent.estimated_cost)} · ${this.formatRelativeTime(agent.last_seen_at)}`,
-      {
-        showTalkComposer: true,
-        onAgentControlSent: () => this.fetchActiveAgentsData(),
-      }
-    );
-  }
-
-  private renderCollapsibleGroup(
-    groupId: string,
-    name: string,
-    href: string | null,
-    summaryMetric: string,
-    content: ReturnType<typeof html>,
-    icon: ReturnType<typeof html> | null = null
-  ) {
-    return this.renderExpandableSubGroup(
-      groupId,
-      name,
-      href,
-      summaryMetric,
-      content,
-      icon
-    );
   }
 
   private formatRelativeTime(value: string | null | undefined): string {
@@ -2579,7 +2182,7 @@ export class DashboardView extends AuthedElement {
       this.fetchingGatewaySummary ||
       this.fetchingRecentExecutions ||
       this.fetchingBudget ||
-      this.fetchingActiveAgents
+      this.fetchingAgents
     ) {
       return 'Loading…';
     }
@@ -2695,15 +2298,6 @@ export class DashboardView extends AuthedElement {
     return this.tools.filter((tool) => tool.is_enabled).length;
   }
 
-  private get activeAgentsCount(): number {
-    return this.managedAgents.filter(
-      (agent) =>
-        agent.is_active_now ||
-        agent.activity_status === 'active_now' ||
-        agent.activity_status === 'recently_active'
-    ).length;
-  }
-
   private getManagedAgentBySourceId(
     sourceId: string | null | undefined
   ): ManagedAgentSummary | undefined {
@@ -2756,75 +2350,6 @@ export class DashboardView extends AuthedElement {
       }
     }
     return undefined;
-  }
-
-  private isFlowBackedUsageSession(session: GatewayUsageBySession): boolean {
-    return Boolean(
-      session.flow_execution_id ||
-      session.flow_id ||
-      session.session_source_type === 'flow_execution' ||
-      session.runtime_principal_type === 'flow_execution'
-    );
-  }
-
-  private isAgentBackedUsageSession(
-    session: GatewayUsageBySession,
-    agent?: ManagedAgentSummary
-  ): boolean {
-    return Boolean(
-      agent ||
-      session.agent_id ||
-      session.session_source_type === 'managed_agent' ||
-      session.runtime_principal_type === 'managed_agent'
-    );
-  }
-
-  private getUsageSessionSubject(
-    session: GatewayUsageBySession
-  ): UsageSessionSubject {
-    if (this.isFlowBackedUsageSession(session)) {
-      return {
-        kind: 'flow',
-        name: session.flow_name || session.runtime_principal_name || 'Flow',
-        href: session.flow_id
-          ? `/console/flows/${session.flow_id}`
-          : '/console/flows',
-      };
-    }
-
-    const agent = this.getManagedAgentForUsageSession(session);
-    if (this.isAgentBackedUsageSession(session, agent)) {
-      const agentId =
-        agent?.id ||
-        session.agent_id ||
-        (session.session_source_type === 'managed_agent'
-          ? session.session_source_id
-          : null) ||
-        (session.runtime_principal_type === 'managed_agent'
-          ? session.runtime_principal_id
-          : null);
-      return {
-        kind: 'agent',
-        name:
-          agent?.display_name ||
-          session.agent_name ||
-          session.runtime_principal_name ||
-          'Managed agent',
-        href: agentId ? `/console/agents/${agentId}` : '/console/agents',
-      };
-    }
-
-    return {
-      kind: 'session',
-      name: this.getSessionDisplayTitle(session),
-      href: session.runtime_session_id
-        ? `/console/runtime-sessions?sessionId=${session.runtime_session_id}`
-        : '/console/runtime-sessions',
-    };
-  }
-
-  private renderEmptyState(message: string) {
-    return html`<div class="empty-state">${message}</div>`;
   }
 
   private handleDeployAgentSuccess(event: CustomEvent): void {
@@ -2904,8 +2429,19 @@ export class DashboardView extends AuthedElement {
     if (this.nextStepsDismissed) {
       return nothing;
     }
+    const remembered = this.readCoreStepsDone();
+    if (!this.nextStepsInputsResolved && remembered !== false) {
+      // Either this browser has never seen a finished load, or the last one
+      // said the checklist was done. Both cases stay quiet until the four
+      // fetches land, instead of drawing an empty checklist for a second.
+      return nothing;
+    }
     const steps = this.nextSteps;
-    if (steps.every((step) => step.done || step.optional)) {
+    const allDone = steps.every((step) => step.done || step.optional);
+    if (this.nextStepsInputsResolved) {
+      this.rememberCoreStepsDone(allDone);
+    }
+    if (allDone) {
       return nothing;
     }
 
@@ -2948,97 +2484,6 @@ export class DashboardView extends AuthedElement {
             `;
           })}
         </div>
-      </sl-card>
-    `;
-  }
-
-  private renderRecentFlowExecutionsCard() {
-    if (
-      this.fetchingRecentExecutions &&
-      this.recentFlowExecutions.length === 0
-    ) {
-      return nothing;
-    }
-
-    return html`
-      <!-- Flow Executions -->
-      <sl-card>
-        <div slot="header" class="chart-header">
-          <sl-icon name="diagram-3"></sl-icon>
-          Recent Flow Executions
-          ${
-            this.failedFlowExecutions.length > 0
-              ? html`<sl-badge class="chip" variant="neutral" pill
-                  >${this.failedFlowExecutions.length} failed</sl-badge
-                >`
-              : ''
-          }
-        </div>
-
-        ${
-          this.recentFlowExecutions.length === 0
-            ? html`
-                <div class="empty-state">
-                  <sl-icon name="inbox"></sl-icon>
-                  <p>
-                    No flow executions yet.
-                    <a href="/console/flows">Create a flow</a>
-                  </p>
-                </div>
-              `
-            : html`
-                <div class="item-list">
-                  ${this.recentFlowExecutions.slice(0, 5).map(
-                    (exec) => html`
-                      <div class="item-card">
-                        <div class="item-info">
-                          <span class="item-name"
-                            >${exec.flow_name || 'Unnamed Flow'}</span
-                          >
-                          ${
-                            exec.error_message
-                              ? html`<span
-                                  class="item-error"
-                                  title=${exec.error_message}
-                                  >${exec.error_message}</span
-                                >`
-                              : ''
-                          }
-                          <span class="item-secondary"
-                            >${this.executionSecondaryText(exec)}</span
-                          >
-                        </div>
-                        <div class="item-actions">
-                          <sl-badge
-                            class="chip"
-                            pill
-                            variant=${this.getStatusColor(exec.status)}
-                            >${exec.status}</sl-badge
-                          >
-                          <sl-button
-                            size="small"
-                            href="/console/flows/executions/${exec.id}"
-                          >
-                            View
-                          </sl-button>
-                        </div>
-                      </div>
-                    `
-                  )}
-                </div>
-
-                <div class="quick-actions">
-                  <sl-button size="small" href="/console/flows/executions">
-                    <sl-icon slot="prefix" name="list"></sl-icon>
-                    View All Executions
-                  </sl-button>
-                  <sl-button size="small" href="/console/flows">
-                    <sl-icon slot="prefix" name="plus-circle"></sl-icon>
-                    Create Flow
-                  </sl-button>
-                </div>
-              `
-        }
       </sl-card>
     `;
   }
@@ -3093,7 +2538,9 @@ export class DashboardView extends AuthedElement {
                   >
                     ${item.model_alias || item.provider_name || item.endpoint}
                   </a>
-                  <sl-badge variant="danger">${item.status_code}</sl-badge>
+                  <sl-badge class="chip" pill variant="danger"
+                    >${item.status_code}</sl-badge
+                  >
                 </div>
                 <div class="row-meta">
                   <span>
@@ -3135,6 +2582,8 @@ export class DashboardView extends AuthedElement {
                     ${group.primary_event.action.replace(/_/g, ' ')}
                   </span>
                   <sl-badge
+                    class="chip"
+                    pill
                     variant=${
                       group.outcome === 'budget_denied' ? 'warning' : 'danger'
                     }
@@ -3164,648 +2613,6 @@ export class DashboardView extends AuthedElement {
     `;
   }
 
-  private collectTopModelSubjectGroups(
-    modelKey: string,
-    modelSessions: GatewayUsageBySession[]
-  ): TopModelSubjectGroup[] {
-    const agentGroups = new Map<
-      string,
-      { subject: UsageSessionSubject; sessions: GatewayUsageBySession[] }
-    >();
-    const flowGroups = new Map<
-      string,
-      { subject: UsageSessionSubject; sessions: GatewayUsageBySession[] }
-    >();
-    const otherSessions: GatewayUsageBySession[] = [];
-
-    modelSessions.forEach((session) => {
-      const subject = this.getUsageSessionSubject(session);
-      if (subject.kind === 'agent') {
-        const agent = this.getManagedAgentForUsageSession(session);
-        const key =
-          agent?.id ||
-          session.agent_id ||
-          session.runtime_session_id ||
-          session.session_source_id ||
-          session.runtime_principal_id ||
-          subject.href;
-        if (!agentGroups.has(key)) {
-          agentGroups.set(key, { subject, sessions: [] });
-        }
-        agentGroups.get(key)!.sessions.push(session);
-      } else if (subject.kind === 'flow') {
-        const key = session.flow_id || session.flow_name || subject.href;
-        if (!flowGroups.has(key)) {
-          flowGroups.set(key, { subject, sessions: [] });
-        }
-        flowGroups.get(key)!.sessions.push(session);
-      } else {
-        otherSessions.push(session);
-      }
-    });
-
-    const groups: TopModelSubjectGroup[] = [];
-    const pushGroup = (
-      kind: TopModelSubjectGroup['kind'],
-      groupId: string,
-      subject: UsageSessionSubject,
-      sessions: GatewayUsageBySession[]
-    ) => {
-      groups.push({
-        groupId,
-        kind,
-        subject,
-        sessions,
-        totalCost: sessions.reduce((acc, row) => acc + row.estimated_cost, 0),
-        totalRequests: sessions.reduce(
-          (acc, row) => acc + row.request_count,
-          0
-        ),
-      });
-    };
-
-    agentGroups.forEach(({ subject, sessions }, groupKey) => {
-      pushGroup(
-        'agent',
-        `top-model:${modelKey}:agent:${groupKey}`,
-        subject,
-        sessions
-      );
-    });
-    flowGroups.forEach(({ subject, sessions }, groupKey) => {
-      pushGroup(
-        'flow',
-        `top-model:${modelKey}:flow:${groupKey}`,
-        subject,
-        sessions
-      );
-    });
-    if (otherSessions.length > 0) {
-      pushGroup(
-        'other',
-        `top-model:${modelKey}:other`,
-        { kind: 'session', name: 'Other', href: '/console/runtime-sessions' },
-        otherSessions
-      );
-    }
-
-    groups.sort((left, right) =>
-      compareByUsageMetric(
-        {
-          estimated_cost: left.totalCost,
-          request_count: left.totalRequests,
-        },
-        {
-          estimated_cost: right.totalCost,
-          request_count: right.totalRequests,
-        },
-        this.topModelsSortMetric
-      )
-    );
-    return groups;
-  }
-
-  private renderTopModelSubjectGroup(group: TopModelSubjectGroup) {
-    const trailingMetric = `${this.formatCurrency(group.totalCost)} (${this.formatNumber(group.totalRequests)} req)`;
-    const nestedPreviewKey = `${group.groupId}:sessions`;
-    const nested = this.renderCappedNestedSessions(
-      group.sessions,
-      nestedPreviewKey
-    );
-
-    if (group.kind === 'agent') {
-      const agent = this.getManagedAgentForUsageSession(group.sessions[0]);
-      if (agent) {
-        return this.renderAgentExpandableGroup(
-          group.groupId,
-          agent,
-          group.sessions,
-          trailingMetric,
-          { nestedPreviewKey }
-        );
-      }
-    }
-
-    return this.renderCollapsibleGroup(
-      group.groupId,
-      group.subject.name,
-      group.kind === 'other' ? null : group.subject.href,
-      trailingMetric,
-      nested,
-      group.kind === 'flow' ? this.renderFlowIcon() : null
-    );
-  }
-
-  private renderTopModelsSkeleton() {
-    return html`
-      <sl-card class="content-card">
-        <div slot="header" class="card-header-with-action">
-          <div class="card-title">Top Models</div>
-        </div>
-        <div class="list">
-          ${[0, 1, 2, 3].map(
-            () => html`
-              <div class="row">
-                <sl-skeleton
-                  effect="sheen"
-                  style="width: 60%; height: 0.9rem;"
-                ></sl-skeleton>
-                <sl-skeleton
-                  effect="sheen"
-                  style="width: 35%; height: 0.75rem; margin-top: var(--sl-spacing-2x-small);"
-                ></sl-skeleton>
-              </div>
-            `
-          )}
-        </div>
-      </sl-card>
-    `;
-  }
-
-  private renderTopModelsCard() {
-    const rawModels = this.gatewaySummary?.usage_by_model || [];
-    if (rawModels.length === 0) {
-      return this.fetchingGatewaySummary
-        ? this.renderTopModelsSkeleton()
-        : nothing;
-    }
-
-    const aggregatedModels = new Map<string, any>();
-    rawModels.forEach((m) => {
-      const key = `${m.model_alias}-${m.provider_name}`;
-      if (!aggregatedModels.has(key)) {
-        aggregatedModels.set(key, { ...m });
-      } else {
-        const existing = aggregatedModels.get(key)!;
-        existing.request_count += m.request_count;
-        existing.estimated_cost += m.estimated_cost;
-        existing.prompt_tokens =
-          (existing.prompt_tokens || 0) + (m.prompt_tokens || 0);
-        existing.completion_tokens =
-          (existing.completion_tokens || 0) + (m.completion_tokens || 0);
-        if (m.ai_model_id && !existing.ai_model_id) {
-          existing.ai_model_id = m.ai_model_id;
-        }
-      }
-    });
-
-    const models = Array.from(aggregatedModels.values());
-    models.sort((a, b) => compareByUsageMetric(a, b, this.topModelsSortMetric));
-
-    const allSessions = this.gatewaySummary?.usage_by_session || [];
-
-    return html`
-      <sl-card class="content-card">
-        <div slot="header" class="card-header-with-action">
-          <div style="display: flex; align-items: center; gap: 4px;">
-            Top Models
-            <select
-              style="background: transparent; border: none; font-size: inherit; font-weight: inherit; font-family: inherit; color: inherit; cursor: pointer; outline: none; padding: 0;"
-              .value=${this.topModelsSortMetric}
-              @change=${(e: Event) => {
-                this.topModelsSortMetric = (e.target as HTMLSelectElement)
-                  .value as any;
-              }}
-            >
-              <option value="spend">by Spend</option>
-              <option value="usage">by Usage</option>
-            </select>
-            <span class="range-note">· ${this.gatewayRangeLabel}</span>
-          </div>
-          <div
-            style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-          >
-            <a href="/console/ai-models" class="header-action-link"
-              >Model fleet</a
-            >
-          </div>
-        </div>
-        <div class="list">
-          ${repeat(
-            models.slice(0, 6),
-            (item) =>
-              `${item.ai_model_id}-${item.model_alias}-${item.provider_name}`,
-            (item) => {
-              const modelKey = `${item.ai_model_id}-${item.model_alias}-${item.provider_name}`;
-              const modelSessions = allSessions.filter(
-                (s) =>
-                  (s.ai_model_id &&
-                    item.ai_model_id &&
-                    s.ai_model_id === item.ai_model_id) ||
-                  (s.model_alias === item.model_alias &&
-                    (!s.provider_name ||
-                      !item.provider_name ||
-                      s.provider_name === item.provider_name))
-              );
-              const groups = this.collectTopModelSubjectGroups(
-                modelKey,
-                modelSessions
-              );
-              const groupsPreviewKey = `top-model-groups:${modelKey}`;
-              const { visible, overflow } = previewWindow(
-                groups,
-                TOP_MODEL_GROUP_PREVIEW_LIMIT,
-                this.isPreviewExpanded(groupsPreviewKey)
-              );
-
-              return html`
-                <div
-                  class="row"
-                  style="flex-direction: column; align-items: stretch; gap: var(--sl-spacing-2x-small);"
-                >
-                  <div
-                    style="display: flex; justify-content: space-between; align-items: center;"
-                  >
-                    <div
-                      style="display: flex; align-items: center; gap: var(--sl-spacing-2x-small); overflow: hidden;"
-                    >
-                      ${
-                        item.ai_model_id
-                          ? html`
-                              <a
-                                class="row-link row-primary"
-                                href=${`/console/ai-models/${item.ai_model_id}`}
-                                style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-                              >
-                                ${item.model_alias || 'Unknown model'}
-                              </a>
-                            `
-                          : html`
-                              <span
-                                class="row-primary"
-                                style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-                              >
-                                ${item.model_alias || 'Unknown model'}
-                              </span>
-                            `
-                      }
-                    </div>
-                    <span class="row-value">
-                      ${
-                        this.topModelsSortMetric === 'usage'
-                          ? `${this.formatNumber(item.request_count)} requests`
-                          : this.formatCurrency(item.estimated_cost)
-                      }
-                    </span>
-                  </div>
-                  <div
-                    style="display: flex; justify-content: space-between; align-items: center; font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-500);"
-                  >
-                    <span>${item.provider_name || 'provider unknown'}</span>
-                    <span
-                      >${
-                        this.topModelsSortMetric === 'spend'
-                          ? `${this.formatNumber(item.request_count)} requests`
-                          : this.formatCurrency(item.estimated_cost)
-                      }</span
-                    >
-                  </div>
-
-                  ${
-                    groups.length > 0
-                      ? html`
-                          <div class="overview-nested-groups">
-                            ${repeat(
-                              visible,
-                              (group) => group.groupId,
-                              (group) => this.renderTopModelSubjectGroup(group)
-                            )}
-                            ${this.renderSeeMoreControl(
-                              groupsPreviewKey,
-                              overflow
-                            )}
-                          </div>
-                        `
-                      : ''
-                  }
-                </div>
-              `;
-            }
-          )}
-        </div>
-      </sl-card>
-    `;
-  }
-
-  private renderSessionsAttentionCard() {
-    if (
-      this.fetchingGatewaySummary &&
-      (this.gatewaySummary?.usage_by_session || []).length === 0
-    ) {
-      return html`
-        <sl-card class="content-card">
-          <div slot="header" class="card-header-with-action">
-            Top sessions by usage
-          </div>
-          <div
-            class="loading-container"
-            style="padding: var(--sl-spacing-2x-large); display: flex; justify-content: center; align-items: center;"
-          >
-            <sl-spinner style="font-size: 1.5rem;"></sl-spinner>
-          </div>
-        </sl-card>
-      `;
-    }
-    const items = this.gatewaySummary?.usage_by_session || [];
-    if (!this.fetchingGatewaySummary && items.length === 0) {
-      return nothing;
-    }
-
-    return html`
-      <sl-card class="content-card">
-        <div slot="header" class="card-header-with-action">
-          Top sessions by usage
-          <div
-            style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-          >
-            <a href="/console/runtime-sessions" class="header-action-link"
-              >Model fleet</a
-            >
-          </div>
-        </div>
-        <div class="list">
-          ${repeat(
-            items.slice(0, 6),
-            (item) =>
-              item.runtime_session_id ||
-              `${item.session_source_type}-${item.session_source_id}-${item.model_alias}`,
-            (item) => html`
-              <div class="row">
-                <div class="row-main">
-                  <a
-                    class="row-link row-primary"
-                    href=${
-                      item.runtime_session_id
-                        ? `/console/runtime-sessions?sessionId=${item.runtime_session_id}`
-                        : '/console/runtime-sessions'
-                    }
-                  >
-                    ${this.getSessionDisplayTitle(item)}
-                  </a>
-                  <span class="row-value">
-                    ${this.formatCurrency(item.estimated_cost)}
-                  </span>
-                </div>
-                <div class="row-meta">
-                  <span>
-                    ${item.model_alias || item.provider_name || 'model unknown'}
-                  </span>
-                  <span>${this.formatDateTime(item.last_request_at)}</span>
-                </div>
-              </div>
-            `
-          )}
-        </div>
-      </sl-card>
-    `;
-  }
-
-  private sessionBelongsToAgent(
-    session: RuntimeSessionSummary,
-    agent: ManagedAgentSummary
-  ): boolean {
-    const base = agent.session_source_id;
-    const candidates = [
-      session.runtime_principal_id,
-      session.session_source_id,
-    ].filter((value): value is string => Boolean(value));
-    return candidates.some(
-      (id) =>
-        id === base ||
-        id === agent.id ||
-        (Boolean(base) &&
-          (id.startsWith(`${base}:`) || id.startsWith(`${base}-`)))
-    );
-  }
-
-  private renderActiveExecutionsCard() {
-    if (this.managedAgents.length === 0 && this.runtimeSessions.length === 0) {
-      return nothing;
-    }
-
-    const agentsWithSessions: Array<{
-      agent: (typeof this.activeAgents)[0];
-      sessions: typeof this.activeSessions;
-    }> = [];
-    const usedSessionIds = new Set<string>();
-
-    for (const agent of this.activeAgents) {
-      const sessions = this.activeSessions.filter((s) =>
-        this.sessionBelongsToAgent(s, agent)
-      );
-      if (sessions.length > 0) {
-        agentsWithSessions.push({ agent, sessions });
-      }
-      sessions.forEach((s) => usedSessionIds.add(s.id));
-    }
-
-    // Sort agents by last activity
-    agentsWithSessions.sort((a, b) => {
-      const aTime = a.agent.last_seen_at
-        ? new Date(a.agent.last_seen_at).getTime()
-        : 0;
-      const bTime = b.agent.last_seen_at
-        ? new Date(b.agent.last_seen_at).getTime()
-        : 0;
-      return bTime - aTime;
-    });
-
-    const unmatchedSessions = this.activeSessions.filter(
-      (s) => !usedSessionIds.has(s.id)
-    );
-
-    // Flow-execution sessions group under their flow; only sessions with no
-    // resolvable agent AND no flow remain as true "Other".
-    const flowGroupMap = new Map<
-      string,
-      {
-        name: string;
-        flowId: string | null;
-        sessions: typeof unmatchedSessions;
-      }
-    >();
-    const orphanSessions: typeof unmatchedSessions = [];
-    for (const s of unmatchedSessions) {
-      const isFlow = Boolean(
-        s.flow_id ||
-        s.flow_execution_id ||
-        s.runtime_principal_type === 'flow_execution' ||
-        s.session_source_type === 'flow_execution'
-      );
-      if (isFlow) {
-        const key = s.flow_id || s.flow_name || 'flow';
-        if (!flowGroupMap.has(key)) {
-          flowGroupMap.set(key, {
-            name: s.flow_name || s.runtime_principal_name || 'Flow',
-            flowId: s.flow_id || null,
-            sessions: [],
-          });
-        }
-        flowGroupMap.get(key)!.sessions.push(s);
-      } else {
-        orphanSessions.push(s);
-      }
-    }
-    const flowGroups = Array.from(flowGroupMap.values()).sort(
-      (a, b) => b.sessions.length - a.sessions.length
-    );
-    orphanSessions.sort((a, b) => {
-      const aTime =
-        a.last_activity_at || a.started_at
-          ? new Date(a.last_activity_at || a.started_at).getTime()
-          : 0;
-      const bTime =
-        b.last_activity_at || b.started_at
-          ? new Date(b.last_activity_at || b.started_at).getTime()
-          : 0;
-      return bTime - aTime;
-    });
-
-    const hasAnyExecutions =
-      agentsWithSessions.length > 0 ||
-      flowGroups.length > 0 ||
-      orphanSessions.length > 0;
-
-    return html`
-      <sl-card class="content-card">
-        <div slot="header" class="card-header-with-action">
-          <div
-            class="card-title"
-            style="display: flex; align-items: center; gap: var(--sl-spacing-2x-small);"
-          >
-            Active agents
-            ${
-              this.fetchingActiveAgents
-                ? html`<sl-spinner
-                    style="font-size: 1rem; width: 1rem; height: 1rem;"
-                  ></sl-spinner>`
-                : ''
-            }
-          </div>
-          <time-range-select
-            style="margin-left: auto; margin-right: var(--sl-spacing-small);"
-            ariaLabel="Active agents time range"
-            .value=${this.activeAgentsTimeRange}
-            .options=${[
-              { value: '5m', label: '5m' },
-              { value: '1h', label: '1h' },
-              { value: '1d', label: '1d' },
-              { value: '1w', label: '1w' },
-              { value: '1mo', label: '1mo' },
-            ]}
-            @range-change=${(event: CustomEvent<{ value: string }>) => {
-              event.stopPropagation();
-              this.activeAgentsTimeRange = event.detail.value as
-                '5m' | '1h' | '1d' | '1w' | '1mo';
-              this.fetchActiveAgentsData();
-            }}
-          ></time-range-select>
-          <div
-            style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
-          >
-            <a href="/console/runtime-sessions" class="header-action-link"
-              >View all</a
-            >
-          </div>
-        </div>
-        ${
-          this.fetchingActiveAgents && !hasAnyExecutions
-            ? html`<div
-                class="loading-container"
-                style="padding: var(--sl-spacing-small); display: flex; justify-content: center; align-items: center;"
-              >
-                <sl-spinner style="font-size: 1.5rem;"></sl-spinner>
-              </div>`
-            : html`
-                <div class="list">
-                  ${
-                    !hasAnyExecutions
-                      ? this.renderEmptyState('No active agents right now.')
-                      : ''
-                  }
-                  ${repeat(
-                    agentsWithSessions.slice(0, 8),
-                    (item) => item.agent.id,
-                    (item) => html`
-                      <div class="row">
-                        ${this.renderActiveAgentGroup(item.agent, item.sessions)}
-                      </div>
-                    `
-                  )}
-                  ${repeat(
-                    flowGroups.slice(0, 8),
-                    (group) => group.flowId || group.name,
-                    (group) => html`
-                      <div class="row">
-                        ${this.renderCollapsibleGroup(
-                          `active-agents:flow:${group.flowId || group.name}`,
-                          group.name,
-                          group.flowId
-                            ? `/console/flows/${group.flowId}`
-                            : '/console/flows',
-                          `${this.formatCurrency(
-                            group.sessions.reduce(
-                              (total, session) =>
-                                total + (session.estimated_cost || 0),
-                              0
-                            )
-                          )} · ${group.sessions.length} exec`,
-                          html`
-                            <div class="nested-session-list">
-                              ${group.sessions
-                                .slice(0, 8)
-                                .map((session) =>
-                                  this.renderNestedSessionRow(
-                                    session,
-                                    `${this.formatNumber(session.total_requests)} req`
-                                  )
-                                )}
-                            </div>
-                          `,
-                          this.renderFlowIcon()
-                        )}
-                      </div>
-                    `
-                  )}
-                  ${
-                    orphanSessions.length > 0
-                      ? html`
-                          <div class="row">
-                            ${this.renderCollapsibleGroup(
-                              'active-agents:other',
-                              'Other',
-                              null,
-                              `${this.formatCurrency(
-                                orphanSessions.reduce(
-                                  (total, session) =>
-                                    total + (session.estimated_cost || 0),
-                                  0
-                                )
-                              )} · ${orphanSessions.length} sessions`,
-                              html`
-                                <div class="nested-session-list">
-                                  ${orphanSessions
-                                    .slice(0, 8)
-                                    .map((session) =>
-                                      this.renderNestedSessionRow(
-                                        session,
-                                        `${this.formatNumber(session.total_requests)} req`
-                                      )
-                                    )}
-                                </div>
-                              `
-                            )}
-                          </div>
-                        `
-                      : ''
-                  }
-                </div>
-              `
-        }
-      </sl-card>
-    `;
-  }
-
   /**
    * One amber line across the top of the page, above everything else, or
    * nothing at all. The side card it replaces competed with Usage for the
@@ -3813,21 +2620,28 @@ export class DashboardView extends AuthedElement {
    * first, and it costs one line instead of a card.
    */
   private renderAttentionStrip() {
-    const items = this.attentionItems;
+    const all = this.attentionItems;
+    // Low-tone items (a model priced at $0) are a question, not a problem.
+    // They never take a slot from something that is actually wrong, so the
+    // strip shows them only when nothing louder is open.
+    const loud = all.filter((item) => item.severity !== 'low');
+    const lowOnly = loud.length === 0;
+    const items = lowOnly ? all : loud;
     if (items.length === 0) {
       return nothing;
     }
     const visible = items.slice(0, 3);
 
     return html`
-      <div class="attention-strip">
+      <div class="attention-strip ${lowOnly ? 'low-only' : ''}">
         <sl-icon
           class="attention-strip-icon"
-          name="exclamation-triangle"
+          name=${lowOnly ? 'info-circle' : 'exclamation-triangle'}
           aria-hidden="true"
         ></sl-icon>
         <span class="attention-strip-count"
-          >${this.formatNumber(items.length)} need attention</span
+          >${this.formatNumber(items.length)}
+          ${lowOnly ? 'worth a look' : 'need attention'}</span
         >
         <div class="attention-strip-items">
           ${repeat(
@@ -3838,7 +2652,11 @@ export class DashboardView extends AuthedElement {
                 class="attention-chip-link"
                 href=${attentionItemAnchor(item.id)}
               >
-                <sl-badge class="chip" variant="warning" pill>
+                <sl-badge
+                  class="chip"
+                  variant=${lowOnly ? 'neutral' : 'warning'}
+                  pill
+                >
                   <sl-icon
                     name=${ATTENTION_KIND_META[item.kind].icon}
                     aria-hidden="true"
@@ -3859,101 +2677,6 @@ export class DashboardView extends AuthedElement {
           }View
           all <span aria-hidden="true">→</span></a
         >
-      </div>
-    `;
-  }
-
-  /**
-   * A stat is an icon, a number and a word, on two lines, about 64px tall.
-   * The old block spent a fifth of a 900px screen on the same five numbers.
-   */
-  private renderMetricItem(metric: DashboardMetric) {
-    const content = html`
-      <span class="hero-stat-top">
-        ${
-          metric.icon.includes('/')
-            ? html`<sl-icon
-                class="hero-stat-icon"
-                src=${metric.icon}
-              ></sl-icon>`
-            : html`<sl-icon
-                class="hero-stat-icon"
-                name=${metric.icon}
-              ></sl-icon>`
-        }
-        <span class="hero-stat-value">${metric.value}</span>
-      </span>
-      <span class="hero-stat-label">${metric.label}</span>
-    `;
-
-    const toneClass = metric.tone ? `tone-${metric.tone}` : '';
-
-    if (metric.href) {
-      return html`
-        <a class="hero-stat ${toneClass}" href=${metric.href}>${content}</a>
-      `;
-    }
-
-    return html`<div class="hero-stat ${toneClass}">${content}</div>`;
-  }
-
-  private get gatewayMetrics(): DashboardMetric[] {
-    const attentionCount = this.attentionItems.length;
-    // Four counts are just counts: their icons stay neutral so the only
-    // coloured stat in the row is the one that means something.
-    return [
-      {
-        label: 'agents',
-        value: this.formatNumber(this.totalAgentsCount),
-        icon: 'robot',
-        href: '/console/agents',
-        tone: 'neutral',
-      },
-      {
-        label: 'flows',
-        value: this.formatNumber(this.totalFlowsCount),
-        icon: '/images/flow.svg',
-        href: '/console/flows',
-        tone: 'neutral',
-      },
-      {
-        label: 'models',
-        value: this.formatNumber(this.aiModelsCount),
-        icon: 'cpu',
-        href: '/console/ai-models',
-        tone: 'neutral',
-      },
-      {
-        label: 'tools',
-        value: this.formatNumber(this.enabledToolsCount),
-        icon: 'tools',
-        href: '/console/tools',
-        tone: 'neutral',
-      },
-      {
-        label: 'need attention',
-        value: this.formatNumber(attentionCount),
-        icon: attentionCount > 0 ? 'exclamation-triangle' : 'check-circle',
-        href: '/console/attention',
-        tone: attentionCount > 0 ? 'warning' : 'success',
-      },
-    ];
-  }
-
-  /** Five counts, borderless, directly under the page title. */
-  private renderStatStrip() {
-    if (this.fetchingGatewaySummary && !this.gatewaySummary) {
-      return html`
-        <div class="hero-stats stat-strip">
-          <div style="display: flex; align-items: center; min-height: 64px;">
-            <sl-spinner style="font-size: 1.5rem;"></sl-spinner>
-          </div>
-        </div>
-      `;
-    }
-    return html`
-      <div class="hero-stats stat-strip">
-        ${this.gatewayMetrics.map((metric) => this.renderMetricItem(metric))}
       </div>
     `;
   }
@@ -4190,6 +2913,288 @@ export class DashboardView extends AuthedElement {
     `;
   }
 
+  /**
+   * The Inventory tabs read the page's existing fetches; none of them adds a
+   * request. Agents come from the agents list, their numbers from the gateway
+   * summary's per-session breakdown (the agents list totals are lifetime, the
+   * Inventory shows the page range). Flows come from the flows list joined to
+   * the executions the page already fetches. Models come from the AI models
+   * list joined to `usage_by_model`. Tools come from the tool catalogue joined
+   * to `usage_by_tool`.
+   */
+  private get inventoryAgentRows(): InventoryAgentRow[] {
+    const totals = new Map<
+      string,
+      { requests: number; tokens: number; cost: number }
+    >();
+    for (const session of this.gatewaySummary?.usage_by_session || []) {
+      const agent = this.getManagedAgentForUsageSession(session);
+      if (!agent) continue;
+      const running = totals.get(agent.id) || {
+        requests: 0,
+        tokens: 0,
+        cost: 0,
+      };
+      running.requests += session.request_count || 0;
+      running.tokens += session.token_usage?.total_tokens || 0;
+      running.cost += session.estimated_cost || 0;
+      totals.set(agent.id, running);
+    }
+    return this.managedAgents.map((agent) => {
+      const usage = totals.get(agent.id);
+      return {
+        id: agent.id,
+        name: agent.display_name,
+        kind: agent.agent_kind || agent.session_source_type || null,
+        status: getAgentStatusChip(agent),
+        modelAlias: agent.latest_model_alias || agent.configured_model_alias,
+        requests: usage?.requests ?? 0,
+        tokens: usage?.tokens ?? 0,
+        cost: usage?.cost ?? 0,
+        lastSeenAt: agent.last_seen_at || agent.last_activity_at || null,
+      };
+    });
+  }
+
+  /**
+   * Runs the page range contains, newest first. `$ est.` comes from the
+   * range-scoped gateway summary, so runs, failures and the last run are
+   * scoped the same way: one row of the table must not hold two time windows.
+   */
+  private get inRangeFlowExecutions(): FlowExecution[] {
+    const startMs = this.getGatewayStartMs();
+    return this.flowExecutions.filter((execution) => {
+      if (!execution.start_time) return false;
+      return parseUTCDate(execution.start_time).getTime() >= startMs;
+    });
+  }
+
+  /**
+   * True when the executions page came back full and its oldest row is still
+   * inside the range: the account ran more than one page inside the window, so
+   * the counts below are "from the most recent 100 runs", not "in the range".
+   */
+  private get flowRunsCapped(): boolean {
+    if (this.flowExecutions.length < FLOW_EXECUTIONS_PAGE_SIZE) return false;
+    const oldest = this.flowExecutions[this.flowExecutions.length - 1];
+    if (!oldest?.start_time) return false;
+    return (
+      parseUTCDate(oldest.start_time).getTime() >= this.getGatewayStartMs()
+    );
+  }
+
+  private get inventoryFlowRows(): InventoryFlowRow[] {
+    const costs = new Map<string, number>();
+    for (const flow of this.gatewaySummary?.usage_by_flow || []) {
+      if (flow.flow_id) {
+        costs.set(flow.flow_id, flow.estimated_cost || 0);
+      }
+    }
+
+    const runs = new Map<
+      string,
+      { runs: number; failed: number; last: FlowExecution | null }
+    >();
+    for (const execution of this.inRangeFlowExecutions) {
+      if (!execution.flow_id) continue;
+      const running = runs.get(execution.flow_id) || {
+        runs: 0,
+        failed: 0,
+        last: null,
+      };
+      running.runs += 1;
+      if (execution.status === 'FAILED') {
+        running.failed += 1;
+      }
+      // The list arrives newest first, so the first row wins.
+      running.last = running.last || execution;
+      runs.set(execution.flow_id, running);
+    }
+
+    // Names for flows the list no longer holds come from every execution the
+    // page fetched, in range or not: a deleted flow's spend is in the summary
+    // and the row that carries it needs a name.
+    const names = new Map<string, string>();
+    for (const execution of this.flowExecutions) {
+      if (execution.flow_id && execution.flow_name) {
+        names.set(execution.flow_id, execution.flow_name);
+      }
+    }
+
+    const known = new Set(this.flows.map((flow) => flow.id));
+    const listed = this.flows.map((flow) => ({ id: flow.id, name: flow.name }));
+    // A run whose flow was deleted still has spend in the window; show it
+    // rather than losing the money. Only in-range spend or in-range runs earn
+    // the row, so a flow that was deleted before the window opened is gone.
+    for (const [flowId, name] of names) {
+      if (!known.has(flowId) && (costs.has(flowId) || runs.has(flowId))) {
+        listed.push({ id: flowId, name });
+      }
+    }
+
+    return listed.map((flow) => {
+      const counted = runs.get(flow.id);
+      return {
+        id: flow.id,
+        name: flow.name,
+        lastRun: counted?.last
+          ? {
+              id: counted.last.id,
+              status: counted.last.status,
+              start_time: counted.last.start_time,
+              end_time: counted.last.end_time,
+              trigger_subject: counted.last.trigger_subject,
+              trigger_subject_url: counted.last.trigger_subject_url,
+              trigger_event_details: counted.last.trigger_event_details,
+            }
+          : null,
+        runs: counted?.runs ?? 0,
+        failed: counted?.failed ?? 0,
+        cost: costs.get(flow.id) ?? 0,
+      };
+    });
+  }
+
+  private get inventoryModelRows(): InventoryModelRow[] {
+    const usage = new Map<string, GatewayUsageByModel>();
+    for (const model of this.gatewaySummary?.usage_by_model || []) {
+      const alias = model.model_alias || model.ai_model_id;
+      if (alias) {
+        usage.set(alias, model);
+      }
+    }
+
+    const rows: InventoryModelRow[] = this.aiModels.map((model) => {
+      const used = usage.get(model.name);
+      usage.delete(model.name);
+      return {
+        id: model.id,
+        alias: model.name,
+        provider: model.provider_name || 'Unknown',
+        requests: used?.request_count ?? 0,
+        tokens: used?.token_usage?.total_tokens ?? 0,
+        cost: used?.estimated_cost ?? 0,
+      };
+    });
+
+    // Aliases the gateway served that are no longer in the models list.
+    for (const [alias, model] of usage) {
+      rows.push({
+        id: model.ai_model_id,
+        alias,
+        provider: model.provider_name || 'Unknown',
+        requests: model.request_count || 0,
+        tokens: model.token_usage?.total_tokens || 0,
+        cost: model.estimated_cost || 0,
+      });
+    }
+    return rows;
+  }
+
+  /**
+   * One row per active teammate. Spend reaches a person through the agents
+   * they own, which is the only link the gateway records between a request
+   * and a human; flows carry no owner at all, so there is no flows column.
+   */
+  private get inventoryUserRows(): InventoryUserRow[] {
+    const perAgent = new Map<string, { tokens: number; cost: number }>();
+    for (const session of this.gatewaySummary?.usage_by_session || []) {
+      const agent = this.getManagedAgentForUsageSession(session);
+      if (!agent) continue;
+      const running = perAgent.get(agent.id) || { tokens: 0, cost: 0 };
+      running.tokens += session.token_usage?.total_tokens || 0;
+      running.cost += session.estimated_cost || 0;
+      perAgent.set(agent.id, running);
+    }
+
+    const byOwner = new Map<
+      string,
+      { agents: number; tokens: number; cost: number }
+    >();
+    for (const agent of this.managedAgents) {
+      const ownerId = agent.owner_user_id;
+      if (!ownerId) continue;
+      const running = byOwner.get(ownerId) || { agents: 0, tokens: 0, cost: 0 };
+      running.agents += 1;
+      const usage = perAgent.get(agent.id);
+      running.tokens += usage?.tokens || 0;
+      running.cost += usage?.cost || 0;
+      byOwner.set(ownerId, running);
+    }
+
+    return this.accountUsers.map((user) => {
+      const owned = byOwner.get(user.id);
+      const roles = [...(user.roles || []), ...(user.inherited_roles || [])]
+        .map((role) => role?.name)
+        .filter((name): name is string => Boolean(name));
+      return {
+        id: user.id,
+        name: user.full_name || user.username || user.email || 'Unknown',
+        role: [...new Set(roles)].join(', '),
+        lastLoginAt: user.last_login || null,
+        agentsOwned: owned?.agents ?? 0,
+        tokens: owned?.tokens ?? 0,
+        cost: owned?.cost ?? 0,
+      };
+    });
+  }
+
+  private get inventoryToolRows(): InventoryToolRow[] {
+    const usage = new Map<string, GatewayUsageByTool>();
+    for (const tool of this.gatewaySummary?.usage_by_tool || []) {
+      usage.set(tool.tool_name, tool);
+    }
+    return this.tools
+      .filter((tool) => tool.is_enabled)
+      .map((tool) => {
+        const used = usage.get(tool.name);
+        return {
+          name: tool.name,
+          server: tool.source_name || 'Built in',
+          calls: used?.invocation_count ?? 0,
+          failed: used?.failed_invocations ?? 0,
+        };
+      });
+  }
+
+  /**
+   * One box for what the account has: the counts that used to sit in the
+   * stat strip now label its tabs, and the page range drives every column.
+   */
+  private renderInventoryCard() {
+    return html`
+      <inventory-card
+        .agentRows=${this.inventoryAgentRows}
+        .flowRows=${this.inventoryFlowRows}
+        .modelRows=${this.inventoryModelRows}
+        .toolRows=${this.inventoryToolRows}
+        .userRows=${this.inventoryUserRows}
+        .agentsTotal=${this.totalAgentsCount}
+        .flowsTotal=${this.totalFlowsCount}
+        .modelsTotal=${this.aiModelsCount}
+        .toolsTotal=${this.enabledToolsCount}
+        .usersTotal=${this.enabledUsersCount}
+        ?showUsers=${this.canViewUsers}
+        .rangeLabel=${this.gatewayRangeLabel}
+        .flowRunsCapped=${this.flowRunsCapped}
+        ?loading=${this.loading || this.fetchingMCPAndTools}
+      ></inventory-card>
+    `;
+  }
+
+  /** What just happened, live, with the audit page one click away. */
+  private renderActivityFeed() {
+    return html`
+      <activity-feed
+        .flows=${this.flows}
+        .agents=${this.managedAgents}
+        .executions=${this.flowExecutions}
+        .budgetPolicies=${this.budgetPolicies}
+        @open-budget-limits=${() => (this.showBudgetDialog = true)}
+      ></activity-feed>
+    `;
+  }
+
   render() {
     if (!this.isOnboarded && !this.welcomeCardDismissed) {
       return html`
@@ -4210,7 +3215,14 @@ export class DashboardView extends AuthedElement {
 
     return html`
       <view-header headerText="Overview" width="extra-wide">
-        <span slot="meta" class="updated-at"
+        <span
+          slot="meta"
+          class="updated-at"
+          title=${
+            this.lastUpdatedAt
+              ? parseUTCDate(this.lastUpdatedAt).toLocaleString()
+              : 'Not loaded yet'
+          }
           >Updated ${this.formatLastUpdatedLabel()}</span
         >
       </view-header>
@@ -4220,16 +3232,14 @@ export class DashboardView extends AuthedElement {
             ? html`<sl-alert variant="danger" open>${this.error}</sl-alert>`
             : nothing
         }
-        ${this.renderAttentionStrip()} ${this.renderStatStrip()}
-        ${this.renderWelcomeCard()}
+        ${this.renderAttentionStrip()} ${this.renderWelcomeCard()}
       </div>
 
       <div class="column-layout dashboard extra-wide">
         <div class="main-column">
           <div class="dashboard-stack">
             ${this.renderGatewayCard()} ${this.renderNextStepsCard()}
-            ${this.renderActiveExecutionsCard()}
-            ${this.renderRecentFlowExecutionsCard()}
+            ${this.renderInventoryCard()}
 
             <div
               style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sl-spacing-medium);"
@@ -4241,7 +3251,7 @@ export class DashboardView extends AuthedElement {
         </div>
 
         <div class="side-column">
-          ${this.renderUsageCard()} ${this.renderTopModelsCard()}
+          ${this.renderUsageCard()} ${this.renderActivityFeed()}
         </div>
         <mcp-setup-dialog
           ?open=${this.showSetupDialog}

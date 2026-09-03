@@ -10,6 +10,7 @@ from preloop.models import schemas
 from preloop.models.crud import (
     crud_account,
     crud_ai_model,
+    crud_api_usage,
     crud_runtime_session_activity,
 )
 from preloop.models.crud.flow import CRUDFlow
@@ -436,7 +437,31 @@ def read_flow_executions(
     for execution in executions:
         execution.flow_name = execution.flow.name if execution.flow else None
 
+    _project_models_used(db, executions)
+
     return executions
+
+
+def _project_models_used(db: Session, executions: List[Any]) -> None:
+    """Attach the model projection to each execution row in one query.
+
+    "Which model ran this" is answered from gateway usage, which the
+    execution row itself does not carry. One grouped aggregate covers the
+    whole page (see ``crud_api_usage.get_models_used_for_executions``); doing
+    it per row would put a query behind every line of the table.
+    """
+    if not executions:
+        return
+    models_by_execution = crud_api_usage.get_models_used_for_executions(
+        db, [execution.id for execution in executions]
+    )
+    for execution in executions:
+        models = models_by_execution.get(str(execution.id), [])
+        execution.models_used = models
+        # The alias that served most requests leads; the rest stay in
+        # models_used so the console can render "+N".
+        execution.model_alias = models[0]["model_alias"] if models else None
+        execution.provider_name = models[0]["provider_name"] if models else None
 
 
 # Terminal execution statuses, mirroring the orchestrator's state machine.
@@ -472,6 +497,10 @@ def read_batch_executions(
     )
     if not executions:
         raise HTTPException(status_code=404, detail="Batch not found")
+
+    # Projected before validation below, so each cell of a model matrix says
+    # which model actually served it.
+    _project_models_used(db, executions)
 
     by_status: Dict[str, int] = {}
     total_tokens = 0
@@ -558,6 +587,10 @@ def read_flow_execution(
                 }
                 for row in rows
             ]
+
+    # The model that ran this execution, from the same gateway usage the list
+    # projects, so the detail page and the table never disagree.
+    _project_models_used(db, [execution])
 
     return execution
 
@@ -1091,6 +1124,17 @@ async def send_execution_command(
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
 
 
+def _display_name(user: User) -> str:
+    """The name to attribute a manually triggered run to in the console.
+
+    Prefers the operator's own name, then the username, and finally the
+    email, so the executions list says "Manual Run by Ada Lovelace" rather
+    than repeating an opaque id.
+    """
+    name = (getattr(user, "full_name", None) or "").strip()
+    return name or getattr(user, "username", None) or getattr(user, "email", "") or ""
+
+
 def _validate_matrix(
     db: Session, matrix: Any, account_id: uuid.UUID
 ) -> List[Dict[str, Any]]:
@@ -1207,10 +1251,14 @@ async def trigger_flow_execution(
             matrix=validated_matrix,
             test_mode=True,
             trigger_event_data=trigger_event_data,
+            triggered_by=_display_name(current_user),
         )
 
     result = await trigger_service.trigger_flow(
-        flow_id=flow_id, test_mode=True, trigger_event_data=trigger_event_data
+        flow_id=flow_id,
+        test_mode=True,
+        trigger_event_data=trigger_event_data,
+        triggered_by=_display_name(current_user),
     )
 
     return result
@@ -1269,6 +1317,7 @@ async def retry_flow_execution(
         test_mode=False,
         trigger_event_data=original.trigger_event_details,
         retry_of_execution_id=original.id,
+        triggered_by=_display_name(current_user),
     )
 
     return result

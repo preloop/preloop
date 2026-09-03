@@ -8,6 +8,7 @@ import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '../../components/view-header.ts';
 import { getRunners, type RunnerRecord } from '../../api';
+import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { formatLocalDateTime } from '../../utils/date';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
@@ -21,6 +22,8 @@ export class RunnersView extends LitElement {
 
   @state()
   private error: string | null = null;
+
+  private unsubscribe?: () => void;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -133,6 +136,42 @@ export class RunnersView extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     void this.load();
+    this.unsubscribe = unifiedWebSocketManager.subscribe(
+      'runners',
+      (message: { type?: string; payload?: Partial<RunnerRecord> }) =>
+        this.handleRunnerEvent(message)
+    );
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this.unsubscribe?.();
+  }
+
+  private handleRunnerEvent(message: {
+    type?: string;
+    payload?: Partial<RunnerRecord>;
+  }) {
+    if (message.type !== 'runner_updated' || !message.payload?.id) {
+      return;
+    }
+    const incoming = message.payload as RunnerRecord;
+    const index = this.runners.findIndex((row) => row.id === incoming.id);
+    if (index === -1) {
+      this.runners = [...this.runners, incoming];
+      return;
+    }
+    const current = this.runners[index];
+    this.runners = [
+      ...this.runners.slice(0, index),
+      {
+        ...current,
+        ...incoming,
+        registered_by_email:
+          incoming.registered_by_email || current.registered_by_email,
+      },
+      ...this.runners.slice(index + 1),
+    ];
   }
 
   private async load() {
