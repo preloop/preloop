@@ -757,7 +757,39 @@ describe('activity-feed', () => {
       const list = el.shadowRoot!.querySelector<HTMLElement>('.rows')!;
       const styles = getComputedStyle(list);
       expect(styles.overflowY).to.equal('auto');
+      // The stop is the same 360px floor the rail gives the card, and it
+      // does not depend on how wide the window is: a card nobody has
+      // bounded stops there whatever the viewport.
+      expect(styles.maxHeight).to.equal('360px');
+      expect(list.clientHeight).to.be.at.most(360);
       expect(list.scrollHeight).to.be.greaterThan(list.clientHeight);
+    });
+
+    it('lets a column that bounds it lift the stop', async () => {
+      const el = await feed();
+      // What the Overview rail does: it is sticky, stretched and capped at
+      // one viewport, so it owns the height and the card's own stop would
+      // only leave part of the rail empty.
+      el.style.setProperty('--activity-feed-list-max-height', 'none');
+      el.style.height = '640px';
+      for (let index = 0; index < FEED_CAP; index += 1) {
+        el.ingest('gateway_activity', {
+          type: 'model_gateway_call',
+          timestamp: new Date(Date.now() - index * 1000).toISOString(),
+          payload: {
+            api_usage_id: `lift-${index}`,
+            status_code: 500,
+            model_alias: `model-${index}`,
+          },
+        });
+      }
+      await el.updateComplete;
+      const list = el.shadowRoot!.querySelector<HTMLElement>('.rows')!;
+      expect(getComputedStyle(list).maxHeight).to.equal('none');
+      // The list takes the height the column gave it, not its own stop, and
+      // it is still the one thing that scrolls when the rows outgrow it.
+      expect(list.clientHeight).to.be.greaterThan(360);
+      expect(getComputedStyle(list).overflowY).to.equal('auto');
     });
 
     it('holds the read position when a row arrives above it', async () => {

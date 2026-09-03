@@ -1212,14 +1212,23 @@ export class ActivityFeed extends LitElement {
         width: 6px;
       }
 
-      /* The list is the one thing that scrolls. Off the rail (below 1200px,
-         or anywhere else this card is used) it stops at 480px so it cannot
-         run away with the page either. */
+      /* The list is the one thing that scrolls. Wherever nobody hands the
+         card a height it stops at 360px, the same floor the rail gives it,
+         so the feed is one size off the rail and cannot run away with the
+         page. 360px holds about twenty rows against an in-memory cap of
+         thirty, so a full feed always overflows and the list really does
+         scroll rather than the card quietly growing to the cap.
+
+         The cap is lifted by whoever takes responsibility for the height
+         (the Overview rail sets --activity-feed-list-max-height: none),
+         not by a viewport width: this card is not only ever on the rail,
+         and a wide window is not a promise that something above it is
+         bounding the column. */
       .rows {
         display: flex;
         flex: 1 1 auto;
         flex-direction: column;
-        max-height: 480px;
+        max-height: var(--activity-feed-list-max-height, 360px);
         min-height: 0;
         overflow-y: auto;
         scrollbar-width: thin;
@@ -1233,13 +1242,6 @@ export class ActivityFeed extends LitElement {
       .rows::-webkit-scrollbar-thumb {
         background: var(--console-hairline);
         border-radius: 4px;
-      }
-
-      @media (min-width: 1200px) {
-        /* On the rail the column decides the height, not the list. */
-        .rows {
-          max-height: none;
-        }
       }
 
       .footer,
