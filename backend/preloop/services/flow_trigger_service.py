@@ -1020,6 +1020,28 @@ class FlowTriggerService:
                         f"Triggering flow '{flow.name}' ({flow.id}) for event {event_type}"
                     )
                     event_copy = dict(event_data)
+                    if event_type == "comment_created":
+                        from preloop.services.flow_pr_binding import (
+                            bind_resume_or_skip,
+                            flow_requires_pr_comment_resume,
+                        )
+
+                        if flow_requires_pr_comment_resume(flow):
+                            resume = bind_resume_or_skip(self.db, flow, event_copy)
+                            if resume is None:
+                                logger.info(
+                                    "Skipping comment_created on flow '%s' (%s): "
+                                    "no matching opened PR for this comment",
+                                    flow.name,
+                                    flow.id,
+                                )
+                                continue
+                            logger.info(
+                                "Resuming flow '%s' from execution %s on %s",
+                                flow.name,
+                                resume.get("execution_id"),
+                                resume.get("pr_url"),
+                            )
                     await self._start_flow_execution(
                         flow=flow,
                         event_data=event_copy,

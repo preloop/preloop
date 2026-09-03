@@ -189,6 +189,27 @@ class TestEventNormalization:
         }
         assert normalize_event_type("github", "issues", payload) == "issue_labeled"
 
+    def test_github_pr_merged_on_close(self):
+        """GitHub PR closed+merged is pull_request_merged, not closed."""
+        payload = {"action": "closed", "pull_request": {"merged": True, "number": 1}}
+        assert (
+            normalize_event_type("github", "pull_request", payload)
+            == "pull_request_merged"
+        )
+
+    def test_github_pr_closed_without_merge(self):
+        payload = {"action": "closed", "pull_request": {"merged": False, "number": 1}}
+        assert (
+            normalize_event_type("github", "pull_request", payload)
+            == "pull_request_closed"
+        )
+
+    def test_gitlab_job_hook(self):
+        assert normalize_event_type("gitlab", "Job Hook", {}) == "job"
+
+    def test_github_deployment_status(self):
+        assert normalize_event_type("github", "deployment_status", {}) == "deployment"
+
 
 class TestFilterFieldExtraction:
     """Test extraction of filter fields from webhook payloads."""
@@ -308,6 +329,44 @@ class TestFilterFieldExtraction:
 
         # Should be a single string, not a list
         assert fields["assignee"] == "single_assignee"
+
+    def test_github_issue_closed_exposes_state_reason(self):
+        payload = {
+            "action": "closed",
+            "issue": {
+                "state": "closed",
+                "state_reason": "completed",
+                "user": {"login": "octocat"},
+            },
+            "sender": {"login": "octocat"},
+        }
+        fields = extract_filter_fields("github", "issues", payload)
+        assert fields["state_reason"] == "completed"
+        assert fields["state"] == "closed"
+
+    def test_gitlab_job_hook_exposes_build_fields(self):
+        payload = {
+            "object_kind": "build",
+            "build_name": "deploy:staging",
+            "build_status": "success",
+            "build_stage": "deploy",
+            "ref": "main",
+        }
+        fields = extract_filter_fields("gitlab", "Job Hook", payload)
+        assert fields["build_name"] == "deploy:staging"
+        assert fields["build_status"] == "success"
+        assert fields["build_stage"] == "deploy"
+        assert fields["ref"] == "main"
+
+    def test_github_deployment_exposes_environment(self):
+        payload = {
+            "deployment": {"environment": "staging"},
+            "deployment_status": {"state": "success", "environment": "staging"},
+            "sender": {"login": "octocat"},
+        }
+        fields = extract_filter_fields("github", "deployment_status", payload)
+        assert fields["environment"] == "staging"
+        assert fields["state"] == "success"
 
 
 class TestFilterMatching:
@@ -492,6 +551,9 @@ class TestHumanizeEventType:
         assert humanize_event_type("pull_request_updated") == "Pull Request Updated"
         assert humanize_event_type("merge_request_merged") == "Merge Request Merged"
         assert humanize_event_type("push") == "Push to Repository"
+        assert humanize_event_type("job") == "Job Event"
+        assert humanize_event_type("deployment") == "Deployment"
+        assert humanize_event_type("pull_request_merged") == "Pull Request Merged"
 
     def test_unknown_event_type_falls_back_to_title_case(self):
         """Unknown/future event types still render readably, not as slugs."""

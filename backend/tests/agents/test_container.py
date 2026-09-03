@@ -1388,3 +1388,65 @@ class TestLogScrubbing:
         assert streamed == [
             "origin\thttps://[REDACTED]@github.com/acme/private.git (push)"
         ]
+
+
+class TestResolveGitBranchPlan:
+    def test_resume_overrides_config_source_branch(self, container_executor):
+        source, target, _, _, _ = container_executor._resolve_git_branch_plan(
+            {
+                "flow_name": "Automated Issue Implementation",
+                "execution_id": "83021dcc-4658-45a3-814c-0e67d07642f6",
+                "trigger_event_data": {
+                    "_resume": {
+                        "execution_id": "prior",
+                        "source_branch": "preloop/issue-353",
+                    }
+                },
+            },
+            {"source_branch": "main", "target_branch": None},
+        )
+        assert source == "preloop/issue-353"
+        assert target == "preloop/issue-353"
+
+    def test_default_target_when_not_resuming(self, container_executor):
+        source, target, _, _, _ = container_executor._resolve_git_branch_plan(
+            {
+                "flow_name": "Automated Issue Implementation",
+                "execution_id": "83021dcc-4658-45a3-814c-0e67d07642f6",
+                "trigger_event_data": {},
+            },
+            {"source_branch": None, "target_branch": None},
+        )
+        assert source == "main"
+        assert target == "preloop/automated-issue-implementation-83021dcc"
+
+
+class TestExtractMergeRequestRef:
+    def test_github_pr_comment_issue_stub(self, container_executor):
+        ref = container_executor._extract_merge_request_ref_from_trigger(
+            {
+                "payload": {
+                    "issue": {
+                        "number": 353,
+                        "pull_request": {
+                            "html_url": "https://github.com/preloop/preloop/pull/353"
+                        },
+                    }
+                }
+            }
+        )
+        assert ref == "pull/353/head"
+
+    def test_gitlab_mr_note(self, container_executor):
+        ref = container_executor._extract_merge_request_ref_from_trigger(
+            {"payload": {"merge_request": {"iid": 10}}}
+        )
+        assert ref == "refs/merge-requests/10/head"
+
+
+class TestExtractSourceBranch:
+    def test_gitlab_mr_note_source_branch(self, container_executor):
+        branch = container_executor._extract_source_branch_from_trigger(
+            {"payload": {"merge_request": {"source_branch": "feat/x"}}}
+        )
+        assert branch == "feat/x"

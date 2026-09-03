@@ -5,6 +5,7 @@ from .registry import resolver_registry
 from .trigger_event import TriggerEventResolver
 from .project import ProjectResolver
 from .account import AccountResolver
+from .execution import ExecutionResolver
 
 __all__ = [
     "PromptResolver",
@@ -13,4 +14,5 @@ __all__ = [
     "TriggerEventResolver",
     "ProjectResolver",
     "AccountResolver",
+    "ExecutionResolver",
 ]

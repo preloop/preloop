@@ -1977,17 +1977,31 @@ class ContainerAgentExecutor(AgentExecutor):
         source_branch = git_config.get("source_branch") or None
         target_branch = git_config.get("target_branch") or None
         trigger_data = execution_context.get("trigger_event_data", {})
+        resume = trigger_data.get("_resume") if isinstance(trigger_data, dict) else None
+        resume_branch = None
+        if isinstance(resume, dict):
+            resume_branch = resume.get("source_branch") or None
 
-        if not source_branch:
-            source_branch = self._extract_source_branch_from_trigger(trigger_data)
-        if not source_branch:
-            source_branch = "main"
+        if resume_branch:
+            # Clone and push the same PR branch so a comment restart continues
+            # the existing review, not a new branch off main.
+            source_branch = resume_branch
+            target_branch = resume_branch
+            self.logger.info(
+                "Resume clone: using existing PR branch %s as source and target",
+                resume_branch,
+            )
+        else:
+            if not source_branch:
+                source_branch = self._extract_source_branch_from_trigger(trigger_data)
+            if not source_branch:
+                source_branch = "main"
 
-        if not target_branch:
-            flow_name = execution_context.get("flow_name", "flow")
-            execution_id = execution_context.get("execution_id", "exec")
-            safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
-            target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
+            if not target_branch:
+                flow_name = execution_context.get("flow_name", "flow")
+                execution_id = execution_context.get("execution_id", "exec")
+                safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
+                target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
 
         commit_sha = self._extract_commit_sha_from_trigger(trigger_data)
         if commit_sha:
@@ -2550,10 +2564,12 @@ echo "========================================="
                 # under /workspace/evidence *before* push so a failed push
                 # still leaves a recoverable artifact in the log stream.
                 # Note: Directory is guaranteed to exist because git clone validation would have failed earlier
+                quoted_source = shlex.quote(source_branch)
+                quoted_target = shlex.quote(target_branch)
                 repo_post_commands = [
                     f"cd {full_path}",
                     # Check if there are any commits on target branch vs source
-                    f'COMMIT_COUNT=$(git rev-list --count {source_branch}..{target_branch} 2>/dev/null || echo "0")',
+                    f'COMMIT_COUNT=$(git rev-list --count origin/{quoted_target}..HEAD 2>/dev/null || git rev-list --count {quoted_source}..{quoted_target} 2>/dev/null || echo "0")',
                     'if [ "$COMMIT_COUNT" -gt "0" ]; then',
                     f'  echo "Found $COMMIT_COUNT commits on {target_branch}, pushing..."',
                     f"  mkdir -p {EVIDENCE_DIR_PATH}",
@@ -3001,6 +3017,22 @@ MREOF
                 self.logger.info(f"Extracted GitHub PR fetch ref: {ref}")
                 return ref
 
+            issue = payload.get("issue")
+            if (
+                isinstance(issue, dict)
+                and isinstance(issue.get("pull_request"), dict)
+                and issue.get("number") is not None
+            ):
+                ref = f"pull/{issue['number']}/head"
+                self.logger.info(f"Extracted GitHub PR comment fetch ref: {ref}")
+                return ref
+
+            mr = payload.get("merge_request")
+            if isinstance(mr, dict) and mr.get("iid") is not None:
+                ref = f"refs/merge-requests/{mr['iid']}/head"
+                self.logger.info(f"Extracted GitLab MR note fetch ref: {ref}")
+                return ref
+
             return None
         except Exception as e:
             self.logger.debug(f"Error extracting merge request ref from trigger: {e}")
@@ -3075,6 +3107,15 @@ MREOF
             if isinstance(obj_attrs, dict) and obj_attrs.get("source_branch"):
                 branch = obj_attrs["source_branch"]
                 self.logger.info(f"Extracted source branch from GitLab MR: {branch}")
+                return branch
+
+            # GitLab note on an MR
+            mr = payload.get("merge_request")
+            if isinstance(mr, dict) and mr.get("source_branch"):
+                branch = mr["source_branch"]
+                self.logger.info(
+                    f"Extracted source branch from GitLab MR note: {branch}"
+                )
                 return branch
 
             return None

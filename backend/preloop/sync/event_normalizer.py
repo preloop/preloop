@@ -246,7 +246,10 @@ def normalize_event_type(
                         # This matches user expectation that "PR Updated" includes new commits
                         normalized = "pull_request_updated"
                     elif action == "closed":
-                        normalized = "pull_request_closed"
+                        if payload.get("pull_request", {}).get("merged"):
+                            normalized = "pull_request_merged"
+                        else:
+                            normalized = "pull_request_closed"
                     elif action == "reopened":
                         normalized = "pull_request_reopened"
                     elif action == "review_requested":
@@ -588,6 +591,16 @@ def extract_filter_fields(
                 "detailed_merge_status"
             )
 
+        if payload.get("object_kind") == "build" or payload.get("build_name"):
+            if payload.get("build_name"):
+                filter_fields["build_name"] = payload.get("build_name")
+            if payload.get("build_status"):
+                filter_fields["build_status"] = payload.get("build_status")
+            if payload.get("build_stage"):
+                filter_fields["build_stage"] = payload.get("build_stage")
+            if payload.get("ref"):
+                filter_fields["ref"] = payload.get("ref")
+
     elif tracker_type_lower == "github":
         # GitHub structure varies by event type
         action = payload.get("action")
@@ -630,6 +643,8 @@ def extract_filter_fields(
 
             # State
             filter_fields["state"] = issue.get("state")
+            if issue.get("state_reason"):
+                filter_fields["state_reason"] = issue.get("state_reason")
 
         # Extract from pull_request object
         elif "pull_request" in payload:
@@ -693,6 +708,18 @@ def extract_filter_fields(
         # Sender (who triggered the event)
         sender = payload.get("sender", {})
         filter_fields["sender"] = sender.get("login")
+
+        deployment = payload.get("deployment") or {}
+        deployment_status = payload.get("deployment_status") or {}
+        if deployment or deployment_status:
+            environment = deployment_status.get("environment") or deployment.get(
+                "environment"
+            )
+            if environment:
+                filter_fields["environment"] = environment
+            dep_state = deployment_status.get("state")
+            if dep_state:
+                filter_fields["state"] = dep_state
 
     elif tracker_type_lower == "jira":
         # Jira webhook structure
