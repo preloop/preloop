@@ -3362,7 +3362,7 @@ export class DashboardView extends AuthedElement {
         <budget-limits-dialog
           ?open=${this.showBudgetDialog}
           billingEnabled
-          @sl-hide=${() => (this.showBudgetDialog = false)}
+          @budget-limits-hide=${() => (this.showBudgetDialog = false)}
           @budget-policies-changed=${this.handleBudgetPoliciesChanged}
         ></budget-limits-dialog>
         <preloop-invite-dialog

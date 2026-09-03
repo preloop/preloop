@@ -55,7 +55,9 @@ describe('budget-limits-dialog', () => {
     await element.updateComplete;
     const dialog = element.shadowRoot!.querySelector('sl-dialog')!;
 
+    const hidden = oneEvent(element, 'budget-limits-hide');
     dialog.dispatchEvent(new CustomEvent('sl-hide', { bubbles: true }));
+    await hidden;
     await element.updateComplete;
 
     expect(element.open).to.be.false;
@@ -79,5 +81,44 @@ describe('budget-limits-dialog', () => {
 
     expect(event.defaultPrevented).to.be.true;
     expect(element.open).to.be.true;
+  });
+
+  it('does not close when a nested select or dropdown hides', async () => {
+    const element = await fixture<BudgetLimitsDialog>(
+      html`<budget-limits-dialog open></budget-limits-dialog>`
+    );
+    await element.updateComplete;
+    const editor = element.shadowRoot!.querySelector('budget-policy-editor')!;
+
+    editor.dispatchEvent(
+      new CustomEvent('sl-hide', { bubbles: true, composed: true })
+    );
+    await element.updateComplete;
+
+    expect(element.open).to.be.true;
+  });
+
+  it('does not let nested sl-hide reach parent listeners', async () => {
+    let parentSawHide = false;
+    const wrap = await fixture(
+      html`<div
+        @sl-hide=${() => {
+          parentSawHide = true;
+        }}
+      >
+        <budget-limits-dialog open></budget-limits-dialog>
+      </div>`
+    );
+    const element = wrap.querySelector('budget-limits-dialog')!;
+    await element.updateComplete;
+    const editor = element.shadowRoot!.querySelector('budget-policy-editor')!;
+
+    editor.dispatchEvent(
+      new CustomEvent('sl-hide', { bubbles: true, composed: true })
+    );
+    await element.updateComplete;
+
+    expect(element.open).to.be.true;
+    expect(parentSawHide).to.be.false;
   });
 });

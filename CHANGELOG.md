@@ -87,6 +87,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (matched by email, case-insensitive) or are omitted. Overlay clicks no
   longer close the limits dialog, so opening the notify dropdowns does not
   dismiss it.
+- **Picking a period or subject no longer closes spending limits**:
+  `sl-select` / `sl-dropdown` fire composed `sl-hide` when their popup
+  closes. Overview and Attention treated that as the dialog hiding.
+  Nested hides are contained; parents listen for `budget-limits-hide`.
 - **Overview first paint no longer waits on the attention usage breakdown**:
   the shared attention loader used to fetch ``include_breakdown=true`` in
   parallel with wave 1, and the page waited for it before drawing. Attention

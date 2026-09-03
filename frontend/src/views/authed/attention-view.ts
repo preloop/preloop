@@ -1440,7 +1440,7 @@ export class AttentionView extends AuthedElement {
       <budget-limits-dialog
         ?open=${this.showLimitsDialog}
         .billingEnabled=${this.billingEnabled}
-        @sl-hide=${() => (this.showLimitsDialog = false)}
+        @budget-limits-hide=${() => (this.showLimitsDialog = false)}
         @budget-policies-changed=${() => void this.fetchAll()}
       ></budget-limits-dialog>
     `;
