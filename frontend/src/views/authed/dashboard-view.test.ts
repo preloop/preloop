@@ -1023,6 +1023,63 @@ describe('DashboardView', () => {
       );
     });
 
+    // Wave 8: spend reaches a person through the agents they own, which is
+    // the only link the gateway records between a request and a human.
+    it("attributes an owned agent's tokens and spend to its owner", async () => {
+      agentsResponse = {
+        ...agentsResponse,
+        items: agentsResponse.items.map((agent: any) => ({
+          ...agent,
+          owner_user_id: 'user-1',
+          owner_username: 'ada',
+        })),
+      };
+      const element = await mountLoaded();
+      element['accountUsers'] = [
+        {
+          id: 'user-1',
+          username: 'ada',
+          full_name: 'Ada Lovelace',
+          is_active: true,
+          last_login: '2026-03-07T09:00:00Z',
+          roles: [{ name: 'Admin' }],
+        },
+        {
+          id: 'user-2',
+          username: 'grace',
+          full_name: null,
+          is_active: true,
+          last_login: null,
+          roles: [],
+        },
+      ] as any;
+      await element.updateComplete;
+
+      const rows = element['inventoryUserRows'];
+      expect(rows.map((row: any) => row.name)).to.eql([
+        'Ada Lovelace',
+        'grace',
+      ]);
+      expect(rows[0].role).to.equal('Admin');
+      expect(rows[0].agentsOwned).to.equal(1);
+      expect(rows[0].tokens).to.equal(15);
+      expect(rows[0].cost).to.equal(4.2);
+      // Nobody's agent, nobody's spend: a zero here is true, not missing.
+      expect(rows[1].agentsOwned).to.equal(0);
+      expect(rows[1].cost).to.equal(0);
+    });
+
+    it('shows the Users tab only where user management is on', async () => {
+      const element = await mountLoaded();
+      const inventory = element.shadowRoot!.querySelector('inventory-card')!;
+      expect((inventory as any).showUsers).to.be.false;
+
+      element['userManagementEnabled'] = true;
+      await element.updateComplete;
+      await (inventory as any).updateComplete;
+      expect((inventory as any).showUsers).to.be.true;
+    });
+
     it('hides next steps when every step is already done', async () => {
       const element = await mountLoaded();
 

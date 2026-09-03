@@ -76,9 +76,25 @@ import type {
   InventoryFlowRow,
   InventoryModelRow,
   InventoryToolRow,
+  InventoryUserRow,
 } from '../../components/inventory-card';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
+
+/**
+ * A user as the admin list returns them: the shared `User` type predates
+ * roles being carried on the list, and the Inventory only reads four fields.
+ */
+interface AccountUser {
+  id: string;
+  username?: string | null;
+  email?: string | null;
+  full_name?: string | null;
+  is_active?: boolean;
+  last_login?: string | null;
+  roles?: Array<{ name?: string | null }> | null;
+  inherited_roles?: Array<{ name?: string | null }> | null;
+}
 
 interface AuditEvent {
   id: string;
@@ -224,6 +240,8 @@ export class DashboardView extends AuthedElement {
   @state() private hasAIModels = false;
   @state() private aiModelsCount = 0;
   @state() private enabledUsersCount = 0;
+  /** Active users, kept for the Inventory's Users tab (Cloud/Enterprise). */
+  @state() private accountUsers: AccountUser[] = [];
   @state() private toolCallsCount = 0;
   @state() private failedToolCallsCount = 0;
   @state() private totalFlowsCount = 0;
@@ -1882,6 +1900,11 @@ export class DashboardView extends AuthedElement {
         }
         this.hasAIModels = (aiModels || []).length > 0;
         this.aiModelsCount = Array.isArray(aiModels) ? aiModels.length : 0;
+        this.accountUsers = Array.isArray(users.users)
+          ? (users.users as AccountUser[]).filter(
+              (user) => user.is_active !== false
+            )
+          : [];
         this.enabledUsersCount = Array.isArray(users.users)
           ? users.users.filter((u: { is_active?: boolean }) => u.is_active)
               .length
@@ -2972,6 +2995,54 @@ export class DashboardView extends AuthedElement {
     return rows;
   }
 
+  /**
+   * One row per active teammate. Spend reaches a person through the agents
+   * they own, which is the only link the gateway records between a request
+   * and a human; flows carry no owner at all, so there is no flows column.
+   */
+  private get inventoryUserRows(): InventoryUserRow[] {
+    const perAgent = new Map<string, { tokens: number; cost: number }>();
+    for (const session of this.gatewaySummary?.usage_by_session || []) {
+      const agent = this.getManagedAgentForUsageSession(session);
+      if (!agent) continue;
+      const running = perAgent.get(agent.id) || { tokens: 0, cost: 0 };
+      running.tokens += session.token_usage?.total_tokens || 0;
+      running.cost += session.estimated_cost || 0;
+      perAgent.set(agent.id, running);
+    }
+
+    const byOwner = new Map<
+      string,
+      { agents: number; tokens: number; cost: number }
+    >();
+    for (const agent of this.managedAgents) {
+      const ownerId = agent.owner_user_id;
+      if (!ownerId) continue;
+      const running = byOwner.get(ownerId) || { agents: 0, tokens: 0, cost: 0 };
+      running.agents += 1;
+      const usage = perAgent.get(agent.id);
+      running.tokens += usage?.tokens || 0;
+      running.cost += usage?.cost || 0;
+      byOwner.set(ownerId, running);
+    }
+
+    return this.accountUsers.map((user) => {
+      const owned = byOwner.get(user.id);
+      const roles = [...(user.roles || []), ...(user.inherited_roles || [])]
+        .map((role) => role?.name)
+        .filter((name): name is string => Boolean(name));
+      return {
+        id: user.id,
+        name: user.full_name || user.username || user.email || 'Unknown',
+        role: [...new Set(roles)].join(', '),
+        lastLoginAt: user.last_login || null,
+        agentsOwned: owned?.agents ?? 0,
+        tokens: owned?.tokens ?? 0,
+        cost: owned?.cost ?? 0,
+      };
+    });
+  }
+
   private get inventoryToolRows(): InventoryToolRow[] {
     const usage = new Map<string, GatewayUsageByTool>();
     for (const tool of this.gatewaySummary?.usage_by_tool || []) {
@@ -3001,10 +3072,13 @@ export class DashboardView extends AuthedElement {
         .flowRows=${this.inventoryFlowRows}
         .modelRows=${this.inventoryModelRows}
         .toolRows=${this.inventoryToolRows}
+        .userRows=${this.inventoryUserRows}
         .agentsTotal=${this.totalAgentsCount}
         .flowsTotal=${this.totalFlowsCount}
         .modelsTotal=${this.aiModelsCount}
         .toolsTotal=${this.enabledToolsCount}
+        .usersTotal=${this.enabledUsersCount}
+        ?showUsers=${this.userManagementEnabled}
         .rangeLabel=${this.gatewayRangeLabel}
         ?loading=${this.loading && !this.gatewaySummary}
       ></inventory-card>

@@ -7,6 +7,7 @@ import type {
   InventoryFlowRow,
   InventoryModelRow,
   InventoryToolRow,
+  InventoryUserRow,
 } from './inventory-card';
 
 function agentRow(overrides: Partial<InventoryAgentRow> = {}) {
@@ -65,12 +66,28 @@ function toolRow(overrides: Partial<InventoryToolRow> = {}) {
   };
 }
 
+function userRow(overrides: Partial<InventoryUserRow> = {}) {
+  return {
+    id: 'user-1',
+    name: 'Ada Lovelace',
+    role: 'Admin',
+    lastLoginAt: new Date(Date.now() - 7200000).toISOString(),
+    agentsOwned: 3,
+    tokens: 240000,
+    cost: 9.5,
+    ...overrides,
+  };
+}
+
 async function card(
   props: Partial<{
     agentRows: InventoryAgentRow[];
     flowRows: InventoryFlowRow[];
     modelRows: InventoryModelRow[];
     toolRows: InventoryToolRow[];
+    userRows: InventoryUserRow[];
+    usersTotal: number;
+    showUsers: boolean;
     loading: boolean;
   }> = {}
 ): Promise<InventoryCard> {
@@ -80,6 +97,9 @@ async function card(
       .flowRows=${props.flowRows ?? [flowRow()]}
       .modelRows=${props.modelRows ?? [modelRow()]}
       .toolRows=${props.toolRows ?? [toolRow()]}
+      .userRows=${props.userRows ?? []}
+      .usersTotal=${props.usersTotal ?? 0}
+      ?showUsers=${props.showUsers ?? false}
       .agentsTotal=${10}
       .flowsTotal=${30}
       .modelsTotal=${16}
@@ -350,5 +370,90 @@ describe('inventory-card', () => {
       (el.shadowRoot?.querySelector('.range-label')?.textContent || '').trim()
     ).to.equal('30d');
     expect(el.shadowRoot?.querySelector('time-range-select')).to.not.exist;
+  });
+  describe('users tab', () => {
+    const withUsers = (props = {}) =>
+      card({
+        showUsers: true,
+        usersTotal: 4,
+        userRows: [
+          userRow(),
+          userRow({
+            id: 'user-2',
+            name: 'Grace Hopper',
+            role: 'Member',
+            lastLoginAt: new Date(Date.now() - 86400000 * 3).toISOString(),
+            agentsOwned: 1,
+            tokens: 12000,
+            cost: 41.25,
+          }),
+        ],
+        ...props,
+      });
+
+    it('is absent without user management', async () => {
+      const el = await card();
+      expect(tabText(el)).to.eql([
+        'Agents 10',
+        'Flows 30',
+        'Models 16',
+        'Tools 16',
+      ]);
+    });
+
+    it('lists who is on the account, what they own and what they spent', async () => {
+      const el = await withUsers();
+      expect(tabText(el)[4]).to.equal('Users 4');
+
+      await showTab(el, 'users');
+      const rows = el.shadowRoot!.querySelectorAll('tbody tr');
+      expect(rows.length).to.equal(2);
+      const first = rows[0].textContent!.replace(/\s+/g, ' ');
+      expect(first).to.contain('Ada Lovelace');
+      expect(first).to.contain('Admin');
+      expect(first).to.contain('2h ago');
+      expect(first).to.contain('3');
+      expect(first).to.contain('$9.50');
+      expect(rows[0].querySelector('user-avatar')).to.exist;
+    });
+
+    it('sorts by spend when asked, not just by last login', async () => {
+      const el = await withUsers();
+      await showTab(el, 'users');
+      expect(el.shadowRoot!.querySelector('tbody tr')!.textContent).to.contain(
+        'Ada Lovelace'
+      );
+
+      (el as any).setSort('spend');
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelector('tbody tr')!.textContent).to.contain(
+        'Grace Hopper'
+      );
+    });
+
+    // One person on the account is not a list to open.
+    it('asks a lone user to invite somebody instead of viewing all 1', async () => {
+      const el = await withUsers({
+        usersTotal: 1,
+        userRows: [userRow()],
+      });
+      await showTab(el, 'users');
+
+      const footer = el.shadowRoot!.querySelector('.footer')!;
+      expect(footer.textContent!.replace(/\s+/g, ' ')).to.contain(
+        'Working alone? Invite a teammate'
+      );
+      expect(footer.querySelector('a')!.getAttribute('href')).to.equal(
+        '/console/settings/invitations'
+      );
+    });
+
+    it('falls back to Agents when a remembered Users tab is not offered', async () => {
+      localStorage.setItem(INVENTORY_TAB_STORAGE_KEY, 'users');
+      const el = await card();
+
+      expect(el.shadowRoot?.querySelector('a[href="/console/agents/agent-1"]'))
+        .to.exist;
+    });
   });
 });
