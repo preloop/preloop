@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 
 from preloop.services.flow_orchestrator import (
     AGENT_EXEC_START_MARKER,
+    COMPLETION_NUDGE_MARKER,
+    COMPLETION_NUDGE_RESULT_MARKER,
+    COMPLETION_NUDGE_UNSUPPORTED_MARKER,
     FLOW_AUDIT_SUCCESS_INSTRUCTION,
     FLOW_EVAL_SUCCESS_INSTRUCTION,
     FLOW_FAILURE_REPORT_PREFIX,
@@ -2895,3 +2898,276 @@ class TestConfirmationNudge:
         nudges = _milestones(orchestrator, "confirmation_nudge_used")
         assert nudges[0]["details"]["outcome"] == "error"
         assert "no capacity" in nudges[0]["details"]["reason"]
+
+
+class TestInPlaceCompletionNudge:
+    """The cheap layer: the agent script reminds itself in its own container.
+
+    The orchestrator's part is small on purpose: read the markers the script
+    prints, publish them as timeline events, and stand down from its own
+    (much more expensive) second-session nudge.
+    """
+
+    def _monitor_orchestrator(self, mock_nats_client, event_data):
+        orchestrator = FlowExecutionOrchestrator(
+            db=MagicMock(),
+            flow_id=uuid4(),
+            trigger_event_data=event_data,
+            nats_client=mock_nats_client,
+        )
+        orchestrator._agent_exec_started = True
+        orchestrator.execution_log = type("ExecutionLogStub", (), {"id": uuid4()})()
+        orchestrator._sync_runtime_tool_activity_metrics = AsyncMock(return_value=None)
+        orchestrator._execution_context = {
+            "prompt": "original task prompt",
+            "agent_type": "codex",
+            "agent_config": {},
+        }
+        return orchestrator
+
+    def _streaming_executor(self, lines):
+        executor = _confirmation_executor()
+
+        async def stream(session_ref):
+            for line in lines:
+                yield line
+
+        executor.stream_logs = stream
+        executor.get_logs = AsyncMock(return_value=[])
+        return executor
+
+    async def _stream(self, orchestrator, lines):
+        """Run the live log reader over a fixed set of lines.
+
+        The reader is exercised directly rather than through the monitor
+        loop: what is under test is marker parsing, and the monitor's
+        streaming task is racy by design (it finishes when the runtime
+        closes the stream, not when the decision is taken).
+        """
+        await orchestrator._stream_logs_to_nats(
+            self._streaming_executor(lines), "session-1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_marker_in_live_stream_logs_the_timeline_event(
+        self, mock_nats_client, event_data
+    ):
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+
+        await self._stream(
+            orchestrator,
+            [
+                AGENT_EXEC_START_MARKER,
+                "did the work",
+                COMPLETION_NUDGE_MARKER,
+                FLOW_SUCCESS_SENTINEL,
+                f"{COMPLETION_NUDGE_RESULT_MARKER} exit=0",
+            ],
+        )
+
+        # The reminder round confirmed on the same channel as any other run.
+        assert orchestrator._success_sentinel_seen.is_set()
+        nudges = _milestones(orchestrator, "completion_nudge")
+        assert len(nudges) == 1
+        assert nudges[0]["details"]["mode"] == "in_place"
+        assert nudges[0]["details"]["source"] == "live_stream"
+        outcomes = _milestones(orchestrator, "completion_nudge_result")
+        assert outcomes[0]["details"]["exit_code"] == 0
+
+    @pytest.mark.asyncio
+    async def test_result_marker_is_not_mistaken_for_the_start_marker(
+        self, mock_nats_client, event_data
+    ):
+        """The result marker starts with the start marker's text, so a
+        prefix match would log the round twice with the wrong source."""
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+
+        await self._stream(
+            orchestrator,
+            [
+                AGENT_EXEC_START_MARKER,
+                f"{COMPLETION_NUDGE_RESULT_MARKER} exit=7",
+                FLOW_SUCCESS_SENTINEL,
+            ],
+        )
+
+        assert len(_milestones(orchestrator, "completion_nudge")) == 0
+        outcomes = _milestones(orchestrator, "completion_nudge_result")
+        assert len(outcomes) == 1
+        assert outcomes[0]["details"]["exit_code"] == 7
+
+    @pytest.mark.asyncio
+    async def test_marker_recovered_from_the_post_exit_refetch(
+        self, mock_nats_client, event_data
+    ):
+        """The reconnect that loses a sentinel loses these markers too; the
+        complete logs are the authoritative view."""
+        executor = _confirmation_executor()
+        executor.get_logs = AsyncMock(
+            return_value=[
+                AGENT_EXEC_START_MARKER,
+                "work",
+                COMPLETION_NUDGE_MARKER,
+                "still nothing",
+            ]
+        )
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+
+        result = await orchestrator._monitor_agent_execution("session-1", executor)
+
+        assert result["status"] == "FAILED"
+        nudges = _milestones(orchestrator, "completion_nudge")
+        assert nudges[0]["details"]["source"] == "post_exit_rescan"
+
+    @pytest.mark.asyncio
+    async def test_marker_before_exec_start_is_prompt_echo(
+        self, mock_nats_client, event_data
+    ):
+        """Same arming rule as the sentinel: a marker quoted in the prompt
+        echo is not evidence that a round ran."""
+        executor = _confirmation_executor()
+        executor.get_logs = AsyncMock(
+            return_value=[COMPLETION_NUDGE_MARKER, AGENT_EXEC_START_MARKER, "work"]
+        )
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+
+        await orchestrator._monitor_agent_execution("session-1", executor)
+
+        assert _milestones(orchestrator, "completion_nudge") == []
+
+    @pytest.mark.asyncio
+    async def test_in_place_round_stands_down_the_session_nudge(
+        self, mock_nats_client, event_data
+    ):
+        """Asking twice is two model calls for one answer, and the second
+        session knows strictly less than the container did."""
+        executor = _confirmation_executor()
+        executor.get_logs = AsyncMock(
+            return_value=[AGENT_EXEC_START_MARKER, COMPLETION_NUDGE_MARKER]
+        )
+        executor.supports_confirmation_nudge = True
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+        orchestrator._start_agent_session = AsyncMock()
+
+        result = await orchestrator._monitor_agent_execution("session-1", executor)
+
+        assert result["status"] == "FAILED"
+        orchestrator._start_agent_session.assert_not_awaited()
+        nudges = _milestones(orchestrator, "confirmation_nudge_used")
+        assert nudges[0]["details"]["outcome"] == "skipped_inplace_nudge_used"
+        # The operator learns from the message alone that the agent was asked.
+        assert "reminded once in its own container" in result["error_message"]
+        assert (
+            _milestones(orchestrator, "success_confirmation_missing")[0]["details"][
+                "inplace_nudge"
+            ]
+            is True
+        )
+
+    @pytest.mark.asyncio
+    async def test_recorded_actions_stand_down_the_session_nudge(
+        self, mock_nats_client, event_data
+    ):
+        """A nudge re-invokes the agent. Once a comment or a push is on
+        record, a model that decides to finish the job repeats it."""
+        executor = _confirmation_executor()
+        executor.get_logs = AsyncMock(return_value=[])
+        executor.supports_confirmation_nudge = True
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+        orchestrator._start_agent_session = AsyncMock()
+        orchestrator.execution_logger.log_agent_action(
+            "api_called", "posted a review comment"
+        )
+
+        result = await orchestrator._monitor_agent_execution("session-1", executor)
+
+        assert result["status"] == "FAILED"
+        orchestrator._start_agent_session.assert_not_awaited()
+        nudges = _milestones(orchestrator, "confirmation_nudge_used")
+        assert nudges[0]["details"]["outcome"] == "skipped_actions_recorded"
+        assert nudges[0]["details"]["action_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_unsupported_marker_does_not_count_as_a_round(
+        self, mock_nats_client, event_data
+    ):
+        """A CLI without a resume flag never asked anything, so the
+        orchestrator keeps its own options open."""
+        executor = _confirmation_executor()
+        executor.get_logs = AsyncMock(
+            return_value=[
+                AGENT_EXEC_START_MARKER,
+                f"{COMPLETION_NUDGE_UNSUPPORTED_MARKER} codex",
+            ]
+        )
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+
+        await orchestrator._monitor_agent_execution("session-1", executor)
+
+        assert _milestones(orchestrator, "completion_nudge") == []
+        assert orchestrator._inplace_nudge_seen is False
+        assert orchestrator._inplace_nudge_unsupported is True
+
+
+class TestWiderCompletionSignalFallback:
+    """Runtimes that cannot be resumed at all: accept the written report."""
+
+    def _monitor_orchestrator(self, mock_nats_client, event_data):
+        orchestrator = FlowExecutionOrchestrator(
+            db=MagicMock(),
+            flow_id=uuid4(),
+            trigger_event_data=event_data,
+            nats_client=mock_nats_client,
+        )
+        orchestrator._agent_exec_started = True
+        orchestrator.execution_log = type("ExecutionLogStub", (), {"id": uuid4()})()
+        orchestrator._sync_runtime_tool_activity_metrics = AsyncMock(return_value=None)
+        return orchestrator
+
+    @pytest.mark.asyncio
+    async def test_bare_result_report_completes_a_non_resumable_runtime(
+        self, mock_nats_client, event_data
+    ):
+        """There is nobody left to ask: a report the agent actually wrote is
+        the best evidence available, even in an unrecognized vocabulary."""
+        executor = _confirmation_executor(artifact={"outcome": "all checks ran"})
+        executor.get_logs = AsyncMock(return_value=[])
+        executor.supports_inplace_completion_nudge = False
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+
+        result = await orchestrator._monitor_agent_execution("session-1", executor)
+
+        assert result["status"] == "SUCCEEDED"
+        accepted = _milestones(orchestrator, "completion_signal_accepted")
+        assert accepted[0]["details"]["signal"] == "result_artifact_present"
+        assert accepted[0]["details"]["keys"] == ["outcome"]
+
+    @pytest.mark.asyncio
+    async def test_resumable_runtime_still_fails_closed(
+        self, mock_nats_client, event_data
+    ):
+        """The agent was asked directly in its own container and declined to
+        confirm, which outweighs the presence of a file."""
+        executor = _confirmation_executor(artifact={"outcome": "all checks ran"})
+        executor.get_logs = AsyncMock(return_value=[])
+        executor.supports_inplace_completion_nudge = True
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+
+        result = await orchestrator._monitor_agent_execution("session-1", executor)
+
+        assert result["status"] == "FAILED"
+        assert _milestones(orchestrator, "completion_signal_accepted") == []
+
+    @pytest.mark.asyncio
+    async def test_empty_report_is_not_a_completion_signal(
+        self, mock_nats_client, event_data
+    ):
+        executor = _confirmation_executor(artifact={})
+        executor.get_logs = AsyncMock(return_value=[])
+        executor.supports_inplace_completion_nudge = False
+        orchestrator = self._monitor_orchestrator(mock_nats_client, event_data)
+
+        result = await orchestrator._monitor_agent_execution("session-1", executor)
+
+        assert result["status"] == "FAILED"
+        assert _milestones(orchestrator, "completion_signal_accepted") == []

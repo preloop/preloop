@@ -33,6 +33,11 @@ from preloop.agents import (
     AgentStatus,
 )
 from preloop.agents.container import AGENT_SESSION_SUFFIX_KEY
+from preloop.agents.completion_nudge import (
+    COMPLETION_NUDGE_MARKER,
+    COMPLETION_NUDGE_RESULT_MARKER,
+    COMPLETION_NUDGE_UNSUPPORTED_MARKER,
+)
 from preloop.agents.failure_analysis import analyze_agent_failure
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_UNKNOWN,
@@ -331,6 +336,13 @@ class FlowExecutionOrchestrator:
         # per execution, across all attempts. Set the moment a nudge is
         # considered, so even an errored nudge is never repeated.
         self._confirmation_nudge_attempted = False
+        # In-place completion nudge (the cheap layer): the agent script itself
+        # re-invoked the harness in this container when it exited without
+        # confirming. Observed from the marker lines it prints, so the
+        # orchestrator never nudges a second time for the same session.
+        self._inplace_nudge_seen = False
+        self._inplace_nudge_logged = False
+        self._inplace_nudge_unsupported = False
         # Execution context of the current attempt, kept so the confirmation
         # nudge can re-invoke the agent with prior context.
         self._execution_context: Optional[Dict[str, Any]] = None
@@ -1928,6 +1940,21 @@ class FlowExecutionOrchestrator:
                         )
                         self._success_sentinel_seen.set()
 
+                # In-place completion nudge markers printed by the agent
+                # script. Order matters: the result marker shares the start
+                # marker's prefix, so the exact match is tested first.
+                if stripped_line == COMPLETION_NUDGE_MARKER:
+                    self._note_inplace_nudge(source="live_stream")
+                elif stripped_line.startswith(COMPLETION_NUDGE_RESULT_MARKER):
+                    self._note_inplace_nudge_result(stripped_line)
+                elif stripped_line.startswith(COMPLETION_NUDGE_UNSUPPORTED_MARKER):
+                    self._inplace_nudge_unsupported = True
+                    logger.info(
+                        "Agent runtime could not resume its session in place "
+                        "for the completion contract: %s",
+                        stripped_line,
+                    )
+
                 previous_tool_calls_count = len(self.execution_logger.mcp_usage_logs)
 
                 # Parse log line for structured data (includes tool call detection)
@@ -2367,6 +2394,100 @@ class FlowExecutionOrchestrator:
             return []
         return [line for line in logs if isinstance(line, str)]
 
+    def _note_inplace_nudge(self, *, source: str) -> None:
+        """Record that the agent script ran its own completion reminder.
+
+        Emitted once per execution as the ``completion_nudge`` timeline
+        event, whether the marker was seen live or recovered from the
+        post-exit log refetch. The orchestrator does not nudge again after
+        this: the agent has already been asked, in the container where the
+        work happened, and asking twice is two model calls for one answer.
+
+        Args:
+            source: Where the marker was observed (``live_stream`` or
+                ``post_exit_rescan``).
+        """
+        self._inplace_nudge_seen = True
+        if self._inplace_nudge_logged:
+            return
+        self._inplace_nudge_logged = True
+        self.execution_logger.log_milestone(
+            "completion_nudge",
+            {
+                "mode": "in_place",
+                "source": source,
+                "agent_type": self.agent_type,
+            },
+        )
+        logger.info("In-place completion nudge observed (source=%s)", source)
+
+    def _note_inplace_nudge_result(self, line: str) -> None:
+        """Record the exit code of the in-place reminder round."""
+        self._inplace_nudge_seen = True
+        exit_code: Optional[int] = None
+        _, _, tail = line.partition("exit=")
+        try:
+            exit_code = int(tail.strip().split()[0])
+        except (ValueError, IndexError):
+            exit_code = None
+        self.execution_logger.log_milestone(
+            "completion_nudge_result",
+            {"mode": "in_place", "exit_code": exit_code},
+        )
+
+    def _scan_inplace_nudge_markers(self, lines: List[str]) -> None:
+        """Recover the in-place nudge markers from refetched logs.
+
+        The live stream is best-effort; the same reconnect that loses a
+        sentinel can lose these. The complete post-exit logs are the
+        authoritative view, so they are rescanned before the orchestrator
+        decides whether to start a nudge session of its own.
+        """
+        for line in _armed_log_lines(lines):
+            if line == COMPLETION_NUDGE_MARKER:
+                self._note_inplace_nudge(source="post_exit_rescan")
+            elif line.startswith(COMPLETION_NUDGE_RESULT_MARKER):
+                if not self._inplace_nudge_logged:
+                    self._note_inplace_nudge(source="post_exit_rescan")
+                self._inplace_nudge_seen = True
+            elif line.startswith(COMPLETION_NUDGE_UNSUPPORTED_MARKER):
+                self._inplace_nudge_unsupported = True
+
+    def _accept_wider_completion_signal(
+        self, agent_executor: Any, result_artifact: Optional[Dict[str, Any]]
+    ) -> bool:
+        """Whether a bare result.json counts as completion for this runtime.
+
+        The fallback for runtimes that cannot be resumed in place (gemini,
+        aider, openhands, remote runners): there is nobody left to ask, so a
+        report the agent actually wrote is the best evidence available. A
+        non-empty JSON object at ``/workspace/result.json`` is accepted as
+        completion even when its status vocabulary is not one Preloop
+        recognizes. An explicit failure status never reaches this point: it
+        is decided earlier and fails the run.
+
+        Runtimes that CAN resume are deliberately excluded: for them the
+        agent was asked directly and declined to confirm, which is a much
+        stronger signal than the presence of a file.
+
+        The capability check is a strict identity test against ``False``, the
+        mirror of the ``supports_confirmation_nudge is True`` check: widening
+        what counts as success is a safety decision, so it is taken only for
+        a runtime that positively declares it cannot be resumed, never for an
+        executor whose capability is merely unknown (a mock, a partially
+        implemented runtime), which keeps failing closed.
+        """
+        if (
+            getattr(agent_executor, "supports_inplace_completion_nudge", None)
+            is not False
+        ):
+            return False
+        if self._inplace_nudge_seen:
+            return False
+        if not isinstance(result_artifact, dict) or not result_artifact:
+            return False
+        return True
+
     async def _resolve_missing_confirmation(
         self,
         agent_executor: Any,
@@ -2378,9 +2499,14 @@ class FlowExecutionOrchestrator:
 
         Order (cheapest first):
           1. Layer 3 — refetch the complete runtime logs and rescan for the
-             exact-line sentinel (covers the lost-stream-tail edge).
-          2. Layer 2 — one confirmation-round nudge on supported runtimes.
-          3. Fail closed with the standard missing-confirmation message.
+             exact-line sentinel (covers the lost-stream-tail edge), and for
+             the in-place completion-nudge markers.
+          2. Layer 2 — one confirmation-round nudge, skipped when the agent
+             script already nudged itself in place (the cheap layer) or when
+             the run recorded actions a nudge could repeat.
+          3. Wider completion signals for runtimes that cannot be resumed at
+             all: a non-empty result.json is accepted as completion.
+          4. Fail closed with the standard missing-confirmation message.
 
         Returns ``(final_status, error_message, result_artifact)``.
         """
@@ -2388,6 +2514,7 @@ class FlowExecutionOrchestrator:
         refetched_lines = await self._refetch_exited_session_logs(
             agent_executor, session_reference
         )
+        self._scan_inplace_nudge_markers(refetched_lines)
         sentinel_found = _sentinel_in_log_lines(refetched_lines)
         self.execution_logger.log_milestone(
             "post_exit_log_rescan",
@@ -2430,6 +2557,23 @@ class FlowExecutionOrchestrator:
                 merged_artifact,
             )
 
+        # Wider completion signals, for runtimes that cannot be resumed.
+        if self._accept_wider_completion_signal(agent_executor, merged_artifact):
+            assert merged_artifact is not None
+            logger.info(
+                "Accepting a written result.json as the completion signal for "
+                "a runtime that cannot be resumed in place."
+            )
+            self.execution_logger.log_milestone(
+                "completion_signal_accepted",
+                {
+                    "signal": "result_artifact_present",
+                    "agent_type": self.agent_type,
+                    "keys": sorted(merged_artifact.keys())[:20],
+                },
+            )
+            return result.status.value, result.error_message, merged_artifact
+
         # Fail closed: no confirmation even after the ladder.
         logger.warning(
             f"Agent exited with SUCCEEDED status (exit_code={result.exit_code}) "
@@ -2445,6 +2589,7 @@ class FlowExecutionOrchestrator:
                 "sentinel_seen": False,
                 "artifact_confirmation": _result_artifact_confirmation(result_artifact),
                 "nudge_outcome": nudge_outcome,
+                "inplace_nudge": self._inplace_nudge_seen,
             },
         )
         # When no error heuristics fired (result.error_message is empty),
@@ -2461,6 +2606,13 @@ class FlowExecutionOrchestrator:
             "or fail) was written. The work may have completed "
             "without confirmation, or the agent died mid-task."
         )
+        if self._inplace_nudge_seen and not result.error_message:
+            # Name the reminder round: an operator reading this should not
+            # have to open the timeline to learn the agent was asked again.
+            error_message += (
+                " The agent was reminded once in its own container and still "
+                "did not confirm."
+            )
         return "FAILED", error_message, result_artifact
 
     async def _run_confirmation_nudge(
@@ -2510,6 +2662,23 @@ class FlowExecutionOrchestrator:
             # One round max — even across flow-level retry attempts.
             return _finish("skipped_already_used")
         self._confirmation_nudge_attempted = True
+
+        if self._inplace_nudge_seen:
+            # The agent script already asked, in the container where the work
+            # happened. A second round would be a second model call for the
+            # same answer, from a session that knows strictly less.
+            return _finish("skipped_inplace_nudge_used")
+
+        actions_taken = self.execution_logger.get_actions_taken()
+        if actions_taken:
+            # A nudge re-invokes the agent. Once side effects are on record
+            # (a posted comment, a push), a model that decides to "finish the
+            # job" repeats them, and a duplicate review comment is worse than
+            # a run reported as unconfirmed.
+            return _finish(
+                "skipped_actions_recorded",
+                extra={"action_count": len(actions_taken)},
+            )
 
         # Strict identity check: mock executors (AsyncMock) auto-create
         # truthy attributes, and an accidental nudge in tests or on an

@@ -10,6 +10,13 @@ from aiodocker.exceptions import DockerError
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.services.model_runtime_resolver import gateway_url_for_api
 
+from .completion_nudge import (
+    AGENT_OUTPUT_LOG_PATH,
+    NUDGE_PROMPT_PATH,
+    build_completion_nudge_block,
+    completion_nudge_enabled,
+    completion_nudge_timeout_seconds,
+)
 from .container import ContainerAgentExecutor
 
 logger = logging.getLogger(__name__)
@@ -27,6 +34,11 @@ class CodexAgent(ContainerAgentExecutor):
     # invocation with prior context — validated for the orchestrator's
     # completion-confirmation round (see AgentExecutor for semantics).
     supports_confirmation_nudge = True
+
+    # `codex exec resume --last` re-enters the rollout the container just
+    # recorded, so the completion reminder happens in the same container and
+    # workspace instead of starting a second session.
+    supports_inplace_completion_nudge = True
 
     def __init__(self, config: Dict[str, Any]):
         """
@@ -360,6 +372,27 @@ if [ "$CODEX_EXIT_CODE" -eq "0" ]; then
 fi
 """
 
+        # In-place completion nudge, emitted BEFORE the post-execution git
+        # block so it can never re-run a push. `codex exec resume --last`
+        # re-enters the rollout this container just wrote, so the reminder
+        # is one short exchange in the same workspace rather than a second
+        # session with a second clone.
+        completion_nudge_block = ""
+        if completion_nudge_enabled(execution_context):
+            completion_nudge_block = build_completion_nudge_block(
+                agent_label="codex",
+                exit_code_var="CODEX_EXIT_CODE",
+                resume_probe="codex exec --help 2>&1 | grep -qw resume",
+                resume_command=(
+                    "$PRELOOP_NUDGE_TIMEOUT codex exec resume --last "
+                    "--skip-git-repo-check "
+                    f'--model "{model}" --sandbox workspace-write --yolo '
+                    f'"$(cat {NUDGE_PROMPT_PATH})" 2>&1 '
+                    f'| tee -a "{AGENT_OUTPUT_LOG_PATH}"'
+                ),
+                timeout_seconds=completion_nudge_timeout_seconds(),
+            )
+
         # Get execution details for logging
         execution_id = execution_context.get("execution_id", "unknown")
         flow_name = execution_context.get("flow_name", "unknown")
@@ -436,10 +469,17 @@ echo "=========================="
 # Sentinel detection is suppressed until this marker is seen in logs.
 echo "PRELOOP_AGENT_EXEC_START"
 
-# Run codex in non-interactive mode with the prompt
-echo "{escaped_prompt}" | codex exec --skip-git-repo-check --model "{model}" --sandbox workspace-write --yolo
-CODEX_EXIT_CODE=$?
-{post_exec_block}
+# Run codex in non-interactive mode with the prompt.
+# The output is tee'd so the in-place completion nudge can check for the
+# success sentinel on a line of its own, exactly as the orchestrator does.
+# PIPESTATUS[1] is codex's own exit code (echo | codex | tee).
+set +e
+: > "{AGENT_OUTPUT_LOG_PATH}"
+echo "{escaped_prompt}" | codex exec --skip-git-repo-check --model "{model}" --sandbox workspace-write --yolo 2>&1 | tee -a "{AGENT_OUTPUT_LOG_PATH}"
+CODEX_PIPE_CODES=("${{PIPESTATUS[@]}}")
+CODEX_EXIT_CODE=${{CODEX_PIPE_CODES[1]:-0}}
+set -e
+{completion_nudge_block}{post_exec_block}
 # Exit with codex's exit code
 exit $CODEX_EXIT_CODE
 """

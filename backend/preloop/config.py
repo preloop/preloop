@@ -503,6 +503,26 @@ class Settings(BaseSettings):
             "missing-confirmation message."
         ),
     )
+    flow_completion_nudge_enabled: bool = Field(
+        True,
+        description=(
+            "When true, agent scripts carry the in-place completion nudge: "
+            "after a clean harness exit with no completion signal, the same "
+            "container re-invokes the same harness session once with a short "
+            "reminder to write result.json and print the sentinel. Runs "
+            "before the container's post-execution git block, so it can "
+            "never re-run a push. Set to false to disable fleet-wide."
+        ),
+    )
+    flow_completion_nudge_timeout_seconds: int = Field(
+        300,
+        description=(
+            "Wall clock for the in-place completion nudge round inside the "
+            "agent container. The round is one short reminder, so this "
+            "should stay small; when it expires the run falls back to the "
+            "standard missing-confirmation handling."
+        ),
+    )
     flow_execution_worker_enabled: bool = Field(
         False,
         description=(
@@ -831,6 +851,13 @@ class Settings(BaseSettings):
             ),
             flow_confirmation_nudge_timeout_seconds=int(
                 os.getenv("FLOW_CONFIRMATION_NUDGE_TIMEOUT_SECONDS", "300")
+            ),
+            flow_completion_nudge_enabled=os.getenv(
+                "FLOW_COMPLETION_NUDGE_ENABLED", "true"
+            ).lower()
+            in ("true", "1", "t", "yes"),
+            flow_completion_nudge_timeout_seconds=int(
+                os.getenv("FLOW_COMPLETION_NUDGE_TIMEOUT_SECONDS", "300")
             ),
             flow_execution_worker_enabled=os.getenv(
                 "FLOW_EXECUTION_WORKER_ENABLED", "false"

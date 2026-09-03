@@ -58,6 +58,14 @@ flowExecution:
   agentJobCreate:
     maxAttempts: 3
     retryBaseSeconds: 0.5
+  # One in-container reminder when the agent exits 0 without the completion
+  # contract (no sentinel, no result artifact). It runs in the same container
+  # and workspace, before the post-execution git block, and its own exit code
+  # is discarded, so it can never turn a good run bad. Set enabled to false to
+  # go back to failing those runs closed.
+  completionNudge:
+    enabled: true
+    timeoutSeconds: 300
 
 console:
   repository: ghcr.io/preloop/console
