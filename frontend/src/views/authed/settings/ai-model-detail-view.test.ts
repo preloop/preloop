@@ -837,6 +837,38 @@ describe('AIModelDetailView', () => {
     ).to.equal('Repriced 1,120 of 1,284 rows since Aug 1, 2026.');
   });
 
+  it('does not offer to reprice when the new price starts in the future', async () => {
+    featureFlags = { model_price_overrides: true };
+    const element = await mountModel();
+    (
+      pricingCard(element).querySelector(
+        '[data-testid="edit-price"]'
+      ) as HTMLElement
+    ).click();
+    await element.updateComplete;
+    (element as any).setPriceField('input', '4');
+    (element as any).setPriceField('output', '20');
+    (element as any).setPriceField('effectiveFrom', '2027-01-01');
+    await element.updateComplete;
+    (
+      pricingCard(element).querySelector(
+        '[data-testid="save-price"]'
+      ) as HTMLElement
+    ).click();
+    await waitUntil(() => overrideWrites.length > 0, 'override written');
+    await waitUntil(
+      () => Boolean((element as any).pricingNotice),
+      'the save did not settle'
+    );
+    await element.updateComplete;
+
+    expect((element as any).repriceSince).to.equal(null);
+    expect(
+      pricingCard(element).querySelector('[data-testid="reprice-offer"]'),
+      'a future start date has no past window to reprice'
+    ).to.not.exist;
+  });
+
   it('says a backgrounded reprice is still running rather than counting rows', async () => {
     featureFlags = { model_price_overrides: true };
     repriceResponse = {

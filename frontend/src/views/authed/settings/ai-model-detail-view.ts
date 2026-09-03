@@ -938,10 +938,12 @@ export class AIModelDetailView extends LitElement {
       }
       this.pricingEditOpen = false;
       this.pricingNotice = 'Price saved. New requests are costed with it.';
-      // The rows already in the database still carry the cost they were
-      // given when they ran, so offer the backfill instead of implying it
-      // happened.
-      this.repriceSince = effectiveDate.toISOString();
+      // Only offer a backfill when the new price already covers some past
+      // window. A future effective_from would make start_date > end_date.
+      this.repriceSince =
+        effectiveDate.getTime() <= Date.now()
+          ? effectiveDate.toISOString()
+          : null;
       this.repriceNotice = null;
       this.repriceError = null;
       await this.loadPricing();
