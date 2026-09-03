@@ -405,6 +405,48 @@ describe('activity-feed', () => {
       localStorage.removeItem('accessToken');
     });
 
+    it('keeps paging when a page folds down to one row', async () => {
+      // Staging at 03:00: twelve events, all of them the same agent calling
+      // the same two tools, so the fill hit its twelve and the rail showed
+      // three lines in a 240px box. Rows are what has to be counted.
+      localStorage.setItem('accessToken', 'test-token');
+      const sameCall = (index: number) =>
+        auditGroup(
+          'tool_call',
+          {
+            id: `same-${index}`,
+            resource_id: 'update_pull_request',
+            details: { runtime_principal_name: 'Pull Request Reviewer' },
+            timestamp: new Date(Date.now() - index * 1000).toISOString(),
+          },
+          'allow'
+        );
+      const { restore, urls } = stubFetch([
+        Array.from({ length: 20 }, (_, index) => sameCall(index)).concat(
+          gatewayNoise(AUDIT_PAGE_SIZE - 20)
+        ),
+        [
+          auditGroup('runtime_session_created', {
+            id: 'older',
+            resource_id: 'sess-9',
+            details: { runtime_principal_name: 'Hermes' },
+            timestamp: new Date(Date.now() - 90000).toISOString(),
+          }),
+        ],
+      ]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(() => rowText(el).length === 2, 'the older row arrives');
+      expect(rowText(el)[0]).to.contain('×20');
+      expect(rowText(el)[1]).to.contain('Hermes started a session');
+      expect(
+        urls.filter((url) => url.includes('/audit-logs/grouped')).length
+      ).to.be.greaterThan(1);
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
     it('renders rows even when the user lookup fails', async () => {
       localStorage.setItem('accessToken', 'test-token');
       const { restore } = stubFetch(

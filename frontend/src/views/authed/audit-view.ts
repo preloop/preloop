@@ -99,6 +99,8 @@ const EVENT_TYPE_OPTIONS = [
  */
 const DEEP_LINK_PAGE_SIZE = 200;
 const DEEP_LINK_PAGES = 4;
+/** The fixed console header, which a scrolled-to row must clear. */
+const HEADER_OFFSET_PX = 60;
 
 // Outcome filter options
 const OUTCOME_OPTIONS = [
@@ -396,9 +398,19 @@ export class AuditView extends AuthedElement {
     this._expandedGroups = next;
     this._highlightedKey = key;
     void this.updateComplete.then(() => {
-      this.renderRoot
-        ?.querySelector(`[data-group-key="${CSS.escape(key)}"]`)
-        ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      const row = this.renderRoot?.querySelector(
+        `[data-group-key="${CSS.escape(key)}"]`
+      );
+      if (!row) return;
+      // The head of the row, not its middle: an expanded group runs for
+      // several screens, and centring one lands on a field list belonging to
+      // a row the operator can no longer see the title of. The offset clears
+      // the fixed console header.
+      const top =
+        row.getBoundingClientRect().top +
+        window.scrollY -
+        (HEADER_OFFSET_PX + 12);
+      window.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' });
     });
     if (this._highlightTimer !== null) {
       window.clearTimeout(this._highlightTimer);

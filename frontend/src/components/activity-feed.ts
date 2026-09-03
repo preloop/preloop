@@ -141,6 +141,27 @@ export const AUDIT_PAGE_SIZE = 50;
 export const AUDIT_MAX_PAGES = 4;
 const AUDIT_WINDOW_HOURS = 24;
 
+/**
+ * Consecutive identical lines become one row with a count.
+ *
+ * An agent working a pull request calls the same tool six times in a minute;
+ * six rows of it push everything else off the rail for one fact. Only
+ * adjacent events fold, so the timeline stays a timeline: anything that
+ * happened in between breaks the run.
+ */
+export function foldRows(events: FeedEvent[]): FeedRow[] {
+  const rows: FeedRow[] = [];
+  for (const event of events) {
+    const last = rows[rows.length - 1];
+    if (last && event.foldKey && last.event.foldKey === event.foldKey) {
+      last.repeats.push(event);
+      continue;
+    }
+    rows.push({ event, repeats: [] });
+  }
+  return rows;
+}
+
 interface AuditLogLike {
   id: string;
   user_id?: string | null;
@@ -711,7 +732,9 @@ export function feedEventFromAuditGroup(
           field('Outcome', outcome ? humaniseAction(outcome) : null)
         ),
         href: `/console/audit?event_type=${event.action}`,
-        openLabel: 'Open in audit',
+        // The body already links to this very event, so the type filter has to
+        // say that it is the wider list, not repeat "Open in audit".
+        openLabel: 'Filter audit by this type',
       };
       if (PAST_TENSE.has(verb) && subject) {
         const suffix = actor ? ` by ${actor}` : '';
@@ -1287,18 +1310,24 @@ export class ActivityFeed extends LitElement {
 
       /* The whole row is the target; the subject link inside it keeps its own
          hit area by sitting above the stretched one. */
+      /* Two lines rather than one clipped one: the tool at the end of
+         "Pull Request Reviewer ran update_pull_request" is the news, and a
+         368px rail cannot hold that sentence on one line. */
       .row-text {
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
         background: none;
         border: none;
         color: inherit;
         cursor: pointer;
+        display: -webkit-box;
         font: inherit;
         overflow: hidden;
+        overflow-wrap: anywhere;
         padding: 0;
         text-align: left;
         text-decoration: none;
-        text-overflow: ellipsis;
-        white-space: nowrap;
       }
 
       .row-text::after {
@@ -1545,7 +1574,9 @@ export class ActivityFeed extends LitElement {
    */
   private rowsFrom(groups: AuditGroupLike[], into: FeedEvent[]): void {
     for (const group of groups) {
-      if (into.length >= FEED_INITIAL_ROWS) return;
+      // Rows, not events: twelve tool calls by one agent fold into one row,
+      // and a rail with one row in it is not a filled feed.
+      if (foldRows(into).length >= FEED_INITIAL_ROWS) return;
       let event: FeedEvent | null = null;
       try {
         event = feedEventFromAuditGroup(group, this.context);
@@ -1578,7 +1609,7 @@ export class ActivityFeed extends LitElement {
         if (groups === null) break;
         if (page === 0 && groups.length === 0) emptyWindow = true;
         this.rowsFrom(groups, events);
-        if (events.length >= FEED_INITIAL_ROWS) break;
+        if (foldRows(events).length >= FEED_INITIAL_ROWS) break;
         if (groups.length < AUDIT_PAGE_SIZE) break;
       }
       // A quiet account has nothing in the last day and still has a history.
@@ -1614,6 +1645,18 @@ export class ActivityFeed extends LitElement {
   }
 
   protected updated(changed: Map<string, unknown>): void {
+    // An opened row whose body is below the fold of a short rail has told the
+    // operator nothing, so the row moves to the top of the list and its body
+    // takes the height that is left. The list is scrolled by hand rather than
+    // with scrollIntoView, which would drag the page along with it.
+    if (changed.has('openId') && this.openId) {
+      const list = this.renderRoot?.querySelector<HTMLElement>('.rows');
+      const row = this.renderRoot?.querySelector<HTMLElement>('.row.open');
+      if (list && row) {
+        list.scrollTop +=
+          row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+      }
+    }
     if (!changed.has('events') || !this.scrollAnchor) return;
     const anchor = this.scrollAnchor;
     this.scrollAnchor = null;
@@ -1635,12 +1678,20 @@ export class ActivityFeed extends LitElement {
     this.events = this.sortAndCap([event, ...this.events]);
   }
 
-  /** Newest first, capped: the feed is a window, not a log. */
+  /**
+   * Newest first, capped at rows: the feed is a window, not a log.
+   *
+   * The cap counts rows rather than events, because a run of identical tool
+   * calls is one row: counting events would leave a rail holding five lines
+   * and call it full.
+   */
   private sortAndCap(events: FeedEvent[]): FeedEvent[] {
     const sorted = [...events].sort(
       (a, b) => this.time(b.at) - this.time(a.at)
     );
-    const kept = sorted.slice(0, FEED_CAP);
+    const kept = foldRows(sorted)
+      .slice(0, FEED_CAP)
+      .flatMap((row) => [row.event, ...row.repeats]);
     if (kept.length < sorted.length) {
       const keptIds = new Set(kept.map((event) => event.id));
       for (const event of sorted) {
@@ -1684,16 +1735,7 @@ export class ActivityFeed extends LitElement {
    * that happened in between breaks the run.
    */
   private get rows(): FeedRow[] {
-    const rows: FeedRow[] = [];
-    for (const event of this.events) {
-      const last = rows[rows.length - 1];
-      if (last && event.foldKey && last.event.foldKey === event.foldKey) {
-        last.repeats.push(event);
-        continue;
-      }
-      rows.push({ event, repeats: [] });
-    }
-    return rows;
+    return foldRows(this.events);
   }
 
   /** Who, what and when, then whatever this kind of event knows. */
@@ -1801,9 +1843,12 @@ export class ActivityFeed extends LitElement {
               aria-controls=${bodyId}
               @click=${() => this.toggle(event.id)}
             >
-              ${event.text}
+              ${event.text}${
+                count > 1
+                  ? html` <span class="count">×${count}</span>`
+                  : nothing
+              }
             </button>
-            ${count > 1 ? html`<span class="count">×${count}</span>` : nothing}
             ${
               event.subject
                 ? html`<span class="sep">·</span>

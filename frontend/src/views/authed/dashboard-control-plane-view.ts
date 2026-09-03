@@ -845,9 +845,14 @@ export class DashboardView extends AuthedElement {
           );
         }
 
+        /* The floor is what makes the rail a list rather than a peephole:
+           at 240px the card showed three lines and an expanded row had to be
+           scrolled to be read. It is stated against the viewport as well as
+           in pixels so a short laptop window shrinks the feed instead of
+           pushing the Usage card off the rail. */
         .column-layout.dashboard > .side-column > activity-feed {
           flex: 1 1 0;
-          min-height: 240px;
+          min-height: min(360px, 34dvh);
         }
       }
 
