@@ -31,9 +31,8 @@ describe('DashboardView', () => {
   /** Set by a test that wants to hold the secondary pass open. */
   let aiModelsGate: Promise<void> | null;
   /**
-   * Holds the Overview's own breakdown call in flight. The shared attention
-   * loader asks for a breakdown too, and it asks first; the gate lets that
-   * one through so the first pass can finish.
+   * Holds the Overview's wave-2 breakdown call in flight. Attention no
+   * longer asks for its own copy.
    */
   let breakdownGate: Promise<void> | null;
   let breakdownCalls = 0;
@@ -417,7 +416,7 @@ describe('DashboardView', () => {
           }
           if (url.includes('include_breakdown=true')) {
             breakdownCalls += 1;
-            if (breakdownCalls > 1 && breakdownGate) {
+            if (breakdownGate) {
               await breakdownGate;
             }
           }
@@ -580,18 +579,19 @@ describe('DashboardView', () => {
         url.startsWith('/api/v1/account/gateway-usage/summary')
       )
     ).to.be.true;
-    // Two for the cards (summary + breakdown upgrade), one for the prior
-    // window behind the Usage delta, plus the fixed 30d one the shared
-    // attention loader uses; and one agents call per source: the cards' own
-    // list and the attention loader's, which must stay on the parameters the
-    // Attention page uses.
+    // Two for the cards (summary + breakdown upgrade) and one for the prior
+    // window behind the Usage delta. Attention reuses wave 2's breakdown
+    // instead of asking for a fourth.
     expect(
       urls.filter((url) =>
         url.startsWith('/api/v1/account/gateway-usage/summary')
       ).length
-    ).to.be.at.most(4);
+    ).to.equal(3);
     expect(urls.some((url) => url.includes('include_breakdown=false'))).to.be
       .true;
+    expect(
+      urls.filter((url) => url.includes('include_breakdown=true')).length
+    ).to.equal(1);
     expect(
       urls.filter((url) => url.startsWith('/api/v1/agents')).length
     ).to.equal(2);

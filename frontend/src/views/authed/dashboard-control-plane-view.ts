@@ -334,6 +334,11 @@ export class DashboardView extends AuthedElement {
    * /console/attention.
    */
   @state() private attentionInputs: AttentionInputs | null = null;
+  /**
+   * Wave 2's usage breakdown, kept so attention can reuse it whether the
+   * loader or the breakdown finishes first.
+   */
+  private pendingAttentionUsageSummary: AttentionInputs['usageSummary'] = null;
   @state()
   private approvalStats = {
     total: 0,
@@ -1712,7 +1717,6 @@ export class DashboardView extends AuthedElement {
     this.error = null;
 
     const startDateStr = this.getGatewayStartDate();
-    const attentionPromise = this.refreshAttentionInputs();
 
     try {
       // Wave 1 (above-the-fold): gateway metrics, budget, recent executions,
@@ -1858,11 +1862,13 @@ export class DashboardView extends AuthedElement {
         features: featuresRes,
       });
 
-      await attentionPromise;
-
       this.lastUpdatedAt = new Date().toISOString();
       this.loading = false;
       this.saveDashboardCache();
+
+      // After the fold, not during wave 1: attention used to fetch its own
+      // usage breakdown in parallel and first paint waited for it.
+      void this.refreshAttentionInputs();
 
       // Wave 2 is slow (full session breakdown + audit/tools). On a live
       // websocket refresh only upgrade the top-models breakdown so the card
@@ -2060,6 +2066,13 @@ export class DashboardView extends AuthedElement {
         return;
       }
       this.gatewaySummary = detailed;
+      this.pendingAttentionUsageSummary = detailed;
+      if (this.attentionInputs) {
+        this.attentionInputs = {
+          ...this.attentionInputs,
+          usageSummary: detailed,
+        };
+      }
     } catch (error) {
       console.error('Failed to load gateway breakdown for top models', error);
     } finally {
@@ -2288,13 +2301,18 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
-   * Same loader, same parameters as the Attention page. Runs alongside the
-   * dashboard fetch rather than inside it so a slow attention input never
-   * holds up the cards above the fold.
+   * Same loader, same parameters as the Attention page, except the usage
+   * breakdown: Overview already fetches that in wave 2. Starts after the
+   * first paint so a slow attention input never holds up the cards above
+   * the fold.
    */
   private async refreshAttentionInputs(): Promise<void> {
     try {
-      this.attentionInputs = await loadAttentionInputs();
+      const inputs = await loadAttentionInputs({ skipUsageSummary: true });
+      this.attentionInputs = {
+        ...inputs,
+        usageSummary: this.pendingAttentionUsageSummary ?? inputs.usageSummary,
+      };
       this.saveDashboardCache();
     } catch (error) {
       console.error('Failed to load attention inputs', error);

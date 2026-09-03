@@ -81,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Overview first paint no longer waits on the attention usage breakdown**:
+  the shared attention loader used to fetch ``include_breakdown=true`` in
+  parallel with wave 1, and the page waited for it before drawing. Attention
+  now starts after the fold and reuses wave 2's summary, so the expensive
+  aggregate runs once.
 - **CLI runner interrupt test no longer races `exec.Cmd`**: GitLab
   `test:unit:cli` (`-race`) failed because the test read `Process` /
   `ProcessState` while the runner called `Start`/`Wait`. It now watches a
