@@ -75,6 +75,48 @@ graph LR
 *   **Features:** Rate limiting, error handling, monitoring integration.
 *   **Interaction:** Communicates with `preloop.models` for database operations, directly with Issue Tracker APIs for certain actions (e.g., creating/updating issues in real-time), and with LiteLLM/provider APIs through the model gateway path.
 
+## Operations: database pool sizing and readiness
+
+Each API process opens two SQLAlchemy connection pools (a sync engine and an
+async engine in `preloop.models.db.session`), plus one connection for a
+dedicated health-check engine. So a process's connection ceiling is
+`(pool_size + max_overflow) * 2 + 1`. Helm sets `DATABASE_POOL_SIZE` and
+`DATABASE_MAX_OVERFLOW` per component (`values.yaml` under `database.pool`,
+currently api `8+12`, gateway `6+14`, worker `2+4`); the code defaults in
+`_database_pool_kwargs()` (`preloop/models/db/session.py`) apply only where
+those are not set, such as a local `docker compose up`, and are sized (`10+20`)
+to fit a stock Postgres `max_connections` of 100 on their own.
+
+`pool_timeout` is 5 seconds, not the SQLAlchemy default of 30. A request that
+cannot get a connection in 5 seconds has already lost interest; holding it
+(and, before the 2026-09-03 fix, the event loop under it) for 30 seconds only
+grows the queue behind it. A `sqlalchemy.exc.TimeoutError` on a saturated pool
+renders as `503` with `Retry-After` instead of a generic `500`.
+
+`GET /api/v1/health` reports each engine's checked-out/pool-size numbers and a
+`saturated` flag, plus the usage-writer queue counters (see
+`api_usage_recorder.py`). It deliberately does not fail readiness on
+saturation: taking a saturated pod out of the load balancer concentrates the
+same traffic on the remaining pods, which is the failure mode a full pool
+already causes on its own.
+
+Synchronous database work in `async def` handlers must not run inline: a
+`Session` checks out its connection on first use, so an `async def` handler
+that blocks on a full pool blocks the event loop under it, including
+dependency-free routes like the liveness probe `GET /api/v1/ping`. Use
+`preloop.api.loop_safety.run_db_off_loop` (or an async session where one is
+already in scope) for handlers on request paths that can burst, such as
+per-model or per-session console fan-out. `backend/tests/api/test_event_loop_pool_wait.py`
+ratchets the set of async handlers still holding a synchronous session and
+pins that a saturated pool on a hot path leaves `/api/v1/ping` responsive.
+
+Usage telemetry (`log_usage_sync` in `preloop/api/app.py`) is written through
+a bounded queue (`ApiUsageRecorder`, `API_USAGE_QUEUE_SIZE` default 1000) by a
+small fixed pool of writer threads (`API_USAGE_WORKERS`, default 2) that batch
+rows into one session (`API_USAGE_BATCH_SIZE`, default 50). When the queue is
+full the row is dropped and counted, rather than every request paying for its
+own logging connection under load.
+
 ## REST API Flow (e.g., Searching Issues)
 1.  **Client Request:** An HTTP client sends a `GET /api/v1/issues/search` request to the Preloop API server.
 2.  **API Server:**
