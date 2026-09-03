@@ -721,8 +721,8 @@ export function render_blog_index_html(
         <p class="blog-index-dateline"><time datetime="${escape_html(
           post.date
         )}">${escape_html(format_display_date(post.date))}</time>${reading}</p>
-        ${hero}
         <h2><a href="${escape_html(route)}">${escape_html(post.title)}</a></h2>
+        ${hero}
         <p>${escape_html(post.description)}</p>
       </li>`;
           })
