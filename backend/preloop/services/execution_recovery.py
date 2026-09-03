@@ -19,7 +19,7 @@ def _exception_message(exc: BaseException) -> str:
     return str(exc) or exc.__class__.__name__
 
 
-def _retire_runtime_credentials(db: Session, execution) -> None:
+def _retire_runtime_credentials(db: Session, execution: models.FlowExecution) -> None:
     """Close the runtime session and revoke the runtime tokens of an execution.
 
     Recovery decides an execution is over without ever running its
@@ -309,7 +309,9 @@ class ExecutionRecoveryService:
             )
             crud_flow_execution.update(db, db_obj=execution, obj_in=update_data)
             db.commit()
-            _retire_runtime_credentials(db, execution)
+            # Status check failed: agent liveness is unknown. Leave the
+            # runtime token alone (it lapses on expiry) rather than revoking
+            # a credential an agent may still be using.
             return
 
         # Container is still running - create orchestrator and resume monitoring
