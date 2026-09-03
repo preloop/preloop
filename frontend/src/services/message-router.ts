@@ -119,6 +119,10 @@ export class MessageRouter {
       return 'approvals';
     }
 
+    if (messageType.startsWith('runner_')) {
+      return 'runners';
+    }
+
     if (
       messageType === 'runtime_session_created' ||
       messageType === 'runtime_session_updated' ||

@@ -203,3 +203,78 @@ def test_price_fetch_reports_a_model_the_provider_does_not_list(
     monkeypatch.setattr(model_price_catalog, "fetch_openrouter_price_map", lambda: None)
     with pytest.raises(ai_model_pricing.PriceFetchUnavailableError):
         ai_model_pricing.fetch_provider_pricing(model)
+
+
+def test_a_malformed_request_price_reads_as_unpriced(db_session, test_user):
+    """Account-supplied JSON must not turn the Pricing card into a 500.
+
+    ``meta_data["pricing"]`` is whatever was stored on the model, so a
+    request price of "n/a" is a shape this code has to survive: the rest of
+    the price still shows and the request line reads as no price at all.
+    """
+    model = _model(
+        db_session,
+        test_user.account_id,
+        meta_data={
+            "pricing": {
+                "input_price_per_1k": 0.001,
+                "output_price_per_1k": 0.003,
+                "request_price": "n/a",
+            }
+        },
+    )
+
+    pricing = ai_model_pricing.get_effective_pricing(
+        db_session, account_id=test_user.account_id, ai_model=model
+    )
+
+    assert pricing.source == "model_config"
+    assert pricing.price.input_per_1m == 1.0
+    assert pricing.price.output_per_1m == 3.0
+    assert pricing.price.request_price is None
+
+
+def test_a_price_that_is_only_a_malformed_request_price_is_no_price(
+    db_session, test_user
+):
+    """Nothing readable in the configured dict falls through to the catalog."""
+    model = _model(
+        db_session,
+        test_user.account_id,
+        provider_name="custom",
+        model_identifier="no-such-model-anywhere-9000",
+        api_endpoint="https://models.internal.example.com/v1",
+        meta_data={"pricing": {"request_price": ["not", "a", "number"]}},
+    )
+
+    pricing = ai_model_pricing.get_effective_pricing(
+        db_session, account_id=test_user.account_id, ai_model=model
+    )
+
+    assert pricing.source == "none"
+    assert pricing.price.request_price is None
+
+
+def test_a_malformed_catalog_request_price_reads_as_unpriced(
+    db_session, test_user, monkeypatch
+):
+    """The third-party price map gets the same guard the stored dict gets."""
+    entry = {
+        "input_cost_per_token": 0.000001,
+        "output_cost_per_token": 0.000003,
+        "input_cost_per_request": "free",
+    }
+    monkeypatch.setattr(
+        ai_model_pricing,
+        "_catalog_entry",
+        lambda ai_model: ("vendor/model", entry),
+    )
+    model = _model(db_session, test_user.account_id)
+
+    pricing = ai_model_pricing.get_effective_pricing(
+        db_session, account_id=test_user.account_id, ai_model=model
+    )
+
+    assert pricing.source == "catalog"
+    assert pricing.price.input_per_1m == 1.0
+    assert pricing.price.request_price is None

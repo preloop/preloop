@@ -101,6 +101,17 @@ class FlowExecutionBase(BaseModel):
     error_message: Optional[str] = Field(
         None, description="Error message if the execution failed"
     )
+    failure_category: Optional[str] = Field(
+        None,
+        description=(
+            "Coarse machine-readable reason a terminal execution did not "
+            "succeed: one of runner_conflict, runner_error, model_transient, "
+            "model_auth, model_quota, model_config, no_confirmation, "
+            "tool_error, agent_error, timeout, cancelled, unknown. Null for "
+            "successful or still-running executions, and for executions that "
+            "predate this field."
+        ),
+    )
     retry_of_execution_id: Optional[uuid.UUID] = Field(
         None, description="ID of the original execution if this is a retry"
     )
@@ -137,6 +148,7 @@ class FlowExecutionUpdate(BaseModel):
     result: Optional[Dict[str, Any]] = None
     agent_session_reference: Optional[str] = None
     error_message: Optional[str] = None
+    failure_category: Optional[str] = None
     tool_calls_count: Optional[int] = None
     total_tokens: Optional[int] = None
     estimated_cost: Optional[float] = None
@@ -164,6 +176,14 @@ class FlowExecutionListResponse(ExecutionModelProjection):
     start_time: datetime
     end_time: Optional[datetime] = None
     error_message: Optional[str] = None
+    failure_category: Optional[str] = Field(
+        None,
+        description=(
+            "Coarse machine-readable failure class for terminal executions "
+            "(runner_conflict, model_transient, agent_error, ...). Null when "
+            "the execution succeeded, is still running, or predates the field."
+        ),
+    )
     retry_of_execution_id: Optional[uuid.UUID] = None
     batch_id: Optional[uuid.UUID] = None
     tool_calls_count: Optional[int] = 0

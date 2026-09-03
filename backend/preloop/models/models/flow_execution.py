@@ -98,6 +98,14 @@ class FlowExecution(Base):
         String, nullable=True
     )  # e.g., agent session ID, K8s job ID, Docker container ID, process ID
     error_message = Column(Text, nullable=True)
+    # Coarse machine-readable reason a terminal execution did not succeed, from
+    # the closed vocabulary in preloop.services.flow_failure_category (e.g.
+    # "runner_conflict", "model_transient", "agent_error"). error_message stays
+    # the human-readable detail; this column is what you group by when asking
+    # "what is actually breaking?" — indexed for exactly that query. NULL for
+    # successful runs, for still-running rows, and for rows that predate the
+    # column.
+    failure_category = Column(String(32), nullable=True, index=True)
 
     # Retry tracking
     retry_of_execution_id = Column(

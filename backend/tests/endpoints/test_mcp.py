@@ -238,6 +238,147 @@ async def test_mcp_update_issue_success(db_session: Session, test_user: User):
 
 
 @pytest.mark.asyncio
+async def test_mcp_update_issue_add_reaction_only(db_session: Session, test_user: User):
+    """Reaction-only update_issue should not require other fields."""
+    tracker = Tracker(
+        name="test-tracker-react",
+        account_id=test_user.account_id,
+        tracker_type="github",
+        api_key="test_key",
+        url="https://github.com",
+    )
+    db_session.add(tracker)
+    db_session.commit()
+
+    organization = Organization(
+        name="test-org-react",
+        identifier="test-org-react",
+        tracker_id=tracker.id,
+    )
+    db_session.add(organization)
+    db_session.commit()
+
+    project = Project(
+        name="test-proj-react",
+        identifier="test-proj-react",
+        slug="test-proj-react",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    issue = Issue(
+        title="Original Title",
+        description="Original description.",
+        project_id=project.id,
+        tracker_id=tracker.id,
+        external_id="456",
+        key="owner/repo#456",
+        status="open",
+    )
+    db_session.add(issue)
+    db_session.commit()
+
+    with (
+        patch("preloop.api.endpoints.mcp.get_http_request") as mock_get_request,
+        patch(
+            "preloop.api.endpoints.mcp.get_user_from_token_if_valid",
+            new_callable=AsyncMock,
+        ) as mock_get_user,
+        patch(
+            "preloop.api.endpoints.mcp.get_tracker_client", new_callable=AsyncMock
+        ) as mock_get_tracker,
+        patch("preloop.api.endpoints.mcp.get_db") as mock_get_db,
+    ):
+        mock_get_request.return_value.headers = {"authorization": "Bearer testtoken"}
+        mock_get_user.return_value = test_user
+        mock_get_db.return_value = iter([db_session])
+        mock_tracker_client = AsyncMock()
+        mock_tracker_client.tracker_type = "github"
+        mock_get_tracker.return_value = mock_tracker_client
+
+        response = await mcp.update_issue(issue=str(issue.id), add_reaction="eyes")
+
+    assert isinstance(response, GetIssueResponse)
+    mock_tracker_client.add_issue_reaction.assert_called_once_with(
+        issue_number="456",
+        reaction="eyes",
+    )
+    mock_tracker_client.update_issue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mcp_update_issue_reaction_rejected_on_gitlab(
+    db_session: Session, test_user: User
+):
+    """GitLab issues have no reaction API."""
+    tracker = Tracker(
+        name="test-tracker-gl",
+        account_id=test_user.account_id,
+        tracker_type="gitlab",
+        api_key="test_key",
+        url="https://gitlab.com",
+    )
+    db_session.add(tracker)
+    db_session.commit()
+
+    organization = Organization(
+        name="test-org-gl",
+        identifier="test-org-gl",
+        tracker_id=tracker.id,
+    )
+    db_session.add(organization)
+    db_session.commit()
+
+    project = Project(
+        name="test-proj-gl",
+        identifier="test-proj-gl",
+        slug="test-proj-gl",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    issue = Issue(
+        title="Original Title",
+        description="Original description.",
+        project_id=project.id,
+        tracker_id=tracker.id,
+        external_id="99",
+        key="99",
+        status="open",
+    )
+    db_session.add(issue)
+    db_session.commit()
+
+    from fastapi import HTTPException
+
+    with (
+        patch("preloop.api.endpoints.mcp.get_http_request") as mock_get_request,
+        patch(
+            "preloop.api.endpoints.mcp.get_user_from_token_if_valid",
+            new_callable=AsyncMock,
+        ) as mock_get_user,
+        patch(
+            "preloop.api.endpoints.mcp.get_tracker_client", new_callable=AsyncMock
+        ) as mock_get_tracker,
+        patch("preloop.api.endpoints.mcp.get_db") as mock_get_db,
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        mock_get_request.return_value.headers = {"authorization": "Bearer testtoken"}
+        mock_get_user.return_value = test_user
+        mock_get_db.return_value = iter([db_session])
+        mock_tracker_client = AsyncMock()
+        mock_tracker_client.tracker_type = "gitlab"
+        mock_get_tracker.return_value = mock_tracker_client
+
+        await mcp.update_issue(issue=str(issue.id), add_reaction="eyes")
+
+    assert exc_info.value.status_code == 400
+    assert "GitLab" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
 async def test_mcp_search_success(db_session: Session, test_user: User):
     """
     Tests the MCP search tool.

@@ -32,17 +32,27 @@ from preloop.agents import (
     create_executor_for_execution,
     AgentStatus,
 )
+from preloop.agents.container import AGENT_SESSION_SUFFIX_KEY
 from preloop.agents.failure_analysis import analyze_agent_failure
+from preloop.services.flow_failure_category import (
+    FAILURE_CATEGORY_UNKNOWN,
+    derive_failure_category,
+)
 from preloop.config import settings
+from preloop.services.flow_pr_binding import merge_result_preserving_pr_binding
 from preloop.services.prompt_resolvers import (
     resolver_registry,
     ResolverContext,
     TriggerEventResolver,
     ProjectResolver,
     AccountResolver,
+    ExecutionResolver,
 )
 from preloop.services.flow_execution_logger import FlowExecutionLogger
-from preloop.services.flow_runtime_token import create_flow_runtime_token
+from preloop.services.flow_runtime_token import (
+    create_flow_runtime_token,
+    revoke_flow_runtime_tokens,
+)
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.utils.git_credentials import (
@@ -65,6 +75,12 @@ from preloop.services.account_realtime import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Statuses after which no agent of this execution can still be running, so its
+# runtime credentials can be retired. Anything else means the agent may still
+# be live (an interrupted run is resumed by a peer worker), and its gateway
+# token must keep working.
+TERMINAL_EXECUTION_STATUSES = frozenset({"SUCCEEDED", "FAILED", "STOPPED", "CANCELLED"})
 
 # Sentinel string that agents print when completing successfully.
 FLOW_SUCCESS_SENTINEL = "FLOW_EXECUTION_SUCCESS"
@@ -1047,6 +1063,8 @@ class FlowExecutionOrchestrator:
             resolver_registry.register(ProjectResolver())
         if not resolver_registry.get("account"):
             resolver_registry.register(AccountResolver())
+        if not resolver_registry.get("execution"):
+            resolver_registry.register(ExecutionResolver())
 
     def _sync_runtime_session(
         self,
@@ -1193,27 +1211,82 @@ class FlowExecutionOrchestrator:
             self.db.rollback()
             return None, None
 
+    def _execution_reached_terminal_state(self) -> bool:
+        """Read this execution's committed status back from the database.
+
+        The in-memory row can be stale (another worker may have finished the
+        execution), so the status is re-read rather than trusted.
+        """
+        if self.execution_log is None:
+            return False
+        try:
+            row = crud_flow_execution.get(self.db, id=self.execution_log.id)
+            if row is not None:
+                # Another worker may have finished this execution; without an
+                # explicit refresh the identity map hands back this session's
+                # own, possibly stale, copy of the row.
+                self.db.refresh(row)
+        except Exception as exc:
+            logger.warning(
+                "Could not read execution status for %s: %s",
+                self.execution_log.id,
+                type(exc).__name__,
+            )
+            return False
+        if row is None:
+            return False
+        return str(row.status).upper() in TERMINAL_EXECUTION_STATUSES
+
+    def _revoke_execution_runtime_tokens(self) -> int:
+        """Revoke every runtime token minted for this execution."""
+        account_id = getattr(self.flow, "account_id", None)
+        execution_id = self.execution_log.id if self.execution_log else None
+        revoked = revoke_flow_runtime_tokens(
+            self.db,
+            account_id=account_id,
+            execution_id=execution_id,
+        )
+        if revoked == 0 and self.temporary_api_key_id:
+            # Fall back to the key this orchestrator minted (account or
+            # execution unknown, e.g. a flow row that never loaded).
+            try:
+                if crud_api_key.deactivate(self.db, key_id=self.temporary_api_key_id):
+                    revoked = 1
+            except Exception as exc:
+                logger.error(
+                    "Failed to cleanup temporary API key record: %s",
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                self.db.rollback()
+        return revoked
+
     def _cleanup_temporary_api_token(self):
-        """Deactivate the temporary API token created for this flow execution."""
-        if not self.temporary_api_key_id:
+        """Retire this execution's runtime token once the execution is terminal.
+
+        The agent outlives its orchestrator. A deploy drain cancels the
+        in-flight handler, releases the claim and re-dispatches the execution
+        so a peer worker resumes monitoring the *same* agent Job (see
+        ``flow_execution_runner.claim_and_run_execution``). Revoking the token
+        on the way out of an interrupted run leaves that still-running agent
+        holding a credential the gateway rejects, and the run dies mid-stream
+        with "Invalid authentication credentials".
+
+        So the token is retired only when the execution itself has reached a
+        terminal state; whichever worker finishes the run revokes it.
+        """
+        if not self.temporary_api_key_id and self.execution_log is None:
             return
 
-        try:
-            api_key = crud_api_key.deactivate(self.db, key_id=self.temporary_api_key_id)
-
-            if api_key:
-                # Log outcome only — key ids are treated as sensitive by CodeQL.
-                logger.info("Deactivated temporary API key record")
-            else:
-                logger.warning("Temporary API key record not found for cleanup")
-
-        except Exception as e:
-            logger.error(
-                "Failed to cleanup temporary API key record: %s",
-                type(e).__name__,
-                exc_info=True,
+        if not self._execution_reached_terminal_state():
+            logger.info(
+                "Leaving runtime token active for execution %s: not terminal "
+                "(handed off to another worker)",
+                self.execution_log.id if self.execution_log else "unknown",
             )
-            self.db.rollback()
+            return
+
+        self._revoke_execution_runtime_tokens()
 
     def _simple_resolve(self, placeholder: str, data: Dict[str, Any]) -> Optional[str]:
         """
@@ -2532,6 +2605,11 @@ class FlowExecutionOrchestrator:
         nudge_context["git_clone_config"] = None
         nudge_context["custom_commands"] = None
         nudge_context["confirmation_nudge"] = True
+        # The nudge is a second session for the SAME execution, started while
+        # the original agent Job still exists (it lingers until its TTL). It
+        # therefore needs its own runtime session name, or the nudge can only
+        # ever fail with a 409 name conflict on Kubernetes.
+        nudge_context[AGENT_SESSION_SUFFIX_KEY] = "nudge"
         # Token ceiling for runtimes that honor model parameters; the prompt
         # budget above enforces the input side regardless. The nudge ceiling
         # is a hard cap: a larger limit inherited from the flow's model is
@@ -3134,6 +3212,29 @@ class FlowExecutionOrchestrator:
         """Update the execution log and publish the update to NATS."""
         logger.info(f"Updating execution log to status: {status}")
 
+        # Every terminal write goes through here, so this is the one place
+        # that guarantees a failed execution carries a failure_category.
+        # Callers that hold richer evidence (an agent result with a failure
+        # analysis, or the exception that aborted the run) pass an explicit
+        # category and it is respected; everyone else gets one derived from
+        # the message being stored, falling back to the message already on
+        # the row when this update only moves the status.
+        if kwargs.get("failure_category") is None:
+            derived = derive_failure_category(
+                status=status,
+                error_message=(
+                    kwargs.get("error_message")
+                    or getattr(self.execution_log, "error_message", None)
+                ),
+            )
+            existing = getattr(self.execution_log, "failure_category", None)
+            if derived == FAILURE_CATEGORY_UNKNOWN and existing:
+                # Never downgrade a category an earlier, better-informed
+                # write already established.
+                derived = existing
+            if derived is not None:
+                kwargs["failure_category"] = derived
+
         # Debug logging for metrics
         if "tool_calls_count" in kwargs or "total_tokens" in kwargs:
             logger.info(
@@ -3272,6 +3373,17 @@ class FlowExecutionOrchestrator:
         session_reference: Optional[str] = None
 
         for attempt in range(1, max_attempts + 1):
+            # Each attempt starts a NEW agent session, so it must ask the
+            # runtime for a new session name. Without this, attempt 2 asked
+            # Kubernetes for the Job name attempt 1 still owns and died with
+            # "Failed to start agent Job: (409) Conflict" — the retry that
+            # was supposed to rescue a transient provider failure became the
+            # thing that failed the run. Attempt 1 keeps the historic
+            # unsuffixed name so an in-flight run stays addressable by the
+            # session reference stored before this change.
+            execution_context[AGENT_SESSION_SUFFIX_KEY] = (
+                f"a{attempt}" if attempt > 1 else None
+            )
             session_reference, agent_executor = await self._start_agent_session(
                 execution_context
             )
@@ -3481,13 +3593,37 @@ class FlowExecutionOrchestrator:
                     # (expire + rebind the execution row) instead.
                     self.db.rollback()
 
+            # MCP create_pull_request writes pr_url onto result in another
+            # session. Refresh so a None agent result cannot wipe the binding.
+            try:
+                self.db.refresh(self.execution_log)
+            except Exception:
+                logger.debug(
+                    "Could not refresh execution log before merging result",
+                    exc_info=True,
+                )
+            merged_result = merge_result_preserving_pr_binding(
+                getattr(self.execution_log, "result", None),
+                agent_result.get("result"),
+            )
+
             await self._update_execution_log(
                 status=final_status,
                 model_output_summary=output_summary,
                 error_message=agent_result.get("error_message"),
+                # The agent executor already classified the failure against
+                # the FULL container logs; that verdict is strictly better
+                # evidence than the truncated error message, so pass it in
+                # rather than letting _update_execution_log re-derive from
+                # prose.
+                failure_category=derive_failure_category(
+                    status=final_status,
+                    error_message=agent_result.get("error_message"),
+                    failure_analysis=agent_result.get("failure_analysis"),
+                ),
                 actions_taken_summary=agent_result.get("actions_taken"),
                 mcp_usage_logs=agent_result.get("mcp_usage_logs"),
-                result=agent_result.get("result"),
+                result=merged_result,
                 end_time=datetime.now(timezone.utc),
                 tool_calls_count=self.tool_calls_count,
                 total_tokens=self.total_tokens,
@@ -3513,6 +3649,18 @@ class FlowExecutionOrchestrator:
                 f"Flow execution completed with status {final_status}: {self.execution_log.id}"
             )
 
+        except asyncio.CancelledError:
+            # Deploy drain: the worker cancels in-flight handlers, releases the
+            # claim and re-dispatches so a peer resumes monitoring the agent,
+            # which keeps running. Nothing is finalized here (the execution is
+            # not over) and, critically, the runtime token is left active for
+            # the agent that is still streaming.
+            logger.info(
+                "Flow execution %s interrupted; leaving it to the worker that "
+                "resumes it (agent and runtime token untouched)",
+                self.execution_log.id if self.execution_log else "unknown",
+            )
+            raise
         except Exception as e:
             logger.error(
                 f"Flow execution {self.execution_log.id if self.execution_log else 'unknown'} failed: {e}",
@@ -3554,6 +3702,15 @@ class FlowExecutionOrchestrator:
                     await self._update_execution_log(
                         status="FAILED",
                         error_message=str(e),
+                        # The exception type carries the category for failures
+                        # raised by the runtime itself (e.g. AgentStartError on
+                        # an unresolvable Job name conflict), which no amount
+                        # of message matching would recover as reliably.
+                        failure_category=derive_failure_category(
+                            status="FAILED",
+                            error_message=str(e),
+                            exception=e,
+                        ),
                         end_time=datetime.now(timezone.utc),
                         tool_calls_count=self.tool_calls_count,
                         total_tokens=self.total_tokens,
@@ -3568,5 +3725,5 @@ class FlowExecutionOrchestrator:
             else:
                 logger.error("Cannot update execution log - not created yet")
         finally:
-            # Always cleanup the temporary API token
+            # Retire the runtime token, but only if this execution is over.
             self._cleanup_temporary_api_token()

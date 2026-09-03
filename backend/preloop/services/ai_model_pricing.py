@@ -100,6 +100,24 @@ def _model_alias(ai_model: AIModel) -> Optional[str]:
     return ai_model.model_identifier
 
 
+def _flat_price(value: Any) -> Optional[float]:
+    """Read a per-request price as it is stored, in dollars, or read nothing.
+
+    Everything else on the card is scaled to a per-million quote; a request
+    price is already a flat dollar amount, so it only needs the same guard.
+    Both dicts this module converts are account-supplied JSON (the pricing
+    stored on the model, an override row) or a third-party price map, so a
+    value that is not a number is a page the operator cannot open, not an
+    exception worth raising: it reads as unpriced, exactly like a missing one.
+    """
+    if value is None:
+        return None
+    try:
+        return round(float(value), 6)
+    except (TypeError, ValueError):
+        return None
+
+
 def _price_from_configured(pricing: Dict[str, Any]) -> AIModelPrice:
     """Convert a stored per-1k pricing dict into per-million display prices."""
 
@@ -112,15 +130,12 @@ def _price_from_configured(pricing: Dict[str, Any]) -> AIModelPrice:
         except (TypeError, ValueError):
             return None
 
-    request_price = pricing.get("request_price")
     return AIModelPrice(
         input_per_1m=scaled("input_price_per_1k"),
         output_per_1m=scaled("output_price_per_1k"),
         cached_input_per_1m=scaled("cache_read_input_price_per_1k"),
         blended_per_1m=scaled("price_per_1k"),
-        request_price=(
-            round(float(request_price), 6) if request_price is not None else None
-        ),
+        request_price=_flat_price(pricing.get("request_price")),
     )
 
 
@@ -140,11 +155,7 @@ def _price_from_catalog_entry(entry: Dict[str, Any]) -> AIModelPrice:
         input_per_1m=scaled("input_cost_per_token"),
         output_per_1m=scaled("output_cost_per_token"),
         cached_input_per_1m=scaled("cache_read_input_token_cost"),
-        request_price=(
-            round(float(entry["input_cost_per_request"]), 6)
-            if entry.get("input_cost_per_request") is not None
-            else None
-        ),
+        request_price=_flat_price(entry.get("input_cost_per_request")),
     )
 
 

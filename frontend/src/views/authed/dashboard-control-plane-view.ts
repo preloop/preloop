@@ -35,6 +35,8 @@ import {
   getUsers,
   getFeatures,
   getUserProfile,
+  hasPermission,
+  type UserPermissions,
 } from '../../api';
 import '../../components/preloop-invite-dialog';
 import '../../components/preloop-flow-form';
@@ -276,6 +278,14 @@ export class DashboardView extends AuthedElement {
   @state() private enabledUsersCount = 0;
   /** Active users, kept for the Inventory's Users tab (Cloud/Enterprise). */
   @state() private accountUsers: AccountUser[] = [];
+  /**
+   * This account's permissions, or null when RBAC is off (OSS, DISABLE_RBAC).
+   *
+   * `undefined` means the profile has not answered yet; both that and null
+   * read as unrestricted, the same way the shell treats them, so a slow or
+   * failed profile call never hides something the operator can use.
+   */
+  @state() private permissions: UserPermissions = undefined;
   @state() private toolCallsCount = 0;
   @state() private failedToolCallsCount = 0;
   @state() private totalFlowsCount = 0;
@@ -927,6 +937,11 @@ export class DashboardView extends AuthedElement {
         .column-layout.dashboard > .side-column > activity-feed {
           flex: 1 1 0;
           min-height: min(360px, 34dvh);
+          /* The rail is bounded and stretched above, so here (and only
+             here) the column decides the feed's height and the card's own
+             360px stop would only make the list shorter than the space it
+             has been given. */
+          --activity-feed-list-max-height: none;
         }
       }
 
@@ -1259,10 +1274,30 @@ export class DashboardView extends AuthedElement {
     try {
       const user = await getUserProfile();
       this.isAdmin = user?.is_superuser || false;
+      this.permissions = user?.permissions ?? null;
     } catch (error) {
       console.error('Failed to fetch user profile:', error);
       this.isAdmin = false;
+      this.permissions = null;
     }
+  }
+
+  /**
+   * Whether this account has teammates to show *and* this operator may see
+   * them.
+   *
+   * `GET /api/v1/users` requires `view_users`, which the system viewer role
+   * does not carry. Gating the tab on the licence flag alone put a Users tab
+   * in front of a viewer that answered "No teammates yet." after a swallowed
+   * 403 - a sentence about the account when the truth was about the reader.
+   * Without the permission there is no tab, which is what the sidebar already
+   * does with /console/settings/users.
+   */
+  private get canViewUsers(): boolean {
+    return (
+      this.userManagementEnabled &&
+      hasPermission(this.permissions, 'view_users')
+    );
   }
 
   private async fetchFeatures() {
@@ -1900,9 +1935,12 @@ export class DashboardView extends AuthedElement {
         const users = await this.catchWith403Handling(
           // User management is a licensed feature, not a hosting model:
           // a self-hosted Enterprise account has teammates too, and the
-          // Inventory's Users tab is gated on the same flag. Features
-          // have resolved by the time this secondary fetch runs.
-          isSaaS() || this.userManagementEnabled
+          // Inventory's Users tab is gated on the same flag and on
+          // view_users. Both the flags and the profile have answered by
+          // the time this secondary fetch runs, so a reader without the
+          // permission does not spend a request on a certain 403.
+          hasPermission(this.permissions, 'view_users') &&
+            (isSaaS() || this.userManagementEnabled)
             ? getUsers()
             : Promise.resolve({
                 users: [],
@@ -3201,7 +3239,7 @@ export class DashboardView extends AuthedElement {
         .modelsTotal=${this.aiModelsCount}
         .toolsTotal=${this.enabledToolsCount}
         .usersTotal=${this.enabledUsersCount}
-        ?showUsers=${this.userManagementEnabled}
+        ?showUsers=${this.canViewUsers}
         .rangeLabel=${this.gatewayRangeLabel}
         .flowRunsCapped=${this.flowRunsCapped}
         ?loading=${this.loading || this.fetchingMCPAndTools}

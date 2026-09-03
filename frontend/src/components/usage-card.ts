@@ -714,7 +714,7 @@ export class UsageCard extends LitElement {
         )} spent in the first ${percent}% of the period.`}
       >
         On track for ${this.formatCurrency(forecast.amount)} by
-        ${forecastEndLabel(policy.period, forecast.end)}
+        ${forecastEndLabel(policy.period, forecast.end, forecast.endBasis)}
       </div>
     `;
   }
