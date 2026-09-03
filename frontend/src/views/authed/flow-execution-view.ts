@@ -693,6 +693,17 @@ export class FlowExecutionView extends LitElement {
   private wsConnected = false;
   private autoScrollInterval?: number;
   private unsubscribe?: () => void;
+  /** The connection-state listener, kept so it can be dropped on disconnect. */
+  private unsubscribeState?: () => void;
+  /**
+   * The scroll listener the auto-scroll checker installs. One bound reference,
+   * added and removed as a pair: `startAutoScrollChecker` runs again on every
+   * reconnect and on every scroll back to the bottom, and an anonymous arrow
+   * per call could never be removed.
+   */
+  private readonly handleLogScroll = () => this.handleScroll();
+  /** The element `handleLogScroll` is currently attached to, if any. */
+  private scrollListenerTarget?: HTMLElement;
 
   // Buffered log rendering - prevents scroll issues when many lines arrive at once
   private logBuffer: FlowExecutionUpdate[] = [];
@@ -709,11 +720,8 @@ export class FlowExecutionView extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    // Clean up auto-scroll interval when component is removed
-    if (this.autoScrollInterval) {
-      clearInterval(this.autoScrollInterval);
-      this.autoScrollInterval = undefined;
-    }
+    // Clean up the auto-scroll interval and its scroll listener
+    this.stopAutoScrollChecker();
     // Clean up buffer flush interval
     if (this.bufferFlushInterval) {
       clearInterval(this.bufferFlushInterval);
@@ -721,8 +729,11 @@ export class FlowExecutionView extends LitElement {
     }
     // Stop the elapsed-duration ticker
     this.stopDurationTicker();
-    // Unsubscribe from WebSocket
+    // Unsubscribe from WebSocket, messages and connection state alike
     this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    this.unsubscribeState?.();
+    this.unsubscribeState = undefined;
   }
 
   /** Whether the loaded execution has not reached a terminal state yet. */
@@ -799,17 +810,6 @@ export class FlowExecutionView extends LitElement {
       // First, fetch execution data (which loads persisted logs)
       await this.fetchExecution();
 
-      console.log(`After fetchExecution, logs.length = ${this.logs.length}`);
-      console.log(`Execution status: ${this.execution?.status}`);
-      console.log(
-        `Has model_output_summary: ${!!this.execution?.model_output_summary}`
-      );
-      if (this.execution?.model_output_summary) {
-        console.log(
-          `model_output_summary length: ${this.execution.model_output_summary.length} chars`
-        );
-      }
-
       // Check if execution is still running
       const isRunning =
         this.execution &&
@@ -818,13 +818,8 @@ export class FlowExecutionView extends LitElement {
           this.execution.status === 'INITIALIZING' ||
           this.execution.status === 'PENDING');
 
-      console.log(`isRunning: ${isRunning}`);
-
       // If finished, show model_output_summary in logs
       if (!isRunning && this.execution?.model_output_summary) {
-        console.log(
-          'Adding model_output_summary to logs (execution finished on page load)'
-        );
         this.logs = [
           ...this.logs,
           {
@@ -834,11 +829,6 @@ export class FlowExecutionView extends LitElement {
             payload: { content: this.execution.model_output_summary },
           },
         ];
-        console.log(`Updated logs.length = ${this.logs.length}`);
-      } else {
-        console.log(
-          `Not adding model_output: isRunning=${isRunning}, has_summary=${!!this.execution?.model_output_summary}`
-        );
       }
 
       // Scroll to bottom after logs are loaded
@@ -861,37 +851,46 @@ export class FlowExecutionView extends LitElement {
           (message: any) => message.execution_id === this.executionId
         );
 
-        // Track connection state
-        unifiedWebSocketManager.onStateChange((state) => {
-          const wasConnected = this.wsConnected;
-          this.wsConnected = state === 'connected';
+        // Track connection state. The unsubscribe is kept and dropped in
+        // disconnectedCallback: discarding it leaked a listener holding this
+        // view for every connect.
+        this.unsubscribeState?.();
+        this.unsubscribeState = unifiedWebSocketManager.onStateChange(
+          (state) => {
+            const wasConnected = this.wsConnected;
+            this.wsConnected = state === 'connected';
 
-          // Add connection log if this is initial connection
-          if (
-            state === 'connected' &&
-            !wasConnected &&
-            this.logs.length === 0
-          ) {
-            console.log('Adding connection log message');
-            this.logs = [
-              {
-                execution_id: this.executionId!,
-                timestamp: new Date().toISOString(),
-                type: 'connected',
-                payload: { message: 'Connected to flow execution stream' },
-              },
-            ];
-          }
+            // Add connection log if this is initial connection
+            if (
+              state === 'connected' &&
+              !wasConnected &&
+              this.logs.length === 0
+            ) {
+              this.logs = [
+                {
+                  execution_id: this.executionId!,
+                  timestamp: new Date().toISOString(),
+                  type: 'connected',
+                  payload: { message: 'Connected to flow execution stream' },
+                },
+              ];
+            }
 
-          // Stop auto-scroll and buffer flush when disconnected
-          if (state !== 'connected') {
-            this.stopAutoScrollChecker();
-            this.stopBufferFlush();
+            if (state === 'connected') {
+              // A reconnect has to put back what the drop stopped, or the
+              // logs stay frozen for the rest of the session: the socket is
+              // delivering lines again but nothing flushes the buffer and
+              // nothing follows the stream down.
+              if (this.isExecutionRunning()) {
+                this.startAutoScrollChecker();
+                this.startBufferFlush();
+              }
+            } else {
+              // Stop auto-scroll and buffer flush when disconnected
+              this.stopAutoScrollChecker();
+              this.stopBufferFlush();
+            }
           }
-        });
-      } else {
-        console.log(
-          'Execution is finished, not connecting to WebSocket stream'
         );
       }
     }
@@ -957,8 +956,6 @@ export class FlowExecutionView extends LitElement {
   }
 
   private handleWebSocketMessage(message: any) {
-    console.log('WebSocket message:', message);
-
     // Handle connection confirmation
     if (message.type === 'connected') {
       return; // Already handled in onOpen callback
@@ -1066,7 +1063,12 @@ export class FlowExecutionView extends LitElement {
     }
   }
 
-  private copyAllLogs() {
+  /**
+   * The clipboard write can be refused — no permission, an insecure origin,
+   * an unfocused document — so the toast waits for it. Claiming a copy that
+   * did not happen sends the operator to paste nothing.
+   */
+  private async copyAllLogs() {
     const text = this.logs
       .map((l) =>
         typeof l.payload === 'string'
@@ -1077,7 +1079,22 @@ export class FlowExecutionView extends LitElement {
             JSON.stringify(l.payload)
       )
       .join('\n');
-    navigator.clipboard.writeText(text);
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (error) {
+      console.error('Failed to copy logs to clipboard:', error);
+      this.dispatchEvent(
+        new CustomEvent('show-toast', {
+          bubbles: true,
+          composed: true,
+          detail: {
+            message: 'Could not copy the logs to the clipboard.',
+            variant: 'danger',
+          },
+        })
+      );
+      return;
+    }
     this.dispatchEvent(
       new CustomEvent('show-toast', {
         bubbles: true,
@@ -1088,16 +1105,15 @@ export class FlowExecutionView extends LitElement {
   }
 
   startAutoScrollChecker() {
-    // Clear any existing interval
+    // Clear any existing interval and the listener that went with it
     this.stopAutoScrollChecker();
 
     this.logContainerRef = this.shadowRoot?.querySelector(
       '.log-container'
     ) as HTMLElement;
     if (this.logContainerRef) {
-      this.logContainerRef.addEventListener('scroll', () =>
-        this.handleScroll()
-      );
+      this.logContainerRef.addEventListener('scroll', this.handleLogScroll);
+      this.scrollListenerTarget = this.logContainerRef;
     }
     // Fallback: check scroll position every 500ms and force scroll if needed
     // Primary scrolling is done via updateComplete in handleWebSocketMessage
@@ -1118,6 +1134,14 @@ export class FlowExecutionView extends LitElement {
     if (this.autoScrollInterval) {
       clearInterval(this.autoScrollInterval);
       this.autoScrollInterval = undefined;
+    }
+    // The listener is the checker's, so it goes when the checker goes.
+    if (this.scrollListenerTarget) {
+      this.scrollListenerTarget.removeEventListener(
+        'scroll',
+        this.handleLogScroll
+      );
+      this.scrollListenerTarget = undefined;
     }
   }
 
@@ -1182,11 +1206,9 @@ export class FlowExecutionView extends LitElement {
 
     // Disable auto-scroll when user manually scrolls away from bottom
     if (!isAtBottom && this.isAutoScroll) {
-      console.log('User scrolled away from bottom, disabling auto-scroll');
       this.isAutoScroll = false;
     } else if (isAtBottom && !this.isAutoScroll) {
       // Re-enable auto-scroll when user scrolls back to bottom
-      console.log('User scrolled to bottom, enabling auto-scroll');
       this.isAutoScroll = true;
       // Restart the checker if execution is still running
       if (this.wsConnected) {
@@ -1207,6 +1229,8 @@ export class FlowExecutionView extends LitElement {
   async loadGatewayEvents(metadataOnly: boolean = false) {
     if (!this.executionId) return;
     this.isLoadingGatewayEvents = true;
+    // A retry starts clean, so the banner belongs to this attempt.
+    this.gatewayEventsError = null;
     try {
       const response = await getFlowExecutionGatewayEvents(
         this.executionId,
@@ -1226,6 +1250,21 @@ export class FlowExecutionView extends LitElement {
           : 'Failed to load execution gateway events';
     } finally {
       this.isLoadingGatewayEvents = false;
+    }
+
+    // A switch to the transcript while this fetch was in flight was dropped by
+    // `handleTabShow`, which leaves the transcript reading the metadata-only
+    // events — and `conversation_preview`, the only thing it is built from, is
+    // exactly what those leave out. Deferred, not dropped: the upgrade runs as
+    // soon as the metadata lands. A full load never re-enters here, so this
+    // cannot loop.
+    if (
+      metadataOnly &&
+      this.activeTab === 'transcript' &&
+      !this.gatewayEventsFullLoaded &&
+      !this.gatewayEventsError
+    ) {
+      await this.loadGatewayEvents(false);
     }
   }
 
@@ -1279,23 +1318,16 @@ export class FlowExecutionView extends LitElement {
           this.execution.execution_logs &&
           Array.isArray(this.execution.execution_logs)
         ) {
-          console.log(
-            `Using fallback: Loaded ${this.execution.execution_logs.length} persisted logs from database`
-          );
           return {
             logs: this.execution.execution_logs,
             source: 'fallback',
             has_more: false,
           };
         }
-        console.log('No fallback logs available');
         return { logs: [], source: 'none', has_more: false };
       });
 
       if (logsResult && Array.isArray(logsResult.logs)) {
-        console.log(
-          `Loaded ${logsResult.logs.length} logs from ${logsResult.source}`
-        );
         this.logs = logsResult.logs;
         this.hasMoreLogs = !!logsResult.has_more;
       }
@@ -1328,7 +1360,6 @@ export class FlowExecutionView extends LitElement {
             metrics.token_usage.total_tokens
           );
           this.hasPricing = this.hasPricing || metrics.has_pricing;
-          console.log('Loaded execution metrics:', metrics);
         } catch (error) {
           console.error('Failed to fetch execution metrics:', error);
           // Don't fail the whole page if metrics fetch fails
@@ -2188,7 +2219,7 @@ ${execution.model_output_summary}</pre>
                 ? html`<sl-button
                     size="small"
                     variant="text"
-                    @click=${this.copyAllLogs}
+                    @click=${() => void this.copyAllLogs()}
                   >
                     <sl-icon slot="prefix" name="clipboard"></sl-icon>
                     Copy logs
@@ -2884,9 +2915,6 @@ ${log.payload.content}</pre>
         if (logsResponse.logs && Array.isArray(logsResponse.logs)) {
           this.logs = logsResponse.logs;
           this.hasMoreLogs = !!logsResponse.has_more;
-          console.log(
-            `Loaded ${logsResponse.logs.length} logs after stop from ${logsResponse.source}`
-          );
         }
       } catch (error) {
         console.error('Failed to fetch logs after stop:', error);

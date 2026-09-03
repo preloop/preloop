@@ -3,13 +3,17 @@ import sinon from 'sinon';
 
 import './flow-execution-view';
 import type { FlowExecutionView } from './flow-execution-view';
+import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 
 describe('FlowExecutionView', () => {
   let fetchStub: sinon.SinonStub;
+  /** Held to keep the metadata-only gateway fetch in flight during a test. */
+  let gatewayEventsGate: Promise<void> | null;
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
+    gatewayEventsGate = null;
 
     fetchStub = sinon.stub(window, 'fetch');
     fetchStub.callsFake(
@@ -21,6 +25,9 @@ describe('FlowExecutionView', () => {
           url.includes('/api/v1/flows/executions/exec-1/gateway-events') &&
           method === 'GET'
         ) {
+          if (url.includes('metadata_only=true') && gatewayEventsGate) {
+            await gatewayEventsGate;
+          }
           return new Response(
             JSON.stringify({
               logs: [
@@ -1017,5 +1024,211 @@ describe('FlowExecutionView', () => {
 
     expect((element as any).totalTokens).to.equal(5000);
     expect((element as any).hasPricing).to.equal(false);
+  });
+
+  describe('wave 7 review fixes', () => {
+    it('puts the buffer flush and the scroll follower back after a reconnect', async () => {
+      let notifyState: ((state: string) => void) | null = null;
+      const stateStub = sinon
+        .stub(unifiedWebSocketManager, 'onStateChange')
+        .callsFake((callback: (state: any) => void) => {
+          notifyState = callback;
+          return () => {};
+        });
+
+      try {
+        const element = await load('exec-running');
+        const intervals = () => ({
+          buffer: (element as any).bufferFlushInterval,
+          scroll: (element as any).autoScrollInterval,
+        });
+
+        expect(intervals().buffer, 'buffer flush runs while live').to.not.be
+          .undefined;
+        expect(intervals().scroll, 'scroll follower runs while live').to.not.be
+          .undefined;
+        expect(notifyState, 'the view tracks connection state').to.not.be.null;
+
+        notifyState!('disconnected');
+        expect(intervals().buffer).to.be.undefined;
+        expect(intervals().scroll).to.be.undefined;
+
+        // The drop used to be one way: lines kept arriving into a buffer
+        // nothing flushed, and the view stayed frozen for the session.
+        notifyState!('connected');
+        expect(intervals().buffer, 'buffer flush restarted').to.not.be
+          .undefined;
+        expect(intervals().scroll, 'scroll follower restarted').to.not.be
+          .undefined;
+      } finally {
+        stateStub.restore();
+      }
+    });
+
+    it('leaves the buffer alone when the run already finished', async () => {
+      let notifyState: ((state: string) => void) | null = null;
+      const stateStub = sinon
+        .stub(unifiedWebSocketManager, 'onStateChange')
+        .callsFake((callback: (state: any) => void) => {
+          notifyState = callback;
+          return () => {};
+        });
+
+      try {
+        const element = await load('exec-running');
+        (element as any).execution = {
+          ...(element as any).execution,
+          status: 'COMPLETED',
+        };
+        notifyState!('disconnected');
+        notifyState!('connected');
+
+        expect((element as any).bufferFlushInterval).to.be.undefined;
+        expect((element as any).autoScrollInterval).to.be.undefined;
+      } finally {
+        stateStub.restore();
+      }
+    });
+
+    it('adds one scroll listener per checker and takes it back off', async () => {
+      const element = await load('exec-running');
+      const container = element.shadowRoot!.querySelector(
+        '.log-container'
+      ) as HTMLElement;
+      expect(container, 'the logs tab has its container').to.exist;
+
+      // Start from nothing attached so the count below is only what the
+      // restarts did.
+      (element as any).stopAutoScrollChecker();
+      const added = sinon.spy(container, 'addEventListener');
+      const removed = sinon.spy(container, 'removeEventListener');
+      try {
+        (element as any).startAutoScrollChecker();
+        (element as any).startAutoScrollChecker();
+        (element as any).startAutoScrollChecker();
+        (element as any).stopAutoScrollChecker();
+
+        const scrollAdds = added
+          .getCalls()
+          .filter((call) => call.args[0] === 'scroll');
+        const scrollRemoves = removed
+          .getCalls()
+          .filter((call) => call.args[0] === 'scroll');
+        // Every restart used to leave its listener behind, so the handler ran
+        // once per reconnect for the life of the page. Now each one is added
+        // and taken off in a pair, and the last stop leaves none.
+        expect(scrollAdds.length).to.be.at.least(3);
+        expect(scrollRemoves.length).to.equal(scrollAdds.length);
+        // One bound reference throughout, or nothing could be removed.
+        expect(scrollAdds[0].args[1]).to.equal(scrollRemoves[0].args[1]);
+        expect((element as any).scrollListenerTarget).to.be.undefined;
+      } finally {
+        added.restore();
+        removed.restore();
+      }
+    });
+
+    it('drops the connection-state listener when the view goes away', async () => {
+      const unsubscribeState = sinon.spy();
+      const stateStub = sinon
+        .stub(unifiedWebSocketManager, 'onStateChange')
+        .returns(unsubscribeState);
+
+      try {
+        const element = await load('exec-running');
+        expect(unsubscribeState.called).to.be.false;
+
+        element.remove();
+        expect(unsubscribeState.calledOnce, 'state listener released').to.be
+          .true;
+      } finally {
+        stateStub.restore();
+      }
+    });
+
+    it('says the copy failed instead of claiming the logs are on the clipboard', async () => {
+      const element = await load('exec-1');
+      (element as any).logs = [
+        {
+          execution_id: 'exec-1',
+          timestamp: '2026-03-09T10:00:00Z',
+          type: 'agent_log_line',
+          payload: { content: 'first line' },
+        },
+      ];
+      const toasts: Array<{ message: string; variant?: string }> = [];
+      element.addEventListener('show-toast', (event) => {
+        toasts.push((event as CustomEvent).detail);
+      });
+
+      const writeText = sinon
+        .stub(navigator.clipboard, 'writeText')
+        .rejects(new Error('Write permission denied'));
+      try {
+        await (element as any).copyAllLogs();
+        expect(toasts).to.eql([
+          {
+            message: 'Could not copy the logs to the clipboard.',
+            variant: 'danger',
+          },
+        ]);
+
+        writeText.resolves();
+        await (element as any).copyAllLogs();
+        expect(toasts[1]).to.eql({ message: 'Logs copied to clipboard!' });
+      } finally {
+        writeText.restore();
+      }
+    });
+
+    it('upgrades the events when the transcript is opened mid-fetch', async () => {
+      let openGate: () => void = () => {};
+      gatewayEventsGate = new Promise<void>((resolve) => {
+        openGate = resolve;
+      });
+
+      const element = (await fixture(
+        html`<flow-execution-view></flow-execution-view>`
+      )) as FlowExecutionView;
+      element.executionId = 'exec-1';
+      await element.updateComplete;
+
+      const gatewayCalls = () =>
+        fetchStub
+          .getCalls()
+          .map((call) => String(call.args[0]))
+          .filter((url) => url.includes('/gateway-events'));
+
+      await waitUntil(
+        () => gatewayCalls().length === 1,
+        'The metadata fetch never started'
+      );
+
+      // The switch lands while the metadata fetch is still in flight, which
+      // handleTabShow declines to act on.
+      (element as any).handleTabShow({ detail: { name: 'transcript' } });
+      expect(gatewayCalls()).to.have.length(1);
+
+      openGate();
+      await waitUntil(
+        () => (element as any).gatewayEventsFullLoaded === true,
+        'The transcript was left on metadata-only events'
+      );
+
+      const calls = gatewayCalls();
+      expect(calls).to.have.length(2);
+      expect(calls[0]).to.contain('metadata_only=true');
+      expect(calls[1]).to.not.contain('metadata_only');
+    });
+
+    it('keeps no debug logging in the execution page', async () => {
+      const log = sinon.spy(console, 'log');
+      try {
+        await load('exec-running');
+        expect(log.called, 'no console.log survives on this page').to.be.false;
+      } finally {
+        log.restore();
+      }
+    });
   });
 });
