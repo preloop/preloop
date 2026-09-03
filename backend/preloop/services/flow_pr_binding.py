@@ -21,6 +21,24 @@ from preloop.models.models.flow_execution import FlowExecution
 logger = logging.getLogger(__name__)
 
 _RESUME_LOOKBACK = 50
+_GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
+
+
+def _is_github_host(host: str) -> bool:
+    return host in _GITHUB_HOSTS
+
+
+def _is_tracker_api_url(url: str) -> bool:
+    """True for GitLab/GitHub REST URLs that must not be compared to HTML URLs."""
+
+    parsed = urlparse(url.strip())
+    host = (parsed.hostname or "").lower()
+    path = parsed.path or ""
+    if "/api/v4/" in path:
+        return True
+    if host == "api.github.com":
+        return True
+    return False
 
 
 def normalize_pr_url(url: Optional[str]) -> str:
@@ -28,12 +46,15 @@ def normalize_pr_url(url: Optional[str]) -> str:
 
     if not url or not isinstance(url, str):
         return ""
-    parsed = urlparse(url.strip())
+    raw = url.strip()
+    if _is_tracker_api_url(raw):
+        return ""
+    parsed = urlparse(raw)
     if not parsed.netloc or not parsed.path:
         return ""
     path = parsed.path.rstrip("/")
-    host = parsed.netloc.lower()
-    if host.endswith("github.com"):
+    host = (parsed.hostname or "").lower()
+    if _is_github_host(host):
         parts = path.split("/")
         # GitHub issue comments on PRs often use /issues/N in html_url.
         if len(parts) >= 5 and parts[3] == "issues":
@@ -41,6 +62,14 @@ def normalize_pr_url(url: Optional[str]) -> str:
             path = "/".join(parts)
     scheme = parsed.scheme or "https"
     return f"{scheme}://{host}{path}"
+
+
+def _first_html_pr_url(*candidates: Optional[str]) -> Optional[str]:
+    for raw in candidates:
+        normalized = normalize_pr_url(raw)
+        if normalized:
+            return normalized
+    return None
 
 
 def extract_pr_url_from_comment_event(event_data: Dict[str, Any]) -> Optional[str]:
@@ -54,21 +83,25 @@ def extract_pr_url_from_comment_event(event_data: Dict[str, Any]) -> Optional[st
     if isinstance(issue, dict):
         pr_stub = issue.get("pull_request")
         if isinstance(pr_stub, dict):
-            url = pr_stub.get("html_url") or issue.get("html_url") or pr_stub.get("url")
-            normalized = normalize_pr_url(url)
-            return normalized or None
+            return _first_html_pr_url(
+                pr_stub.get("html_url"),
+                issue.get("html_url"),
+                pr_stub.get("url"),
+            )
 
     pr = payload.get("pull_request")
     if isinstance(pr, dict):
-        normalized = normalize_pr_url(pr.get("html_url") or pr.get("url"))
-        if normalized:
-            return normalized
+        found = _first_html_pr_url(pr.get("html_url"), pr.get("url"))
+        if found:
+            return found
 
     mr = payload.get("merge_request")
     if isinstance(mr, dict):
-        normalized = normalize_pr_url(mr.get("url") or mr.get("web_url"))
-        if normalized:
-            return normalized
+        # create_merge_request persists mr.web_url. Webhook notes expose both
+        # an API ``url`` and a browser ``web_url``; prefer the HTML form.
+        found = _first_html_pr_url(mr.get("web_url"), mr.get("url"))
+        if found:
+            return found
 
     return None
 
@@ -114,7 +147,8 @@ def record_opened_pr(
             current = dict(execution.result)
         else:
             current = {}
-        current["pr_url"] = pr_url
+        stored_url = normalize_pr_url(pr_url) or pr_url
+        current["pr_url"] = stored_url
         if source_branch:
             current["pr_source_branch"] = source_branch
         execution.result = current
@@ -122,7 +156,7 @@ def record_opened_pr(
         db.commit()
         logger.info(
             "Recorded opened PR %s (branch=%s) on execution %s",
-            pr_url,
+            stored_url,
             source_branch,
             execution_id,
         )
@@ -135,7 +169,11 @@ def record_opened_pr(
         try:
             db.rollback()
         except Exception:
-            pass
+            # Best-effort: the outer warning already recorded the write failure.
+            logger.debug(
+                "Could not roll back after a failed PR-binding write",
+                exc_info=True,
+            )
 
 
 def find_bound_execution(
@@ -146,6 +184,9 @@ def find_bound_execution(
     needle = normalize_pr_url(pr_url)
     if not needle:
         return None
+    direct = crud_flow_execution.get_by_result_pr_url(db, flow_id, needle)
+    if direct is not None:
+        return direct
     executions = crud_flow_execution.get_by_flow(
         db, flow_id=flow_id, skip=0, limit=_RESUME_LOOKBACK
     )
@@ -154,6 +195,12 @@ def find_bound_execution(
         stored = normalize_pr_url(result.get("pr_url"))
         if stored and stored == needle:
             return execution
+    logger.info(
+        "No execution of flow %s recorded PR %s (jsonb miss, lookback=%s)",
+        flow_id,
+        needle,
+        _RESUME_LOOKBACK,
+    )
     return None
 
 

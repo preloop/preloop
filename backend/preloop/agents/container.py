@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import re
 import shlex
 import tarfile
 from typing import Any, Dict, Optional
@@ -34,6 +35,22 @@ from preloop.utils.workspace_seed import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Git ref names interpolated into generated shell (origin/<branch>..HEAD).
+# Reject anything that would need quoting so we never splice shlex.quote
+# into the middle of a token (origin/'feat/x').
+_SAFE_GIT_REF = re.compile(r"^[A-Za-z0-9._/\-]+$")
+
+
+def _validated_git_ref(name: Optional[str]) -> Optional[str]:
+    """Return ``name`` when it is a safe git ref, otherwise None."""
+
+    if not name or not isinstance(name, str):
+        return None
+    if _SAFE_GIT_REF.fullmatch(name):
+        return name
+    return None
+
 
 # Path inside the agent container where eval/observe flows write their
 # structured result report (see backend/presets/003-observe-eval.yaml).
@@ -2518,6 +2535,15 @@ echo "========================================="
             if not target_branch:
                 return ""
 
+            safe_target = _validated_git_ref(target_branch)
+            safe_source = _validated_git_ref(source_branch) or "main"
+            if not safe_target:
+                self.logger.warning(
+                    "Skipping post-execution git: unsafe target branch %r",
+                    target_branch,
+                )
+                return ""
+
             post_commands = []
 
             for idx, repo_config in enumerate(repositories):
@@ -2564,27 +2590,28 @@ echo "========================================="
                 # under /workspace/evidence *before* push so a failed push
                 # still leaves a recoverable artifact in the log stream.
                 # Note: Directory is guaranteed to exist because git clone validation would have failed earlier
-                quoted_source = shlex.quote(source_branch)
-                quoted_target = shlex.quote(target_branch)
                 repo_post_commands = [
                     f"cd {full_path}",
-                    # Check if there are any commits on target branch vs source
-                    f'COMMIT_COUNT=$(git rev-list --count origin/{quoted_target}..HEAD 2>/dev/null || git rev-list --count {quoted_source}..{quoted_target} 2>/dev/null || echo "0")',
+                    # Resume clones source==target, so origin/<branch>..HEAD
+                    # still counts local commits the branch-vs-branch range
+                    # would miss. Branch names are validated above; do not
+                    # shlex.quote mid-token (that yields origin/'feat/x').
+                    f'COMMIT_COUNT=$(git rev-list --count origin/{safe_target}..HEAD 2>/dev/null || git rev-list --count {safe_source}..{safe_target} 2>/dev/null || echo "0")',
                     'if [ "$COMMIT_COUNT" -gt "0" ]; then',
-                    f'  echo "Found $COMMIT_COUNT commits on {target_branch}, pushing..."',
+                    f'  echo "Found $COMMIT_COUNT commits on {safe_target}, pushing..."',
                     f"  mkdir -p {EVIDENCE_DIR_PATH}",
                     f"  git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
                     f"  git log -1 --format='%H %s' >> {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
-                    f"  git format-patch --stdout {source_branch}..HEAD > {EVIDENCE_DIR_PATH}/branch.patch 2>/dev/null || true",
+                    f"  git format-patch --stdout {safe_source}..HEAD > {EVIDENCE_DIR_PATH}/branch.patch 2>/dev/null || true",
                     (
                         f"  git bundle create {EVIDENCE_DIR_PATH}/branch.bundle "
-                        f"{source_branch}..HEAD 2>/dev/null "
+                        f"{safe_source}..HEAD 2>/dev/null "
                         f"|| git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD "
                         f"2>/dev/null || true"
                     ),
                     f'  echo "Wrote git recovery artifacts under {EVIDENCE_DIR_PATH}"',
                     push_auth,
-                    f"  git push origin {target_branch}",
+                    f"  git push origin {safe_target}",
                 ]
 
                 # Add PR/MR creation if enabled

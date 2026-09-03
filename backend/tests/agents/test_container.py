@@ -1345,6 +1345,27 @@ class TestGitApiTokensNotInScript:
         assert "username=x-access-token" in commands
         assert "username=oauth2" not in commands
 
+    def test_resume_commit_count_uses_origin_target_head(self, container_executor):
+        context = self._context()
+        context["_git_source_branch"] = "preloop/issue-353"
+        context["_git_target_branch"] = "preloop/issue-353"
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "origin/preloop/issue-353..HEAD" in commands
+        assert "origin/'preloop" not in commands
+
+    def test_normal_commit_count_falls_back_to_source_target(self, container_executor):
+        context = self._context()
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "origin/preloop/fix..HEAD" in commands
+        assert "main..preloop/fix" in commands
+        assert "origin/'preloop" not in commands
+
+    def test_unsafe_target_branch_skips_post_execution(self, container_executor):
+        context = self._context()
+        context["_git_target_branch"] = "feat/x; rm -rf /"
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert commands == ""
+
 
 class TestLogScrubbing:
     """Logs are scrubbed on read as well, so a token already present in a

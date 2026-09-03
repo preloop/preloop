@@ -31,6 +31,29 @@ class TestNormalizePrUrl:
         assert normalize_pr_url("") == ""
         assert normalize_pr_url(None) == ""
 
+    def test_non_github_host_does_not_rewrite_issues_path(self):
+        assert (
+            normalize_pr_url("https://notgithub.com/org/repo/issues/12")
+            == "https://notgithub.com/org/repo/issues/12"
+        )
+        assert (
+            normalize_pr_url("https://github.com.evil.example/org/repo/issues/12")
+            == "https://github.com.evil.example/org/repo/issues/12"
+        )
+
+    def test_www_github_issues_url_becomes_pull(self):
+        assert (
+            normalize_pr_url("https://www.github.com/preloop/preloop/issues/353")
+            == "https://www.github.com/preloop/preloop/pull/353"
+        )
+
+    def test_tracker_api_url_is_rejected(self):
+        assert (
+            normalize_pr_url("https://gitlab.com/api/v4/projects/1/merge_requests/10")
+            == ""
+        )
+        assert normalize_pr_url("https://api.github.com/repos/a/b/pulls/1") == ""
+
 
 class TestExtractPrUrlFromCommentEvent:
     def test_github_pr_comment(self):
@@ -76,6 +99,21 @@ class TestExtractPrUrlFromCommentEvent:
             == "https://gitlab.com/acme/backend/-/merge_requests/10"
         )
 
+    def test_gitlab_prefers_web_url_over_api_url(self):
+        event = {
+            "payload": {
+                "merge_request": {
+                    "iid": 10,
+                    "url": "https://gitlab.com/api/v4/projects/1/merge_requests/10",
+                    "web_url": "https://gitlab.com/acme/backend/-/merge_requests/10",
+                }
+            }
+        }
+        assert (
+            extract_pr_url_from_comment_event(event)
+            == "https://gitlab.com/acme/backend/-/merge_requests/10"
+        )
+
 
 class TestMergeResultPreservingPrBinding:
     def test_none_incoming_keeps_existing(self):
@@ -111,6 +149,27 @@ class TestFlowRequiresPrCommentResume:
 
 
 class TestFindAndBind:
+    def test_find_bound_execution_jsonb_hit(self):
+        execution = MagicMock()
+        db = MagicMock()
+        from preloop.services import flow_pr_binding as mod
+
+        original_jsonb = mod.crud_flow_execution.get_by_result_pr_url
+        original_flow = mod.crud_flow_execution.get_by_flow
+        mod.crud_flow_execution.get_by_result_pr_url = MagicMock(return_value=execution)
+        mod.crud_flow_execution.get_by_flow = MagicMock()
+        try:
+            found = find_bound_execution(
+                db,
+                flow_id="flow-1",
+                pr_url="https://github.com/preloop/preloop/pull/353",
+            )
+            assert found is execution
+            mod.crud_flow_execution.get_by_flow.assert_not_called()
+        finally:
+            mod.crud_flow_execution.get_by_result_pr_url = original_jsonb
+            mod.crud_flow_execution.get_by_flow = original_flow
+
     def test_find_bound_execution_matches_normalized_url(self):
         execution = MagicMock()
         execution.result = {
@@ -120,7 +179,9 @@ class TestFindAndBind:
         db = MagicMock()
         from preloop.services import flow_pr_binding as mod
 
-        original = mod.crud_flow_execution.get_by_flow
+        original_jsonb = mod.crud_flow_execution.get_by_result_pr_url
+        original_flow = mod.crud_flow_execution.get_by_flow
+        mod.crud_flow_execution.get_by_result_pr_url = MagicMock(return_value=None)
         mod.crud_flow_execution.get_by_flow = MagicMock(return_value=[execution])
         try:
             found = find_bound_execution(
@@ -130,7 +191,29 @@ class TestFindAndBind:
             )
             assert found is execution
         finally:
-            mod.crud_flow_execution.get_by_flow = original
+            mod.crud_flow_execution.get_by_result_pr_url = original_jsonb
+            mod.crud_flow_execution.get_by_flow = original_flow
+
+    def test_find_bound_execution_logs_when_missing(self, caplog):
+        db = MagicMock()
+        from preloop.services import flow_pr_binding as mod
+
+        original_jsonb = mod.crud_flow_execution.get_by_result_pr_url
+        original_flow = mod.crud_flow_execution.get_by_flow
+        mod.crud_flow_execution.get_by_result_pr_url = MagicMock(return_value=None)
+        mod.crud_flow_execution.get_by_flow = MagicMock(return_value=[])
+        try:
+            with caplog.at_level("INFO"):
+                found = find_bound_execution(
+                    db,
+                    flow_id="flow-1",
+                    pr_url="https://github.com/preloop/preloop/pull/999",
+                )
+            assert found is None
+            assert "lookback=" in caplog.text
+        finally:
+            mod.crud_flow_execution.get_by_result_pr_url = original_jsonb
+            mod.crud_flow_execution.get_by_flow = original_flow
 
     def test_bind_resume_or_skip_attaches_resume(self):
         execution = MagicMock()

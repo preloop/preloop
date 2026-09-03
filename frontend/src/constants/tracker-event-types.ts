@@ -41,6 +41,7 @@ export const GITLAB_TRACKER_EVENTS: TrackerEventOption[] = [
   { name: 'Tag Push', value: 'tag_push' },
   { name: 'Pipeline Event', value: 'pipeline' },
   { name: 'Job Event', value: 'job' },
+  { name: 'Deployment', value: 'deployment' },
   { name: 'Release Published', value: 'release' },
 ];
 

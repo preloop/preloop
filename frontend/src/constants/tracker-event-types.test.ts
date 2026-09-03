@@ -12,5 +12,6 @@ describe('getTrackerEventOptions', () => {
     expect(events.some((event) => event.value === 'merge_request_updated')).to
       .be.true;
     expect(events.some((event) => event.value === 'issue_updated')).to.be.true;
+    expect(events.some((event) => event.value === 'deployment')).to.be.true;
   });
 });
