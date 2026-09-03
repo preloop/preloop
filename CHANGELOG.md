@@ -239,9 +239,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can contain secrets. It is an audit fingerprint (never the raw text),
   the same pattern as API-key lookup hashes. The algorithm is unchanged,
   so existing ``text_sha256`` rows keep matching. The suppression is a bare
-  ``# codeql[py/weak-sensitive-data-hashing]`` on the line above
-  ``hashlib.sha256()`` (no extra text on that comment; CodeQL ignores
-  trailing notes) plus ``# lgtm[...]`` on the call itself.
+  ``# codeql[py/weak-sensitive-data-hashing]`` on the line above the
+  ``hashlib.sha256(...)`` call that receives the prompt bytes. Alert 201
+  was on ``digest.update(text)``, not on the empty constructor. Trailing
+  notes on that comment are omitted; ``# lgtm[...]`` stays on the call.
 
 - **Drop python-jose for PyJWT**: auth tokens, email/reset tokens, WebAuthn
   challenge state, MCP OAuth authorize codes, and APNs ES256 client
