@@ -9,6 +9,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
+import './talking-indicator';
 import './theme-switcher.ts';
 import './user-avatar.ts';
 import * as api from '../api';
@@ -1024,6 +1025,10 @@ export class ConsoleHeader extends LitElement {
           <slot name="nav-toggle"></slot>
         </div>
         <div class="user-menu">
+          <!-- Open talk windows, left of the bell: they belong to the
+               operator's current work, not to the notification history. -->
+          <talking-indicator></talking-indicator>
+
           <!-- Notification Center -->
           <sl-dropdown distance="8" placement="bottom-end">
             <div

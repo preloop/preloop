@@ -24,7 +24,7 @@ import '../../components/view-header.ts';
 import '../../components/preloop-agent-deployer.ts';
 import '../../components/preloop-deploy-wizard.ts';
 import '../../components/resource-actions.ts';
-import '../../components/agent-talk-composer.ts';
+import '../../components/talk-button.ts';
 import '../../components/confirm-dialog.ts';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
@@ -51,6 +51,7 @@ import { reducedMotionStyles } from '../../styles/reduced-motion';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { getAgentControlState } from '../../utils/agent-control';
 import { renderAgentIcon } from '../../utils/agent-icons';
+import { openTalkWindow } from '../../utils/talk-window';
 import {
   REMOVE_AGENT_CONSEQUENCE,
   getAgentSourceLabel,
@@ -2906,7 +2907,10 @@ export class AgentsView extends LitElement {
     this.navigateToCardTarget(url);
   }
 
-  private getCardActions(item: any): ResourceAction[] {
+  private getCardActions(
+    item: any,
+    options: { includeTalk?: boolean } = {}
+  ): ResourceAction[] {
     const isFlow =
       'flow_status' in item || ('name' in item && !('display_name' in item));
     if (isFlow) {
@@ -2914,7 +2918,27 @@ export class AgentsView extends LitElement {
     }
 
     const agent = item as ManagedAgentSummary;
-    const actions: ResourceAction[] = [
+    const actions: ResourceAction[] = [];
+
+    // The table has no room for a Talk button per row, so the kebab carries it
+    // there. Cards and canvas nodes show the button itself and would otherwise
+    // offer the same action twice.
+    if (options.includeTalk && getAgentControlState(agent).visible) {
+      const control = getAgentControlState(agent);
+      actions.push({
+        id: 'talk',
+        label: 'Talk',
+        icon: 'chat-dots',
+        disabled: !control.enabled,
+        // Runs inside the menu item's click handler, so the window still opens
+        // on the user gesture.
+        onClick: () => {
+          openTalkWindow(agent, undefined, { sourceContext: 'agents-list' });
+        },
+      });
+    }
+
+    actions.push(
       {
         id: 'rename',
         label: 'Rename',
@@ -2928,8 +2952,8 @@ export class AgentsView extends LitElement {
         icon: 'tags',
         loading: this.actionAgentId === agent.id,
         onClick: () => this.promptEditAgentTags(agent),
-      },
-    ];
+      }
+    );
 
     if (this.featureFlags.user_management && this.availableUsers.length > 0) {
       actions.push({
@@ -3090,13 +3114,11 @@ export class AgentsView extends LitElement {
         @keydown=${(event: Event) => event.stopPropagation()}
         @pointerdown=${(event: Event) => event.stopPropagation()}
       >
-        <agent-talk-composer
+        <talk-button
           .agent=${agent}
-          .sessions=${[]}
-          sourceContext=${sourceContext}
+          source-context=${sourceContext}
           compact
-          @agent-control-sent=${() => this.loadAgents()}
-        ></agent-talk-composer>
+        ></talk-button>
       </div>
     `;
   }
@@ -3279,7 +3301,7 @@ export class AgentsView extends LitElement {
   }
 
   private renderListRow(row: AgentListRow) {
-    const actions = this.getCardActions(row.source);
+    const actions = this.getCardActions(row.source, { includeTalk: true });
     return html`
       <tr
         class="agent-row"

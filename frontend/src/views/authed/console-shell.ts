@@ -52,6 +52,18 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
 const SIDEBAR_BREAKPOINT = 768;
 
 /**
+ * A view asks for popup chrome with `?window=1` in the URL.
+ *
+ * The talk window is a real console route inside this shell rather than a
+ * separate page: it keeps the session cookie, the theme, the permission gate
+ * and the dialog offset without a second bootstrap. All the popup needs is for
+ * the shell to stop drawing navigation it cannot use.
+ */
+export function isWindowChromeRequested(search: string): boolean {
+  return new URLSearchParams(search).get('window') === '1';
+}
+
+/**
  * The sidebar's rendered width on desktop, published as
  * `--console-main-offset` so that dialogs centre over the content area
  * instead of over the window. Kept in step with the `.sidebar` rule below.
@@ -107,6 +119,9 @@ export class ConsoleShell extends LitElement {
 
   @state()
   private _currentPath = window.location.pathname;
+
+  @state()
+  private _windowMode = isWindowChromeRequested(window.location.search);
 
   private _mediaQuery?: MediaQueryList;
   private _mediaQueryHandler?: (e: MediaQueryListEvent) => void;
@@ -217,6 +232,11 @@ export class ConsoleShell extends LitElement {
         grid-template-rows: auto auto 1fr; /* Header, bypass banner, content */
         overflow-y: hidden;
         background-color: var(--console-page);
+      }
+
+      /* A popup has no header and no banner, so the content is the only row. */
+      .main-view.window-mode {
+        grid-template-rows: 1fr;
       }
 
       /* The page is the bottom rung of the ladder and every card sits one
@@ -496,6 +516,8 @@ export class ConsoleShell extends LitElement {
   private _handleLocationChanged = () => {
     this._fullBleed = false;
     this._currentPath = window.location.pathname;
+    this._windowMode = isWindowChromeRequested(window.location.search);
+    this._publishMainOffset();
   };
 
   private _handleNavClick = (e: Event) => {
@@ -593,7 +615,9 @@ export class ConsoleShell extends LitElement {
    */
   private _publishMainOffset() {
     const offset =
-      this._sidebarOpen && !this._isMobile ? `${SIDEBAR_WIDTH_PX}px` : '0px';
+      this._sidebarOpen && !this._isMobile && !this._windowMode
+        ? `${SIDEBAR_WIDTH_PX}px`
+        : '0px';
     this.style.setProperty('--console-main-offset', offset);
   }
 
@@ -642,199 +666,227 @@ export class ConsoleShell extends LitElement {
       <global-notice></global-notice>
 
       <div class="console-container">
-        <div class="sidebar-wrapper">
-          <div
-            class="sidebar-backdrop ${this._sidebarOpen ? 'visible' : ''}"
-            @click=${this._closeSidebar}
-            aria-hidden="true"
-          ></div>
-          <div
-            class="sidebar ${this._sidebarOpen ? 'open' : 'closed'}"
-            role="navigation"
-            aria-label="Console navigation"
-          >
-            <div class="logo">
-              <a href="/console" @click=${this._closeSidebar}
-                ><logo-component></logo-component
-              ></a>
-            </div>
-            <sl-menu style="font-size: var(--console-text-body);">
-              ${this._renderNavLink(
-                '/console',
-                html`
-                  <sl-menu-item>
-                    <sl-icon name="house" slot="prefix"></sl-icon>
-                    <span class="sidebar-label">Overview</span>
-                  </sl-menu-item>
-                `,
-                true
-              )}
-              ${this._renderNavLink(
-                '/console/agents',
-                html`
-                  <sl-menu-item>
-                    <sl-icon name="robot" slot="prefix"></sl-icon>
-                    <span class="sidebar-label">Agents</span>
-                  </sl-menu-item>
-                `
-              )}
-              ${this._renderNavLink(
-                '/console/flows',
-                html`
-                  <sl-menu-item>
-                    <sl-icon src="/images/flow.svg" slot="prefix"></sl-icon>
-                    <span class="sidebar-label">Flows</span>
-                  </sl-menu-item>
-                `
-              )}
-              ${this._renderNavLink(
-                '/console/tools',
-                html`
-                  <sl-menu-item>
-                    <sl-icon name="tools" slot="prefix"></sl-icon>
-                    <span class="sidebar-label">Tools</span>
-                  </sl-menu-item>
-                `
-              )}
-              ${
-                this._canShowPolicies()
-                  ? this._renderNavLink(
-                      '/console/policies',
+        ${
+          this._windowMode
+            ? nothing
+            : html`<div class="sidebar-wrapper">
+                <div
+                  class="sidebar-backdrop ${this._sidebarOpen ? 'visible' : ''}"
+                  @click=${this._closeSidebar}
+                  aria-hidden="true"
+                ></div>
+                <div
+                  class="sidebar ${this._sidebarOpen ? 'open' : 'closed'}"
+                  role="navigation"
+                  aria-label="Console navigation"
+                >
+                  <div class="logo">
+                    <a href="/console" @click=${this._closeSidebar}
+                      ><logo-component></logo-component
+                    ></a>
+                  </div>
+                  <sl-menu style="font-size: var(--console-text-body);">
+                    ${this._renderNavLink(
+                      '/console',
                       html`
                         <sl-menu-item>
-                          <sl-icon name="shield-lock" slot="prefix"></sl-icon>
-                          <span class="sidebar-label">Policies</span>
+                          <sl-icon name="house" slot="prefix"></sl-icon>
+                          <span class="sidebar-label">Overview</span>
+                        </sl-menu-item>
+                      `,
+                      true
+                    )}
+                    ${this._renderNavLink(
+                      '/console/agents',
+                      html`
+                        <sl-menu-item>
+                          <sl-icon name="robot" slot="prefix"></sl-icon>
+                          <span class="sidebar-label">Agents</span>
                         </sl-menu-item>
                       `
-                    )
-                  : nothing
-              }
-              ${this._renderNavLink(
-                '/console/trackers',
-                html`
-                  <sl-menu-item>
-                    <sl-icon src="/images/git.svg" slot="prefix"></sl-icon>
-                    <span class="sidebar-label">Trackers</span>
-                  </sl-menu-item>
-                `
-              )}
-              ${this._renderNavLink(
-                '/console/ai-models',
-                html`
-                  <sl-menu-item>
-                    <sl-icon name="cpu" slot="prefix"></sl-icon>
-                    <span class="sidebar-label">Models</span>
-                  </sl-menu-item>
-                `
-              )}
-              ${this._renderNavLink(
-                '/console/cost',
-                html`
-                  <sl-menu-item>
-                    <sl-icon name="cash-coin" slot="prefix"></sl-icon>
-                    <span class="sidebar-label">Cost</span>
-                  </sl-menu-item>
-                `
-              )}
-              ${
-                this._hasAuditSection()
-                  ? html`
-                      <sl-details
-                        class="nav-section"
-                        ?open=${this._isAuditActive()}
-                      >
-                        <span slot="summary">
+                    )}
+                    ${this._renderNavLink(
+                      '/console/flows',
+                      html`
+                        <sl-menu-item>
                           <sl-icon
-                            name="journal-text"
-                            style="padding-right: 6px;"
+                            src="/images/flow.svg"
+                            slot="prefix"
                           ></sl-icon>
-                          <span class="sidebar-label">Audit</span>
-                        </span>
-                        <sl-menu>
-                          ${
-                            this._canShowAuditEvents()
-                              ? this._renderNavLink(
-                                  '/console/audit',
-                                  html`<sl-menu-item>All events</sl-menu-item>`
-                                )
-                              : nothing
-                          }
-                          ${this._renderNavLink(
-                            '/console/runtime-sessions',
-                            html`<sl-menu-item>Sessions</sl-menu-item>`
-                          )}
-                          ${this._renderNavLink(
-                            '/console/approvals',
-                            html`<sl-menu-item>Approvals</sl-menu-item>`
-                          )}
-                        </sl-menu>
-                      </sl-details>
-                    `
-                  : nothing
-              }
-              <sl-details class="nav-section" ?open=${this._isSettingsActive()}>
-                <span slot="summary">
-                  <sl-icon name="gear" style="padding-right: 6px;"></sl-icon>
-                  <span class="sidebar-label">Settings</span>
-                </span>
-                <sl-menu>
-                  ${
-                    this.features.user_management
-                      ? html`${this._renderNavLink(
-                          '/console/settings/account',
-                          html`<sl-menu-item>Account</sl-menu-item>`
+                          <span class="sidebar-label">Flows</span>
+                        </sl-menu-item>
+                      `
+                    )}
+                    ${this._renderNavLink(
+                      '/console/tools',
+                      html`
+                        <sl-menu-item>
+                          <sl-icon name="tools" slot="prefix"></sl-icon>
+                          <span class="sidebar-label">Tools</span>
+                        </sl-menu-item>
+                      `
+                    )}
+                    ${
+                      this._canShowPolicies()
+                        ? this._renderNavLink(
+                            '/console/policies',
+                            html`
+                              <sl-menu-item>
+                                <sl-icon
+                                  name="shield-lock"
+                                  slot="prefix"
+                                ></sl-icon>
+                                <span class="sidebar-label">Policies</span>
+                              </sl-menu-item>
+                            `
+                          )
+                        : nothing
+                    }
+                    ${this._renderNavLink(
+                      '/console/trackers',
+                      html`
+                        <sl-menu-item>
+                          <sl-icon
+                            src="/images/git.svg"
+                            slot="prefix"
+                          ></sl-icon>
+                          <span class="sidebar-label">Trackers</span>
+                        </sl-menu-item>
+                      `
+                    )}
+                    ${this._renderNavLink(
+                      '/console/ai-models',
+                      html`
+                        <sl-menu-item>
+                          <sl-icon name="cpu" slot="prefix"></sl-icon>
+                          <span class="sidebar-label">Models</span>
+                        </sl-menu-item>
+                      `
+                    )}
+                    ${this._renderNavLink(
+                      '/console/cost',
+                      html`
+                        <sl-menu-item>
+                          <sl-icon name="cash-coin" slot="prefix"></sl-icon>
+                          <span class="sidebar-label">Cost</span>
+                        </sl-menu-item>
+                      `
+                    )}
+                    ${
+                      this._hasAuditSection()
+                        ? html`
+                            <sl-details
+                              class="nav-section"
+                              ?open=${this._isAuditActive()}
+                            >
+                              <span slot="summary">
+                                <sl-icon
+                                  name="journal-text"
+                                  style="padding-right: 6px;"
+                                ></sl-icon>
+                                <span class="sidebar-label">Audit</span>
+                              </span>
+                              <sl-menu>
+                                ${
+                                  this._canShowAuditEvents()
+                                    ? this._renderNavLink(
+                                        '/console/audit',
+                                        html`<sl-menu-item
+                                          >All events</sl-menu-item
+                                        >`
+                                      )
+                                    : nothing
+                                }
+                                ${this._renderNavLink(
+                                  '/console/runtime-sessions',
+                                  html`<sl-menu-item>Sessions</sl-menu-item>`
+                                )}
+                                ${this._renderNavLink(
+                                  '/console/approvals',
+                                  html`<sl-menu-item>Approvals</sl-menu-item>`
+                                )}
+                              </sl-menu>
+                            </sl-details>
+                          `
+                        : nothing
+                    }
+                    <sl-details
+                      class="nav-section"
+                      ?open=${this._isSettingsActive()}
+                    >
+                      <span slot="summary">
+                        <sl-icon
+                          name="gear"
+                          style="padding-right: 6px;"
+                        ></sl-icon>
+                        <span class="sidebar-label">Settings</span>
+                      </span>
+                      <sl-menu>
+                        ${
+                          this.features.user_management
+                            ? html`${this._renderNavLink(
+                                '/console/settings/account',
+                                html`<sl-menu-item>Account</sl-menu-item>`
+                              )}
+                              ${this._renderNavLink(
+                                '/console/settings/users',
+                                html`<sl-menu-item>Users</sl-menu-item>`
+                              )}`
+                            : ''
+                        }
+                        ${
+                          this.features.team_management
+                            ? this._renderNavLink(
+                                '/console/settings/teams',
+                                html`<sl-menu-item>Teams</sl-menu-item>`
+                              )
+                            : ''
+                        }
+                        ${
+                          this.features.user_management ||
+                          this.features.team_management
+                            ? this._renderNavLink(
+                                '/console/settings/invitations',
+                                html`<sl-menu-item>Invitations</sl-menu-item>`
+                              )
+                            : ''
+                        }
+                        ${this._renderNavLink(
+                          '/console/settings/api-keys',
+                          html`<sl-menu-item>API Keys</sl-menu-item>`
                         )}
                         ${this._renderNavLink(
-                          '/console/settings/users',
-                          html`<sl-menu-item>Users</sl-menu-item>`
-                        )}`
-                      : ''
-                  }
-                  ${
-                    this.features.team_management
-                      ? this._renderNavLink(
-                          '/console/settings/teams',
-                          html`<sl-menu-item>Teams</sl-menu-item>`
-                        )
-                      : ''
-                  }
-                  ${
-                    this.features.user_management ||
-                    this.features.team_management
-                      ? this._renderNavLink(
-                          '/console/settings/invitations',
-                          html`<sl-menu-item>Invitations</sl-menu-item>`
-                        )
-                      : ''
-                  }
-                  ${this._renderNavLink(
-                    '/console/settings/api-keys',
-                    html`<sl-menu-item>API Keys</sl-menu-item>`
-                  )}
-                  ${this._renderNavLink(
-                    '/console/settings/runners',
-                    html`<sl-menu-item>Runners</sl-menu-item>`
-                  )}
-                </sl-menu>
-              </sl-details>
-            </sl-menu>
-          </div>
-        </div>
+                          '/console/settings/runners',
+                          html`<sl-menu-item>Runners</sl-menu-item>`
+                        )}
+                      </sl-menu>
+                    </sl-details>
+                  </sl-menu>
+                </div>
+              </div>`
+        }
 
-        <div class="main-view">
-          <console-header>
-            <sl-icon-button
-              slot="nav-toggle"
-              name="list"
-              label="Open menu"
-              @click=${this._handleSidebarToggle}
-            ></sl-icon-button>
-          </console-header>
-          <!-- Sits directly under the header so a relaxed governance state is
-               visible on every console page, not just the approvals view. -->
-          <approval-bypass-banner></approval-bypass-banner>
+        <div class="main-view ${this._windowMode ? 'window-mode' : ''}">
+          ${
+            this._windowMode
+              ? nothing
+              : html`<console-header>
+                    <sl-icon-button
+                      slot="nav-toggle"
+                      name="list"
+                      label="Open menu"
+                      @click=${this._handleSidebarToggle}
+                    ></sl-icon-button>
+                  </console-header>
+                  <!-- Sits directly under the header so a relaxed governance
+                       state is visible on every console page, not just the
+                       approvals view. -->
+                  <approval-bypass-banner></approval-bypass-banner>`
+          }
           <div
-            class="main-content ${this._fullBleed ? 'full-bleed' : ''}"
+            class="main-content ${
+              this._fullBleed || this._windowMode ? 'full-bleed' : ''
+            }"
             @request-full-bleed=${(e: CustomEvent) =>
               (this._fullBleed = !!e.detail)}
           >

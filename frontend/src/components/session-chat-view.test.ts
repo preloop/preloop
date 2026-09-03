@@ -310,3 +310,94 @@ describe('session-chat-view', () => {
     expect(expanded.textContent).to.contain(' end');
   });
 });
+
+describe('session-chat-view in the talk window', () => {
+  it('scrolls inside itself and offers a jump pill when scrolled up', async () => {
+    const events = Array.from({ length: 12 }, (_, index) =>
+      previewEvent(
+        `e${index}`,
+        `2026-08-06T10:${String(index).padStart(2, '0')}:00Z`,
+        [
+          { role: 'user', text: `prompt ${index}` },
+          { role: 'assistant', text: `answer ${index}`, source: 'response' },
+        ]
+      )
+    );
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view
+        scrollable
+        style="height: 200px"
+        .events=${events}
+      ></session-chat-view>`
+    );
+    await el.updateComplete;
+
+    const thread = el.shadowRoot!.querySelector('.thread') as HTMLElement;
+    expect(getComputedStyle(thread).overflowY).to.equal('auto');
+    expect(thread.scrollHeight).to.be.greaterThan(thread.clientHeight);
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="jump-latest"]'),
+      'at the bottom there is nothing to jump to'
+    ).to.not.exist;
+
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new Event('scroll'));
+    await el.updateComplete;
+    const pill = el.shadowRoot!.querySelector('[data-testid="jump-latest"]');
+    expect(pill).to.exist;
+
+    el.scrollToLatest();
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('[data-testid="jump-latest"]')).to.not
+      .exist;
+  });
+
+  it('renders a pending turn and its retry link', async () => {
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view
+        .pending=${[
+          {
+            id: 'p1',
+            text: 'ship it',
+            at: '2026-09-03T10:00:00Z',
+            state: 'failed' as const,
+            error: 'Gateway timeout',
+          },
+        ]}
+      ></session-chat-view>`
+    );
+    await el.updateComplete;
+
+    const bubble = el.shadowRoot!.querySelector('[data-kind="pending"]')!;
+    expect(bubble.textContent).to.contain('ship it');
+    expect(bubble.textContent).to.contain('Gateway timeout');
+
+    const retried: string[] = [];
+    el.addEventListener('talk-retry', (event) =>
+      retried.push((event as CustomEvent<{ id: string }>).detail.id)
+    );
+    (
+      el.shadowRoot!.querySelector(
+        '[data-testid="pending-retry"]'
+      ) as HTMLElement
+    ).click();
+    expect(retried).to.deep.equal(['p1']);
+  });
+
+  it('announces the agent reply politely', async () => {
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view
+        .events=${[
+          previewEvent('e1', '2026-08-06T10:00:00Z', [
+            { role: 'user', text: 'status?' },
+            { role: 'assistant', text: 'All green.', source: 'response' },
+          ]),
+        ]}
+      ></session-chat-view>`
+    );
+    await el.updateComplete;
+    const region = el.shadowRoot!.querySelector('.live-region')!;
+    expect(region.getAttribute('aria-live')).to.equal('polite');
+    expect(region.textContent).to.contain('All green.');
+  });
+});

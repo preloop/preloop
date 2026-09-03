@@ -61,6 +61,7 @@ import '../views/authed/policies-view';
 import '../views/authed/audit-view';
 import '../views/authed/agents-view';
 import '../views/authed/agent-detail-view';
+import '../views/authed/agent-talk-view';
 import '../views/authed/attention-view';
 import './app-header';
 import './app-footer';
@@ -384,6 +385,10 @@ export class LitApp extends LitElement {
           },
           { path: '/runtime-sessions', component: 'runtime-sessions-view' },
           { path: '/agents', component: 'agents-view' },
+          // Before ':agentId' would not matter to Vaadin Router (it matches
+          // the full path), but keeping the more specific route first is how
+          // the file reads elsewhere.
+          { path: '/agents/:agentId/talk', component: 'agent-talk-view' },
           { path: '/agents/:agentId', component: 'agent-detail-view' },
           {
             path: '/onboarding',

@@ -11,6 +11,7 @@ import {
   parseUTCDate,
 } from './date';
 import { sessionBelongsToAgent } from './agent-display';
+import { shellQuote } from './shell';
 
 /**
  * Everything the console considers "needs attention", derived from data the
@@ -347,7 +348,9 @@ function agentItems(
       reasons.push('Not connected');
       evidence.push({
         text: 'Onboarding never completed. Onboard it on the machine it runs on, or remove it.',
-        command: `preloop agents onboard "${agent.display_name || agent.id}"`,
+        command: `preloop agents onboard ${shellQuote(
+          agent.display_name || agent.id
+        )}`,
         action: { label: 'Open agent', href: agentHref },
       });
     }
