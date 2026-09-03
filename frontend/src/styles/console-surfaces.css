@@ -1,0 +1,120 @@
+/* =====================================================================
+   Console surface ladder (wave 4).
+
+   Shoelace's dark theme inverts the neutral scale: in `.sl-theme-dark`,
+   `--sl-color-neutral-0` is the DARKEST step (hsl(240 5.9% 11%)) and 50,
+   100, 200 get progressively lighter. A rule written as "page neutral-50,
+   card neutral-0" is therefore right in light and exactly backwards in
+   dark, where it paints a dark card on a lighter page and puts a border
+   around it: the opposite of elevation, repeated at every nesting level.
+   That is the "gray boxes within gray boxes" the console was showing.
+
+   So the console never names a neutral step for a background again. It
+   names a rung of this ladder, and the ladder is defined once per theme:
+
+     --console-page             the one page surface (.main-content)
+     --console-surface          cards, sidebar, dialog panel: ONE step up
+     --console-surface-raised   dialogs, dropdowns, popovers only
+     --console-hairline         row separators (and the card border in light)
+
+   Depth limit: two. Page and surface. Nothing inside a card gets its own
+   filled box; structure comes from hairlines, spacing and type weight.
+
+   These live at document level (loaded by main.css) rather than inside a
+   shadow root, because custom properties inherit through shadow boundaries
+   while `.sl-theme-dark` (a class on <html>) is not reachable from inside
+   one without `:host-context`, which Safari and Firefox do not implement.
+   ===================================================================== */
+:root,
+.sl-theme-light {
+    --console-page: var(--sl-color-neutral-50);
+    --console-surface: var(--sl-color-neutral-0);
+    --console-surface-raised: var(--sl-color-neutral-0);
+    --console-hairline: var(--sl-color-neutral-200);
+
+    /* Light states elevation with a hairline and the smallest shadow. */
+    --console-card-border: 1px solid var(--sl-color-neutral-200);
+    --console-card-shadow: var(--sl-shadow-x-small);
+    --console-raised-shadow: var(--sl-shadow-small);
+
+    /* 13px gray on gray is unreadable in dark; light can afford 500. */
+    --console-meta-color: var(--sl-color-neutral-500);
+    --console-body-color: var(--sl-color-neutral-900);
+    --console-link-color: var(--sl-color-primary-600);
+
+    /* Transient pointer feedback. Never a resting fill. */
+    --console-hover-tint: color-mix(
+        in srgb,
+        var(--sl-color-neutral-1000) 4%,
+        transparent
+    );
+
+    /* Default buttons: Shoelace's own face in light. */
+    --console-button-face: var(--sl-color-neutral-0);
+    --console-button-border: var(--sl-color-neutral-300);
+    --console-button-face-hover: var(--sl-color-primary-50);
+    --console-button-border-hover: var(--sl-color-primary-300);
+}
+
+.sl-theme-dark {
+    --console-page: var(--sl-color-neutral-0);
+    --console-surface: var(--sl-color-neutral-50);
+    --console-surface-raised: var(--sl-color-neutral-100);
+    --console-hairline: color-mix(
+        in srgb,
+        var(--sl-color-neutral-1000) 10%,
+        transparent
+    );
+
+    /* Dark cards have no border and no shadow: the lightness step IS the
+       elevation. A border around a lighter panel reads as a box. */
+    --console-card-border: 0 solid transparent;
+    --console-card-shadow: none;
+    --console-raised-shadow: var(--sl-shadow-large);
+
+    --console-meta-color: var(--sl-color-neutral-600);
+    --console-body-color: var(--sl-color-neutral-900);
+    /* The scale is inverted here too: primary-400 is a dim blue in dark and
+       measures 4.0:1 on a card, under the 4.5 a 13px link needs. primary-600
+       is the light end of the same hue and measures 7.0:1. */
+    --console-link-color: var(--sl-color-primary-600);
+
+    --console-hover-tint: color-mix(
+        in srgb,
+        var(--sl-color-neutral-1000) 6%,
+        transparent
+    );
+
+    /* A filled default button in dark is one more box: neutral-0 is the
+       darkest step, so the button ends up darker than the card it sits on.
+       In dark a default button is a 14% white hairline and nothing else. */
+    --console-button-face: transparent;
+    --console-button-border: color-mix(
+        in srgb,
+        var(--sl-color-neutral-1000) 14%,
+        transparent
+    );
+    --console-button-face-hover: color-mix(
+        in srgb,
+        var(--sl-color-neutral-1000) 8%,
+        transparent
+    );
+    --console-button-border-hover: color-mix(
+        in srgb,
+        var(--sl-color-neutral-1000) 28%,
+        transparent
+    );
+}
+
+:root {
+    /* Cards are 8px in both themes (Shoelace large), so a card corner is
+       distinguishable from a chip corner without a border to help. */
+    --console-card-radius: var(--sl-border-radius-large);
+
+    /* The console header sits above the scrolling content area, so a column
+       that wants to be exactly as tall as what the operator can see has to
+       subtract it. Measured on the shell at 1440x900 (58.6px); rounded up so
+       a sticky column keeps a hair of clearance rather than a hair of
+       overlap. Anything sticky inside `.main-content` uses this. */
+    --console-header-height: 60px;
+}

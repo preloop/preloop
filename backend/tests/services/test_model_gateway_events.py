@@ -565,3 +565,35 @@ def test_build_event_preserves_newlines_and_tabs_in_bodies():
         )
 
     assert event["payload"]["response"]["body"] == text
+
+
+def test_build_event_surfaces_upstream_retry_count():
+    """A call the gateway had to retry must say so on the execution timeline.
+
+    Without this the only visible symptom of a flaky provider is a run that
+    took longer than usual, which is indistinguishable from a slow model.
+    """
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage(
+        meta_data={
+            "endpoint_kind": "responses",
+            "upstream_retries": 2,
+            "error_detail": None,
+        }
+    )
+    with patch.object(settings, "model_gateway_capture_content", False):
+        event = emitter._build_event(
+            usage=usage, request_payload=None, response_payload=None
+        )
+    assert event["payload"]["retried"] == 2
+
+
+def test_build_event_reports_zero_retries_for_a_clean_call():
+    """`retried` is always present so consumers never special-case its absence."""
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage()
+    with patch.object(settings, "model_gateway_capture_content", False):
+        event = emitter._build_event(
+            usage=usage, request_payload=None, response_payload=None
+        )
+    assert event["payload"]["retried"] == 0

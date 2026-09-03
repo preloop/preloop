@@ -50,6 +50,25 @@ class GatewayUsageByModel(BaseModel):
     request_count: int = 0
     token_usage: GatewayTokenUsage
     estimated_cost: float = 0.0
+    unpriced_request_count: int = Field(
+        default=0,
+        description=(
+            "Requests that consumed tokens and carried no price at all, so "
+            "their cost is missing from every total."
+        ),
+    )
+    zero_priced_request_count: int = Field(
+        default=0,
+        description=(
+            "Requests a price was applied to and the price was exactly zero. "
+            "Free tier, a promotion, or a price entered wrongly; unlike an "
+            "unpriced request, nothing is missing from the total."
+        ),
+    )
+    failed_request_count: int = Field(
+        default=0,
+        description="Requests the gateway answered with a 4xx or 5xx status.",
+    )
     last_request_at: Optional[datetime] = None
 
 

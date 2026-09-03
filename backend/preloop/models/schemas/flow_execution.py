@@ -5,6 +5,53 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, ConfigDict
 
 
+class ExecutionModelUsage(BaseModel):
+    """One model alias that served requests during an execution."""
+
+    model_alias: str = Field(
+        ..., description="Gateway model alias, e.g. 'openai/gpt-5'"
+    )
+    provider_name: Optional[str] = Field(
+        None, description="Provider that served the requests, when recorded"
+    )
+    request_count: int = Field(
+        0, description="Gateway requests this execution sent to that alias"
+    )
+
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
+class ExecutionModelProjection(BaseModel):
+    """Which model(s) ran an execution, derived from gateway usage.
+
+    Mixed into both the list and the detail response so "what ran this" is
+    answerable without a second call. Every field is None/empty for an
+    execution whose gateway traffic recorded no model alias (a run that never
+    called the gateway, or one that predates alias recording).
+    """
+
+    model_alias: Optional[str] = Field(
+        None,
+        description=(
+            "Alias of the model that served most of this execution's gateway "
+            "requests. Null when the execution has no attributable gateway "
+            "usage."
+        ),
+    )
+    provider_name: Optional[str] = Field(
+        None, description="Provider behind ``model_alias``, when recorded"
+    )
+    models_used: List[ExecutionModelUsage] = Field(
+        default_factory=list,
+        description=(
+            "Every distinct model alias this execution used with its request "
+            "count, most used first."
+        ),
+    )
+
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
 # Base Pydantic model for FlowExecution attributes
 class FlowExecutionBase(BaseModel):
     flow_id: uuid.UUID = Field(..., description="Foreign Key to Flows.id")
@@ -54,6 +101,17 @@ class FlowExecutionBase(BaseModel):
     error_message: Optional[str] = Field(
         None, description="Error message if the execution failed"
     )
+    failure_category: Optional[str] = Field(
+        None,
+        description=(
+            "Coarse machine-readable reason a terminal execution did not "
+            "succeed: one of runner_conflict, runner_error, model_transient, "
+            "model_auth, model_quota, model_config, no_confirmation, "
+            "tool_error, agent_error, timeout, cancelled, unknown. Null for "
+            "successful or still-running executions, and for executions that "
+            "predate this field."
+        ),
+    )
     retry_of_execution_id: Optional[uuid.UUID] = Field(
         None, description="ID of the original execution if this is a retry"
     )
@@ -90,13 +148,14 @@ class FlowExecutionUpdate(BaseModel):
     result: Optional[Dict[str, Any]] = None
     agent_session_reference: Optional[str] = None
     error_message: Optional[str] = None
+    failure_category: Optional[str] = None
     tool_calls_count: Optional[int] = None
     total_tokens: Optional[int] = None
     estimated_cost: Optional[float] = None
 
 
 # Pydantic model for representing a FlowExecution in API responses (includes DB fields)
-class FlowExecutionResponse(FlowExecutionBase):
+class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
     id: uuid.UUID
     created_at: datetime
     updated_at: datetime
@@ -108,7 +167,7 @@ class FlowExecutionResponse(FlowExecutionBase):
     # flow: Optional[FlowResponse] = None # Assuming a FlowResponse Pydantic schema exists
 
 
-class FlowExecutionListResponse(BaseModel):
+class FlowExecutionListResponse(ExecutionModelProjection):
     """Lightweight flow execution row for list views."""
 
     id: uuid.UUID
@@ -117,6 +176,14 @@ class FlowExecutionListResponse(BaseModel):
     start_time: datetime
     end_time: Optional[datetime] = None
     error_message: Optional[str] = None
+    failure_category: Optional[str] = Field(
+        None,
+        description=(
+            "Coarse machine-readable failure class for terminal executions "
+            "(runner_conflict, model_transient, agent_error, ...). Null when "
+            "the execution succeeded, is still running, or predates the field."
+        ),
+    )
     retry_of_execution_id: Optional[uuid.UUID] = None
     batch_id: Optional[uuid.UUID] = None
     tool_calls_count: Optional[int] = 0

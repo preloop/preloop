@@ -81,3 +81,57 @@ describe('FlowView trigger summary', () => {
     expect(element.getTriggerSummary()).to.equal('Schedule');
   });
 });
+
+describe('FlowView recent executions', () => {
+  it('names what each run was about, since they all share the flow name', async () => {
+    // Every row on this page is the same flow: without a subject the table
+    // is three timestamps and a status, and a reader cannot pick a run.
+    const element = document.createElement('flow-view') as any;
+    element.flowReady = true;
+    element.isNew = false;
+    element.isEditing = false;
+    element.initialized = true;
+    element.flow = {
+      id: 'flow-1',
+      name: 'PR Reviewer',
+      agent_type: 'codex',
+      trigger_event_source: 'webhook',
+    };
+    element.recentExecutions = [
+      {
+        id: 'dee1da93-6d1e-4c0e-9f3a-2b1d0c4e5f60',
+        status: 'FAILED',
+        start_time: '2026-03-09T10:00:00Z',
+        end_time: '2026-03-09T10:02:00Z',
+        trigger_subject: 'spacecode/preloop-ios !17 · Merge Request Updated',
+        trigger_subject_url:
+          'https://gitlab.com/spacecode/preloop-ios/-/merge_requests/17',
+      },
+    ];
+    document.body.appendChild(element);
+    await element.updateComplete;
+
+    try {
+      const headers = Array.from(
+        element.shadowRoot!.querySelectorAll('.executions-table thead th')
+      ).map((th: any) => (th.textContent || '').trim());
+      expect(headers).to.eql([
+        'Subject',
+        'Status',
+        'Started',
+        'Duration',
+        'Actions',
+      ]);
+
+      const link = element.shadowRoot!.querySelector(
+        '.executions-table .subject-cell a'
+      )!;
+      expect(link.textContent).to.contain('spacecode/preloop-ios !17');
+      expect(link.getAttribute('href')).to.equal(
+        'https://gitlab.com/spacecode/preloop-ios/-/merge_requests/17'
+      );
+    } finally {
+      element.remove();
+    }
+  });
+});

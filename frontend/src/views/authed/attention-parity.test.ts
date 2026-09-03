@@ -208,7 +208,7 @@ describe('attention count parity', () => {
     sessionStorage.clear();
   });
 
-  it('shows the same count on the Overview hero and the Attention page', async () => {
+  it('shows the same count on the Overview strip and the Attention page', async () => {
     const dashboard = (await fixture(
       html`<dashboard-view></dashboard-view>`
     )) as DashboardView;
@@ -218,10 +218,15 @@ describe('attention count parity', () => {
     );
     await dashboard.updateComplete;
 
-    const heroValue = dashboard
-      .shadowRoot!.querySelector('a.hero-stat[href="/console/attention"]')!
-      .querySelector('.hero-stat-value')!
-      .textContent!.trim();
+    // Wave 6 removed the hero counter; the amber strip is the only place
+    // the Overview states the count, so parity is measured there. Wave 8
+    // added low-tone items, which the strip holds back while anything louder
+    // is open; this fixture has none, so the two counts still match exactly.
+    const stripCount = dashboard
+      .shadowRoot!.querySelector('.attention-strip-count')!
+      .textContent!.replace(/\s+/g, ' ')
+      .trim()
+      .replace(' need attention', '');
 
     const page = (await fixture(
       html`<attention-view></attention-view>`
@@ -237,7 +242,7 @@ describe('attention count parity', () => {
     // 1 live approval + 1 agent + 2 flows (three failed runs of two flows).
     // The expired-but-still-pending request is on neither side.
     expect(pageRows).to.equal(4);
-    expect(heroValue).to.equal(String(pageRows));
+    expect(stripCount).to.equal(String(pageRows));
     expect(page['items'].map((item) => item.id)).to.not.contain(
       'approval:approval-expired'
     );

@@ -389,6 +389,469 @@ func TestRunnerFgStartsLeaseAfterIdleHalt(t *testing.T) {
 	t.Fatal("idle halt latched; later lease did not start")
 }
 
+func useFastRunnerReconnect(t *testing.T) {
+	t.Helper()
+	oldMin, oldMax := runnerReconnectMin, runnerReconnectMax
+	runnerReconnectMin = 10 * time.Millisecond
+	runnerReconnectMax = 50 * time.Millisecond
+	t.Cleanup(func() {
+		runnerReconnectMin, runnerReconnectMax = oldMin, oldMax
+	})
+}
+
+func TestNextRunnerBackoffCaps(t *testing.T) {
+	oldMin, oldMax := runnerReconnectMin, runnerReconnectMax
+	runnerReconnectMin = time.Second
+	runnerReconnectMax = 30 * time.Second
+	t.Cleanup(func() {
+		runnerReconnectMin, runnerReconnectMax = oldMin, oldMax
+	})
+	if got := nextRunnerBackoff(time.Second); got != 2*time.Second {
+		t.Fatalf("backoff = %s", got)
+	}
+	if got := nextRunnerBackoff(30 * time.Second); got != 30*time.Second {
+		t.Fatalf("capped backoff = %s", got)
+	}
+}
+
+func TestRunnerFgReconnectsAfterAbnormalClose(t *testing.T) {
+	testenv.SetTempHome(t)
+	useFastRunnerReconnect(t)
+	var completed atomic.Bool
+	var conns atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/runners/register" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "11111111-1111-4111-8111-111111111111",
+				"account_id": "22222222-2222-4222-8222-222222222222",
+				"name":       "box",
+				"status":     "online",
+				"token":      "runner-token",
+				"created_at": "2026-08-17T00:00:00Z",
+				"updated_at": "2026-08-17T00:00:00Z",
+			})
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/ws") {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		n := conns.Add(1)
+		if n == 1 {
+			_ = conn.Close()
+			return
+		}
+		defer conn.Close() //nolint:errcheck
+		_ = conn.WriteJSON(map[string]any{
+			"type": "hello",
+			"job":  map[string]any{"execution_id": "exec-after-drop"},
+		})
+		for {
+			var msg map[string]any
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			if msg["type"] == "complete" && msg["execution_id"] == "exec-after-drop" {
+				completed.Store(true)
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	oldToken, oldURL := FlagToken, FlagURL
+	FlagURL = server.URL
+	FlagToken = "tok"
+	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
+	client := api.NewClientWithToken(server.URL, "tok")
+	state, err := loadOrRegisterRunner(client, "box", "host", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	interrupt := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- runnerForegroundLoop(state, interrupt, io.Discard)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if completed.Load() {
+			interrupt <- os.Interrupt
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("runner exited with %v", err)
+				}
+			case <-time.After(time.Second):
+			}
+			if conns.Load() < 2 {
+				t.Fatalf("expected reconnect, conns=%d", conns.Load())
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	interrupt <- os.Interrupt
+	t.Fatal("runner did not reconnect after websocket drop")
+}
+
+func TestRunnerFgResendsCompleteOnJobReplay(t *testing.T) {
+	testenv.SetTempHome(t)
+	useFastRunnerReconnect(t)
+	var secondComplete atomic.Bool
+	var conns atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/runners/register" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "11111111-1111-4111-8111-111111111111",
+				"account_id": "22222222-2222-4222-8222-222222222222",
+				"name":       "box",
+				"status":     "online",
+				"token":      "runner-token",
+				"created_at": "2026-08-17T00:00:00Z",
+				"updated_at": "2026-08-17T00:00:00Z",
+			})
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/ws") {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		n := conns.Add(1)
+		defer conn.Close() //nolint:errcheck
+		_ = conn.WriteJSON(map[string]any{
+			"type": "hello",
+			"job":  map[string]any{"execution_id": "exec-replay"},
+		})
+		for {
+			var msg map[string]any
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			if msg["type"] == "complete" && msg["execution_id"] == "exec-replay" {
+				if n == 1 {
+					return
+				}
+				secondComplete.Store(true)
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	oldToken, oldURL := FlagToken, FlagURL
+	FlagURL = server.URL
+	FlagToken = "tok"
+	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
+	client := api.NewClientWithToken(server.URL, "tok")
+	state, err := loadOrRegisterRunner(client, "box", "host", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	interrupt := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- runnerForegroundLoop(state, interrupt, io.Discard)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if secondComplete.Load() {
+			interrupt <- os.Interrupt
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	interrupt <- os.Interrupt
+	t.Fatal("runner did not resend complete after reconnect job replay")
+}
+
+func TestRunnerFgFatalServerErrorDoesNotReconnect(t *testing.T) {
+	testenv.SetTempHome(t)
+	useFastRunnerReconnect(t)
+	var conns atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/runners/register" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "11111111-1111-4111-8111-111111111111",
+				"account_id": "22222222-2222-4222-8222-222222222222",
+				"name":       "box",
+				"status":     "online",
+				"token":      "runner-token",
+				"created_at": "2026-08-17T00:00:00Z",
+				"updated_at": "2026-08-17T00:00:00Z",
+			})
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/ws") {
+			http.NotFound(w, r)
+			return
+		}
+		conns.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close() //nolint:errcheck
+		_ = conn.WriteJSON(map[string]any{"type": "error", "error": "unauthorized"})
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	oldToken, oldURL := FlagToken, FlagURL
+	FlagURL = server.URL
+	FlagToken = "tok"
+	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
+	client := api.NewClientWithToken(server.URL, "tok")
+	state, err := loadOrRegisterRunner(client, "box", "host", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = runnerForegroundLoop(state, make(chan os.Signal, 1), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "unauthorized") {
+		t.Fatalf("err = %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if conns.Load() != 1 {
+		t.Fatalf("fatal error reconnected, conns=%d", conns.Load())
+	}
+}
+
+func TestStopForegroundOnInterruptKillsJobAndUnregisters(t *testing.T) {
+	testenv.SetTempHome(t)
+	var unregistered atomic.Bool
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/runners/register" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "11111111-1111-4111-8111-111111111111",
+				"account_id": "22222222-2222-4222-8222-222222222222",
+				"name":       "box",
+				"status":     "online",
+				"token":      "runner-token",
+				"created_at": "2026-08-17T00:00:00Z",
+				"updated_at": "2026-08-17T00:00:00Z",
+			})
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/ws") {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close() //nolint:errcheck
+		for {
+			var msg map[string]any
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			if msg["type"] == "unregister" {
+				unregistered.Store(true)
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	oldToken, oldURL := FlagToken, FlagURL
+	FlagURL = server.URL
+	FlagToken = "tok"
+	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
+	client := api.NewClientWithToken(server.URL, "tok")
+	state, err := loadOrRegisterRunner(client, "box", "host", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	halted := &atomic.Bool{}
+	halt := true
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	stopForegroundOnInterrupt(state, cmd, &halt, halted, io.Discard)
+	if !halted.Load() {
+		t.Fatal("running job must latch halted")
+	}
+	select {
+	case <-waited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("interrupt must kill the in-flight job")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if unregistered.Load() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("interrupt must send unregister")
+}
+
+func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
+	testenv.SetTempHome(t)
+	oldMin, oldMax := runnerReconnectMin, runnerReconnectMax
+	runnerReconnectMin = 2 * time.Second
+	runnerReconnectMax = 2 * time.Second
+	t.Cleanup(func() {
+		runnerReconnectMin, runnerReconnectMax = oldMin, oldMax
+	})
+	oldDocker, oldCmd := runnerHasDocker, newRunnerJobCmd
+	var jobCmd *exec.Cmd
+	runnerHasDocker = func() bool { return true }
+	newRunnerJobCmd = func(image string, env map[string]string) *exec.Cmd {
+		jobCmd = exec.Command("sleep", "30")
+		return jobCmd
+	}
+	t.Cleanup(func() {
+		runnerHasDocker, newRunnerJobCmd = oldDocker, oldCmd
+		if jobCmd != nil && jobCmd.Process != nil && jobCmd.ProcessState == nil {
+			_ = jobCmd.Process.Kill()
+			_, _ = jobCmd.Process.Wait()
+		}
+	})
+
+	var unregistered atomic.Bool
+	var started atomic.Bool
+	var dropped atomic.Bool
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/runners/register" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "11111111-1111-4111-8111-111111111111",
+				"account_id": "22222222-2222-4222-8222-222222222222",
+				"name":       "box",
+				"status":     "online",
+				"token":      "runner-token",
+				"created_at": "2026-08-17T00:00:00Z",
+				"updated_at": "2026-08-17T00:00:00Z",
+			})
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/ws") {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		if started.Swap(true) {
+			defer conn.Close() //nolint:errcheck
+			for {
+				var msg map[string]any
+				if err := conn.ReadJSON(&msg); err != nil {
+					return
+				}
+				if msg["type"] == "unregister" {
+					unregistered.Store(true)
+					return
+				}
+			}
+		}
+		_ = conn.WriteJSON(map[string]any{
+			"type": "hello",
+			"job": map[string]any{
+				"execution_id": "exec-backoff",
+				"agent_config": map[string]any{"image": "preloop/agent:dev"},
+			},
+		})
+		time.Sleep(300 * time.Millisecond)
+		_ = conn.Close()
+		dropped.Store(true)
+	}))
+	defer server.Close()
+
+	oldToken, oldURL := FlagToken, FlagURL
+	FlagURL = server.URL
+	FlagToken = "tok"
+	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
+	client := api.NewClientWithToken(server.URL, "tok")
+	state, err := loadOrRegisterRunner(client, "box", "host", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	interrupt := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- runnerForegroundLoop(state, interrupt, io.Discard)
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if jobCmd != nil && jobCmd.Process != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if jobCmd == nil || jobCmd.Process == nil {
+		interrupt <- os.Interrupt
+		t.Fatal("leased job did not start")
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !dropped.Load() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !dropped.Load() {
+		interrupt <- os.Interrupt
+		t.Fatal("control-plane socket did not drop")
+	}
+	time.Sleep(50 * time.Millisecond)
+	interrupt <- os.Interrupt
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runner exited with %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runner did not exit after interrupt during backoff")
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if unregistered.Load() && jobCmd.ProcessState != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !unregistered.Load() {
+		t.Fatal("interrupt during backoff must unregister")
+	}
+	if jobCmd.ProcessState == nil {
+		t.Fatal("interrupt during backoff must kill the in-flight job")
+	}
+}
+
 func TestRunnerCommandsExist(t *testing.T) {
 	names := map[string]bool{}
 	for _, child := range runnerCmd.Commands() {

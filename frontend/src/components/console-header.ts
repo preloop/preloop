@@ -9,6 +9,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
+import './talking-indicator';
 import './theme-switcher.ts';
 import './user-avatar.ts';
 import * as api from '../api';
@@ -99,7 +100,7 @@ export class ConsoleHeader extends LitElement {
       justify-content: flex-end;
       align-items: center;
       padding: 0.4rem;
-      border-bottom: 1px solid var(--sl-color-neutral-200);
+      border-bottom: 1px solid var(--console-hairline);
     }
     .nav-toggle {
       display: flex;
@@ -143,7 +144,7 @@ export class ConsoleHeader extends LitElement {
       font-weight: bold;
     }
     .user-email {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
     }
     .notification-button {
       position: relative;
@@ -168,23 +169,24 @@ export class ConsoleHeader extends LitElement {
       max-width: 420px;
       max-height: 500px;
       overflow-y: auto;
-      background: var(--sl-color-neutral-0);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      box-shadow: var(--sl-shadow-large);
+      /* A popover is the one thing allowed on the raised rung. */
+      background: var(--console-surface-raised);
+      border: 1px solid var(--console-hairline);
+      border-radius: var(--console-card-radius);
+      box-shadow: var(--console-raised-shadow);
     }
     .notification-section {
-      border-bottom: 1px solid var(--sl-color-neutral-100);
+      border-bottom: 1px solid var(--console-hairline);
     }
     .dropdown-footer {
-      border-top: 1px solid var(--sl-color-neutral-100);
+      border-top: 1px solid var(--console-hairline);
       padding: var(--sl-spacing-x-small) var(--sl-spacing-medium);
       position: sticky;
       bottom: 0;
-      background: var(--sl-color-neutral-0);
+      background: var(--console-surface-raised);
     }
     .dropdown-footer a {
-      color: var(--sl-color-primary-600);
+      color: var(--console-link-color);
       font-size: var(--sl-font-size-small);
       text-decoration: none;
     }
@@ -199,8 +201,8 @@ export class ConsoleHeader extends LitElement {
       align-items: center;
       justify-content: space-between;
       padding: 0.75rem 1rem;
-      background-color: var(--sl-color-neutral-50);
-      border-bottom: 1px solid var(--sl-color-neutral-100);
+      background-color: transparent;
+      border-bottom: 1px solid var(--console-hairline);
     }
     .section-title {
       display: flex;
@@ -212,11 +214,11 @@ export class ConsoleHeader extends LitElement {
     }
     .section-count {
       font-size: 0.75rem;
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
     }
     .section-link {
       font-size: 0.75rem;
-      color: var(--sl-color-primary-600);
+      color: var(--console-link-color);
       text-decoration: none;
       cursor: pointer;
     }
@@ -234,7 +236,7 @@ export class ConsoleHeader extends LitElement {
     .notification-item {
       padding: 0.75rem 1rem;
       cursor: pointer;
-      border-bottom: 1px solid var(--sl-color-neutral-50);
+      border-bottom: 1px solid var(--console-hairline);
     }
     .execution-item:last-child,
     .approval-item:last-child,
@@ -244,7 +246,7 @@ export class ConsoleHeader extends LitElement {
     .execution-item:hover,
     .approval-item:hover,
     .notification-item:hover {
-      background-color: var(--sl-color-neutral-50);
+      background-color: var(--console-hover-tint);
     }
     .execution-name,
     .approval-name,
@@ -257,7 +259,7 @@ export class ConsoleHeader extends LitElement {
     .approval-time,
     .notification-time {
       font-size: 0.75rem;
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
     }
     .approval-actions {
       display: flex;
@@ -268,7 +270,11 @@ export class ConsoleHeader extends LitElement {
       font-size: 0.75rem;
     }
     .notification-item.unread {
-      background-color: var(--sl-color-primary-50);
+      background-color: color-mix(
+        in srgb,
+        var(--sl-color-primary-500) 10%,
+        transparent
+      );
     }
     .notification-item.unread::before {
       content: '';
@@ -285,13 +291,13 @@ export class ConsoleHeader extends LitElement {
     .no-items {
       padding: 1rem;
       text-align: center;
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: 0.875rem;
     }
     .empty-state {
       padding: 2rem 1rem;
       text-align: center;
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
     }
     .empty-state sl-icon {
       font-size: 2rem;
@@ -1019,6 +1025,10 @@ export class ConsoleHeader extends LitElement {
           <slot name="nav-toggle"></slot>
         </div>
         <div class="user-menu">
+          <!-- Open talk windows, left of the bell: they belong to the
+               operator's current work, not to the notification history. -->
+          <talking-indicator></talking-indicator>
+
           <!-- Notification Center -->
           <sl-dropdown distance="8" placement="bottom-end">
             <div

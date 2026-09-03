@@ -216,6 +216,29 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.offset(skip).limit(limit).all()
 
+    def get_by_result_pr_url(
+        self,
+        db: Session,
+        flow_id: Any,
+        pr_url: str,
+    ) -> Optional[FlowExecution]:
+        """Return the newest execution of this flow that recorded ``pr_url``.
+
+        Matches ``FlowExecution.result['pr_url']`` exactly so resume does not
+        depend on a recency window. Callers should pass a normalized URL.
+        """
+        if not pr_url:
+            return None
+        return (
+            db.query(FlowExecution)
+            .filter(
+                FlowExecution.flow_id == flow_id,
+                FlowExecution.result["pr_url"].astext == pr_url,
+            )
+            .order_by(FlowExecution.start_time.desc())
+            .first()
+        )
+
     def get_by_batch(
         self,
         db: Session,
@@ -307,6 +330,10 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     FlowExecution.start_time,
                     FlowExecution.end_time,
                     FlowExecution.error_message,
+                    # Small and the whole point of the list view for
+                    # failures; omitting it here would make the schema
+                    # projection lazy-load it one row at a time.
+                    FlowExecution.failure_category,
                     FlowExecution.retry_of_execution_id,
                     FlowExecution.batch_id,
                     FlowExecution.tool_calls_count,

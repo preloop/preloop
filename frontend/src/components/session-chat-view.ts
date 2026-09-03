@@ -32,6 +32,21 @@ import { SESSION_EVENTS_PAGE_REQUESTED_EVENT } from '../utils/session-observer';
 
 const MESSAGE_PREVIEW_CHARS = 2000;
 const STEP_PREVIEW_CHARS = 600;
+/** How far from the bottom still counts as "reading the latest". */
+const FOLLOW_THRESHOLD_PX = 48;
+
+/** A turn the operator sent that the server has not echoed back yet. */
+export interface PendingTalkMessage {
+  id: string;
+  text: string;
+  at: string;
+  state: 'sending' | 'sent' | 'failed';
+  error?: string;
+  inputMode?: 'text' | 'voice_transcript';
+}
+
+/** Bubbled by the Retry link under a failed turn. */
+export const TALK_RETRY_EVENT = 'talk-retry';
 
 @customElement('session-chat-view')
 export class SessionChatView extends LitElement {
@@ -58,6 +73,24 @@ export class SessionChatView extends LitElement {
 
   @property({ type: String })
   emptyText = 'No conversation captured for this session yet.';
+
+  /**
+   * Own the viewport instead of growing the page.
+   *
+   * Embedded in the session widget the thread grows and the page scrolls, which
+   * is right for reading a finished session. In the talk window the composer
+   * must stay pinned at the bottom, so the thread scrolls inside itself and
+   * offers a jump-to-latest pill when the operator has scrolled up.
+   */
+  @property({ type: Boolean, reflect: true })
+  scrollable = false;
+
+  /** Optimistic turns rendered after the transcript, newest last. */
+  @property({ attribute: false })
+  pending: PendingTalkMessage[] = [];
+
+  @state()
+  private atBottom = true;
 
   @state()
   private expandedMessageKeys = new Set<string>();
@@ -86,6 +119,12 @@ export class SessionChatView extends LitElement {
   // Events seen at the last follow-live scroll; scrolling happens only when
   // new events actually arrive, never on state-only re-renders.
   private lastScrolledEventCount = 0;
+  private lastScrolledPendingCount = 0;
+  private lastAnnouncedKey: string | null = null;
+  private scrollBound = false;
+
+  @state()
+  private liveAnnouncement = '';
 
   static styles = css`
     :host {
@@ -93,11 +132,63 @@ export class SessionChatView extends LitElement {
       min-height: 0;
     }
 
+    :host([scrollable]) {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+      position: relative;
+    }
+
     .thread {
       display: flex;
       flex-direction: column;
       gap: var(--sl-spacing-medium);
       padding: var(--sl-spacing-small) 0;
+    }
+
+    :host([scrollable]) .thread {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+    }
+
+    .jump-latest {
+      bottom: var(--sl-spacing-small);
+      left: 50%;
+      position: absolute;
+      transform: translateX(-50%);
+      z-index: 1;
+    }
+
+    .jump-latest::part(base) {
+      border-radius: 999px;
+    }
+
+    .pending-error {
+      align-items: center;
+      color: var(--sl-color-danger-700);
+      display: flex;
+      flex-wrap: wrap;
+      font-size: var(--sl-font-size-x-small);
+      gap: var(--sl-spacing-x-small);
+      margin-top: var(--sl-spacing-2x-small);
+    }
+
+    .bubble.pending {
+      opacity: 0.72;
+    }
+
+    .live-region {
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      height: 1px;
+      overflow: hidden;
+      position: absolute;
+      white-space: nowrap;
+      width: 1px;
     }
 
     .empty,
@@ -281,19 +372,66 @@ export class SessionChatView extends LitElement {
   willUpdate(changed: PropertyValues<this>): void {
     if (changed.has('events') || changed.has('activity')) {
       this.conversation = buildConversation(this.events, this.activity);
+      // Screen readers get the agent's reply, not the whole thread: the last
+      // message is the only thing that changed for the person listening.
+      const messages = this.conversation.items.filter(
+        (item): item is TranscriptMessageItem =>
+          item.type === 'message' && item.kind === 'agent_response'
+      );
+      const latest = messages[messages.length - 1];
+      if (latest && latest.key !== this.lastAnnouncedKey) {
+        this.lastAnnouncedKey = latest.key;
+        this.liveAnnouncement = latest.text
+          ? `Agent replied: ${latest.text.slice(0, 400)}`
+          : 'Agent replied.';
+      }
     }
   }
 
   updated(changed: PropertyValues<this>): void {
+    const thread = this.renderRoot.querySelector('.thread');
+    if (thread && this.scrollable && !this.scrollBound) {
+      thread.addEventListener('scroll', this.handleScroll, { passive: true });
+      this.scrollBound = true;
+    }
+    // A turn the operator just typed always pulls the thread down: they are
+    // looking at what they sent.
+    const pendingGrew = this.pending.length > this.lastScrolledPendingCount;
+    this.lastScrolledPendingCount = this.pending.length;
     if (!this.followLive) return;
     // Scroll only when new events arrived (or follow-live was just switched
     // on); a scrollTop write on every update would force a reflow — and yank
     // the view — each time the user expands a message they are reading.
     const newEvents = this.events.length > this.lastScrolledEventCount;
     this.lastScrolledEventCount = this.events.length;
-    if (!newEvents && !changed.has('followLive')) return;
+    if (!newEvents && !pendingGrew && !changed.has('followLive')) return;
+    // Someone who scrolled up to re-read is not interrupted; the pill takes
+    // them back when they want it.
+    if (this.scrollable && !this.atBottom && !pendingGrew) return;
+    this.scrollToLatest();
+  }
+
+  disconnectedCallback(): void {
+    const thread = this.renderRoot?.querySelector('.thread');
+    thread?.removeEventListener('scroll', this.handleScroll);
+    this.scrollBound = false;
+    super.disconnectedCallback();
+  }
+
+  private handleScroll = (event: Event): void => {
+    const thread = event.currentTarget as HTMLElement;
+    const distance =
+      thread.scrollHeight - thread.scrollTop - thread.clientHeight;
+    const atBottom = distance <= FOLLOW_THRESHOLD_PX;
+    if (atBottom !== this.atBottom) this.atBottom = atBottom;
+  };
+
+  /** Public so the talk page can snap the thread down after it loads. */
+  public scrollToLatest(): void {
     const thread = this.renderRoot.querySelector('.thread');
-    if (thread) thread.scrollTop = thread.scrollHeight;
+    if (!thread) return;
+    thread.scrollTop = thread.scrollHeight;
+    this.atBottom = true;
   }
 
   private formatTime(value: string | null): string {
@@ -527,6 +665,78 @@ ${
     `;
   }
 
+  private renderPending(message: PendingTalkMessage) {
+    return html`
+      <div
+        class="bubble operator pending ${message.state === 'failed' ? 'failed' : ''}"
+        data-kind="pending"
+        data-pending-state=${message.state}
+      >
+        <div class="bubble-meta">
+          <span class="bubble-role">You</span>
+          <span>${this.formatTime(message.at)}</span>
+          ${
+            message.state === 'sending'
+              ? html`<sl-badge variant="neutral" pill>Sending</sl-badge>`
+              : nothing
+          }
+          ${
+            message.state === 'failed'
+              ? html`<sl-badge variant="danger" pill>Not sent</sl-badge>`
+              : nothing
+          }
+        </div>
+        <pre class="bubble-text">${message.text}</pre>
+        ${
+          message.state === 'failed'
+            ? html`
+                <div class="pending-error">
+                  <span>${message.error || 'Failed to send.'}</span>
+                  <button
+                    class="inline-toggle"
+                    type="button"
+                    data-testid="pending-retry"
+                    @click=${() =>
+                      this.dispatchEvent(
+                        new CustomEvent(TALK_RETRY_EVENT, {
+                          detail: { id: message.id },
+                          bubbles: true,
+                          composed: true,
+                        })
+                      )}
+                  >
+                    Retry
+                  </button>
+                </div>
+              `
+            : nothing
+        }
+      </div>
+    `;
+  }
+
+  private renderLiveRegion() {
+    return html`<div class="live-region" aria-live="polite" role="status">
+      ${this.liveAnnouncement}
+    </div>`;
+  }
+
+  private renderJumpPill() {
+    if (!this.scrollable || this.atBottom) return nothing;
+    return html`
+      <sl-button
+        class="jump-latest"
+        size="small"
+        variant="neutral"
+        data-testid="jump-latest"
+        @click=${() => this.scrollToLatest()}
+      >
+        <sl-icon slot="prefix" name="arrow-down"></sl-icon>
+        Jump to latest
+      </sl-button>
+    `;
+  }
+
   render() {
     if (this.loading && !this.events.length && !this.activity.length) {
       return html`
@@ -538,11 +748,13 @@ ${
     }
 
     const { items, stats } = this.conversation;
-    if (!items.length) {
-      return html`<div class="empty">${this.emptyText}</div>`;
+    if (!items.length && !this.pending.length) {
+      return html`${this.renderLiveRegion()}
+        <div class="empty">${this.emptyText}</div>`;
     }
 
     return html`
+      ${this.renderLiveRegion()}${this.renderJumpPill()}
       <div class="thread">
         ${
           this.hasMoreEvents
@@ -585,6 +797,11 @@ ${
           items,
           (item) => item.key,
           (item) => this.renderItem(item)
+        )}
+        ${repeat(
+          this.pending,
+          (message) => message.id,
+          (message) => this.renderPending(message)
         )}
       </div>
     `;

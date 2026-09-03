@@ -373,6 +373,8 @@ class WebSocketManager:
             return None
         if message_type.startswith("approval_"):
             return "approvals"
+        if message_type.startswith("runner_"):
+            return "runners"
         if message_type == "activity_update":
             return "activity"
         if message_type in {

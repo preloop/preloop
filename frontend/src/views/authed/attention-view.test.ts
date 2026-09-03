@@ -1,7 +1,8 @@
-import { expect, fixture, html, waitUntil } from '@open-wc/testing';
+import { aTimeout, expect, fixture, html, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import { invalidateApiCaches } from '../../api';
+import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import '../../components/view-header.ts';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import './attention-view';
@@ -18,6 +19,9 @@ describe('AttentionView', () => {
   let dismissalsSupported = true;
   let rejectPolicies = false;
   let permissions: string[] | null = null;
+  let agentsResponse: any[];
+  let usageByModel: any[];
+  let agentDeletes: string[];
   let dismissalWrites: { url: string; method: string; body: any }[];
 
   const json = (data: unknown) =>
@@ -34,6 +38,9 @@ describe('AttentionView', () => {
     permissions = null;
     dismissalsResponse = [];
     dismissalWrites = [];
+    agentsResponse = [];
+    usageByModel = [];
+    agentDeletes = [];
     window.location.hash = '';
 
     approvalsResponse = [
@@ -115,7 +122,11 @@ describe('AttentionView', () => {
             : json(policiesResponse);
         }
         if (url.startsWith('/api/v1/agents')) {
-          return json({ items: [], total: 0 });
+          if ((init?.method || 'GET').toUpperCase() === 'DELETE') {
+            agentDeletes.push(url);
+            return json({ message: 'removed' });
+          }
+          return json({ items: agentsResponse, total: agentsResponse.length });
         }
         if (url.startsWith('/api/v1/runtime-sessions')) {
           return json({ items: [], total: 0 });
@@ -135,7 +146,11 @@ describe('AttentionView', () => {
             },
             estimated_cost: 0,
             requests_by_day: [],
-            usage_by_model: [],
+            price_catalog: {
+              fetched_at: new Date().toISOString(),
+              model_count: 120,
+            },
+            usage_by_model: usageByModel,
             usage_by_flow: [],
             usage_by_session: [],
           });
@@ -347,6 +362,57 @@ describe('AttentionView', () => {
     expect(row.querySelector('.row-evidence')).to.not.exist;
   });
 
+  it('says what each failed run was about, linked to it (wave 4)', async () => {
+    executionsResponse = [
+      {
+        id: 'execution-1',
+        flow_id: 'flow-1',
+        flow_name: 'PR Reviewer',
+        status: 'FAILED',
+        start_time: new Date(Date.now() - 3_600_000).toISOString(),
+        end_time: new Date(Date.now() - 3_500_000).toISOString(),
+        error_message: 'Failed to start agent Job: (409) Conflict',
+        trigger_subject: 'spacecode/preloop-ios !17 · Merge Request Updated',
+        trigger_subject_url:
+          'https://gitlab.com/spacecode/preloop-ios/-/merge_requests/17',
+      },
+      {
+        id: 'execution-2',
+        flow_id: 'flow-1',
+        flow_name: 'PR Reviewer',
+        status: 'FAILED',
+        start_time: new Date(Date.now() - 7_200_000).toISOString(),
+        error_message: 'Failed to start agent Job: (409) Conflict',
+      },
+    ];
+    const el = await mount();
+
+    const evidence = el.shadowRoot!.querySelector('#flows .row-evidence')!;
+    const headers = Array.from(evidence.querySelectorAll('th')).map((th) =>
+      (th.textContent || '').trim()
+    );
+    // Subject leads: two failures of one flow differ by what they ran on.
+    expect(headers.slice(0, 3)).to.eql(['Subject', 'Started', 'Duration']);
+
+    const rows = Array.from(evidence.querySelectorAll('tbody tr'));
+    const first = rows[0].querySelector('.subject-cell')!;
+    const link = first.querySelector('a')!;
+    expect(link.textContent).to.contain('spacecode/preloop-ios !17');
+    expect(link.getAttribute('href')).to.equal(
+      'https://gitlab.com/spacecode/preloop-ios/-/merge_requests/17'
+    );
+    expect(link.getAttribute('target')).to.equal('_blank');
+
+    // A run with no derivable subject still gets a handle, in meta register.
+    const second = rows[1].querySelector('.subject-cell')!;
+    expect(second.textContent!.trim()).to.equal('executio');
+    expect(
+      second
+        .querySelector('.execution-subject')!
+        .classList.contains('is-fallback')
+    ).to.be.true;
+  });
+
   it('dismisses a row with a reason and lists it under Dismissed', async () => {
     const el = await mount();
 
@@ -484,6 +550,68 @@ describe('AttentionView', () => {
     window.location.hash = '';
   });
 
+  // A custom agent is not something the CLI can find on a machine, so the
+  // row offers the two things its owner can actually do.
+  it('offers Remove instead of an onboard command for a custom agent', async () => {
+    permissions = ['view_flows', 'manage_agents'];
+    agentsResponse = [
+      {
+        id: 'agent-7',
+        display_name: 'Researcher',
+        agent_kind: 'custom',
+        lifecycle_state: 'active',
+        onboarding_state: 'incomplete',
+        live_validation_status: 'passed',
+        total_requests: 0,
+        last_seen_at: new Date(Date.now() - 3_600_000).toISOString(),
+      },
+    ];
+    const el = await mount();
+
+    const agents = el.shadowRoot!.querySelector('#agents')!;
+    expect(agents.textContent).to.contain('Custom agents are started by you.');
+    expect(agents.querySelector('.evidence-command')).to.not.exist;
+
+    const remove = agents.querySelector(
+      '[data-testid="remove-agent"]'
+    ) as HTMLElement;
+    expect(remove).to.exist;
+    remove.click();
+    await aTimeout(0);
+
+    const dialog = document.body.querySelector('confirm-dialog')!;
+    await (dialog as any).updateComplete;
+    const confirm = Array.from(
+      dialog.shadowRoot!.querySelectorAll('sl-button')
+    ).find((button) => button.textContent!.trim() === 'Remove agent')!;
+    (confirm as HTMLElement).click();
+    await waitUntil(() => agentDeletes.length > 0, 'agent removal requested');
+
+    expect(agentDeletes[0]).to.equal('/api/v1/agents/agent-7');
+    resetConfirmDialogForTests();
+  });
+
+  it('keeps the onboard command for a CLI agent', async () => {
+    permissions = ['view_flows', 'manage_agents'];
+    agentsResponse = [
+      {
+        id: 'agent-8',
+        display_name: 'Claude Code',
+        agent_kind: 'claude_code',
+        lifecycle_state: 'active',
+        onboarding_state: 'incomplete',
+        live_validation_status: 'passed',
+        total_requests: 0,
+        last_seen_at: new Date(Date.now() - 3_600_000).toISOString(),
+      },
+    ];
+    const el = await mount();
+
+    const agents = el.shadowRoot!.querySelector('#agents')!;
+    expect(agents.textContent).to.contain('preloop agents onboard');
+    expect(agents.querySelector('[data-testid="remove-agent"]')).to.not.exist;
+  });
+
   it('shows an all-clear card when nothing needs attention', async () => {
     approvalsResponse = [];
     executionsResponse = [];
@@ -492,5 +620,81 @@ describe('AttentionView', () => {
     const el = await mount();
     expect(text(el)).to.contain('Nothing needs you right now.');
     expect(el.shadowRoot!.querySelector('sl-card[id]')).to.not.exist;
+  });
+
+  // Wave 8: a $0 price is a question with one sensible answer, so the row
+  // offers that answer directly instead of a menu.
+  it('dismisses a zero-priced model in one click', async () => {
+    permissions = ['manage_agents'];
+    usageByModel = [
+      {
+        ai_model_id: 'model-2',
+        model_alias: 'local/qwen-3-coder',
+        provider_name: 'ollama',
+        request_count: 12,
+        token_usage: {
+          prompt_tokens: 4,
+          completion_tokens: 4,
+          total_tokens: 40,
+        },
+        estimated_cost: 0,
+        unpriced_request_count: 0,
+        zero_priced_request_count: 12,
+        last_request_at: new Date(Date.now() - 60_000).toISOString(),
+      },
+    ];
+    const el = await mount();
+
+    const row = el.shadowRoot!.querySelector(
+      '[data-item-id="pricing:zero-priced"]'
+    ) as HTMLElement;
+    expect(row, 'zero-priced row').to.exist;
+    expect(row.textContent!.replace(/\s+/g, ' ')).to.contain(
+      '1 model priced at $0'
+    );
+    expect(row.querySelector('.severity-dot')!.classList.contains('low')).to.be
+      .true;
+    expect(row.querySelector('sl-dropdown'), 'no dismiss menu').to.not.exist;
+
+    const quick = row.querySelector(
+      '[data-testid="quick-dismiss"]'
+    ) as HTMLElement;
+    expect(quick.textContent!.trim()).to.equal('Expected');
+    quick.click();
+    await waitUntil(() => dismissalWrites.length > 0, 'dismissal written');
+
+    expect(dismissalWrites[0].method).to.equal('PUT');
+    expect(dismissalWrites[0].url).to.contain('pricing%3Azero-priced');
+    expect(dismissalWrites[0].body.reason).to.equal('expected');
+  });
+
+  it('links a zero-priced model to its pricing editor', async () => {
+    usageByModel = [
+      {
+        ai_model_id: 'model-2',
+        model_alias: 'local/qwen-3-coder',
+        provider_name: 'ollama',
+        request_count: 12,
+        token_usage: {
+          prompt_tokens: 4,
+          completion_tokens: 4,
+          total_tokens: 40,
+        },
+        estimated_cost: 0,
+        unpriced_request_count: 0,
+        zero_priced_request_count: 12,
+        last_request_at: new Date(Date.now() - 60_000).toISOString(),
+      },
+    ];
+    const el = await mount();
+
+    const row = el.shadowRoot!.querySelector(
+      '[data-item-id="pricing:zero-priced"]'
+    ) as HTMLElement;
+    const link = row.querySelector(
+      'a[href="/console/ai-models/model-2?pricing=edit"]'
+    ) as HTMLAnchorElement;
+    expect(link, 'edit price link').to.exist;
+    expect(link.textContent!.trim()).to.equal('Edit price');
   });
 });

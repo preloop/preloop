@@ -43,8 +43,14 @@ describe('DashboardView', () => {
   let aiModelsResponse: any[];
   let usersResponse: any;
   let budgetPoliciesResponse: any[];
+  /** Set by a test that wants to hold the secondary pass open. */
+  let aiModelsGate: Promise<void> | null;
+  /** null means RBAC is off, so every permission check passes. */
+  let mePermissions: string[] | null;
 
   beforeEach(() => {
+    aiModelsGate = null;
+    mePermissions = null;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
@@ -278,14 +284,17 @@ describe('DashboardView', () => {
       },
     ];
     flowsResponse = [{ id: 'flow-1', name: 'Refund Assistant' }];
+    // Relative, not a fixed date: the Inventory Flows tab counts the runs the
+    // page range contains, so a run pinned to a calendar day leaves the range
+    // as soon as the clock moves past it.
     flowExecutionsResponse = [
       {
         id: 'execution-1',
         flow_id: 'flow-1',
         flow_name: 'Refund Assistant',
         status: 'FAILED',
-        start_time: '2026-03-07T10:00:00Z',
-        end_time: '2026-03-07T10:03:00Z',
+        start_time: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+        end_time: new Date(Date.now() - 2 * 3600 * 1000 + 180000).toISOString(),
         error_message: 'Provider timeout',
       },
     ];
@@ -422,7 +431,7 @@ describe('DashboardView', () => {
             email: 'tester@example.com',
             email_verified: true,
             is_superuser: false,
-            permissions: null,
+            permissions: mePermissions,
           });
         }
 
@@ -455,6 +464,7 @@ describe('DashboardView', () => {
         }
 
         if (url === '/api/v1/ai-models') {
+          if (aiModelsGate) await aiModelsGate;
           return json(aiModelsResponse);
         }
 
@@ -503,9 +513,10 @@ describe('DashboardView', () => {
 
     const header = element.shadowRoot?.querySelector('view-header');
     expect(header?.getAttribute('headerText')).to.equal('Overview');
-    expect(element.shadowRoot?.textContent).to.contain(
-      'Recent Flow Executions'
-    );
+    // Both boxes own their shadow roots, so the page holds the elements and
+    // their own tests hold their contents.
+    expect(element.shadowRoot?.querySelector('inventory-card')).to.exist;
+    expect(element.shadowRoot?.querySelector('activity-feed')).to.exist;
     expect(element.shadowRoot?.textContent).to.contain('Audit exceptions');
     expect(element.shadowRoot?.textContent).to.contain('need attention');
   });
@@ -515,7 +526,7 @@ describe('DashboardView', () => {
     await waitUntil(
       () =>
         !element['loading'] &&
-        !element['fetchingActiveAgents'] &&
+        !element['fetchingAgents'] &&
         !element['fetchingBudget'] &&
         !element['fetchingAudit'] &&
         !element['fetchingMCPAndTools'],
@@ -523,7 +534,8 @@ describe('DashboardView', () => {
     );
 
     expect(connectStub).to.have.been.calledOnce;
-    expect(subscribeStub.callCount).to.equal(8);
+    // Eight for the page's own refresh, seven for the Activity feed's topics.
+    expect(subscribeStub.callCount).to.equal(15);
 
     const urls = fetchStub.getCalls().map((call) => String(call.args[0]));
     expect(
@@ -553,7 +565,9 @@ describe('DashboardView', () => {
     expect(urls).to.include('/api/v1/mcp-servers');
     expect(urls).to.include('/api/v1/tools');
     expect(urls).to.include('/api/v1/flows');
-    expect(urls).to.include('/api/v1/flows/executions?limit=10');
+    // Raised from 10 in wave 6: the Inventory Flows tab counts runs and
+    // failures per flow across the range, not the last five runs.
+    expect(urls).to.include('/api/v1/flows/executions?limit=100');
     expect(urls.some((url) => url.startsWith('/api/v1/approval-requests'))).to
       .be.true;
 
@@ -561,112 +575,6 @@ describe('DashboardView', () => {
     expect(updatedAt?.textContent || '').to.match(/Updated (just now|\d)/);
     expect(updatedAt?.textContent || '').to.not.contain('Never');
     expect(updatedAt?.textContent || '').to.not.contain('Loading');
-
-    // Rows are never tinted by state (wave 3): the status pill is the only
-    // red on the card.
-    expect(element.shadowRoot?.querySelector('.item-card')).to.exist;
-    expect(element.shadowRoot?.querySelector('.item-card.failed-execution')).to
-      .not.exist;
-    expect(element.shadowRoot?.querySelector('.item-card.danger')).to.not.exist;
-  });
-
-  describe('Recent Flow Executions failed row (#174)', () => {
-    // A real failing run: a git clone error long enough to overflow the row.
-    // The URL has no break opportunity, which is what actually broke the
-    // layout: it set the min-content width of the flex column.
-    const LONG_ERROR =
-      'Git clone failed! Could not clone repository ' +
-      'https://github.com/example_org/mender_mcu_firmware_integration_service_repository_mirror.git ' +
-      'into /workspace/src: authentication failed';
-
-    async function mountWithFailedExecution(width: string) {
-      flowExecutionsResponse = [
-        {
-          id: 'execution-failed',
-          flow_id: 'flow-1',
-          flow_name: 'Security Vulnerability Scanner',
-          status: 'FAILED',
-          start_time: '2026-08-04T14:37:00Z',
-          end_time: '2026-08-04T14:38:00Z',
-          error_message: LONG_ERROR,
-        },
-      ];
-
-      const element = await mountDashboard();
-      // Constrain to the main column width the card gets beside the sidebar.
-      element.style.display = 'block';
-      element.style.width = width;
-      await waitUntil(
-        () => !element['loading'],
-        'dashboard did not finish loading'
-      );
-      await element.updateComplete;
-      return element;
-    }
-
-    it('does not let the error text overflow the row horizontally', async () => {
-      const element = await mountWithFailedExecution('520px');
-      const row = element.shadowRoot?.querySelector(
-        '.item-card'
-      ) as HTMLElement;
-      const error = row.querySelector('.item-error') as HTMLElement;
-
-      expect(error).to.exist;
-      // The message is clipped to one ellipsised line (wave 3), so the box
-      // itself must stay inside the row: a wider box is text on the loose.
-      expect(getComputedStyle(error).overflow).to.equal('hidden');
-      expect(
-        error.getBoundingClientRect().right,
-        'error text is wider than its container'
-      ).to.be.at.most(row.getBoundingClientRect().right + 1);
-    });
-
-    it('keeps the row after a reload, with no dismiss control', async () => {
-      const element = await mountWithFailedExecution('520px');
-
-      expect(element.shadowRoot?.querySelector('sl-icon-button.item-dismiss'))
-        .to.not.exist;
-      expect(
-        element.shadowRoot?.querySelector('.item-card'),
-        'failed execution row'
-      ).to.exist;
-      expect(localStorage.getItem('dashboard_dismissed_executions')).to.be.null;
-    });
-
-    it('puts the red in the status pill and nowhere else', async () => {
-      const element = await mountWithFailedExecution('520px');
-      const row = element.shadowRoot?.querySelector(
-        '.item-card'
-      ) as HTMLElement;
-
-      // The row itself: no tint, no red rule.
-      const rowStyle = getComputedStyle(row);
-      expect(isReddish(rowStyle.backgroundColor), 'row background is red').to.be
-        .false;
-      expect(isReddish(rowStyle.borderLeftColor), 'row rule is red').to.be
-        .false;
-
-      // The error line: neutral, 13px, one line with the full text in title.
-      const error = row.querySelector('.item-error') as HTMLElement;
-      const errorStyle = getComputedStyle(error);
-      expect(isReddish(errorStyle.color), 'error text is red').to.be.false;
-      expect(errorStyle.fontSize).to.equal('13px');
-      expect(errorStyle.whiteSpace).to.equal('nowrap');
-      expect(errorStyle.textOverflow).to.equal('ellipsis');
-      expect(error.getAttribute('title')).to.equal(LONG_ERROR);
-
-      // The pill keeps danger; the header count does not.
-      const pill = row.querySelector('sl-badge.chip') as HTMLElement;
-      expect(pill.getAttribute('variant')).to.equal('danger');
-      const executionsHeader = [
-        ...(element.shadowRoot?.querySelectorAll('.chart-header') || []),
-      ].find((header) =>
-        (header.textContent || '').includes('Recent Flow Executions')
-      );
-      const headerChip = executionsHeader?.querySelector('sl-badge.chip');
-      expect(headerChip, 'header count chip').to.exist;
-      expect(headerChip?.getAttribute('variant')).to.equal('neutral');
-    });
   });
 
   it('hides exception cards when there is nothing actionable to show', async () => {
@@ -699,7 +607,7 @@ describe('DashboardView', () => {
     await waitUntil(
       () =>
         !element['loading'] &&
-        !element['fetchingActiveAgents'] &&
+        !element['fetchingAgents'] &&
         !element['fetchingBudget'] &&
         !element['fetchingAudit'] &&
         !element['fetchingMCPAndTools'],
@@ -757,7 +665,7 @@ describe('DashboardView', () => {
     await waitUntil(
       () =>
         !element['loading'] &&
-        !element['fetchingActiveAgents'] &&
+        !element['fetchingAgents'] &&
         !element['fetchingBudget'] &&
         !element['fetchingAudit'] &&
         !element['fetchingMCPAndTools'],
@@ -773,55 +681,35 @@ describe('DashboardView', () => {
     expect(usageContent).to.contain('Cost details');
   });
 
-  it('renders exactly the five hero metrics with no expand toggle', async () => {
-    const element = await mountDashboard();
-    await waitUntil(
-      () =>
-        !element['loading'] &&
-        !element['fetchingActiveAgents'] &&
-        !element['fetchingBudget'] &&
-        !element['fetchingAudit'] &&
-        !element['fetchingMCPAndTools'],
-      'dashboard did not finish loading'
-    );
-    await element.updateComplete;
-
-    const heroStats = element.shadowRoot?.querySelector('.hero-stats');
-    expect(heroStats).to.exist;
-    const metricText = heroStats?.textContent || '';
-    ['agents', 'flows', 'models', 'tools', 'need attention'].forEach((label) =>
-      expect(metricText).to.contain(label)
-    );
-
-    const metricLinks = heroStats?.querySelectorAll('a.hero-stat') || [];
-    expect(metricLinks.length).to.equal(5);
-    expect(metricLinks[4].getAttribute('href')).to.equal('/console/attention');
-
-    [
-      'approved requests',
-      'inactive agents',
-      'flow executions',
-      'model requests',
-      'tool calls',
-      'declined requests',
-      'total runtime sessions',
-      'failed executions',
-      'failed requests',
-      'failed tool calls',
-      'timed out approval requests',
-      'total tokens',
-      'flow execution success rate',
-      'model request success rate',
-      'tool call success rate',
-      'approval rate',
-    ].forEach((label) => expect(metricText).to.not.contain(label));
-
-    const toggle = Array.from(
-      element.shadowRoot?.querySelectorAll('sl-button') || []
-    ).find((button) => button.textContent?.includes('Show more metrics'));
-    expect(toggle).to.not.exist;
-    expect(localStorage.getItem('preloop_dashboard_metrics_expanded')).to.be
-      .null;
+  /** A usage summary whose only oddity is a model that costs nothing. */
+  const zeroPricedSummary = (): any => ({
+    total_requests: 12,
+    successful_requests: 12,
+    failed_requests: 0,
+    token_usage: { prompt_tokens: 4, completion_tokens: 4, total_tokens: 40 },
+    estimated_cost: 0,
+    unpriced_requests: 0,
+    requests_by_day: [],
+    price_catalog: { fetched_at: new Date().toISOString(), model_count: 120 },
+    usage_by_model: [
+      {
+        ai_model_id: 'model-2',
+        model_alias: 'local/qwen-3-coder',
+        provider_name: 'ollama',
+        request_count: 12,
+        token_usage: {
+          prompt_tokens: 4,
+          completion_tokens: 4,
+          total_tokens: 40,
+        },
+        estimated_cost: 0,
+        unpriced_request_count: 0,
+        zero_priced_request_count: 12,
+        last_request_at: new Date(Date.now() - 60_000).toISOString(),
+      },
+    ],
+    usage_by_flow: [],
+    usage_by_session: [],
   });
 
   it('surfaces pending approvals in the attention strip', async () => {
@@ -900,6 +788,70 @@ describe('DashboardView', () => {
     );
   });
 
+  // Wave 8: a model priced at $0 is a question. It never takes a slot from
+  // something that is actually wrong.
+  it('keeps zero-priced models out of the strip while warnings are open', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
+      'dashboard did not finish loading'
+    );
+    element['attentionInputs'] = {
+      approvals: [
+        {
+          id: 'approval-1',
+          tool_name: 'refund_order',
+          status: 'pending',
+          requested_at: new Date(Date.now() - 60_000).toISOString(),
+        },
+      ],
+      usageSummary: zeroPricedSummary(),
+    } as any;
+    await element.updateComplete;
+
+    const strip = element.shadowRoot?.querySelector(
+      '.attention-strip'
+    ) as HTMLElement;
+    expect(strip.classList.contains('low-only')).to.be.false;
+    expect(strip.textContent).to.contain('need attention');
+    expect(strip.textContent).to.not.contain('priced at $0');
+    // The count is what the strip shows, not what the page derived.
+    expect(strip.textContent!.replace(/\s+/g, ' ')).to.contain(
+      '1 need attention'
+    );
+  });
+
+  it('shows a zero-priced model on its own, without the amber tone', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'],
+      'dashboard did not finish loading'
+    );
+    element['attentionInputs'] = {
+      usageSummary: zeroPricedSummary(),
+    } as any;
+    await element.updateComplete;
+
+    const strip = element.shadowRoot?.querySelector(
+      '.attention-strip'
+    ) as HTMLElement;
+    expect(strip, 'the attention strip').to.exist;
+    expect(strip.classList.contains('low-only')).to.be.true;
+    expect(strip.textContent).to.contain('worth a look');
+    expect(strip.textContent).to.contain('1 model priced at $0');
+    expect(strip.querySelector('sl-badge')?.getAttribute('variant')).to.equal(
+      'neutral'
+    );
+  });
+
   it('hides the attention strip when nothing needs attention', async () => {
     const element = await mountDashboard();
     await waitUntil(
@@ -919,15 +871,9 @@ describe('DashboardView', () => {
       'nothing needs attention'
     ).to.equal(0);
     expect(element.shadowRoot?.querySelector('.attention-strip')).to.not.exist;
-
-    // The hero stat still states the fact, in green.
-    const attentionStat = element.shadowRoot?.querySelector(
-      'a.hero-stat[href="/console/attention"]'
-    );
-    expect(attentionStat?.classList.contains('tone-success')).to.be.true;
-    expect(
-      attentionStat?.querySelector('.hero-stat-value')?.textContent?.trim()
-    ).to.equal('0');
+    // Wave 6: at zero the page is simply quiet. There is no counter left to
+    // state the fact, and the strip is the only thing that ever did.
+    expect(element.shadowRoot?.textContent).to.not.contain('need attention');
   });
 
   it('shows Updated beside the page title, and Manage keys in the gateway header', async () => {
@@ -948,155 +894,13 @@ describe('DashboardView', () => {
     expect(manageKeys?.textContent?.trim()).to.equal('Manage keys');
   });
 
-  it('skips zero-request runtime sessions and displays ids instead of config paths', async () => {
-    runtimeSessionsResponse = {
-      ...runtimeSessionsResponse,
-      items: [
-        ...runtimeSessionsResponse.items,
-        {
-          ...runtimeSessionsResponse.items[0],
-          id: 'runtime-session-empty',
-          session_reference: '/Users/dimo/.openclaw/openclaw.json',
-          total_requests: 0,
-          successful_requests: 0,
-          failed_requests: 0,
-          estimated_cost: 0,
-          last_request_at: null,
-        },
-      ],
-    };
-
-    const element = await mountDashboard();
-    await waitUntil(
-      () =>
-        !element['loading'] &&
-        !element['fetchingActiveAgents'] &&
-        !element['fetchingBudget'] &&
-        !element['fetchingAudit'] &&
-        !element['fetchingMCPAndTools'],
-      'dashboard did not finish loading'
-    );
-    await element.updateComplete;
-
-    element['expandedOverviewGroups'] = new Set(['active-agent:agent-1']);
-    await element.updateComplete;
-
-    const content = element.shadowRoot?.textContent || '';
-    expect(content).to.contain('Ops Agent');
-    expect(content).to.contain('8 req');
-    expect(content).to.not.contain('/Users/dimo/.openclaw/openclaw.json');
-  });
-
-  it('attributes top model usage to agents and flows instead of generic sessions', async () => {
-    gatewaySummaryResponse = {
-      ...gatewaySummaryResponse,
-      usage_by_session: [
-        ...gatewaySummaryResponse.usage_by_session,
-        {
-          runtime_session_id: 'flow-runtime-session-1',
-          session_source_type: 'flow_execution',
-          session_source_id: 'execution-1',
-          flow_execution_id: 'execution-1',
-          flow_id: 'flow-1',
-          flow_name: 'Refund Assistant',
-          session_reference: 'flow-session-ref',
-          model_alias: 'gpt-5.4',
-          provider_name: 'openai',
-          request_count: 2,
-          token_usage: {
-            prompt_tokens: 10,
-            completion_tokens: 5,
-            total_tokens: 15,
-          },
-          estimated_cost: 1.2,
-          last_request_at: '2026-03-07T10:00:00Z',
-        },
-      ],
-    };
-
-    const element = await mountDashboard();
-    await waitUntil(
-      () =>
-        !element['loading'] &&
-        !element['fetchingActiveAgents'] &&
-        !element['fetchingBudget'] &&
-        !element['fetchingAudit'] &&
-        !element['fetchingMCPAndTools'],
-      'dashboard did not finish loading'
-    );
-    await element.updateComplete;
-
-    const content = element.shadowRoot?.textContent || '';
-    expect(content).to.contain('Ops Agent');
-    expect(content).to.contain('Refund Assistant');
-    expect(content).to.not.contain('flow-session-ref');
-  });
-
-  it('links flow-backed top model sessions to flow execution pages', async () => {
-    gatewaySummaryResponse = {
-      ...gatewaySummaryResponse,
-      usage_by_session: [
-        {
-          runtime_session_id: 'flow-runtime-session-1',
-          session_source_type: 'flow_execution',
-          session_source_id: 'execution-1',
-          flow_execution_id: 'execution-1',
-          flow_id: 'flow-1',
-          flow_name: 'Pull Request Reviewer',
-          title: 'PR #42 review',
-          model_alias: 'gpt-5.4',
-          provider_name: 'openai',
-          ai_model_id: 'model-1',
-          request_count: 2,
-          token_usage: {
-            prompt_tokens: 10,
-            completion_tokens: 5,
-            total_tokens: 15,
-          },
-          estimated_cost: 1.2,
-          last_request_at: '2026-03-07T10:00:00Z',
-        },
-      ],
-    };
-
-    const element = await mountDashboard();
-    await waitUntil(
-      () =>
-        !element['loading'] &&
-        !element['fetchingActiveAgents'] &&
-        !element['fetchingBudget'] &&
-        !element['fetchingAudit'] &&
-        !element['fetchingMCPAndTools'],
-      'dashboard did not finish loading'
-    );
-    await element.updateComplete;
-
-    element['expandedOverviewGroups'] = new Set([
-      'top-model:model-1-gpt-5.4-openai:flow:flow-1',
-    ]);
-    await element.updateComplete;
-
-    const flowLink = element.shadowRoot?.querySelector(
-      'a[href="/console/flows/flow-1"]'
-    );
-    const executionLink = element.shadowRoot?.querySelector(
-      'a[href="/console/flows/executions/execution-1"]'
-    );
-
-    expect(flowLink).to.exist;
-    expect(executionLink).to.exist;
-    expect(element.shadowRoot?.textContent || '').to.contain(
-      'Pull Request Reviewer'
-    );
-    expect(element.shadowRoot?.textContent || '').to.contain('PR #42 review');
-  });
   describe('wave 2 Overview', () => {
     async function mountLoaded(): Promise<DashboardView> {
       const element = await mountDashboard();
       await waitUntil(
         () =>
           !element['loading'] &&
-          !element['fetchingActiveAgents'] &&
+          !element['fetchingAgents'] &&
           !element['fetchingBudget'] &&
           !element['fetchingAudit'] &&
           !element['fetchingMCPAndTools'],
@@ -1105,54 +909,6 @@ describe('DashboardView', () => {
       await element.updateComplete;
       return element;
     }
-
-    it('states the five counts in a single 64px row', async () => {
-      const element = await mountLoaded();
-
-      const row = element.shadowRoot?.querySelector(
-        '.hero-stats'
-      ) as HTMLElement;
-      expect(row, 'the hero row').to.exist;
-      // It used to be about 200px: a fifth of the window for five numbers.
-      expect(row.offsetHeight, 'hero row height').to.be.at.most(96);
-
-      expect(getComputedStyle(row).flexDirection, 'stats read across').to.equal(
-        'row'
-      );
-
-      const stats = row.querySelectorAll('a.hero-stat');
-      expect(stats.length).to.equal(5);
-      const stat = stats[0] as HTMLElement;
-      expect(stat.offsetHeight, 'one stat').to.be.at.most(64);
-
-      const value = stat.querySelector('.hero-stat-value') as HTMLElement;
-      const valueStyles = getComputedStyle(value);
-      expect(valueStyles.fontSize).to.equal('22px');
-      expect(valueStyles.fontWeight).to.equal('600');
-      expect(valueStyles.fontVariantNumeric).to.contain('tabular-nums');
-
-      // Label under the number, in the meta register.
-      const label = stat.querySelector('.hero-stat-label') as HTMLElement;
-      expect(getComputedStyle(label).fontSize).to.equal('13px');
-      expect(label.getBoundingClientRect().top).to.be.greaterThan(
-        value.getBoundingClientRect().top
-      );
-
-      const icon = stat.querySelector('sl-icon') as HTMLElement;
-      expect(getComputedStyle(icon).fontSize).to.equal('18px');
-    });
-
-    it('colours the attention stat amber and marks it with a triangle when items exist', async () => {
-      const element = await mountLoaded();
-
-      const stat = element.shadowRoot?.querySelector(
-        'a.hero-stat[href="/console/attention"]'
-      ) as HTMLElement;
-      expect(stat.classList.contains('tone-warning')).to.be.true;
-      expect(stat.querySelector('sl-icon')?.getAttribute('name')).to.equal(
-        'exclamation-triangle'
-      );
-    });
 
     it('shows both endpoints without a disclosure', async () => {
       const element = await mountLoaded();
@@ -1235,32 +991,6 @@ describe('DashboardView', () => {
       );
     });
 
-    it('moves the five counts out of the card and under the page title', async () => {
-      const element = await mountLoaded();
-
-      const strip = element.shadowRoot?.querySelector(
-        '.hero-stats.stat-strip'
-      ) as HTMLElement;
-      expect(strip, 'the stat strip').to.exist;
-      expect(strip.querySelectorAll('a.hero-stat').length).to.equal(5);
-      expect(element.shadowRoot?.querySelector('.gateway-card .hero-stats')).to
-        .not.exist;
-      // Borderless: the strip is a line of numbers under the title, not a
-      // card. (The hairline under it is a token the test environment does not
-      // load, so it is checked in the screenshots.)
-      const styles = getComputedStyle(strip);
-      expect(styles.borderTopWidth).to.equal('0px');
-      expect(styles.borderLeftWidth).to.equal('0px');
-
-      // And it sits above the first card in the main column.
-      const card = element.shadowRoot?.querySelector(
-        '.gateway-card'
-      ) as HTMLElement;
-      expect(strip.getBoundingClientRect().top).to.be.lessThan(
-        card.getBoundingClientRect().top
-      );
-    });
-
     it('replaces the plane rows with one onboarding line on a new instance', async () => {
       agentsResponse = { ...agentsResponse, total: 0, items: [] };
       const element = await mountLoaded();
@@ -1303,6 +1033,91 @@ describe('DashboardView', () => {
       );
     });
 
+    // Wave 8: spend reaches a person through the agents they own, which is
+    // the only link the gateway records between a request and a human.
+    it("attributes an owned agent's tokens and spend to its owner", async () => {
+      agentsResponse = {
+        ...agentsResponse,
+        items: agentsResponse.items.map((agent: any) => ({
+          ...agent,
+          owner_user_id: 'user-1',
+          owner_username: 'ada',
+        })),
+      };
+      const element = await mountLoaded();
+      element['accountUsers'] = [
+        {
+          id: 'user-1',
+          username: 'ada',
+          full_name: 'Ada Lovelace',
+          is_active: true,
+          last_login: '2026-03-07T09:00:00Z',
+          roles: [{ name: 'Admin' }],
+        },
+        {
+          id: 'user-2',
+          username: 'grace',
+          full_name: null,
+          is_active: true,
+          last_login: null,
+          roles: [],
+        },
+      ] as any;
+      await element.updateComplete;
+
+      const rows = element['inventoryUserRows'];
+      expect(rows.map((row: any) => row.name)).to.eql([
+        'Ada Lovelace',
+        'grace',
+      ]);
+      expect(rows[0].role).to.equal('Admin');
+      expect(rows[0].agentsOwned).to.equal(1);
+      expect(rows[0].tokens).to.equal(15);
+      expect(rows[0].cost).to.equal(4.2);
+      // Nobody's agent, nobody's spend: a zero here is true, not missing.
+      expect(rows[1].agentsOwned).to.equal(0);
+      expect(rows[1].cost).to.equal(0);
+    });
+
+    it('shows the Users tab only where user management is on', async () => {
+      const element = await mountLoaded();
+      const inventory = element.shadowRoot!.querySelector('inventory-card')!;
+      expect((inventory as any).showUsers).to.be.false;
+
+      element['userManagementEnabled'] = true;
+      await element.updateComplete;
+      await (inventory as any).updateComplete;
+      expect((inventory as any).showUsers).to.be.true;
+    });
+
+    // Wave 8: the tab is a list of people, and the API behind it answers only
+    // to view_users. Without that permission the tab would open on an error,
+    // so it is not offered at all.
+    it('hides the Users tab from a reader without view_users', async () => {
+      mePermissions = ['view_agents', 'view_flows'];
+      const element = await mountLoaded();
+      element['userManagementEnabled'] = true;
+      await element.updateComplete;
+      const inventory = element.shadowRoot!.querySelector('inventory-card')!;
+      await (inventory as any).updateComplete;
+      expect((inventory as any).showUsers).to.be.false;
+      expect(
+        [...inventory.shadowRoot!.querySelectorAll('sl-tab')].map((tab) =>
+          tab.getAttribute('panel')
+        )
+      ).to.not.contain('users');
+    });
+
+    it('shows the Users tab to a reader with view_users', async () => {
+      mePermissions = ['view_agents', 'view_users'];
+      const element = await mountLoaded();
+      element['userManagementEnabled'] = true;
+      await element.updateComplete;
+      const inventory = element.shadowRoot!.querySelector('inventory-card')!;
+      await (inventory as any).updateComplete;
+      expect((inventory as any).showUsers).to.be.true;
+    });
+
     it('hides next steps when every step is already done', async () => {
       const element = await mountLoaded();
 
@@ -1310,6 +1125,42 @@ describe('DashboardView', () => {
       expect(element['nextSteps'].every((step: any) => step.done)).to.be.true;
       expect(element.shadowRoot?.querySelector('.next-steps-card')).to.not
         .exist;
+    });
+
+    // Wave 8: the checklist reads four separate fetches. Before they land
+    // every step looks undone, so a finished account used to watch the card
+    // appear and vanish on every refresh.
+    it('does not flash next steps while the page is still loading', async () => {
+      localStorage.setItem('dashboard_next_steps_all_done', 'true');
+      const element = await mountDashboard();
+
+      // Mid-load: agents, policies and tools have not answered yet.
+      expect(element['loading'] || element['fetchingMCPAndTools']).to.be.true;
+      expect(
+        element.shadowRoot?.querySelector('.next-steps-card'),
+        'no card during loading'
+      ).to.not.exist;
+
+      await waitUntil(
+        () =>
+          !element['loading'] &&
+          !element['fetchingAgents'] &&
+          !element['fetchingBudget'] &&
+          !element['fetchingMCPAndTools'],
+        'dashboard did not finish loading'
+      );
+      await element.updateComplete;
+      expect(element.shadowRoot?.querySelector('.next-steps-card')).to.not
+        .exist;
+    });
+
+    it('remembers that the checklist is finished', async () => {
+      localStorage.removeItem('dashboard_next_steps_all_done');
+      await mountLoaded();
+
+      expect(localStorage.getItem('dashboard_next_steps_all_done')).to.equal(
+        'true'
+      );
     });
 
     it('lists the open steps for a new account, with the done ones ticked', async () => {
@@ -1390,6 +1241,353 @@ describe('DashboardView', () => {
 
       const usageCard = element.shadowRoot?.querySelector('usage-card') as any;
       expect(usageCard.priorSummary, 'prior summary reaches the card').to.exist;
+    });
+  });
+  describe('wave 6 Overview', () => {
+    async function mountLoaded(): Promise<DashboardView> {
+      const element = await mountDashboard();
+      await waitUntil(
+        () =>
+          !element['loading'] &&
+          !element['fetchingAgents'] &&
+          !element['fetchingBudget'] &&
+          !element['fetchingAudit'] &&
+          !element['fetchingMCPAndTools'],
+        'dashboard did not finish loading'
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    it('no longer renders the stat strip or the three folded cards', async () => {
+      const element = await mountLoaded();
+
+      expect(element.shadowRoot?.querySelector('.hero-stats')).to.not.exist;
+      expect(element.shadowRoot?.querySelector('.stat-strip')).to.not.exist;
+      const text = element.shadowRoot?.textContent || '';
+      expect(text).to.not.contain('Active agents');
+      expect(text).to.not.contain('Recent Flow Executions');
+      expect(text).to.not.contain('Top Models');
+      // The Active agents card had the page's second time range; there is
+      // one range on the Overview now, and it lives on the Usage card.
+      expect(
+        element.shadowRoot?.querySelectorAll('time-range-select').length
+      ).to.equal(0);
+    });
+
+    it('puts the Inventory under the Gateway card and the feed under Usage', async () => {
+      const element = await mountLoaded();
+
+      const inventory = element.shadowRoot?.querySelector(
+        'inventory-card'
+      ) as HTMLElement;
+      const feed = element.shadowRoot?.querySelector(
+        'activity-feed'
+      ) as HTMLElement;
+      const gateway = element.shadowRoot?.querySelector(
+        '.gateway-card'
+      ) as HTMLElement;
+      const usage = element.shadowRoot?.querySelector(
+        'usage-card'
+      ) as HTMLElement;
+
+      expect(inventory.closest('.main-column'), 'Inventory column').to.exist;
+      expect(feed.closest('.side-column'), 'Activity column').to.exist;
+      expect(gateway.getBoundingClientRect().top).to.be.lessThan(
+        inventory.getBoundingClientRect().top
+      );
+      expect(usage.getBoundingClientRect().top).to.be.lessThan(
+        feed.getBoundingClientRect().top
+      );
+    });
+
+    it('labels the tabs with the counts the strip used to carry', async () => {
+      const element = await mountLoaded();
+
+      const inventory = element.shadowRoot?.querySelector(
+        'inventory-card'
+      ) as any;
+      expect(inventory.agentsTotal).to.equal(1);
+      expect(inventory.flowsTotal).to.equal(1);
+      expect(inventory.modelsTotal).to.equal(1);
+      expect(inventory.toolsTotal).to.equal(2);
+      expect(inventory.rangeLabel).to.equal('30d');
+
+      const tabs = [
+        ...(inventory.shadowRoot?.querySelectorAll('sl-tab') || []),
+      ].map((tab: Element) =>
+        (tab.textContent || '').replace(/\s+/g, ' ').trim()
+      );
+      expect(tabs).to.eql(['Agents 1', 'Flows 1', 'Models 1', 'Tools 2']);
+    });
+
+    it('reads each tab from a fetch the page already made', async () => {
+      const element = await mountLoaded();
+
+      const agents = element['inventoryAgentRows'];
+      expect(agents[0].name).to.equal('Ops Agent');
+      // Range numbers, from the gateway breakdown, not the agent's lifetime.
+      expect(agents[0].requests).to.equal(8);
+      expect(agents[0].cost).to.equal(4.2);
+      expect(agents[0].modelAlias).to.equal('gpt-5.4');
+
+      const flows = element['inventoryFlowRows'];
+      expect(flows[0].name).to.equal('Refund Assistant');
+      expect(flows[0].runs).to.equal(1);
+      expect(flows[0].failed).to.equal(1);
+      expect(flows[0].lastRun.id).to.equal('execution-1');
+
+      const models = element['inventoryModelRows'];
+      expect(models[0].alias).to.equal('OpenAI GPT-5.4');
+      expect(models[0].provider).to.equal('openai');
+
+      const tools = element['inventoryToolRows'].map(
+        (row: { name: string; server: string }) => `${row.name} (${row.server})`
+      );
+      expect(tools).to.eql([
+        'verify_refund_eligibility (builtin)',
+        'refund_order (Example MCP Server)',
+      ]);
+    });
+
+    it('counts flow runs in the range the $ est. column already covers', async () => {
+      // Two runs of the same flow: one this morning, one last quarter. The
+      // spend column is range-scoped, so the run counts beside it must be.
+      flowExecutionsResponse = [
+        {
+          id: 'execution-1',
+          flow_id: 'flow-1',
+          flow_name: 'Refund Assistant',
+          status: 'FAILED',
+          start_time: new Date(Date.now() - 3600 * 1000).toISOString(),
+          end_time: null,
+          error_message: 'Provider timeout',
+        },
+        {
+          id: 'execution-old',
+          flow_id: 'flow-1',
+          flow_name: 'Refund Assistant',
+          status: 'FAILED',
+          start_time: new Date(Date.now() - 120 * 86400000).toISOString(),
+          end_time: null,
+          error_message: 'Ancient history',
+        },
+      ];
+      const element = await mountLoaded();
+
+      const flows = element['inventoryFlowRows'];
+      expect(flows[0].runs).to.equal(1);
+      expect(flows[0].failed).to.equal(1);
+      expect(flows[0].lastRun.id).to.equal('execution-1');
+      expect(element['flowRunsCapped']).to.be.false;
+      const inventory = element.shadowRoot?.querySelector(
+        'inventory-card'
+      ) as any;
+      expect(inventory.flowRunsCapped).to.be.false;
+    });
+
+    it('leaves a flow whose runs all predate the range at zero', async () => {
+      flowExecutionsResponse = [
+        {
+          id: 'execution-old',
+          flow_id: 'flow-1',
+          flow_name: 'Refund Assistant',
+          status: 'SUCCEEDED',
+          start_time: new Date(Date.now() - 120 * 86400000).toISOString(),
+          end_time: null,
+          error_message: null,
+        },
+      ];
+      const element = await mountLoaded();
+
+      const flows = element['inventoryFlowRows'];
+      expect(flows.length).to.equal(1);
+      expect(flows[0].runs).to.equal(0);
+      expect(flows[0].lastRun).to.equal(null);
+    });
+
+    it('flags the 100-run cap when the page never reached the range floor', async () => {
+      flowExecutionsResponse = Array.from({ length: 100 }, (_, index) => ({
+        id: `execution-${index}`,
+        flow_id: 'flow-1',
+        flow_name: 'Refund Assistant',
+        status: index === 0 ? 'FAILED' : 'SUCCEEDED',
+        start_time: new Date(Date.now() - (index + 1) * 60000).toISOString(),
+        end_time: null,
+        error_message: null,
+      }));
+      const element = await mountLoaded();
+
+      expect(element['flowRunsCapped']).to.be.true;
+      const inventory = element.shadowRoot?.querySelector(
+        'inventory-card'
+      ) as any;
+      expect(inventory.flowRunsCapped).to.be.true;
+    });
+
+    it('keeps the Models tab on a skeleton until the second pass lands', async () => {
+      // The models arrive in the slow secondary pass, after `loading` has
+      // cleared. Hold that pass open and the card must still be waiting, not
+      // telling a stocked account it has no models.
+      let releaseModels = () => {};
+      aiModelsGate = new Promise<void>((resolve) => {
+        releaseModels = resolve;
+      });
+      // Nothing in the gateway breakdown either, so the tab has only the
+      // models list to draw from.
+      gatewaySummaryResponse.usage_by_model = [];
+
+      const element = await mountDashboard();
+      await waitUntil(() => !element['loading'], 'first pass did not finish');
+      await element.updateComplete;
+
+      const inventory = element.shadowRoot?.querySelector(
+        'inventory-card'
+      ) as any;
+      expect(inventory.loading, 'card still loading mid-flight').to.be.true;
+      expect(element['inventoryModelRows'].length).to.equal(0);
+      inventory.shadowRoot
+        ?.querySelector('sl-tab[panel="models"]')
+        ?.dispatchEvent(
+          new CustomEvent('sl-tab-show', {
+            detail: { name: 'models' },
+            bubbles: true,
+            composed: true,
+          })
+        );
+      await inventory.updateComplete;
+      const midFlight = (inventory.shadowRoot?.textContent || '').replace(
+        /\s+/g,
+        ' '
+      );
+      expect(midFlight).to.not.contain('No models yet');
+      expect(
+        inventory.shadowRoot?.querySelectorAll('sl-skeleton').length
+      ).to.be.greaterThan(0);
+
+      releaseModels();
+      await waitUntil(
+        () => !element['fetchingMCPAndTools'],
+        'second pass did not finish'
+      );
+      await element.updateComplete;
+      await inventory.updateComplete;
+      expect(inventory.loading).to.be.false;
+      expect(element['inventoryModelRows'][0].alias).to.equal('OpenAI GPT-5.4');
+    });
+
+    it('restores the models from the cache so a reload paints rows', async () => {
+      // The cache is keyed on the token subject, so this test needs a token
+      // shaped like one.
+      const payload = btoa(JSON.stringify({ sub: 'cache-tester' }));
+      localStorage.setItem('accessToken', `header.${payload}.signature`);
+      const key = 'preloop:dashboard:cache-tester';
+      sessionStorage.removeItem(key);
+
+      try {
+        const first = await mountLoaded();
+        expect(first['aiModels'].length).to.equal(1);
+
+        const cached = JSON.parse(sessionStorage.getItem(key) || '{}');
+        expect(cached.tools, 'tools were already cached').to.exist;
+        expect(cached.aiModels?.[0]?.name).to.equal('OpenAI GPT-5.4');
+
+        // A reload restores them before the slow pass resolves, exactly the
+        // way `tools` already was.
+        const reloaded = await mountDashboard();
+        expect(reloaded['aiModels'][0].name).to.equal('OpenAI GPT-5.4');
+        expect(reloaded['inventoryModelRows'][0].alias).to.equal(
+          'OpenAI GPT-5.4'
+        );
+        await waitUntil(
+          () => !reloaded['fetchingMCPAndTools'],
+          'second pass did not finish'
+        );
+      } finally {
+        sessionStorage.removeItem(key);
+      }
+    });
+
+    it('hands the feed the context it needs to name things', async () => {
+      const element = await mountLoaded();
+
+      const feed = element.shadowRoot?.querySelector('activity-feed') as any;
+      expect(feed.flows[0].name).to.equal('Refund Assistant');
+      expect(feed.executions[0].id).to.equal('execution-1');
+      expect(feed.agents[0].display_name).to.equal('Ops Agent');
+      expect(feed.budgetPolicies.length).to.equal(3);
+    });
+
+    it('makes the side column a sticky rail on a wide viewport', async () => {
+      const element = await mountLoaded();
+      const side = element.shadowRoot?.querySelector(
+        '.side-column'
+      ) as HTMLElement;
+      const feed = element.shadowRoot?.querySelector(
+        'activity-feed'
+      ) as HTMLElement;
+
+      // The rule is a media query, so it only holds on a wide test window.
+      if (window.innerWidth < 1200) return;
+      const column = getComputedStyle(side);
+      expect(column.position).to.equal('sticky');
+      // Exactly as tall as the viewport minus the shell header and the gap,
+      // never taller: the column is the page's floor for its cards.
+      expect(parseFloat(column.maxHeight)).to.be.at.most(window.innerHeight);
+      expect(parseFloat(column.maxHeight)).to.be.greaterThan(0);
+      const card = getComputedStyle(feed);
+      expect(card.flexGrow).to.equal('1');
+      expect(parseFloat(card.minHeight)).to.equal(240);
+      expect(side.getBoundingClientRect().height).to.be.at.most(
+        window.innerHeight
+      );
+    });
+
+    it('ages the Updated label instead of freezing it at "just now"', async () => {
+      const element = await mountLoaded();
+      const label = () =>
+        (
+          element.shadowRoot?.querySelector('view-header .updated-at')
+            ?.textContent || ''
+        ).trim();
+      expect(label()).to.equal('Updated just now');
+
+      // The page has been open for four minutes and nothing has changed.
+      element['lastUpdatedAt'] = new Date(Date.now() - 4 * 60000).toISOString();
+      element['updatedTick'] += 1;
+      await element.updateComplete;
+      expect(label()).to.equal('Updated 4m ago');
+      expect(
+        element.shadowRoot
+          ?.querySelector('view-header .updated-at')
+          ?.getAttribute('title')
+      ).to.not.equal('Not loaded yet');
+    });
+
+    it('takes its turn when an event lands during a refresh', async () => {
+      const element = await mountLoaded();
+      // A socket event arriving mid-refresh used to be dropped, leaving the
+      // header claiming numbers older than the event that announced them.
+      element['refreshInFlight'] = true;
+      element['initialLoadTime'] = Date.now() - 60000;
+      element['lastUpdatedAt'] = new Date(Date.now() - 60000).toISOString();
+      element['scheduleRefresh']();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(element['refreshTimer']).to.not.equal(null);
+      element['refreshInFlight'] = false;
+      window.clearTimeout(element['refreshTimer'] as number);
+      element['refreshTimer'] = null;
+    });
+
+    it('opens the budget dialog when the feed asks for it', async () => {
+      const element = await mountLoaded();
+
+      const feed = element.shadowRoot?.querySelector('activity-feed')!;
+      feed.dispatchEvent(
+        new CustomEvent('open-budget-limits', { bubbles: true, composed: true })
+      );
+      await element.updateComplete;
+      expect(element['showBudgetDialog']).to.be.true;
     });
   });
 });

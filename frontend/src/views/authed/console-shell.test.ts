@@ -115,6 +115,58 @@ describe('ConsoleShell', () => {
     invalidateApiCaches();
   });
 
+  describe('window chrome', () => {
+    it('drops the sidebar, the header and the bell for ?window=1', async () => {
+      const originalUrl = window.location.pathname + window.location.search;
+      window.history.replaceState(
+        {},
+        '',
+        '/console/agents/agent-1/talk?window=1'
+      );
+      try {
+        const el = (await fixture(
+          html`<console-shell></console-shell>`
+        )) as ConsoleShell;
+        await waitUntil(
+          () => el.shadowRoot?.querySelector('.console-container') !== null,
+          'Console container did not render'
+        );
+
+        expect(el.shadowRoot!.querySelector('.sidebar-wrapper')).to.not.exist;
+        expect(el.shadowRoot!.querySelector('console-header')).to.not.exist;
+        expect(el.shadowRoot!.querySelector('approval-bypass-banner')).to.not
+          .exist;
+        // The popup content is the only row and it fills the window.
+        expect(el.shadowRoot!.querySelector('.main-view.window-mode')).to.exist;
+        expect(el.shadowRoot!.querySelector('.main-content.full-bleed')).to
+          .exist;
+        // Dialogs centre on the window, not on a sidebar that is not there.
+        expect(el.style.getPropertyValue('--console-main-offset')).to.equal(
+          '0px'
+        );
+      } finally {
+        window.history.replaceState({}, '', originalUrl);
+      }
+    });
+
+    it('keeps the full chrome on the same route without the flag', async () => {
+      const originalUrl = window.location.pathname + window.location.search;
+      window.history.replaceState({}, '', '/console/agents/agent-1/talk');
+      try {
+        const el = (await fixture(
+          html`<console-shell></console-shell>`
+        )) as ConsoleShell;
+        await waitUntil(
+          () => el.shadowRoot?.querySelector('console-header') !== null,
+          'Header did not render'
+        );
+        expect(el.shadowRoot!.querySelector('.sidebar-wrapper')).to.exist;
+      } finally {
+        window.history.replaceState({}, '', originalUrl);
+      }
+    });
+  });
+
   it('renders the component', async () => {
     const el = (await fixture(
       html`<console-shell></console-shell>`
@@ -205,12 +257,13 @@ describe('ConsoleShell', () => {
     expect(el.style.getPropertyValue('--console-main-offset')).to.equal('0px');
   });
 
-  it('tints the page behind the cards and sets the compact type scale', async () => {
-    // The Shoelace theme sheet is not loaded in the test page, so pin the two
-    // tokens to sentinel colours: if the rule stops reading them the computed
-    // colour stops matching.
+  it('paints the page from the ladder and sets the compact type scale', async () => {
+    // The ladder sheet is loaded by main.css, not by the test page, so pin
+    // the rung to a sentinel colour: if the rule stops reading the token the
+    // computed colour stops matching. Naming a neutral step here instead is
+    // exactly the bug wave 4 removed, because that step inverts in dark.
     document.documentElement.style.setProperty(
-      '--sl-color-neutral-50',
+      '--console-page',
       'rgb(1, 2, 3)'
     );
 
@@ -229,12 +282,45 @@ describe('ConsoleShell', () => {
       ) as HTMLElement;
       const styles = getComputedStyle(mainContent);
 
-      // Page is neutral-50, cards stay neutral-0: depth without decoration.
       expect(styles.backgroundColor).to.equal('rgb(1, 2, 3)');
       expect(styles.fontSize).to.equal('14px');
       expect(styles.fontVariantNumeric).to.contain('tabular-nums');
     } finally {
-      document.documentElement.style.removeProperty('--sl-color-neutral-50');
+      document.documentElement.style.removeProperty('--console-page');
+    }
+  });
+
+  it('puts the sidebar on the card rung, hairline away from the page', async () => {
+    document.documentElement.style.setProperty(
+      '--console-surface',
+      'rgb(7, 8, 9)'
+    );
+    document.documentElement.style.setProperty(
+      '--console-hairline',
+      'rgb(10, 11, 12)'
+    );
+
+    try {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+
+      await waitUntil(
+        () => el.shadowRoot?.querySelector('.sidebar') !== null,
+        'Sidebar did not render'
+      );
+
+      const sidebar = el.shadowRoot?.querySelector('.sidebar') as HTMLElement;
+      const styles = getComputedStyle(sidebar);
+
+      // Sidebar and cards share one rung; a hairline, not a second gray
+      // step, is what separates it from the page.
+      expect(styles.backgroundColor).to.equal('rgb(7, 8, 9)');
+      expect(styles.borderRightColor).to.equal('rgb(10, 11, 12)');
+      expect(styles.borderRightWidth).to.equal('1px');
+    } finally {
+      document.documentElement.style.removeProperty('--console-surface');
+      document.documentElement.style.removeProperty('--console-hairline');
     }
   });
 

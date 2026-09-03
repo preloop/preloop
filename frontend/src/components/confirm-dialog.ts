@@ -151,10 +151,16 @@ export function resetConfirmDialogForTests(): void {
 /**
  * The console's replacement for `window.alert`: a Shoelace toast, so a
  * non-blocking message never freezes the tab.
+ *
+ * A toast may carry one action, for the case where the message alone leaves
+ * the operator stuck ("your browser blocked the window" needs "open in a new
+ * tab" next to it). An action holds the toast open until it is dismissed:
+ * a button that disappears after four seconds is a trap.
  */
 export function showToast(
   message: string,
-  variant: 'primary' | 'success' | 'neutral' | 'warning' | 'danger' = 'primary'
+  variant: 'primary' | 'success' | 'neutral' | 'warning' | 'danger' = 'primary',
+  action?: { label: string; onClick: () => void }
 ): void {
   const icon =
     variant === 'danger' || variant === 'warning'
@@ -164,11 +170,23 @@ export function showToast(
         : 'info-circle';
   const alert = Object.assign(document.createElement('sl-alert'), {
     variant,
-    duration: 4000,
+    duration: action ? Infinity : 4000,
     closable: true,
   });
   alert.innerHTML = `<sl-icon slot="icon" name="${icon}"></sl-icon>`;
   alert.append(document.createTextNode(message));
+  if (action) {
+    const button = document.createElement('sl-button');
+    button.setAttribute('size', 'small');
+    button.setAttribute('variant', 'text');
+    button.setAttribute('data-toast-action', '');
+    button.textContent = action.label;
+    button.addEventListener('click', () => {
+      action.onClick();
+      void (alert as unknown as { hide: () => Promise<void> }).hide();
+    });
+    alert.append(button);
+  }
   document.body.append(alert);
   void (alert as unknown as { toast: () => Promise<void> }).toast();
 }

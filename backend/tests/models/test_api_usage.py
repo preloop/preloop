@@ -785,3 +785,124 @@ def test_get_gateway_usage_by_model_filters_ids_and_honors_unlimited(
         )
         == []
     )
+
+
+def test_get_gateway_usage_by_model_separates_unpriced_from_zero_priced(
+    db_session, test_user
+):
+    """A missing price and a $0 price are different facts about a model.
+
+    ``estimated_cost`` alone cannot tell them apart: both leave the total
+    unchanged. The console needs to say "we do not know what this cost" for
+    one and "this was free, on purpose or by mistake" for the other, so they
+    are counted apart here.
+    """
+    model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Mixed Pricing Model",
+            "provider_name": "openrouter",
+            "model_identifier": "mixed-pricing",
+        },
+        account_id=test_user.account_id,
+    )
+
+    def log(cost, *, status_code=200, tokens=15, minutes_ago=10):
+        usage = crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/openai/v1/chat/completions",
+            method="POST",
+            status_code=status_code,
+            duration=0.1,
+            user_id=str(test_user.id),
+            account_id=str(test_user.account_id),
+            ai_model_id=str(model.id),
+            model_alias="openrouter/mixed-pricing",
+            provider_name="openrouter",
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=tokens,
+            estimated_cost=cost,
+        )
+        usage.timestamp = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+        db_session.commit()
+
+    log(0.25, minutes_ago=30)
+    log(None, minutes_ago=20)
+    log(None, minutes_ago=19)
+    log(0.0, minutes_ago=15)
+    log(0.0, status_code=500, minutes_ago=5)
+
+    rows = crud_api_usage.get_gateway_usage_by_model(
+        db_session, account_id=str(test_user.account_id), limit=None
+    )
+    row = next(item for item in rows if item["ai_model_id"] == str(model.id))
+
+    assert row["request_count"] == 5
+    assert row["unpriced_request_count"] == 2
+    assert row["zero_priced_request_count"] == 2
+    assert row["failed_request_count"] == 1
+    assert row["estimated_cost"] == 0.25
+    # The newest call, not the newest priced one.
+    assert row["last_request_at"] is not None
+    age = datetime.now(timezone.utc) - row["last_request_at"].replace(
+        tzinfo=timezone.utc
+    )
+    assert timedelta(minutes=4) < age < timedelta(minutes=6)
+
+
+def test_get_gateway_usage_by_model_unpriced_count_matches_the_summary(
+    db_session, test_user
+):
+    """The per-model counts sum to the account total the same page shows.
+
+    Two aggregates disagreeing about how many requests are unpriced is a bug
+    report waiting to happen, so both use the same condition.
+    """
+    model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Summary Parity Model",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-parity",
+        },
+        account_id=test_user.account_id,
+    )
+    for cost in (None, None, 0.0, 0.02):
+        crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/anthropic/v1/messages",
+            method="POST",
+            status_code=200,
+            duration=0.1,
+            user_id=str(test_user.id),
+            account_id=str(test_user.account_id),
+            ai_model_id=str(model.id),
+            model_alias="anthropic/claude-parity",
+            provider_name="anthropic",
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            estimated_cost=cost,
+        )
+
+    start = datetime.now(timezone.utc) - timedelta(days=1)
+    end = datetime.now(timezone.utc) + timedelta(days=1)
+    rows = crud_api_usage.get_gateway_usage_by_model(
+        db_session,
+        account_id=str(test_user.account_id),
+        start_date=start,
+        end_date=end,
+        limit=None,
+    )
+    summary = crud_api_usage.get_gateway_usage_summary(
+        db_session,
+        account_id=str(test_user.account_id),
+        start_date=start,
+        end_date=end,
+    )
+
+    assert (
+        sum(row["unpriced_request_count"] for row in rows)
+        == (summary["unpriced_requests"])
+    )

@@ -67,6 +67,8 @@ import type {
   ProviderBillingConnection,
   RepriceResponse,
   ToolUsageStatsResponse,
+  AIModelPriceQuote,
+  AIModelPricingResponse,
   ModelPriceOverride,
   ModelPriceOverrideCreate,
   ModelPriceOverrideUpdate,
@@ -776,6 +778,39 @@ export async function getToolUsageStats(
   );
   if (!response.ok) {
     throw new Error('Failed to fetch tool usage stats');
+  }
+  return response.json();
+}
+
+export async function getAIModelPricing(
+  modelId: string
+): Promise<AIModelPricingResponse> {
+  const response = await fetchWithAuth(`/api/v1/ai-models/${modelId}/pricing`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch model pricing');
+  }
+  return response.json();
+}
+
+/**
+ * Read the provider's published price for a model. Returns numbers to confirm;
+ * nothing is stored until somebody saves an override.
+ */
+export async function fetchAIModelPricingFromProvider(
+  modelId: string
+): Promise<AIModelPriceQuote> {
+  const response = await fetchWithAuth(
+    `/api/v1/ai-models/${modelId}/pricing/fetch`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(
+        errorData,
+        'Failed to fetch a price from the provider'
+      )
+    );
   }
   return response.json();
 }

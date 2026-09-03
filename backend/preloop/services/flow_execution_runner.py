@@ -15,6 +15,7 @@ from preloop.services.flow_execution_dispatcher import (
     dispatch_resume,
     get_orchestrator_worker_id,
 )
+from preloop.services.flow_failure_category import derive_failure_category
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 from preloop.sync.services.event_bus import get_nats_client
 
@@ -79,11 +80,24 @@ async def resume_existing_execution(
             status=final_status,
             model_output_summary=agent_result.get("output_summary"),
             error_message=agent_result.get("error_message"),
+            # Same reasoning as the initial-run terminal update: the executor's
+            # verdict over the full logs beats re-deriving from the summary.
+            failure_category=derive_failure_category(
+                status=final_status,
+                error_message=agent_result.get("error_message"),
+                failure_analysis=agent_result.get("failure_analysis"),
+            ),
             actions_taken_summary=agent_result.get("actions_taken"),
             mcp_usage_logs=agent_result.get("mcp_usage_logs"),
             result=agent_result.get("result"),
             end_time=datetime.now(timezone.utc),
         )
+        # The worker that finishes a run owns its teardown, even though it did
+        # not mint the credential: close the runtime session and revoke every
+        # runtime token of this execution. The worker that started the run left
+        # both alive on purpose, because the agent was still using them.
+        orchestrator._sync_runtime_session(ended_at=datetime.now(timezone.utc))
+        orchestrator._revoke_execution_runtime_tokens()
         logger.info(
             "Resumed execution %s completed with status %s",
             orchestrator.execution_log.id,

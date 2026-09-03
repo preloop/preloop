@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import './agents-view.ts';
 import type { AgentListRow, AgentsView } from './agents-view';
 import { sortAgentListRows } from './agents-view';
+import { loadShoelaceTokens } from '../../utils/test-shoelace-theme';
 
 function makeAgent(
   id: string,
@@ -293,6 +294,10 @@ describe('AgentsView', () => {
     const chip = el.shadowRoot?.querySelector('tbody sl-badge.status-chip');
     expect(chip?.textContent?.trim()).to.equal('Active now');
     expect(chip?.getAttribute('variant')).to.equal('success');
+    // Wave 4: a state is a tint. The class carries the soft recipe; only a
+    // header count or a failed run opts back into a solid pill.
+    expect(chip?.classList.contains('solid'), 'row state is a solid pill').to.be
+      .false;
 
     const numeric = el.shadowRoot?.querySelectorAll('tbody td.numeric');
     expect(numeric?.[0].textContent?.trim()).to.equal((1234).toLocaleString());
@@ -486,6 +491,7 @@ describe('AgentsView', () => {
     );
     expect(chip?.textContent?.trim()).to.equal('Live check failed');
     expect(chip?.getAttribute('variant')).to.equal('warning');
+    expect(chip?.classList.contains('solid')).to.be.false;
   });
 
   it('suppresses the validation badge when the live check passed', async () => {
@@ -574,6 +580,80 @@ describe('AgentsView', () => {
 
     const name = table?.querySelector('tbody .agent-cell a.row-link');
     expect(getComputedStyle(name!).whiteSpace).to.equal('nowrap');
+  });
+
+  it('keeps the kebab button inside its own cell', async () => {
+    // Measured against the real tokens: without them the button renders at
+    // less than half its size and a column that clips it looks roomy.
+    await loadShoelaceTokens();
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const cell = el.shadowRoot?.querySelector<HTMLElement>(
+      'table.agents-table tbody td.actions-cell'
+    );
+    expect(cell, 'the actions cell renders').to.exist;
+
+    const kebab = cell
+      ?.querySelector('resource-actions')
+      ?.shadowRoot?.querySelector<HTMLElement>('sl-dropdown > sl-button');
+    expect(kebab, 'the kebab trigger renders').to.exist;
+
+    const cellBox = cell!.getBoundingClientRect();
+    const buttonBox = kebab!.getBoundingClientRect();
+
+    expect(buttonBox.width, 'the kebab has its real width').to.be.greaterThan(
+      30
+    );
+    expect(
+      buttonBox.left,
+      'the kebab is not cut off the left edge of its cell'
+    ).to.be.at.least(cellBox.left);
+    expect(
+      buttonBox.right,
+      'the kebab is not cut off the right edge of its cell'
+    ).to.be.at.most(cellBox.right);
+  });
+
+  it('offers Talk in the list kebab only for agents with Agent Control', async () => {
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Mini', 'openclaw'),
+        control_state: 'plugin_connected',
+        control_enabled: true,
+        control_online: true,
+        control_capabilities: ['send_text_prompt'],
+      },
+      makeAgent('agent-2', 'Claude Desktop', 'claude_desktop'),
+    ];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const rows = Array.from(
+      el.shadowRoot?.querySelectorAll('table.agents-table tbody tr') || []
+    );
+    const menuFor = (name: string) => {
+      const row = rows.find((candidate) =>
+        (candidate.textContent || '').includes(name)
+      );
+      return row?.querySelector('resource-actions') as HTMLElement & {
+        actions: Array<Record<string, unknown>>;
+      };
+    };
+
+    const connected = menuFor('Mini');
+    const talk = connected.actions.find((action) => action.id === 'talk');
+    expect(talk, 'the connected agent can be talked to').to.exist;
+    expect(talk!.label).to.equal('Talk');
+    expect(talk!.disabled).to.equal(false);
+    expect(connected.actions[0].id, 'Talk leads the menu').to.equal('talk');
+
+    expect(
+      menuFor('Claude Desktop').actions.some((action) => action.id === 'talk'),
+      'a runtime without Agent Control gets no Talk item'
+    ).to.equal(false);
   });
 
   it('shows only the model alias, with the full model text in the title', async () => {

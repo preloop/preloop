@@ -140,7 +140,7 @@ BUILTIN_TOOLS = [
     },
     {
         "name": "update_issue",
-        "description": "Update an existing issue",
+        "description": "Update an existing issue's metadata and/or manage GitHub issue reactions. To add or remove a reaction only, pass add_reaction or remove_reaction without other fields.",
         "source": "builtin",
         "requires_tracker": True,
         "required_tracker_types": [],
@@ -154,6 +154,14 @@ BUILTIN_TOOLS = [
                 "priority": {"type": "string", "description": "New priority"},
                 "assignee": {"type": "string", "description": "New assignee"},
                 "labels": {"type": "array", "items": {"type": "string"}},
+                "add_reaction": {
+                    "type": "string",
+                    "description": "Reaction to add (GitHub: eyes, +1, heart, hooray, rocket, laugh, confused, -1). GitLab issues do not support reactions.",
+                },
+                "remove_reaction": {
+                    "type": "string",
+                    "description": "Reaction to remove (same names as add_reaction)",
+                },
             },
             "required": ["issue"],
         },

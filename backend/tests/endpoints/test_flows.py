@@ -780,6 +780,27 @@ def test_flow_execution_list_schema_excludes_detail_payloads():
     assert "result" not in fields
 
 
+def test_flow_execution_schemas_expose_failure_category():
+    """Failures must be groupable from the list view, not only readable.
+
+    The category is the only field that lets a console (or an operator with
+    curl) answer "what is breaking?" without parsing a hundred free-text
+    error messages, so it has to be on the lightweight list row too.
+    """
+    assert "failure_category" in schemas.FlowExecutionListResponse.model_fields
+    assert "failure_category" in schemas.FlowExecutionResponse.model_fields
+
+
+def test_lightweight_execution_list_loads_the_failure_category():
+    """The column must be in load_only, or the list lazy-loads it per row."""
+    import inspect
+
+    from preloop.models.crud.flow_execution import CRUDFlowExecution
+
+    source = inspect.getsource(CRUDFlowExecution.get_multi)
+    assert "FlowExecution.failure_category" in source
+
+
 @pytest.mark.asyncio
 async def test_read_flow_executions_filters_and_caps_limit(
     mock_account: Account, mocker: MockerFixture
@@ -1455,6 +1476,67 @@ async def test_retry_flow_execution_flow_deleted(
 
 
 @pytest.mark.asyncio
+async def test_trigger_flow_execution_records_who_ran_it(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A manual run carries the operator's name into the execution subject.
+
+    Without it the console can only say "Manual Test Run" for every run of
+    every flow, which is exactly the row that wave 4 set out to fix.
+    """
+    # Arrange
+    flow_id = uuid.uuid4()
+    execution_id = uuid.uuid4()
+
+    mock_flow = MagicMock()
+    mock_flow.id = flow_id
+    mock_crud_flow = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow",
+        new_callable=MagicMock,
+    )
+    mock_crud_flow.get.return_value = mock_flow
+
+    mock_trigger_service = MagicMock()
+    mock_trigger_service.trigger_flow = mocker.AsyncMock(
+        return_value={"id": str(execution_id), "status": "PENDING"}
+    )
+    mocker.patch(
+        "preloop.services.flow_trigger_service.FlowTriggerService",
+        return_value=mock_trigger_service,
+    )
+
+    # Act
+    await maybe_await(
+        flows.trigger_flow_execution(
+            db=MagicMock(),
+            flow_id=flow_id,
+            current_user=mock_account,
+            trigger_event_data={"issue": 7},
+        )
+    )
+
+    # Assert
+    call_kwargs = mock_trigger_service.trigger_flow.call_args.kwargs
+    assert call_kwargs["test_mode"] is True
+    assert call_kwargs["triggered_by"] == mock_account.email
+
+
+def test_display_name_prefers_the_person_over_the_login():
+    """The row should read like a person, not like a database column."""
+    user = MagicMock()
+    user.full_name = "Jane Doe"
+    user.username = "jdoe"
+    user.email = "jane.doe@example.com"
+    assert flows._display_name(user) == "Jane Doe"
+
+    user.full_name = "   "
+    assert flows._display_name(user) == "jdoe"
+
+    user.username = None
+    assert flows._display_name(user) == "jane.doe@example.com"
+
+
+@pytest.mark.asyncio
 async def test_retry_flow_execution_success_failed(
     mock_account: Account, mocker: MockerFixture
 ):
@@ -1516,6 +1598,8 @@ async def test_retry_flow_execution_success_failed(
     assert call_kwargs["test_mode"] is False
     assert call_kwargs["trigger_event_data"] == mock_execution.trigger_event_details
     assert call_kwargs["retry_of_execution_id"] == execution_id
+    # A retry is attributed to whoever pressed retry, not to the original run.
+    assert call_kwargs["triggered_by"] == mock_account.email
 
 
 @pytest.mark.asyncio
