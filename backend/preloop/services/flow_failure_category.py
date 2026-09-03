@@ -8,9 +8,12 @@ that nobody could see without reading a hundred messages by hand.
 
 ``failure_category`` is the small, closed vocabulary those causes map onto.
 It is derived once, at failure time, from the most authoritative signal
-available (in order: an explicit category named by the runner, the agent
-executor's log analysis verdict, then the stored message) and stored on the
-execution so the list/detail APIs and the console can group by it.
+available and stored on the execution so the list/detail APIs and the console
+can group by it. The precedence is: an explicit category named by the runner,
+then structural message shapes that identify the failing layer regardless of
+provider noise (a Job name conflict, a wall-clock timeout, a stop, the
+completion contract), then the agent executor's full-log analysis verdict,
+then provider-message patterns.
 
 The vocabulary is deliberately about *where* a run broke and *who can fix
 it*, not about severity:
@@ -236,8 +239,6 @@ _PROVIDER_MESSAGE_RULES = (
     (_TOOL_ERROR_RE, FAILURE_CATEGORY_TOOL_ERROR),
     (_AGENT_ERROR_RE, FAILURE_CATEGORY_AGENT_ERROR),
 )
-
-_MESSAGE_RULES = _STRUCTURAL_MESSAGE_RULES + _PROVIDER_MESSAGE_RULES
 
 
 def _from_failure_analysis(analysis: Any) -> Optional[str]:
