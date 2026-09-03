@@ -19,6 +19,39 @@ def _exception_message(exc: BaseException) -> str:
     return str(exc) or exc.__class__.__name__
 
 
+def _retire_runtime_credentials(db: Session, execution) -> None:
+    """Close the runtime session and revoke the runtime tokens of an execution.
+
+    Recovery decides an execution is over without ever running its
+    orchestrator's teardown, so it has to retire the credentials itself.
+    Otherwise the gateway token of a run that recovery just marked FAILED keeps
+    authenticating until its two-hour expiry.
+    """
+    if execution is None:
+        return
+    account_id = getattr(getattr(execution, "flow", None), "account_id", None)
+    if account_id is None:
+        return
+    from datetime import datetime, timezone
+
+    from preloop.services.flow_runtime_token import (
+        end_flow_execution_runtime_session,
+        revoke_flow_runtime_tokens,
+    )
+
+    end_flow_execution_runtime_session(
+        db,
+        account_id=account_id,
+        execution_id=execution.id,
+        ended_at=datetime.now(timezone.utc),
+    )
+    revoke_flow_runtime_tokens(
+        db,
+        account_id=account_id,
+        execution_id=execution.id,
+    )
+
+
 class ExecutionRecoveryService:
     """Recovers and resumes monitoring for orphaned flow executions."""
 
@@ -189,6 +222,7 @@ class ExecutionRecoveryService:
             )
             crud_flow_execution.update(db, db_obj=execution, obj_in=update_data)
             db.commit()
+            _retire_runtime_credentials(db, execution)
             return
 
         # Check if the container/job still exists before trying to monitor
@@ -240,6 +274,7 @@ class ExecutionRecoveryService:
                             db, db_obj=execution, obj_in=update_data
                         )
                         db.commit()
+                        _retire_runtime_credentials(db, execution)
                         return
                     elif status == AgentStatus.SUCCEEDED:
                         logger.info(
@@ -253,6 +288,7 @@ class ExecutionRecoveryService:
                             db, db_obj=execution, obj_in=update_data
                         )
                         db.commit()
+                        _retire_runtime_credentials(db, execution)
                         return
                     # Container is RUNNING/STARTING - proceed with monitoring below
                 finally:
@@ -273,6 +309,7 @@ class ExecutionRecoveryService:
             )
             crud_flow_execution.update(db, db_obj=execution, obj_in=update_data)
             db.commit()
+            _retire_runtime_credentials(db, execution)
             return
 
         # Container is still running - create orchestrator and resume monitoring
@@ -357,6 +394,7 @@ class ExecutionRecoveryService:
                     obj_in=update_data,
                 )
                 failure_db.commit()
+                _retire_runtime_credentials(failure_db, execution_log)
             except Exception as update_error:
                 logger.error(f"Failed to mark execution as failed: {update_error}")
             finally:

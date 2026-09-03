@@ -42,7 +42,10 @@ from preloop.services.prompt_resolvers import (
     AccountResolver,
 )
 from preloop.services.flow_execution_logger import FlowExecutionLogger
-from preloop.services.flow_runtime_token import create_flow_runtime_token
+from preloop.services.flow_runtime_token import (
+    create_flow_runtime_token,
+    revoke_flow_runtime_tokens,
+)
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.utils.git_credentials import (
@@ -65,6 +68,12 @@ from preloop.services.account_realtime import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Statuses after which no agent of this execution can still be running, so its
+# runtime credentials can be retired. Anything else means the agent may still
+# be live (an interrupted run is resumed by a peer worker), and its gateway
+# token must keep working.
+TERMINAL_EXECUTION_STATUSES = frozenset({"SUCCEEDED", "FAILED", "STOPPED", "CANCELLED"})
 
 # Sentinel string that agents print when completing successfully.
 FLOW_SUCCESS_SENTINEL = "FLOW_EXECUTION_SUCCESS"
@@ -1193,27 +1202,82 @@ class FlowExecutionOrchestrator:
             self.db.rollback()
             return None, None
 
+    def _execution_reached_terminal_state(self) -> bool:
+        """Read this execution's committed status back from the database.
+
+        The in-memory row can be stale (another worker may have finished the
+        execution), so the status is re-read rather than trusted.
+        """
+        if self.execution_log is None:
+            return False
+        try:
+            row = crud_flow_execution.get(self.db, id=self.execution_log.id)
+            if row is not None:
+                # Another worker may have finished this execution; without an
+                # explicit refresh the identity map hands back this session's
+                # own, possibly stale, copy of the row.
+                self.db.refresh(row)
+        except Exception as exc:
+            logger.warning(
+                "Could not read execution status for %s: %s",
+                self.execution_log.id,
+                type(exc).__name__,
+            )
+            return False
+        if row is None:
+            return False
+        return str(row.status).upper() in TERMINAL_EXECUTION_STATUSES
+
+    def _revoke_execution_runtime_tokens(self) -> int:
+        """Revoke every runtime token minted for this execution."""
+        account_id = getattr(self.flow, "account_id", None)
+        execution_id = self.execution_log.id if self.execution_log else None
+        revoked = revoke_flow_runtime_tokens(
+            self.db,
+            account_id=account_id,
+            execution_id=execution_id,
+        )
+        if revoked == 0 and self.temporary_api_key_id:
+            # Fall back to the key this orchestrator minted (account or
+            # execution unknown, e.g. a flow row that never loaded).
+            try:
+                if crud_api_key.deactivate(self.db, key_id=self.temporary_api_key_id):
+                    revoked = 1
+            except Exception as exc:
+                logger.error(
+                    "Failed to cleanup temporary API key record: %s",
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                self.db.rollback()
+        return revoked
+
     def _cleanup_temporary_api_token(self):
-        """Deactivate the temporary API token created for this flow execution."""
-        if not self.temporary_api_key_id:
+        """Retire this execution's runtime token once the execution is terminal.
+
+        The agent outlives its orchestrator. A deploy drain cancels the
+        in-flight handler, releases the claim and re-dispatches the execution
+        so a peer worker resumes monitoring the *same* agent Job (see
+        ``flow_execution_runner.claim_and_run_execution``). Revoking the token
+        on the way out of an interrupted run leaves that still-running agent
+        holding a credential the gateway rejects, and the run dies mid-stream
+        with "Invalid authentication credentials".
+
+        So the token is retired only when the execution itself has reached a
+        terminal state; whichever worker finishes the run revokes it.
+        """
+        if not self.temporary_api_key_id and self.execution_log is None:
             return
 
-        try:
-            api_key = crud_api_key.deactivate(self.db, key_id=self.temporary_api_key_id)
-
-            if api_key:
-                # Log outcome only — key ids are treated as sensitive by CodeQL.
-                logger.info("Deactivated temporary API key record")
-            else:
-                logger.warning("Temporary API key record not found for cleanup")
-
-        except Exception as e:
-            logger.error(
-                "Failed to cleanup temporary API key record: %s",
-                type(e).__name__,
-                exc_info=True,
+        if not self._execution_reached_terminal_state():
+            logger.info(
+                "Leaving runtime token active for execution %s: not terminal "
+                "(handed off to another worker)",
+                self.execution_log.id if self.execution_log else "unknown",
             )
-            self.db.rollback()
+            return
+
+        self._revoke_execution_runtime_tokens()
 
     def _simple_resolve(self, placeholder: str, data: Dict[str, Any]) -> Optional[str]:
         """
@@ -3513,6 +3577,18 @@ class FlowExecutionOrchestrator:
                 f"Flow execution completed with status {final_status}: {self.execution_log.id}"
             )
 
+        except asyncio.CancelledError:
+            # Deploy drain: the worker cancels in-flight handlers, releases the
+            # claim and re-dispatches so a peer resumes monitoring the agent,
+            # which keeps running. Nothing is finalized here (the execution is
+            # not over) and, critically, the runtime token is left active for
+            # the agent that is still streaming.
+            logger.info(
+                "Flow execution %s interrupted; leaving it to the worker that "
+                "resumes it (agent and runtime token untouched)",
+                self.execution_log.id if self.execution_log else "unknown",
+            )
+            raise
         except Exception as e:
             logger.error(
                 f"Flow execution {self.execution_log.id if self.execution_log else 'unknown'} failed: {e}",
@@ -3568,5 +3644,5 @@ class FlowExecutionOrchestrator:
             else:
                 logger.error("Cannot update execution log - not created yet")
         finally:
-            # Always cleanup the temporary API token
+            # Retire the runtime token, but only if this execution is over.
             self._cleanup_temporary_api_token()
