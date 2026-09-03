@@ -5,6 +5,53 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, ConfigDict
 
 
+class ExecutionModelUsage(BaseModel):
+    """One model alias that served requests during an execution."""
+
+    model_alias: str = Field(
+        ..., description="Gateway model alias, e.g. 'openai/gpt-5'"
+    )
+    provider_name: Optional[str] = Field(
+        None, description="Provider that served the requests, when recorded"
+    )
+    request_count: int = Field(
+        0, description="Gateway requests this execution sent to that alias"
+    )
+
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
+class ExecutionModelProjection(BaseModel):
+    """Which model(s) ran an execution, derived from gateway usage.
+
+    Mixed into both the list and the detail response so "what ran this" is
+    answerable without a second call. Every field is None/empty for an
+    execution whose gateway traffic recorded no model alias (a run that never
+    called the gateway, or one that predates alias recording).
+    """
+
+    model_alias: Optional[str] = Field(
+        None,
+        description=(
+            "Alias of the model that served most of this execution's gateway "
+            "requests. Null when the execution has no attributable gateway "
+            "usage."
+        ),
+    )
+    provider_name: Optional[str] = Field(
+        None, description="Provider behind ``model_alias``, when recorded"
+    )
+    models_used: List[ExecutionModelUsage] = Field(
+        default_factory=list,
+        description=(
+            "Every distinct model alias this execution used with its request "
+            "count, most used first."
+        ),
+    )
+
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
 # Base Pydantic model for FlowExecution attributes
 class FlowExecutionBase(BaseModel):
     flow_id: uuid.UUID = Field(..., description="Foreign Key to Flows.id")
@@ -96,7 +143,7 @@ class FlowExecutionUpdate(BaseModel):
 
 
 # Pydantic model for representing a FlowExecution in API responses (includes DB fields)
-class FlowExecutionResponse(FlowExecutionBase):
+class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
     id: uuid.UUID
     created_at: datetime
     updated_at: datetime
@@ -108,7 +155,7 @@ class FlowExecutionResponse(FlowExecutionBase):
     # flow: Optional[FlowResponse] = None # Assuming a FlowResponse Pydantic schema exists
 
 
-class FlowExecutionListResponse(BaseModel):
+class FlowExecutionListResponse(ExecutionModelProjection):
     """Lightweight flow execution row for list views."""
 
     id: uuid.UUID
