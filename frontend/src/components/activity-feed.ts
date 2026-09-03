@@ -268,9 +268,27 @@ export function feedEventFromAuditGroup(
     }
     case 'tool_call': {
       const tool = event.resource_id || details.tool_name || 'Tool';
-      const agent = details.managed_agent_name
-        ? ` (${details.managed_agent_name})`
-        : '';
+      // A busy hour is a wall of "update_pull_request ran", so every tool
+      // line names who called it: the agent when the audit knows it, the
+      // flow run or session principal otherwise. The row then goes to that
+      // session rather than to a filtered audit page, which is as specific
+      // as this event gets.
+      const caller =
+        (typeof details.managed_agent_name === 'string'
+          ? details.managed_agent_name
+          : null) ||
+        (typeof details.runtime_principal_name === 'string'
+          ? details.runtime_principal_name
+          : null);
+      const agent = caller ? ` (${caller})` : '';
+      const by = caller ? ` · ${caller}` : '';
+      const sessionId =
+        typeof details.runtime_session_id === 'string'
+          ? details.runtime_session_id
+          : null;
+      const href = sessionId
+        ? `/console/runtime-sessions?sessionId=${sessionId}`
+        : '/console/audit?event_type=tool_call';
       const normalized = (outcome || '').toLowerCase();
       if (normalized === 'require_approval') {
         return {
@@ -284,23 +302,23 @@ export function feedEventFromAuditGroup(
         return {
           ...base,
           tone: 'warning',
-          text: `${tool} blocked${agent}`,
-          href: '/console/audit?event_type=tool_call',
+          text: `${tool} blocked${by}`,
+          href,
         };
       }
       if (normalized === 'failed') {
         return {
           ...base,
           tone: 'danger',
-          text: `${tool} failed${agent}`,
-          href: '/console/audit?event_type=tool_call',
+          text: `${tool} failed${by}`,
+          href,
         };
       }
       return {
         ...base,
         tone: 'neutral',
-        text: `${tool} ran${agent}`,
-        href: '/console/audit?event_type=tool_call',
+        text: `${tool} ran${by}`,
+        href,
       };
     }
     case 'authentication':
@@ -672,7 +690,9 @@ export class ActivityFeed extends LitElement {
         padding: 0;
       }
 
-      .header {
+      /* Not ".header": the console sheet gives that class a page-header
+         min-height and bottom margin, which pads a card header by 40px. */
+      .card-head {
         align-items: center;
         display: flex;
         gap: var(--sl-spacing-small);
@@ -975,15 +995,21 @@ export class ActivityFeed extends LitElement {
   }
 
   private renderRow(event: FeedEvent) {
+    // The line ellipsises in a narrow column, and the tail of it is often
+    // the part that names who acted, so the whole line is also its title.
     const text = event.budget
       ? html`<button
           class="row-text"
           type="button"
+          title=${event.text}
           @click=${() => this.openBudgetDialog()}
         >
           ${event.text}
         </button>`
-      : html`<a class="row-text" href=${event.href || '/console/audit'}
+      : html`<a
+          class="row-text"
+          href=${event.href || '/console/audit'}
+          title=${event.text}
           >${event.text}</a
         >`;
     return html`
@@ -1044,7 +1070,7 @@ export class ActivityFeed extends LitElement {
   render() {
     return html`
       <sl-card class="content-card">
-        <div slot="header" class="header">
+        <div slot="header" class="card-head">
           <span class="title">Activity</span>
           ${
             this.connected

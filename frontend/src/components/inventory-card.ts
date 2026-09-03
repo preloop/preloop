@@ -65,10 +65,19 @@ export interface InventoryModelRow {
   requests: number;
   tokens: number;
   cost: number;
-  failed: number;
-  /** Why the failure count is a sample, when it is one. */
-  failedNote?: string;
 }
+
+/*
+ * Why the Models tab has no "failed" column.
+ *
+ * The spec asked for one. Nothing the console can call counts failures per
+ * model: the usage summary groups by model but carries no outcome, and the
+ * interaction search has no outcome filter and stops at 100 rows, so on an
+ * account doing 14K calls a month the column would print a sample of one
+ * page as if it were the month. A zero that is not a zero is worse than an
+ * absent column, so the failures story stays where it is true: the Gateway
+ * card's "58 failed" and the failures card under it.
+ */
 
 export interface InventoryToolRow {
   name: string;
@@ -98,7 +107,6 @@ const SORT_OPTIONS: Record<InventoryTab, SortOption[]> = {
   models: [
     { value: 'spend', label: 'Spend' },
     { value: 'requests', label: 'Requests' },
-    { value: 'failures', label: 'Failures' },
   ],
   tools: [
     { value: 'calls', label: 'Calls' },
@@ -224,7 +232,9 @@ export class InventoryCard extends LitElement {
         padding: 0;
       }
 
-      .header {
+      /* Not ".header": the console sheet gives that class a page-header
+         min-height and bottom margin, which pads a card header by 40px. */
+      .card-head {
         align-items: center;
         display: flex;
         gap: var(--sl-spacing-small);
@@ -330,10 +340,18 @@ export class InventoryCard extends LitElement {
         background-color: var(--console-hover-tint);
       }
 
+      /* Numbers pay less for their gutters than words do: the columns are
+         narrow, and "Requests" has to fit its own heading. */
       .inventory-table th.num,
       .inventory-table td.num {
         font-variant-numeric: tabular-nums;
+        padding-inline: var(--sl-spacing-x-small);
         text-align: right;
+      }
+
+      .inventory-table th.num:last-child,
+      .inventory-table td.num:last-child {
+        padding-right: var(--sl-spacing-medium);
       }
 
       .identity {
@@ -370,6 +388,19 @@ export class InventoryCard extends LitElement {
         align-items: center;
         display: flex;
         gap: var(--sl-spacing-x-small);
+        min-width: 0;
+      }
+
+      /* The subject is the only part of a run worth reading twice, so it is
+         the only part allowed to grow, and the chip and the clock never
+         steal from it. */
+      .last-run sl-badge,
+      .last-run .meta {
+        flex-shrink: 0;
+      }
+
+      .last-run .execution-subject {
+        flex: 1 1 auto;
         min-width: 0;
       }
 
@@ -423,10 +454,15 @@ export class InventoryCard extends LitElement {
       }
 
       /* Phones read a row as two lines: who it is, then its numbers. The
-         header row has nothing to align to once the cells stack, so it goes. */
+         table stops being a table (a row that is still a table row keeps the
+         column widths and squeezes the name into a sliver), the header row
+         has nothing to align to once the cells stack, so it goes, and each
+         number carries the word its column heading used to supply. */
       @media (max-width: 640px) {
-        .inventory-table {
-          table-layout: auto;
+        .inventory-table,
+        .inventory-table tbody {
+          display: block;
+          width: 100%;
         }
 
         .inventory-table thead {
@@ -436,12 +472,13 @@ export class InventoryCard extends LitElement {
         .inventory-table tr {
           display: flex;
           flex-wrap: wrap;
-          gap: 0 var(--sl-spacing-small);
+          gap: 2px var(--sl-spacing-small);
           padding: var(--sl-spacing-x-small) var(--sl-spacing-medium);
         }
 
         .inventory-table td {
           border-bottom: none;
+          display: block;
           padding: 0;
         }
 
@@ -449,15 +486,47 @@ export class InventoryCard extends LitElement {
           border-bottom: 1px solid var(--console-hairline);
         }
 
-        .inventory-table td.identity-cell {
+        .inventory-table tbody tr:last-child {
+          border-bottom: none;
+        }
+
+        .inventory-table td.identity-cell,
+        .inventory-table td.wide-cell {
           flex: 0 0 100%;
+          min-width: 0;
         }
 
         .inventory-table td.num,
         .inventory-table td.secondary {
           color: var(--console-meta-color);
           font-size: var(--console-text-meta);
+          padding-inline: 0;
           text-align: left;
+        }
+
+        /* One alias, one line: the second line is a summary, not a URL. */
+        .inventory-table td.secondary:not(.wide-cell) {
+          max-width: 55%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .inventory-table td[data-label]::before {
+          content: attr(data-label) ' ';
+        }
+
+        /* The second line is one sentence of numbers, so it is punctuated. */
+        .inventory-table td.num:not(:last-child)::after,
+        .inventory-table td.secondary:not(.wide-cell)::after {
+          color: var(--console-meta-color);
+          content: ' ·';
+        }
+
+        /* Tokens are the one number a phone can do without: the request
+           count and the spend already say how much this row is doing. */
+        .inventory-table td[data-label='Tokens'] {
+          display: none;
         }
       }
     `,
@@ -524,9 +593,18 @@ export class InventoryCard extends LitElement {
     return Number.isNaN(date.getTime()) ? 'Never' : date.toLocaleString();
   }
 
+  /**
+   * Age, always relative.
+   *
+   * The default cuts over to a date after a week, which in a column this
+   * narrow becomes "8/26/2..." and tells nobody anything. "6w ago" is the
+   * answer the row is being asked for; the exact date is in the title.
+   */
   private relative(value: string | null | undefined): string {
     if (!value) return 'Never';
-    return formatRelativeTime(value);
+    return formatRelativeTime(value, new Date(), {
+      maxRelativeDays: Infinity,
+    });
   }
 
   /** Green for a finished run, red for a failed one, neutral while it runs. */
@@ -539,6 +617,12 @@ export class InventoryCard extends LitElement {
       return 'danger';
     }
     return 'neutral';
+  }
+
+  /** SUCCEEDED shouts; a chip in a dense table speaks. */
+  private statusLabel(status: string): string {
+    const text = (status || '').toLowerCase();
+    return text ? text.charAt(0).toUpperCase() + text.slice(1) : 'Unknown';
   }
 
   private get sortedAgents(): InventoryAgentRow[] {
@@ -577,8 +661,6 @@ export class InventoryCard extends LitElement {
     const sort = this.sorts.models;
     if (sort === 'requests') {
       rows.sort((a, b) => b.requests - a.requests);
-    } else if (sort === 'failures') {
-      rows.sort((a, b) => b.failed - a.failed);
     } else {
       rows.sort((a, b) => b.cost - a.cost);
     }
@@ -599,7 +681,7 @@ export class InventoryCard extends LitElement {
   private renderHeader() {
     const options = SORT_OPTIONS[this.tab];
     return html`
-      <div slot="header" class="header">
+      <div slot="header" class="card-head">
         <span class="title">Inventory</span>
         <div class="header-controls">
           <sl-select
@@ -689,12 +771,12 @@ export class InventoryCard extends LitElement {
     return html`
       <table class="inventory-table">
         <colgroup>
-          <col style="width: 30%" />
+          <col style="width: 28%" />
           <col style="width: 22%" />
           <col style="width: 12%" />
           <col style="width: 12%" />
           <col style="width: 12%" />
-          <col style="width: 12%" />
+          <col style="width: 14%" />
         </colgroup>
         <thead>
           <tr>
@@ -736,10 +818,10 @@ export class InventoryCard extends LitElement {
                         >
                           ${row.modelAlias || 'No model'}
                         </td>
-                        <td class="num">
+                        <td class="num" data-label="Requests">
                           ${this.formatCompactNumber(row.requests)}
                         </td>
-                        <td class="num">
+                        <td class="num" data-label="Tokens">
                           ${this.formatCompactNumber(row.tokens)}
                         </td>
                         <td class="num">${this.formatCurrency(row.cost)}</td>
@@ -764,7 +846,7 @@ export class InventoryCard extends LitElement {
     return html`
       <span class="last-run">
         <sl-badge class="chip" pill variant=${this.statusVariant(run.status)}
-          >${run.status}</sl-badge
+          >${this.statusLabel(run.status)}</sl-badge
         >
         ${renderExecutionSubject(run)}
         <span class="meta" title=${this.absolute(run.start_time)}
@@ -781,10 +863,10 @@ export class InventoryCard extends LitElement {
     return html`
       <table class="inventory-table">
         <colgroup>
-          <col style="width: 24%" />
-          <col style="width: 40%" />
-          <col style="width: 12%" />
-          <col style="width: 12%" />
+          <col style="width: 25%" />
+          <col style="width: 45%" />
+          <col style="width: 9%" />
+          <col style="width: 9%" />
           <col style="width: 12%" />
         </colgroup>
         <thead>
@@ -813,17 +895,17 @@ export class InventoryCard extends LitElement {
                             >
                           </span>
                         </td>
-                        <td class="secondary">
+                        <td class="secondary wide-cell">
                           ${this.renderLastRun(row.lastRun)}
                         </td>
-                        <td class="num">
+                        <td class="num" data-label="Runs">
                           <a
                             class="row-name"
                             href="/console/flows/executions?flow_id=${row.id}"
                             >${this.formatCompactNumber(row.runs)}</a
                           >
                         </td>
-                        <td class="num">
+                        <td class="num" data-label="Failed">
                           ${this.formatCompactNumber(row.failed)}
                         </td>
                         <td class="num">${this.formatCurrency(row.cost)}</td>
@@ -842,12 +924,11 @@ export class InventoryCard extends LitElement {
     return html`
       <table class="inventory-table">
         <colgroup>
-          <col style="width: 30%" />
-          <col style="width: 20%" />
-          <col style="width: 12%" />
+          <col style="width: 34%" />
+          <col style="width: 24%" />
           <col style="width: 14%" />
-          <col style="width: 12%" />
-          <col style="width: 12%" />
+          <col style="width: 14%" />
+          <col style="width: 14%" />
         </colgroup>
         <thead>
           <tr>
@@ -856,12 +937,11 @@ export class InventoryCard extends LitElement {
             <th class="num">Requests</th>
             <th class="num">Tokens</th>
             <th class="num">$ est.</th>
-            <th class="num">Failed</th>
           </tr>
         </thead>
         ${
           this.loading && rows.length === 0
-            ? this.renderSkeleton(6)
+            ? this.renderSkeleton(5)
             : html`
                 <tbody>
                   ${repeat(
@@ -887,16 +967,13 @@ export class InventoryCard extends LitElement {
                         <td class="secondary muted">
                           ${row.provider || 'Unknown'}
                         </td>
-                        <td class="num">
+                        <td class="num" data-label="Requests">
                           ${this.formatCompactNumber(row.requests)}
                         </td>
-                        <td class="num">
+                        <td class="num" data-label="Tokens">
                           ${this.formatCompactNumber(row.tokens)}
                         </td>
                         <td class="num">${this.formatCurrency(row.cost)}</td>
-                        <td class="num" title=${row.failedNote || ''}>
-                          ${this.formatCompactNumber(row.failed)}
-                        </td>
                       </tr>
                     `
                   )}
@@ -949,10 +1026,10 @@ export class InventoryCard extends LitElement {
                         <td class="secondary muted">
                           ${row.server || 'Unknown'}
                         </td>
-                        <td class="num">
+                        <td class="num" data-label="Calls">
                           ${this.formatCompactNumber(row.calls)}
                         </td>
-                        <td class="num">
+                        <td class="num" data-label="Failed">
                           ${this.formatCompactNumber(row.failed)}
                         </td>
                       </tr>

@@ -51,7 +51,6 @@ function modelRow(overrides: Partial<InventoryModelRow> = {}) {
     requests: 900,
     tokens: 320000,
     cost: 8.25,
-    failed: 2,
     ...overrides,
   };
 }
@@ -159,7 +158,7 @@ describe('inventory-card', () => {
     expect(select().value).to.equal('last-run');
 
     await showTab(el, 'models');
-    expect(options()).to.eql(['Spend', 'Requests', 'Failures']);
+    expect(options()).to.eql(['Spend', 'Requests']);
     expect(select().value).to.equal('spend');
 
     await showTab(el, 'tools');
@@ -224,9 +223,35 @@ describe('inventory-card', () => {
     const el = await card();
     await showTab(el, 'flows');
     const text = (el.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
-    expect(text).to.contain('SUCCEEDED');
+    expect(text).to.contain('Succeeded');
+    expect(text).to.not.contain('SUCCEEDED');
     expect(text).to.contain('preloop/preloop #352');
     expect(text).to.contain('3m 7s');
+  });
+
+  it('claims no per-model failure count it cannot stand behind', async () => {
+    const el = await card();
+    await showTab(el, 'models');
+    const headings = Array.from(el.shadowRoot!.querySelectorAll('th')).map(
+      (th) => (th.textContent || '').trim()
+    );
+    expect(headings).to.eql([
+      'Model',
+      'Provider',
+      'Requests',
+      'Tokens',
+      '$ est.',
+    ]);
+  });
+
+  it('keeps an old timestamp relative, with the date in the title', async () => {
+    const stale = new Date(Date.now() - 45 * 86400000).toISOString();
+    const el = await card({ agentRows: [agentRow({ lastSeenAt: stale })] });
+    const cell = el.shadowRoot!.querySelector('tbody tr td:last-child');
+    expect((cell?.textContent || '').trim()).to.equal('6w ago');
+    expect(cell?.getAttribute('title')).to.contain(
+      String(new Date(stale).getFullYear())
+    );
   });
 
   it('says what is missing, with the way to fix it', async () => {

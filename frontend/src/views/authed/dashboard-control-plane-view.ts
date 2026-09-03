@@ -198,8 +198,6 @@ export class DashboardView extends AuthedElement {
   @state() private managedAgents: ManagedAgentSummary[] = [];
   @state() private budgetAgents: ManagedAgentSummary[] = [];
   @state() private gatewayInteractions: GatewayUsageSearchResultItem[] = [];
-  /** How many calls the range holds, to say when a failure count is a sample. */
-  @state() private gatewayInteractionsTotal = 0;
   @state() private auditGroups: AuditGroup[] = [];
   @state() private trackers: Tracker[] = [];
   @state() private totalIssues = 0;
@@ -1541,9 +1539,10 @@ export class DashboardView extends AuthedElement {
         rateLimitReport,
       ] = await Promise.all([
         gatewaySummaryPromise,
-        // The failures card shows a handful, but the Inventory Models tab
-        // counts failures per model across the page range, so the window and
-        // the page size both follow the range rather than the card.
+        // The failures card shows a handful, and it should be the handful
+        // that happened in the range the page is showing: a full page of
+        // in-range calls is far likelier to contain the current failures
+        // than the last twelve calls of any age were.
         this.catchWith403Handling(
           getAccountGatewayUsageSearch({
             limit: 100,
@@ -1593,8 +1592,6 @@ export class DashboardView extends AuthedElement {
       );
       this.priorGatewaySummary = priorGatewaySummary;
       this.gatewayInteractions = gatewayInteractions.items || [];
-      this.gatewayInteractionsTotal =
-        gatewayInteractions.total ?? this.gatewayInteractions.length;
       this.fetchingGatewaySummary = false;
 
       this.hasFlows = (flows || []).length > 0;
@@ -2819,17 +2816,6 @@ export class DashboardView extends AuthedElement {
   }
 
   private get inventoryModelRows(): InventoryModelRow[] {
-    // The gateway search window is the page range, but it is one page deep,
-    // so its failure counts are a sample once the account is busier than that.
-    const sampled =
-      this.gatewayInteractionsTotal > this.gatewayInteractions.length;
-    const failures = new Map<string, number>();
-    for (const item of this.gatewayInteractions) {
-      if (item.outcome === 'success') continue;
-      const alias = item.model_alias || 'Unknown model';
-      failures.set(alias, (failures.get(alias) || 0) + 1);
-    }
-
     const usage = new Map<string, GatewayUsageByModel>();
     for (const model of this.gatewaySummary?.usage_by_model || []) {
       const alias = model.model_alias || model.ai_model_id;
@@ -2841,7 +2827,6 @@ export class DashboardView extends AuthedElement {
     const rows: InventoryModelRow[] = this.aiModels.map((model) => {
       const used = usage.get(model.name);
       usage.delete(model.name);
-      const failed = failures.get(model.name) || 0;
       return {
         id: model.id,
         alias: model.name,
@@ -2849,17 +2834,11 @@ export class DashboardView extends AuthedElement {
         requests: used?.request_count ?? 0,
         tokens: used?.token_usage?.total_tokens ?? 0,
         cost: used?.estimated_cost ?? 0,
-        failed,
-        failedNote:
-          failed > 0 && sampled
-            ? 'Counted from the most recent 100 gateway calls in this range'
-            : undefined,
       };
     });
 
     // Aliases the gateway served that are no longer in the models list.
     for (const [alias, model] of usage) {
-      const failed = failures.get(alias) || 0;
       rows.push({
         id: model.ai_model_id,
         alias,
@@ -2867,11 +2846,6 @@ export class DashboardView extends AuthedElement {
         requests: model.request_count || 0,
         tokens: model.token_usage?.total_tokens || 0,
         cost: model.estimated_cost || 0,
-        failed,
-        failedNote:
-          failed > 0 && sampled
-            ? 'Counted from the most recent 100 gateway calls in this range'
-            : undefined,
       });
     }
     return rows;

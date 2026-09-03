@@ -230,6 +230,30 @@ describe('activity-feed', () => {
       ).to.equal(null);
     });
 
+    it('names who called a tool and links to that session', () => {
+      const event = feedEventFromAuditGroup(
+        auditGroup(
+          'tool_call',
+          {
+            id: 't1',
+            resource_id: 'get_pull_request',
+            details: {
+              runtime_principal_name: 'Pull Request Reviewer',
+              runtime_session_id: 'sess-7',
+            },
+          },
+          'allow'
+        )
+      );
+      expect(event?.text).to.equal(
+        'get_pull_request ran · Pull Request Reviewer'
+      );
+      expect(event?.tone).to.equal('neutral');
+      expect(event?.href).to.equal(
+        '/console/runtime-sessions?sessionId=sess-7'
+      );
+    });
+
     it('never drops an audit event type it has no recipe for', () => {
       const event = feedEventFromAuditGroup(
         auditGroup('api_key_created', { id: 'k1' }, 'success'),
