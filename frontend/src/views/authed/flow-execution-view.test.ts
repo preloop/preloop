@@ -835,6 +835,86 @@ describe('FlowExecutionView', () => {
       ).to.equal(0);
     });
 
+    it('keeps non-model log rows out of the timeline as event cards', async () => {
+      // The gateway-events endpoint returns every log row of the run, and the
+      // plain ones are the same rows the logs endpoint already returned.
+      const element = await load('exec-1');
+      (element as any).gatewayEvents = [
+        ...(element as any).gatewayEvents,
+        {
+          id: 'evt-status',
+          execution_id: 'exec-1',
+          timestamp: '2026-03-09T10:01:30Z',
+          type: 'status_update',
+          payload: { status: 'RUNNING' },
+        },
+      ];
+      await element.updateComplete;
+
+      expect(
+        element.shadowRoot!.querySelectorAll(
+          '.timeline-stream preloop-gateway-event'
+        ).length
+      ).to.equal(1);
+    });
+
+    it('loads full gateway payloads when the transcript is opened', async () => {
+      const element = await load('exec-1');
+      const gatewayCalls = () =>
+        fetchStub
+          .getCalls()
+          .map((call) => String(call.args[0]))
+          .filter((url) => url.includes('/gateway-events'));
+
+      // The first paint asks for metadata only: it just feeds the timeline.
+      expect(gatewayCalls()).to.have.length(1);
+      expect(gatewayCalls()[0]).to.contain('metadata_only=true');
+
+      (element as any).handleTabShow({ detail: { name: 'transcript' } });
+      await waitUntil(
+        () => gatewayCalls().length === 2,
+        'Transcript did not reload the events with full payloads'
+      );
+      expect(gatewayCalls()[1]).to.not.contain('metadata_only');
+
+      // The upgrade reads as loading, not as "nothing was captured".
+      (element as any).isLoadingGatewayEvents = true;
+      (element as any).gatewayEventsFullLoaded = false;
+      await element.updateComplete;
+      expect(
+        (element.shadowRoot!.querySelector('session-chat-view') as any).loading
+      ).to.equal(true);
+      (element as any).isLoadingGatewayEvents = false;
+      (element as any).gatewayEventsFullLoaded = true;
+      await element.updateComplete;
+
+      // Reopening it does not refetch.
+      (element as any).handleTabShow({ detail: { name: 'timeline' } });
+      (element as any).handleTabShow({ detail: { name: 'transcript' } });
+      await element.updateComplete;
+      expect(gatewayCalls()).to.have.length(2);
+    });
+
+    it('bounds the model output summary in a scrollable block', async () => {
+      const element = await load('exec-1');
+      (element as any).execution = {
+        ...(element as any).execution,
+        model_output_summary: 'line one\nline two\nline three',
+      };
+      await element.updateComplete;
+
+      const summary = element.shadowRoot!.querySelector(
+        'pre[data-testid="output-summary"]'
+      )!;
+      expect(summary).to.exist;
+      expect(summary.textContent).to.contain('line three');
+      expect(
+        element.shadowRoot!.querySelector(
+          'sl-tab-panel[name="output"] sl-copy-button'
+        )
+      ).to.exist;
+    });
+
     it('reads the conversation through the shared session view', async () => {
       const element = await load('exec-1');
       const transcript = element.shadowRoot!.querySelector(
@@ -899,11 +979,17 @@ describe('FlowExecutionView', () => {
         element.shadowRoot!.querySelectorAll('.header-actions sl-menu-item')
       ).map((item) => (item.textContent || '').trim());
 
-      expect(items).to.eql(['Copy execution id', 'Copy session id']);
+      // "View flow" is in the menu for the phone layout, where the header
+      // has no room for it; CSS hides it on a wide screen.
+      expect(items).to.eql([
+        'View flow',
+        'Copy execution id',
+        'Copy session id',
+      ]);
       // exec-1 has no session reference, so that item cannot be clicked.
       expect(
         element
-          .shadowRoot!.querySelectorAll('.header-actions sl-menu-item')[1]
+          .shadowRoot!.querySelectorAll('.header-actions sl-menu-item')[2]
           .hasAttribute('disabled')
       ).to.equal(true);
     });

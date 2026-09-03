@@ -2,6 +2,7 @@ import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { AnsiUp } from 'ansi_up';
+import { Router } from '@vaadin/router';
 import DOMPurify from 'dompurify';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 
@@ -145,6 +146,14 @@ function firstErrorLine(message?: string | null): string {
   if (!message) return '';
   const line = message.split('\n').find((part) => part.trim().length > 0);
   return (line || '').trim();
+}
+
+/**
+ * The gateway-events endpoint returns every log row of the execution; only
+ * the model calls carry request/response detail worth a card.
+ */
+function isModelGatewayCall(event: FlowGatewayEvent): boolean {
+  return (event.type || '').includes('model_gateway_call');
 }
 
 function shortenIdentifier(value: string, length = 8): string {
@@ -437,14 +446,9 @@ export class FlowExecutionView extends LitElement {
         font-weight: 600;
         color: var(--sl-color-neutral-900);
       }
-      .output-summary {
-        font-size: var(--console-text-body);
-        line-height: 1.6;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-      }
       .error-block,
-      .prompt-block {
+      .prompt-block,
+      .output-summary {
         margin: 0;
         padding: 12px;
         border-radius: var(--sl-border-radius-medium);
@@ -572,7 +576,18 @@ export class FlowExecutionView extends LitElement {
       .log-group-lines .log-timestamp {
         color: var(--console-meta-color);
       }
+      /* The two navigations are buttons on a desktop and menu items on a
+         phone, where the header only has room for the primary action. */
+      .header-actions sl-menu-item.narrow-action {
+        display: none;
+      }
       @media (max-width: 700px) {
+        .header-actions .secondary-action {
+          display: none;
+        }
+        .header-actions sl-menu-item.narrow-action {
+          display: block;
+        }
         .summary-strip {
           gap: 8px 20px;
         }
@@ -1182,6 +1197,13 @@ export class FlowExecutionView extends LitElement {
 
   gatewayEventsLoaded = false;
 
+  /**
+   * True once the events were fetched with full payloads. The metadata-only
+   * fetch drops `conversation_preview`, which is exactly what the transcript
+   * is built from, so the transcript tab has to ask for the full payloads.
+   */
+  gatewayEventsFullLoaded = false;
+
   async loadGatewayEvents(metadataOnly: boolean = false) {
     if (!this.executionId) return;
     this.isLoadingGatewayEvents = true;
@@ -1194,6 +1216,7 @@ export class FlowExecutionView extends LitElement {
       this.gatewayEvents = response.logs || [];
       this.gatewayEventsSource = response.source;
       this.gatewayEventsLoaded = true;
+      this.gatewayEventsFullLoaded = !metadataOnly;
       this.applyGatewayMetricsFromEvents();
     } catch (error) {
       console.error('Failed to fetch gateway events:', error);
@@ -1236,6 +1259,7 @@ export class FlowExecutionView extends LitElement {
       this.gatewayEvents = [];
       this.gatewayEventsSource = null;
       this.gatewayEventsLoaded = false;
+      this.gatewayEventsFullLoaded = false;
       this.liveToolActivityEvents = [];
 
       // Fetch execution details
@@ -1279,8 +1303,9 @@ export class FlowExecutionView extends LitElement {
 
       // The timeline is the default tab and merges gateway requests, so the
       // events are part of the first paint rather than a tab-open fetch.
+      // A deep link straight to the transcript needs the full payloads.
       this.isLoadingGatewayEvents = false;
-      void this.loadGatewayEvents(true);
+      void this.loadGatewayEvents(this.activeTab !== 'transcript');
 
       // Fetch flow details
       if (this.execution && this.execution.flow_id) {
@@ -1692,11 +1717,14 @@ export class FlowExecutionView extends LitElement {
     if (!isExecutionTab(name)) return;
     this.activeTab = name;
     this.rememberTab(name);
-    if (
-      (name === 'timeline' || name === 'transcript') &&
-      !this.gatewayEventsLoaded &&
-      !this.isLoadingGatewayEvents
-    ) {
+    if (this.isLoadingGatewayEvents) return;
+    if (name === 'transcript' && !this.gatewayEventsFullLoaded) {
+      // The transcript needs conversation_preview, which the metadata-only
+      // fetch strips, so opening it upgrades the events to full payloads once.
+      this.loadGatewayEvents(false);
+      return;
+    }
+    if (name === 'timeline' && !this.gatewayEventsLoaded) {
       this.loadGatewayEvents(true);
     }
   }
@@ -1811,6 +1839,10 @@ export class FlowExecutionView extends LitElement {
     }
 
     for (const event of this.gatewayEvents) {
+      // The gateway-events endpoint returns every log row of the execution,
+      // not only the model calls. The non-call rows are the same rows the
+      // logs endpoint already gave us, so only model calls earn a card here.
+      if (!isModelGatewayCall(event)) continue;
       items.push({
         kind: 'gateway',
         key: `gateway-${this.getGatewayEventKey(event)}`,
@@ -2077,10 +2109,17 @@ export class FlowExecutionView extends LitElement {
           execution.model_output_summary
             ? html`
                 <section class="output-section">
-                  <h2 class="section-title">Summary</h2>
-                  <div class="output-summary">
-                    ${execution.model_output_summary}
-                  </div>
+                  <h2 class="section-title">
+                    Summary
+                    <sl-copy-button
+                      value=${execution.model_output_summary}
+                      copy-label="Copy summary"
+                    ></sl-copy-button>
+                  </h2>
+                  <!-- Agents often report their whole stdout here, so it is
+                       bounded and monospaced instead of running the page. -->
+                  <pre class="output-summary" data-testid="output-summary">
+${execution.model_output_summary}</pre>
                 </section>
               `
             : ''
@@ -2107,7 +2146,10 @@ export class FlowExecutionView extends LitElement {
         <session-chat-view
           .events=${this.gatewayEvents}
           .loading=${
-            this.isLoadingGatewayEvents && this.gatewayEvents.length === 0
+            // While the events are being upgraded to full payloads there is
+            // no conversation to build yet, and claiming "nothing captured"
+            // in that gap would be a lie.
+            this.isLoadingGatewayEvents && !this.gatewayEventsFullLoaded
           }
           .followLive=${running && this.followLive}
           ?scrollable=${running}
@@ -2424,6 +2466,7 @@ ${execution.resolved_input_prompt}</pre>
           sessionReference
             ? html`
                 <sl-button
+                  class="secondary-action"
                   size="small"
                   variant="default"
                   href="/console/runtime-sessions?query=${encodeURIComponent(
@@ -2440,6 +2483,7 @@ ${execution.resolved_input_prompt}</pre>
           this.flow
             ? html`
                 <sl-button
+                  class="secondary-action"
                   size="small"
                   variant="default"
                   href="/console/flows/${this.flow.id}"
@@ -2456,6 +2500,35 @@ ${execution.resolved_input_prompt}</pre>
             label="More actions"
           ></sl-icon-button>
           <sl-menu>
+            ${
+              // On a phone the header has room for the primary action only,
+              // so the two navigations move into the menu rather than
+              // stacking a column of buttons next to the title.
+              sessionReference
+                ? html`<sl-menu-item
+                    class="narrow-action"
+                    @click=${() =>
+                      Router.go(
+                        `/console/runtime-sessions?query=${encodeURIComponent(
+                          execution.id
+                        )}`
+                      )}
+                  >
+                    Open session
+                  </sl-menu-item>`
+                : ''
+            }
+            ${
+              this.flow
+                ? html`<sl-menu-item
+                    class="narrow-action"
+                    @click=${() =>
+                      this.flow && Router.go(`/console/flows/${this.flow.id}`)}
+                  >
+                    View flow
+                  </sl-menu-item>`
+                : ''
+            }
             <sl-menu-item
               @click=${() =>
                 this.copyToClipboard(execution.id, 'Execution id copied')}
