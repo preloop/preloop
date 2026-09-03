@@ -32,7 +32,9 @@
     "ws": "^8.18.3"
   },
   "overrides": {
-    "hono": "4.13.3"
+    "hono": "4.13.3",
+    "fast-uri": "3.1.6",
+    "qs": "6.16.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.19",

@@ -81,6 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Unused dashboard test helper and redundant asyncio import**: drop
+  `isReddish` from `dashboard-view.test.ts` and the second `import asyncio`
+  in the Kubernetes log streamer (`container.py` already imports it at
+  module scope).
 - **`POST /openai/v1/responses` forwards to the upstream Responses API**:
   a Responses request used to be transcoded into a chat-completions call,
   so an upstream that implements `/responses` but not `/chat/completions`
@@ -213,11 +217,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **CodeQL runs from an in-repo workflow** on every pull request and every
+  push to `main`, so OpenSSF Scorecard can see `github/codeql-action` on
+  all commits rather than only the GitHub default-setup checks that some
+  merged PRs skipped.
+- **`@preloop-ai/claude-plugin` overrides `fast-uri` 3.1.6 and `qs` 6.16.0**
+  (Dependabot GHSA-5jgf-p345-68v8 / GHSA-f65p-4m7j-42xc / GHSA-fph4-wmhf-6fwf
+  / GHSA-jqff-g426-hqxp, GHSA-x5fp-wj9c-mxmx / GHSA-4mjr-xmp4-gh2g).
 - **Model I/O ``text_sha256`` stays a SHA-256 prompt fingerprint**:
   CodeQL flagged the digest as password hashing because scanned prompts
   can contain secrets. It is an audit fingerprint (never the raw text),
   the same pattern as API-key lookup hashes. The algorithm is unchanged,
-  so existing ``text_sha256`` rows keep matching.
+  so existing ``text_sha256`` rows keep matching. The CodeQL suppression
+  sits on the `hashlib.sha256()` call (`codeql[py/weak-sensitive-data-hashing]`).
 
 - **Drop python-jose for PyJWT**: auth tokens, email/reset tokens, WebAuthn
   challenge state, MCP OAuth authorize codes, and APNs ES256 client

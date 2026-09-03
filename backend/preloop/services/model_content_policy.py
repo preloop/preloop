@@ -240,8 +240,10 @@ def _text_privacy(text: str) -> str:
     This is not password storage: a KDF would change existing
     ``text_sha256`` values and would run on every model call.
     """
-    # codeql[py/weak-sensitive-data-hashing] Prompt fingerprint for audit, not password hashing
-    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+    # Audit fingerprint of possibly-secret prompt text, not a password hash.
+    digest = hashlib.sha256()  # codeql[py/weak-sensitive-data-hashing]
+    digest.update(text.encode("utf-8", errors="replace"))
+    return digest.hexdigest()
 
 
 def _rule_enables_detector(rule: ModelIORule, name: str) -> bool:

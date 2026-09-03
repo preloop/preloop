@@ -1,0 +1,53 @@
+# In-repo CodeQL so Scorecard sees github/codeql-action on every
+# pull_request and every push to main. Default setup only covers some
+# merged PRs (Scorecard SAST: "not run on all commits").
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  # No base-branch filter: stacked PRs must still be scanned.
+  pull_request:
+  schedule:
+    - cron: '17 5 * * 2'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: go
+            build-mode: autobuild
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@a2983b8bed1923f44751c5c43237f479442827b3 # v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@a2983b8bed1923f44751c5c43237f479442827b3 # v3
+        with:
+          category: "/language:${{ matrix.language }}"
