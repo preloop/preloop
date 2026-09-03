@@ -43,8 +43,11 @@ describe('DashboardView', () => {
   let aiModelsResponse: any[];
   let usersResponse: any;
   let budgetPoliciesResponse: any[];
+  /** Set by a test that wants to hold the secondary pass open. */
+  let aiModelsGate: Promise<void> | null;
 
   beforeEach(() => {
+    aiModelsGate = null;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
@@ -458,6 +461,7 @@ describe('DashboardView', () => {
         }
 
         if (url === '/api/v1/ai-models') {
+          if (aiModelsGate) await aiModelsGate;
           return json(aiModelsResponse);
         }
 
@@ -1200,6 +1204,89 @@ describe('DashboardView', () => {
         'inventory-card'
       ) as any;
       expect(inventory.flowRunsCapped).to.be.true;
+    });
+
+    it('keeps the Models tab on a skeleton until the second pass lands', async () => {
+      // The models arrive in the slow secondary pass, after `loading` has
+      // cleared. Hold that pass open and the card must still be waiting, not
+      // telling a stocked account it has no models.
+      let releaseModels = () => {};
+      aiModelsGate = new Promise<void>((resolve) => {
+        releaseModels = resolve;
+      });
+      // Nothing in the gateway breakdown either, so the tab has only the
+      // models list to draw from.
+      gatewaySummaryResponse.usage_by_model = [];
+
+      const element = await mountDashboard();
+      await waitUntil(() => !element['loading'], 'first pass did not finish');
+      await element.updateComplete;
+
+      const inventory = element.shadowRoot?.querySelector(
+        'inventory-card'
+      ) as any;
+      expect(inventory.loading, 'card still loading mid-flight').to.be.true;
+      expect(element['inventoryModelRows'].length).to.equal(0);
+      inventory.shadowRoot
+        ?.querySelector('sl-tab[panel="models"]')
+        ?.dispatchEvent(
+          new CustomEvent('sl-tab-show', {
+            detail: { name: 'models' },
+            bubbles: true,
+            composed: true,
+          })
+        );
+      await inventory.updateComplete;
+      const midFlight = (inventory.shadowRoot?.textContent || '').replace(
+        /\s+/g,
+        ' '
+      );
+      expect(midFlight).to.not.contain('No models yet');
+      expect(
+        inventory.shadowRoot?.querySelectorAll('sl-skeleton').length
+      ).to.be.greaterThan(0);
+
+      releaseModels();
+      await waitUntil(
+        () => !element['fetchingMCPAndTools'],
+        'second pass did not finish'
+      );
+      await element.updateComplete;
+      await inventory.updateComplete;
+      expect(inventory.loading).to.be.false;
+      expect(element['inventoryModelRows'][0].alias).to.equal('OpenAI GPT-5.4');
+    });
+
+    it('restores the models from the cache so a reload paints rows', async () => {
+      // The cache is keyed on the token subject, so this test needs a token
+      // shaped like one.
+      const payload = btoa(JSON.stringify({ sub: 'cache-tester' }));
+      localStorage.setItem('accessToken', `header.${payload}.signature`);
+      const key = 'preloop:dashboard:cache-tester';
+      sessionStorage.removeItem(key);
+
+      try {
+        const first = await mountLoaded();
+        expect(first['aiModels'].length).to.equal(1);
+
+        const cached = JSON.parse(sessionStorage.getItem(key) || '{}');
+        expect(cached.tools, 'tools were already cached').to.exist;
+        expect(cached.aiModels?.[0]?.name).to.equal('OpenAI GPT-5.4');
+
+        // A reload restores them before the slow pass resolves, exactly the
+        // way `tools` already was.
+        const reloaded = await mountDashboard();
+        expect(reloaded['aiModels'][0].name).to.equal('OpenAI GPT-5.4');
+        expect(reloaded['inventoryModelRows'][0].alias).to.equal(
+          'OpenAI GPT-5.4'
+        );
+        await waitUntil(
+          () => !reloaded['fetchingMCPAndTools'],
+          'second pass did not finish'
+        );
+      } finally {
+        sessionStorage.removeItem(key);
+      }
     });
 
     it('hands the feed the context it needs to name things', async () => {

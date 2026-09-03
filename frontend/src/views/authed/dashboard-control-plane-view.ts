@@ -1219,6 +1219,10 @@ export class DashboardView extends AuthedElement {
       this.totalIssues = data.totalIssues || 0;
       this.mcpServers = data.mcpServers || [];
       this.tools = data.tools || [];
+      // Restored like `tools`: both arrive in the slow secondary pass, and
+      // the Inventory Models tab would otherwise sit on "No models yet · Add
+      // a model" for the length of that pass on every reload.
+      this.aiModels = data.aiModels || [];
       this.flowExecutions = data.flowExecutions || [];
       this.flows = data.flows || [];
       this.flowExecutionsCount = data.flowExecutionsCount || 0;
@@ -1262,6 +1266,7 @@ export class DashboardView extends AuthedElement {
         totalIssues: this.totalIssues,
         mcpServers: this.mcpServers,
         tools: this.tools,
+        aiModels: this.aiModels,
         flowExecutions: this.flowExecutions,
         flows: this.flows,
         flowExecutionsCount: this.flowExecutionsCount,
@@ -2918,7 +2923,7 @@ export class DashboardView extends AuthedElement {
         .toolsTotal=${this.enabledToolsCount}
         .rangeLabel=${this.gatewayRangeLabel}
         .flowRunsCapped=${this.flowRunsCapped}
-        ?loading=${this.loading && !this.gatewaySummary}
+        ?loading=${this.loading || this.fetchingMCPAndTools}
       ></inventory-card>
     `;
   }
