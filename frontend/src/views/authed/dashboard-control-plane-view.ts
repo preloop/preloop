@@ -903,6 +903,11 @@ export class DashboardView extends AuthedElement {
         .column-layout.dashboard > .side-column > activity-feed {
           flex: 1 1 0;
           min-height: min(360px, 34dvh);
+          /* The rail is bounded and stretched above, so here (and only
+             here) the column decides the feed's height and the card's own
+             360px stop would only make the list shorter than the space it
+             has been given. */
+          --activity-feed-list-max-height: none;
         }
       }
 
