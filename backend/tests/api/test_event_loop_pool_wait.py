@@ -178,6 +178,11 @@ class _SaturatedPoolSession:
         return _blocking_call
 
 
+def _saturated_db_session() -> _SaturatedPoolSession:
+    """Dependency override that simulates a pool checkout timeout."""
+    return _SaturatedPoolSession()
+
+
 def _stub_user() -> User:
     """Build a detached user for dependency overrides."""
     return User(
@@ -233,7 +238,7 @@ async def test_pool_timeout_on_a_burst_path_does_not_stall_ping(app: FastAPI) ->
     user = _stub_user()
     account = Account(id=user.account_id, organization_name="Example Org")
 
-    app.dependency_overrides[get_db_session] = lambda: _SaturatedPoolSession()
+    app.dependency_overrides[get_db_session] = _saturated_db_session
     app.dependency_overrides[get_current_active_user] = lambda: user
     app.dependency_overrides[get_account_for_user] = lambda: account
     try:

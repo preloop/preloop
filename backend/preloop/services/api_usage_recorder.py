@@ -194,12 +194,16 @@ class ApiUsageRecorder:
             workers = list(self._workers)
             self._workers = []
             self._started = False
-        for _ in workers:
-            try:
-                self._queue.put_nowait(None)
-            except queue.Full:
-                pass
         deadline = time.monotonic() + timeout
+        for _ in workers:
+            while True:
+                try:
+                    self._queue.put_nowait(None)
+                    break
+                except queue.Full:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.05)
         for worker in workers:
             worker.join(timeout=max(0.0, deadline - time.monotonic()))
 
@@ -233,7 +237,13 @@ class ApiUsageRecorder:
     def _run(self) -> None:
         """Drain the queue in batches until asked to stop."""
         while True:
-            record = self._queue.get()
+            if self._stopping:
+                try:
+                    record = self._queue.get(timeout=0.25)
+                except queue.Empty:
+                    return
+            else:
+                record = self._queue.get()
             if record is None:
                 return
             batch = [record]

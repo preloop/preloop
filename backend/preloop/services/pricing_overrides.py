@@ -198,7 +198,12 @@ def _matches(
     alias: str,
     observed_at: datetime,
 ) -> bool:
-    """Apply the CRUD lookup's WHERE clause to one already-loaded row."""
+    """Apply the CRUD lookup's WHERE clause to one already-loaded row.
+
+    Keep in lockstep with ``CRUDModelPriceOverride.get_active_for_model``;
+    ``test_bulk_resolver_agrees_with_the_per_model_resolver`` and
+    ``test_bulk_resolver_effective_from_and_provider_precedence`` pin parity.
+    """
     if not override.is_active:
         return False
     if override.model_alias != alias:

@@ -166,3 +166,29 @@ def test_shutdown_stops_accepting_records() -> None:
     recorder.shutdown()
 
     assert recorder.submit(_record()) is False
+
+
+def test_shutdown_retries_stop_sentinel_when_queue_is_full() -> None:
+    """A full queue must not leave workers blocked on get() after shutdown."""
+    release = threading.Event()
+
+    def _blocked_session_factory() -> Any:
+        release.wait(timeout=10)
+        raise SQLAlchemyTimeoutError(POOL_TIMEOUT_MESSAGE)
+
+    recorder = ApiUsageRecorder(
+        session_factory=_blocked_session_factory,
+        queue_size=2,
+        workers=2,
+        batch_size=1,
+    )
+    try:
+        for _ in range(2):
+            assert recorder.submit(_record()) is True
+        started = time.perf_counter()
+        recorder.shutdown(timeout=2.0)
+        elapsed = time.perf_counter() - started
+    finally:
+        release.set()
+
+    assert elapsed < 2.5, "shutdown should not rely on daemon threads alone"

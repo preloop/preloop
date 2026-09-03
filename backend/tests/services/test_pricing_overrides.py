@@ -178,3 +178,58 @@ def test_bulk_resolver_agrees_with_the_per_model_resolver(db_session, test_user)
     assert bulk[str(wildcard.id)].input_price_per_1k == 3.0
     assert str(expired.id) not in bulk
     assert str(unpriced.id) not in bulk
+
+
+def test_bulk_resolver_effective_from_and_provider_precedence(db_session, test_user):
+    """Bulk path matches CRUD on effective_from ordering and provider filters."""
+    from datetime import datetime, timedelta, timezone
+
+    from preloop.services.pricing_overrides import (
+        resolve_active_override_row,
+        resolve_pricing_overrides_bulk,
+    )
+
+    ai_model = _create_model(db_session, test_user, alias="openai/ranked")
+    older = datetime.now(timezone.utc) - timedelta(days=30)
+    newer = datetime.now(timezone.utc) - timedelta(days=1)
+
+    crud_model_price_override.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={
+            "model_alias": "openai/ranked",
+            "input_price_per_1k": 1.0,
+            "effective_from": older,
+        },
+    )
+    winner = crud_model_price_override.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={
+            "model_alias": "openai/ranked",
+            "input_price_per_1k": 2.0,
+            "effective_from": newer,
+        },
+    )
+    crud_model_price_override.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={
+            "model_alias": "openai/ranked",
+            "input_price_per_1k": 9.0,
+            "provider_name": "anthropic",
+        },
+    )
+    db_session.flush()
+
+    bulk = resolve_pricing_overrides_bulk(
+        db_session, account_id=test_user.account_id, ai_models=[ai_model]
+    )
+    single = resolve_active_override_row(
+        db_session, account_id=test_user.account_id, ai_model=ai_model
+    )
+
+    assert single is not None
+    assert bulk[str(ai_model.id)].id == winner.id
+    assert str(single.id) == str(bulk[str(ai_model.id)].id)
+    assert bulk[str(ai_model.id)].input_price_per_1k == 2.0

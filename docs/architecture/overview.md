@@ -113,9 +113,10 @@ pins that a saturated pool on a hot path leaves `/api/v1/ping` responsive.
 Usage telemetry (`log_usage_sync` in `preloop/api/app.py`) is written through
 a bounded queue (`ApiUsageRecorder`, `API_USAGE_QUEUE_SIZE` default 1000) by a
 small fixed pool of writer threads (`API_USAGE_WORKERS`, default 2) that batch
-rows into one session (`API_USAGE_BATCH_SIZE`, default 50). When the queue is
-full the row is dropped and counted, rather than every request paying for its
-own logging connection under load.
+rows into one session (`API_USAGE_BATCH_SIZE`, default 50). Set
+`API_USAGE_LOGGING_ENABLED=false` to disable usage rows entirely (default
+`true`). When the queue is full the row is dropped and counted, rather than
+every request paying for its own logging connection under load.
 
 ## REST API Flow (e.g., Searching Issues)
 1.  **Client Request:** An HTTP client sends a `GET /api/v1/issues/search` request to the Preloop API server.
