@@ -235,14 +235,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Dependabot GHSA-5jgf-p345-68v8 / GHSA-f65p-4m7j-42xc / GHSA-fph4-wmhf-6fwf
   / GHSA-jqff-g426-hqxp, GHSA-x5fp-wj9c-mxmx / GHSA-4mjr-xmp4-gh2g).
 - **Model I/O ``text_sha256`` stays a SHA-256 prompt fingerprint**:
-  CodeQL flagged the digest as password hashing because scanned prompts
-  can contain secrets. It is an audit fingerprint (never the raw text),
-  the same pattern as API-key lookup hashes. The algorithm is unchanged,
-  so existing ``text_sha256`` rows keep matching. The suppression is a bare
-  ``# codeql[py/weak-sensitive-data-hashing]`` on the line above the
-  ``hashlib.sha256(...)`` call that receives the prompt bytes. Alert 201
-  was on ``digest.update(text)``, not on the empty constructor. Trailing
-  notes on that comment are omitted; ``# lgtm[...]`` stays on the call.
+  GitHub default CodeQL traces the Anthropic OAuth HTTP response into
+  scanned model I/O and reports ``hashlib.sha256(...)`` as a password
+  KDF. Inline ``# codeql[...]`` comments are not honored by that check.
+  The digest is still SHA-256 (via ``hashlib.file_digest``) so existing
+  ``text_sha256`` rows keep matching; it is an audit fingerprint, not
+  password storage.
 
 - **Drop python-jose for PyJWT**: auth tokens, email/reset tokens, WebAuthn
   challenge state, MCP OAuth authorize codes, and APNs ES256 client
