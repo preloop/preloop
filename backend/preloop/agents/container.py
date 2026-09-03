@@ -862,7 +862,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
         Raises:
             AgentStartError: When the conflicting Job does not provably
-                belong to this execution — deleting or adopting it would
+                belong to this execution. Deleting or adopting it would
                 corrupt an unrelated run, so this fails loudly instead.
         """
         try:
