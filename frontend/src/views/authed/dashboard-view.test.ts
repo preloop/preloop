@@ -45,9 +45,12 @@ describe('DashboardView', () => {
   let budgetPoliciesResponse: any[];
   /** Set by a test that wants to hold the secondary pass open. */
   let aiModelsGate: Promise<void> | null;
+  /** null means RBAC is off, so every permission check passes. */
+  let mePermissions: string[] | null;
 
   beforeEach(() => {
     aiModelsGate = null;
+    mePermissions = null;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
@@ -428,7 +431,7 @@ describe('DashboardView', () => {
             email: 'tester@example.com',
             email_verified: true,
             is_superuser: false,
-            permissions: null,
+            permissions: mePermissions,
           });
         }
 
@@ -1083,6 +1086,34 @@ describe('DashboardView', () => {
 
       element['userManagementEnabled'] = true;
       await element.updateComplete;
+      await (inventory as any).updateComplete;
+      expect((inventory as any).showUsers).to.be.true;
+    });
+
+    // Wave 8: the tab is a list of people, and the API behind it answers only
+    // to view_users. Without that permission the tab would open on an error,
+    // so it is not offered at all.
+    it('hides the Users tab from a reader without view_users', async () => {
+      mePermissions = ['view_agents', 'view_flows'];
+      const element = await mountLoaded();
+      element['userManagementEnabled'] = true;
+      await element.updateComplete;
+      const inventory = element.shadowRoot!.querySelector('inventory-card')!;
+      await (inventory as any).updateComplete;
+      expect((inventory as any).showUsers).to.be.false;
+      expect(
+        [...inventory.shadowRoot!.querySelectorAll('sl-tab')].map((tab) =>
+          tab.getAttribute('panel')
+        )
+      ).to.not.contain('users');
+    });
+
+    it('shows the Users tab to a reader with view_users', async () => {
+      mePermissions = ['view_agents', 'view_users'];
+      const element = await mountLoaded();
+      element['userManagementEnabled'] = true;
+      await element.updateComplete;
+      const inventory = element.shadowRoot!.querySelector('inventory-card')!;
       await (inventory as any).updateComplete;
       expect((inventory as any).showUsers).to.be.true;
     });
