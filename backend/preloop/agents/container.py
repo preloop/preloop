@@ -2036,8 +2036,6 @@ class ContainerAgentExecutor(AgentExecutor):
             pod_name = None
 
             # Retry for up to 60 seconds to find the pod
-            import asyncio
-
             for attempt in range(60):
                 pods = await self._k8s_core_api.list_namespaced_pod(
                     namespace=self.agent_namespace, label_selector=label_selector

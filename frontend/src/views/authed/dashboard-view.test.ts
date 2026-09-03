@@ -6,22 +6,6 @@ import { unifiedWebSocketManager } from '../../services/unified-websocket-manage
 import './dashboard-control-plane-view';
 import type { DashboardView } from './dashboard-control-plane-view';
 
-/**
- * "Is this colour a red?" - true when the red channel dominates both others
- * by a wide margin, which is what every danger token in either theme does and
- * no neutral token does. Written against the computed value so a rule that
- * hard-codes a hex is caught as well as one that names a token.
- */
-function isReddish(color: string): boolean {
-  const match = color.match(/rgba?\(([^)]+)\)/);
-  if (!match) return false;
-  const [red, green, blue, alpha = '1'] = match[1]
-    .split(',')
-    .map((part) => Number(part.trim()));
-  if (alpha === 0) return false;
-  return red > green + 24 && red > blue + 24;
-}
-
 describe('DashboardView', () => {
   let fetchStub: sinon.SinonStub;
   let connectStub: sinon.SinonStub;
