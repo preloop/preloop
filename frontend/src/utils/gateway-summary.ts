@@ -1,18 +1,13 @@
 import type { AccountGatewayUsageSummaryResponse } from '../types';
 
-/** Collapsed rows shown per model (agents, flows, ungrouped sessions). */
-export const TOP_MODEL_GROUP_PREVIEW_LIMIT = 4;
-
-/** Nested sessions shown inside one expanded agent/flow group. */
-export const TOP_MODEL_SESSION_PREVIEW_LIMIT = 4;
-
-export type TopModelsSortMetric = 'spend' | 'usage';
-
-export type UsageSortable = {
-  estimated_cost?: number;
-  request_count?: number;
-  total_requests?: number;
-};
+/**
+ * Reading one gateway summary two ways.
+ *
+ * The Overview asks for a cheap summary on every refresh and a full
+ * breakdown (per model, flow, session and tool) only on the slower second
+ * pass. These helpers keep the two from fighting: a cheap refresh must not
+ * blank the Inventory tables that the breakdown filled.
+ */
 
 /**
  * Keep per-model/session breakdowns when a lightweight summary refresh
@@ -54,34 +49,4 @@ export function hasUsageBreakdown(
     (summary.usage_by_session?.length || 0) > 0 ||
     (summary.usage_by_model?.length || 0) > 0
   );
-}
-
-export function usageSortValue(
-  item: UsageSortable,
-  metric: TopModelsSortMetric
-): number {
-  if (metric === 'usage') {
-    return item.total_requests ?? item.request_count ?? 0;
-  }
-  return item.estimated_cost ?? 0;
-}
-
-export function compareByUsageMetric(
-  a: UsageSortable,
-  b: UsageSortable,
-  metric: TopModelsSortMetric
-): number {
-  return usageSortValue(b, metric) - usageSortValue(a, metric);
-}
-
-export function previewWindow<T>(
-  items: T[],
-  limit: number,
-  expanded: boolean
-): { visible: T[]; overflow: number } {
-  const overflow = Math.max(0, items.length - limit);
-  if (expanded || overflow === 0) {
-    return { visible: items, overflow };
-  }
-  return { visible: items.slice(0, limit), overflow };
 }

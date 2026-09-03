@@ -872,14 +872,16 @@ export class InventoryCard extends LitElement {
                         <td class="identity-cell">
                           <span class="identity">
                             ${
-                            row.id
-                              ? html`<a
-                                  class="row-name"
-                                  href="/console/ai-models/${row.id}"
-                                  >${row.alias}</a
-                                >`
-                              : html`<span class="row-name">${row.alias}</span>`
-                          }
+                              row.id
+                                ? html`<a
+                                    class="row-name"
+                                    href="/console/ai-models/${row.id}"
+                                    >${row.alias}</a
+                                  >`
+                                : html`<span class="row-name"
+                                    >${row.alias}</span
+                                  >`
+                            }
                           </span>
                         </td>
                         <td class="secondary muted">
@@ -938,8 +940,8 @@ export class InventoryCard extends LitElement {
                             <a
                               class="row-name"
                               href="/console/tools#tool=${encodeURIComponent(
-                              row.name
-                            )}"
+                                row.name
+                              )}"
                               >${row.name}</a
                             >
                           </span>
