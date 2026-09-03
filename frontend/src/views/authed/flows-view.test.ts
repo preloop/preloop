@@ -97,6 +97,8 @@ describe('FlowsView', () => {
     const mockFlows = [
       { id: 'flow-1', name: 'Test Flow', description: 'A test flow' },
     ];
+    // Cards are no longer the default view, so this asks for them explicitly.
+    localStorage.setItem('preloop.flows.view_mode', 'cards');
     fetchStub = createFetchStub(mockFlows, []);
     const element = (await fixture(
       html`<flows-view></flows-view>`
@@ -153,6 +155,9 @@ describe('FlowsView', () => {
 
   describe('schedule indicators', () => {
     async function renderFlows(flows: unknown[]) {
+      // The next-run line lives on the card; the table says it in the
+      // Trigger cell's title, where there is no room for a second line.
+      localStorage.setItem('preloop.flows.view_mode', 'cards');
       fetchStub = createFetchStub(flows, []);
       const element = (await fixture(
         html`<flows-view></flows-view>`
