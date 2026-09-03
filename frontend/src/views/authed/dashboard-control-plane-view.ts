@@ -224,6 +224,12 @@ export class DashboardView extends AuthedElement {
   private initialLoadTime = Date.now();
   @state() private loading = true;
   @state() private fetchingGatewaySummary = true;
+  /**
+   * A range change refetches the summary with the old one still on screen.
+   * The card dims what it has rather than blanking while the new range
+   * arrives, so this is deliberately not `fetchingGatewaySummary`.
+   */
+  @state() private updatingUsage = false;
   @state() private fetchingRecentExecutions = true;
   @state() private fetchingApprovals = true;
   @state() private fetchingAudit = true;
@@ -1765,6 +1771,7 @@ export class DashboardView extends AuthedElement {
       this.priorGatewaySummary = priorGatewaySummary;
       this.gatewayInteractions = gatewayInteractions.items || [];
       this.fetchingGatewaySummary = false;
+      this.updatingUsage = false;
 
       this.hasFlows = (flows || []).length > 0;
       this.totalFlowsCount = (flows || []).length;
@@ -1828,6 +1835,7 @@ export class DashboardView extends AuthedElement {
       );
       this.error = 'Failed to load some overview dashboard data.';
       this.fetchingGatewaySummary = false;
+      this.updatingUsage = false;
       this.fetchingRecentExecutions = false;
       this.fetchingApprovals = false;
       this.fetchingAgents = false;
@@ -2490,6 +2498,7 @@ export class DashboardView extends AuthedElement {
         .priorSummary=${this.priorGatewaySummary}
         .policies=${this.budgetPolicies}
         .loading=${this.fetchingGatewaySummary || this.fetchingBudget}
+        ?updating=${this.updatingUsage}
         .error=${this.error}
         .timeRange=${this.gatewayTimeRange}
         .toolCallsCount=${this.toolCallsCount}
@@ -2497,7 +2506,16 @@ export class DashboardView extends AuthedElement {
           event.stopPropagation();
           this.gatewayTimeRange = event.detail.value as
             'day' | 'week' | 'month' | 'year';
-          void this.fetchDashboardData({ preserveLoadingState: true });
+          // The numbers on screen belong to the old range, so say they are
+          // being replaced instead of clearing them.
+          this.updatingUsage = true;
+          void this.fetchDashboardData({ preserveLoadingState: true }).finally(
+            () => {
+              // A refresh already in flight returns without fetching; the
+              // card should not be left spinning on it.
+              this.updatingUsage = false;
+            }
+          );
         }}
         @configure-limits=${() => (this.showBudgetDialog = true)}
       ></usage-card>

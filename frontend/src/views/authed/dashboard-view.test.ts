@@ -52,11 +52,14 @@ describe('DashboardView', () => {
    */
   let breakdownGate: Promise<void> | null;
   let breakdownCalls = 0;
+  /** Holds every gateway summary call, for tests about a range change. */
+  let summaryGate: Promise<void> | null;
 
   beforeEach(() => {
     aiModelsGate = null;
     breakdownGate = null;
     breakdownCalls = 0;
+    summaryGate = null;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
@@ -394,6 +397,9 @@ describe('DashboardView', () => {
           });
 
         if (url.startsWith('/api/v1/account/gateway-usage/summary')) {
+          if (summaryGate) {
+            await summaryGate;
+          }
           if (url.includes('include_breakdown=true')) {
             breakdownCalls += 1;
             if (breakdownCalls > 1 && breakdownGate) {
@@ -1465,6 +1471,45 @@ describe('DashboardView', () => {
       await element.updateComplete;
       await inventory.updateComplete;
       expect(inventory.usageLoading).to.be.false;
+    });
+
+    it('dims the usage numbers over a range change rather than blanking them', async () => {
+      const element = await mountDashboard();
+      await waitUntil(() => !element['loading'], 'first pass did not finish');
+      await element.updateComplete;
+
+      const usage = element.shadowRoot?.querySelector('usage-card') as any;
+      const shown = usage.summary;
+      expect(shown, 'a summary on screen before the change').to.exist;
+
+      let releaseSummary = () => {};
+      summaryGate = new Promise<void>((resolve) => {
+        releaseSummary = resolve;
+      });
+      usage.dispatchEvent(
+        new CustomEvent('range-change', {
+          detail: { value: 'year' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await element.updateComplete;
+      await usage.updateComplete;
+
+      expect(usage.updating, 'card told it is updating').to.be.true;
+      expect(usage.summary, 'last range still on screen').to.equal(shown);
+      expect(usage.shadowRoot.querySelector('.primary-value')).to.exist;
+      expect(usage.shadowRoot.querySelector('sl-skeleton')).to.not.exist;
+
+      summaryGate = null;
+      releaseSummary();
+      await waitUntil(
+        () => !element['updatingUsage'],
+        'the range change never settled'
+      );
+      await element.updateComplete;
+      await usage.updateComplete;
+      expect(usage.updating).to.be.false;
     });
 
     it('keeps the Models tab on a skeleton until the second pass lands', async () => {

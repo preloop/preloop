@@ -8,6 +8,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/radio-button/radio-button.js';
 import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
 import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
+import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import './time-range-select.ts';
 
@@ -19,6 +20,9 @@ import { budgetForecast, forecastEndLabel } from '../utils/budget-forecast';
 export type UsageUnit = 'tokens' | 'dollars';
 
 export const USAGE_UNIT_STORAGE_KEY = 'overview_usage_unit';
+
+/** How long a wait has to be before the card explains it. */
+const LONG_RANGE_HINT_MS = 2000;
 
 const PERIOD_ORDER = [
   'hourly',
@@ -56,12 +60,29 @@ export class UsageCard extends LitElement {
   priorSummary: AccountGatewayUsageSummaryResponse | null = null;
   @property({ type: Array }) policies: BudgetPolicy[] = [];
   @property({ type: Boolean }) loading = false;
+  /**
+   * A range change is in flight and the card is showing the range before it.
+   *
+   * Blanking the card on every range change threw away a true answer to ask
+   * for another one, and for the second or two in between the account looked
+   * like it had no usage at all. The numbers stay, dimmed, with a spinner in
+   * the header saying they are about to be replaced.
+   */
+  @property({ type: Boolean }) updating = false;
   @property({ type: String }) error: string | null = null;
   /** 'day' | 'week' | 'month' | 'year', shared with the rest of the page. */
   @property({ type: String }) timeRange = 'month';
   @property({ type: Number }) toolCallsCount = 0;
 
   @state() private unit: UsageUnit = 'tokens';
+  /**
+   * "Long ranges take longer" only once the wait is long enough to need
+   * explaining. Said immediately it would be an excuse offered before
+   * anything went wrong; a year of usage that comes back in 300ms needs no
+   * apology.
+   */
+  @state() private longRangeHint = false;
+  private longRangeTimer: number | null = null;
 
   static styles = [
     budgetTrackStyles,
@@ -104,9 +125,44 @@ export class UsageCard extends LitElement {
       }
 
       .title {
+        align-items: center;
+        display: flex;
         font-size: 0.9375rem; /* console card title */
         font-weight: 600;
+        gap: var(--sl-spacing-x-small);
         color: var(--sl-color-neutral-900);
+      }
+
+      /* The one place the card says it is working. Small enough to sit in a
+         title, and it is the second and last ambient motion on this card:
+         it exists only while a request is in flight. */
+      .updating-spinner {
+        font-size: 0.85rem;
+        --indicator-color: var(--sl-color-neutral-500);
+        --track-width: 2px;
+      }
+
+      /* Last range's numbers, on their way out. Readable, clearly not
+         current, and in exactly the place the new ones will appear. */
+      .is-updating .primary-value,
+      .is-updating .primary-label,
+      .is-updating .delta,
+      .is-updating .secondary-line,
+      .is-updating .sparkline,
+      .is-updating .budgets {
+        opacity: 0.6;
+      }
+
+      .long-range-hint {
+        color: var(--sl-color-neutral-500);
+        font-size: 0.8125rem;
+        margin-top: var(--sl-spacing-2x-small);
+      }
+
+      /* Where the number came from, not what it is: same register as the
+         range it qualifies. */
+      .provenance {
+        color: var(--sl-color-neutral-500);
       }
 
       .body {
@@ -284,6 +340,70 @@ export class UsageCard extends LitElement {
     }
   }
 
+  disconnectedCallback(): void {
+    this.clearLongRangeTimer();
+    super.disconnectedCallback();
+  }
+
+  // In `willUpdate` so that dropping the hint again lands in the same render
+  // pass as the property change that dropped it.
+  willUpdate(changed: Map<string, unknown>): void {
+    if (!changed.has('updating') && !changed.has('timeRange')) {
+      return;
+    }
+    // Only a year: the shorter ranges are back before anybody would read a
+    // sentence about them, and saying it there would be noise.
+    if (this.updating && this.timeRange === 'year') {
+      if (this.longRangeTimer === null && !this.longRangeHint) {
+        this.longRangeTimer = window.setTimeout(() => {
+          this.longRangeTimer = null;
+          this.longRangeHint = true;
+        }, LONG_RANGE_HINT_MS);
+      }
+      return;
+    }
+    this.clearLongRangeTimer();
+    if (this.longRangeHint) {
+      this.longRangeHint = false;
+    }
+  }
+
+  private clearLongRangeTimer(): void {
+    if (this.longRangeTimer !== null) {
+      window.clearTimeout(this.longRangeTimer);
+      this.longRangeTimer = null;
+    }
+  }
+
+  /**
+   * True when the server says the summary came out of a pre-aggregated
+   * rollup. Read defensively: servers that do not roll up send neither
+   * field, and the card then claims nothing about where the number is from.
+   */
+  private get fromRollup(): boolean {
+    const summary = this.summary;
+    if (!summary) return false;
+    return (
+      summary.from_rollup === true ||
+      (summary.source || '').toLowerCase() === 'rollup'
+    );
+  }
+
+  /** "· from rollup", or nothing at all. */
+  private renderProvenance() {
+    if (!this.fromRollup) return nothing;
+    return html`<span class="provenance" data-testid="usage-provenance"
+      >· from rollup</span
+    >`;
+  }
+
+  private renderLongRangeHint() {
+    if (!this.longRangeHint || !this.updating) return nothing;
+    return html`<div class="long-range-hint" data-testid="long-range-hint">
+      Long ranges take longer
+    </div>`;
+  }
+
   private get rangeLabel(): string {
     if (this.timeRange === 'day') return '24h';
     if (this.timeRange === 'week') return '7d';
@@ -379,6 +499,7 @@ export class UsageCard extends LitElement {
           <div class="primary-value">${this.formatCurrency(cost)}</div>
           <div class="primary-label">
             <span>est. spend · ${this.rangeLabel}</span>
+            ${this.renderProvenance()}
             <sl-tooltip
               content="Estimated from provider list prices and your plan. See Cost for reconciliation."
             >
@@ -388,7 +509,7 @@ export class UsageCard extends LitElement {
               ></sl-icon>
             </sl-tooltip>
           </div>
-          ${this.renderDelta()}
+          ${this.renderDelta()} ${this.renderLongRangeHint()}
         </div>
       `;
     }
@@ -398,8 +519,9 @@ export class UsageCard extends LitElement {
         <div class="primary-value">${this.formatCompactNumber(tokens)}</div>
         <div class="primary-label">
           <span>tokens · ${this.rangeLabel}</span>
+          ${this.renderProvenance()}
         </div>
-        ${this.renderDelta()}
+        ${this.renderDelta()} ${this.renderLongRangeHint()}
       </div>
     `;
   }
@@ -716,7 +838,18 @@ export class UsageCard extends LitElement {
     return html`
       <sl-card class="content-card">
         <div slot="header" class="header">
-          <div class="title">Usage</div>
+          <div class="title">
+            Usage
+            ${
+              this.updating
+                ? html`<sl-spinner
+                    class="updating-spinner"
+                    data-testid="usage-updating"
+                    aria-label="Updating usage"
+                  ></sl-spinner>`
+                : nothing
+            }
+          </div>
           <div class="header-controls">
             ${this.renderUnitToggle()}
             <time-range-select
@@ -733,7 +866,7 @@ export class UsageCard extends LitElement {
           </div>
         </div>
 
-        <div class="body">
+        <div class="body ${this.updating ? 'is-updating' : ''}">
           ${
             this.error
               ? html`<sl-alert variant="danger" open>
