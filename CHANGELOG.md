@@ -222,6 +222,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Frontend `fflate` 0.7.5**: override the `deck.gl` transitive so ZIP64
+  inflate cannot loop on a malformed archive (GHSA-px8p-9vwx-vf98 /
+  Dependabot #126).
 - **CodeQL runs from an in-repo workflow** on every pull request and every
   push to `main`, so OpenSSF Scorecard can see `github/codeql-action` on
   all commits rather than only the GitHub default-setup checks that some
@@ -232,12 +235,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Dependabot GHSA-5jgf-p345-68v8 / GHSA-f65p-4m7j-42xc / GHSA-fph4-wmhf-6fwf
   / GHSA-jqff-g426-hqxp, GHSA-x5fp-wj9c-mxmx / GHSA-4mjr-xmp4-gh2g).
 - **Model I/O ``text_sha256`` stays a SHA-256 prompt fingerprint**:
-  CodeQL flagged the digest as password hashing because scanned prompts
-  can contain secrets. It is an audit fingerprint (never the raw text),
-  the same pattern as API-key lookup hashes. The algorithm is unchanged,
-  so existing ``text_sha256`` rows keep matching. The CodeQL suppression
-  matches the API-key fingerprint pattern (comment on the ``hashlib.sha256``
-  call, ``codeql[py/weak-sensitive-data-hashing]``).
+  GitHub default CodeQL traces the Anthropic OAuth HTTP response into
+  scanned model I/O and reports ``hashlib.sha256(...)`` as a password
+  KDF. Inline ``# codeql[...]`` comments are not honored by that check.
+  The digest is still SHA-256 (via ``hashlib.file_digest``) so existing
+  ``text_sha256`` rows keep matching; it is an audit fingerprint, not
+  password storage.
 
 - **Drop python-jose for PyJWT**: auth tokens, email/reset tokens, WebAuthn
   challenge state, MCP OAuth authorize codes, and APNs ES256 client
