@@ -18,15 +18,12 @@ import {
   getFlowExecutionGatewayEvent,
   retryFlowExecution,
 } from '../../api';
-import type {
-  FlowGatewayConversationPreviewMessage,
-  FlowGatewayEvent,
-  FlowGatewayEventPayload,
-} from '../../types';
+import type { FlowGatewayEvent } from '../../types';
 import {
-  parseUTCDate,
   formatLocalTime,
+  formatRelativeTime,
   formatUTCDateTime,
+  parseUTCDate,
 } from '../../utils/date';
 import { RUNNING_STATUSES, executionDurationText } from '../../utils/execution';
 import {
@@ -34,21 +31,32 @@ import {
   isSubjectFallback,
   renderExecutionSubject,
 } from '../../utils/execution-subject';
+import {
+  executionModelCss,
+  executionStatusLabel,
+  executionStatusVariant,
+  formatEstimatedCost,
+  renderExecutionModel,
+  type ExecutionModelSource,
+  type ExecutionModelUsage,
+} from '../../utils/execution-presentation';
 import '../../components/preloop-gateway-event.ts';
-import '@shoelace-style/shoelace/dist/components/card/card.js';
+import '../../components/view-header.ts';
+import '../../components/json-tree.ts';
+import '../../components/session-chat-view';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
-import '@shoelace-style/shoelace/dist/components/progress-bar/progress-bar.js';
-import '@shoelace-style/shoelace/dist/components/relative-time/relative-time.js';
-import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
+import '@shoelace-style/shoelace/dist/components/button/button.js';
+import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
+import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
-import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
+import '@shoelace-style/shoelace/dist/components/menu/menu.js';
+import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
-import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 
@@ -65,6 +73,10 @@ interface FlowExecution {
   status: string;
   start_time: string;
   end_time?: string;
+  result?: any;
+  model_alias?: string | null;
+  provider_name?: string | null;
+  models_used?: ExecutionModelUsage[] | null;
   actions_taken_summary?: any[];
   model_output_summary?: string;
   resolved_input_prompt?: string;
@@ -98,6 +110,71 @@ interface ToolActivityEntry {
   payload?: any;
 }
 
+/** Tabs of the execution page, in the order they are shown. */
+const EXECUTION_TABS = [
+  'timeline',
+  'output',
+  'transcript',
+  'logs',
+  'input',
+] as const;
+type ExecutionTab = (typeof EXECUTION_TABS)[number];
+
+const TAB_STORAGE_KEY = 'preloop.execution-view.tab';
+
+/** Same threshold the session widget uses before it offers "jump to latest". */
+const TIMELINE_FOLLOW_THRESHOLD_PX = 48;
+
+function isExecutionTab(value: unknown): value is ExecutionTab {
+  return (
+    typeof value === 'string' &&
+    (EXECUTION_TABS as readonly string[]).includes(value)
+  );
+}
+
+function timelineTime(timestamp: string): number {
+  const parsed = timestamp ? parseUTCDate(timestamp).getTime() : NaN;
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+/**
+ * Failed runs get one danger-toned line under the strip, so the first line
+ * of the error is what has to fit; the full text lives in the Output tab.
+ */
+function firstErrorLine(message?: string | null): string {
+  if (!message) return '';
+  const line = message.split('\n').find((part) => part.trim().length > 0);
+  return (line || '').trim();
+}
+
+function shortenIdentifier(value: string, length = 8): string {
+  if (!value) return '';
+  return value.length <= length ? value : `${value.slice(0, length)}…`;
+}
+
+/** One entry of the merged timeline before consecutive log lines are folded. */
+interface TimelineItem {
+  kind: 'gateway' | 'tool' | 'status' | 'log';
+  key: string;
+  timestamp: string;
+  gatewayEvent?: FlowGatewayEvent;
+  tool?: ToolActivityEntry;
+  log?: FlowExecutionUpdate;
+  statusLabel?: string;
+  statusVariant?: string;
+  statusDetail?: string;
+}
+
+/** A timeline entry as rendered: either one event or a run of log lines. */
+type TimelineRow =
+  | { kind: 'event'; key: string; timestamp: string; item: TimelineItem }
+  | {
+      kind: 'logs';
+      key: string;
+      timestamp: string;
+      logs: FlowExecutionUpdate[];
+    };
+
 @customElement('flow-execution-view')
 export class FlowExecutionView extends LitElement {
   // Vaadin Router lifecycle callback
@@ -109,9 +186,22 @@ export class FlowExecutionView extends LitElement {
     reducedMotionStyles,
     unsafeCSS(consoleStyles),
     unsafeCSS(executionSubjectCss),
+    unsafeCSS(executionModelCss),
     css`
       :host {
         display: block;
+      }
+      .page-loading {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 48px;
+        gap: 16px;
+      }
+      .back-row {
+        margin-bottom: var(--sl-spacing-small);
+        margin-left: -12px;
       }
       /* Body size, not meta: this line says what the run was about, and on
          this page that is second in importance only to the flow name. */
@@ -120,64 +210,283 @@ export class FlowExecutionView extends LitElement {
         margin-top: var(--sl-spacing-2x-small);
         max-width: 100%;
       }
-      .summary-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 16px;
+      .status-pill {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      /* One of the page's two ambient animations: the dot that says this run
+         is still going. The chip beside it stays a soft tint. */
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--sl-color-primary-600);
+        animation: execution-pulse 2s infinite;
+      }
+      @keyframes execution-pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.4;
+        }
+      }
+      .header-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        flex: 1;
+        min-width: 0;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      /* The facts about the run live on one hairline row, not in five boxes:
+         labels in the meta register, values in body ink. */
+      .summary-strip {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 8px 28px;
+        padding: 12px 0;
+        border-top: 1px solid var(--console-hairline);
+        border-bottom: 1px solid var(--console-hairline);
         margin-bottom: 16px;
       }
-      .summary-value {
-        font-size: 1.2rem;
-        font-weight: 600;
+      .strip-item {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        min-width: 0;
+      }
+      .strip-label {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+      }
+      .strip-value {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 6px;
         color: var(--sl-color-neutral-900);
+        font-size: var(--console-text-body);
+        font-variant-numeric: tabular-nums;
         overflow-wrap: anywhere;
       }
-      .summary-subtext {
-        margin-top: 6px;
-        color: var(--sl-color-neutral-600);
-        font-size: 0.875rem;
+      .strip-note {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+      }
+      .strip-code {
+        font-family: var(--sl-font-mono);
+        font-size: var(--console-text-meta);
+      }
+      .strip-link {
+        color: var(--sl-color-primary-700);
+        font-family: var(--sl-font-mono);
+        font-size: var(--console-text-meta);
+        text-decoration: none;
+      }
+      .strip-link:hover,
+      .strip-link:focus-visible {
+        text-decoration: underline;
+      }
+      .strip-value sl-copy-button::part(button) {
+        padding: 0 2px;
+      }
+      /* Red appears twice on this page: the status pill and this line. */
+      .error-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: -4px 0 16px;
+        color: var(--sl-color-danger-700);
+        font-size: var(--console-text-body);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .execution-tabs {
         margin-bottom: 16px;
       }
-      .output-workspace {
+      .execution-tabs::part(base) {
+        --indicator-color: var(--sl-color-primary-600);
+      }
+      .panel-empty {
+        padding: 32px 0;
+        color: var(--console-meta-color);
+        font-size: var(--console-text-body);
+      }
+      .timeline-panel {
+        position: relative;
+      }
+      .timeline-toolbar {
         display: flex;
-        flex-direction: column;
-        gap: 16px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding-bottom: 8px;
       }
-      .output-main {
-        min-width: 0;
+      .timeline-count {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+        font-variant-numeric: tabular-nums;
       }
-      .output-sidebar {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-      }
-      .output-sidebar-card {
-        min-width: 0;
-      }
-      .execution-metadata-list {
-        display: grid;
-        grid-template-columns: minmax(110px, auto) minmax(0, 1fr);
-        gap: 10px 12px;
-        align-items: start;
-        font-size: 0.95rem;
-      }
-      .execution-metadata-label {
-        color: var(--sl-color-neutral-600);
-        font-weight: 600;
-      }
-      .execution-metadata-value {
-        min-width: 0;
-        overflow-wrap: anywhere;
-      }
-      .execution-metadata-value code {
-        font-size: 0.85em;
-      }
-      .output-sidebar .tool-activity-list {
-        max-height: 520px;
+      /* While the run is live the stream owns a viewport-sized region and
+         scrolls inside itself, so the newest item stays where the eye is.
+         A finished run is a document: it scrolls with the page. */
+      .timeline-stream.is-live {
+        height: calc(100dvh - 340px);
+        min-height: 320px;
         overflow-y: auto;
         padding-right: 4px;
+      }
+      .timeline-row {
+        display: grid;
+        grid-template-columns: 76px minmax(0, 1fr);
+        gap: 12px;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--console-hairline);
+      }
+      .timeline-row:last-child {
+        border-bottom: none;
+      }
+      .timeline-time {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .timeline-body {
+        min-width: 0;
+      }
+      .timeline-title {
+        color: var(--sl-color-neutral-900);
+        font-size: var(--console-text-body);
+        font-weight: 600;
+      }
+      .timeline-meta {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+        overflow-wrap: anywhere;
+      }
+      .timeline-detail {
+        margin: 6px 0;
+      }
+      .timeline-summary {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .timeline-details::part(base) {
+        border: none;
+        background: transparent;
+      }
+      .timeline-details::part(header) {
+        padding: 0;
+      }
+      .timeline-details::part(content) {
+        padding: 8px 0 0;
+        border: none;
+      }
+      .log-group-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: none;
+        background: none;
+        padding: 0;
+        color: var(--console-meta-color);
+        font-family: inherit;
+        font-size: var(--console-text-meta);
+        cursor: pointer;
+      }
+      .log-group-toggle:hover {
+        color: var(--sl-color-neutral-900);
+      }
+      .log-group-lines {
+        margin-top: 8px;
+        padding: 8px 12px;
+        border-radius: var(--sl-border-radius-medium);
+        background: var(--sl-color-neutral-100);
+        font-family: var(--sl-font-mono);
+        font-size: 12px;
+        max-height: 320px;
+        overflow: auto;
+      }
+      .jump-latest {
+        position: sticky;
+        bottom: 12px;
+        display: block;
+        width: fit-content;
+        margin: -12px auto 0;
+      }
+      .output-panel,
+      .input-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+      .section-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 8px;
+        font-size: var(--console-text-body);
+        font-weight: 600;
+        color: var(--sl-color-neutral-900);
+      }
+      .output-summary {
+        font-size: var(--console-text-body);
+        line-height: 1.6;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .error-block,
+      .prompt-block {
+        margin: 0;
+        padding: 12px;
+        border-radius: var(--sl-border-radius-medium);
+        background: var(--sl-color-neutral-100);
+        font-family: var(--sl-font-mono);
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 420px;
+        overflow: auto;
+      }
+      .error-block {
+        color: var(--sl-color-danger-700);
+      }
+      .logs-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .logs-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .logs-toolbar-meta {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .log-search {
+        max-width: 320px;
+        flex: 1;
+      }
+      .load-previous {
+        text-align: center;
+        padding: 6px 0 10px;
+      }
+      .transcript-panel {
+        min-height: 240px;
       }
       .log-container {
         background-color: #1e1e1e;
@@ -204,58 +513,10 @@ export class FlowExecutionView extends LitElement {
       .log-container::-webkit-scrollbar-thumb:hover {
         background: #666;
       }
-      .loading-indicator {
-        display: flex;
-        align-items: center;
-        color: #858585;
-        font-size: 13px;
-        height: 20px;
-      }
-      .loading-dots {
-        display: inline-flex;
-        gap: 4px;
-      }
-      .loading-dots span {
-        width: 6px;
-        height: 6px;
-        background-color: #858585;
-        border-radius: 50%;
-        animation: loadingDot 1.4s infinite ease-in-out both;
-      }
-      .loading-dots span:nth-child(1) {
-        animation-delay: -0.32s;
-      }
-      .loading-dots span:nth-child(2) {
-        animation-delay: -0.16s;
-      }
-      .loading-dots span:nth-child(3) {
-        animation-delay: 0s;
-      }
-      @keyframes loadingDot {
-        0%,
-        80%,
-        100% {
-          transform: scale(0.6);
-          opacity: 0.5;
-        }
-        40% {
-          transform: scale(1);
-          opacity: 1;
-        }
-      }
       .log-entry {
         display: flex;
         margin-bottom: 4px;
-        animation: fadeIn 0.2s ease-in;
         line-height: 1.5;
-      }
-      @keyframes fadeIn {
-        from {
-          opacity: 0;
-        }
-        to {
-          opacity: 1;
-        }
       }
       .log-timestamp {
         color: #858585;
@@ -294,16 +555,6 @@ export class FlowExecutionView extends LitElement {
         flex: 1;
         overflow-wrap: break-word;
       }
-      .terminal-input {
-        display: flex;
-        gap: 8px;
-        margin-top: 12px;
-      }
-      .controls {
-        display: flex;
-        gap: 8px;
-        margin-bottom: 12px;
-      }
       .empty-logs {
         display: flex;
         flex-direction: column;
@@ -313,203 +564,24 @@ export class FlowExecutionView extends LitElement {
         color: #858585;
         gap: 12px;
       }
-      .gateway-events-panel {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-      }
-      .gateway-panel-intro {
-        color: var(--sl-color-neutral-600);
-        font-size: 0.875rem;
-        line-height: 1.5;
-      }
-      .search-summary {
-        color: var(--sl-color-neutral-600);
-        font-size: 0.875rem;
-      }
-      .gateway-events-list {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-      }
-      .gateway-event-empty {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        min-height: 240px;
-        gap: 12px;
-        color: var(--sl-color-neutral-600);
-        border: 1px dashed var(--sl-color-neutral-300);
-        border-radius: var(--sl-border-radius-medium);
-        background: var(--sl-color-neutral-50);
-      }
-      .gateway-event {
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
-        background: var(--sl-color-neutral-0);
-      }
-      .gateway-event::part(summary) {
-        padding: 16px;
-      }
-      .gateway-event::part(content) {
-        border-top: 1px solid var(--sl-color-neutral-200);
-        padding: 16px;
-        background: var(--sl-color-neutral-50);
-      }
-      .gateway-event-summary {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-        gap: 12px;
-        align-items: center;
-        width: 100%;
-        padding-right: 12px;
-      }
-      .gateway-event-field {
-        min-width: 0;
-      }
-      .gateway-event-label {
-        font-size: 0.75rem;
-        font-weight: 600;
-        color: var(--sl-color-neutral-600);
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        margin-bottom: 4px;
-      }
-      .gateway-event-value {
-        font-size: 0.95rem;
-        font-weight: 500;
-        color: var(--sl-color-neutral-900);
-        overflow-wrap: anywhere;
-      }
-      .gateway-event-meta {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 12px;
-        margin-bottom: 16px;
-      }
-      .payload-section-title {
-        font-size: 0.875rem;
-        font-weight: 600;
-        color: var(--sl-color-neutral-700);
-        margin-bottom: 8px;
-      }
-      .payload-block {
-        background: var(--sl-color-neutral-100);
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
-        padding: 12px;
-        max-height: 360px;
-        overflow: auto;
-      }
-      .payload-block pre {
-        margin: 0;
-        white-space: pre-wrap;
-        word-break: break-word;
-        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
-        font-size: 12px;
-        line-height: 1.5;
-      }
-      .gateway-capture-policy {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        margin-bottom: 16px;
-      }
-      .gateway-capture-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-        gap: 12px;
-      }
-      .gateway-badges {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-      .conversation-preview-list {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        margin-bottom: 16px;
-      }
-      .conversation-preview-message {
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
-        background: var(--sl-color-neutral-100);
-        padding: 12px;
-      }
-      .conversation-preview-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        flex-wrap: wrap;
-        margin-bottom: 8px;
-      }
-      .conversation-preview-title {
-        font-size: 0.9rem;
-        font-weight: 600;
+      /* Log lines folded into the timeline read on the page surface, not in
+         the terminal box the Logs tab uses. */
+      .log-group-lines .log-entry {
         color: var(--sl-color-neutral-800);
       }
-      .conversation-preview-text {
-        margin: 0;
-        white-space: pre-wrap;
-        word-break: break-word;
-        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
-        font-size: 12px;
-        line-height: 1.5;
-        color: var(--sl-color-neutral-900);
+      .log-group-lines .log-timestamp {
+        color: var(--console-meta-color);
       }
-      .conversation-preview-redacted {
-        color: var(--sl-color-neutral-600);
-      }
-      .tool-activity-list {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-      }
-      .tool-activity-item {
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
-        background: var(--sl-color-neutral-50);
-        padding: 12px;
-      }
-      .tool-activity-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 12px;
-        flex-wrap: wrap;
-        margin-bottom: 8px;
-      }
-      .tool-activity-title {
-        font-weight: 600;
-        color: var(--sl-color-neutral-900);
-      }
-      .tool-activity-meta {
-        color: var(--sl-color-neutral-600);
-        font-size: 0.875rem;
-        overflow-wrap: anywhere;
-      }
-      .tool-activity-note {
-        margin-top: 12px;
-        color: var(--sl-color-neutral-600);
-        font-size: 0.875rem;
-      }
-      .tool-activity-empty {
-        color: var(--sl-color-neutral-600);
-        font-size: 0.95rem;
-        line-height: 1.5;
-      }
-      @media (min-width: 1500px) {
-        .output-workspace {
-          display: grid;
-          grid-template-columns: minmax(0, 2fr) minmax(320px, 420px);
-          align-items: start;
+      @media (max-width: 700px) {
+        .summary-strip {
+          gap: 8px 20px;
         }
-        .output-sidebar {
-          position: sticky;
-          top: 16px;
+        .timeline-row {
+          grid-template-columns: 64px minmax(0, 1fr);
+          gap: 8px;
+        }
+        .timeline-stream.is-live {
+          height: calc(100dvh - 420px);
         }
       }
     `,
@@ -546,9 +618,6 @@ export class FlowExecutionView extends LitElement {
   private gatewayEventsError: string | null = null;
 
   @state()
-  private gatewaySearchQuery = '';
-
-  @state()
   private isLoadingGatewayEvents = false;
 
   @state()
@@ -567,13 +636,7 @@ export class FlowExecutionView extends LitElement {
   private hasPricing = false;
 
   @state()
-  private commandInput = '';
-
-  @state()
   private isAutoScroll = true;
-
-  @state()
-  private isSendingCommand = false;
 
   @state()
   private loadingError: string | null = null;
@@ -592,6 +655,23 @@ export class FlowExecutionView extends LitElement {
   @state()
   private durationNow: Date = new Date();
 
+  /** Which tab is showing; seeded from `?tab=` or the remembered choice. */
+  @state()
+  private activeTab: ExecutionTab = 'timeline';
+
+  /** Whether the timeline pins itself to the newest entry as items arrive. */
+  @state()
+  private followLive = true;
+
+  @state()
+  private atTimelineBottom = true;
+
+  @state()
+  private logSearchQuery = '';
+
+  @state()
+  private expandedLogGroups: Set<string> = new Set();
+
   private durationTickIntervalId?: number;
 
   private logContainerRef?: HTMLElement;
@@ -604,6 +684,13 @@ export class FlowExecutionView extends LitElement {
   private bufferFlushInterval?: number;
   private readonly BUFFER_FLUSH_INTERVAL_MS = 500;
   private readonly MAX_LINES_PER_FLUSH = 5;
+
+  connectedCallback() {
+    super.connectedCallback();
+    // A deep link wins over the remembered tab, so a shared "?tab=logs" URL
+    // opens on logs for whoever receives it.
+    this.activeTab = this.resolveInitialTab();
+  }
 
   disconnectedCallback() {
     super.disconnectedCallback();
@@ -658,12 +745,12 @@ export class FlowExecutionView extends LitElement {
   }
 
   /**
-   * Duration text for the Timing card: the final span once the run ended,
-   * a live-ticking elapsed value while it runs (measured against
-   * `durationNow`, which the ticker refreshes), and an em dash when the
+   * Duration for the summary strip: the final span once the run ended, a
+   * live-ticking elapsed value while it runs (measured against
+   * `durationNow`, which the ticker refreshes), and a dash when the
    * timestamps cannot produce anything meaningful.
    */
-  private renderTimingDuration(): string {
+  private renderDurationText(): string {
     const execution = this.execution;
     if (!execution) return '—';
 
@@ -677,6 +764,16 @@ export class FlowExecutionView extends LitElement {
     // start it once a running execution is loaded, stop it as soon as the
     // status turns terminal.
     this.syncDurationTicker();
+
+    // While following, every new timeline entry pulls the stream down with
+    // it; a paused stream stays exactly where the operator left it.
+    if (
+      this.followLive &&
+      this.activeTab === 'timeline' &&
+      this.isExecutionRunning()
+    ) {
+      this.scrollTimelineToBottom();
+    }
 
     // When executionId property changes, fetch execution data
     if (
@@ -1085,14 +1182,6 @@ export class FlowExecutionView extends LitElement {
 
   gatewayEventsLoaded = false;
 
-  handleTabShow(e: CustomEvent) {
-    if (e.detail.name === 'gateway-events') {
-      if (!this.gatewayEventsLoaded && !this.isLoadingGatewayEvents) {
-        this.loadGatewayEvents(true);
-      }
-    }
-  }
-
   async loadGatewayEvents(metadataOnly: boolean = false) {
     if (!this.executionId) return;
     this.isLoadingGatewayEvents = true;
@@ -1146,6 +1235,7 @@ export class FlowExecutionView extends LitElement {
       this.gatewayEventsError = null;
       this.gatewayEvents = [];
       this.gatewayEventsSource = null;
+      this.gatewayEventsLoaded = false;
       this.liveToolActivityEvents = [];
 
       // Fetch execution details
@@ -1187,8 +1277,10 @@ export class FlowExecutionView extends LitElement {
       }
       this.hydrateToolActivityLogs();
 
-      // Defer loading gateway events until the tab is opened
+      // The timeline is the default tab and merges gateway requests, so the
+      // events are part of the first paint rather than a tab-open fetch.
       this.isLoadingGatewayEvents = false;
+      void this.loadGatewayEvents(true);
 
       // Fetch flow details
       if (this.execution && this.execution.flow_id) {
@@ -1228,54 +1320,6 @@ export class FlowExecutionView extends LitElement {
       this.isLoading = false;
       this.isLoadingGatewayEvents = false;
     }
-  }
-
-  getTriggerSource(): string {
-    if (!this.execution?.trigger_event_details) {
-      return 'Unknown';
-    }
-
-    const details = this.execution.trigger_event_details;
-
-    // Prefer the subject computed when the execution was created — it reads
-    // like 'preloop/preloop #78 · Pull Request Updated · 5167595c' and saves
-    // digging through the raw payload below. Older executions have none.
-    const subject = details._subject?.text;
-    if (subject) {
-      return subject;
-    }
-
-    if (details.test_mode) {
-      return 'Manual Test Run';
-    }
-
-    if (details.source && details.type) {
-      return `${details.source} ${details.type}`;
-    }
-
-    return 'Automatic';
-  }
-
-  getTriggerIcon(): string {
-    if (!this.execution?.trigger_event_details) {
-      return 'question-circle';
-    }
-
-    const details = this.execution.trigger_event_details;
-
-    if (details.test_mode) {
-      return 'play-circle';
-    }
-
-    if (details.source === 'github') {
-      return 'github';
-    }
-
-    if (details.source === 'gitlab') {
-      return 'git';
-    }
-
-    return 'lightning';
   }
 
   private appendGatewayEvent(event: FlowGatewayEvent) {
@@ -1596,283 +1640,6 @@ export class FlowExecutionView extends LitElement {
       });
   }
 
-  private renderToolActivityList(toolEntries: ToolActivityEntry[]) {
-    return html`
-      <div class="tool-activity-list">
-        ${toolEntries.map((entry) => {
-          return html`
-            <sl-details
-              class="tool-activity-item"
-              style="border:none; padding:0; background:transparent;"
-            >
-              <div
-                slot="summary"
-                class="tool-activity-header"
-                style="width: 100%; border: 1px solid var(--sl-color-neutral-200); border-radius: var(--sl-border-radius-medium); background: var(--sl-color-neutral-50); padding: 12px; margin-bottom: 0;"
-              >
-                <div>
-                  <div class="tool-activity-title">${entry.toolName}</div>
-                  <div class="tool-activity-meta">
-                    ${entry.serverName} · ${formatLocalTime(entry.timestamp)}
-                  </div>
-                </div>
-                ${
-                  entry.status
-                    ? html`
-                        <sl-badge
-                          variant=${
-                            entry.status === 'error' ||
-                            entry.status === 'failed'
-                              ? 'danger'
-                              : 'success'
-                          }
-                        >
-                          ${entry.status}
-                        </sl-badge>
-                      `
-                    : ''
-                }
-              </div>
-              <div class="payload-block" style="margin-top: 8px;">
-                ${
-                  entry.detail
-                    ? html`<div
-                        class="tool-activity-meta"
-                        style="margin-bottom: 8px; font-weight: 600;"
-                      >
-                        ${entry.detail}
-                      </div>`
-                    : ''
-                }
-                <json-tree .data=${entry.payload}></json-tree>
-              </div>
-            </sl-details>
-          `;
-        })}
-      </div>
-    `;
-  }
-
-  private renderToolActivityCard() {
-    const toolEntries = this.getToolActivityEntries();
-    const totalToolCalls = this.getTotalToolCallCount();
-    if (toolEntries.length === 0 && totalToolCalls === 0) {
-      return '';
-    }
-    return html`
-      <sl-card style="margin-bottom: 16px;">
-        <div
-          slot="header"
-          style="display: flex; justify-content: space-between; align-items: center; gap: 12px;"
-        >
-          <span>
-            <sl-icon name="tools"></sl-icon>
-            Tool Activity
-          </span>
-          <sl-badge variant="primary" pill style="margin-left: 8px;"
-            >${toolEntries.length}</sl-badge
-          >
-        </div>
-        ${
-          toolEntries.length > 0
-            ? this.renderToolActivityList(toolEntries)
-            : html`
-                <div class="tool-activity-empty">
-                  Tool calls are being counted, but no structured tool names
-                  have been captured yet.
-                </div>
-              `
-        }
-        ${
-          totalToolCalls > toolEntries.length
-            ? html`
-                <div class="tool-activity-note">
-                  ${totalToolCalls.toLocaleString()} total
-                  call${totalToolCalls === 1 ? '' : 's'} recorded, showing
-                  ${toolEntries.length.toLocaleString()} structured
-                  entr${toolEntries.length === 1 ? 'y' : 'ies'}.
-                </div>
-              `
-            : ''
-        }
-      </sl-card>
-    `;
-  }
-
-  private renderGatewayEventsPanel() {
-    const filteredEvents = this.getFilteredGatewayEvents();
-    const query = this.gatewaySearchQuery.trim();
-
-    return html`
-      <sl-card>
-        <div
-          slot="header"
-          style="display: flex; justify-content: space-between; align-items: center; gap: 12px;"
-        >
-          <span>
-            <sl-icon name="cpu"></sl-icon>
-            Gateway Events
-          </span>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            ${
-              this.gatewayEventsSource
-                ? html`
-                    <span class="gateway-panel-intro">
-                      ${
-                        this.gatewayEventsSource === 'database'
-                          ? 'Stored execution events'
-                          : 'Live execution events'
-                      }
-                    </span>
-                  `
-                : ''
-            }
-            <sl-badge pill>
-              ${
-                query
-                  ? `${filteredEvents.length}/${this.gatewayEvents.length}`
-                  : this.gatewayEvents.length
-              }
-            </sl-badge>
-          </div>
-        </div>
-
-        <div class="gateway-events-panel">
-          <div class="gateway-panel-intro">
-            Inspect normalized model gateway calls for this execution, including
-            sanitized request and response payload previews when available.
-          </div>
-          <sl-input
-            label="Search gateway events"
-            placeholder="Search previews, payloads, tool outputs, or errors"
-            .value=${this.gatewaySearchQuery}
-            @sl-input=${this.handleGatewaySearchQueryChange}
-          ></sl-input>
-          <div class="search-summary">
-            ${
-              query
-                ? `Showing ${filteredEvents.length} matching event${filteredEvents.length === 1 ? '' : 's'} for "${query}".`
-                : `Showing all ${this.gatewayEvents.length} captured event${this.gatewayEvents.length === 1 ? '' : 's'}.`
-            }
-          </div>
-
-          ${
-            this.gatewayEventsError
-              ? html`
-                  <sl-alert variant="warning" open>
-                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                    ${this.gatewayEventsError}
-                  </sl-alert>
-                `
-              : ''
-          }
-          ${
-            this.isLoadingGatewayEvents && this.gatewayEvents.length === 0
-              ? html`
-                  <div class="gateway-event-empty">
-                    <sl-spinner style="font-size: 2rem;"></sl-spinner>
-                    <p>Loading gateway events...</p>
-                  </div>
-                `
-              : this.gatewayEvents.length === 0
-                ? html`
-                    <div class="gateway-event-empty">
-                      <sl-icon
-                        name="diagram-3"
-                        style="font-size: 2rem;"
-                      ></sl-icon>
-                      <p>No gateway events recorded for this execution.</p>
-                    </div>
-                  `
-                : filteredEvents.length === 0
-                  ? html`
-                      <div class="gateway-event-empty">
-                        <sl-icon
-                          name="search"
-                          style="font-size: 2rem;"
-                        ></sl-icon>
-                        <p>No gateway events matched "${query}".</p>
-                      </div>
-                    `
-                  : html`
-                      <div class="gateway-events-list">
-                        ${filteredEvents.map((event) =>
-                          this.renderGatewayEvent(event)
-                        )}
-                      </div>
-                    `
-          }
-        </div>
-      </sl-card>
-    `;
-  }
-
-  private formatGatewayPayload(payload: unknown): string {
-    return JSON.stringify(payload, null, 2);
-  }
-
-  private handleGatewaySearchQueryChange(event: Event) {
-    this.gatewaySearchQuery = (
-      event.target as HTMLInputElement & { value: string }
-    ).value;
-  }
-
-  private getGatewaySearchText(event: FlowGatewayEvent): string {
-    const payload = event.payload || {};
-    const previewText = this.getGatewayPreviewMessages(payload)
-      .map(
-        (message) =>
-          `${message.source || ''} ${message.role || ''} ${message.text || ''}`
-      )
-      .join('\n');
-
-    return [
-      event.type,
-      event.timestamp || '',
-      payload.endpoint || '',
-      payload.endpoint_kind || '',
-      payload.model_alias || '',
-      payload.requested_model || '',
-      payload.provider_name || '',
-      payload.gateway_provider || '',
-      payload.error_detail || '',
-      payload.message || '',
-      previewText,
-      this.formatGatewayPayload(payload),
-    ]
-      .filter(Boolean)
-      .join('\n')
-      .toLowerCase();
-  }
-
-  private getFilteredGatewayEvents(): FlowGatewayEvent[] {
-    const query = this.gatewaySearchQuery.trim().toLowerCase();
-    if (!query) {
-      return this.gatewayEvents;
-    }
-    return this.gatewayEvents.filter((event) =>
-      this.getGatewaySearchText(event).includes(query)
-    );
-  }
-
-  private formatGatewayLabel(value?: string | null): string {
-    if (!value) {
-      return 'Unknown';
-    }
-    return value
-      .split('_')
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-  }
-
-  private getGatewayPreviewMessages(
-    payload: FlowGatewayEventPayload
-  ): FlowGatewayConversationPreviewMessage[] {
-    return Array.isArray(payload.conversation_preview?.messages)
-      ? payload.conversation_preview?.messages
-      : [];
-  }
-
   private renderGatewayEvent(event: FlowGatewayEvent) {
     return html`
       <preloop-gateway-event
@@ -1886,45 +1653,876 @@ export class FlowExecutionView extends LitElement {
     `;
   }
 
+  /**
+   * Tabs are deep-linkable (`?tab=logs`) and remembered per user, so a
+   * reload lands where the operator was reading instead of always on the
+   * Timeline.
+   */
+  private resolveInitialTab(): ExecutionTab {
+    const fromUrl = new URLSearchParams(window.location.search).get('tab');
+    if (isExecutionTab(fromUrl)) {
+      return fromUrl;
+    }
+    try {
+      const remembered = window.localStorage.getItem(TAB_STORAGE_KEY);
+      if (isExecutionTab(remembered)) {
+        return remembered;
+      }
+    } catch {
+      // Private-mode storage failures must not keep the page from rendering.
+    }
+    return 'timeline';
+  }
+
+  private rememberTab(tab: ExecutionTab) {
+    try {
+      window.localStorage.setItem(TAB_STORAGE_KEY, tab);
+    } catch {
+      // Ignore: remembering the tab is a convenience, not a requirement.
+    }
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('tab') !== tab) {
+      url.searchParams.set('tab', tab);
+      window.history.replaceState({}, '', `${url.pathname}${url.search}`);
+    }
+  }
+
+  handleTabShow(e: CustomEvent) {
+    const name = e.detail?.name;
+    if (!isExecutionTab(name)) return;
+    this.activeTab = name;
+    this.rememberTab(name);
+    if (
+      (name === 'timeline' || name === 'transcript') &&
+      !this.gatewayEventsLoaded &&
+      !this.isLoadingGatewayEvents
+    ) {
+      this.loadGatewayEvents(true);
+    }
+  }
+
+  /**
+   * Pause/resume for the live stream. Pausing is how an operator reads
+   * something that would otherwise scroll away; resuming snaps back to the
+   * newest item, which is what "follow" means.
+   */
+  private toggleFollowLive() {
+    this.followLive = !this.followLive;
+    if (this.followLive) {
+      this.scrollTimelineToBottom();
+    }
+  }
+
+  private jumpToLatest() {
+    this.followLive = true;
+    this.scrollTimelineToBottom();
+  }
+
+  private scrollTimelineToBottom() {
+    const stream = this.shadowRoot?.querySelector(
+      '.timeline-stream'
+    ) as HTMLElement | null;
+    if (!stream) return;
+    requestAnimationFrame(() => {
+      stream.scrollTop = stream.scrollHeight;
+      this.atTimelineBottom = true;
+    });
+  }
+
+  private handleTimelineScroll(event: Event) {
+    const stream = event.currentTarget as HTMLElement;
+    const distance =
+      stream.scrollHeight - stream.scrollTop - stream.clientHeight;
+    const atBottom = distance < TIMELINE_FOLLOW_THRESHOLD_PX;
+    if (atBottom !== this.atTimelineBottom) {
+      this.atTimelineBottom = atBottom;
+    }
+    // Scrolling away from the newest item is the operator saying "hold
+    // still"; the pill then offers the way back.
+    if (!atBottom && this.followLive) {
+      this.followLive = false;
+    }
+  }
+
+  private toggleLogGroup(key: string) {
+    const next = new Set(this.expandedLogGroups);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    this.expandedLogGroups = next;
+  }
+
+  private handleLogSearchInput(event: Event) {
+    this.logSearchQuery = (
+      event.target as HTMLInputElement & { value: string }
+    ).value;
+  }
+
+  private getFilteredLogs(): FlowExecutionUpdate[] {
+    const query = this.logSearchQuery.trim().toLowerCase();
+    if (!query) return this.logs;
+    return this.logs.filter((log) =>
+      this.getLogSearchText(log).includes(query)
+    );
+  }
+
+  private getLogSearchText(log: FlowExecutionUpdate): string {
+    const payload = log.payload;
+    const text =
+      typeof payload === 'string'
+        ? payload
+        : payload?.content ||
+          payload?.message ||
+          payload?.line ||
+          JSON.stringify(payload || {});
+    return `${log.type} ${log.timestamp} ${text}`.toLowerCase();
+  }
+
+  /**
+   * One chronological stream: gateway requests, tool calls, status changes
+   * and the run's own log lines, oldest first. Consecutive log lines fold
+   * into a single "N log lines" row so the events an operator is looking
+   * for are not buried under container chatter.
+   */
+  private buildTimelineItems(): TimelineItem[] {
+    const items: TimelineItem[] = [];
+    const execution = this.execution;
+
+    if (execution) {
+      items.push({
+        kind: 'status',
+        key: 'status-start',
+        timestamp: execution.start_time,
+        statusLabel: 'Run started',
+        statusVariant: 'neutral',
+      });
+      if (execution.end_time && !this.isExecutionRunning()) {
+        items.push({
+          kind: 'status',
+          key: 'status-end',
+          timestamp: execution.end_time,
+          statusLabel: executionStatusLabel(execution.status),
+          statusVariant: executionStatusVariant(execution.status),
+          statusDetail: firstErrorLine(execution.error_message),
+        });
+      }
+    }
+
+    for (const event of this.gatewayEvents) {
+      items.push({
+        kind: 'gateway',
+        key: `gateway-${this.getGatewayEventKey(event)}`,
+        timestamp: event.timestamp || execution?.start_time || '',
+        gatewayEvent: event,
+      });
+    }
+
+    for (const entry of this.getToolActivityEntries()) {
+      items.push({
+        kind: 'tool',
+        key: `tool-${entry.key}`,
+        timestamp: entry.timestamp,
+        tool: entry,
+      });
+    }
+
+    this.logs.forEach((log, index) => {
+      // Tool calls get their own row above; repeating them as log lines
+      // would double every tool in the stream.
+      if (log.type === 'tool_call' || log.type === 'mcp_call') return;
+      items.push({
+        kind: 'log',
+        key: `log-${index}`,
+        timestamp: log.timestamp,
+        log,
+      });
+    });
+
+    return items
+      .map((item, index) => ({ item, index }))
+      .sort((left, right) => {
+        const delta =
+          timelineTime(left.item.timestamp) -
+          timelineTime(right.item.timestamp);
+        return delta !== 0 ? delta : left.index - right.index;
+      })
+      .map((entry) => entry.item);
+  }
+
+  private getTimelineRows(): TimelineRow[] {
+    const rows: TimelineRow[] = [];
+    for (const item of this.buildTimelineItems()) {
+      if (item.kind === 'log' && item.log) {
+        const last = rows[rows.length - 1];
+        if (last && last.kind === 'logs') {
+          last.logs.push(item.log);
+          continue;
+        }
+        rows.push({
+          kind: 'logs',
+          key: `logs-${item.key}`,
+          timestamp: item.timestamp,
+          logs: [item.log],
+        });
+        continue;
+      }
+      rows.push({
+        kind: 'event',
+        key: item.key,
+        timestamp: item.timestamp,
+        item,
+      });
+    }
+    return rows;
+  }
+
+  private renderTimelineTime(timestamp: string) {
+    if (!timestamp) return html`<span class="timeline-time">--:--:--</span>`;
+    return html`<span
+      class="timeline-time"
+      title=${formatUTCDateTime(timestamp)}
+      >${formatLocalTime(timestamp)}</span
+    >`;
+  }
+
+  private renderTimelineRow(row: TimelineRow) {
+    if (row.kind === 'logs') {
+      const expanded = this.expandedLogGroups.has(row.key);
+      const count = row.logs.length;
+      return html`
+        <div class="timeline-row timeline-logs">
+          ${this.renderTimelineTime(row.timestamp)}
+          <div class="timeline-body">
+            <button
+              class="log-group-toggle"
+              type="button"
+              aria-expanded=${expanded ? 'true' : 'false'}
+              @click=${() => this.toggleLogGroup(row.key)}
+            >
+              <sl-icon
+                name=${expanded ? 'chevron-down' : 'chevron-right'}
+              ></sl-icon>
+              ${count} log line${count === 1 ? '' : 's'}
+            </button>
+            ${
+              expanded
+                ? html`<div class="log-group-lines">
+                    ${row.logs.map((log) => this.renderLogEntry(log))}
+                  </div>`
+                : ''
+            }
+          </div>
+        </div>
+      `;
+    }
+
+    const item = row.item;
+    if (item.kind === 'gateway' && item.gatewayEvent) {
+      return html`
+        <div class="timeline-row timeline-gateway">
+          ${this.renderTimelineTime(row.timestamp)}
+          <div class="timeline-body">
+            ${this.renderGatewayEvent(item.gatewayEvent)}
+          </div>
+        </div>
+      `;
+    }
+
+    if (item.kind === 'tool' && item.tool) {
+      const tool = item.tool;
+      const failed = tool.status === 'error' || tool.status === 'failed';
+      return html`
+        <div class="timeline-row timeline-tool">
+          ${this.renderTimelineTime(row.timestamp)}
+          <div class="timeline-body">
+            <sl-details class="timeline-details">
+              <div slot="summary" class="timeline-summary">
+                <span class="timeline-title">${tool.toolName}</span>
+                <span class="timeline-meta">${tool.serverName}</span>
+                ${
+                  tool.status
+                    ? html`<sl-badge
+                        class="chip"
+                        pill
+                        variant=${failed ? 'danger' : 'success'}
+                        >${executionStatusLabel(tool.status)}</sl-badge
+                      >`
+                    : ''
+                }
+              </div>
+              ${
+                tool.detail
+                  ? html`<div class="timeline-meta timeline-detail">
+                      ${tool.detail}
+                    </div>`
+                  : ''
+              }
+              <json-tree .data=${tool.payload}></json-tree>
+            </sl-details>
+          </div>
+        </div>
+      `;
+    }
+
+    return html`
+      <div class="timeline-row timeline-status">
+        ${this.renderTimelineTime(row.timestamp)}
+        <div class="timeline-body">
+          <span class="timeline-title">${item.statusLabel}</span>
+          ${
+            item.statusDetail
+              ? html`<span class="timeline-meta">${item.statusDetail}</span>`
+              : ''
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  private renderTimelinePanel(running: boolean) {
+    const rows = this.getTimelineRows();
+    return html`
+      <div class="timeline-panel">
+        <div class="timeline-toolbar">
+          <span class="timeline-count"
+            >${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}</span
+          >
+          ${
+            running
+              ? html`
+                  <sl-button
+                    size="small"
+                    variant="text"
+                    class="follow-pill"
+                    data-testid="follow-live"
+                    @click=${this.toggleFollowLive}
+                  >
+                    <sl-icon
+                      slot="prefix"
+                      name=${this.followLive ? 'pause-fill' : 'play-fill'}
+                    ></sl-icon>
+                    ${this.followLive ? 'Following live' : 'Paused'}
+                  </sl-button>
+                `
+              : ''
+          }
+        </div>
+        <div
+          class="timeline-stream ${running ? 'is-live' : ''}"
+          data-testid="timeline-stream"
+          @scroll=${this.handleTimelineScroll}
+        >
+          ${
+            rows.length === 0
+              ? html`<div class="panel-empty">
+                  Nothing recorded for this run yet.
+                </div>`
+              : rows.map((row) => this.renderTimelineRow(row))
+          }
+        </div>
+        ${
+          running && !this.atTimelineBottom
+            ? html`<sl-button
+                class="jump-latest"
+                data-testid="jump-latest"
+                size="small"
+                pill
+                @click=${this.jumpToLatest}
+                >Jump to latest</sl-button
+              >`
+            : ''
+        }
+      </div>
+    `;
+  }
+
+  private renderOutputPanel(execution: FlowExecution) {
+    const hasAnything =
+      execution.error_message ||
+      execution.result ||
+      execution.model_output_summary ||
+      (execution.actions_taken_summary || []).length > 0;
+
+    if (!hasAnything) {
+      return html`<div class="panel-empty">
+        This run reported no result, summary or error.
+      </div>`;
+    }
+
+    return html`
+      <div class="output-panel">
+        ${
+          execution.error_message
+            ? html`
+                <section class="output-section">
+                  <h2 class="section-title">Error</h2>
+                  <pre class="error-block">${execution.error_message}</pre>
+                </section>
+              `
+            : ''
+        }
+        ${
+          execution.result
+            ? html`
+                <section class="output-section">
+                  <h2 class="section-title">Result</h2>
+                  <json-tree .data=${execution.result}></json-tree>
+                </section>
+              `
+            : ''
+        }
+        ${
+          execution.model_output_summary
+            ? html`
+                <section class="output-section">
+                  <h2 class="section-title">Summary</h2>
+                  <div class="output-summary">
+                    ${execution.model_output_summary}
+                  </div>
+                </section>
+              `
+            : ''
+        }
+        ${
+          (execution.actions_taken_summary || []).length > 0
+            ? html`
+                <section class="output-section">
+                  <h2 class="section-title">Actions taken</h2>
+                  <json-tree
+                    .data=${execution.actions_taken_summary}
+                  ></json-tree>
+                </section>
+              `
+            : ''
+        }
+      </div>
+    `;
+  }
+
+  private renderTranscriptPanel(running: boolean) {
+    return html`
+      <div class="transcript-panel">
+        <session-chat-view
+          .events=${this.gatewayEvents}
+          .loading=${
+            this.isLoadingGatewayEvents && this.gatewayEvents.length === 0
+          }
+          .followLive=${running && this.followLive}
+          ?scrollable=${running}
+          emptyText="No model conversation was captured for this run."
+        ></session-chat-view>
+      </div>
+    `;
+  }
+
+  private renderLogsPanel(running: boolean) {
+    const filtered = this.getFilteredLogs();
+    const query = this.logSearchQuery.trim();
+    return html`
+      <div class="logs-panel">
+        <div class="logs-toolbar">
+          <sl-input
+            class="log-search"
+            size="small"
+            clearable
+            placeholder="Search log lines"
+            .value=${this.logSearchQuery}
+            @sl-input=${this.handleLogSearchInput}
+          >
+            <sl-icon slot="prefix" name="search"></sl-icon>
+          </sl-input>
+          <div class="logs-toolbar-meta">
+            <span class="timeline-count">
+              ${
+                query
+                  ? `${filtered.length} of ${this.logs.length} lines`
+                  : `${this.logs.length} line${this.logs.length === 1 ? '' : 's'}`
+              }
+            </span>
+            ${
+              this.logs.length > 0
+                ? html`<sl-button
+                    size="small"
+                    variant="text"
+                    @click=${this.copyAllLogs}
+                  >
+                    <sl-icon slot="prefix" name="clipboard"></sl-icon>
+                    Copy logs
+                  </sl-button>`
+                : ''
+            }
+            ${
+              running
+                ? html`<sl-button
+                    size="small"
+                    variant="text"
+                    data-testid="follow-logs"
+                    @click=${() => (this.isAutoScroll = !this.isAutoScroll)}
+                  >
+                    <sl-icon
+                      slot="prefix"
+                      name=${this.isAutoScroll ? 'pause-fill' : 'play-fill'}
+                    ></sl-icon>
+                    ${this.isAutoScroll ? 'Following live' : 'Paused'}
+                  </sl-button>`
+                : ''
+            }
+          </div>
+        </div>
+        <div class="log-container">
+          ${
+            this.hasMoreLogs && !query
+              ? html`
+                  <div class="load-previous">
+                    <sl-button
+                      size="small"
+                      variant="default"
+                      ?loading=${this.isFetchingMoreLogs}
+                      @click=${this.loadPreviousLogs}
+                    >
+                      Load previous logs
+                    </sl-button>
+                  </div>
+                `
+              : ''
+          }
+          ${
+            filtered.length === 0
+              ? html`<div class="empty-logs">
+                  <p>
+                    ${
+                      query
+                        ? `No log line matches "${query}".`
+                        : 'Waiting for logs...'
+                    }
+                  </p>
+                </div>`
+              : filtered.map((log) => this.renderLogEntry(log))
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  private renderInputPanel(execution: FlowExecution) {
+    if (!execution.trigger_event_details && !execution.resolved_input_prompt) {
+      return html`<div class="panel-empty">
+        No trigger payload or resolved prompt was stored for this run.
+      </div>`;
+    }
+    return html`
+      <div class="input-panel">
+        ${
+          execution.trigger_event_details
+            ? html`
+                <section class="output-section">
+                  <h2 class="section-title">Trigger event</h2>
+                  <json-tree
+                    .data=${execution.trigger_event_details}
+                  ></json-tree>
+                </section>
+              `
+            : ''
+        }
+        ${
+          execution.resolved_input_prompt
+            ? html`
+                <section class="output-section">
+                  <h2 class="section-title">
+                    Resolved prompt
+                    <sl-copy-button
+                      value=${execution.resolved_input_prompt}
+                    ></sl-copy-button>
+                  </h2>
+                  <pre class="prompt-block">
+${execution.resolved_input_prompt}</pre>
+                </section>
+              `
+            : ''
+        }
+      </div>
+    `;
+  }
+
+  /**
+   * Which model ran this execution.
+   *
+   * The API projects the answer from gateway usage, but a run whose usage
+   * rows have aged out still has its gateway events on this page, so fall
+   * back to counting those rather than showing a dash next to a page full
+   * of model calls.
+   */
+  private getExecutionModelSource(
+    execution: FlowExecution
+  ): ExecutionModelSource {
+    if (execution.model_alias || (execution.models_used || []).length > 0) {
+      return execution;
+    }
+
+    const counts = new Map<string, ExecutionModelUsage>();
+    for (const event of this.gatewayEvents) {
+      const alias = event.payload?.model_alias;
+      if (!alias) continue;
+      const existing = counts.get(alias);
+      if (existing) {
+        existing.request_count = (existing.request_count || 0) + 1;
+        continue;
+      }
+      counts.set(alias, {
+        model_alias: alias,
+        provider_name: event.payload?.provider_name || null,
+        request_count: 1,
+      });
+    }
+
+    const models = Array.from(counts.values()).sort(
+      (left, right) => (right.request_count || 0) - (left.request_count || 0)
+    );
+    return {
+      model_alias: models[0]?.model_alias || null,
+      provider_name: models[0]?.provider_name || null,
+      models_used: models,
+    };
+  }
+
+  /**
+   * One hairline row instead of five cards: what ran, how long, on which
+   * model, what it cost and where to find the session. Values are the
+   * loudest thing in the row; the labels stay in the meta register.
+   */
+  private renderSummaryStrip(execution: FlowExecution) {
+    const toolEntries = this.getToolActivityEntries();
+    const failedTools = toolEntries.filter(
+      (entry) => entry.status === 'error' || entry.status === 'failed'
+    ).length;
+    const toolCount = this.getTotalToolCallCount();
+    const sessionReference = execution.agent_session_reference;
+
+    const costText = this.hasPricing
+      ? formatEstimatedCost(this.budgetUsed)
+      : this.totalTokens > 0
+        ? 'Not priced'
+        : '—';
+
+    return html`
+      <div class="summary-strip" data-testid="summary-strip">
+        <div class="strip-item">
+          <span class="strip-label">Started</span>
+          <span
+            class="strip-value"
+            data-testid="strip-started"
+            title=${formatUTCDateTime(execution.start_time)}
+            >${formatRelativeTime(execution.start_time, this.durationNow)}</span
+          >
+        </div>
+        <div class="strip-item">
+          <span class="strip-label">Duration</span>
+          <span class="strip-value" data-testid="strip-duration"
+            >${this.renderDurationText()}</span
+          >
+        </div>
+        <div class="strip-item">
+          <span class="strip-label">Model</span>
+          <span class="strip-value" data-testid="strip-model"
+            >${renderExecutionModel(this.getExecutionModelSource(execution))}</span
+          >
+        </div>
+        <div class="strip-item">
+          <span class="strip-label">Tokens</span>
+          <span class="strip-value" data-testid="strip-tokens"
+            >${
+              this.totalTokens > 0 ? this.totalTokens.toLocaleString() : '—'
+            }</span
+          >
+        </div>
+        <div class="strip-item">
+          <span class="strip-label">$ est.</span>
+          <span class="strip-value" data-testid="strip-cost">${costText}</span>
+        </div>
+        <div class="strip-item">
+          <span class="strip-label">Tools</span>
+          <span class="strip-value" data-testid="strip-tools">
+            ${toolCount.toLocaleString()}${
+              failedTools > 0
+                ? html`<span class="strip-note">(${failedTools} failed)</span>`
+                : ''
+            }
+          </span>
+        </div>
+        <div class="strip-item">
+          <span class="strip-label">Agent</span>
+          <span class="strip-value">${this.flow?.agent_type || '—'}</span>
+        </div>
+        <div class="strip-item">
+          <span class="strip-label">Session</span>
+          <span class="strip-value">
+            ${
+              sessionReference
+                ? html`<a
+                    class="strip-link"
+                    href="/console/runtime-sessions?query=${encodeURIComponent(
+                      execution.id
+                    )}"
+                    title=${sessionReference}
+                    >${shortenIdentifier(sessionReference)}</a
+                  >`
+                : '—'
+            }
+          </span>
+        </div>
+        <div class="strip-item">
+          <span class="strip-label">Execution</span>
+          <span class="strip-value">
+            <code class="strip-code" title=${execution.id}
+              >${shortenIdentifier(execution.id)}</code
+            >
+            <sl-copy-button
+              value=${execution.id}
+              copy-label="Copy execution id"
+            ></sl-copy-button>
+          </span>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderHeaderActions(execution: FlowExecution, running: boolean) {
+    const sessionReference = execution.agent_session_reference;
+    return html`
+      <div slot="main-column" class="header-actions">
+        ${
+          running
+            ? html`
+                <sl-button
+                  size="small"
+                  variant="danger"
+                  outline
+                  @click=${this.stopExecution}
+                >
+                  <sl-icon slot="prefix" name="x-circle"></sl-icon> Cancel
+                </sl-button>
+              `
+            : ''
+        }
+        ${
+          this.canRetry()
+            ? html`
+                <sl-button
+                  size="small"
+                  variant="default"
+                  ?loading=${this.isRetrying}
+                  @click=${this.retryExecution}
+                >
+                  <sl-icon slot="prefix" name="arrow-repeat"></sl-icon> Retry
+                </sl-button>
+              `
+            : ''
+        }
+        ${
+          sessionReference
+            ? html`
+                <sl-button
+                  size="small"
+                  variant="default"
+                  href="/console/runtime-sessions?query=${encodeURIComponent(
+                    execution.id
+                  )}"
+                >
+                  <sl-icon slot="prefix" name="chat-left-text"></sl-icon> Open
+                  session
+                </sl-button>
+              `
+            : ''
+        }
+        ${
+          this.flow
+            ? html`
+                <sl-button
+                  size="small"
+                  variant="default"
+                  href="/console/flows/${this.flow.id}"
+                >
+                  <sl-icon slot="prefix" name="diagram-3"></sl-icon> View flow
+                </sl-button>
+              `
+            : ''
+        }
+        <sl-dropdown hoist>
+          <sl-icon-button
+            slot="trigger"
+            name="three-dots-vertical"
+            label="More actions"
+          ></sl-icon-button>
+          <sl-menu>
+            <sl-menu-item
+              @click=${() =>
+                this.copyToClipboard(execution.id, 'Execution id copied')}
+            >
+              Copy execution id
+            </sl-menu-item>
+            <sl-menu-item
+              ?disabled=${!sessionReference}
+              @click=${() =>
+                sessionReference &&
+                this.copyToClipboard(sessionReference, 'Session id copied')}
+            >
+              Copy session id
+            </sl-menu-item>
+          </sl-menu>
+        </sl-dropdown>
+      </div>
+    `;
+  }
+
+  private async copyToClipboard(value: string, message: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      this.dispatchEvent(
+        new CustomEvent('show-toast', {
+          bubbles: true,
+          composed: true,
+          detail: { message },
+        })
+      );
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+    }
+  }
+
   render() {
     // Waiting for router to set executionId
     if (!this.executionId) {
       return html`
-        <view-header headerText="Flow Execution" width="wide"></view-header>
-        <div
-          style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px; gap: 16px;"
-        >
+        <view-header headerText="Flow execution" width="wide"></view-header>
+        <div class="page-loading">
           <sl-spinner style="font-size: 3rem;"></sl-spinner>
           <p>Loading...</p>
         </div>
       `;
     }
 
-    // Loading execution data
     if (this.isLoading) {
       return html`
-        <view-header headerText="Flow Execution" width="wide"></view-header>
-        <div
-          style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px; gap: 16px;"
-        >
+        <view-header headerText="Flow execution" width="wide"></view-header>
+        <div class="page-loading">
           <sl-spinner style="font-size: 3rem;"></sl-spinner>
           <p>Loading execution details...</p>
         </div>
       `;
     }
 
-    // Error state
     if (this.loadingError || !this.execution) {
       return html`
-        <view-header headerText="Flow Execution" width="wide">
-          <div slot="top" style="margin-bottom: var(--sl-spacing-small);">
+        <view-header headerText="Flow execution" width="wide">
+          <div slot="top" class="back-row">
             <sl-button
-              variant="default"
+              variant="text"
               size="small"
               href="/console/flows/executions"
             >
-              <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back to
-              Executions
+              <sl-icon slot="prefix" name="arrow-left"></sl-icon> All executions
             </sl-button>
           </div>
         </view-header>
@@ -1932,7 +2530,7 @@ export class FlowExecutionView extends LitElement {
           <div class="main-column">
             <sl-alert variant="danger" open>
               <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-              <strong>Error Loading Execution</strong><br />
+              <strong>Could not load this execution</strong><br />
               ${this.loadingError || 'Execution not found'}
             </sl-alert>
           </div>
@@ -1940,377 +2538,113 @@ export class FlowExecutionView extends LitElement {
       `;
     }
 
-    const isRunning =
-      this.execution.status === 'RUNNING' ||
-      this.execution.status === 'STARTING' ||
-      this.execution.status === 'INITIALIZING' ||
-      this.execution.status === 'PENDING';
+    const execution = this.execution;
+    const running = this.isExecutionRunning();
+    const statusVariant = executionStatusVariant(execution.status);
+    const errorLine = firstErrorLine(execution.error_message);
 
     return html`
       <view-header
-        headerText="${this.flow?.name || 'Flow Execution'}"
+        headerText=${this.flow?.name || 'Flow execution'}
         width="wide"
       >
-        <div slot="top" style="margin-bottom: var(--sl-spacing-small);">
-          <div style="display: flex; gap: var(--sl-spacing-small);">
-            <sl-button
-              variant="default"
-              size="small"
-              href="/console/flows/executions"
-            >
-              <sl-icon slot="prefix" name="arrow-left"></sl-icon> All Executions
-            </sl-button>
-            ${
-              this.flow
-                ? html`
-                    <sl-button
-                      variant="default"
-                      size="small"
-                      href="/console/flows/${this.flow.id}"
-                    >
-                      <sl-icon slot="prefix" name="diagram-3"></sl-icon> View
-                      Flow
-                    </sl-button>
-                  `
-                : ''
-            }
-          </div>
+        <div slot="top" class="back-row">
+          <sl-button
+            variant="text"
+            size="small"
+            href="/console/flows/executions"
+          >
+            <sl-icon slot="prefix" name="arrow-left"></sl-icon> All executions
+          </sl-button>
+        </div>
+        <div slot="title-prefix" class="status-pill">
+          ${running ? html`<span class="status-dot"></span>` : ''}
+          <sl-badge
+            class="chip ${statusVariant === 'danger' ? 'solid' : ''}"
+            pill
+            variant=${statusVariant}
+            >${executionStatusLabel(execution.status)}</sl-badge
+          >
         </div>
         <!-- The title is the flow name, which every run of it shares. What
              this particular run was about goes directly under it, linked to
              the pull request or issue it came from. -->
         ${
-          this.execution && !isSubjectFallback(this.execution)
+          !isSubjectFallback(execution)
             ? html`<div slot="description" class="execution-subject-line">
-                ${renderExecutionSubject(this.execution)}
+                ${renderExecutionSubject(execution)}
               </div>`
             : ''
         }
-        <div
-          slot="main-column"
-          style="display: flex; justify-content: flex-end; flex: 1; min-width: 0; gap: 8px;"
-        >
-          ${
-            isRunning
-              ? html`
-                  <sl-button
-                    size="small"
-                    variant="danger"
-                    @click=${this.stopExecution}
-                  >
-                    <sl-icon slot="prefix" name="x-circle"></sl-icon> Cancel
-                  </sl-button>
-                `
-              : ''
-          }
-          ${
-            this.canRetry()
-              ? html`
-                  <sl-button
-                    size="small"
-                    variant="warning"
-                    ?loading=${this.isRetrying}
-                    @click=${this.retryExecution}
-                  >
-                    <sl-icon slot="prefix" name="arrow-repeat"></sl-icon> Retry
-                  </sl-button>
-                `
-              : ''
-          }
-        </div>
+        ${this.renderHeaderActions(execution, running)}
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
-          <div class="summary-grid">
-            <sl-card>
-              <div slot="header">
-                <sl-icon name="info-circle"></sl-icon> Status
-              </div>
-              <div class="summary-value">
-                <sl-badge
-                  class="chip ${
-                    this.getStatusVariant(this.execution.status) === 'danger'
-                      ? 'solid'
-                      : ''
-                  }"
-                  pill
-                  variant=${this.getStatusVariant(this.execution.status)}
-                  >${this.execution.status}</sl-badge
+          ${this.renderSummaryStrip(execution)}
+          ${
+            errorLine
+              ? html`<div
+                  class="error-line"
+                  data-testid="error-line"
+                  title=${execution.error_message || ''}
                 >
-              </div>
-              <div class="summary-subtext">Execution ${this.execution.id}</div>
-            </sl-card>
-            <sl-card>
-              <div slot="header"><sl-icon name="diagram-3"></sl-icon> Flow</div>
-              <div class="summary-value">
-                ${
-                  this.flow
-                    ? html`<a href="/console/flows/${this.flow.id}"
-                        >${this.flow.name}</a
-                      >`
-                    : 'Unknown flow'
-                }
-              </div>
-              <div class="summary-subtext">
-                ${
-                  this.flow?.agent_type
-                    ? html`Agent: <sl-badge>${this.flow.agent_type}</sl-badge>`
-                    : this.getTriggerSource()
-                }
-              </div>
-            </sl-card>
-            <sl-card>
-              <div slot="header"><sl-icon name="clock"></sl-icon> Timing</div>
-              <sl-tooltip
-                content=${formatUTCDateTime(this.execution.start_time)}
-              >
-                <div class="summary-value">
-                  <sl-relative-time
-                    date=${parseUTCDate(
-                      this.execution.start_time
-                    ).toISOString()}
-                  ></sl-relative-time>
-                </div>
-              </sl-tooltip>
-              <div class="summary-subtext">${this.renderTimingDuration()}</div>
-            </sl-card>
-            <sl-card>
-              <div slot="header">
-                <sl-icon name="${this.getTriggerIcon()}"></sl-icon> Trigger
-              </div>
-              <div class="summary-value">${this.getTriggerSource()}</div>
-              <div class="summary-subtext">
-                ${
-                  this.execution.agent_session_reference
-                    ? html`Session:
-                        <code
-                          >${this.execution.agent_session_reference.slice(
-                            0,
-                            12
-                          )}...</code
-                        >`
-                    : 'Flow-triggered run'
-                }
-              </div>
-            </sl-card>
-            <sl-card>
-              <div slot="header">
-                <sl-icon name="${this.hasPricing ? 'cash' : 'cpu'}"></sl-icon>
-                ${this.hasPricing ? 'Cost' : 'Tokens'}
-              </div>
-              <div class="summary-value">
-                ${
-                  this.hasPricing
-                    ? html`$${this.budgetUsed.toFixed(2)}`
-                    : this.totalTokens.toLocaleString()
-                }
-              </div>
-              <div class="summary-subtext">
-                ${
-                  this.hasPricing
-                    ? `${this.totalTokens.toLocaleString()} tokens`
-                    : this.totalTokens > 0
-                      ? 'cost unavailable: model not priced'
-                      : `${this.getTotalToolCallCount().toLocaleString()} tool calls recorded`
-                }
-              </div>
-            </sl-card>
-          </div>
-
-          <!-- Trigger Event Details (collapsible) -->
-          ${
-            this.execution.trigger_event_details
-              ? html`
-                  <sl-details
-                    summary="Trigger Event"
-                    style="margin-bottom: 16px;"
-                  >
-                    <sl-card>
-                      <pre
-                        style="white-space: pre-wrap; word-wrap: break-word; margin: 0; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 12px; line-height: 1.4; background: var(--sl-color-neutral-100); padding: 12px; border-radius: 4px; max-height: 400px; overflow-y: auto;"
-                      >
-${JSON.stringify(this.execution.trigger_event_details, null, 2)}</pre>
-                    </sl-card>
-                  </sl-details>
-                `
+                  <sl-icon name="exclamation-triangle"></sl-icon>
+                  <span>${errorLine}</span>
+                </div>`
               : ''
           }
-
-          <!-- Resolved Input Prompt (collapsible) -->
-          ${
-            this.execution.resolved_input_prompt
-              ? html`
-                  <sl-details
-                    summary="Resolved Input Prompt"
-                    style="margin-bottom: 16px;"
-                  >
-                    <sl-card>
-                      <div style="position: relative;">
-                        <sl-copy-button
-                          value=${this.execution.resolved_input_prompt}
-                          style="position: absolute; right: 8px; top: 8px; z-index: 1;"
-                        ></sl-copy-button>
-                        <pre
-                          style="white-space: pre-wrap; word-wrap: break-word; margin: 0; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 13px; line-height: 1.5; background: var(--sl-color-neutral-100); padding: 12px; border-radius: 4px;"
-                        >
-${this.execution.resolved_input_prompt}</pre>
-                      </div>
-                    </sl-card>
-                  </sl-details>
-                `
-              : ''
-          }
-          ${this.renderToolActivityCard()}
-
           <sl-tab-group
             class="execution-tabs"
             @sl-tab-show=${this.handleTabShow}
           >
-            <sl-tab slot="nav" panel="output">Output</sl-tab>
-            <sl-tab slot="nav" panel="gateway-events">Gateway Events</sl-tab>
+            <sl-tab
+              slot="nav"
+              panel="timeline"
+              ?active=${this.activeTab === 'timeline'}
+              >Timeline</sl-tab
+            >
+            <sl-tab
+              slot="nav"
+              panel="output"
+              ?active=${this.activeTab === 'output'}
+              >Output</sl-tab
+            >
+            <sl-tab
+              slot="nav"
+              panel="transcript"
+              ?active=${this.activeTab === 'transcript'}
+              >Transcript</sl-tab
+            >
+            <sl-tab slot="nav" panel="logs" ?active=${this.activeTab === 'logs'}
+              >Logs</sl-tab
+            >
+            <sl-tab
+              slot="nav"
+              panel="input"
+              ?active=${this.activeTab === 'input'}
+              >Input</sl-tab
+            >
 
-            <sl-tab-panel name="output">
-              <div class="output-workspace">
-                <div class="output-main">
-                  <sl-card>
-                    <div
-                      slot="header"
-                      style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;"
-                    >
-                      <span
-                        style="display: flex; align-items: center; gap: 6px;"
-                      >
-                        <sl-icon name="terminal"></sl-icon>
-                        Output
-                      </span>
-                      <div
-                        style="display: flex; gap: var(--sl-spacing-2x-small); align-items: center;"
-                      >
-                        ${
-                          this.logs.length > 0
-                            ? html`
-                                <sl-button
-                                  size="small"
-                                  variant="default"
-                                  @click=${this.copyAllLogs}
-                                >
-                                  <sl-icon
-                                    slot="prefix"
-                                    name="clipboard"
-                                  ></sl-icon>
-                                  Copy Logs
-                                </sl-button>
-                              `
-                            : ''
-                        }
-                        ${
-                          isRunning
-                            ? html`
-                                <sl-button-group>
-                                  <sl-button
-                                    size="small"
-                                    variant=${
-                                      this.isAutoScroll ? 'primary' : 'default'
-                                    }
-                                    @click=${() =>
-                                      (this.isAutoScroll = !this.isAutoScroll)}
-                                  >
-                                    <sl-icon name="arrow-down"></sl-icon>
-                                    Auto-scroll
-                                  </sl-button>
-                                  <sl-button
-                                    size="small"
-                                    variant="danger"
-                                    @click=${this.stopExecution}
-                                  >
-                                    <sl-icon name="stop-circle"></sl-icon>
-                                    Stop
-                                  </sl-button>
-                                </sl-button-group>
-                              `
-                            : ''
-                        }
-                      </div>
-                    </div>
-
-                    <div class="log-container">
-                      ${
-                        this.hasMoreLogs
-                          ? html`
-                              <div
-                                style="text-align: center; padding: 10px 0; border-bottom: 1px solid var(--sl-color-neutral-200); margin-bottom: 10px;"
-                              >
-                                <sl-button
-                                  size="small"
-                                  variant="default"
-                                  ?loading=${this.isFetchingMoreLogs}
-                                  @click=${this.loadPreviousLogs}
-                                >
-                                  Load Previous Logs
-                                </sl-button>
-                              </div>
-                            `
-                          : ''
-                      }
-                      ${
-                        this.logs.length === 0
-                          ? html`
-                              <div class="empty-logs">
-                                <sl-icon
-                                  name="inbox"
-                                  style="font-size: 3rem;"
-                                ></sl-icon>
-                                <p>Waiting for logs...</p>
-                              </div>
-                            `
-                          : this.logs.map((log) => this.renderLogEntry(log))
-                      }
-                      ${
-                        isRunning
-                          ? html`
-                              <div class="loading-indicator">
-                                <div class="loading-dots">
-                                  <span></span>
-                                  <span></span>
-                                  <span></span>
-                                </div>
-                              </div>
-                            `
-                          : ''
-                      }
-                    </div>
-                  </sl-card>
-                </div>
-              </div>
-            </sl-tab-panel>
-
-            <sl-tab-panel name="gateway-events">
-              ${this.renderGatewayEventsPanel()}
-            </sl-tab-panel>
+            <sl-tab-panel
+              name="timeline"
+              ?active=${this.activeTab === 'timeline'}
+              >${this.renderTimelinePanel(running)}</sl-tab-panel
+            >
+            <sl-tab-panel name="output" ?active=${this.activeTab === 'output'}
+              >${this.renderOutputPanel(execution)}</sl-tab-panel
+            >
+            <sl-tab-panel
+              name="transcript"
+              ?active=${this.activeTab === 'transcript'}
+              >${this.renderTranscriptPanel(running)}</sl-tab-panel
+            >
+            <sl-tab-panel name="logs" ?active=${this.activeTab === 'logs'}
+              >${this.renderLogsPanel(running)}</sl-tab-panel
+            >
+            <sl-tab-panel name="input" ?active=${this.activeTab === 'input'}
+              >${this.renderInputPanel(execution)}</sl-tab-panel
+            >
           </sl-tab-group>
-
-          ${
-            this.execution.error_message
-              ? html`
-                  <sl-card>
-                    <div
-                      slot="header"
-                      style="color: var(--sl-color-danger-600);"
-                    >
-                      <sl-icon name="exclamation-triangle"></sl-icon>
-                      Error
-                    </div>
-                    <sl-alert variant="danger" open>
-                      <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                      <pre
-                        style="white-space: pre-wrap; word-wrap: break-word; margin: 0;"
-                      >
-${this.execution.error_message}</pre>
-                    </sl-alert>
-                  </sl-card>
-                `
-              : ''
-          }
         </div>
       </div>
     `;
@@ -2456,64 +2790,6 @@ ${log.payload.content}</pre>
     return '';
   }
 
-  async sendCommand() {
-    if (!this.commandInput.trim() || !this.executionId) return;
-
-    this.isSendingCommand = true;
-    try {
-      const input = this.commandInput.trim();
-      let commandData: any = {};
-
-      // Parse command: "message: hello" -> { command: "send_message", message: "hello" }
-      if (input.includes(':')) {
-        const [cmd, ...rest] = input.split(':');
-        const command = cmd.trim();
-        const message = rest.join(':').trim();
-
-        if (command === 'message') {
-          commandData = { command: 'send_message', message };
-        } else {
-          commandData = { command, payload: message };
-        }
-      } else {
-        // Simple command like "stop" or "pause"
-        commandData = { command: input };
-      }
-
-      // Send command via WebSocket
-      unifiedWebSocketManager.send({
-        type: 'command',
-        execution_id: this.executionId,
-        ...commandData,
-      });
-
-      // Add command to logs for user feedback
-      this.logs = [
-        ...this.logs,
-        {
-          execution_id: this.executionId,
-          timestamp: new Date().toISOString(),
-          type: 'user_command',
-          payload: { command: commandData.command },
-        },
-      ];
-
-      this.commandInput = '';
-    } catch (error) {
-      console.error('Failed to send command:', error);
-      // TODO: Show error notification
-    } finally {
-      this.isSendingCommand = false;
-    }
-  }
-
-  handleInputKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      this.sendCommand();
-    }
-  }
-
   async stopExecution() {
     if (!this.executionId) return;
 
@@ -2579,22 +2855,20 @@ ${log.payload.content}</pre>
       // Show error message
       const message =
         error instanceof Error ? error.message : 'Failed to retry execution';
-      alert(message); // TODO: Use proper notification
+      this.dispatchEvent(
+        new CustomEvent('show-toast', {
+          bubbles: true,
+          composed: true,
+          detail: { message, variant: 'danger' },
+        })
+      );
     } finally {
       this.isRetrying = false;
     }
   }
 
+  /** Kept for callers outside the render path; the shared helper decides. */
   getStatusVariant(status: string) {
-    switch (status) {
-      case 'SUCCEEDED':
-        return 'success';
-      case 'FAILED':
-        return 'danger';
-      case 'RUNNING':
-        return 'primary';
-      default:
-        return 'neutral';
-    }
+    return executionStatusVariant(status);
   }
 }
