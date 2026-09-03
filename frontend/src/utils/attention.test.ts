@@ -19,6 +19,10 @@ function daysAgo(days: number): string {
   return new Date(NOW.getTime() - days * 86400000).toISOString();
 }
 
+function daysFromNow(days: number): string {
+  return new Date(NOW.getTime() + days * 86400000).toISOString();
+}
+
 function agentFixture(overrides: Record<string, unknown> = {}): any {
   return {
     id: 'agent-1',
@@ -755,6 +759,126 @@ describe('deriveAttentionItems', () => {
 
       expect(items).to.have.length(1);
       expect(items[0].title).to.equal('1 model without a price');
+    });
+
+    // The staging account has priced ox-alpha at $0 since July and the
+    // console kept asking for a price. An override is an answer.
+    it('treats an override as a price, including one of $0', () => {
+      const usageSummary = summary({
+        price_catalog: { fetched_at: daysAgo(1), model_count: 120 },
+        unpriced_requests: 5,
+        usage_by_model: [
+          {
+            ai_model_id: 'model-1',
+            model_alias: 'openrouter/stealth/ox-alpha',
+            provider_name: 'openrouter',
+            request_count: 5,
+            token_usage: {
+              prompt_tokens: 1,
+              completion_tokens: 1,
+              total_tokens: 900,
+            },
+            estimated_cost: 0,
+            last_request_at: minutesAgo(10),
+          },
+        ],
+      });
+
+      const zeroOverride = {
+        model_alias: 'stealth/ox-alpha',
+        ai_model_id: 'model-1',
+        is_active: true,
+        effective_from: daysAgo(30),
+        effective_until: null,
+      };
+      expect(derive({ usageSummary, priceOverrides: [zeroOverride] })).to.eql(
+        []
+      );
+
+      // An override that has been switched off, or has not started, or has
+      // already ended, prices nothing.
+      const inert = [
+        { ...zeroOverride, is_active: false },
+        { ...zeroOverride, effective_from: daysFromNow(3) },
+        { ...zeroOverride, effective_until: daysAgo(1) },
+      ];
+      for (const override of inert) {
+        const items = derive({ usageSummary, priceOverrides: [override] });
+        expect(
+          items.map((item) => item.title),
+          JSON.stringify(override)
+        ).to.eql(['1 model without a price']);
+      }
+    });
+
+    it('matches an override on the alias the gateway reports', () => {
+      const usageSummary = summary({
+        price_catalog: { fetched_at: daysAgo(1), model_count: 120 },
+        unpriced_requests: 5,
+        usage_by_model: [
+          {
+            ai_model_id: null,
+            model_alias: 'openrouter/ox-alpha',
+            provider_name: 'openrouter',
+            request_count: 5,
+            token_usage: {
+              prompt_tokens: 1,
+              completion_tokens: 1,
+              total_tokens: 900,
+            },
+            estimated_cost: 0,
+            last_request_at: minutesAgo(10),
+          },
+        ],
+      });
+
+      // The override names the model, the gateway prefixes the provider.
+      expect(
+        derive({
+          usageSummary,
+          priceOverrides: [{ model_alias: 'ox-alpha', is_active: true }],
+        })
+      ).to.eql([]);
+
+      // A different model is a different model.
+      expect(
+        derive({
+          usageSummary,
+          priceOverrides: [{ model_alias: 'ox-beta', is_active: true }],
+        }).map((item) => item.title)
+      ).to.eql(['1 model without a price']);
+    });
+
+    // On a server that counts unpriced requests per model, the server knows
+    // better than any guess the console can make from an override list.
+    it('defers to the server count when the server sends one', () => {
+      const items = derive({
+        usageSummary: summary({
+          price_catalog: { fetched_at: daysAgo(1), model_count: 120 },
+          unpriced_requests: 5,
+          usage_by_model: [
+            {
+              ai_model_id: 'model-1',
+              model_alias: 'stealth/ox-alpha',
+              provider_name: 'openrouter',
+              request_count: 5,
+              token_usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 900,
+              },
+              estimated_cost: 0,
+              unpriced_request_count: 5,
+              last_request_at: minutesAgo(10),
+            },
+          ],
+        }),
+        priceOverrides: [{ model_alias: 'stealth/ox-alpha', is_active: true }],
+      });
+
+      expect(items.map((item) => item.title)).to.eql([
+        '1 model without a price',
+      ]);
     });
 
     it('stays quiet for a fresh catalog with everything priced', () => {

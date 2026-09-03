@@ -46,6 +46,7 @@ import {
   type AttentionFlowExecution,
   type AttentionItem,
   type AttentionKind,
+  type AttentionPriceOverride,
   type DismissedAttentionItem,
 } from '../../utils/attention';
 import { REMOVE_AGENT_CONSEQUENCE } from '../../utils/agent-display';
@@ -88,6 +89,8 @@ export class AttentionView extends AuthedElement {
   @state() private executions: AttentionFlowExecution[] = [];
   @state() private gatewayFailures: GatewayUsageSearchResultItem[] = [];
   @state() private budgetPolicies: BudgetPolicy[] = [];
+  @state() private priceOverrides: AttentionPriceOverride[] = [];
+
   @state() private usageSummary: AccountGatewayUsageSummaryResponse | null =
     null;
   @state() private dismissals: AttentionDismissal[] = [];
@@ -558,6 +561,7 @@ export class AttentionView extends AuthedElement {
     this.gatewayFailures = inputs.gatewayFailures || [];
     this.budgetPolicies = inputs.budgetPolicies || [];
     this.usageSummary = inputs.usageSummary || null;
+    this.priceOverrides = inputs.priceOverrides || [];
     this.dismissals = (inputs.dismissals || []) as AttentionDismissal[];
     this.dismissalsSupported = inputs.dismissalsSupported;
     this.permissions = profile?.permissions ?? null;
@@ -576,6 +580,7 @@ export class AttentionView extends AuthedElement {
       gatewayFailures: this.gatewayFailures,
       budgetPolicies: this.budgetPolicies,
       usageSummary: this.usageSummary,
+      priceOverrides: this.priceOverrides,
       dismissals: this.dismissals,
     });
   }
