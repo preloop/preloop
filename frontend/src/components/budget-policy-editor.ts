@@ -457,7 +457,8 @@ export class BudgetPolicyEditor extends LitElement {
 
   /**
    * `/auth/users/me` does not include `id`. Prefer a real string, then the
-   * account user list matched by email, otherwise leave recipients empty.
+   * account user list matched by email (case-insensitive), otherwise leave
+   * recipients empty rather than posting `[null]`.
    */
   private currentUserNotifyId(
     userProfile: { id?: unknown; email?: string } | null
@@ -469,7 +470,10 @@ export class BudgetPolicyEditor extends LitElement {
     if (!email) {
       return undefined;
     }
-    return this.availableUsers.find((user) => user.email === email)?.id;
+    const needle = email.toLowerCase();
+    return this.availableUsers.find(
+      (user) => user.email?.toLowerCase() === needle
+    )?.id;
   }
 
   private compactIds(ids: Array<string | null | undefined>): string[] {

@@ -562,4 +562,24 @@ describe('BudgetPolicyEditor', () => {
     const body = await fillHardLimitAndSave(element);
     expect(body.notification_user_ids).to.deep.equal(['owner-user-id']);
   });
+
+  it('matches the current user by email case-insensitively', async () => {
+    stubBillingFetch({
+      users: [
+        {
+          id: 'owner-user-id',
+          email: 'Owner@Example.com',
+          username: 'owner',
+        },
+      ],
+    });
+    const element = await mountEditor();
+    (
+      element.shadowRoot!.querySelector(
+        'sl-button[variant="primary"]'
+      ) as HTMLElement
+    ).click();
+    const body = await fillHardLimitAndSave(element);
+    expect(body.notification_user_ids).to.deep.equal(['owner-user-id']);
+  });
 });
