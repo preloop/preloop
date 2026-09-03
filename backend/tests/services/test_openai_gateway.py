@@ -713,6 +713,10 @@ def test_create_response_normalizes_and_calls_litellm(db_session, test_user):
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 },
                 "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
             },
@@ -821,6 +825,10 @@ def test_create_response_uses_litellm_pricing_when_metadata_missing(
                     "enabled": True,
                     "model_alias": "openai/gpt-5.4",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -903,6 +911,10 @@ def test_create_response_forwards_tools_and_returns_function_call_output(
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -991,6 +1003,10 @@ def test_create_response_preserves_responses_tool_history_in_chat_messages(
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -1073,6 +1089,10 @@ def test_create_response_coalesces_multi_tool_turns_for_upstream(db_session, tes
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -1244,6 +1264,10 @@ def test_create_response_downgrades_custom_tools_to_functions(db_session, test_u
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -1323,6 +1347,10 @@ def test_create_response_inlines_custom_tool_grammar_into_description(
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -1387,6 +1415,10 @@ def test_create_response_drops_unsupported_hosted_tools_for_upstream(
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -3898,7 +3930,12 @@ def _run_full_turn1_stream(upstream_chunks):
         provider_name="openai",
         model_identifier="ox-alpha",
         api_endpoint=None,
-        meta_data={},
+        # Pinned to the chat-completions transcode: these cases exist to
+        # cover the transcode's namespace-alias restoration, which is the
+        # path taken for every upstream that has no Responses endpoint
+        # (issue #159). The native passthrough is covered separately in
+        # tests/services/test_openai_responses_passthrough.py.
+        meta_data={"gateway": {"responses_api": "transcode"}},
         credentials_secret=None,
         model_gateway_model_alias="ox-alpha",
     )
@@ -4141,7 +4178,12 @@ def test_create_response_turn1_with_namespace_tools_nonstreaming():
         provider_name="openai",
         model_identifier="ox-alpha",
         api_endpoint=None,
-        meta_data={},
+        # Pinned to the chat-completions transcode: these cases exist to
+        # cover the transcode's namespace-alias restoration, which is the
+        # path taken for every upstream that has no Responses endpoint
+        # (issue #159). The native passthrough is covered separately in
+        # tests/services/test_openai_responses_passthrough.py.
+        meta_data={"gateway": {"responses_api": "transcode"}},
         credentials_secret=None,
         model_gateway_model_alias="ox-alpha",
     )

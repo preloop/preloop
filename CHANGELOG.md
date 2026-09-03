@@ -59,6 +59,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`POST /openai/v1/responses` forwards to the upstream Responses API**:
+  a Responses request used to be transcoded into a chat-completions call,
+  so an upstream that implements `/responses` but not `/chat/completions`
+  (measured: OpenCode Zen) answered every request with
+  `502 InternalServerError - Internal server error`. OpenAI-shaped API-key
+  upstreams now receive the payload on their own `/responses` endpoint and
+  the answer is relayed verbatim, streaming included, which also stops
+  `instructions`, `reasoning`, `include`, `store` and `prompt_cache_key`
+  from being dropped in translation. Upstreams that only speak chat
+  completions are detected automatically (404/405/501, remembered per base
+  URL for 15 minutes) and keep the previous behaviour with no configuration.
+  `meta_data.gateway.responses_api` on the model row pins the choice
+  (`auto` default, `native`, `transcode`). Auth, budgets, governance
+  tool-stripping, accounting and audit run on both paths.
+
 - **Migration job now syncs global flow presets after alembic**: the
   post-upgrade hook runs `scripts/sync_flow_presets.py --no-propagate`
   in the same container so global presets stop drifting between deploys
