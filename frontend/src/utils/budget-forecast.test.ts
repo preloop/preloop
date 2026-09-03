@@ -103,4 +103,65 @@ describe('budget-forecast', () => {
     const end = periodEndFor('daily', at('2026-09-03T15:00:00'))!;
     expect(forecastEndLabel('daily', end)).to.equal('midnight');
   });
+
+  it('names the last day of a server period on the server clock', () => {
+    // The server cuts periods in UTC, so September ends at 2026-10-01T00:00Z.
+    // One millisecond back is 30 September in UTC and 1 October in Tokyo:
+    // read locally, the sentence would name a day in the next period.
+    const forecast = budgetForecast({
+      period: 'monthly',
+      spend: 50,
+      periodStart: '2026-09-01T00:00:00Z',
+      periodEnd: '2026-10-01T00:00:00Z',
+      now: new Date('2026-09-16T00:00:00Z'),
+    })!;
+    expect(forecast.endBasis).to.equal('utc');
+    expect(
+      forecastEndLabel('monthly', forecast.end, forecast.endBasis)
+    ).to.equal('Sep 30');
+    // The same instant named on the reader's clock is what used to be shown;
+    // it is the wrong day east of UTC and this is what the basis prevents.
+    const inclusive = new Date(forecast.end.getTime() - 1);
+    expect(
+      forecastEndLabel('monthly', forecast.end, forecast.endBasis)
+    ).to.equal(
+      inclusive.toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        timeZone: 'UTC',
+      })
+    );
+  });
+
+  it('keeps naming a locally cut period on the local clock', () => {
+    // No server bounds: the client aligned the period on the browser's own
+    // clock, so the label has to follow that clock, not UTC.
+    const forecast = budgetForecast({
+      period: 'monthly',
+      spend: 60,
+      now: at('2026-09-16T00:00:00'),
+    })!;
+    expect(forecast.endBasis).to.equal('local');
+    expect(
+      forecastEndLabel('monthly', forecast.end, forecast.endBasis)
+    ).to.equal('Sep 30');
+  });
+
+  it("only calls a day midnight when it ends at the reader's midnight", () => {
+    const local = periodEndFor('daily', at('2026-09-03T15:00:00'))!;
+    expect(forecastEndLabel('daily', local, 'local')).to.equal('midnight');
+    // A UTC-aligned day seen from a timezone with an offset ends at some
+    // other hour of the reader's day, and the label says which.
+    const utcDayEnd = new Date('2026-09-04T00:00:00Z');
+    const expected =
+      utcDayEnd.getHours() === 0 &&
+      utcDayEnd.getMinutes() === 0 &&
+      utcDayEnd.getSeconds() === 0
+        ? 'midnight'
+        : utcDayEnd.toLocaleTimeString(undefined, {
+            hour: 'numeric',
+            minute: '2-digit',
+          });
+    expect(forecastEndLabel('daily', utcDayEnd, 'utc')).to.equal(expected);
+  });
 });

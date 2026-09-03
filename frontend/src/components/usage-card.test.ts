@@ -230,13 +230,25 @@ describe('usage-card', () => {
     expect(element.shadowRoot!.querySelector('.budget-forecast')).to.be.null;
   });
 
-  it('names the end of a daily budget midnight', async () => {
+  it("names the end of a daily budget on the reader's clock", async () => {
+    // The server cuts days in UTC, so the window ends at a UTC midnight: that
+    // is midnight for a reader in UTC and some other hour of their day
+    // everywhere else. Either way the sentence never names tomorrow's date.
+    const end = new Date();
+    end.setUTCHours(24, 0, 0, 0);
+    const expected =
+      end.getHours() === 0 && end.getMinutes() === 0 && end.getSeconds() === 0
+        ? 'midnight'
+        : end.toLocaleTimeString(undefined, {
+            hour: 'numeric',
+            minute: '2-digit',
+          });
     const element = await renderCard({
       policies: [
         policyFixture({
           period: 'daily',
-          period_start: new Date(Date.now() - 12 * 3600000).toISOString(),
-          period_end: new Date(Date.now() + 12 * 3600000).toISOString(),
+          period_start: new Date(Date.now() - 24 * 3600000).toISOString(),
+          period_end: end.toISOString(),
           current_spend_usd: 6,
         }),
       ],
@@ -245,7 +257,7 @@ describe('usage-card', () => {
       element
         .shadowRoot!.querySelector('.budget-forecast')!
         .textContent!.replace(/\s+/g, ' ')
-    ).to.contain('by midnight');
+    ).to.contain(`by ${expected}`);
   });
 
   it('renders the legacy account budget as a monthly row', async () => {
