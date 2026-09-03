@@ -221,6 +221,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Frontend `fflate` 0.7.5**: override the `deck.gl` transitive so ZIP64
+  inflate cannot loop on a malformed archive (GHSA-px8p-9vwx-vf98 /
+  Dependabot #126).
 - **CodeQL runs from an in-repo workflow** on every pull request and every
   push to `main`, so OpenSSF Scorecard can see `github/codeql-action` on
   all commits rather than only the GitHub default-setup checks that some
@@ -234,9 +237,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CodeQL flagged the digest as password hashing because scanned prompts
   can contain secrets. It is an audit fingerprint (never the raw text),
   the same pattern as API-key lookup hashes. The algorithm is unchanged,
-  so existing ``text_sha256`` rows keep matching. The CodeQL suppression
-  matches the API-key fingerprint pattern (comment on the ``hashlib.sha256``
-  call, ``codeql[py/weak-sensitive-data-hashing]``).
+  so existing ``text_sha256`` rows keep matching. The suppression is a bare
+  ``# codeql[py/weak-sensitive-data-hashing]`` on the line above
+  ``hashlib.sha256()`` (no extra text on that comment; CodeQL ignores
+  trailing notes) plus ``# lgtm[...]`` on the call itself.
 
 - **Drop python-jose for PyJWT**: auth tokens, email/reset tokens, WebAuthn
   challenge state, MCP OAuth authorize codes, and APNs ES256 client
