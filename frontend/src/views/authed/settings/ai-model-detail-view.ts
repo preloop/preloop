@@ -1000,7 +1000,6 @@ export class AIModelDetailView extends LitElement {
     return html`
       <div class="reprice-offer" data-testid="reprice-offer">
         <div class="meta-line">
-          Usage already recorded keeps the cost it was given at the time.
           Repricing recosts every gateway row since ${since} against current
           prices, not this model alone.
         </div>
