@@ -21,6 +21,7 @@ import {
   renderExecutionSubject,
   type ExecutionSubjectSource,
 } from '../utils/execution-subject';
+import { renderFailureCategoryChip } from '../utils/failure-category';
 import { renderAgentIcon } from '../utils/agent-icons';
 import type { AgentStatusChip } from '../utils/agent-display';
 
@@ -35,6 +36,8 @@ export interface InventoryFlowRun extends ExecutionSubjectSource {
   status: string;
   start_time: string;
   end_time?: string | null;
+  /** Which layer broke the run (#361); absent unless the run failed. */
+  failure_category?: string | null;
 }
 
 export interface InventoryAgentRow {
@@ -257,6 +260,17 @@ export class InventoryCard extends LitElement {
   @property({ type: Boolean }) showUsers = false;
 
   @property({ type: Boolean }) loading = false;
+  /**
+   * The usage breakdown is a second, slower request than the lists it fills.
+   * While it is in flight the identity of a row (who, which role, when they
+   * were last here, how many agents they own) is already known and is shown;
+   * only the columns that come from the breakdown wait, as skeleton cells.
+   *
+   * A zero standing in for "not fetched yet" is the thing this avoids: an
+   * account reading "$0.00" for every teammate for four seconds is a wrong
+   * answer, not a slow one.
+   */
+  @property({ type: Boolean }) usageLoading = false;
   /** The page range, already worded ("30d"), shown but not editable here. */
   @property({ type: String }) rangeLabel = '30d';
   /**
@@ -464,6 +478,7 @@ export class InventoryCard extends LitElement {
          the only part allowed to grow, and the chip and the clock never
          steal from it. */
       .last-run sl-badge,
+      .last-run sl-tooltip,
       .last-run .meta {
         flex-shrink: 0;
       }
@@ -486,6 +501,14 @@ export class InventoryCard extends LitElement {
       sl-skeleton {
         --border-radius: var(--sl-border-radius-small);
         height: 0.75rem;
+      }
+
+      /* The width of the number it stands in for, right where the number
+         will be, so nothing moves sideways when the usage arrives. */
+      .usage-skeleton {
+        display: inline-block;
+        vertical-align: middle;
+        width: 40px;
       }
 
       .empty {
@@ -713,7 +736,10 @@ export class InventoryCard extends LitElement {
 
   private get sortedAgents(): InventoryAgentRow[] {
     const rows = [...this.agentRows];
-    const sort = this.sorts.agents;
+    // Sorting by a number nobody has yet would order the table by zero and
+    // then reshuffle it under the reader's eyes. Until the usage lands, the
+    // identity sort holds the rows still.
+    const sort = this.usageLoading ? 'last-active' : this.sorts.agents;
     if (sort === 'requests') {
       rows.sort((a, b) => b.requests - a.requests);
     } else if (sort === 'spend') {
@@ -755,7 +781,7 @@ export class InventoryCard extends LitElement {
 
   private get sortedUsers(): InventoryUserRow[] {
     const rows = [...this.userRows];
-    if (this.sorts.users === 'spend') {
+    if (!this.usageLoading && this.sorts.users === 'spend') {
       rows.sort((a, b) => b.cost - a.cost);
     } else {
       rows.sort((a, b) => timeValue(b.lastLoginAt) - timeValue(a.lastLoginAt));
@@ -848,6 +874,21 @@ export class InventoryCard extends LitElement {
     `;
   }
 
+  /**
+   * One usage number, or the space it will occupy. The skeleton is the width
+   * of a number rather than the width of the column, so the cell does not
+   * shimmer across half the table while it waits.
+   */
+  private renderUsageCell(value: unknown) {
+    if (this.usageLoading) {
+      return html`<sl-skeleton
+        class="usage-skeleton"
+        effect="none"
+      ></sl-skeleton>`;
+    }
+    return value;
+  }
+
   private renderEmpty() {
     const empty = EMPTY_STATES[this.activeTab];
     return html`
@@ -918,12 +959,18 @@ export class InventoryCard extends LitElement {
                           ${row.modelAlias || 'No model'}
                         </td>
                         <td class="num" data-label="Requests">
-                          ${this.formatCompactNumber(row.requests)}
+                          ${this.renderUsageCell(
+                            this.formatCompactNumber(row.requests)
+                          )}
                         </td>
                         <td class="num" data-label="Tokens">
-                          ${this.formatCompactNumber(row.tokens)}
+                          ${this.renderUsageCell(
+                            this.formatCompactNumber(row.tokens)
+                          )}
                         </td>
-                        <td class="num">${this.formatCurrency(row.cost)}</td>
+                        <td class="num">
+                          ${this.renderUsageCell(this.formatCurrency(row.cost))}
+                        </td>
                         <td class="num" title=${this.absolute(row.lastSeenAt)}>
                           ${this.relative(row.lastSeenAt)}
                         </td>
@@ -962,6 +1009,9 @@ export class InventoryCard extends LitElement {
         <sl-badge class="chip" pill variant=${this.statusVariant(run.status)}
           >${this.statusLabel(run.status)}</sl-badge
         >
+        <!-- The category sits with the status it qualifies, before the
+             subject, so "Failed · runner conflict" reads as one statement. -->
+        ${renderFailureCategoryChip(run.failure_category)}
         ${renderExecutionSubject(run)}
         <span class="meta" title=${this.absolute(run.start_time)}
           >${this.relative(run.start_time)}${
@@ -1179,9 +1229,13 @@ export class InventoryCard extends LitElement {
                           ${this.formatCompactNumber(row.agentsOwned)}
                         </td>
                         <td class="num" data-label="Tokens">
-                          ${this.formatCompactNumber(row.tokens)}
+                          ${this.renderUsageCell(
+                            this.formatCompactNumber(row.tokens)
+                          )}
                         </td>
-                        <td class="num">${this.formatCurrency(row.cost)}</td>
+                        <td class="num">
+                          ${this.renderUsageCell(this.formatCurrency(row.cost))}
+                        </td>
                       </tr>
                     `
                   )}

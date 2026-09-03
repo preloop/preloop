@@ -50,6 +50,25 @@ flowExecution:
   # Long enough to stop fetches, cancel in-flight monitors, and re-dispatch
   # owned claims — not to wait for agent Jobs to finish.
   terminationGracePeriodSeconds: 90
+  # Bounded retry around CREATING the agent Job in Kubernetes. Covers the
+  # api-server being briefly unavailable (5xx/429) and name conflicts with a
+  # finished-but-not-yet-collected Job from an earlier attempt. Attempts are
+  # jittered: base * 2^n plus up to base of jitter. Set maxAttempts to 1 to
+  # disable (a single create, failing on the first error).
+  agentJobCreate:
+    maxAttempts: 3
+    retryBaseSeconds: 0.5
+  # Default wall-clock budget for one execution. A flow may carry its own
+  # timeout_seconds, which wins; this is the value used when it does not.
+  maxWaitSeconds: 3600
+  # One in-container reminder when the agent exits 0 without the completion
+  # contract (no sentinel, no result artifact). It runs in the same container
+  # and workspace, before the post-execution git block, and its own exit code
+  # is discarded, so it can never turn a good run bad. Set enabled to false to
+  # go back to failing those runs closed.
+  completionNudge:
+    enabled: true
+    timeoutSeconds: 300
 
 console:
   repository: ghcr.io/preloop/console
@@ -272,6 +291,17 @@ environment:
   preloopUrl: "https://preloop.ai"
   debug: false
   modelGatewayCaptureContent: true
+  # Bounded retry the model gateway performs INSIDE one client request when
+  # the upstream provider drops the stream, throttles (429) or 5xx's before
+  # any token has been forwarded. A provider's bad second should not end a
+  # flow run. Retry-After from the provider is honoured, capped at
+  # retryAfterCapSeconds so a hostile header cannot pin a worker. The count
+  # is reported to clients as `retried` on the model_gateway_call event.
+  # Set maxAttempts to 1 to disable.
+  modelGatewayUpstreamRetry:
+    maxAttempts: 3
+    baseSeconds: 0.2
+    retryAfterCapSeconds: 8
   # Set true ONLY on the hosted preloop.ai deployment: it is the version-check
   # tracker itself, so it must never persist update state or show the console
   # "update available" banner (rendered as PRELOOP_HOSTED=1 on the API).

@@ -41,6 +41,7 @@ import {
   type ExecutionModelSource,
   type ExecutionModelUsage,
 } from '../../utils/execution-presentation';
+import { renderFailureCategoryChip } from '../../utils/failure-category';
 import '../../components/preloop-gateway-event.ts';
 import '../../components/view-header.ts';
 import '../../components/json-tree.ts';
@@ -60,6 +61,7 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
+import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
 interface FlowExecutionUpdate {
   execution_id: string;
@@ -85,6 +87,11 @@ interface FlowExecution {
   trigger_event_id?: string;
   agent_session_reference?: string;
   error_message?: string;
+  /**
+   * Which layer broke this run (#361). Absent on a run that did not fail and
+   * on servers that do not derive it yet.
+   */
+  failure_category?: string | null;
   mcp_usage_logs?: any[];
   tool_calls_count?: number;
   total_tokens?: number;
@@ -2396,6 +2403,18 @@ ${execution.resolved_input_prompt}</pre>
             >${this.renderDurationText()}</span
           >
         </div>
+        ${
+          /* Only failed runs carry a category, and only from servers that
+             derive it. The strip stays the same shape without it. */
+          execution.failure_category
+            ? html`<div class="strip-item">
+                <span class="strip-label">Failure</span>
+                <span class="strip-value" data-testid="strip-failure-category"
+                  >${renderFailureCategoryChip(execution.failure_category)}</span
+                >
+              </div>`
+            : ''
+        }
         <div class="strip-item">
           <span class="strip-label">Model</span>
           <span class="strip-value" data-testid="strip-model"

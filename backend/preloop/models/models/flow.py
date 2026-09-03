@@ -1,4 +1,12 @@
-from sqlalchemy import Boolean, Column, ForeignKey, String, Text, JSON  # Added JSON
+from sqlalchemy import (  # Added JSON
+    Boolean,
+    Column,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    JSON,
+)
 
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import relationship
@@ -113,6 +121,12 @@ class Flow(Base):
     # When set, executions are leased to a matching self-hosted runner.
     # No hosted-compute fallback (data-boundary).
     runner_pool = Column(String(200), nullable=True)
+    # Wall-clock budget for one execution of this flow, in seconds. NULL means
+    # the global default (FLOW_EXECUTION_MAX_WAIT_SECONDS). A review flow that
+    # should finish in minutes and a nightly audit that legitimately runs for
+    # hours cannot share one ceiling: with a single global value, "stuck" and
+    # "genuinely long" produce the same timeout row.
+    timeout_seconds = Column(Integer, nullable=True)
 
     ai_model = relationship("AIModel", back_populates="flows")
     account = relationship("Account", back_populates="flows", foreign_keys=[account_id])

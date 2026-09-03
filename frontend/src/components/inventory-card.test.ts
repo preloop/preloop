@@ -89,6 +89,7 @@ async function card(
     usersTotal: number;
     showUsers: boolean;
     loading: boolean;
+    usageLoading: boolean;
     flowRunsCapped: boolean;
   }> = {}
 ): Promise<InventoryCard> {
@@ -107,6 +108,7 @@ async function card(
       .modelsTotal=${16}
       .toolsTotal=${16}
       .loading=${props.loading ?? false}
+      .usageLoading=${props.usageLoading ?? false}
       rangeLabel="30d"
     ></inventory-card>
   `);
@@ -267,6 +269,77 @@ describe('inventory-card', () => {
     });
     await showTab(empty, 'flows');
     expect(empty.shadowRoot?.textContent).to.contain('No run in range');
+  });
+
+  it('names an agent before its usage lands, and holds the sort until then', async () => {
+    const el = await card({
+      usageLoading: true,
+      agentRows: [
+        agentRow(),
+        agentRow({
+          id: 'agent-2',
+          name: 'Quiet Agent',
+          requests: 9000,
+          tokens: 90000,
+          cost: 99,
+          lastSeenAt: new Date(Date.now() - 86400000).toISOString(),
+        }),
+      ],
+    });
+
+    const cells = Array.from(
+      el.shadowRoot!.querySelectorAll('tbody tr')[0].querySelectorAll('td')
+    );
+    expect(cells[0].textContent).to.contain('Hermes');
+    expect(cells[2].querySelector('sl-skeleton'), 'Requests').to.exist;
+    expect(cells[3].querySelector('sl-skeleton'), 'Tokens').to.exist;
+    expect(cells[4].querySelector('sl-skeleton'), '$ est.').to.exist;
+    // Last seen comes off the agent itself, so it is never a skeleton.
+    expect(cells[5].textContent!.trim()).to.not.equal('');
+
+    (el as any).setSort('spend');
+    await el.updateComplete;
+    expect(
+      el.shadowRoot!.querySelectorAll('tbody tr')[0].textContent
+    ).to.contain('Hermes');
+
+    (el as any).usageLoading = false;
+    await el.updateComplete;
+    expect(
+      el.shadowRoot!.querySelectorAll('tbody tr')[0].textContent
+    ).to.contain('Quiet Agent');
+    expect(el.shadowRoot!.querySelector('sl-skeleton')).to.not.exist;
+  });
+
+  it('says which layer broke the last run when the server categorised it', async () => {
+    const el = await card({
+      flowRows: [
+        flowRow({
+          lastRun: {
+            id: 'exec-9',
+            status: 'FAILED',
+            start_time: new Date(Date.now() - 300000).toISOString(),
+            end_time: new Date(Date.now() - 290000).toISOString(),
+            failure_category: 'runner_conflict',
+          },
+        }),
+      ],
+    });
+    await showTab(el, 'flows');
+
+    const chips = Array.from(
+      el.shadowRoot!.querySelectorAll('.last-run sl-badge')
+    ).map((chip) => (chip.textContent || '').trim());
+    expect(chips).to.eql(['Failed', 'Runner conflict']);
+
+    // Nothing extra on a server that does not derive the category.
+    const plain = await card();
+    await showTab(plain, 'flows');
+    expect(
+      Array.from(plain.shadowRoot!.querySelectorAll('.last-run sl-badge')).map(
+        (chip) => (chip.textContent || '').trim()
+      )
+    ).to.eql(['Succeeded']);
   });
 
   it('says the counts came off the last 100 runs when they did', async () => {
@@ -467,6 +540,43 @@ describe('inventory-card', () => {
       );
 
       (el as any).setSort('spend');
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelector('tbody tr')!.textContent).to.contain(
+        'Grace Hopper'
+      );
+    });
+
+    it('shows who is on the account before their spend has arrived', async () => {
+      const el = await withUsers({ usageLoading: true });
+      await showTab(el, 'users');
+
+      const cells = Array.from(
+        el.shadowRoot!.querySelectorAll('tbody tr')[0].querySelectorAll('td')
+      );
+      // Identity is known the moment the users list lands.
+      expect(cells[0].textContent).to.contain('Ada Lovelace');
+      expect(cells[1].textContent).to.contain('Admin');
+      expect(cells[2].textContent).to.contain('2h ago');
+      expect(cells[3].textContent!.trim()).to.equal('3');
+      // Usage is not, and says so instead of printing a zero.
+      expect(cells[4].querySelector('sl-skeleton')).to.exist;
+      expect(cells[5].querySelector('sl-skeleton')).to.exist;
+      expect(cells[5].textContent).to.not.contain('$');
+    });
+
+    it('waits for the usage before sorting by spend', async () => {
+      const el = await withUsers({ usageLoading: true });
+      await showTab(el, 'users');
+      (el as any).setSort('spend');
+      await el.updateComplete;
+
+      // Grace outspends Ada, but nothing here knows that yet: the rows keep
+      // the order the identity sort gave them rather than sorting by zero.
+      expect(el.shadowRoot!.querySelector('tbody tr')!.textContent).to.contain(
+        'Ada Lovelace'
+      );
+
+      (el as any).usageLoading = false;
       await el.updateComplete;
       expect(el.shadowRoot!.querySelector('tbody tr')!.textContent).to.contain(
         'Grace Hopper'

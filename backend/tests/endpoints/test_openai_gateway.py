@@ -133,6 +133,9 @@ def test_openai_gateway_responses_codex_replay_normalizes_tools(
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # These tests mock litellm.completion (transcode path).
+                    # Auto native /responses would POST the dummy key upstream.
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -180,6 +183,9 @@ def _gateway_model_and_auth(app, db_session, test_user):
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # These tests mock litellm.completion (transcode path).
+                    # Auto native /responses would POST the dummy key upstream.
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -316,6 +322,9 @@ def test_list_models_endpoint_returns_gateway_models(
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # These tests mock litellm.completion (transcode path).
+                    # Auto native /responses would POST the dummy key upstream.
+                    "responses_api": "transcode",
                 }
             },
         },
@@ -358,6 +367,9 @@ def test_chat_completions_endpoint_returns_openai_shape(
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # These tests mock litellm.completion (transcode path).
+                    # Auto native /responses would POST the dummy key upstream.
+                    "responses_api": "transcode",
                 }
             },
         },
@@ -424,6 +436,9 @@ def test_chat_completions_endpoint_rejects_omitted_model_without_gateway_default
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # These tests mock litellm.completion (transcode path).
+                    # Auto native /responses would POST the dummy key upstream.
+                    "responses_api": "transcode",
                 }
             },
         },
@@ -469,6 +484,9 @@ def test_chat_completions_endpoint_denies_when_account_budget_exceeded(
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # These tests mock litellm.completion (transcode path).
+                    # Auto native /responses would POST the dummy key upstream.
+                    "responses_api": "transcode",
                 },
                 "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
             },
@@ -523,6 +541,9 @@ def test_chat_completions_endpoint_returns_openai_error_envelope_for_upstream_fa
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # These tests mock litellm.completion (transcode path).
+                    # Auto native /responses would POST the dummy key upstream.
+                    "responses_api": "transcode",
                 }
             },
         },
@@ -600,6 +621,9 @@ def test_chat_completions_endpoint_streams_sse(app, client, db_session, test_use
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # These tests mock litellm.completion (transcode path).
+                    # Auto native /responses would POST the dummy key upstream.
+                    "responses_api": "transcode",
                 }
             },
         },
@@ -661,6 +685,9 @@ def test_responses_endpoint_streams_sse(app, client, db_session, test_user):
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # These tests mock litellm.completion (transcode path).
+                    # Auto native /responses would POST the dummy key upstream.
+                    "responses_api": "transcode",
                 }
             },
         },
@@ -723,6 +750,9 @@ def _create_gateway_model(db_session, test_user):
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # These tests mock litellm.completion (transcode path).
+                    # Auto native /responses would POST the dummy key upstream.
+                    "responses_api": "transcode",
                 }
             },
         },

@@ -11,6 +11,10 @@ import {
   formatRelativeTime,
   parseUTCDate,
 } from './date';
+import {
+  failureCategoryBreakdown,
+  failureCategoryLabel,
+} from './failure-category';
 import { sessionBelongsToAgent } from './agent-display';
 import { isCliOnboardableAgentKind } from './agent-kinds';
 import { shellQuote } from './shell';
@@ -47,6 +51,12 @@ export interface AttentionFailedRun {
       six rows that differ only by a timestamp. */
   subject?: string | null;
   subjectUrl?: string | null;
+  /**
+   * Which layer broke, as the server categorised it (#361). Absent on servers
+   * that do not derive it, in which case the evidence table drops the column
+   * rather than showing a row of blanks.
+   */
+  failureCategory?: string | null;
 }
 
 /** One gateway failure behind a model item's count. */
@@ -193,6 +203,8 @@ export interface AttentionFlowExecution {
   /** Also already returned; shown in the evidence table since wave 4. */
   trigger_subject?: string | null;
   trigger_subject_url?: string | null;
+  /** One of the closed failure vocabulary (#361), on failed runs only. */
+  failure_category?: string | null;
 }
 
 export interface AttentionInputs {
@@ -203,6 +215,11 @@ export interface AttentionInputs {
   gatewayFailures?: GatewayUsageSearchResultItem[];
   budgetPolicies?: BudgetPolicy[];
   usageSummary?: AccountGatewayUsageSummaryResponse | null;
+  /**
+   * Account price overrides. An override is a price, including one of $0,
+   * so a model that has one is priced whatever its spend adds up to.
+   */
+  priceOverrides?: AttentionPriceOverride[];
   /**
    * Active dismissals. `undefined` (an older backend without the endpoint)
    * hides nothing and is not an error.
@@ -493,17 +510,27 @@ function flowItems(
       maxRelativeDays: Infinity,
       withSuffix: false,
     });
+    // What the count is made of: "5 failed: 3 model transient, 2 no
+    // confirmation" is a different morning than "5 failed: 5 runner conflict".
+    // Empty on servers that do not categorise, and the sentence falls back to
+    // the count it had before.
+    const breakdown = failureCategoryBreakdown(
+      runs.map((run) => run.failure_category)
+    );
+    const singleCategory = failureCategoryLabel(latest.failure_category);
     const detail =
       runs.length === 1
         ? joinReasons([
-            'Failed',
+            singleCategory ? `Failed: ${singleCategory}` : 'Failed',
             formatRelativeTime(latestStart, now),
             duration,
           ])
         : joinReasons([
-            `${runs.length} failed runs in ${
-              span === 'just now' ? '1m' : span
-            }`,
+            breakdown
+              ? `${runs.length} failed: ${breakdown}`
+              : `${runs.length} failed runs in ${
+                  span === 'just now' ? '1m' : span
+                }`,
             `latest ${formatRelativeTime(latestStart, now)}`,
             duration,
           ]);
@@ -528,6 +555,7 @@ function flowItems(
         errorMessage: (run.error_message || '').trim(),
         subject: run.trigger_subject || null,
         subjectUrl: run.trigger_subject_url || null,
+        failureCategory: run.failure_category || null,
       };
     });
 
@@ -710,6 +738,70 @@ function budgetItems(policies: BudgetPolicy[]): AttentionItem[] {
   return items;
 }
 
+/**
+ * The part of a `ModelPriceOverride` this module reads. Kept structural so
+ * the rules stay a pure function of plain data.
+ */
+export interface AttentionPriceOverride {
+  model_alias?: string | null;
+  ai_model_id?: string | null;
+  is_active?: boolean | null;
+  effective_from?: string | null;
+  effective_until?: string | null;
+}
+
+/** An alias matches whether or not it carries its provider prefix. */
+function aliasKeys(alias: string | null | undefined): string[] {
+  const value = (alias || '').trim().toLowerCase();
+  if (!value) return [];
+  const slash = value.lastIndexOf('/');
+  return slash > 0 ? [value, value.slice(slash + 1)] : [value];
+}
+
+/**
+ * Every alias and model id an in-force override prices. An override that has
+ * been switched off, has not started, or has already ended prices nothing.
+ */
+export function pricedByOverrideKeys(
+  overrides: AttentionPriceOverride[] | null | undefined,
+  now: Date
+): Set<string> {
+  const keys = new Set<string>();
+  for (const override of overrides || []) {
+    if (override.is_active === false) continue;
+    if (
+      override.effective_from &&
+      timestampOf(override.effective_from) > now.getTime()
+    ) {
+      continue;
+    }
+    if (
+      override.effective_until &&
+      timestampOf(override.effective_until) <= now.getTime()
+    ) {
+      continue;
+    }
+    for (const key of aliasKeys(override.model_alias)) {
+      keys.add(key);
+    }
+    if (override.ai_model_id) {
+      keys.add(override.ai_model_id.toLowerCase());
+    }
+  }
+  return keys;
+}
+
+function hasPriceOverride(
+  model: GatewayUsageByModel,
+  keys: Set<string>
+): boolean {
+  if (keys.size === 0) return false;
+  if (model.ai_model_id && keys.has(model.ai_model_id.toLowerCase())) {
+    return true;
+  }
+  return aliasKeys(model.model_alias).some((key) => keys.has(key));
+}
+
 function unpricedModelOf(model: GatewayUsageByModel): AttentionUnpricedModel {
   return {
     alias: model.model_alias || model.provider_name || 'Unknown model',
@@ -729,15 +821,19 @@ function unpricedModelOf(model: GatewayUsageByModel): AttentionUnpricedModel {
  * `unpriced_request_count` distinguishes "nobody knows what this costs" from
  * "this is free", which `estimated_cost === 0` cannot. Servers older than
  * wave 8 do not send it, so there the two collapse back into one warning
- * rather than disappearing.
+ * rather than disappearing, except where an account price override says
+ * outright what the model costs: an override of $0 is an answer, and the
+ * console asked for a price it had already been given.
  */
 function unpricedModelsOf(
-  usageSummary: AccountGatewayUsageSummaryResponse
+  usageSummary: AccountGatewayUsageSummaryResponse,
+  overrideKeys: Set<string>
 ): AttentionUnpricedModel[] {
   return (usageSummary.usage_by_model || [])
     .filter((model) => {
       if (model.request_count <= 0) return false;
       if (model.unpriced_request_count === undefined) {
+        if (hasPriceOverride(model, overrideKeys)) return false;
         return !model.estimated_cost;
       }
       return model.unpriced_request_count > 0;
@@ -797,17 +893,19 @@ function zeroPricedItem(
 
 function pricingItems(
   usageSummary: AccountGatewayUsageSummaryResponse | null | undefined,
+  priceOverrides: AttentionPriceOverride[] | null | undefined,
   now: Date
 ): AttentionItem[] {
   if (!usageSummary) {
     return [];
   }
+  const overrideKeys = pricedByOverrideKeys(priceOverrides, now);
   const zeroPriced = zeroPricedItem(usageSummary);
   const catalog = usageSummary.price_catalog;
   const fetchedAt = catalog?.fetched_at || null;
   const modelCount = catalog?.model_count ?? null;
   const unpricedRequests = usageSummary.unpriced_requests || 0;
-  const unpricedModels = unpricedModelsOf(usageSummary);
+  const unpricedModels = unpricedModelsOf(usageSummary, overrideKeys);
   const stale =
     Boolean(fetchedAt) &&
     now.getTime() - timestampOf(fetchedAt) > FOURTEEN_DAYS_MS;
@@ -950,7 +1048,7 @@ export function deriveAttentionItems(inputs: AttentionInputs): AttentionResult {
     ...flowItems(inputs.executions || [], now),
     ...modelItems(inputs.gatewayFailures || [], now),
     ...budgetItems(inputs.budgetPolicies || []),
-    ...pricingItems(inputs.usageSummary, now),
+    ...pricingItems(inputs.usageSummary, inputs.priceOverrides, now),
   ];
 
   const byItemId = new Map<string, AttentionDismissalRecord>();

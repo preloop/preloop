@@ -16,7 +16,12 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from preloop.agents.base import AgentExecutionResult, AgentStatus
-from preloop.agents.container import ContainerAgentExecutor
+from preloop.agents.container import (
+    AGENT_SESSION_SUFFIX_KEY,
+    ContainerAgentExecutor,
+    kubernetes_job_name,
+)
+from preloop.agents.errors import AgentStartError
 from preloop.models.crud import crud_account, crud_flow, crud_user
 from preloop.models.models import Account, Flow
 from preloop.models.models.user import User
@@ -679,3 +684,209 @@ class TestRetryVerdictWiring:
         )
 
         assert orchestrator._retry_decision(agent_result) is None
+
+
+@pytest.mark.asyncio
+class TestPerAttemptSessionNames:
+    """Each attempt must ask the runtime for its OWN session name.
+
+    The staging regression: the Kubernetes Job name is derived from the
+    execution id alone, so attempt 2 asked for the name attempt 1 still owned
+    (its Job lingers for AGENT_JOB_TTL_SECONDS) and died with
+    ``Failed to start agent Job: (409) Conflict``. The retry meant to rescue a
+    transient provider failure became the cause of the failure — and its 409
+    message overwrote the real one.
+    """
+
+    @staticmethod
+    def _recording_executor(suffixes: list):
+        executor = AsyncMock()
+
+        async def start(context):
+            suffixes.append(context.get(AGENT_SESSION_SUFFIX_KEY))
+            return f"session-{len(suffixes)}"
+
+        executor.start = AsyncMock(side_effect=start)
+        executor.cleanup = AsyncMock()
+        return executor
+
+    async def test_retry_attempt_requests_a_distinct_session_name(
+        self, db_session, test_flow, event_data, mock_nats_client
+    ):
+        suffixes: list = []
+        calls = []
+
+        async def monitor(session_reference, agent_executor):
+            calls.append(session_reference)
+            if len(calls) == 1:
+                return {
+                    "status": "FAILED",
+                    "error_message": "Upstream model provider timed out (HTTP 504).",
+                    "exit_code": 1,
+                    "actions_taken": [],
+                    "mcp_usage_logs": [],
+                }
+            return {
+                "status": "SUCCEEDED",
+                "output_summary": "ok",
+                "error_message": None,
+                "exit_code": 0,
+                "actions_taken": [],
+                "mcp_usage_logs": [],
+            }
+
+        with (
+            patch(
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
+                return_value=self._recording_executor(suffixes),
+            ),
+            patch.object(
+                FlowExecutionOrchestrator,
+                "_monitor_agent_execution",
+                side_effect=monitor,
+            ),
+            patch("preloop.services.flow_orchestrator.asyncio.sleep", AsyncMock()),
+        ):
+            orchestrator = _build_orchestrator(
+                db_session, test_flow, event_data, mock_nats_client
+            )
+            await orchestrator.run()
+
+        assert len(suffixes) == 2
+        # Attempt 1 keeps the historic unsuffixed name so an in-flight run
+        # started before this change is still addressable by its stored
+        # session reference; every later attempt gets its own.
+        assert suffixes[0] is None
+        assert suffixes[1] == "a2"
+
+        execution_id = str(orchestrator.execution_log.id)
+        names = [
+            kubernetes_job_name(execution_id, session_suffix=suffix)
+            for suffix in suffixes
+        ]
+        assert len(set(names)) == len(names), (
+            f"attempts must not collide on a Kubernetes Job name; got {names}"
+        )
+
+
+@pytest.mark.asyncio
+class TestFailureCategoryRecorded:
+    """Every terminal failure carries a category you can group by."""
+
+    @staticmethod
+    def _executor():
+        executor = AsyncMock()
+        executor.start = AsyncMock(return_value="session-under-test")
+        executor.cleanup = AsyncMock()
+        return executor
+
+    async def _run_with_result(
+        self, db_session, test_flow, event_data, mock_nats_client, agent_result: dict
+    ):
+        async def monitor(session_reference, agent_executor):
+            return agent_result
+
+        with (
+            patch(
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
+                return_value=self._executor(),
+            ),
+            patch.object(
+                FlowExecutionOrchestrator,
+                "_monitor_agent_execution",
+                side_effect=monitor,
+            ),
+            patch("preloop.services.flow_orchestrator.asyncio.sleep", AsyncMock()),
+        ):
+            orchestrator = _build_orchestrator(
+                db_session, test_flow, event_data, mock_nats_client
+            )
+            await orchestrator.run()
+        return orchestrator
+
+    async def test_transient_upstream_failure_is_categorised(
+        self, db_session, test_flow, event_data, mock_nats_client
+    ):
+        orchestrator = await self._run_with_result(
+            db_session,
+            test_flow,
+            event_data,
+            mock_nats_client,
+            {
+                "status": "FAILED",
+                "error_message": "Upstream model provider timed out (HTTP 504).",
+                "exit_code": 0,  # exit 0 => not retried, terminal on attempt 1
+                "actions_taken": [],
+                "mcp_usage_logs": [],
+            },
+        )
+        assert orchestrator.execution_log.status == "FAILED"
+        assert orchestrator.execution_log.failure_category == "model_transient"
+
+    async def test_auth_failure_is_categorised_apart_from_transient(
+        self, db_session, test_flow, event_data, mock_nats_client
+    ):
+        orchestrator = await self._run_with_result(
+            db_session,
+            test_flow,
+            event_data,
+            mock_nats_client,
+            {
+                "status": "FAILED",
+                "error_message": "Upstream model provider rejected our credentials "
+                "(HTTP 401).",
+                "exit_code": 1,
+                "actions_taken": [],
+                "mcp_usage_logs": [],
+            },
+        )
+        assert orchestrator.execution_log.failure_category == "model_auth"
+
+    async def test_successful_run_has_no_category(
+        self, db_session, test_flow, event_data, mock_nats_client
+    ):
+        orchestrator = await self._run_with_result(
+            db_session,
+            test_flow,
+            event_data,
+            mock_nats_client,
+            {
+                "status": "SUCCEEDED",
+                "output_summary": "ok",
+                "error_message": None,
+                "exit_code": 0,
+                "actions_taken": [],
+                "mcp_usage_logs": [],
+            },
+        )
+        assert orchestrator.execution_log.status == "SUCCEEDED"
+        assert orchestrator.execution_log.failure_category is None
+
+    async def test_runner_start_failure_is_categorised_as_runner(
+        self, db_session, test_flow, event_data, mock_nats_client
+    ):
+        """A run killed by an unresolvable Job conflict must say so."""
+        executor = AsyncMock()
+        executor.start = AsyncMock(
+            side_effect=AgentStartError(
+                "Failed to start agent Job: name agent-x is already used by "
+                "execution other",
+                category="runner_conflict",
+            )
+        )
+        executor.cleanup = AsyncMock()
+
+        with (
+            patch(
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
+                return_value=executor,
+            ),
+            patch("preloop.services.flow_orchestrator.asyncio.sleep", AsyncMock()),
+        ):
+            orchestrator = _build_orchestrator(
+                db_session, test_flow, event_data, mock_nats_client
+            )
+            await orchestrator.run()
+
+        assert orchestrator.execution_log.status == "FAILED"
+        assert orchestrator.execution_log.failure_category == "runner_conflict"

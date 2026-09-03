@@ -328,6 +328,20 @@ describe('blog-seo', () => {
       expect(html).to.contain('href="/blog/a-post"');
     });
 
+    it('puts the index thumbnail under the title, not above it', () => {
+      const html = render_blog_index_html(
+        config,
+        [makePost({ og_image: '/assets/blog/ship.png' })],
+        ''
+      );
+      const title_at = html.indexOf('<h2>');
+      const hero_at = html.indexOf('class="blog-index-hero"');
+      const description_at = html.indexOf('<p>A description.</p>');
+      expect(title_at).to.be.greaterThan(-1);
+      expect(hero_at).to.be.greaterThan(title_at);
+      expect(description_at).to.be.greaterThan(hero_at);
+    });
+
     it('renders an empty state rather than failing with no posts', () => {
       const html = render_blog_index_html(config, [], '');
       expect(html).to.contain('No posts yet.');

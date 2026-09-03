@@ -1,4 +1,5 @@
 import { expect, fixture, html, oneEvent } from '@open-wc/testing';
+import sinon from 'sinon';
 import './usage-card.ts';
 import { USAGE_UNIT_STORAGE_KEY } from './usage-card';
 import type { UsageCard } from './usage-card';
@@ -71,6 +72,7 @@ async function renderCard(props: Partial<UsageCard> = {}): Promise<UsageCard> {
       .timeRange=${props.timeRange ?? 'month'}
       .toolCallsCount=${props.toolCallsCount ?? 0}
       .loading=${props.loading ?? false}
+      ?updating=${props.updating ?? false}
       .error=${props.error ?? null}
       .priorSummary=${props.priorSummary ?? null}
     ></usage-card>
@@ -230,13 +232,25 @@ describe('usage-card', () => {
     expect(element.shadowRoot!.querySelector('.budget-forecast')).to.be.null;
   });
 
-  it('names the end of a daily budget midnight', async () => {
+  it("names the end of a daily budget on the reader's clock", async () => {
+    // The server cuts days in UTC, so the window ends at a UTC midnight: that
+    // is midnight for a reader in UTC and some other hour of their day
+    // everywhere else. Either way the sentence never names tomorrow's date.
+    const end = new Date();
+    end.setUTCHours(24, 0, 0, 0);
+    const expected =
+      end.getHours() === 0 && end.getMinutes() === 0 && end.getSeconds() === 0
+        ? 'midnight'
+        : end.toLocaleTimeString(undefined, {
+            hour: 'numeric',
+            minute: '2-digit',
+          });
     const element = await renderCard({
       policies: [
         policyFixture({
           period: 'daily',
-          period_start: new Date(Date.now() - 12 * 3600000).toISOString(),
-          period_end: new Date(Date.now() + 12 * 3600000).toISOString(),
+          period_start: new Date(Date.now() - 24 * 3600000).toISOString(),
+          period_end: end.toISOString(),
           current_spend_usd: 6,
         }),
       ],
@@ -245,7 +259,7 @@ describe('usage-card', () => {
       element
         .shadowRoot!.querySelector('.budget-forecast')!
         .textContent!.replace(/\s+/g, ' ')
-    ).to.contain('by midnight');
+    ).to.contain(`by ${expected}`);
   });
 
   it('renders the legacy account budget as a monthly row', async () => {
@@ -355,6 +369,92 @@ describe('usage-card', () => {
     expect(alert.getAttribute('variant')).to.equal('danger');
     expect(alert.textContent).to.contain('Failed to load usage');
   });
+  describe('while a new range loads', () => {
+    it('keeps the numbers it has and marks them as being replaced', async () => {
+      const element = await renderCard({ updating: true });
+
+      // The old range is still readable: a blank card would be a worse
+      // answer than a slightly stale one.
+      expect(text(element, '.primary-value')).to.equal('584.3M');
+      expect(element.shadowRoot!.querySelector('sl-skeleton')).to.not.exist;
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="usage-updating"]')
+      ).to.exist;
+
+      const body = element.shadowRoot!.querySelector('.body') as HTMLElement;
+      expect(body.classList.contains('is-updating')).to.equal(true);
+      expect(
+        getComputedStyle(body.querySelector('.primary-value')!).opacity
+      ).to.equal('0.6');
+
+      element.updating = false;
+      await element.updateComplete;
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="usage-updating"]')
+      ).to.not.exist;
+      expect(
+        getComputedStyle(element.shadowRoot!.querySelector('.primary-value')!)
+          .opacity
+      ).to.equal('1');
+    });
+
+    it('says the total came off a rollup only when the server says so', async () => {
+      const plain = await renderCard();
+      expect(
+        plain.shadowRoot!.querySelector('[data-testid="usage-provenance"]')
+      ).to.not.exist;
+
+      const rolled = await renderCard({
+        summary: summaryFixture({ from_rollup: true }),
+      });
+      expect(text(rolled, '[data-testid="usage-provenance"]')).to.equal(
+        '· from rollup'
+      );
+
+      // Some servers name the source instead of flagging it.
+      const named = await renderCard({
+        summary: summaryFixture({ source: 'rollup' }),
+      });
+      expect(
+        named.shadowRoot!.querySelector('[data-testid="usage-provenance"]')
+      ).to.exist;
+    });
+
+    it('warns about a slow year only after it has been slow', async () => {
+      const clock = sinon.useFakeTimers();
+      try {
+        const element = await renderCard({ timeRange: 'year', updating: true });
+        const hint = () =>
+          element.shadowRoot!.querySelector('[data-testid="long-range-hint"]');
+        expect(hint(), 'immediately').to.not.exist;
+
+        clock.tick(1999);
+        await element.updateComplete;
+        expect(hint(), 'just under two seconds').to.not.exist;
+
+        clock.tick(2);
+        await element.updateComplete;
+        expect((hint()!.textContent || '').trim()).to.equal(
+          'Long ranges take longer'
+        );
+
+        // Gone the moment the year lands, and never shown for a short range.
+        element.updating = false;
+        await element.updateComplete;
+        expect(hint()).to.not.exist;
+
+        const month = await renderCard({ timeRange: 'month', updating: true });
+        clock.tick(5000);
+        await month.updateComplete;
+        expect(
+          month.shadowRoot!.querySelector('[data-testid="long-range-hint"]')
+        ).to.not.exist;
+      } finally {
+        clock.restore();
+      }
+    });
+  });
+
   describe('prior-period delta', () => {
     it('states the change against the previous window of the same length', async () => {
       const element = await renderCard({

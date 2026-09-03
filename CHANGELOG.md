@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-flow timeout budget**: `timeout_seconds` on a flow (create/update
+  API, preset YAML, 60..86400 seconds) sets the wall-clock budget for one
+  execution; unset keeps the deployment default
+  (`FLOW_EXECUTION_MAX_WAIT_SECONDS`, 3600). A run that overruns it fails
+  with a message that names the budget that expired, so a stuck run is
+  distinguishable from work that legitimately needs longer. The PR reviewer
+  preset ships with 1800 and the release security audit with 7200.
+- **In-place completion nudge**: when an agent exits cleanly without
+  confirming completion, its own container now reminds it once, on the same
+  harness session and workspace, to write `result.json` and print the
+  completion sentinel. The reminder runs before any push or PR creation and
+  can never repeat a side effect, is bounded to one round
+  (`FLOW_COMPLETION_NUDGE_TIMEOUT_SECONDS`, default 300; disable fleet-wide
+  with `FLOW_COMPLETION_NUDGE_ENABLED=false`), and appears on the execution
+  timeline as `completion_nudge`. Runs that used to fail as "exited 0 but
+  did not produce the success sentinel", the largest failure class on
+  staging, now mostly confirm themselves. For runtimes that cannot resume a
+  session (Gemini, Aider, OpenHands, remote runners) a written
+  `/workspace/result.json` is accepted as the completion signal instead.
+- **Issue-implementation pickup and PR-comment resume**: `update_issue` can add a GitHub reaction (eyes on pickup) with no other fields. Flow prompts can use `{{execution.url}}`. Opening a PR records its URL on the execution, so a human comment on that PR restarts the same flow on the same branch. Unmatched comments do not start a run. Native CLI `--resume` is a follow-up (#356).
 - **`preloop agents refresh` (alias `sync`), `preloop models sync`, and `POST /api/v1/ai-models/sync`**: refresh rewrites managed model sections of onboarded agent configs from the account catalog; models sync (and the endpoint) pull newly released provider models into that catalog using stored credentials.
 - **Opt-in scheduled model-catalog sync**: `MODEL_CATALOG_SYNC_SCHEDULED_ENABLED` (default false; helm `config.modelCatalogSync.*`) runs the same discovery as `preloop models sync` for every account, attributing audit events to the `model-catalog-sync` system actor.
 - **`preloop usage hook` accepts harness-agnostic events**: stdin is
@@ -19,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a stub).
 
 ### Changed
+
+- **GitHub merged PRs emit `pull_request_merged`**: a closed-and-merged pull request is no longer normalized as `pull_request_closed`. GitLab Job Hooks expose `build_name` / `build_status`, and GitHub issue close exposes `state_reason`, so flows can filter `deploy:staging` success and merge-completed closes. The event pickers list Job Event and Deployment.
 
 - **GitHub backend CI uses 8 pytest-split shards**: group 1 of 4 was the
   wall-clock pole (~7-9m vs ~3-4.5m). Eight `duration_based_chunks` slices
@@ -58,6 +80,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds a page by dropping a markdown file.
 
 ### Fixed
+
+- **Unused dashboard test helper and redundant asyncio import**: drop
+  `isReddish` from `dashboard-view.test.ts` and the second `import asyncio`
+  in the Kubernetes log streamer (`container.py` already imports it at
+  module scope).
+- **`POST /openai/v1/responses` forwards to the upstream Responses API**:
+  a Responses request used to be transcoded into a chat-completions call,
+  so an upstream that implements `/responses` but not `/chat/completions`
+  (measured: OpenCode Zen) answered every request with
+  `502 InternalServerError - Internal server error`. OpenAI-shaped API-key
+  upstreams now receive the payload on their own `/responses` endpoint and
+  the answer is relayed verbatim, streaming included, which also stops
+  `instructions`, `reasoning`, `include`, `store` and `prompt_cache_key`
+  from being dropped in translation. Upstreams that only speak chat
+  completions are detected automatically (404/405/501, remembered per base
+  URL for 15 minutes) and keep the previous behaviour with no configuration.
+  `meta_data.gateway.responses_api` on the model row pins the choice
+  (`auto` default, `native`, `transcode`). Auth, budgets, governance
+  tool-stripping, accounting and audit run on both paths.
+- **`preloop runner fg` reconnects when the control-plane WebSocket drops**: close 1006 (and other transport errors) no longer exit the process. The runner redials with backoff, keeps an in-flight Docker job, resends `complete`/`logs` on the new socket, and sends WebSocket pings alongside the JSON heartbeat. Ctrl-C still unregisters. Auth/`gone` errors stay fatal.
+- **Console Runners page updates live**: register, connect, disconnect, lease, and complete publish `runner_updated` on the account websocket (`runners` topic) so status changes without a manual refresh.
 
 - **Migration job now syncs global flow presets after alembic**: the
   post-upgrade hook runs `scripts/sync_flow_presets.py --no-propagate`
@@ -174,11 +217,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **CodeQL runs from an in-repo workflow** on every pull request and every
+  push to `main`, so OpenSSF Scorecard can see `github/codeql-action` on
+  all commits rather than only the GitHub default-setup checks that some
+  merged PRs skipped. SARIF upload stays off until GitHub default CodeQL
+  setup is disabled (both cannot upload at once); then set ``upload: true``
+  in ``.github/workflows/codeql.yml``.
+- **`@preloop-ai/claude-plugin` overrides `fast-uri` 3.1.6 and `qs` 6.16.0**
+  (Dependabot GHSA-5jgf-p345-68v8 / GHSA-f65p-4m7j-42xc / GHSA-fph4-wmhf-6fwf
+  / GHSA-jqff-g426-hqxp, GHSA-x5fp-wj9c-mxmx / GHSA-4mjr-xmp4-gh2g).
 - **Model I/O ``text_sha256`` stays a SHA-256 prompt fingerprint**:
   CodeQL flagged the digest as password hashing because scanned prompts
   can contain secrets. It is an audit fingerprint (never the raw text),
   the same pattern as API-key lookup hashes. The algorithm is unchanged,
-  so existing ``text_sha256`` rows keep matching.
+  so existing ``text_sha256`` rows keep matching. The CodeQL suppression
+  matches the API-key fingerprint pattern (comment on the ``hashlib.sha256``
+  call, ``codeql[py/weak-sensitive-data-hashing]``).
 
 - **Drop python-jose for PyJWT**: auth tokens, email/reset tokens, WebAuthn
   challenge state, MCP OAuth authorize codes, and APNs ES256 client

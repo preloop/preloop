@@ -1,11 +1,14 @@
 """Container-based agent executor for Docker and Kubernetes."""
 
+import asyncio
 import base64
 import binascii
 import io
 import json
 import logging
 import os
+import random
+import re
 import shlex
 import tarfile
 from typing import Any, Dict, Optional
@@ -13,7 +16,14 @@ from typing import Any, Dict, Optional
 import aiodocker
 from aiodocker.exceptions import DockerError
 
+from preloop.config import settings
+from preloop.services.flow_failure_category import (
+    FAILURE_CATEGORY_RUNNER_CONFLICT,
+    FAILURE_CATEGORY_RUNNER_ERROR,
+)
+
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
+from .errors import AgentStartError
 from .failure_analysis import analyze_agent_failure
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.utils.git_credentials import (
@@ -34,6 +44,31 @@ from preloop.utils.workspace_seed import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Git ref names interpolated into generated shell (origin/<branch>..HEAD).
+# Charset is unquoted-shell-safe so we never splice shlex.quote into the
+# middle of a token (origin/'feat/x'). Extra checks below match git's
+# own refname rules: no ``..``, leading ``-``, trailing ``.``, or
+# ``~``/``^``/``:`` (the last three are already outside the charset).
+_SAFE_GIT_REF_CHARS = re.compile(r"^[A-Za-z0-9._/\-]+$")
+
+
+def _validated_git_ref(name: Optional[str]) -> Optional[str]:
+    """Return ``name`` when it is a safe git branch/ref, otherwise None."""
+
+    if not name or not isinstance(name, str):
+        return None
+    if not _SAFE_GIT_REF_CHARS.fullmatch(name):
+        return None
+    if name.startswith("-") or name.startswith("/") or name.endswith("."):
+        return None
+    if name.endswith("/") or ".." in name or "//" in name:
+        return None
+    for part in name.split("/"):
+        if not part or part.startswith(".") or part.endswith(".lock"):
+            return None
+    return name
+
 
 # Path inside the agent container where eval/observe flows write their
 # structured result report (see backend/presets/003-observe-eval.yaml).
@@ -76,6 +111,76 @@ ARTIFACT_STREAM_LINE_PREFIX = "PRELOOP_ARTIFACT_"
 # Environment variable carrying the original (unwrapped) agent script when the
 # Kubernetes artifact-emission wrapper is applied.
 K8S_INNER_SCRIPT_ENV = "PRELOOP_INNER_SCRIPT"
+
+# Key under which the orchestrator names the SESSION (not the execution) that
+# is being started. One execution can legitimately start several agent
+# sessions — attempt 2 of the transient-failure retry, the completion
+# confirmation nudge — and each needs its own Kubernetes Job. Without a
+# discriminator every session of one execution asks the API server for the
+# same Job name, and the second one fails with 409 AlreadyExists while the
+# first Job is still around (it lingers for AGENT_JOB_TTL_SECONDS after it
+# finishes). That is the staging "Failed to start agent Job: (409) Conflict"
+# signature.
+AGENT_SESSION_SUFFIX_KEY = "agent_session_suffix"
+
+# Kubernetes object names must be DNS-1123 labels: <=63 chars, lowercase
+# alphanumeric and '-', starting and ending alphanumeric.
+K8S_NAME_MAX_LENGTH = 63
+_K8S_NAME_INVALID_RE = re.compile(r"[^a-z0-9-]+")
+
+# Bounded wait for a leftover finished Job to actually disappear after a
+# delete, before the name can be reused.
+_JOB_DELETE_POLL_INTERVAL_SECONDS = 0.5
+_JOB_DELETE_MAX_WAIT_SECONDS = 15.0
+
+
+def kubernetes_job_name(
+    execution_id: str, *, session_suffix: Optional[str] = None
+) -> str:
+    """Build the DNS-1123 Job name for one agent session of an execution.
+
+    The execution id stays the readable core of the name (operators grep for
+    it), and the optional session suffix keeps a retry attempt or the
+    confirmation nudge from colliding with the Job of the session before it.
+
+    Args:
+        execution_id: Flow execution UUID (string).
+        session_suffix: Short discriminator for this session within the
+            execution (``"a2"``, ``"nudge"``). None/empty keeps the historic
+            ``agent-<execution_id>`` name, so an in-flight first attempt is
+            still found by its stored session reference across a deploy.
+
+    Returns:
+        A valid Kubernetes Job name.
+    """
+    base = f"agent-{execution_id}".replace("_", "-").lower()
+    suffix = (session_suffix or "").replace("_", "-").lower()
+    suffix = _K8S_NAME_INVALID_RE.sub("", suffix)
+    if suffix:
+        base = f"{base[: K8S_NAME_MAX_LENGTH - len(suffix) - 1]}-{suffix}"
+    base = _K8S_NAME_INVALID_RE.sub("", base)[:K8S_NAME_MAX_LENGTH]
+    return base.strip("-")
+
+
+def _job_create_retry_delay_seconds(attempt: int) -> float:
+    """Jittered exponential backoff before re-attempting a Job creation.
+
+    Args:
+        attempt: Zero-based index of the attempt that just failed.
+
+    Returns:
+        Seconds to wait. Jitter matters here because the collisions this
+        guards against are caused by *concurrent* actors (two dispatchers,
+        a reclaiming worker): a fixed backoff would keep them in lockstep.
+    """
+    base = max(0.0, float(settings.agent_job_create_retry_base_seconds))
+    return (base * (2**attempt)) + random.uniform(0, base)
+
+
+async def _sleep_before_job_create_retry(seconds: float) -> None:
+    """Sleep hook tests can patch without slowing the suite."""
+    await asyncio.sleep(seconds)
+
 
 # Wrapper applied to Kubernetes agent scripts. Runs the unchanged agent script
 # in a CHILD shell (so its own `trap ... EXIT` and `exit $rc` cannot skip the
@@ -415,8 +520,14 @@ class ContainerAgentExecutor(AgentExecutor):
         execution_id = execution_context["execution_id"]
         flow_id = execution_context["flow_id"]
 
-        # Generate unique job name (K8s names must be DNS-1123 compliant)
-        job_name = f"agent-{execution_id}".replace("_", "-").lower()
+        # Job name: execution id plus the per-session discriminator, so a
+        # retry attempt or the confirmation nudge never asks for the name a
+        # previous session of this execution already owns (see
+        # AGENT_SESSION_SUFFIX_KEY).
+        job_name = kubernetes_job_name(
+            execution_id,
+            session_suffix=execution_context.get(AGENT_SESSION_SUFFIX_KEY),
+        )
 
         # Prepare environment variables
         # Start with agent-specific env if provided by any subclass.
@@ -634,23 +745,253 @@ class ContainerAgentExecutor(AgentExecutor):
             ),
         )
 
+        return await self._create_kubernetes_job(
+            job, job_name=job_name, execution_id=execution_id
+        )
+
+    async def _create_kubernetes_job(
+        self, job: Any, *, job_name: str, execution_id: str
+    ) -> str:
+        """Create the agent Job, tolerating conflicts and API-server blips.
+
+        Two failure shapes must not kill a flow execution:
+
+        * **409 AlreadyExists.** Either another actor already created the Job
+          for this exact session (a duplicate dispatch, a worker reclaiming a
+          lease) — in which case the existing Job IS our agent and is adopted
+          instead of started twice — or a Job of the same name from an
+          earlier, already-finished session is still lingering inside its
+          TTL, in which case it is deleted (background propagation, so its
+          pods go with it) and the name reused.
+        * **429 / 5xx from the API server.** A transient control-plane
+          failure; retried with jittered backoff.
+
+        Anything else (403, invalid manifest, quota) is terminal and raised
+        immediately — retrying it only delays a failure the user must see.
+
+        Args:
+            job: The V1Job body to create.
+            job_name: Name on the body, used for conflict resolution.
+            execution_id: Owning flow execution (for logs and the ownership
+                check on an existing Job).
+
+        Returns:
+            The Job name (the agent session reference).
+
+        Raises:
+            AgentStartError: When the Job could not be created within the
+                configured attempts, or the failure was terminal.
+        """
+        max_attempts = max(1, int(settings.agent_job_create_max_attempts))
+        last_error: Optional[ApiException] = None
+
+        for attempt in range(max_attempts):
+            try:
+                await self._k8s_batch_api.create_namespaced_job(
+                    namespace=self.agent_namespace, body=job
+                )
+                self.logger.info(
+                    f"Started Kubernetes Job {job_name} in namespace "
+                    f"{self.agent_namespace} for execution {execution_id}"
+                )
+                return job_name
+            except ApiException as e:
+                last_error = e
+                # Whether a create can still follow this attempt. Everything
+                # that is only a *precondition* for another create - deleting
+                # a finished leftover to free its name - is gated on it: with
+                # AGENT_JOB_CREATE_MAX_ATTEMPTS=1 nothing would recreate the
+                # Job, so deleting would throw away the leftover's logs and
+                # still fail the run. Adoption is not gated: it returns a
+                # started agent without needing another attempt.
+                can_retry = attempt < max_attempts - 1
+                if e.status == 409:
+                    adopted = await self._resolve_job_name_conflict(
+                        job_name=job_name,
+                        execution_id=execution_id,
+                        may_delete=can_retry,
+                    )
+                    if adopted:
+                        self.logger.warning(
+                            f"Adopted pre-existing Kubernetes Job {job_name} for "
+                            f"execution {execution_id} instead of starting a "
+                            "duplicate agent"
+                        )
+                        return job_name
+                elif not self._is_retryable_job_api_error(e):
+                    self.logger.error(
+                        f"Failed to create Kubernetes Job for execution "
+                        f"{execution_id}: {e}"
+                    )
+                    raise AgentStartError(
+                        f"Failed to start agent Job: {e}",
+                        category=FAILURE_CATEGORY_RUNNER_ERROR,
+                    ) from e
+
+                if not can_retry:
+                    break
+
+                delay = _job_create_retry_delay_seconds(attempt)
+                self.logger.warning(
+                    "Retrying Kubernetes Job creation for execution %s after "
+                    "HTTP %s (attempt %s/%s, delay=%.2fs)",
+                    execution_id,
+                    e.status,
+                    attempt + 1,
+                    max_attempts,
+                    delay,
+                )
+                await _sleep_before_job_create_retry(delay)
+
+        assert last_error is not None
+        self.logger.error(
+            f"Failed to create Kubernetes Job for execution {execution_id} after "
+            f"{max_attempts} attempts: {last_error}"
+        )
+        raise AgentStartError(
+            f"Failed to start agent Job: {last_error}",
+            category=(
+                FAILURE_CATEGORY_RUNNER_CONFLICT
+                if last_error.status == 409
+                else FAILURE_CATEGORY_RUNNER_ERROR
+            ),
+        ) from last_error
+
+    @staticmethod
+    def _is_retryable_job_api_error(error: "ApiException") -> bool:
+        """Whether a Job-create API error is worth another attempt."""
+        status = getattr(error, "status", None)
         try:
-            # Create the Job
-            await self._k8s_batch_api.create_namespaced_job(
-                namespace=self.agent_namespace, body=job
+            status = int(status)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        return status == 429 or 500 <= status < 600
+
+    async def _resolve_job_name_conflict(
+        self, *, job_name: str, execution_id: str, may_delete: bool = True
+    ) -> bool:
+        """Adopt or clear the Job that owns a conflicting name.
+
+        Args:
+            job_name: Name that came back 409 AlreadyExists.
+            execution_id: Execution the caller is starting.
+            may_delete: Whether a finished leftover may be deleted to free
+                its name. False when no create attempt remains, in which case
+                the leftover (and its logs) is left in place: deleting it
+                would help nobody and destroy the evidence.
+
+        Returns:
+            True when the existing Job is a live agent for this execution and
+            was adopted (the caller must NOT create anything). False when the
+            name was freed (or the Job vanished) and creation should be
+            retried, and when a leftover was deliberately left in place.
+
+        Raises:
+            AgentStartError: When the conflicting Job does not provably
+                belong to this execution. Deleting or adopting it would
+                corrupt an unrelated run, so this fails loudly instead.
+        """
+        try:
+            existing = await self._k8s_batch_api.read_namespaced_job(
+                name=job_name, namespace=self.agent_namespace
+            )
+        except ApiException as read_error:
+            if read_error.status == 404:
+                # Raced with the owner's own cleanup: the name is free again.
+                return False
+            self.logger.warning(
+                f"Could not read conflicting Job {job_name}: {read_error}"
+            )
+            return False
+
+        # Fail closed on ownership: this guard is the only thing standing
+        # between a name collision and someone else's agent being adopted or
+        # deleted. Every Preloop job-creation path sets the label, so a
+        # missing one means the Job is not ours to touch (an operator's, a
+        # foreign tool's, or a label stripped after creation) - unknown
+        # ownership is treated exactly like foreign ownership.
+        labels = getattr(getattr(existing, "metadata", None), "labels", None) or {}
+        owner = labels.get("preloop.execution_id")
+        if not owner:
+            raise AgentStartError(
+                f"Failed to start agent Job: name {job_name} is already used by "
+                "a Job with no preloop.execution_id label (unknown owner)",
+                category=FAILURE_CATEGORY_RUNNER_CONFLICT,
+            )
+        if str(owner) != str(execution_id):
+            raise AgentStartError(
+                f"Failed to start agent Job: name {job_name} is already used by "
+                f"execution {owner}",
+                category=FAILURE_CATEGORY_RUNNER_CONFLICT,
             )
 
-            self.logger.info(
-                f"Started Kubernetes Job {job_name} in namespace {self.agent_namespace} "
-                f"for execution {execution_id}"
-            )
-            return job_name
+        if self._job_is_live(existing):
+            return True
 
-        except ApiException as e:
-            self.logger.error(
-                f"Failed to create Kubernetes Job for execution {execution_id}: {e}"
+        if not may_delete:
+            # Last attempt: nothing would recreate the Job, so deleting the
+            # leftover would only cost its logs. Fail on the 409 instead.
+            self.logger.warning(
+                f"Leaving finished leftover Job {job_name} in place for "
+                f"execution {execution_id}: no creation attempt remains "
+                "(AGENT_JOB_CREATE_MAX_ATTEMPTS)"
             )
-            raise RuntimeError(f"Failed to start agent Job: {e}")
+            return False
+
+        self.logger.info(
+            f"Deleting finished leftover Job {job_name} so execution "
+            f"{execution_id} can reuse the name"
+        )
+        try:
+            await self._k8s_batch_api.delete_namespaced_job(
+                name=job_name,
+                namespace=self.agent_namespace,
+                # Background propagation removes the Job's pods with it;
+                # without it the orphaned pods keep the name's resources
+                # (and their logs) around.
+                propagation_policy="Background",
+            )
+        except ApiException as delete_error:
+            if delete_error.status != 404:
+                self.logger.warning(
+                    f"Could not delete leftover Job {job_name}: {delete_error}"
+                )
+                return False
+
+        await self._wait_for_job_deletion(job_name)
+        return False
+
+    @staticmethod
+    def _job_is_live(job: Any) -> bool:
+        """Whether a Job still has (or may still get) a running pod."""
+        status = getattr(job, "status", None)
+        if status is None:
+            # No status yet means the Job was only just created.
+            return True
+        if getattr(status, "active", None):
+            return True
+        if getattr(status, "succeeded", None) or getattr(status, "failed", None):
+            return False
+        # Created but not yet scheduled: no counters, no completion time.
+        return getattr(status, "completion_time", None) is None
+
+    async def _wait_for_job_deletion(self, job_name: str) -> None:
+        """Poll until a deleted Job is gone, bounded by a hard deadline."""
+        waited = 0.0
+        while waited < _JOB_DELETE_MAX_WAIT_SECONDS:
+            try:
+                await self._k8s_batch_api.read_namespaced_job(
+                    name=job_name, namespace=self.agent_namespace
+                )
+            except ApiException as e:
+                if e.status == 404:
+                    return
+            await _sleep_before_job_create_retry(_JOB_DELETE_POLL_INTERVAL_SECONDS)
+            waited += _JOB_DELETE_POLL_INTERVAL_SECONDS
+        self.logger.warning(
+            f"Leftover Job {job_name} still present after "
+            f"{_JOB_DELETE_MAX_WAIT_SECONDS}s; retrying creation anyway"
+        )
 
     async def get_status(self, session_reference: str) -> AgentStatus:
         """
@@ -1695,8 +2036,6 @@ class ContainerAgentExecutor(AgentExecutor):
             pod_name = None
 
             # Retry for up to 60 seconds to find the pod
-            import asyncio
-
             for attempt in range(60):
                 pods = await self._k8s_core_api.list_namespaced_pod(
                     namespace=self.agent_namespace, label_selector=label_selector
@@ -1977,17 +2316,31 @@ class ContainerAgentExecutor(AgentExecutor):
         source_branch = git_config.get("source_branch") or None
         target_branch = git_config.get("target_branch") or None
         trigger_data = execution_context.get("trigger_event_data", {})
+        resume = trigger_data.get("_resume") if isinstance(trigger_data, dict) else None
+        resume_branch = None
+        if isinstance(resume, dict):
+            resume_branch = resume.get("source_branch") or None
 
-        if not source_branch:
-            source_branch = self._extract_source_branch_from_trigger(trigger_data)
-        if not source_branch:
-            source_branch = "main"
+        if resume_branch:
+            # Clone and push the same PR branch so a comment restart continues
+            # the existing review, not a new branch off main.
+            source_branch = resume_branch
+            target_branch = resume_branch
+            self.logger.info(
+                "Resume clone: using existing PR branch %s as source and target",
+                resume_branch,
+            )
+        else:
+            if not source_branch:
+                source_branch = self._extract_source_branch_from_trigger(trigger_data)
+            if not source_branch:
+                source_branch = "main"
 
-        if not target_branch:
-            flow_name = execution_context.get("flow_name", "flow")
-            execution_id = execution_context.get("execution_id", "exec")
-            safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
-            target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
+            if not target_branch:
+                flow_name = execution_context.get("flow_name", "flow")
+                execution_id = execution_context.get("execution_id", "exec")
+                safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
+                target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
 
         commit_sha = self._extract_commit_sha_from_trigger(trigger_data)
         if commit_sha:
@@ -2504,6 +2857,23 @@ echo "========================================="
             if not target_branch:
                 return ""
 
+            safe_target = _validated_git_ref(target_branch)
+            if not safe_target:
+                self.logger.warning(
+                    "Skipping post-execution git: unsafe target branch %r",
+                    target_branch,
+                )
+                return ""
+            safe_source = _validated_git_ref(source_branch)
+            if source_branch and safe_source is None:
+                self.logger.warning(
+                    "Skipping post-execution git: unsafe source branch %r",
+                    source_branch,
+                )
+                return ""
+            if safe_source is None:
+                safe_source = "main"
+
             post_commands = []
 
             for idx, repo_config in enumerate(repositories):
@@ -2552,23 +2922,26 @@ echo "========================================="
                 # Note: Directory is guaranteed to exist because git clone validation would have failed earlier
                 repo_post_commands = [
                     f"cd {full_path}",
-                    # Check if there are any commits on target branch vs source
-                    f'COMMIT_COUNT=$(git rev-list --count {source_branch}..{target_branch} 2>/dev/null || echo "0")',
+                    # Resume clones source==target, so origin/<branch>..HEAD
+                    # still counts local commits the branch-vs-branch range
+                    # would miss. Branch names are validated above; do not
+                    # shlex.quote mid-token (that yields origin/'feat/x').
+                    f'COMMIT_COUNT=$(git rev-list --count origin/{safe_target}..HEAD 2>/dev/null || git rev-list --count {safe_source}..{safe_target} 2>/dev/null || echo "0")',
                     'if [ "$COMMIT_COUNT" -gt "0" ]; then',
-                    f'  echo "Found $COMMIT_COUNT commits on {target_branch}, pushing..."',
+                    f'  echo "Found $COMMIT_COUNT commits on {safe_target}, pushing..."',
                     f"  mkdir -p {EVIDENCE_DIR_PATH}",
                     f"  git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
                     f"  git log -1 --format='%H %s' >> {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
-                    f"  git format-patch --stdout {source_branch}..HEAD > {EVIDENCE_DIR_PATH}/branch.patch 2>/dev/null || true",
+                    f"  git format-patch --stdout {safe_source}..HEAD > {EVIDENCE_DIR_PATH}/branch.patch 2>/dev/null || true",
                     (
                         f"  git bundle create {EVIDENCE_DIR_PATH}/branch.bundle "
-                        f"{source_branch}..HEAD 2>/dev/null "
+                        f"{safe_source}..HEAD 2>/dev/null "
                         f"|| git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD "
                         f"2>/dev/null || true"
                     ),
                     f'  echo "Wrote git recovery artifacts under {EVIDENCE_DIR_PATH}"',
                     push_auth,
-                    f"  git push origin {target_branch}",
+                    f"  git push origin {safe_target}",
                 ]
 
                 # Add PR/MR creation if enabled
@@ -3001,6 +3374,22 @@ MREOF
                 self.logger.info(f"Extracted GitHub PR fetch ref: {ref}")
                 return ref
 
+            issue = payload.get("issue")
+            if (
+                isinstance(issue, dict)
+                and isinstance(issue.get("pull_request"), dict)
+                and issue.get("number") is not None
+            ):
+                ref = f"pull/{issue['number']}/head"
+                self.logger.info(f"Extracted GitHub PR comment fetch ref: {ref}")
+                return ref
+
+            mr = payload.get("merge_request")
+            if isinstance(mr, dict) and mr.get("iid") is not None:
+                ref = f"refs/merge-requests/{mr['iid']}/head"
+                self.logger.info(f"Extracted GitLab MR note fetch ref: {ref}")
+                return ref
+
             return None
         except Exception as e:
             self.logger.debug(f"Error extracting merge request ref from trigger: {e}")
@@ -3075,6 +3464,15 @@ MREOF
             if isinstance(obj_attrs, dict) and obj_attrs.get("source_branch"):
                 branch = obj_attrs["source_branch"]
                 self.logger.info(f"Extracted source branch from GitLab MR: {branch}")
+                return branch
+
+            # GitLab note on an MR
+            mr = payload.get("merge_request")
+            if isinstance(mr, dict) and mr.get("source_branch"):
+                branch = mr["source_branch"]
+                self.logger.info(
+                    f"Extracted source branch from GitLab MR note: {branch}"
+                )
                 return branch
 
             return None

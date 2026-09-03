@@ -77,6 +77,43 @@ describe('FlowExecutionsView', () => {
     expect(el.shadowRoot?.textContent).to.contain('Triage');
   });
 
+  it('chips the failure category after the status pill, when there is one', async () => {
+    fetchStub = stub([
+      {
+        id: 'exec-cccccccc-3',
+        flow_id: 'flow-3',
+        flow_name: 'Refunds',
+        status: 'FAILED',
+        start_time: '2026-03-09T12:00:00Z',
+        end_time: '2026-03-09T12:01:00Z',
+        failure_category: 'runner_conflict',
+      },
+      ...EXECUTIONS,
+    ]);
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const cells = Array.from(
+      el.shadowRoot!.querySelectorAll('tbody tr .status-cell')
+    );
+    const badges = Array.from(cells[0].querySelectorAll('sl-badge')).map(
+      (badge) => (badge.textContent || '').trim()
+    );
+    // Red stays in the pill; the category is the soft chip after it.
+    expect(badges).to.eql(['Failed', 'Runner conflict']);
+    const chip = cells[0].querySelector('sl-badge[data-failure-category]')!;
+    expect(chip.getAttribute('variant')).to.equal('neutral');
+    expect(chip.closest('sl-tooltip')!.getAttribute('content')).to.contain(
+      'a job of the same name'
+    );
+
+    // The runs that carry no category look exactly as they did.
+    expect(cells[1].querySelectorAll('sl-badge').length).to.equal(1);
+  });
+
   it('preselects the status and flow filters from the query string', async () => {
     const requested: string[] = [];
     fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {

@@ -308,6 +308,31 @@ class Settings(BaseSettings):
             "Current supported value: litellm"
         ),
     )
+    model_gateway_upstream_retry_max_attempts: int = Field(
+        3,
+        description=(
+            "Total attempts (1 initial + retries) the gateway makes for ONE "
+            "upstream model call when the provider fails transiently: "
+            "mid-stream disconnect, provider_unavailable, network error, "
+            "overload, or a non-terminal 429. Auth, quota and request errors "
+            "are never retried. Set to 1 to disable."
+        ),
+    )
+    model_gateway_upstream_retry_base_seconds: float = Field(
+        0.2,
+        description=(
+            "Base backoff between upstream retry attempts. Doubles per "
+            "attempt and carries jitter; a provider Retry-After hint raises "
+            "it, capped by MODEL_GATEWAY_UPSTREAM_RETRY_AFTER_CAP_SECONDS."
+        ),
+    )
+    model_gateway_upstream_retry_after_cap_seconds: float = Field(
+        8.0,
+        description=(
+            "Ceiling applied to a provider Retry-After hint, so one hostile "
+            "or mistaken header cannot stall a gateway worker."
+        ),
+    )
     runtime_session_idle_timeout_minutes: int = Field(
         720,
         description=(
@@ -450,6 +475,23 @@ class Settings(BaseSettings):
             "per attempt, giving an overloaded provider time to recover."
         ),
     )
+    agent_job_create_max_attempts: int = Field(
+        3,
+        description=(
+            "Attempts to create the Kubernetes agent Job before failing the "
+            "execution. Covers 409 AlreadyExists (a leftover Job from an "
+            "earlier session of the same execution, or a duplicate dispatch) "
+            "and 429/5xx from the API server. Set to 1 to disable."
+        ),
+    )
+    agent_job_create_retry_base_seconds: float = Field(
+        0.5,
+        description=(
+            "Base backoff before re-attempting Kubernetes agent Job "
+            "creation. Doubles per attempt and carries jitter, so concurrent "
+            "dispatchers do not retry in lockstep."
+        ),
+    )
     flow_confirmation_nudge_max_tokens: int = Field(
         4096,
         description=(
@@ -467,6 +509,26 @@ class Settings(BaseSettings):
             "Maximum wall-clock time to wait for the one-shot confirmation "
             "round before failing closed with the standard "
             "missing-confirmation message."
+        ),
+    )
+    flow_completion_nudge_enabled: bool = Field(
+        True,
+        description=(
+            "When true, agent scripts carry the in-place completion nudge: "
+            "after a clean harness exit with no completion signal, the same "
+            "container re-invokes the same harness session once with a short "
+            "reminder to write result.json and print the sentinel. Runs "
+            "before the container's post-execution git block, so it can "
+            "never re-run a push. Set to false to disable fleet-wide."
+        ),
+    )
+    flow_completion_nudge_timeout_seconds: int = Field(
+        300,
+        description=(
+            "Wall clock for the in-place completion nudge round inside the "
+            "agent container. The round is one short reminder, so this "
+            "should stay small; when it expires the run falls back to the "
+            "standard missing-confirmation handling."
         ),
     )
     flow_execution_worker_enabled: bool = Field(
@@ -778,11 +840,33 @@ class Settings(BaseSettings):
             flow_execution_retry_backoff_seconds=int(
                 os.getenv("FLOW_EXECUTION_RETRY_BACKOFF_SECONDS", "15")
             ),
+            agent_job_create_max_attempts=int(
+                os.getenv("AGENT_JOB_CREATE_MAX_ATTEMPTS", "3")
+            ),
+            agent_job_create_retry_base_seconds=float(
+                os.getenv("AGENT_JOB_CREATE_RETRY_BASE_SECONDS", "0.5")
+            ),
+            model_gateway_upstream_retry_max_attempts=int(
+                os.getenv("MODEL_GATEWAY_UPSTREAM_RETRY_MAX_ATTEMPTS", "3")
+            ),
+            model_gateway_upstream_retry_base_seconds=float(
+                os.getenv("MODEL_GATEWAY_UPSTREAM_RETRY_BASE_SECONDS", "0.2")
+            ),
+            model_gateway_upstream_retry_after_cap_seconds=float(
+                os.getenv("MODEL_GATEWAY_UPSTREAM_RETRY_AFTER_CAP_SECONDS", "8.0")
+            ),
             flow_confirmation_nudge_max_tokens=int(
                 os.getenv("FLOW_CONFIRMATION_NUDGE_MAX_TOKENS", "4096")
             ),
             flow_confirmation_nudge_timeout_seconds=int(
                 os.getenv("FLOW_CONFIRMATION_NUDGE_TIMEOUT_SECONDS", "300")
+            ),
+            flow_completion_nudge_enabled=os.getenv(
+                "FLOW_COMPLETION_NUDGE_ENABLED", "true"
+            ).lower()
+            in ("true", "1", "t", "yes"),
+            flow_completion_nudge_timeout_seconds=int(
+                os.getenv("FLOW_COMPLETION_NUDGE_TIMEOUT_SECONDS", "300")
             ),
             flow_execution_worker_enabled=os.getenv(
                 "FLOW_EXECUTION_WORKER_ENABLED", "false"

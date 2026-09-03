@@ -30,6 +30,7 @@ import {
   getAIModelGatewayUsageSummary,
   getAIModelRuntimeSessions,
   getFeatures,
+  repriceCost,
   updateAIModel,
   updateModelPriceOverride,
   type GatewayUsageSummaryParams,
@@ -133,6 +134,23 @@ export class AIModelDetailView extends LitElement {
 
   @state()
   private pricingNotice: string | null = null;
+
+  /**
+   * The effective date of the price just saved, or null when nothing was
+   * saved this visit. A new price only costs new requests, so the card
+   * offers to recost what is already recorded rather than doing it quietly.
+   */
+  @state()
+  private repriceSince: string | null = null;
+
+  @state()
+  private repricing = false;
+
+  @state()
+  private repriceNotice: string | null = null;
+
+  @state()
+  private repriceError: string | null = null;
 
   /** The form's own values, in USD per million tokens, as typed. */
   @state()
@@ -242,6 +260,17 @@ export class AIModelDetailView extends LitElement {
 
       .price-error {
         color: var(--sl-color-danger-700);
+      }
+
+      .reprice-offer {
+        border-top: 1px solid
+          var(--console-hairline, var(--sl-color-neutral-200));
+        margin-top: var(--sl-spacing-medium);
+        padding-top: var(--sl-spacing-medium);
+      }
+
+      .reprice-offer sl-button {
+        margin-top: var(--sl-spacing-small);
       }
 
       .filters-grid,
@@ -909,6 +938,14 @@ export class AIModelDetailView extends LitElement {
       }
       this.pricingEditOpen = false;
       this.pricingNotice = 'Price saved. New requests are costed with it.';
+      // Only offer a backfill when the new price already covers some past
+      // window. A future effective_from would make start_date > end_date.
+      this.repriceSince =
+        effectiveDate.getTime() <= Date.now()
+          ? effectiveDate.toISOString()
+          : null;
+      this.repriceNotice = null;
+      this.repriceError = null;
       await this.loadPricing();
     } catch (error) {
       this.pricingError =
@@ -916,6 +953,85 @@ export class AIModelDetailView extends LitElement {
     } finally {
       this.pricingSaving = false;
     }
+  }
+
+  /**
+   * Recost usage already recorded, from the date the saved price starts.
+   *
+   * `only_unpriced: false` because the point is retroactive application: a
+   * row that was costed with the old price has a cost, and leaving it alone
+   * would make the offer a lie.
+   */
+  private async applyToPastUsage(): Promise<void> {
+    const since = this.repriceSince;
+    if (!since || this.repricing) {
+      return;
+    }
+    this.repricing = true;
+    this.repriceError = null;
+    this.repriceNotice = null;
+    try {
+      const result = await repriceCost({
+        start_date: since,
+        end_date: new Date().toISOString(),
+        only_unpriced: false,
+      });
+      if (result.submitted_async) {
+        this.repriceNotice =
+          'Repricing is running in the background. Costs update as it works through the window.';
+      } else {
+        const updated = Number(result.rows_updated || 0).toLocaleString();
+        const examined = Number(result.rows_examined || 0).toLocaleString();
+        this.repriceNotice = `Repriced ${updated} of ${examined} rows since ${this.formatDate(
+          since
+        )}.`;
+      }
+    } catch (error) {
+      this.repriceError =
+        error instanceof Error ? error.message : 'Failed to reprice usage.';
+    } finally {
+      this.repricing = false;
+    }
+  }
+
+  private renderRepriceOffer() {
+    if (!this.repriceSince || !this.canEditPrice) {
+      return '';
+    }
+    const since = this.formatDate(this.repriceSince);
+    return html`
+      <div class="reprice-offer" data-testid="reprice-offer">
+        <div class="meta-line">
+          Repricing recosts every gateway row since ${since} against current
+          prices, not this model alone.
+        </div>
+        <sl-button
+          size="small"
+          data-testid="apply-past-usage"
+          ?loading=${this.repricing}
+          @click=${() => void this.applyToPastUsage()}
+          >Apply to past usage since ${since}</sl-button
+        >
+        ${
+          this.repriceNotice
+            ? html`<div
+                class="price-notice"
+                role="status"
+                data-testid="reprice-result"
+              >
+                ${this.repriceNotice}
+              </div>`
+            : ''
+        }
+        ${
+          this.repriceError
+            ? html`<div class="price-error" role="alert">
+                ${this.repriceError}
+              </div>`
+            : ''
+        }
+      </div>
+    `;
   }
 
   private formatCost(value: number | null | undefined): string {
@@ -939,6 +1055,17 @@ export class AIModelDetailView extends LitElement {
     return new Intl.DateTimeFormat(undefined, {
       month: 'short',
       day: 'numeric',
+    }).format(new Date(value));
+  }
+
+  private formatDate(value: string | null | undefined): string {
+    if (!value) {
+      return 'Unknown';
+    }
+    return new Intl.DateTimeFormat(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
     }).format(new Date(value));
   }
 
@@ -1427,6 +1554,10 @@ export class AIModelDetailView extends LitElement {
                   )}
                 </div>
                 <div class="meta-line">${this.pricingProvenance()}</div>
+                <div class="meta-line" data-testid="pricing-history-note">
+                  A price applies to new requests. Usage already recorded keeps
+                  the cost it was given until it is repriced.
+                </div>
               `
             : html`
                 <div class="meta-line">
@@ -1449,6 +1580,7 @@ export class AIModelDetailView extends LitElement {
             : ''
         }
         ${this.pricingEditOpen ? this.renderPriceForm() : ''}
+        ${this.renderRepriceOffer()}
         <div class="price-actions">
           ${
             this.canEditPrice && !this.pricingEditOpen

@@ -524,6 +524,75 @@ class TestProcessEvent:
 
         mock_create_task.assert_not_called()
 
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    @patch("preloop.services.flow_pr_binding.bind_resume_or_skip")
+    async def test_comment_on_opened_pr_resumes(
+        self,
+        mock_bind,
+        mock_crud,
+        mock_nats,
+        mock_create_task,
+        flow_trigger_service,
+        sample_flow,
+    ):
+        sample_flow.trigger_event_types = ["issue_labeled", "comment_created"]
+        mock_bind.return_value = {
+            "execution_id": "prior",
+            "pr_url": "https://github.com/preloop/preloop/pull/353",
+            "source_branch": "feat/x",
+        }
+        mock_nats.return_value = AsyncMock()
+        mock_crud.get_by_trigger.return_value = [sample_flow]
+        event = {
+            "source": "github",
+            "type": "comment_created",
+            "account_id": str(uuid.uuid4()),
+            "payload": {
+                "issue": {
+                    "pull_request": {
+                        "html_url": "https://github.com/preloop/preloop/pull/353"
+                    }
+                }
+            },
+        }
+
+        await flow_trigger_service.process_event(event)
+
+        mock_bind.assert_called_once()
+        mock_create_task.assert_called_once()
+
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    async def test_unmatched_pr_comment_does_not_start_run(
+        self,
+        mock_crud,
+        mock_nats,
+        mock_create_task,
+        flow_trigger_service,
+        sample_flow,
+    ):
+        sample_flow.trigger_event_types = ["issue_labeled", "comment_created"]
+        mock_nats.return_value = AsyncMock()
+        mock_crud.get_by_trigger.return_value = [sample_flow]
+        event = {
+            "source": "github",
+            "type": "comment_created",
+            "account_id": str(uuid.uuid4()),
+            "payload": {
+                "issue": {
+                    "number": 1,
+                    "html_url": "https://github.com/preloop/preloop/issues/1",
+                }
+            },
+        }
+
+        await flow_trigger_service.process_event(event)
+
+        mock_create_task.assert_not_called()
+
 
 class TestProcessEventReleaseDedupe:
     """process_event must coalesce duplicate release events (issue #241).

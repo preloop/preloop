@@ -33,6 +33,7 @@ import {
   renderExecutionModel,
 } from '../../utils/execution-presentation';
 import type { ExecutionModelUsage } from '../../utils/execution-presentation';
+import { renderFailureCategoryChip } from '../../utils/failure-category';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import '../../components/view-header.ts';
@@ -56,6 +57,12 @@ interface FlowExecution {
   trigger_subject?: string | null;
   /** Link to the triggering pull/merge request, when the payload carries one. */
   trigger_subject_url?: string | null;
+  /**
+   * Which layer broke a failed run: `runner_conflict`, `model_transient`,
+   * `no_confirmation`, ... Derived by the server at failure time (#361) and
+   * absent both on runs that did not fail and on servers older than it.
+   */
+  failure_category?: string | null;
   /** Alias that served most of the run's gateway requests (wave 7). */
   model_alias?: string | null;
   provider_name?: string | null;
@@ -862,6 +869,10 @@ export class FlowExecutionsView extends AuthedElement {
               variant=${variant}
               >${executionStatusLabel(exec.status)}</sl-badge
             >
+            <!-- "Failed" says that it broke; the category says what broke,
+                 which is the difference between a provider hiccup and a flow
+                 that never confirms it finished. -->
+            ${renderFailureCategoryChip(exec.failure_category)}
           </div>
         </td>
         <td class="started-cell" title=${formatUTCDateTime(exec.start_time)}>

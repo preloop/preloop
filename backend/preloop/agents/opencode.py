@@ -12,6 +12,13 @@ from aiodocker.exceptions import DockerError
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.services.model_runtime_resolver import gateway_url_for_api
 
+from .completion_nudge import (
+    AGENT_OUTPUT_LOG_PATH,
+    NUDGE_PROMPT_PATH,
+    build_completion_nudge_block,
+    completion_nudge_enabled,
+    completion_nudge_timeout_seconds,
+)
 from .container import ContainerAgentExecutor
 
 logger = logging.getLogger(__name__)
@@ -84,6 +91,11 @@ class OpenCodeAgent(ContainerAgentExecutor):
     # invocation with prior context — validated for the orchestrator's
     # completion-confirmation round (see AgentExecutor for semantics).
     supports_confirmation_nudge = True
+
+    # `opencode run --continue` re-enters the last session of the current
+    # project directory, so the completion reminder happens in the container
+    # that just ran, with the workspace and the conversation still in place.
+    supports_inplace_completion_nudge = True
 
     def __init__(self, config: Dict[str, Any]):
         """
@@ -401,6 +413,28 @@ fi
         # the shell script without heredoc delimiter injection risk.
         prompt_b64 = base64.b64encode(prompt.encode()).decode()
 
+        # In-place completion nudge, emitted BEFORE the post-execution git
+        # block so it can never re-run a push. `opencode run --continue`
+        # re-enters the session that just ran, in this container and this
+        # workspace, so the reminder costs one short exchange instead of a
+        # second container, a second clone and a second Job name.
+        completion_nudge_block = ""
+        if completion_nudge_enabled(execution_context):
+            completion_nudge_block = build_completion_nudge_block(
+                agent_label="opencode",
+                exit_code_var="OPENCODE_EXIT_CODE",
+                resume_probe="opencode run --help 2>&1 | grep -q -- '--continue'",
+                resume_command=(
+                    "$PRELOOP_NUDGE_TIMEOUT opencode run --continue "
+                    "--format json --print-logs --log-level WARN "
+                    f"--model {opencode_model_arg} --dangerously-skip-permissions "
+                    f'-- "$(cat {NUDGE_PROMPT_PATH})" 2>&1 '
+                    "| node /tmp/opencode-json-log-filter.js "
+                    f'| tee -a "{AGENT_OUTPUT_LOG_PATH}"'
+                ),
+                timeout_seconds=completion_nudge_timeout_seconds(),
+            )
+
         # Create the full script
         script = f"""
 set -e
@@ -555,7 +589,8 @@ echo "PRELOOP_AGENT_EXEC_START"
 # 2>&1 merges stderr into the filter pipe; the filter passes non-JSON lines
 # through verbatim, so stderr text reaches the execution log in order.
 set +e
-opencode run --format json --print-logs --log-level WARN --model {opencode_model_arg} --dangerously-skip-permissions -- "$(cat /tmp/prompt.txt)" 2>&1 | node /tmp/opencode-json-log-filter.js
+: > "{AGENT_OUTPUT_LOG_PATH}"
+opencode run --format json --print-logs --log-level WARN --model {opencode_model_arg} --dangerously-skip-permissions -- "$(cat /tmp/prompt.txt)" 2>&1 | node /tmp/opencode-json-log-filter.js | tee -a "{AGENT_OUTPUT_LOG_PATH}"
 PIPE_CODES=("${{PIPESTATUS[@]}}")
 OPENCODE_EXIT_CODE=${{PIPE_CODES[0]}}
 FILTER_EXIT_CODE=${{PIPE_CODES[1]:-0}}
@@ -571,7 +606,7 @@ echo ""
 echo "=================================================="
 echo "OpenCode CLI exited with code: $OPENCODE_EXIT_CODE"
 echo "=================================================="
-{post_exec_block}
+{completion_nudge_block}{post_exec_block}
 # Exit with opencode's exit code
 exit $OPENCODE_EXIT_CODE
 """

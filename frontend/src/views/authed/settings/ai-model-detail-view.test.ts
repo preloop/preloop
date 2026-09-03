@@ -14,10 +14,22 @@ describe('AIModelDetailView', () => {
   let pricingQuote: any;
   let featureFlags: Record<string, boolean>;
   let overrideWrites: { url: string; method: string; body: any }[];
+  let repriceCalls: any[];
+  let repriceResponse: any;
 
   beforeEach(() => {
     featureFlags = {};
     overrideWrites = [];
+    repriceCalls = [];
+    repriceResponse = {
+      submitted_async: false,
+      rows_examined: 1284,
+      rows_updated: 1120,
+      rows_skipped: 164,
+      cost_before: 0,
+      cost_after: 42.5,
+      dry_run: false,
+    };
     pricingResponse = {
       ai_model_id: 'model-1',
       model_alias: 'anthropic/claude-sonnet-4',
@@ -70,6 +82,14 @@ describe('AIModelDetailView', () => {
 
         if (url.includes('/api/v1/ai-models/model-1/pricing')) {
           return new Response(JSON.stringify(pricingResponse), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (url.includes('/api/v1/billing/cost/reprice')) {
+          repriceCalls.push(init?.body ? JSON.parse(String(init.body)) : null);
+          return new Response(JSON.stringify(repriceResponse), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
@@ -732,6 +752,154 @@ describe('AIModelDetailView', () => {
     expect(overrideWrites[0].body.effective_from).to.equal(
       new Date('2026-09-01T00:00:00').toISOString()
     );
+  });
+
+  async function saveAPrice(element: AIModelDetailView) {
+    (
+      pricingCard(element).querySelector(
+        '[data-testid="edit-price"]'
+      ) as HTMLElement
+    ).click();
+    await element.updateComplete;
+    (element as any).setPriceField('input', '4');
+    (element as any).setPriceField('output', '20');
+    (element as any).setPriceField('effectiveFrom', '2026-08-01');
+    await element.updateComplete;
+    (
+      pricingCard(element).querySelector(
+        '[data-testid="save-price"]'
+      ) as HTMLElement
+    ).click();
+    await waitUntil(() => overrideWrites.length > 0, 'override written');
+    // The save is not done when the request goes out: the reload of the
+    // price follows it.
+    await waitUntil(
+      () => Boolean((element as any).repriceSince),
+      'the save did not settle'
+    );
+    await element.updateComplete;
+  }
+
+  it('says a new price does not touch what is already recorded', async () => {
+    const element = await mountModel();
+    expect(
+      pricingCard(element)
+        .querySelector('[data-testid="pricing-history-note"]')!
+        .textContent!.replace(/\s+/g, ' ')
+    ).to.contain('keeps the cost it was given until it is repriced');
+  });
+
+  it('offers to apply a saved price to past usage, from the date it starts', async () => {
+    featureFlags = { model_price_overrides: true };
+    const element = await mountModel();
+    expect(
+      pricingCard(element).querySelector('[data-testid="reprice-offer"]'),
+      'nothing offered before a save'
+    ).to.not.exist;
+
+    await saveAPrice(element);
+
+    const offer = pricingCard(element).querySelector(
+      '[data-testid="reprice-offer"]'
+    ) as HTMLElement;
+    expect(offer, 'the offer follows the save').to.exist;
+    const button = offer.querySelector(
+      '[data-testid="apply-past-usage"]'
+    ) as HTMLElement;
+    expect(button.textContent!.replace(/\s+/g, ' ').trim()).to.equal(
+      'Apply to past usage since Aug 1, 2026'
+    );
+    // The button reprices the account window, which is worth saying before
+    // somebody presses it.
+    expect(offer.textContent!.replace(/\s+/g, ' ')).to.contain(
+      'recosts every gateway row since Aug 1, 2026'
+    );
+
+    button.click();
+    await waitUntil(() => repriceCalls.length > 0, 'reprice requested');
+    await waitUntil(
+      () => Boolean((element as any).repriceNotice),
+      'the reprice never reported back'
+    );
+    await element.updateComplete;
+
+    expect(repriceCalls[0].start_date).to.equal(
+      new Date('2026-08-01T00:00:00').toISOString()
+    );
+    // A row costed with the old price has a cost, so unpriced-only would
+    // leave the very rows the offer is about untouched.
+    expect(repriceCalls[0].only_unpriced).to.equal(false);
+    expect(
+      pricingCard(element)
+        .querySelector('[data-testid="reprice-result"]')!
+        .textContent!.replace(/\s+/g, ' ')
+        .trim()
+    ).to.equal('Repriced 1,120 of 1,284 rows since Aug 1, 2026.');
+  });
+
+  it('does not offer to reprice when the new price starts in the future', async () => {
+    featureFlags = { model_price_overrides: true };
+    const element = await mountModel();
+    (
+      pricingCard(element).querySelector(
+        '[data-testid="edit-price"]'
+      ) as HTMLElement
+    ).click();
+    await element.updateComplete;
+    (element as any).setPriceField('input', '4');
+    (element as any).setPriceField('output', '20');
+    (element as any).setPriceField('effectiveFrom', '2027-01-01');
+    await element.updateComplete;
+    (
+      pricingCard(element).querySelector(
+        '[data-testid="save-price"]'
+      ) as HTMLElement
+    ).click();
+    await waitUntil(() => overrideWrites.length > 0, 'override written');
+    await waitUntil(
+      () => Boolean((element as any).pricingNotice),
+      'the save did not settle'
+    );
+    await element.updateComplete;
+
+    expect((element as any).repriceSince).to.equal(null);
+    expect(
+      pricingCard(element).querySelector('[data-testid="reprice-offer"]'),
+      'a future start date has no past window to reprice'
+    ).to.not.exist;
+  });
+
+  it('says a backgrounded reprice is still running rather than counting rows', async () => {
+    featureFlags = { model_price_overrides: true };
+    repriceResponse = {
+      submitted_async: true,
+      rows_examined: null,
+      rows_updated: null,
+      rows_skipped: null,
+      cost_before: null,
+      cost_after: null,
+      dry_run: false,
+    };
+    const element = await mountModel();
+    await saveAPrice(element);
+
+    (
+      pricingCard(element).querySelector(
+        '[data-testid="apply-past-usage"]'
+      ) as HTMLElement
+    ).click();
+    await waitUntil(() => repriceCalls.length > 0, 'reprice requested');
+    await waitUntil(
+      () => Boolean((element as any).repriceNotice),
+      'the reprice never reported back'
+    );
+    await element.updateComplete;
+
+    const result = pricingCard(element)
+      .querySelector('[data-testid="reprice-result"]')!
+      .textContent!.replace(/\s+/g, ' ');
+    expect(result).to.contain('running in the background');
+    expect(result).to.not.contain('0 of 0');
   });
 
   it('refuses a negative price instead of sending it', async () => {

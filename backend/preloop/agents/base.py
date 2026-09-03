@@ -61,6 +61,16 @@ class AgentExecutor(ABC):
     #: explicit opt-in never trigger a nudge.
     supports_confirmation_nudge: bool = False
 
+    #: Whether this runtime's agent script re-invokes the harness IN PLACE
+    #: for the completion contract: same container, same workspace, same
+    #: harness session (``opencode run --continue``, ``codex exec resume
+    #: --last``), bounded to one round and emitted before the container's
+    #: post-execution git block. This is the cheap path: no second session,
+    #: no second Job, no re-clone. Runtimes without a resume mechanism leave
+    #: this False, and the orchestrator widens the completion signals it
+    #: accepts for them instead of failing a run that wrote a report.
+    supports_inplace_completion_nudge: bool = False
+
     def __init__(self, agent_type: str, config: Dict[str, Any]):
         """
         Initialize the agent executor.

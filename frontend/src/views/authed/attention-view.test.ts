@@ -413,6 +413,67 @@ describe('AttentionView', () => {
     ).to.be.true;
   });
 
+  it('shows a Category column when the server categorises failures', async () => {
+    executionsResponse = [
+      {
+        id: 'execution-1',
+        flow_id: 'flow-1',
+        flow_name: 'PR Reviewer',
+        status: 'FAILED',
+        start_time: new Date(Date.now() - 3_600_000).toISOString(),
+        end_time: new Date(Date.now() - 3_500_000).toISOString(),
+        error_message: 'Read timed out',
+        failure_category: 'model_transient',
+      },
+      {
+        id: 'execution-2',
+        flow_id: 'flow-1',
+        flow_name: 'PR Reviewer',
+        status: 'FAILED',
+        start_time: new Date(Date.now() - 7_200_000).toISOString(),
+        failure_category: 'no_confirmation',
+      },
+    ];
+    const el = await mount();
+
+    const row = el.shadowRoot!.querySelector('#flows .attention-row')!;
+    // The count says what it is made of before the table is read at all.
+    expect(row.querySelector('.row-detail')!.textContent).to.contain(
+      '2 failed: 1 model transient, 1 no confirmation'
+    );
+
+    const evidence = row.querySelector('.row-evidence')!;
+    const headers = Array.from(evidence.querySelectorAll('th')).map((th) =>
+      (th.textContent || '').trim()
+    );
+    expect(headers).to.contain('Category');
+
+    const chips = Array.from(
+      evidence.querySelectorAll('.category-cell sl-badge')
+    );
+    expect(chips.map((chip) => chip.textContent!.trim())).to.eql([
+      'Model transient',
+      'No confirmation',
+    ]);
+    // The soft chip recipe, never a second red object beside the pill.
+    expect(chips[0].getAttribute('variant')).to.equal('neutral');
+    expect(chips[0].classList.contains('solid')).to.be.false;
+    expect(
+      chips[0].closest('sl-tooltip')!.getAttribute('content')
+    ).to.have.length.greaterThan(0);
+  });
+
+  it('drops the Category column on a server that does not categorise', async () => {
+    const el = await mount();
+
+    const evidence = el.shadowRoot!.querySelector('#flows .row-evidence')!;
+    const headers = Array.from(evidence.querySelectorAll('th')).map((th) =>
+      (th.textContent || '').trim()
+    );
+    expect(headers).to.not.contain('Category');
+    expect(evidence.querySelector('.category-cell')).to.not.exist;
+  });
+
   it('dismisses a row with a reason and lists it under Dismissed', async () => {
     const el = await mount();
 

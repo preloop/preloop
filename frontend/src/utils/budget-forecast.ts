@@ -33,6 +33,17 @@ export interface BudgetForecastInput {
   now?: Date;
 }
 
+/**
+ * Which clock the period boundaries were cut on.
+ *
+ * The server aligns budget periods in UTC (`get_period_start` runs on
+ * `datetime.now(timezone.utc)`), so a monthly period it reports ends at
+ * `2026-10-01T00:00:00Z`. The client's own fallback alignment
+ * (`periodStartFor`) cuts on the browser's clock instead. The two differ by
+ * a day at the edges, which is exactly where the label is read.
+ */
+export type ForecastEndBasis = 'utc' | 'local';
+
 export interface BudgetForecast {
   /** Projected spend at the end of the period. */
   amount: number;
@@ -40,6 +51,8 @@ export interface BudgetForecast {
   elapsedFraction: number;
   /** Exclusive end of the period. */
   end: Date;
+  /** The clock `end` was cut on, so a label can name the right day. */
+  endBasis: ForecastEndBasis;
   /** 'neutral' under both limits, 'warning' over the soft one, 'danger' over the hard one. */
   tone: 'neutral' | 'warning' | 'danger';
 }
@@ -107,8 +120,10 @@ export function budgetForecast(
     return Number.isNaN(date.getTime()) ? null : date;
   };
   const start = parsed(input.periodStart) ?? periodStartFor(input.period, now);
-  const end = parsed(input.periodEnd) ?? periodEndFor(input.period, now);
+  const serverEnd = parsed(input.periodEnd);
+  const end = serverEnd ?? periodEndFor(input.period, now);
   if (!start || !end) return null;
+  const endBasis: ForecastEndBasis = serverEnd ? 'utc' : 'local';
 
   const span = end.getTime() - start.getTime();
   if (span <= 0) return null;
@@ -127,27 +142,57 @@ export function budgetForecast(
   if (soft > 0 && amount > soft) tone = 'warning';
   if (hard > 0 && amount > hard) tone = 'danger';
 
-  return { amount, elapsedFraction, end, tone };
+  return { amount, elapsedFraction, end, endBasis, tone };
+}
+
+/** A clock time in the reader's timezone, for a boundary that is an instant. */
+function clockTime(end: Date): string {
+  return end.toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 /**
  * How the end of the period is named in the sentence. Dates for the long
- * periods, a clock time for the hourly one, "midnight" for the daily one:
- * "by Sep 1" for today's budget would be read as tomorrow.
+ * periods, a clock time for the hourly one, "midnight" for a day that really
+ * does end at the reader's midnight: "by Sep 1" for today's budget would be
+ * read as tomorrow.
+ *
+ * `basis` says which clock the boundary was cut on, and the day is named on
+ * that same clock. A server-reported monthly period ends at
+ * `2026-10-01T00:00:00Z`; one millisecond back is still September in UTC but
+ * lands on 1 October in Tokyo, so naming the day in local time would put the
+ * one number the operator is meant to check by hand a day into the next
+ * period. Formatting it in UTC keeps the sentence and the period agreeing.
  */
-export function forecastEndLabel(period: string, end: Date): string {
+export function forecastEndLabel(
+  period: string,
+  end: Date,
+  basis: ForecastEndBasis = 'local'
+): string {
   if (period === 'hourly') {
-    return end.toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+    // An hour boundary is one instant, and the reader's clock is the right
+    // way to name an instant whichever clock cut it.
+    return clockTime(end);
   }
-  if (period === 'daily') return 'midnight';
+  if (period === 'daily') {
+    // "midnight" is a claim about the reader's clock, so it is only made
+    // when the day really ends there. A UTC-aligned day seen from Tokyo
+    // ends at nine in the morning, and says so.
+    return end.getHours() === 0 &&
+      end.getMinutes() === 0 &&
+      end.getSeconds() === 0 &&
+      end.getMilliseconds() === 0
+      ? 'midnight'
+      : clockTime(end);
+  }
   // The exclusive end is the first instant of the next period; the operator
   // thinks in terms of the last day inside it.
   const inclusive = new Date(end.getTime() - 1);
   return inclusive.toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
+    ...(basis === 'utc' ? { timeZone: 'UTC' } : {}),
   });
 }

@@ -124,8 +124,20 @@ from preloop.services.model_pricing import (
 from preloop.services.litellm_routing import (
     apply_preloop_client_headers,
     is_openrouter_model,
+    preloop_client_headers,
     to_litellm_model,
 )
+from preloop.services.openai_responses_passthrough import (
+    RESPONSES_API_ABSENT_STATUS_CODES,
+    build_passthrough_body,
+    capability_cache_key,
+    mark_responses_api_absent,
+    passthrough_host,
+    responses_passthrough_url,
+    responses_tool_choice_named_tool,
+    should_use_responses_passthrough,
+)
+from preloop.services.tls_verify import ssl_verify_setting
 from preloop.services.pricing_overrides import resolve_pricing_override
 from preloop.services.model_runtime_resolver import (
     is_agent_managed_model,
@@ -164,6 +176,14 @@ ANTHROPIC_OAUTH_BETA_FLAG = "oauth-2025-04-20"
 ANTHROPIC_DEFAULT_API_VERSION = "2023-06-01"
 _ANTHROPIC_PASSTHROUGH_TIMEOUT_SECONDS = 600
 
+# Native OpenAI Responses passthrough (issue #159). A request that arrives on
+# ``/openai/v1/responses`` for an OpenAI-shaped API-key upstream is forwarded
+# to that upstream's own ``/responses`` endpoint instead of being transcoded
+# into chat completions. See
+# :mod:`preloop.services.openai_responses_passthrough` for the routing rules
+# and for why the fallback to the transcode has to stay.
+_OPENAI_PASSTHROUGH_TIMEOUT_SECONDS = 600
+
 # Best-effort "request started" NATS publish must not sit on the TTFB path
 # when the caller has no running loop (sync StreamingResponse / tests).
 # Matches the billing plugin entitlements notify pattern: create_task when
@@ -178,43 +198,99 @@ _GATEWAY_STARTED_EMIT_EXECUTOR = ThreadPoolExecutor(
 )
 atexit.register(_GATEWAY_STARTED_EMIT_EXECUTOR.shutdown, wait=False)
 
-# Process-level Anthropic OAuth passthrough client. A fresh httpx.Client
-# per request pays a new TLS handshake; reuse keeps the connection warm.
-_ANTHROPIC_PASSTHROUGH_CLIENT: Optional[httpx.Client] = None
-_ANTHROPIC_PASSTHROUGH_CLIENT_LOCK = threading.Lock()
+
+# Process-level passthrough clients. A fresh httpx.Client per request pays a
+# new TLS handshake; reuse keeps the connection warm. One slot per passthrough
+# so an upstream-specific timeout or a client reset cannot disturb the other.
+class _PassthroughClientSlot:
+    """Lazily built, process-level httpx client(s) shared across requests.
+
+    Clients are keyed by TLS verify setting because ``verify`` is a
+    ``httpx.Client`` constructor option, not a per-request kwarg. A
+    private-CA custom upstream must not share a trust store with
+    api.openai.com.
+    """
+
+    _DEFAULT_VERIFY = object()
+
+    def __init__(self, timeout_seconds: float) -> None:
+        self._timeout_seconds = timeout_seconds
+        self._clients: Dict[Any, httpx.Client] = {}
+        self._lock = threading.Lock()
+
+    def get(self, *, verify: Optional[bool | str] = None) -> httpx.Client:
+        """Return the shared client for this verify setting, building on first use."""
+        key: Any = self._DEFAULT_VERIFY if verify is None else verify
+        client = self._clients.get(key)
+        if client is not None and not client.is_closed:
+            return client
+        with self._lock:
+            client = self._clients.get(key)
+            if client is None or client.is_closed:
+                kwargs: Dict[str, Any] = {
+                    "timeout": self._timeout_seconds,
+                    "limits": httpx.Limits(
+                        max_keepalive_connections=20,
+                        max_connections=40,
+                    ),
+                }
+                if verify is not None:
+                    kwargs["verify"] = verify
+                client = httpx.Client(**kwargs)
+                self._clients[key] = client
+            return client
+
+    def close(self) -> None:
+        """Close and forget every shared client (interpreter exit, tests)."""
+        with self._lock:
+            clients = list(self._clients.values())
+            self._clients.clear()
+            for client in clients:
+                if client is not None and not client.is_closed:
+                    client.close()
+
+
+_ANTHROPIC_PASSTHROUGH_CLIENT_SLOT = _PassthroughClientSlot(
+    _ANTHROPIC_PASSTHROUGH_TIMEOUT_SECONDS
+)
+_OPENAI_PASSTHROUGH_CLIENT_SLOT = _PassthroughClientSlot(
+    _OPENAI_PASSTHROUGH_TIMEOUT_SECONDS
+)
 
 
 def _anthropic_passthrough_http_client() -> httpx.Client:
     """Return the process-level Anthropic passthrough httpx client."""
-    global _ANTHROPIC_PASSTHROUGH_CLIENT
-    client = _ANTHROPIC_PASSTHROUGH_CLIENT
-    if client is not None and not client.is_closed:
-        return client
-    with _ANTHROPIC_PASSTHROUGH_CLIENT_LOCK:
-        client = _ANTHROPIC_PASSTHROUGH_CLIENT
-        if client is None or client.is_closed:
-            client = httpx.Client(
-                timeout=_ANTHROPIC_PASSTHROUGH_TIMEOUT_SECONDS,
-                limits=httpx.Limits(
-                    max_keepalive_connections=20,
-                    max_connections=40,
-                ),
-            )
-            _ANTHROPIC_PASSTHROUGH_CLIENT = client
-        return client
+    return _ANTHROPIC_PASSTHROUGH_CLIENT_SLOT.get()
 
 
 def _close_anthropic_passthrough_http_client() -> None:
     """Close the process-level passthrough client (interpreter exit)."""
-    global _ANTHROPIC_PASSTHROUGH_CLIENT
-    with _ANTHROPIC_PASSTHROUGH_CLIENT_LOCK:
-        client = _ANTHROPIC_PASSTHROUGH_CLIENT
-        _ANTHROPIC_PASSTHROUGH_CLIENT = None
-        if client is not None and not client.is_closed:
-            client.close()
+    _ANTHROPIC_PASSTHROUGH_CLIENT_SLOT.close()
+
+
+def _openai_passthrough_http_client(
+    ai_model: Optional[AIModel] = None,
+) -> httpx.Client:
+    """Return the process-level OpenAI Responses passthrough httpx client.
+
+    ``verify`` belongs on the client, not on ``post`` / ``build_request``.
+    Custom upstreams (those with ``api_endpoint``) inherit the operator's
+    ``PRELOOP_SSL_VERIFY`` / CA-bundle setting; api.openai.com keeps the
+    default public trust store.
+    """
+    verify = None
+    if ai_model is not None and getattr(ai_model, "api_endpoint", None):
+        verify = ssl_verify_setting()
+    return _OPENAI_PASSTHROUGH_CLIENT_SLOT.get(verify=verify)
+
+
+def _close_openai_passthrough_http_client() -> None:
+    """Close the process-level Responses passthrough client (exit, tests)."""
+    _OPENAI_PASSTHROUGH_CLIENT_SLOT.close()
 
 
 atexit.register(_close_anthropic_passthrough_http_client)
+atexit.register(_close_openai_passthrough_http_client)
 
 
 def _emit_account_event_nonblocking(event: Dict[str, Any]) -> None:
@@ -327,12 +403,59 @@ class ModelGatewayBackend(Protocol):
 
 
 # Bounded retries for transient 502 / provider_unavailable /
-# upstream_disconnect / MidStreamFallbackError. 1 initial + 2 retries.
+# upstream_disconnect / MidStreamFallbackError. Default 1 initial + 2 retries.
 # Not LiteLLM Router fallbacks; those would require a model list.
+#
+# The values are settings (MODEL_GATEWAY_UPSTREAM_RETRY_*) read through the
+# helpers below rather than module constants, so an operator can tune or
+# disable the retries without a redeploy of new code. The module-level names
+# remain as the DEFAULTS the settings carry.
 _UPSTREAM_RETRY_MAX_ATTEMPTS = 3
 _UPSTREAM_RETRY_BASE_SECONDS = 0.2
 # Cap provider Retry-After so a 429 hint cannot stall the gateway.
 _UPSTREAM_RETRY_AFTER_CAP_SECONDS = 8.0
+
+
+def _upstream_retry_max_attempts() -> int:
+    """Configured attempt budget for one upstream call (never below 1)."""
+    return max(
+        1,
+        int(
+            getattr(
+                settings,
+                "model_gateway_upstream_retry_max_attempts",
+                _UPSTREAM_RETRY_MAX_ATTEMPTS,
+            )
+        ),
+    )
+
+
+def _upstream_retry_base_seconds() -> float:
+    """Configured backoff base for upstream retries."""
+    return max(
+        0.0,
+        float(
+            getattr(
+                settings,
+                "model_gateway_upstream_retry_base_seconds",
+                _UPSTREAM_RETRY_BASE_SECONDS,
+            )
+        ),
+    )
+
+
+def _upstream_retry_after_cap_seconds() -> float:
+    """Configured ceiling for a provider Retry-After hint."""
+    return max(
+        0.0,
+        float(
+            getattr(
+                settings,
+                "model_gateway_upstream_retry_after_cap_seconds",
+                _UPSTREAM_RETRY_AFTER_CAP_SECONDS,
+            )
+        ),
+    )
 
 
 def _upstream_retry_after_hint_seconds(exc: Exception) -> Optional[int]:
@@ -360,12 +483,13 @@ def _upstream_retry_delay_seconds(
     Returns:
         Seconds to wait before the next attempt.
     """
-    backoff = (_UPSTREAM_RETRY_BASE_SECONDS * (2**attempt)) + random.uniform(
-        0, _UPSTREAM_RETRY_BASE_SECONDS
-    )
+    base = _upstream_retry_base_seconds()
+    backoff = (base * (2**attempt)) + random.uniform(0, base)
     if retry_after_seconds is None:
         return backoff
-    hinted = min(float(max(retry_after_seconds, 0)), _UPSTREAM_RETRY_AFTER_CAP_SECONDS)
+    hinted = min(
+        float(max(retry_after_seconds, 0)), _upstream_retry_after_cap_seconds()
+    )
     return max(backoff, hinted)
 
 
@@ -607,6 +731,17 @@ class OpenAIGatewayService:
         # (then cleared) by _record_gateway_request. Only ever holds values
         # parsed from a real provider response (#136).
         self._last_rate_limit_snapshot: Optional[RateLimitSnapshot] = None
+        # How many times the upstream call for THIS request had to be
+        # retried after a transient provider failure. Accumulated by
+        # _run_with_upstream_retries (a request can run more than one
+        # upstream operation: the completion handshake and the stream open),
+        # consumed and cleared by _record_gateway_request. A request can also
+        # end WITHOUT reaching that recording (a terminal upstream error
+        # propagating out before the usage row is written), so every request
+        # entry point re-arms it through _begin_request_accounting: a stale
+        # count can then never be misattributed to a later request served by
+        # this instance.
+        self._last_upstream_retry_count: int = 0
         # Per-request memo of the authorized model-id set for this principal.
         # Computed once from the account inventory on first use so listing,
         # alias resolution, and default selection all consume the same set.
@@ -620,6 +755,18 @@ class OpenAIGatewayService:
         # (``GatewayStreamingResponse.on_complete``). None when the generator
         # is still mid-stream or recording already ran.
         self._deferred_stream_record: Optional[Callable[[], None]] = None
+
+    def _begin_request_accounting(self) -> None:
+        """Re-arm per-request counters at the start of a gateway request.
+
+        The upstream retry count is consumed and cleared when the usage row is
+        written, but not every request gets that far: a terminal upstream
+        failure can propagate out of the handler before
+        ``_record_gateway_request`` runs. Clearing here makes the count
+        request-scoped no matter how the previous request ended, so a rescued
+        request can never lend its ``retried: n`` to the next one.
+        """
+        self._last_upstream_retry_count = 0
 
     def _adopt_native_session_id(self, payload: Optional[Dict[str, Any]]) -> None:
         """Adopt the agent's own session id from an Anthropic request payload.
@@ -942,6 +1089,7 @@ class OpenAIGatewayService:
 
     def create_chat_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Handle OpenAI-compatible chat completions."""
+        self._begin_request_accounting()
         self._adopt_openai_native_session_id(payload)
         if payload.get("stream"):
             raise ModelGatewayAPIError(
@@ -1088,6 +1236,7 @@ class OpenAIGatewayService:
 
     def create_response(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Handle OpenAI Responses API-compatible requests."""
+        self._begin_request_accounting()
         self._adopt_openai_native_session_id(payload)
         if payload.get("stream"):
             raise ModelGatewayAPIError(
@@ -1135,11 +1284,22 @@ class OpenAIGatewayService:
                 messages=messages,
                 provider="openai",
             )
+            # A Responses request should leave Preloop as a Responses request
+            # whenever the upstream can take one (#159). ``None`` back from the
+            # passthrough means "this upstream has no /responses endpoint", so
+            # the chat-completions transcode below still runs for the many
+            # OpenAI-compatible upstreams that only implement chat completions.
+            native_payload: Optional[Dict[str, Any]] = None
+            response_dict: Optional[Dict[str, Any]] = None
             if self._is_openai_codex_model(model):
                 # Codex bypasses _call_litellm (T11 finding); attribute here.
                 self._capture_tools_meta(payload.get("tools"))
                 response_dict = self._create_openai_codex_response(model, payload)
-            else:
+            elif should_use_responses_passthrough(model):
+                native_payload = self._create_openai_responses_passthrough(
+                    model, payload
+                )
+            if native_payload is None and response_dict is None:
                 response = self._call_litellm(
                     model,
                     messages=messages,
@@ -1147,19 +1307,25 @@ class OpenAIGatewayService:
                     provider="openai",
                 )
                 response_dict = self._response_to_dict(response)
-            response_payload = self._build_responses_api_payload(
-                ai_model=model,
-                requested_model=(
-                    payload.get("model")
-                    or resolve_ai_model_runtime(model).model_gateway_model_alias
-                ),
-                response_dict=response_dict,
-            )
+            if native_payload is not None:
+                # Forwarded verbatim: the client asked the Responses API and
+                # gets the upstream's own Responses object back, reasoning
+                # items and all.
+                response_payload = native_payload
+            else:
+                response_payload = self._build_responses_api_payload(
+                    ai_model=model,
+                    requested_model=(
+                        payload.get("model")
+                        or resolve_ai_model_runtime(model).model_gateway_model_alias
+                    ),
+                    response_dict=response_dict or {},
+                )
             enforce_response_policy(
                 self,
                 payload=payload,
                 ai_model=model,
-                response_text=str(response_payload.get("output_text") or ""),
+                response_text=self._responses_payload_output_text(response_payload),
                 provider="openai",
             )
             self._record_gateway_request(
@@ -1170,7 +1336,12 @@ class OpenAIGatewayService:
                 ai_model=model,
                 requested_model=payload.get("model"),
                 response_payload=response_payload,
-                upstream_response=response_dict,
+                # On the native path the upstream object IS the response, and
+                # its ``usage`` (input_tokens/output_tokens) is what the
+                # accounting layer must price.
+                upstream_response=(
+                    native_payload if native_payload is not None else response_dict
+                ),
                 endpoint_kind="responses",
                 budget_result=budget_result,
                 request_payload=payload,
@@ -1202,6 +1373,7 @@ class OpenAIGatewayService:
         anthropic_beta: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Handle Anthropic Messages API-compatible requests."""
+        self._begin_request_accounting()
         self._adopt_native_session_id(payload)
         if payload.get("stream"):
             raise ModelGatewayAPIError(
@@ -1364,6 +1536,7 @@ class OpenAIGatewayService:
         anthropic_beta: Optional[str] = None,
     ) -> Iterator[str]:
         """Handle streaming Anthropic Messages API-compatible requests."""
+        self._begin_request_accounting()
         self._adopt_native_session_id(payload)
         model = self._resolve_requested_model(
             payload.get("model"), provider="anthropic"
@@ -1803,6 +1976,7 @@ class OpenAIGatewayService:
 
     def stream_chat_completion(self, payload: Dict[str, Any]) -> Iterator[str]:
         """Handle streaming OpenAI-compatible chat completions."""
+        self._begin_request_accounting()
         self._adopt_openai_native_session_id(payload)
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
         messages = payload.get("messages")
@@ -2095,6 +2269,7 @@ class OpenAIGatewayService:
 
     def stream_response(self, payload: Dict[str, Any]) -> Iterator[str]:
         """Handle streaming OpenAI Responses API-compatible requests."""
+        self._begin_request_accounting()
         self._adopt_openai_native_session_id(payload)
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
         messages = self._normalize_responses_input(payload)
@@ -2145,6 +2320,22 @@ class OpenAIGatewayService:
                     started_at=started_at,
                     budget_result=budget_result,
                 )
+            if should_use_responses_passthrough(model):
+                # Native relay: the client gets the upstream's own Responses
+                # SSE sequence, not a re-synthesis of one (#159). ``None``
+                # means the upstream has no /responses endpoint, so fall
+                # through to the chat-completions transcode below.
+                passthrough_response = self._open_openai_responses_passthrough_stream(
+                    model, payload
+                )
+                if passthrough_response is not None:
+                    return self._openai_responses_passthrough_event_stream(
+                        passthrough_response,
+                        ai_model=model,
+                        payload=payload,
+                        budget_result=budget_result,
+                        started_at=started_at,
+                    )
             upstream_stream = self._open_upstream_stream(
                 model,
                 messages=messages,
@@ -4790,6 +4981,578 @@ class OpenAIGatewayService:
             closes=(upstream_response,),
         )
 
+    # ------------------------------------------------------------------
+    # Native OpenAI Responses passthrough (issue #159).
+    #
+    # ``/openai/v1/responses`` used to have exactly one non-Codex
+    # implementation: transcode the Responses payload into chat messages and
+    # let LiteLLM call the upstream's CHAT COMPLETIONS endpoint. A request
+    # that entered on the Responses API therefore left on a different API.
+    # That is lossy (``instructions``, ``reasoning``, ``include``, ``store``,
+    # ``prompt_cache_key`` and the typed ``input`` history are all dropped)
+    # and it is fatal when the upstream implements Responses but not chat
+    # completions for that model, which is the OpenCode Zen case reported on
+    # #159. These methods forward the payload to the upstream's own
+    # ``/responses`` endpoint instead. Preloop still owns auth, model
+    # authorization, request/response policy, governance tool-stripping,
+    # budget checks and usage accounting; only the translation is gone.
+    #
+    # Routing (which models, and the fallback for upstreams with no
+    # Responses endpoint) lives in
+    # :mod:`preloop.services.openai_responses_passthrough`.
+    # ------------------------------------------------------------------
+    def _resolve_openai_passthrough_api_key(self, ai_model: AIModel) -> str:
+        """Resolve the API key for a native Responses passthrough request.
+
+        Mirrors the credential half of ``_build_completion_kwargs``, including
+        resetting and then stamping ``_last_upstream_credential_type`` so the
+        usage row denominates savings the same way on both paths.
+
+        Args:
+            ai_model: The resolved model row.
+
+        Returns:
+            The upstream API key.
+
+        Raises:
+            ModelGatewayAPIError: When no usable API-key credential exists.
+        """
+        self._last_upstream_credential_type = None
+        try:
+            resolved = get_secret_service().resolve_ai_model_credentials(
+                ai_model,
+                db=self.db,
+                allow_refresh=True,
+            )
+        except CredentialRefreshError as exc:
+            status_code = 401
+            if exc.status_code is not None and exc.status_code >= 500:
+                status_code = 502
+            raise ModelGatewayAPIError(
+                provider="openai",
+                status_code=status_code,
+                message=(
+                    "Model credentials could not be refreshed. "
+                    "Reconnect this managed agent or update the model credentials."
+                ),
+                code=exc.code,
+            ) from exc
+        if (
+            resolved is None
+            or resolved.credential_type != "api_key"
+            or not resolved.value
+        ):
+            raise ModelGatewayAPIError(
+                provider="openai",
+                status_code=400,
+                message="Model credentials are not configured",
+            )
+        self._last_upstream_credential_type = "api_key"
+        return str(resolved.value)
+
+    def _strip_openai_passthrough_tools(
+        self, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Apply governance tool-stripping to a Responses payload.
+
+        The MCP firewall's tool disabling is a control, not an optimization,
+        so it must survive the switch to the passthrough. Everything else is
+        forwarded verbatim: message-level context optimization is NOT applied
+        here for the same reason it is skipped on the Anthropic passthrough
+        (rewriting content would break payload fidelity and the upstream's
+        prompt cache prefix).
+
+        Responses-shaped tools carry their name at the top level, which
+        ``tool_definition_name`` already handles, so the same
+        ``strip_disabled_tools`` used by the transcode path applies unchanged.
+
+        Args:
+            payload: The client's Responses request payload.
+
+        Returns:
+            The payload, shallow-copied only when a tool was actually removed.
+        """
+        self._last_context_optimization = None
+        if not self.auth_context.api_key:
+            return payload
+        try:
+            raw_tools = payload.get("tools")
+            if not isinstance(raw_tools, list) or not raw_tools:
+                return payload
+            meta_data = get_cached_account_meta_data(
+                self.db, str(self.auth_context.user.account_id)
+            )
+            if meta_data is None:
+                return payload
+            subject_context = build_subject_context_from_api_key(
+                self.auth_context.api_key
+            )
+            if not subject_governance_affects_gateway_context(
+                meta_data,
+                subject_context=subject_context,
+                has_tools=True,
+            ):
+                return payload
+            kept_tools, removed_names = strip_disabled_tools(
+                raw_tools,
+                meta_data=meta_data,
+                subject_context=subject_context,
+            )
+            if not removed_names:
+                return payload
+            optimized: Dict[str, Any] = {**payload, "tools": kept_tools}
+            if not kept_tools:
+                optimized.pop("tools", None)
+                optimized.pop("tool_choice", None)
+            elif responses_tool_choice_named_tool(optimized.get("tool_choice")) in set(
+                removed_names
+            ):
+                # A forced tool_choice naming a stripped tool would 400
+                # upstream; the Responses API accepts the "auto" string.
+                # Responses names the tool at the top level, which is why this
+                # uses the Responses-aware resolver and not the chat one.
+                optimized["tool_choice"] = "auto"
+            self._last_context_optimization = ContextOptimizationStats(
+                stripped_tools=removed_names
+            )
+            return optimized
+        except Exception:
+            logger.warning(
+                "OpenAI Responses passthrough governance strip failed; "
+                "forwarding request unchanged",
+                exc_info=True,
+            )
+            self._last_context_optimization = None
+            return payload
+
+    def _prepare_openai_responses_passthrough(
+        self, ai_model: AIModel, payload: Dict[str, Any], *, stream: bool
+    ) -> tuple[str, Dict[str, str], Dict[str, Any]]:
+        """Build the URL, headers and body for a native Responses request.
+
+        Args:
+            ai_model: The resolved model row.
+            payload: The client's Responses request payload.
+            stream: Whether the client asked for a streaming response.
+
+        Returns:
+            Tuple of (url, headers, body).
+
+        Raises:
+            ModelGatewayAPIError: When credentials are missing or unusable.
+        """
+        api_key = self._resolve_openai_passthrough_api_key(ai_model)
+        governed_payload = self._strip_openai_passthrough_tools(payload)
+        # Attribution is computed from the tools the CLIENT sent, before the
+        # strip, so a stripped tool is still reported (with stripped=True).
+        self._capture_tools_meta(payload.get("tools"))
+        body = build_passthrough_body(ai_model, governed_payload, stream=stream)
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream" if stream else "application/json",
+            **preloop_client_headers(),
+        }
+        return responses_passthrough_url(ai_model), headers, body
+
+    @staticmethod
+    def _openai_passthrough_upstream_error(
+        status_code: int, body_text: str
+    ) -> ModelGatewayAPIError:
+        """Map an upstream Responses error body to a gateway error.
+
+        Mirrors ``_anthropic_passthrough_upstream_error``: prefer the shared
+        classifier (#118) so retry/alert behaviour matches the LiteLLM path,
+        and scrub through the same helper so upstream blobs cannot echo URLs
+        or keys back to the client.
+        """
+        try:
+            status_code = int(status_code)
+        except (TypeError, ValueError):
+            status_code = 502
+        if status_code < 400 or status_code > 599:
+            status_code = 502
+        # Scrub before surfacing: upstream blobs can echo URLs and keys.
+        message = (
+            extract_upstream_error_detail(body_text or "").message
+            or "OpenAI Responses upstream error"
+        )
+        error_type: Optional[str] = None
+        try:
+            parsed = json.loads(body_text)
+            error = parsed.get("error") if isinstance(parsed, dict) else None
+            if isinstance(error, dict) and error.get("type"):
+                error_type = str(error["type"])
+        except (TypeError, ValueError):
+            # Body is not JSON; the scrubbed text above is the best we have.
+            pass
+
+        class _PassthroughUpstreamError(Exception):
+            """Carrier so classify_upstream_error sees status/type/message."""
+
+            def __init__(self) -> None:
+                self.status_code = status_code
+                self.message = message
+                self.error_type = error_type
+                super().__init__(message)
+
+        classified_error = OpenAIGatewayService._normalize_upstream_error(
+            "openai", _PassthroughUpstreamError()
+        )
+        if classified_error.error_class is not None:
+            if error_type:
+                classified_error.error_type = error_type
+            return classified_error
+
+        return ModelGatewayAPIError(
+            provider="openai",
+            status_code=status_code,
+            message=message,
+            error_type=error_type,
+        )
+
+    def _note_responses_api_absent(self, ai_model: AIModel, status_code: int) -> None:
+        """Remember that this upstream has no Responses endpoint."""
+        mark_responses_api_absent(capability_cache_key(ai_model))
+        logger.info(
+            "Upstream has no Responses endpoint (HTTP %s at host %s); "
+            "falling back to the chat-completions transcode for this upstream",
+            status_code,
+            passthrough_host(ai_model),
+        )
+
+    def _create_openai_responses_passthrough(
+        self, ai_model: AIModel, payload: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Execute a non-streaming native Responses request.
+
+        Args:
+            ai_model: The resolved model row.
+            payload: The client's Responses request payload.
+
+        Returns:
+            The upstream Responses object, forwarded to the client verbatim,
+            or ``None`` when the upstream has no Responses endpoint and the
+            caller must fall back to the chat-completions transcode.
+
+        Raises:
+            ModelGatewayAPIError: On transport failure or a real upstream error.
+        """
+        url, headers, body = self._prepare_openai_responses_passthrough(
+            ai_model, payload, stream=False
+        )
+
+        def _attempt() -> Optional[Dict[str, Any]]:
+            try:
+                response = _openai_passthrough_http_client(ai_model).post(
+                    url,
+                    headers=headers,
+                    json=body,
+                )
+            except httpx.HTTPError as exc:
+                raise ModelGatewayAPIError(
+                    provider="openai",
+                    status_code=502,
+                    message=f"Gateway upstream error: {exc}",
+                ) from exc
+            try:
+                self._capture_rate_limit_headers(response.headers)
+                if response.status_code in RESPONSES_API_ABSENT_STATUS_CODES:
+                    self._note_responses_api_absent(ai_model, response.status_code)
+                    return None
+                if response.status_code >= 400:
+                    raise self._openai_passthrough_upstream_error(
+                        response.status_code, response.text
+                    )
+                try:
+                    response_payload = response.json()
+                except ValueError as exc:
+                    raise ModelGatewayAPIError(
+                        provider="openai",
+                        status_code=502,
+                        message="Gateway upstream error: invalid JSON from upstream",
+                    ) from exc
+                if not isinstance(response_payload, dict):
+                    raise ModelGatewayAPIError(
+                        provider="openai",
+                        status_code=502,
+                        message=(
+                            "Gateway upstream error: unexpected upstream response shape"
+                        ),
+                    )
+                return response_payload
+            finally:
+                response.close()
+
+        return self._run_with_upstream_retries("openai", _attempt)
+
+    def _open_openai_responses_passthrough_stream(
+        self, ai_model: AIModel, payload: Dict[str, Any]
+    ) -> Optional[httpx.Response]:
+        """Open a streaming native Responses request, checking status eagerly.
+
+        The connection is opened before the generator reaches the ASGI layer
+        so upstream auth/validation failures surface as normal gateway errors
+        with a real status code instead of an empty HTTP 200 stream (#109).
+
+        Returns:
+            The open streaming response, or ``None`` when the upstream has no
+            Responses endpoint and the caller must fall back.
+
+        Raises:
+            ModelGatewayAPIError: On transport failure or a real upstream error.
+        """
+        url, headers, body = self._prepare_openai_responses_passthrough(
+            ai_model, payload, stream=True
+        )
+
+        def _attempt() -> Optional[httpx.Response]:
+            client = _openai_passthrough_http_client(ai_model)
+            try:
+                request = client.build_request(
+                    "POST",
+                    url,
+                    headers=headers,
+                    json=body,
+                )
+                response = client.send(request, stream=True)
+            except httpx.HTTPError as exc:
+                raise ModelGatewayAPIError(
+                    provider="openai",
+                    status_code=502,
+                    message=f"Gateway upstream error: {exc}",
+                ) from exc
+            self._capture_rate_limit_headers(response.headers)
+            if response.status_code < 400:
+                return response
+            try:
+                body_text = response.read().decode("utf-8", errors="replace")
+            except Exception:
+                body_text = ""
+            finally:
+                response.close()
+            if response.status_code in RESPONSES_API_ABSENT_STATUS_CODES:
+                self._note_responses_api_absent(ai_model, response.status_code)
+                return None
+            raise self._openai_passthrough_upstream_error(
+                response.status_code, body_text
+            )
+
+        return self._run_with_upstream_retries("openai", _attempt)
+
+    def _openai_responses_passthrough_event_stream(
+        self,
+        upstream_response: httpx.Response,
+        *,
+        ai_model: AIModel,
+        payload: Dict[str, Any],
+        budget_result: Optional[BudgetCheckResult],
+        started_at: float,
+    ) -> Iterator[str]:
+        """Relay upstream Responses SSE verbatim while accounting for usage.
+
+        Frames are forwarded exactly as the upstream wrote them, which is the
+        whole point: Codex (and anything else speaking the Responses wire
+        protocol) gets the upstream's own event sequence, including reasoning
+        summaries, typed tool-call items and terminal semantics that the
+        transcode used to synthesize approximately. Relay happens at SSE frame
+        boundaries so the response-policy wrapper sees whole ``data:`` events.
+
+        A side parser watches the frames to collect the response id, usage and
+        assistant text for the usage record.
+        """
+        requested_model = payload.get("model")
+
+        def _consume_frame(frame: str, state: Dict[str, Any]) -> None:
+            for line in frame.splitlines():
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                raw = line[len("data:") :].strip()
+                if not raw or raw == "[DONE]":
+                    continue
+                try:
+                    event = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                event_type = event.get("type")
+                if event_type == "response.output_text.delta" and isinstance(
+                    event.get("delta"), str
+                ):
+                    state["text_parts"].append(event["delta"])
+                    continue
+                if event_type in {
+                    "response.completed",
+                    "response.incomplete",
+                    "response.failed",
+                }:
+                    response_obj = event.get("response")
+                    if isinstance(response_obj, dict):
+                        if response_obj.get("id"):
+                            state["response_id"] = response_obj["id"]
+                        if isinstance(response_obj.get("usage"), dict):
+                            state["usage"] = self._merge_usage_dicts(
+                                state["usage"], response_obj["usage"]
+                            )
+                        if isinstance(response_obj.get("output_text"), str):
+                            state["snapshot_text"] = response_obj["output_text"]
+                        state["status"] = response_obj.get("status") or state["status"]
+                    if event_type == "response.completed":
+                        state["saw_terminal"] = True
+                    continue
+                if event_type == "response.created":
+                    response_obj = event.get("response")
+                    if isinstance(response_obj, dict) and response_obj.get("id"):
+                        state["response_id"] = response_obj["id"]
+
+        def event_stream() -> Iterator[str]:
+            state: Dict[str, Any] = {
+                "response_id": None,
+                "usage": {},
+                "text_parts": [],
+                "snapshot_text": None,
+                "status": None,
+                "saw_terminal": False,
+            }
+            buffer = ""
+            recorded = False
+            terminal_sent = False
+
+            def _accumulated_text() -> str:
+                if state["snapshot_text"] is not None:
+                    return str(state["snapshot_text"])
+                return "".join(state["text_parts"])
+
+            try:
+                for chunk in upstream_response.iter_text():
+                    if not chunk:
+                        continue
+                    buffer += chunk
+                    # Relay whole SSE frames: concatenating them reproduces the
+                    # upstream bytes, and the policy wrapper needs complete
+                    # ``data:`` events to assemble the response text.
+                    while "\n\n" in buffer:
+                        frame, buffer = buffer.split("\n\n", 1)
+                        frame = f"{frame}\n\n"
+                        _consume_frame(frame, state)
+                        if state["saw_terminal"]:
+                            terminal_sent = True
+                        yield frame
+                if buffer:
+                    _consume_frame(buffer, state)
+                    if state["saw_terminal"]:
+                        terminal_sent = True
+                    yield buffer
+
+                accumulated_text = _accumulated_text()
+                response_id = state["response_id"] or f"resp_{int(time.time())}"
+                normalized_usage = self._normalize_usage(
+                    state["usage"],
+                    prompt_key="input_tokens",
+                    completion_key="output_tokens",
+                    output_names=("output_tokens", "completion_tokens"),
+                )
+                response_payload = {
+                    "id": response_id,
+                    "object": "response",
+                    "model": requested_model,
+                    "status": state["status"] or "completed",
+                    "output_text": accumulated_text,
+                    "usage": {
+                        "input_tokens": normalized_usage["prompt_tokens"],
+                        "output_tokens": normalized_usage["completion_tokens"],
+                        "total_tokens": normalized_usage["total_tokens"],
+                    },
+                }
+                self._defer_stream_record(
+                    endpoint="/openai/v1/responses",
+                    method="POST",
+                    status_code=200,
+                    duration=time.perf_counter() - started_at,
+                    ai_model=ai_model,
+                    requested_model=requested_model,
+                    response_payload=response_payload,
+                    upstream_response={
+                        **response_payload,
+                        "usage": state["usage"] or response_payload["usage"],
+                    },
+                    endpoint_kind="responses_stream",
+                    budget_result=budget_result,
+                    request_payload=payload,
+                    accumulated_output_text=accumulated_text,
+                )
+            except Exception as exc:
+                gateway_error = self._stream_error("openai", exc)
+                if not recorded:
+                    self._record_gateway_request(
+                        endpoint="/openai/v1/responses",
+                        method="POST",
+                        status_code=gateway_error.status_code,
+                        duration=time.perf_counter() - started_at,
+                        ai_model=ai_model,
+                        requested_model=requested_model,
+                        response_payload=None,
+                        upstream_response=None,
+                        endpoint_kind="responses_stream",
+                        budget_result=budget_result,
+                        error_detail=gateway_error.message,
+                        error_class=gateway_error.error_class,
+                        request_payload=payload,
+                    )
+                    recorded = True
+                logger.warning(
+                    "Gateway responses passthrough stream failed mid-stream: %s "
+                    "provider=%s model=%s error_class=%s",
+                    type(exc).__name__,
+                    getattr(ai_model, "provider_name", None),
+                    requested_model,
+                    gateway_error.error_class,
+                )
+                # Status 200 is already on the wire; surface the failure as an
+                # SSE error event instead of silent truncation (#109, #117).
+                yield self._responses_stream_error_event(exc, gateway_error)
+                yield self._sse_done()
+            finally:
+                # GeneratorExit (client disconnect) bypasses the except above;
+                # bill already-consumed upstream tokens best-effort.
+                if not recorded:
+                    self._finish_stream_generator(
+                        recorded=recorded,
+                        endpoint="/openai/v1/responses",
+                        endpoint_kind="responses_stream",
+                        started_at=started_at,
+                        ai_model=ai_model,
+                        payload=payload,
+                        usage_details=state["usage"],
+                        budget_result=budget_result,
+                        accumulated_output_text=_accumulated_text(),
+                        stream_completed=terminal_sent,
+                    )
+                upstream_response.close()
+                # Shared process-level client: do not close.
+
+        # The upstream response is closed in the generator's finally, which
+        # never runs for a stream nobody consumed. Hand it to the observer so
+        # an abandoned passthrough does not leak a connection.
+        return self._observe_stream(
+            wrap_stream_for_response_policy(
+                event_stream(),
+                gateway=self,
+                payload=payload,
+                ai_model=ai_model,
+                provider="openai",
+            ),
+            endpoint="/openai/v1/responses",
+            endpoint_kind="responses_stream",
+            started_at=started_at,
+            ai_model=ai_model,
+            payload=payload,
+            budget_result=budget_result,
+            closes=(upstream_response,),
+        )
+
     def _build_completion_kwargs(
         self,
         ai_model: AIModel,
@@ -4977,16 +5740,25 @@ class OpenAIGatewayService:
             ModelGatewayAPIError: When retries are exhausted or the error
                 is not retryable.
         """
+        max_attempts = _upstream_retry_max_attempts()
         last_exc: Optional[Exception] = None
-        for attempt in range(_UPSTREAM_RETRY_MAX_ATTEMPTS):
+        for attempt in range(max_attempts):
             try:
-                return operation()
+                result = operation()
+                # Count the retries that got us here, not the attempts: 0
+                # means "worked first time". Recorded on the usage row and
+                # surfaced on the gateway event as `retried`, so a run that
+                # survived a flaky provider is visible instead of merely
+                # slow.
+                if attempt:
+                    self._last_upstream_retry_count += attempt
+                return result
             except Exception as exc:
                 last_exc = exc
-                if (
-                    attempt >= _UPSTREAM_RETRY_MAX_ATTEMPTS - 1
-                    or not is_retryable_upstream_failure(exc)
+                if attempt >= max_attempts - 1 or not is_retryable_upstream_failure(
+                    exc
                 ):
+                    self._last_upstream_retry_count += attempt
                     break
                 delay = _upstream_retry_delay_seconds(
                     attempt,
@@ -4996,7 +5768,7 @@ class OpenAIGatewayService:
                     "Retrying gateway upstream call after transient failure "
                     "(attempt %s/%s, delay=%.2fs, error=%s)",
                     attempt + 1,
-                    _UPSTREAM_RETRY_MAX_ATTEMPTS,
+                    max_attempts,
                     delay,
                     exc,
                 )
@@ -5984,6 +6756,26 @@ class OpenAIGatewayService:
                     text_parts.append(content.get("text", ""))
         return "".join(text_parts)
 
+    @staticmethod
+    def _responses_payload_output_text(response_payload: Dict[str, Any]) -> str:
+        """Return the assistant text of a Responses API object.
+
+        ``output_text`` is an SDK convenience field: Preloop synthesizes it on
+        the transcode path, but a real upstream Responses object forwarded
+        verbatim by the passthrough (#159) does not carry it. Response policy
+        and usage recording need the text either way, so fall back to walking
+        the ``output`` items.
+        """
+        direct = response_payload.get("output_text")
+        if isinstance(direct, str) and direct:
+            return direct
+        output_items = response_payload.get("output")
+        if not isinstance(output_items, list):
+            return ""
+        return OpenAIGatewayService._response_output_text(
+            [item for item in output_items if isinstance(item, dict)]
+        )
+
     def _normalize_openai_tools(self, tools: Any) -> Any:
         """Normalize Responses API tools to chat-completions tool format.
 
@@ -6817,6 +7609,9 @@ class OpenAIGatewayService:
         # from leaking onto a later request served by this instance (#136).
         rate_limit_snapshot = self._last_rate_limit_snapshot
         self._last_rate_limit_snapshot = None
+        # Same consume-and-clear discipline for the upstream retry count.
+        upstream_retries = self._last_upstream_retry_count
+        self._last_upstream_retry_count = 0
         rate_limit_meta: Optional[Dict[str, Any]] = (
             rate_limit_snapshot.to_meta() if rate_limit_snapshot else None
         )
@@ -6902,6 +7697,10 @@ class OpenAIGatewayService:
                 "gateway_attempt": gateway_attempt,
                 "is_retry": is_retry,
                 "retry_of_api_usage_id": retry_of_api_usage_id,
+                # Retries the GATEWAY made inside this one request after a
+                # transient upstream failure. Distinct from gateway_attempt /
+                # is_retry, which describe the CLIENT resending a request.
+                "upstream_retries": upstream_retries,
                 "usage_estimated": usage_estimated or None,
                 "api_equivalent_cost": api_equivalent_cost,
                 "context_optimization": (

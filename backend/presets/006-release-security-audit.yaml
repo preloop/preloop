@@ -934,4 +934,8 @@ allowed_mcp_tools:
   - name: resolve_sbom_upstreams
 git_clone_config: null
 trigger_config: null
+# A full release audit resolves upstreams, runs scanners over every
+# component and reconciles waivers. Two hours is normal work here, and the
+# hour-long default was cutting genuine runs off mid-scan.
+timeout_seconds: 7200
 is_preset: true
