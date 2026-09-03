@@ -36,6 +36,8 @@ var (
 	runnerReconnectMin = time.Second
 	runnerReconnectMax = 30 * time.Second
 	runnerReadWait     = 45 * time.Second
+	runnerHasDocker    = dockerAvailable
+	newRunnerJobCmd    = defaultNewRunnerJobCmd
 )
 
 // runnerFatalError stops the process (auth/server rejection). Transport
@@ -329,6 +331,7 @@ func runnerForegroundLoop(state *runnerState, interrupt <-chan os.Signal, out io
 		if err != nil {
 			fmt.Fprintf(out, "Connection failed (%v). Retrying in %s...\n", err, backoff)
 			if !waitOrInterrupt(interrupt, backoff) {
+				stopForegroundOnInterrupt(state, runningCmd, &halt, halted, out)
 				return nil
 			}
 			backoff = nextRunnerBackoff(backoff)
@@ -362,10 +365,42 @@ func runnerForegroundLoop(state *runnerState, interrupt <-chan os.Signal, out io
 		}
 		fmt.Fprintf(out, "Connection lost (%v). Reconnecting in %s...\n", err, backoff)
 		if !waitOrInterrupt(interrupt, backoff) {
+			stopForegroundOnInterrupt(state, runningCmd, &halt, halted, out)
 			return nil
 		}
 		backoff = nextRunnerBackoff(backoff)
 	}
+}
+
+func stopForegroundOnInterrupt(
+	state *runnerState,
+	runningCmd *exec.Cmd,
+	halt *bool,
+	halted *atomic.Bool,
+	out io.Writer,
+) {
+	fmt.Fprintf(out, "Unregistering...\n")
+	if !requestJobHalt(halted, runningCmd) && halt != nil {
+		*halt = false
+	}
+	unregisterRunnerBestEffort(state)
+}
+
+func unregisterRunnerBestEffort(state *runnerState) {
+	if state == nil || state.Token == "" {
+		return
+	}
+	wsURL, err := runnerWebsocketURL(state.ID)
+	if err != nil {
+		return
+	}
+	conn, err := dialRunnerWebsocket(wsURL, state.Token)
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.WriteJSON(map[string]any{"type": "unregister"})
 }
 
 func runRunnerSession(
@@ -503,7 +538,7 @@ func beginLeasedJob(
 	}
 
 	image := runnerImageFromJob(job)
-	dockerOK := image != "" && dockerAvailable()
+	dockerOK := image != "" && runnerHasDocker()
 	if reason := leasedJobFailureReason(job, dockerOK); reason != "" {
 		outcome := leasedJobOutcome{
 			executionID: executionID,
@@ -529,8 +564,7 @@ func beginLeasedJob(
 	}
 
 	env := runnerJobEnv(job, apiURL)
-	cmd := exec.Command("docker", dockerRunArgs(image, env)...)
-	cmd.Env = append(os.Environ(), formatJobEnv(env)...)
+	cmd := newRunnerJobCmd(image, env)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
@@ -713,6 +747,12 @@ func runnerControlPlaneURL() (string, error) {
 func dockerAvailable() bool {
 	cmd := exec.Command("docker", "info")
 	return cmd.Run() == nil
+}
+
+func defaultNewRunnerJobCmd(image string, env map[string]string) *exec.Cmd {
+	cmd := exec.Command("docker", dockerRunArgs(image, env)...)
+	cmd.Env = append(os.Environ(), formatJobEnv(env)...)
+	return cmd
 }
 
 func runnerWebsocketURL(runnerID string) (string, error) {

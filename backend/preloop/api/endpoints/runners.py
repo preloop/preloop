@@ -39,6 +39,14 @@ logger = logging.getLogger(__name__)
 _live: Dict[str, WebSocket] = {}
 
 
+def _release_live_runner(runner_key: str, connection: WebSocket) -> bool:
+    """Drop this socket from ``_live`` only if it is still the current one."""
+    if _live.get(runner_key) is connection:
+        _live.pop(runner_key, None)
+        return True
+    return False
+
+
 def _to_response(
     row: FlowRunner, db: Optional[Session] = None
 ) -> schemas.RunnerResponse:
@@ -83,7 +91,7 @@ def register_runner(
         db.add(existing)
         db.commit()
         db.refresh(existing)
-        emit_runner_updated(existing)
+        emit_runner_updated(existing, db)
         return schemas.RunnerRegisterResponse(
             **_to_response(existing, db).model_dump(), token=token
         )
@@ -107,7 +115,7 @@ def register_runner(
             "halt_requested": False,
         },
     )
-    emit_runner_updated(row)
+    emit_runner_updated(row, db)
     return schemas.RunnerRegisterResponse(
         **_to_response(row, db).model_dump(), token=token
     )
@@ -265,7 +273,7 @@ async def runner_ws(
     crud_flow_runner.touch_heartbeat(db, runner, status="online")
     hello: Dict[str, Any] = {"type": "hello", "runner_id": runner_key}
     db.refresh(runner)
-    emit_runner_updated(runner)
+    emit_runner_updated(runner, db)
     if runner.pending_job:
         hello["job"] = job_for_runner_replay(
             db, pending_job=runner.pending_job, mint_token=True
@@ -350,7 +358,7 @@ async def runner_ws(
                 runner.halt_requested = False
                 db.add(runner)
                 db.commit()
-                emit_runner_updated(runner)
+                emit_runner_updated(runner, db)
                 await websocket.send_json({"type": "ack"})
                 break
 
@@ -380,7 +388,7 @@ async def runner_ws(
                     )
                 db.add(runner)
                 db.commit()
-                emit_runner_updated(runner)
+                emit_runner_updated(runner, db)
                 await websocket.send_json({"type": "ack"})
                 continue
 
@@ -388,13 +396,13 @@ async def runner_ws(
     except WebSocketDisconnect:
         logger.info("runner %s disconnected", runner_id)
     finally:
-        _live.pop(runner_key, None)
-        row = crud_flow_runner.get(db, id=runner_id)
-        if row:
-            row.status = "offline"
-            db.add(row)
-            db.commit()
-            emit_runner_updated(row)
+        if _release_live_runner(runner_key, websocket):
+            row = crud_flow_runner.get(db, id=runner_id)
+            if row and row.status in ("online", "busy"):
+                row.status = "offline"
+                db.add(row)
+                db.commit()
+                emit_runner_updated(row, db)
 
 
 async def push_job_to_runner(runner_id: UUID, job: Dict[str, Any]) -> bool:

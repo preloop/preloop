@@ -5,7 +5,9 @@ from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 from preloop.api.endpoints.runners import (
+    _live,
     _parse_runner_execution_id,
+    _release_live_runner,
     job_for_heartbeat_ack,
     job_for_runner_replay,
     runner_needs_lease_token,
@@ -163,3 +165,16 @@ def test_runners_topic_is_subscribable() -> None:
         WebSocketManager.resolve_topic({"topic": "runners", "type": "runner_updated"})
         == "runners"
     )
+
+
+def test_release_live_runner_ignores_stale_reconnect() -> None:
+    old = object()
+    new = object()
+    _live["rid"] = new
+    try:
+        assert _release_live_runner("rid", old) is False
+        assert _live["rid"] is new
+        assert _release_live_runner("rid", new) is True
+        assert "rid" not in _live
+    finally:
+        _live.pop("rid", None)
