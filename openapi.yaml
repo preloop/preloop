@@ -13760,6 +13760,24 @@ components:
           type: number
           title: Estimated Cost
           default: 0.0
+        unpriced_request_count:
+          type: integer
+          title: Unpriced Request Count
+          description: Requests that consumed tokens and carried no price at all,
+            so their cost is missing from every total.
+          default: 0
+        zero_priced_request_count:
+          type: integer
+          title: Zero Priced Request Count
+          description: Requests a price was applied to and the price was exactly zero.
+            Free tier, a promotion, or a price entered wrongly; unlike an unpriced
+            request, nothing is missing from the total.
+          default: 0
+        failed_request_count:
+          type: integer
+          title: Failed Request Count
+          description: Requests the gateway answered with a 4xx or 5xx status.
+          default: 0
         last_request_at:
           anyOf:
           - type: string

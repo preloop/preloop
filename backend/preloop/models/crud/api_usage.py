@@ -1148,8 +1148,26 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
 
         Returns:
             One dict per (model, alias, provider) group with request counts,
-            token totals, and estimated cost.
+            token totals, estimated cost, how many of those requests carried no
+            price, how many were priced at exactly zero, how many failed, and
+            when the model was last called.
         """
+        # A request with no price and a request priced at zero look identical
+        # in a cost total and mean opposite things: the first is a hole in the
+        # price list, the second is a deliberate (or mistaken) $0. They are
+        # counted apart so the console can say which one it is.
+        #
+        # ``unpriced`` matches ``get_gateway_usage_summary`` exactly, so the
+        # per-model counts sum to the account total the same page shows.
+        unpriced_condition = and_(
+            ApiUsage.estimated_cost.is_(None),
+            ApiUsage.total_tokens > 0,
+        )
+        zero_priced_condition = and_(
+            ApiUsage.estimated_cost.isnot(None),
+            ApiUsage.estimated_cost == 0,
+            ApiUsage.total_tokens > 0,
+        )
         query = db.query(
             ApiUsage.ai_model_id,
             ApiUsage.model_alias,
@@ -1163,6 +1181,16 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
                 "estimated_cost"
             ),
+            func.coalesce(func.sum(case((unpriced_condition, 1), else_=0)), 0).label(
+                "unpriced_request_count"
+            ),
+            func.coalesce(func.sum(case((zero_priced_condition, 1), else_=0)), 0).label(
+                "zero_priced_request_count"
+            ),
+            func.coalesce(
+                func.sum(case((ApiUsage.status_code >= 400, 1), else_=0)), 0
+            ).label("failed_request_count"),
+            func.max(ApiUsage.timestamp).label("last_request_at"),
         ).filter(
             # Aggregate by model identity; aliases that share ai_model_id still
             # appear as separate groups when model_alias differs (intentional —
@@ -1214,6 +1242,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "completion_tokens": int(row.completion_tokens or 0),
                 "total_tokens": int(row.total_tokens or 0),
                 "estimated_cost": float(row.estimated_cost or 0.0),
+                "unpriced_request_count": int(row.unpriced_request_count or 0),
+                "zero_priced_request_count": int(row.zero_priced_request_count or 0),
+                "failed_request_count": int(row.failed_request_count or 0),
+                "last_request_at": row.last_request_at,
             }
             for row in rows
         ]
