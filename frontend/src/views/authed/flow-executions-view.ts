@@ -1,4 +1,4 @@
-import { html, css, unsafeCSS } from 'lit';
+import { html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { router } from '../../router';
 import {
@@ -8,6 +8,8 @@ import {
 } from '../../api';
 import { AuthedElement } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import { confirmDialog } from '../../components/confirm-dialog';
+import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
@@ -227,6 +229,13 @@ export class FlowExecutionsView extends AuthedElement {
         font-size: var(--console-text-meta);
         margin-bottom: 12px;
       }
+      .load-error {
+        margin-bottom: 16px;
+      }
+      .load-error .retry-button {
+        display: block;
+        margin-top: 8px;
+      }
       .pagination {
         display: flex;
         justify-content: space-between;
@@ -285,9 +294,15 @@ export class FlowExecutionsView extends AuthedElement {
   @state()
   private durationNow: Date = new Date();
 
+  /** Set when the executions fetch failed, so the page says so. */
+  @state()
+  private loadError: string | null = null;
+
   private durationTickIntervalId?: number;
 
   private unsubscribe?: () => void;
+  /** The connection-state listener, kept so it can be dropped on disconnect. */
+  private unsubscribeState?: () => void;
 
   async connectedCallback() {
     super.connectedCallback();
@@ -318,20 +333,37 @@ export class FlowExecutionsView extends AuthedElement {
     this.flowIdFilter = params.get('flow_id');
   }
 
+  /**
+   * A failure here used to be an unhandled rejection: it skipped
+   * `connectWebSocket()` on entry, left the page without live updates for the
+   * session, and rendered "No executions found" over a list that may be full.
+   * The error is caught, shown, and retryable instead.
+   */
   async loadExecutions() {
-    const rows = await getFlowExecutions({
-      limit: this.pageSize + 1,
-      skip: (this.currentPage - 1) * this.pageSize,
-      status: this.statusFilter === 'all' ? undefined : this.statusFilter,
-      flowId: this.flowIdFilter || undefined,
-    });
-    this.hasNextPage = rows.length > this.pageSize;
-    this.executions = rows.slice(0, this.pageSize);
-    this.flowNameFilter = this.flowIdFilter
-      ? this.executions.find((execution) => execution.flow_name)?.flow_name ||
-        this.flowNameFilter
-      : null;
-    this.syncDurationTicker();
+    try {
+      const rows = await getFlowExecutions({
+        limit: this.pageSize + 1,
+        skip: (this.currentPage - 1) * this.pageSize,
+        status: this.statusFilter === 'all' ? undefined : this.statusFilter,
+        flowId: this.flowIdFilter || undefined,
+      });
+      this.loadError = null;
+      this.hasNextPage = rows.length > this.pageSize;
+      this.executions = rows.slice(0, this.pageSize);
+      this.flowNameFilter = this.flowIdFilter
+        ? this.executions.find((execution) => execution.flow_name)?.flow_name ||
+          this.flowNameFilter
+        : null;
+      this.syncDurationTicker();
+    } catch (error) {
+      console.error('Failed to load flow executions:', error);
+      this.loadError =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Could not load the executions.';
+      this.hasNextPage = false;
+      this.syncDurationTicker();
+    }
   }
 
   private clearFlowFilter(): void {
@@ -379,8 +411,10 @@ export class FlowExecutionsView extends AuthedElement {
       (message: any) => this.handleWebSocketMessage(message)
     );
 
-    // Track connection state
-    unifiedWebSocketManager.onStateChange((state) => {
+    // Track connection state. The unsubscribe is kept: dropping it leaked a
+    // listener holding this view for every connect.
+    this.unsubscribeState?.();
+    this.unsubscribeState = unifiedWebSocketManager.onStateChange((state) => {
       this.wsConnected = state === 'connected';
       if (this.wsConnected) {
         this.wsWasConnected = true;
@@ -429,6 +463,9 @@ export class FlowExecutionsView extends AuthedElement {
     this.stopDurationTicker();
     // Unsubscribe from flow execution updates
     this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    this.unsubscribeState?.();
+    this.unsubscribeState = undefined;
   }
 
   /**
@@ -534,7 +571,22 @@ export class FlowExecutionsView extends AuthedElement {
     );
   }
 
+  /**
+   * Stopping a run destroys work in progress and cannot be undone from here,
+   * which is exactly the kind of thing the console asks about first.
+   */
   private async cancelExecution(execution: FlowExecution): Promise<void> {
+    const confirmed = await confirmDialog({
+      title: 'Cancel run',
+      message: `Stop the run of "${execution.flow_name || 'this flow'}"?`,
+      detail:
+        'The agent stops where it is. Work already done is kept in the run, but the run does not finish, and it cannot be resumed — only retried from the start.',
+      confirmLabel: 'Cancel run',
+      cancelLabel: 'Keep running',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+
     try {
       await sendCommandToExecution(execution.id, 'stop');
       await this.loadExecutions();
@@ -552,7 +604,14 @@ export class FlowExecutionsView extends AuthedElement {
         window.location.href = router.urlForPath(
           `/console/flows/executions/${result.id}`
         );
+        return;
       }
+      // The retry was accepted but named no run, so there is nowhere to go:
+      // say so rather than leaving the click looking ignored.
+      this.showToast(
+        'The retry did not return a new run. Check the executions list.'
+      );
+      await this.loadExecutions();
     } catch (error) {
       this.showToast(
         error instanceof Error ? error.message : 'Could not retry the run'
@@ -591,6 +650,28 @@ export class FlowExecutionsView extends AuthedElement {
         <div class="connection-dot ${state === 'off' ? '' : state}"></div>
         <span>${label}</span>
       </div>
+    `;
+  }
+
+  /**
+   * The fetch failed. Rows already on screen stay — they were true when they
+   * arrived — with the failure and the retry stated above them.
+   */
+  private renderLoadError() {
+    if (!this.loadError) return nothing;
+    return html`
+      <sl-alert variant="danger" open class="load-error">
+        <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+        Could not load the executions. ${this.loadError}
+        <sl-button
+          size="small"
+          class="retry-button"
+          @click=${() => void this.loadExecutions()}
+        >
+          <sl-icon slot="prefix" name="arrow-clockwise"></sl-icon>
+          Try again
+        </sl-button>
+      </sl-alert>
     `;
   }
 
@@ -673,14 +754,19 @@ export class FlowExecutionsView extends AuthedElement {
             ${this.renderConnectionStatus()}
           </div>
 
+          ${this.renderLoadError()}
           ${
             this.paginatedExecutions.length === 0
-              ? html`
-                  <div class="empty-state">
-                    <sl-icon name="inbox"></sl-icon>
-                    <p>No executions found.</p>
-                  </div>
-                `
+              ? this.loadError
+                ? // The error above already said what happened; "No
+                  // executions found" underneath it would contradict it.
+                  nothing
+                : html`
+                    <div class="empty-state">
+                      <sl-icon name="inbox"></sl-icon>
+                      <p>No executions found.</p>
+                    </div>
+                  `
               : html`
                   <div class="result-count">
                     Showing ${firstRowNumber} -
