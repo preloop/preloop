@@ -771,9 +771,19 @@ class ContainerAgentExecutor(AgentExecutor):
                 return job_name
             except ApiException as e:
                 last_error = e
+                # Whether a create can still follow this attempt. Everything
+                # that is only a *precondition* for another create - deleting
+                # a finished leftover to free its name - is gated on it: with
+                # AGENT_JOB_CREATE_MAX_ATTEMPTS=1 nothing would recreate the
+                # Job, so deleting would throw away the leftover's logs and
+                # still fail the run. Adoption is not gated: it returns a
+                # started agent without needing another attempt.
+                can_retry = attempt < max_attempts - 1
                 if e.status == 409:
                     adopted = await self._resolve_job_name_conflict(
-                        job_name=job_name, execution_id=execution_id
+                        job_name=job_name,
+                        execution_id=execution_id,
+                        may_delete=can_retry,
                     )
                     if adopted:
                         self.logger.warning(
@@ -792,7 +802,7 @@ class ContainerAgentExecutor(AgentExecutor):
                         category=FAILURE_CATEGORY_RUNNER_ERROR,
                     ) from e
 
-                if attempt >= max_attempts - 1:
+                if not can_retry:
                     break
 
                 delay = _job_create_retry_delay_seconds(attempt)
@@ -819,7 +829,6 @@ class ContainerAgentExecutor(AgentExecutor):
                 if last_error.status == 409
                 else FAILURE_CATEGORY_RUNNER_ERROR
             ),
-            retryable=True,
         ) from last_error
 
     @staticmethod
@@ -833,24 +842,28 @@ class ContainerAgentExecutor(AgentExecutor):
         return status == 429 or 500 <= status < 600
 
     async def _resolve_job_name_conflict(
-        self, *, job_name: str, execution_id: str
+        self, *, job_name: str, execution_id: str, may_delete: bool = True
     ) -> bool:
         """Adopt or clear the Job that owns a conflicting name.
 
         Args:
             job_name: Name that came back 409 AlreadyExists.
             execution_id: Execution the caller is starting.
+            may_delete: Whether a finished leftover may be deleted to free
+                its name. False when no create attempt remains, in which case
+                the leftover (and its logs) is left in place: deleting it
+                would help nobody and destroy the evidence.
 
         Returns:
             True when the existing Job is a live agent for this execution and
             was adopted (the caller must NOT create anything). False when the
             name was freed (or the Job vanished) and creation should be
-            retried.
+            retried, and when a leftover was deliberately left in place.
 
         Raises:
-            AgentStartError: When the conflicting Job belongs to a different
-                execution — deleting or adopting it would corrupt an
-                unrelated run, so this fails loudly instead.
+            AgentStartError: When the conflicting Job does not provably
+                belong to this execution — deleting or adopting it would
+                corrupt an unrelated run, so this fails loudly instead.
         """
         try:
             existing = await self._k8s_batch_api.read_namespaced_job(
@@ -865,9 +878,21 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             return False
 
+        # Fail closed on ownership: this guard is the only thing standing
+        # between a name collision and someone else's agent being adopted or
+        # deleted. Every Preloop job-creation path sets the label, so a
+        # missing one means the Job is not ours to touch (an operator's, a
+        # foreign tool's, or a label stripped after creation) - unknown
+        # ownership is treated exactly like foreign ownership.
         labels = getattr(getattr(existing, "metadata", None), "labels", None) or {}
         owner = labels.get("preloop.execution_id")
-        if owner and str(owner) != str(execution_id):
+        if not owner:
+            raise AgentStartError(
+                f"Failed to start agent Job: name {job_name} is already used by "
+                "a Job with no preloop.execution_id label (unknown owner)",
+                category=FAILURE_CATEGORY_RUNNER_CONFLICT,
+            )
+        if str(owner) != str(execution_id):
             raise AgentStartError(
                 f"Failed to start agent Job: name {job_name} is already used by "
                 f"execution {owner}",
@@ -876,6 +901,16 @@ class ContainerAgentExecutor(AgentExecutor):
 
         if self._job_is_live(existing):
             return True
+
+        if not may_delete:
+            # Last attempt: nothing would recreate the Job, so deleting the
+            # leftover would only cost its logs. Fail on the 409 instead.
+            self.logger.warning(
+                f"Leaving finished leftover Job {job_name} in place for "
+                f"execution {execution_id}: no creation attempt remains "
+                "(AGENT_JOB_CREATE_MAX_ATTEMPTS)"
+            )
+            return False
 
         self.logger.info(
             f"Deleting finished leftover Job {job_name} so execution "

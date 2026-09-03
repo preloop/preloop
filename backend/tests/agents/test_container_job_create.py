@@ -62,10 +62,14 @@ def _api_error(status: int) -> ApiException:
     return ApiException(status=status, reason="Conflict" if status == 409 else "Error")
 
 
-def _job(*, execution_id: str = EXECUTION_ID, active=None, succeeded=None, failed=None):
-    """Minimal V1Job stand-in: only what the conflict logic reads."""
+def _job(*, execution_id=EXECUTION_ID, active=None, succeeded=None, failed=None):
+    """Minimal V1Job stand-in: only what the conflict logic reads.
+
+    ``execution_id=None`` models a Job carrying no ownership label at all.
+    """
+    labels = {} if execution_id is None else {"preloop.execution_id": execution_id}
     return SimpleNamespace(
-        metadata=SimpleNamespace(labels={"preloop.execution_id": execution_id}),
+        metadata=SimpleNamespace(labels=labels),
         status=SimpleNamespace(
             active=active,
             succeeded=succeeded,
@@ -187,6 +191,38 @@ class TestCreateJobConflict:
         executor._k8s_batch_api.delete_namespaced_job.assert_not_awaited()
         assert executor._k8s_batch_api.create_namespaced_job.await_count == 1
 
+    async def test_conflict_with_unlabelled_live_job_fails_closed(self, executor):
+        """An unlabelled Job is not provably ours, so it is never adopted."""
+        executor._k8s_batch_api.create_namespaced_job.side_effect = _api_error(409)
+        executor._k8s_batch_api.read_namespaced_job.return_value = _job(
+            execution_id=None, active=1
+        )
+
+        with pytest.raises(AgentStartError) as excinfo:
+            await executor._create_kubernetes_job(
+                object(), job_name="agent-x", execution_id=EXECUTION_ID
+            )
+
+        assert excinfo.value.category == FAILURE_CATEGORY_RUNNER_CONFLICT
+        assert "unknown owner" in str(excinfo.value)
+        executor._k8s_batch_api.delete_namespaced_job.assert_not_awaited()
+        assert executor._k8s_batch_api.create_namespaced_job.await_count == 1
+
+    async def test_conflict_with_unlabelled_finished_job_is_not_deleted(self, executor):
+        """Nor deleted: the guard must not destroy a stranger's Job."""
+        executor._k8s_batch_api.create_namespaced_job.side_effect = _api_error(409)
+        executor._k8s_batch_api.read_namespaced_job.return_value = _job(
+            execution_id=None, succeeded=1
+        )
+
+        with pytest.raises(AgentStartError) as excinfo:
+            await executor._create_kubernetes_job(
+                object(), job_name="agent-x", execution_id=EXECUTION_ID
+            )
+
+        assert excinfo.value.category == FAILURE_CATEGORY_RUNNER_CONFLICT
+        executor._k8s_batch_api.delete_namespaced_job.assert_not_awaited()
+
     async def test_unresolvable_conflict_is_categorised(self, executor, monkeypatch):
         """Exhausting attempts on a 409 is a runner_conflict, not unknown."""
         executor._k8s_batch_api.create_namespaced_job.side_effect = _api_error(409)
@@ -264,3 +300,63 @@ class TestCreateJobApiErrors:
             )
 
         assert executor._k8s_batch_api.create_namespaced_job.await_count == 1
+
+    async def test_single_attempt_setting_keeps_the_leftover_on_conflict(
+        self, executor, monkeypatch
+    ):
+        """Disabling the retry must not delete a Job nothing will recreate.
+
+        Deleting the finished leftover only pays off if a further create
+        follows. With the budget at one attempt the run fails either way, so
+        the leftover (and its logs, the only record of the previous session)
+        stays.
+        """
+        monkeypatch.setattr(
+            "preloop.agents.container.settings.agent_job_create_max_attempts", 1
+        )
+        executor._k8s_batch_api.create_namespaced_job.side_effect = _api_error(409)
+        executor._k8s_batch_api.read_namespaced_job.return_value = _job(succeeded=1)
+
+        with pytest.raises(AgentStartError) as excinfo:
+            await executor._create_kubernetes_job(
+                object(), job_name="agent-x", execution_id=EXECUTION_ID
+            )
+
+        assert excinfo.value.category == FAILURE_CATEGORY_RUNNER_CONFLICT
+        executor._k8s_batch_api.delete_namespaced_job.assert_not_awaited()
+        assert executor._k8s_batch_api.create_namespaced_job.await_count == 1
+
+    async def test_single_attempt_setting_still_adopts_a_live_job(
+        self, executor, monkeypatch
+    ):
+        """Adoption needs no further attempt, so the budget does not block it."""
+        monkeypatch.setattr(
+            "preloop.agents.container.settings.agent_job_create_max_attempts", 1
+        )
+        executor._k8s_batch_api.create_namespaced_job.side_effect = _api_error(409)
+        executor._k8s_batch_api.read_namespaced_job.return_value = _job(active=1)
+
+        name = await executor._create_kubernetes_job(
+            object(), job_name="agent-x", execution_id=EXECUTION_ID
+        )
+
+        assert name == "agent-x"
+        executor._k8s_batch_api.delete_namespaced_job.assert_not_awaited()
+
+    async def test_last_attempt_never_deletes_the_leftover(self, executor, monkeypatch):
+        """The same rule on the final attempt of a wider budget."""
+        monkeypatch.setattr(
+            "preloop.agents.container.settings.agent_job_create_max_attempts", 3
+        )
+        executor._k8s_batch_api.create_namespaced_job.side_effect = _api_error(409)
+        executor._k8s_batch_api.read_namespaced_job.return_value = _job(succeeded=1)
+
+        with pytest.raises(AgentStartError):
+            await executor._create_kubernetes_job(
+                object(), job_name="agent-x", execution_id=EXECUTION_ID
+            )
+
+        assert executor._k8s_batch_api.create_namespaced_job.await_count == 3
+        # Attempts 1 and 2 free the name for the create that follows them;
+        # attempt 3 has nothing to free it for.
+        assert executor._k8s_batch_api.delete_namespaced_job.await_count == 2
