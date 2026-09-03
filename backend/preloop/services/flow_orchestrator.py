@@ -32,7 +32,12 @@ from preloop.agents import (
     create_executor_for_execution,
     AgentStatus,
 )
+from preloop.agents.container import AGENT_SESSION_SUFFIX_KEY
 from preloop.agents.failure_analysis import analyze_agent_failure
+from preloop.services.flow_failure_category import (
+    FAILURE_CATEGORY_UNKNOWN,
+    derive_failure_category,
+)
 from preloop.config import settings
 from preloop.services.flow_pr_binding import merge_result_preserving_pr_binding
 from preloop.services.prompt_resolvers import (
@@ -2536,6 +2541,11 @@ class FlowExecutionOrchestrator:
         nudge_context["git_clone_config"] = None
         nudge_context["custom_commands"] = None
         nudge_context["confirmation_nudge"] = True
+        # The nudge is a second session for the SAME execution, started while
+        # the original agent Job still exists (it lingers until its TTL). It
+        # therefore needs its own runtime session name, or the nudge can only
+        # ever fail with a 409 name conflict on Kubernetes.
+        nudge_context[AGENT_SESSION_SUFFIX_KEY] = "nudge"
         # Token ceiling for runtimes that honor model parameters; the prompt
         # budget above enforces the input side regardless. The nudge ceiling
         # is a hard cap: a larger limit inherited from the flow's model is
@@ -3138,6 +3148,29 @@ class FlowExecutionOrchestrator:
         """Update the execution log and publish the update to NATS."""
         logger.info(f"Updating execution log to status: {status}")
 
+        # Every terminal write goes through here, so this is the one place
+        # that guarantees a failed execution carries a failure_category.
+        # Callers that hold richer evidence (an agent result with a failure
+        # analysis, or the exception that aborted the run) pass an explicit
+        # category and it is respected; everyone else gets one derived from
+        # the message being stored, falling back to the message already on
+        # the row when this update only moves the status.
+        if kwargs.get("failure_category") is None:
+            derived = derive_failure_category(
+                status=status,
+                error_message=(
+                    kwargs.get("error_message")
+                    or getattr(self.execution_log, "error_message", None)
+                ),
+            )
+            existing = getattr(self.execution_log, "failure_category", None)
+            if derived == FAILURE_CATEGORY_UNKNOWN and existing:
+                # Never downgrade a category an earlier, better-informed
+                # write already established.
+                derived = existing
+            if derived is not None:
+                kwargs["failure_category"] = derived
+
         # Debug logging for metrics
         if "tool_calls_count" in kwargs or "total_tokens" in kwargs:
             logger.info(
@@ -3276,6 +3309,17 @@ class FlowExecutionOrchestrator:
         session_reference: Optional[str] = None
 
         for attempt in range(1, max_attempts + 1):
+            # Each attempt starts a NEW agent session, so it must ask the
+            # runtime for a new session name. Without this, attempt 2 asked
+            # Kubernetes for the Job name attempt 1 still owns and died with
+            # "Failed to start agent Job: (409) Conflict" — the retry that
+            # was supposed to rescue a transient provider failure became the
+            # thing that failed the run. Attempt 1 keeps the historic
+            # unsuffixed name so an in-flight run stays addressable by the
+            # session reference stored before this change.
+            execution_context[AGENT_SESSION_SUFFIX_KEY] = (
+                f"a{attempt}" if attempt > 1 else None
+            )
             session_reference, agent_executor = await self._start_agent_session(
                 execution_context
             )
@@ -3503,6 +3547,16 @@ class FlowExecutionOrchestrator:
                 status=final_status,
                 model_output_summary=output_summary,
                 error_message=agent_result.get("error_message"),
+                # The agent executor already classified the failure against
+                # the FULL container logs; that verdict is strictly better
+                # evidence than the truncated error message, so pass it in
+                # rather than letting _update_execution_log re-derive from
+                # prose.
+                failure_category=derive_failure_category(
+                    status=final_status,
+                    error_message=agent_result.get("error_message"),
+                    failure_analysis=agent_result.get("failure_analysis"),
+                ),
                 actions_taken_summary=agent_result.get("actions_taken"),
                 mcp_usage_logs=agent_result.get("mcp_usage_logs"),
                 result=merged_result,
@@ -3572,6 +3626,15 @@ class FlowExecutionOrchestrator:
                     await self._update_execution_log(
                         status="FAILED",
                         error_message=str(e),
+                        # The exception type carries the category for failures
+                        # raised by the runtime itself (e.g. AgentStartError on
+                        # an unresolvable Job name conflict), which no amount
+                        # of message matching would recover as reliably.
+                        failure_category=derive_failure_category(
+                            status="FAILED",
+                            error_message=str(e),
+                            exception=e,
+                        ),
                         end_time=datetime.now(timezone.utc),
                         tool_calls_count=self.tool_calls_count,
                         total_tokens=self.total_tokens,

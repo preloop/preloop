@@ -330,6 +330,10 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     FlowExecution.start_time,
                     FlowExecution.end_time,
                     FlowExecution.error_message,
+                    # Small and the whole point of the list view for
+                    # failures; omitting it here would make the schema
+                    # projection lazy-load it one row at a time.
+                    FlowExecution.failure_category,
                     FlowExecution.retry_of_execution_id,
                     FlowExecution.batch_id,
                     FlowExecution.tool_calls_count,
