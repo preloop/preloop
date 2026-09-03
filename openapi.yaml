@@ -11820,6 +11820,26 @@ components:
       description: Response after avatar upload or deletion.
     BatchExecutionListItem:
       properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+          description: Alias of the model that served most of this execution's gateway
+            requests. Null when the execution has no attributable gateway usage.
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+          description: Provider behind ``model_alias``, when recorded
+        models_used:
+          items:
+            $ref: '#/components/schemas/ExecutionModelUsage'
+          type: array
+          title: Models Used
+          description: Every distinct model alias this execution used with its request
+            count, most used first.
         id:
           type: string
           format: uuid
@@ -12632,6 +12652,28 @@ components:
       - data
       title: EmbeddingRawResponse
       description: Response model for the raw embeddings endpoint.
+    ExecutionModelUsage:
+      properties:
+        model_alias:
+          type: string
+          title: Model Alias
+          description: Gateway model alias, e.g. 'openai/gpt-5'
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+          description: Provider that served the requests, when recorded
+        request_count:
+          type: integer
+          title: Request Count
+          description: Gateway requests this execution sent to that alias
+          default: 0
+      type: object
+      required:
+      - model_alias
+      title: ExecutionModelUsage
+      description: One model alias that served requests during an execution.
     FlowCreate:
       properties:
         name:
@@ -12823,6 +12865,26 @@ components:
       title: FlowExecutionCommand
     FlowExecutionListResponse:
       properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+          description: Alias of the model that served most of this execution's gateway
+            requests. Null when the execution has no attributable gateway usage.
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+          description: Provider behind ``model_alias``, when recorded
+        models_used:
+          items:
+            $ref: '#/components/schemas/ExecutionModelUsage'
+          type: array
+          title: Models Used
+          description: Every distinct model alias this execution used with its request
+            count, most used first.
         id:
           type: string
           format: uuid
@@ -12920,6 +12982,26 @@ components:
       description: Lightweight flow execution row for list views.
     FlowExecutionResponse:
       properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+          description: Alias of the model that served most of this execution's gateway
+            requests. Null when the execution has no attributable gateway usage.
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+          description: Provider behind ``model_alias``, when recorded
+        models_used:
+          items:
+            $ref: '#/components/schemas/ExecutionModelUsage'
+          type: array
+          title: Models Used
+          description: Every distinct model alias this execution used with its request
+            count, most used first.
         flow_id:
           type: string
           format: uuid
