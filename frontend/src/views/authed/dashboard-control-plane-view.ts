@@ -65,7 +65,10 @@ import type {
 } from '../../types';
 import { parseUTCDate } from '../../utils/date';
 import { executionSubjectCss } from '../../utils/execution-subject';
-import { mergeGatewaySummaryPreservingBreakdown } from '../../utils/gateway-summary';
+import {
+  hasUsageBreakdown,
+  mergeGatewaySummaryPreservingBreakdown,
+} from '../../utils/gateway-summary';
 import {
   pickDefaultModel,
   selectableModels,
@@ -225,6 +228,19 @@ export class DashboardView extends AuthedElement {
   @state() private fetchingApprovals = true;
   @state() private fetchingAudit = true;
   @state() private fetchingMCPAndTools = true;
+  /**
+   * The users list is its own request now: it used to wait behind MCP
+   * servers, tools, models and API keys in one `Promise.all`, so the Users
+   * tab stayed a skeleton until the slowest of the five answered even though
+   * the names and roles had arrived first.
+   */
+  @state() private fetchingUsers = true;
+  /**
+   * The second, expensive gateway summary (`include_breakdown=true`) that
+   * fills the usage columns of the Agents and Users tabs. Separate from
+   * `fetchingGatewaySummary`, which is the cheap totals call.
+   */
+  @state() private fetchingUsageBreakdown = true;
   @state() private error: string | null = null;
   @state() private gatewaySummary: AccountGatewayUsageSummaryResponse | null =
     null;
@@ -1868,37 +1884,56 @@ export class DashboardView extends AuthedElement {
       }
     })();
 
-    const pTools = (async () => {
+    // Its own request, awaited by nothing else: the Users tab can list the
+    // people the moment their names arrive, without waiting for the tools.
+    const pUsers = (async () => {
+      this.fetchingUsers = true;
       try {
-        const [mcpServers, tools, aiModels, users, apiKeys] = await Promise.all(
-          [
-            this.catchWith403Handling(getMCPServers(), [] as MCPServer[]),
-            this.catchWith403Handling(getTools(), [] as Tool[]),
-            this.catchWith403Handling(getAIModels(), []),
-            this.catchWith403Handling(
-              // User management is a licensed feature, not a hosting model:
-              // a self-hosted Enterprise account has teammates too, and the
-              // Inventory's Users tab is gated on the same flag. Features
-              // have resolved by the time this secondary fetch runs.
-              isSaaS() || this.userManagementEnabled
-                ? getUsers()
-                : Promise.resolve({
-                    users: [],
-                    total: 0,
-                    skip: 0,
-                    limit: 0,
-                  }),
-              {
+        const users = await this.catchWith403Handling(
+          // User management is a licensed feature, not a hosting model:
+          // a self-hosted Enterprise account has teammates too, and the
+          // Inventory's Users tab is gated on the same flag. Features
+          // have resolved by the time this secondary fetch runs.
+          isSaaS() || this.userManagementEnabled
+            ? getUsers()
+            : Promise.resolve({
                 users: [],
                 total: 0,
                 skip: 0,
                 limit: 0,
-              }
-            ),
-            // Already the api-keys page's endpoint; here it is only a count.
-            this.catchWith403Handling(getApiKeys(), null),
-          ]
+              }),
+          {
+            users: [],
+            total: 0,
+            skip: 0,
+            limit: 0,
+          }
         );
+        this.accountUsers = Array.isArray(users.users)
+          ? (users.users as AccountUser[]).filter(
+              (user) => user.is_active !== false
+            )
+          : [];
+        this.enabledUsersCount = Array.isArray(users.users)
+          ? users.users.filter((u: { is_active?: boolean }) => u.is_active)
+              .length
+          : 0;
+      } catch (error) {
+        console.error('Failed to load users', error);
+      } finally {
+        this.fetchingUsers = false;
+      }
+    })();
+
+    const pTools = (async () => {
+      try {
+        const [mcpServers, tools, aiModels, apiKeys] = await Promise.all([
+          this.catchWith403Handling(getMCPServers(), [] as MCPServer[]),
+          this.catchWith403Handling(getTools(), [] as Tool[]),
+          this.catchWith403Handling(getAIModels(), []),
+          // Already the api-keys page's endpoint; here it is only a count.
+          this.catchWith403Handling(getApiKeys(), null),
+        ]);
         // "Active" means usable: not revoked, not past its expiry.
         this.apiKeysCount = apiKeys
           ? apiKeys.filter(
@@ -1926,15 +1961,6 @@ export class DashboardView extends AuthedElement {
         }
         this.hasAIModels = (aiModels || []).length > 0;
         this.aiModelsCount = Array.isArray(aiModels) ? aiModels.length : 0;
-        this.accountUsers = Array.isArray(users.users)
-          ? (users.users as AccountUser[]).filter(
-              (user) => user.is_active !== false
-            )
-          : [];
-        this.enabledUsersCount = Array.isArray(users.users)
-          ? users.users.filter((u: { is_active?: boolean }) => u.is_active)
-              .length
-          : 0;
       } catch (error) {
         console.error('Failed to load MCP and tools data', error);
       } finally {
@@ -1945,12 +1971,14 @@ export class DashboardView extends AuthedElement {
     await Promise.all([
       pAudit,
       pTools,
+      pUsers,
       this.refreshUsageBreakdown(gatewayStartDate),
     ]);
     this.saveDashboardCache();
   }
 
   private async refreshUsageBreakdown(gatewayStartDate: string) {
+    this.fetchingUsageBreakdown = true;
     try {
       const detailed = await this.catchWith403Handling(
         getAccountGatewayUsageSummary({
@@ -1965,6 +1993,10 @@ export class DashboardView extends AuthedElement {
       this.gatewaySummary = detailed;
     } catch (error) {
       console.error('Failed to load gateway breakdown for top models', error);
+    } finally {
+      // Off whatever happened: a 403 on this endpoint means the columns will
+      // never fill, and a skeleton that never resolves is worse than a zero.
+      this.fetchingUsageBreakdown = false;
     }
   }
 
@@ -3123,6 +3155,18 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
+   * True while the usage columns of the Agents and Users tabs have nothing
+   * true to show. A breakdown already in hand (from the cache, or from the
+   * range before this one) is shown rather than hidden: stale numbers that
+   * are about to be replaced beat skeletons over data the page already has.
+   */
+  private get usageColumnsPending(): boolean {
+    return (
+      this.fetchingUsageBreakdown && !hasUsageBreakdown(this.gatewaySummary)
+    );
+  }
+
+  /**
    * One box for what the account has: the counts that used to sit in the
    * stat strip now label its tabs, and the page range drives every column.
    */
@@ -3143,6 +3187,7 @@ export class DashboardView extends AuthedElement {
         .rangeLabel=${this.gatewayRangeLabel}
         .flowRunsCapped=${this.flowRunsCapped}
         ?loading=${this.loading || this.fetchingMCPAndTools}
+        ?usageLoading=${this.usageColumnsPending}
       ></inventory-card>
     `;
   }

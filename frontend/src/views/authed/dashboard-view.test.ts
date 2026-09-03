@@ -45,9 +45,18 @@ describe('DashboardView', () => {
   let budgetPoliciesResponse: any[];
   /** Set by a test that wants to hold the secondary pass open. */
   let aiModelsGate: Promise<void> | null;
+  /**
+   * Holds the Overview's own breakdown call in flight. The shared attention
+   * loader asks for a breakdown too, and it asks first; the gate lets that
+   * one through so the first pass can finish.
+   */
+  let breakdownGate: Promise<void> | null;
+  let breakdownCalls = 0;
 
   beforeEach(() => {
     aiModelsGate = null;
+    breakdownGate = null;
+    breakdownCalls = 0;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
@@ -385,6 +394,12 @@ describe('DashboardView', () => {
           });
 
         if (url.startsWith('/api/v1/account/gateway-usage/summary')) {
+          if (url.includes('include_breakdown=true')) {
+            breakdownCalls += 1;
+            if (breakdownCalls > 1 && breakdownGate) {
+              await breakdownGate;
+            }
+          }
           if (url.includes('runtime_principal_id=hermes-runtime-principal')) {
             return json({
               ...gatewaySummaryResponse,
@@ -1392,6 +1407,64 @@ describe('DashboardView', () => {
         'inventory-card'
       ) as any;
       expect(inventory.flowRunsCapped).to.be.true;
+    });
+
+    it('lists the teammates without waiting for the tools request', async () => {
+      // Users used to share one Promise.all with MCP servers, tools, models
+      // and API keys, so a slow models call held back names that had already
+      // arrived. Hold the models and the Users tab must still fill.
+      let releaseModels = () => {};
+      aiModelsGate = new Promise<void>((resolve) => {
+        releaseModels = resolve;
+      });
+
+      const element = await mountDashboard();
+      element['userManagementEnabled'] = true;
+      await waitUntil(
+        () => element['accountUsers'].length > 0,
+        'users did not arrive on their own'
+      );
+
+      expect(element['fetchingUsers'], 'users request finished').to.be.false;
+      expect(element['fetchingMCPAndTools'], 'tools still in flight').to.be
+        .true;
+      expect(element['inventoryUserRows'][0].name).to.exist;
+
+      releaseModels();
+      await waitUntil(
+        () => !element['fetchingMCPAndTools'],
+        'second pass did not finish'
+      );
+    });
+
+    it('skeletons the usage columns until the breakdown lands', async () => {
+      let releaseBreakdown = () => {};
+      breakdownGate = new Promise<void>((resolve) => {
+        releaseBreakdown = resolve;
+      });
+      // No breakdown in hand from an earlier pass: the columns have nothing
+      // true to show, which is what the skeleton says.
+      gatewaySummaryResponse.usage_by_session = [];
+      gatewaySummaryResponse.usage_by_model = [];
+
+      const element = await mountDashboard();
+      await waitUntil(() => !element['loading'], 'first pass did not finish');
+      await element.updateComplete;
+
+      const inventory = element.shadowRoot?.querySelector(
+        'inventory-card'
+      ) as any;
+      expect(element['fetchingUsageBreakdown']).to.be.true;
+      expect(inventory.usageLoading, 'card waiting on usage').to.be.true;
+
+      releaseBreakdown();
+      await waitUntil(
+        () => !element['fetchingUsageBreakdown'],
+        'breakdown did not land'
+      );
+      await element.updateComplete;
+      await inventory.updateComplete;
+      expect(inventory.usageLoading).to.be.false;
     });
 
     it('keeps the Models tab on a skeleton until the second pass lands', async () => {
