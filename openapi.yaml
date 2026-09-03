@@ -5776,6 +5776,48 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/ai-models/overview:
+    get:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Get AI Models Overview
+      description: Return usage, active sessions and price source for every model.
+      operationId: get_ai_models_overview_api_v1_ai_models_overview_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelsOverviewResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/ai-models/{model_id}:
     get:
       tags:
@@ -9383,6 +9425,83 @@ components:
       - token_usage
       title: AIModelGatewayUsageSummaryResponse
       description: Gateway usage summary for one durable AI model.
+    AIModelOverviewItem:
+      properties:
+        ai_model_id:
+          type: string
+          title: Ai Model Id
+        model_name:
+          type: string
+          title: Model Name
+        provider_name:
+          type: string
+          title: Provider Name
+        model_identifier:
+          type: string
+          title: Model Identifier
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+          description: Gateway alias clients call this model by, if configured
+        is_default:
+          type: boolean
+          title: Is Default
+          default: false
+        total_requests:
+          type: integer
+          title: Total Requests
+          default: 0
+        successful_requests:
+          type: integer
+          title: Successful Requests
+          default: 0
+        failed_requests:
+          type: integer
+          title: Failed Requests
+          default: 0
+        token_usage:
+          $ref: '#/components/schemas/GatewayTokenUsage'
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          default: 0.0
+        unpriced_request_count:
+          type: integer
+          title: Unpriced Request Count
+          description: Requests with tokens but no price to apply
+          default: 0
+        active_session_count:
+          type: integer
+          title: Active Session Count
+          description: Runtime sessions still open that used this model
+          default: 0
+        last_request_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Request At
+          description: Timestamp of the most recent gateway request
+        pricing_source:
+          type: string
+          enum:
+          - override
+          - model_config
+          - catalog
+          - none
+          title: Pricing Source
+          description: Where this model's effective price comes from
+          default: none
+      type: object
+      required:
+      - ai_model_id
+      - model_name
+      - provider_name
+      - model_identifier
+      title: AIModelOverviewItem
+      description: 'One row of the Models page: what this model did in the window.'
     AIModelPrice:
       properties:
         input_per_1m:
@@ -9718,6 +9837,34 @@ components:
       type: object
       title: AIModelUpdate
       description: Schema for updating an existing AIModel entry. All fields are optional.
+    AIModelsOverviewResponse:
+      properties:
+        period_start:
+          type: string
+          format: date-time
+          title: Period Start
+        period_end:
+          type: string
+          format: date-time
+          title: Period End
+        models:
+          items:
+            $ref: '#/components/schemas/AIModelOverviewItem'
+          type: array
+          title: Models
+      type: object
+      required:
+      - period_start
+      - period_end
+      title: AIModelsOverviewResponse
+      description: 'Batch answer for the Models page and the dashboard inventory tab.
+
+
+        Replaces one request per model per panel with a single response, so
+
+        opening the page costs a fixed number of queries no matter how many
+
+        models an account has configured.'
     AccessRuleCreate:
       properties:
         action:

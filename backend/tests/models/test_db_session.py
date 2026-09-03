@@ -12,11 +12,13 @@ import preloop.models.db.session as session_module
 
 
 EXPECTED_POOL_KWARGS = {
-    "pool_size": 20,
-    "max_overflow": 40,
+    "pool_size": 10,
+    "max_overflow": 20,
     "pool_pre_ping": True,
     "pool_recycle": 1800,
-    "pool_timeout": 30,
+    # Short by design: a saturated pool fails fast with 503 rather than
+    # holding a request for half a minute (2026-09-03 incident).
+    "pool_timeout": 5,
     "pool_use_lifo": True,
 }
 

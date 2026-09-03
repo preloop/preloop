@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from sqlalchemy import (
     String,
@@ -790,6 +790,67 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             )
             .count()
         )
+
+    def count_active_sessions_by_model(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        ai_model_ids: Sequence[str],
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> dict[str, int]:
+        """Count active runtime sessions per AI model in a single query.
+
+        The Models page needs this number for every model on screen. Asking
+        per model meant one request (and one pooled connection) per row; one
+        grouped query answers the whole page.
+
+        Filters match :meth:`list_account_sessions` with ``status="active"``
+        and an ``ai_model_id``: sessions the account owns that have not ended
+        and carry at least one gateway request for the model inside the
+        window. Internal purposes are not excluded here either, so the count
+        agrees with the per-model list the detail page shows.
+
+        Args:
+            db: Database session.
+            account_id: Account whose sessions are counted.
+            ai_model_ids: Models to count for. An empty sequence returns ``{}``
+                without touching the database.
+            start_date: Inclusive lower bound on gateway request timestamp.
+            end_date: Exclusive upper bound on gateway request timestamp.
+
+        Returns:
+            Mapping of model id (as a string) to active session count. Models
+            with no active sessions are absent.
+        """
+        model_ids = [str(model_id) for model_id in ai_model_ids]
+        if not model_ids:
+            return {}
+
+        query = (
+            db.query(
+                ApiUsage.ai_model_id.label("ai_model_id"),
+                func.count(func.distinct(ApiUsage.runtime_session_id)).label(
+                    "session_count"
+                ),
+            )
+            .join(self.model, self.model.id == ApiUsage.runtime_session_id)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.ended_at.is_(None),
+                ApiUsage.runtime_session_id.isnot(None),
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.ai_model_id.in_(model_ids),
+            )
+        )
+        if start_date is not None:
+            query = query.filter(ApiUsage.timestamp >= start_date)
+        if end_date is not None:
+            query = query.filter(ApiUsage.timestamp < end_date)
+
+        rows = query.group_by(ApiUsage.ai_model_id).all()
+        return {str(row.ai_model_id): int(row.session_count or 0) for row in rows}
 
     def get_latest_by_principal(
         self,

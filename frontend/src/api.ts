@@ -57,6 +57,7 @@ import type {
   AccountRateLimitReportResponse,
   FlowGatewayUsageSummaryResponse,
   AIModelGatewayUsageSummaryResponse,
+  AIModelsOverviewResponse,
   ApiKeyGatewayUsageSummaryResponse,
   AIModelRuntimeSessionListResponse,
   AIModelGatewayUsageSearchResponse,
@@ -2602,6 +2603,25 @@ export async function getAvailableModelsForProvider(
     source: data?.source === 'fallback' ? 'fallback' : 'live',
     ...(data?.error ? { error: data.error } : {}),
   };
+}
+
+/**
+ * Fetch one row per configured model: usage, active sessions, price source.
+ *
+ * One request for the whole page. Asking per model instead is what emptied
+ * the API connection pool on 2026-09-03; the per-model endpoints are for the
+ * detail page, where a person is looking at exactly one model.
+ */
+export async function getAIModelsOverview(
+  params: GatewayUsageSummaryParams = {}
+): Promise<AIModelsOverviewResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/ai-models/overview${buildGatewayUsageQuery(params)}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch AI models overview');
+  }
+  return response.json();
 }
 
 export async function getAIModelGatewayUsageSummary(

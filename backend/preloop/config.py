@@ -47,22 +47,30 @@ class DatabaseSettings(BaseModel):
 
     url: str = Field(..., description="Database URL")
     pool_size: int = Field(
-        20,
+        10,
         description=(
             "Database connection pool size per worker process. With default "
-            "max_overflow this allows up to 60 concurrent connections per worker "
-            "(pool_size + max_overflow). Reduce both values on small Postgres "
+            "max_overflow this allows up to 30 concurrent connections per pool "
+            "(pool_size + max_overflow), and a process builds two pools plus a "
+            "one-connection health engine. Reduce both values on small Postgres "
             "instances or when running many workers."
         ),
     )
     max_overflow: int = Field(
-        40,
+        20,
         description=(
             "Maximum overflow connections beyond pool_size for each worker. "
             "Total peak connections per worker is pool_size + max_overflow."
         ),
     )
-    pool_timeout: int = Field(30, description="Pool timeout in seconds")
+    pool_timeout: int = Field(
+        5,
+        description=(
+            "Seconds a request waits for a pooled connection before failing "
+            "with 503. Short on purpose: a saturated pool should shed load "
+            "rather than hold requests open."
+        ),
+    )
     pool_recycle: int = Field(1800, description="Pool recycle time in seconds")
 
 
@@ -684,9 +692,10 @@ class Settings(BaseSettings):
         # Create database settings
         database = DatabaseSettings(
             url=database_url,
-            pool_size=int(os.getenv("DATABASE_POOL_SIZE", "20")),
-            max_overflow=int(os.getenv("DATABASE_MAX_OVERFLOW", "40")),
-            pool_timeout=int(os.getenv("DATABASE_POOL_TIMEOUT", "30")),
+            # Keep in sync with models/db/session.py, the actual consumer.
+            pool_size=int(os.getenv("DATABASE_POOL_SIZE", "10")),
+            max_overflow=int(os.getenv("DATABASE_MAX_OVERFLOW", "20")),
+            pool_timeout=int(os.getenv("DATABASE_POOL_TIMEOUT", "5")),
             pool_recycle=int(os.getenv("DATABASE_POOL_RECYCLE", "1800")),
         )
 

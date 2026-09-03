@@ -32,6 +32,38 @@ from preloop.schemas.gateway_usage import (
 )
 from preloop.services.tool_usage_stats import ToolUsageStatsService
 
+#: Window every usage report falls back to when the caller names no dates.
+DEFAULT_USAGE_WINDOW_DAYS = 30
+
+
+def normalize_usage_period(
+    start_date: Optional[datetime], end_date: Optional[datetime]
+) -> tuple[datetime, datetime]:
+    """Return the reporting window, defaulting to the last 30 days in UTC.
+
+    Shared so every usage answer for the same page covers the same period:
+    the batch overview and the per-model detail summary must not disagree
+    about what "this window" means.
+
+    Args:
+        start_date: Requested lower bound, naive values read as UTC.
+        end_date: Requested upper bound, naive values read as UTC.
+
+    Returns:
+        Timezone-aware ``(start_date, end_date)``.
+    """
+    if end_date is None:
+        end_date = datetime.now(timezone.utc)
+    elif end_date.tzinfo is None:
+        end_date = end_date.replace(tzinfo=timezone.utc)
+
+    if start_date is None:
+        start_date = end_date - timedelta(days=DEFAULT_USAGE_WINDOW_DAYS)
+    elif start_date.tzinfo is None:
+        start_date = start_date.replace(tzinfo=timezone.utc)
+
+    return start_date, end_date
+
 
 class ModelGatewayUsageService:
     """Build product-facing summaries from gateway usage facts."""
@@ -434,17 +466,7 @@ class ModelGatewayUsageService:
     def _normalize_period(
         start_date: Optional[datetime], end_date: Optional[datetime]
     ) -> tuple[datetime, datetime]:
-        if end_date is None:
-            end_date = datetime.now(timezone.utc)
-        elif end_date.tzinfo is None:
-            end_date = end_date.replace(tzinfo=timezone.utc)
-
-        if start_date is None:
-            start_date = end_date - timedelta(days=30)
-        elif start_date.tzinfo is None:
-            start_date = start_date.replace(tzinfo=timezone.utc)
-
-        return start_date, end_date
+        return normalize_usage_period(start_date, end_date)
 
     @staticmethod
     def _normalize_budget_config(config):

@@ -106,3 +106,130 @@ def test_resolver_returns_none_without_override(db_session, test_user):
         )
         is None
     )
+
+
+def test_bulk_resolver_agrees_with_the_per_model_resolver(db_session, test_user):
+    """The batch path must price a fleet exactly as the single path does.
+
+    The Models page resolves every model's price from one query. That is only
+    safe while the in-memory matcher and the SQL lookup pick the same row, so
+    this asserts they agree across the cases that differ: a model-specific
+    override, an account-wide wildcard, an expired window, and no override at
+    all.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from preloop.services.pricing_overrides import (
+        resolve_active_override_row,
+        resolve_pricing_overrides_bulk,
+    )
+
+    specific = _create_model(db_session, test_user, alias="openai/specific")
+    wildcard = _create_model(db_session, test_user, alias="openai/wildcard")
+    expired = _create_model(db_session, test_user, alias="openai/expired")
+    unpriced = _create_model(db_session, test_user, alias="openai/unpriced")
+
+    crud_model_price_override.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={
+            "model_alias": "openai/specific",
+            "ai_model_id": specific.id,
+            "input_price_per_1k": 1.0,
+        },
+    )
+    crud_model_price_override.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={"model_alias": "openai/specific", "input_price_per_1k": 2.0},
+    )
+    crud_model_price_override.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={"model_alias": "openai/wildcard", "input_price_per_1k": 3.0},
+    )
+    crud_model_price_override.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={
+            "model_alias": "openai/expired",
+            "input_price_per_1k": 4.0,
+            "effective_until": datetime.now(timezone.utc) - timedelta(days=1),
+        },
+    )
+    db_session.flush()
+
+    models = [specific, wildcard, expired, unpriced]
+    bulk = resolve_pricing_overrides_bulk(
+        db_session, account_id=test_user.account_id, ai_models=models
+    )
+
+    for ai_model in models:
+        single = resolve_active_override_row(
+            db_session, account_id=test_user.account_id, ai_model=ai_model
+        )
+        batched = bulk.get(str(ai_model.id))
+        assert (single is None) == (batched is None), ai_model.name
+        if single is not None and batched is not None:
+            assert str(single.id) == str(batched.id), ai_model.name
+
+    # And the values themselves: model-specific beats the account wildcard.
+    assert bulk[str(specific.id)].input_price_per_1k == 1.0
+    assert bulk[str(wildcard.id)].input_price_per_1k == 3.0
+    assert str(expired.id) not in bulk
+    assert str(unpriced.id) not in bulk
+
+
+def test_bulk_resolver_effective_from_and_provider_precedence(db_session, test_user):
+    """Bulk path matches CRUD on effective_from ordering and provider filters."""
+    from datetime import datetime, timedelta, timezone
+
+    from preloop.services.pricing_overrides import (
+        resolve_active_override_row,
+        resolve_pricing_overrides_bulk,
+    )
+
+    ai_model = _create_model(db_session, test_user, alias="openai/ranked")
+    older = datetime.now(timezone.utc) - timedelta(days=30)
+    newer = datetime.now(timezone.utc) - timedelta(days=1)
+
+    crud_model_price_override.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={
+            "model_alias": "openai/ranked",
+            "input_price_per_1k": 1.0,
+            "effective_from": older,
+        },
+    )
+    winner = crud_model_price_override.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={
+            "model_alias": "openai/ranked",
+            "input_price_per_1k": 2.0,
+            "effective_from": newer,
+        },
+    )
+    crud_model_price_override.create_for_account(
+        db_session,
+        account_id=test_user.account_id,
+        obj_in={
+            "model_alias": "openai/ranked",
+            "input_price_per_1k": 9.0,
+            "provider_name": "anthropic",
+        },
+    )
+    db_session.flush()
+
+    bulk = resolve_pricing_overrides_bulk(
+        db_session, account_id=test_user.account_id, ai_models=[ai_model]
+    )
+    single = resolve_active_override_row(
+        db_session, account_id=test_user.account_id, ai_model=ai_model
+    )
+
+    assert single is not None
+    assert bulk[str(ai_model.id)].id == winner.id
+    assert str(single.id) == str(bulk[str(ai_model.id)].id)
+    assert bulk[str(ai_model.id)].input_price_per_1k == 2.0

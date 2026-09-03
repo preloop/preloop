@@ -7,7 +7,6 @@ of issue tracking systems.
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -22,6 +21,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, RedirectResponse
 from pyinstrument import Profiler
 from pyinstrument.renderers import SpeedscopeRenderer
+from sqlalchemy.exc import TimeoutError as SQLAlchemyPoolTimeout
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from preloop import __version__
@@ -70,18 +70,17 @@ from preloop.api.endpoints import (
 from preloop.services.mcp_http import setup_mcp_routes
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.models.sentry import init_sentry
-from preloop.models.db.session import get_db_session, get_session_factory
+from preloop.models.db.session import get_db_session
 from preloop.models.db.setup import setup_database
-from preloop.models.models.api_usage import ApiUsage
+from preloop.services.api_usage_recorder import (
+    ApiUsageRecord,
+    record_api_usage,
+    shutdown_api_usage_recorder,
+)
 from preloop.sync.services.event_bus import connect_nats, close_nats  # NATS integration
 
 
 logger = logging.getLogger(__name__)
-
-_api_usage_executor = ThreadPoolExecutor(
-    max_workers=4,
-    thread_name_prefix="api_usage_",
-)
 
 
 class PyinstrumentMiddleware(BaseHTTPMiddleware):
@@ -205,31 +204,21 @@ class ApiUsageMiddleware(BaseHTTPMiddleware):
                 # Ignore errors in token decoding
                 pass
 
-        # Log usage in database on a shared executor to avoid pool starvation
+        # Usage rows go to a bounded background queue that drops (and counts)
+        # rather than queueing behind a slow or saturated database. Telemetry
+        # about requests must never be able to hurt the requests themselves.
         if user_id and status_code < 500:  # Only log successful API calls
-
-            def log_usage_sync() -> None:
-                session_factory = get_session_factory()
-                session = session_factory()
-                try:
-                    usage_entry = ApiUsage(
-                        user_id=user_id,
-                        endpoint=path,
-                        method=method,
-                        status_code=status_code,
-                        duration=duration,
-                        action_type=action_type,
-                        timestamp=start_time,
-                    )
-                    session.add(usage_entry)
-                    session.commit()
-                except Exception as e:
-                    session.rollback()
-                    logger.error(f"Error logging API usage: {str(e)}")
-                finally:
-                    session.close()
-
-            _api_usage_executor.submit(log_usage_sync)
+            record_api_usage(
+                ApiUsageRecord(
+                    user_id=user_id,
+                    endpoint=path,
+                    method=method,
+                    status_code=status_code,
+                    duration=duration,
+                    action_type=action_type,
+                    timestamp=start_time,
+                )
+            )
 
         return response
 
@@ -608,7 +597,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Skipping NATS shutdown for %s role.", service_role)
 
     logger.info("Shutting down application...")
-    logger.info("Shutting down API usage executor...")
+    logger.info("Shutting down API usage recorder...")
     try:
         from preloop.services.otel_export import shutdown_otel
 
@@ -616,7 +605,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         logger.debug("OTLP shutdown failed", exc_info=True)
 
-    _api_usage_executor.shutdown(wait=False, cancel_futures=True)
+    shutdown_api_usage_recorder()
     # Restore the original jsonable_encoder
     import fastapi.encoders
 
@@ -665,6 +654,30 @@ def create_app() -> FastAPI:
             status_code=exc.status_code,
             content=exc.to_payload(),
             headers=exc.response_headers(),
+        )
+
+    @app.exception_handler(SQLAlchemyPoolTimeout)
+    async def pool_timeout_exception_handler(
+        request: Request, exc: SQLAlchemyPoolTimeout
+    ) -> JSONResponse:
+        """Turn a connection-pool timeout into a fast, honest 503.
+
+        A saturated pool is a capacity problem, not a server bug. Reporting it
+        as 503 with ``Retry-After`` lets clients and load balancers back off,
+        and keeps it out of the 500 rate that pages someone.
+        """
+        logger.warning(
+            "Database pool exhausted serving %s %s: %s",
+            request.method,
+            request.url.path,
+            exc,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": ("Database connections are saturated. Please retry shortly.")
+            },
+            headers={"Retry-After": "1"},
         )
 
     @app.exception_handler(Exception)

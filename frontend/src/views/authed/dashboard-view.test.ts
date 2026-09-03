@@ -25,6 +25,7 @@ describe('DashboardView', () => {
   let pendingApprovalRequestsResponse: any[];
   let allApprovalRequestsResponse: any[];
   let aiModelsResponse: any[];
+  let aiModelsOverviewResponse: any;
   let usersResponse: any;
   let budgetPoliciesResponse: any[];
   /** Set by a test that wants to hold the secondary pass open. */
@@ -327,6 +328,33 @@ describe('DashboardView', () => {
         model_identifier: 'gpt-5.4',
       },
     ];
+    aiModelsOverviewResponse = {
+      period_start: '2026-03-01T00:00:00Z',
+      period_end: '2026-03-31T00:00:00Z',
+      models: [
+        {
+          ai_model_id: 'model-1',
+          model_name: 'OpenAI GPT-5.4',
+          provider_name: 'openai',
+          model_identifier: 'gpt-5.4',
+          model_alias: 'gpt-5.4',
+          is_default: true,
+          total_requests: 10,
+          successful_requests: 9,
+          failed_requests: 1,
+          token_usage: {
+            prompt_tokens: 700,
+            completion_tokens: 300,
+            total_tokens: 1000,
+          },
+          estimated_cost: 5.5,
+          unpriced_request_count: 0,
+          active_session_count: 1,
+          last_request_at: '2026-03-09T18:30:00Z',
+          pricing_source: 'catalog',
+        },
+      ],
+    };
     usersResponse = {
       users: [{ id: 'user-1', is_active: true }],
       total: 1,
@@ -466,6 +494,10 @@ describe('DashboardView', () => {
               ? pendingApprovalRequestsResponse
               : allApprovalRequestsResponse
           );
+        }
+
+        if (url.startsWith('/api/v1/ai-models/overview')) {
+          return json(aiModelsOverviewResponse);
         }
 
         if (url === '/api/v1/ai-models') {
@@ -1345,6 +1377,13 @@ describe('DashboardView', () => {
       const models = element['inventoryModelRows'];
       expect(models[0].alias).to.equal('OpenAI GPT-5.4');
       expect(models[0].provider).to.equal('openai');
+      // Numbers come from the one batch overview call, joined on the model
+      // id, so a model whose gateway alias differs from its name is no
+      // longer reported as idle beside a phantom row for the alias.
+      expect(models[0].requests).to.equal(10);
+      expect(models[0].tokens).to.equal(1000);
+      expect(models[0].cost).to.equal(5.5);
+      expect(models.length).to.equal(1);
 
       const tools = element['inventoryToolRows'].map(
         (row: { name: string; server: string }) => `${row.name} (${row.server})`

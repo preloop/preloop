@@ -3,6 +3,10 @@ import { customElement, state } from 'lit/decorators.js';
 import { listIssueDuplicates, checkAIVerdict } from '../api';
 import type { DuplicatePair } from '../types';
 import { AIModelVerdict, renderVerdict } from '../utils/verdict';
+import {
+  DEFAULT_FETCH_CONCURRENCY,
+  mapWithConcurrency,
+} from '../utils/concurrency';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -117,24 +121,29 @@ export class SimilarIssuesWidget extends LitElement {
     }
     this._aiVerdicts = initialVerdicts;
 
-    // 2. Create an array of promises for all the API calls.
-    const verdictPromises = pairsToFetch.map((pair) =>
-      checkAIVerdict(pair.issue1.id, pair.issue2.id).catch((error) => {
-        console.error(
-          `[similar-issues-widget] fetchAIModelVerdicts: API call failed for pair ${pair.issue1.id}-${pair.issue2.id}`,
-          error
-        );
-        // Return a specific error object so Promise.all doesn't fail completely
-        return { error: true, pairKey: `${pair.issue1.id}-${pair.issue2.id}` };
-      })
-    );
-
-    if (verdictPromises.length === 0) {
+    if (pairsToFetch.length === 0) {
       return;
     }
 
-    // 3. Wait for all promises to settle.
-    const results = await Promise.all(verdictPromises);
+    // 2. Ask for the verdicts a few at a time. Each one is a model call the
+    // API pays for with a pooled connection, so a long suggestion list must
+    // not arrive as one burst.
+    const results = await mapWithConcurrency(
+      pairsToFetch,
+      DEFAULT_FETCH_CONCURRENCY,
+      (pair) =>
+        checkAIVerdict(pair.issue1.id, pair.issue2.id).catch((error) => {
+          console.error(
+            `[similar-issues-widget] fetchAIModelVerdicts: API call failed for pair ${pair.issue1.id}-${pair.issue2.id}`,
+            error
+          );
+          // Return a specific error object so one failure does not lose the rest
+          return {
+            error: true,
+            pairKey: `${pair.issue1.id}-${pair.issue2.id}`,
+          };
+        })
+    );
 
     // 4. Process the results and update the state a final time.
     const finalVerdicts = { ...this._aiVerdicts };

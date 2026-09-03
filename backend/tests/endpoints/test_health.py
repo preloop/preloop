@@ -213,3 +213,72 @@ class TestPingLiveness:
 
         assert not engine.called
         assert result["status"] == "pong"
+
+
+class TestReadinessPoolReporting:
+    """Readiness must show pool saturation without failing on it."""
+
+    @patch("preloop.services.mcp_client_pool.get_mcp_client_pool")
+    @patch("preloop.services.mcp_http.get_mcp_lifespan_manager")
+    def test_saturated_pool_is_reported_but_still_ready(
+        self, mock_get_mcp_lifespan, mock_get_client_pool, mock_db_session
+    ):
+        """A full pool is visible in the payload and does not fail readiness.
+
+        Failing readiness on saturation would remove pods from the load
+        balancer and concentrate the same traffic on fewer pods, which is the
+        amplification loop the 2026-09-03 incident already demonstrated.
+        """
+        from preloop.api.endpoints.health import health_check
+
+        mock_db_session.execute.return_value = None
+        mock_get_mcp_lifespan.return_value = MagicMock()
+        mock_pool = MagicMock()
+        mock_pool.get_active_servers.return_value = []
+        mock_get_client_pool.return_value = mock_pool
+
+        saturated = [
+            {
+                "engine": "sync",
+                "size": 8,
+                "checked_out": 20,
+                "checked_in": 0,
+                "overflow_in_use": 12,
+                "ceiling": 20,
+                "status": "Pool size: 8 Connections in pool: 0 ...",
+            }
+        ]
+        with patch(
+            "preloop.services.db_pool_monitor.collect_pool_stats",
+            return_value=saturated,
+        ):
+            result = health_check()
+
+        assert result["status"] == "healthy"
+        assert result["db_pool"]["saturated"] is True
+        assert result["db_pool"]["engines"][0]["checked_out"] == 20
+        assert result["db_pool"]["engines"][0]["ceiling"] == 20
+
+    @patch("preloop.services.mcp_client_pool.get_mcp_client_pool")
+    @patch("preloop.services.mcp_http.get_mcp_lifespan_manager")
+    def test_usage_queue_counters_are_reported(
+        self, mock_get_mcp_lifespan, mock_get_client_pool, mock_db_session
+    ):
+        """Dropped usage rows are visible to operators on the readiness path."""
+        from preloop.api.endpoints.health import health_check
+
+        mock_db_session.execute.return_value = None
+        mock_get_mcp_lifespan.return_value = MagicMock()
+        mock_pool = MagicMock()
+        mock_pool.get_active_servers.return_value = []
+        mock_get_client_pool.return_value = mock_pool
+
+        result = health_check()
+
+        assert set(result["api_usage_queue"]) >= {
+            "queued",
+            "capacity",
+            "written",
+            "dropped",
+            "failed",
+        }

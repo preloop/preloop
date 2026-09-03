@@ -74,13 +74,13 @@ export interface InventoryModelRow {
 /*
  * Why the Models tab has no "failed" column.
  *
- * The spec asked for one. Nothing the console can call counts failures per
- * model: the usage summary groups by model but carries no outcome, and the
- * interaction search has no outcome filter and stops at 100 rows, so on an
- * account doing 14K calls a month the column would print a sample of one
- * page as if it were the month. A zero that is not a zero is worse than an
- * absent column, so the failures story stays where it is true: the Gateway
- * card's "58 failed" and the failures card under it.
+ * The spec asked for one. When this card was written nothing the console
+ * could call counted failures per model, so the column would have printed a
+ * sample of one page as if it were the month. The batch models overview does
+ * count them now, but this card is the spend inventory: five columns of
+ * counts, sorted by requests or cost. Failures are told where they are the
+ * subject, per model on the Models page and per account on the Gateway card
+ * and the failures card under it.
  */
 
 /**

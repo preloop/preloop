@@ -16,6 +16,7 @@ from preloop.config import (
 )  # Import constants directly
 from preloop.models.crud import crud_audit_log
 from preloop.api.auth import get_current_active_user, get_current_user
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.models import User
 from preloop.schemas.version import ClientVersionInfo, VersionInfo, VersionStatus
 from preloop.services.instance_service import (
@@ -114,52 +115,61 @@ async def get_version_info(
     the associated account ID will also be logged.
     """
     client_ip = get_client_ip(request)
-    account_id: Optional[int] = None
-    current_user = None
-    # Explicitly check header for optional authentication
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.replace("Bearer ", "")
+
+    def _authenticate_and_log() -> None:
+        """Do the blocking part (optional auth plus the check-in rows)."""
+        account_id: Optional[int] = None
+        current_user = None
+        # Explicitly check header for optional authentication
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.replace("Bearer ", "")
+            try:
+                # Manually attempt to get user if token exists
+                current_user = get_current_user(token=token, db=db)
+                account_id = current_user.account_id
+            except HTTPException:
+                # Ignore auth errors (invalid token, inactive user, etc.)
+                logger.debug(
+                    "Optional authentication failed for /version endpoint (token provided but invalid/inactive)."
+                )
+            except Exception as e:
+                # Log unexpected errors but don't fail the request
+                logger.error(
+                    f"Unexpected error during optional auth in /version: {e}",
+                    exc_info=True,
+                )
+
+        # Log the client version information
+        log_entry = ClientVersionLog(
+            ip_address=client_ip,
+            client_version=x_client_version if x_client_version else "unknown",
+            account_id=account_id,
+            organization_identifier=x_client_organization,
+            project_identifier=x_client_project,
+        )
+        db.add(log_entry)
         try:
-            # Manually attempt to get user if token exists
-            current_user = get_current_user(token=token, db=db)
-            account_id = current_user.account_id
-        except HTTPException:
-            # Ignore auth errors (invalid token, inactive user, etc.)
-            logger.debug(
-                "Optional authentication failed for /version endpoint (token provided but invalid/inactive)."
+            db.commit()  # Remove await for synchronous commit
+            logger.info(
+                f"Logged client version: IP={client_ip}, Version={x_client_version}, Org={x_client_organization}, Proj={x_client_project}, AccountID={account_id}, AdditionalInfo={x_additional_info}"
             )
         except Exception as e:
-            # Log unexpected errors but don't fail the request
-            logger.error(
-                f"Unexpected error during optional auth in /version: {e}", exc_info=True
-            )
+            db.rollback()  # Remove await for synchronous rollback
+            logger.error(f"Failed to log client version: {e}", exc_info=True)
+            # Continue even if logging fails, returning version info is primary
 
-    # Log the client version information
-    log_entry = ClientVersionLog(
-        ip_address=client_ip,
-        client_version=x_client_version if x_client_version else "unknown",
-        account_id=account_id,
-        organization_identifier=x_client_organization,
-        project_identifier=x_client_project,
-    )
-    db.add(log_entry)
-    try:
-        db.commit()  # Remove await for synchronous commit
-        logger.info(
-            f"Logged client version: IP={client_ip}, Version={x_client_version}, Org={x_client_organization}, Proj={x_client_project}, AccountID={account_id}, AdditionalInfo={x_additional_info}"
+        # Best-effort audit; uses its own session (sync, matching other audit
+        # paths).
+        _log_cli_activity(
+            request=request,
+            client_ip=client_ip,
+            client_version_header=x_client_version,
         )
-    except Exception as e:
-        db.rollback()  # Remove await for synchronous rollback
-        logger.error(f"Failed to log client version: {e}", exc_info=True)
-        # Continue even if logging fails, returning version info is primary goal
 
-    # Best-effort audit; uses its own session (sync, matching other audit paths).
-    _log_cli_activity(
-        request=request,
-        client_ip=client_ip,
-        client_version_header=x_client_version,
-    )
+    # Every CLI and console start-up hits this route, and it writes on read, so
+    # it must never queue for a connection on the event loop.
+    await run_db_off_loop(_authenticate_and_log)
 
     update_status = get_local_update_status()
 

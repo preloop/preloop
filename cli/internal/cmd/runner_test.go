@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -720,6 +722,9 @@ func TestStopForegroundOnInterruptKillsJobAndUnregisters(t *testing.T) {
 
 func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 	testenv.SetTempHome(t)
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("needs sh to start a job the test can observe without racing exec.Cmd")
+	}
 	oldMin, oldMax := runnerReconnectMin, runnerReconnectMax
 	runnerReconnectMin = 2 * time.Second
 	runnerReconnectMax = 2 * time.Second
@@ -727,17 +732,43 @@ func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 		runnerReconnectMin, runnerReconnectMax = oldMin, oldMax
 	})
 	oldDocker, oldCmd := runnerHasDocker, newRunnerJobCmd
-	var jobCmd *exec.Cmd
+	pidPath := filepath.Join(t.TempDir(), "job.pid")
 	runnerHasDocker = func() bool { return true }
 	newRunnerJobCmd = func(image string, env map[string]string) *exec.Cmd {
-		jobCmd = exec.Command("sleep", "30")
-		return jobCmd
+		// Pid file instead of sharing *exec.Cmd: the runner calls Start/Wait
+		// on that Cmd, and -race flags unsynchronized reads of Process /
+		// ProcessState from the test goroutine (GitLab test:unit:cli).
+		quoted := strconv.Quote(pidPath)
+		return exec.Command("sh", "-c", "echo $$ >"+quoted+"; exec sleep 30")
+	}
+	readJobPID := func() int {
+		raw, err := os.ReadFile(pidPath)
+		if err != nil {
+			return 0
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil {
+			return 0
+		}
+		return pid
+	}
+	jobAlive := func(pid int) bool {
+		if pid <= 0 {
+			return false
+		}
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			return false
+		}
+		return proc.Signal(syscall.Signal(0)) == nil
 	}
 	t.Cleanup(func() {
 		runnerHasDocker, newRunnerJobCmd = oldDocker, oldCmd
-		if jobCmd != nil && jobCmd.Process != nil && jobCmd.ProcessState == nil {
-			_ = jobCmd.Process.Kill()
-			_, _ = jobCmd.Process.Wait()
+		if pid := readJobPID(); jobAlive(pid) {
+			proc, err := os.FindProcess(pid)
+			if err == nil {
+				_ = proc.Kill()
+			}
 		}
 	})
 
@@ -808,14 +839,16 @@ func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 		done <- runnerForegroundLoop(state, interrupt, io.Discard)
 	}()
 
+	var jobPID int
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if jobCmd != nil && jobCmd.Process != nil {
+		jobPID = readJobPID()
+		if jobAlive(jobPID) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if jobCmd == nil || jobCmd.Process == nil {
+	if !jobAlive(jobPID) {
 		interrupt <- os.Interrupt
 		t.Fatal("leased job did not start")
 	}
@@ -839,7 +872,7 @@ func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 	}
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if unregistered.Load() && jobCmd.ProcessState != nil {
+		if unregistered.Load() && !jobAlive(jobPID) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -847,7 +880,7 @@ func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 	if !unregistered.Load() {
 		t.Fatal("interrupt during backoff must unregister")
 	}
-	if jobCmd.ProcessState == nil {
+	if jobAlive(jobPID) {
 		t.Fatal("interrupt during backoff must kill the in-flight job")
 	}
 }

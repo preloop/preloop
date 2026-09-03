@@ -18,6 +18,7 @@ import {
   AuthedElement,
   fetchWithAuth,
   getAIModels,
+  getAIModelsOverview,
   getAccountAgents,
   getAccountGatewayUsageSearch,
   getAccountGatewayUsageSummary,
@@ -57,7 +58,7 @@ import { unifiedWebSocketManager } from '../../services/unified-websocket-manage
 import type {
   AccountGatewayUsageSummaryResponse,
   AccountRateLimitReportResponse,
-  GatewayUsageByModel,
+  AIModelOverviewItem,
   GatewayUsageBySession,
   GatewayUsageByTool,
   GatewayUsageSearchResultItem,
@@ -311,6 +312,14 @@ export class DashboardView extends AuthedElement {
   @state() private gatewayFormat: GatewayFormat = '/openai/v1';
 
   @state() private aiModels: AIModel[] = [];
+  /**
+   * Per-model usage for the Inventory Models tab, from the batch overview.
+   *
+   * One request for every model on the tab. Joining on the model id also
+   * removes the alias guessing the tab used to do against the account usage
+   * breakdown, which mislabelled any model renamed at the gateway.
+   */
+  @state() private aiModelOverview: AIModelOverviewItem[] = [];
   @state() private isInviteDialogOpen = false;
   @state() private computeFeatureEnabled = false;
   @state() private isEnterprise = false;
@@ -1373,6 +1382,7 @@ export class DashboardView extends AuthedElement {
       // the Inventory Models tab would otherwise sit on "No models yet · Add
       // a model" for the length of that pass on every reload.
       this.aiModels = data.aiModels || [];
+      this.aiModelOverview = data.aiModelOverview || [];
       this.flowExecutions = data.flowExecutions || [];
       this.flows = data.flows || [];
       this.flowExecutionsCount = data.flowExecutionsCount || 0;
@@ -1417,6 +1427,7 @@ export class DashboardView extends AuthedElement {
         mcpServers: this.mcpServers,
         tools: this.tools,
         aiModels: this.aiModels,
+        aiModelOverview: this.aiModelOverview,
         flowExecutions: this.flowExecutions,
         flows: this.flows,
         flowExecutionsCount: this.flowExecutionsCount,
@@ -2026,13 +2037,25 @@ export class DashboardView extends AuthedElement {
   private async refreshUsageBreakdown(gatewayStartDate: string) {
     this.fetchingUsageBreakdown = true;
     try {
-      const detailed = await this.catchWith403Handling(
-        getAccountGatewayUsageSummary({
-          startDate: gatewayStartDate,
-          includeBreakdown: true,
-        }),
-        null
-      );
+      // Both in the deferred pass, so the fold is unaffected: the breakdown
+      // feeds the top-models card, the overview feeds the Inventory Models
+      // tab in one request rather than one per model.
+      const [detailed, overview] = await Promise.all([
+        this.catchWith403Handling(
+          getAccountGatewayUsageSummary({
+            startDate: gatewayStartDate,
+            includeBreakdown: true,
+          }),
+          null
+        ),
+        this.catchWith403Handling(
+          getAIModelsOverview({ startDate: gatewayStartDate }),
+          null
+        ),
+      ]);
+      if (overview?.models) {
+        this.aiModelOverview = overview.models;
+      }
       if (!detailed) {
         return;
       }
@@ -3108,30 +3131,40 @@ export class DashboardView extends AuthedElement {
     });
   }
 
+  /**
+   * One row per configured model, plus the aliases the gateway still serves.
+   *
+   * Configured models come from the batch overview, which joins usage on the
+   * model id. The account breakdown is only consulted for aliases that no
+   * longer map to a configured model, so a model renamed at the gateway no
+   * longer reads as zero traffic next to a phantom row for its old name.
+   */
   private get inventoryModelRows(): InventoryModelRow[] {
-    const usage = new Map<string, GatewayUsageByModel>();
-    for (const model of this.gatewaySummary?.usage_by_model || []) {
-      const alias = model.model_alias || model.ai_model_id;
-      if (alias) {
-        usage.set(alias, model);
-      }
-    }
+    const overview = new Map(
+      this.aiModelOverview.map((item) => [item.ai_model_id, item])
+    );
+    const knownModelIds = new Set(this.aiModels.map((model) => model.id));
 
     const rows: InventoryModelRow[] = this.aiModels.map((model) => {
-      const used = usage.get(model.name);
-      usage.delete(model.name);
+      const used = overview.get(model.id);
       return {
         id: model.id,
         alias: model.name,
         provider: model.provider_name || 'Unknown',
-        requests: used?.request_count ?? 0,
+        requests: used?.total_requests ?? 0,
         tokens: used?.token_usage?.total_tokens ?? 0,
         cost: used?.estimated_cost ?? 0,
       };
     });
 
     // Aliases the gateway served that are no longer in the models list.
-    for (const [alias, model] of usage) {
+    const seenAliases = new Set<string>();
+    for (const model of this.gatewaySummary?.usage_by_model || []) {
+      const alias = model.model_alias || model.ai_model_id;
+      if (!alias || seenAliases.has(alias)) continue;
+      if (model.ai_model_id && knownModelIds.has(model.ai_model_id)) continue;
+      if (this.aiModels.some((known) => known.name === alias)) continue;
+      seenAliases.add(alias);
       rows.push({
         id: model.ai_model_id,
         alias,

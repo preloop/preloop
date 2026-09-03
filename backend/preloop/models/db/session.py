@@ -46,12 +46,24 @@ def _env_int(name: str, default: int) -> int:
 def _database_pool_kwargs() -> dict:
     """Return shared SQLAlchemy pool settings for sync and async engines."""
     return {
-        "pool_size": _env_int("DATABASE_POOL_SIZE", 20),
-        "max_overflow": _env_int("DATABASE_MAX_OVERFLOW", 40),
+        # Defaults sized for one process against a stock Postgres
+        # (max_connections=100): each process builds a sync engine, an async
+        # engine and a one-connection health engine, so the ceiling is
+        # (pool_size + max_overflow) * 2 + 1 = 61. The previous 20 + 40
+        # defaults asked for 121 from a database that allows 100, and did not
+        # match the deployed helm values either (see helm/preloop/values.yaml
+        # database.pool).
+        "pool_size": _env_int("DATABASE_POOL_SIZE", 10),
+        "max_overflow": _env_int("DATABASE_MAX_OVERFLOW", 20),
         "pool_pre_ping": True,
         # Keep pooled connections younger than typical proxy/LB idle timeouts.
         "pool_recycle": _env_int("DATABASE_POOL_RECYCLE", 1800),
-        "pool_timeout": _env_int("DATABASE_POOL_TIMEOUT", 30),
+        # Fail fast. A request that cannot get a connection in a few seconds
+        # is not going to produce a useful response anyway, and the old 30s
+        # wait meant a saturated pool held requests (and, before the
+        # loop-safety work, the event loop) far longer than any client was
+        # still waiting. Callers see a 503 with Retry-After instead.
+        "pool_timeout": _env_int("DATABASE_POOL_TIMEOUT", 5),
         # Prefer recently used connections so older idle connections are recycled
         # instead of being kept alive indefinitely in FIFO order.
         "pool_use_lifo": True,
