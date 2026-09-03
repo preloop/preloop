@@ -659,8 +659,12 @@ class OpenAIGatewayService:
         # retried after a transient provider failure. Accumulated by
         # _run_with_upstream_retries (a request can run more than one
         # upstream operation: the completion handshake and the stream open),
-        # consumed and cleared by _record_gateway_request so the number
-        # cannot leak onto the next request served by this instance.
+        # consumed and cleared by _record_gateway_request. A request can also
+        # end WITHOUT reaching that recording (a terminal upstream error
+        # propagating out before the usage row is written), so every request
+        # entry point re-arms it through _begin_request_accounting: a stale
+        # count can then never be misattributed to a later request served by
+        # this instance.
         self._last_upstream_retry_count: int = 0
         # Per-request memo of the authorized model-id set for this principal.
         # Computed once from the account inventory on first use so listing,
@@ -675,6 +679,18 @@ class OpenAIGatewayService:
         # (``GatewayStreamingResponse.on_complete``). None when the generator
         # is still mid-stream or recording already ran.
         self._deferred_stream_record: Optional[Callable[[], None]] = None
+
+    def _begin_request_accounting(self) -> None:
+        """Re-arm per-request counters at the start of a gateway request.
+
+        The upstream retry count is consumed and cleared when the usage row is
+        written, but not every request gets that far: a terminal upstream
+        failure can propagate out of the handler before
+        ``_record_gateway_request`` runs. Clearing here makes the count
+        request-scoped no matter how the previous request ended, so a rescued
+        request can never lend its ``retried: n`` to the next one.
+        """
+        self._last_upstream_retry_count = 0
 
     def _adopt_native_session_id(self, payload: Optional[Dict[str, Any]]) -> None:
         """Adopt the agent's own session id from an Anthropic request payload.
@@ -997,6 +1013,7 @@ class OpenAIGatewayService:
 
     def create_chat_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Handle OpenAI-compatible chat completions."""
+        self._begin_request_accounting()
         self._adopt_openai_native_session_id(payload)
         if payload.get("stream"):
             raise ModelGatewayAPIError(
@@ -1143,6 +1160,7 @@ class OpenAIGatewayService:
 
     def create_response(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Handle OpenAI Responses API-compatible requests."""
+        self._begin_request_accounting()
         self._adopt_openai_native_session_id(payload)
         if payload.get("stream"):
             raise ModelGatewayAPIError(
@@ -1257,6 +1275,7 @@ class OpenAIGatewayService:
         anthropic_beta: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Handle Anthropic Messages API-compatible requests."""
+        self._begin_request_accounting()
         self._adopt_native_session_id(payload)
         if payload.get("stream"):
             raise ModelGatewayAPIError(
@@ -1419,6 +1438,7 @@ class OpenAIGatewayService:
         anthropic_beta: Optional[str] = None,
     ) -> Iterator[str]:
         """Handle streaming Anthropic Messages API-compatible requests."""
+        self._begin_request_accounting()
         self._adopt_native_session_id(payload)
         model = self._resolve_requested_model(
             payload.get("model"), provider="anthropic"
@@ -1858,6 +1878,7 @@ class OpenAIGatewayService:
 
     def stream_chat_completion(self, payload: Dict[str, Any]) -> Iterator[str]:
         """Handle streaming OpenAI-compatible chat completions."""
+        self._begin_request_accounting()
         self._adopt_openai_native_session_id(payload)
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
         messages = payload.get("messages")
@@ -2150,6 +2171,7 @@ class OpenAIGatewayService:
 
     def stream_response(self, payload: Dict[str, Any]) -> Iterator[str]:
         """Handle streaming OpenAI Responses API-compatible requests."""
+        self._begin_request_accounting()
         self._adopt_openai_native_session_id(payload)
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
         messages = self._normalize_responses_input(payload)
