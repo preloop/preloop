@@ -2,7 +2,7 @@
 
 This chapter covers the Flow subsystem: the Trigger Service, Flow Orchestrator, NATS queue, agent infrastructure, and data flows. Remote runners, matrix/batch fan-out, eval result artifacts, and evidence packs are included here.
 
-Flows with a `runner_pool` use `RemoteRunnerExecutor` to lease work to a matching self-hosted runner instead of starting a hosted container. Runners maintain an outbound WebSocket control plane for leases, heartbeats, status, logs, completion, and halt requests; durable lease metadata stays in PostgreSQL so temporary disconnects can recover without persisting short-lived API tokens.
+Flows with a `runner_pool` use `RemoteRunnerExecutor` to lease work to a matching self-hosted runner instead of starting a hosted container. Runners maintain an outbound WebSocket control plane for leases, heartbeats, status, logs, completion, and halt requests; durable lease metadata stays in PostgreSQL so temporary disconnects can recover without persisting short-lived API tokens. The CLI (`preloop runner fg`) redials that socket on unexpected close and keeps an in-flight Docker job, sending `complete`/`logs` after reconnect. Register/connect/disconnect also publish `runner_updated` on `account-updates.{account_id}` so the console Runners page updates without a refresh.
 
 ## Prompt placeholders
 

@@ -62,6 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`preloop runner fg` reconnects when the control-plane WebSocket drops**: close 1006 (and other transport errors) no longer exit the process. The runner redials with backoff, keeps an in-flight Docker job, resends `complete`/`logs` on the new socket, and sends WebSocket pings alongside the JSON heartbeat. Ctrl-C still unregisters. Auth/`gone` errors stay fatal.
+- **Console Runners page updates live**: register, connect, disconnect, lease, and complete publish `runner_updated` on the account websocket (`runners` topic) so status changes without a manual refresh.
+
 - **Migration job now syncs global flow presets after alembic**: the
   post-upgrade hook runs `scripts/sync_flow_presets.py --no-propagate`
   in the same container so global presets stop drifting between deploys
