@@ -186,9 +186,11 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         priority: str | None = None,
         assignee: str | None = None,
         labels: list[str] | None = None,
+        add_reaction: str | None = None,
+        remove_reaction: str | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
-        """Update an existing issue."""
+        """Update an existing issue. To add a GitHub eyes reaction on pickup, pass add_reaction=\"eyes\" with no other fields."""
         # Get user context for approval checking
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 
@@ -210,6 +212,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 "priority": priority,
                 "assignee": assignee,
                 "labels": labels,
+                "add_reaction": add_reaction,
+                "remove_reaction": remove_reaction,
             },
             ctx=ctx,
             workflow_id=_rule_workflow_id_var.get(None),
@@ -228,6 +232,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             priority=priority,
             assignee=assignee,
             labels=labels,
+            add_reaction=add_reaction,
+            remove_reaction=remove_reaction,
         )
         return result.model_dump_json()
 

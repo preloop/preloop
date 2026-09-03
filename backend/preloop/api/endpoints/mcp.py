@@ -626,6 +626,8 @@ async def update_issue(
     priority: Optional[str] = None,
     assignee: Optional[str] = None,
     labels: Optional[List[str]] = None,
+    add_reaction: Optional[str] = None,
+    remove_reaction: Optional[str] = None,
 ) -> UpdateIssueResponse:
     """
     Handles the 'update_issue' tool call.
@@ -661,7 +663,8 @@ async def update_issue(
     # Filter out None values, as tracker clients might interpret None as "clear this field"
     update_data_for_tracker = issue_update.model_dump(exclude_unset=True)
 
-    if not update_data_for_tracker:
+    has_reactions = bool(add_reaction or remove_reaction)
+    if not update_data_for_tracker and not has_reactions:
         logger.info(
             f"No fields provided to update for issue {issue_obj.id}. Skipping tracker update."
         )
@@ -680,37 +683,73 @@ async def update_issue(
                 detail="Cannot update issue in tracker: Missing external identifier.",
             )
 
-        try:
-            # Determine the correct identifier for the tracker API call
-            # Prefer using the key (e.g., "owner/repo#1" for GitHub) over external_id
-            # since external_id might be the internal tracker ID (e.g., GitHub's numeric ID)
-            issue_repo_id = issue_obj.key if issue_obj.key else issue_obj.external_id
+        issue_repo_id = issue_obj.key if issue_obj.key else issue_obj.external_id
+        issue_number = (
+            issue_obj.key.split("#")[-1]
+            if issue_obj.key and "#" in str(issue_obj.key)
+            else issue_obj.external_id
+        )
 
-            logger.info(
-                f"Calling tracker client to update issue {issue_repo_id} with data: {update_data_for_tracker}"
-            )
-            await tracker_client.update_issue(
-                issue_repo_id, IssueUpdate(**update_data_for_tracker)
-            )
-            logger.info(
-                f"Successfully updated issue {issue_obj.external_id} via tracker client."
-            )
-        except NotImplementedError:
-            logger.warning(
-                f"Tracker type {tracker_client.tracker_type} does not support updating issues."
-            )
-            # Decide if this should be an error or just a warning
-            # raise HTTPException(status_code=501, detail="Issue updates not supported by this tracker type.")
-        except Exception as e:
-            logger.error(
-                f"Error updating issue {issue_obj.external_id} via tracker client: {e}",
-                exc_info=True,
-            )
-            # Depending on requirements, you might still update the local DB or raise an error
-            raise HTTPException(
-                status_code=502,
-                detail=f"Failed to update issue in the external tracker: {str(e)}",
-            )
+        if has_reactions:
+            try:
+                platform = (tracker_client.tracker_type or "").lower()
+                if platform == "github":
+                    if add_reaction:
+                        await tracker_client.add_issue_reaction(
+                            issue_number=str(issue_number),
+                            reaction=add_reaction,
+                        )
+                    if remove_reaction:
+                        await tracker_client.remove_issue_reaction(
+                            issue_number=str(issue_number),
+                            reaction=remove_reaction,
+                        )
+                elif platform == "gitlab":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Issue reactions are not supported on GitLab. Use update_pull_request on the merge request instead.",
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Issue reactions are not supported on {platform}.",
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(
+                    f"Error updating issue reaction on {issue_obj.external_id}: {e}",
+                    exc_info=True,
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to update issue reaction: {str(e)}",
+                )
+
+        if update_data_for_tracker:
+            try:
+                logger.info(
+                    f"Calling tracker client to update issue {issue_repo_id} with data: {update_data_for_tracker}"
+                )
+                await tracker_client.update_issue(
+                    issue_repo_id, IssueUpdate(**update_data_for_tracker)
+                )
+                logger.info(
+                    f"Successfully updated issue {issue_obj.external_id} via tracker client."
+                )
+            except NotImplementedError:
+                logger.warning(
+                    f"Tracker type {tracker_client.tracker_type} does not support updating issues."
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error updating issue {issue_obj.external_id} via tracker client: {e}",
+                    exc_info=True,
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to update issue in the external tracker: {str(e)}",
+                )
 
         # --- Update Local DB ---
         # Prepare data for local DB update using the IssueUpdate model
@@ -2255,6 +2294,33 @@ async def update_pull_request(
         )
 
 
+def _record_opened_pr_on_execution(
+    db, *, url: Optional[str], source_branch: Optional[str]
+) -> None:
+    """Persist the opened PR on the in-flight execution for later resume."""
+
+    if not url:
+        return
+    try:
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+        from preloop.services.flow_pr_binding import record_opened_pr
+
+        user_context = get_current_user_context()
+        if not user_context or not user_context.flow_execution_id:
+            return
+        record_opened_pr(
+            db,
+            user_context.flow_execution_id,
+            url,
+            source_branch,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to record opened PR URL on the current flow execution",
+            exc_info=True,
+        )
+
+
 async def create_pull_request(
     project: str,
     title: str,
@@ -2364,7 +2430,7 @@ async def create_pull_request(
                 milestone=milestone,
             )
 
-            return CreatePullRequestResponse(
+            response = CreatePullRequestResponse(
                 pull_request_id=str(result["id"]),
                 number=result["number"],
                 status="created",
@@ -2374,6 +2440,10 @@ async def create_pull_request(
                 target_branch=target_branch,
                 is_draft=result.get("is_draft", False),
             )
+            _record_opened_pr_on_execution(
+                db, url=result["url"], source_branch=source_branch
+            )
+            return response
 
         else:  # GitLab
             logger.info(
@@ -2469,7 +2539,7 @@ async def create_pull_request(
             if warnings:
                 message += f". Note: {' '.join(warnings)}"
 
-            return CreatePullRequestResponse(
+            response = CreatePullRequestResponse(
                 pull_request_id=str(result["id"]),
                 number=result["iid"],
                 status="created",
@@ -2479,6 +2549,10 @@ async def create_pull_request(
                 target_branch=target_branch,
                 is_draft=result.get("work_in_progress", False),
             )
+            _record_opened_pr_on_execution(
+                db, url=result["url"], source_branch=source_branch
+            )
+            return response
 
     except HTTPException:
         raise

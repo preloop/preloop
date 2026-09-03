@@ -39,12 +39,14 @@ from preloop.services.flow_failure_category import (
     derive_failure_category,
 )
 from preloop.config import settings
+from preloop.services.flow_pr_binding import merge_result_preserving_pr_binding
 from preloop.services.prompt_resolvers import (
     resolver_registry,
     ResolverContext,
     TriggerEventResolver,
     ProjectResolver,
     AccountResolver,
+    ExecutionResolver,
 )
 from preloop.services.flow_execution_logger import FlowExecutionLogger
 from preloop.services.flow_runtime_token import create_flow_runtime_token
@@ -1052,6 +1054,8 @@ class FlowExecutionOrchestrator:
             resolver_registry.register(ProjectResolver())
         if not resolver_registry.get("account"):
             resolver_registry.register(AccountResolver())
+        if not resolver_registry.get("execution"):
+            resolver_registry.register(ExecutionResolver())
 
     def _sync_runtime_session(
         self,
@@ -3525,6 +3529,20 @@ class FlowExecutionOrchestrator:
                     # (expire + rebind the execution row) instead.
                     self.db.rollback()
 
+            # MCP create_pull_request writes pr_url onto result in another
+            # session. Refresh so a None agent result cannot wipe the binding.
+            try:
+                self.db.refresh(self.execution_log)
+            except Exception:
+                logger.debug(
+                    "Could not refresh execution log before merging result",
+                    exc_info=True,
+                )
+            merged_result = merge_result_preserving_pr_binding(
+                getattr(self.execution_log, "result", None),
+                agent_result.get("result"),
+            )
+
             await self._update_execution_log(
                 status=final_status,
                 model_output_summary=output_summary,
@@ -3541,7 +3559,7 @@ class FlowExecutionOrchestrator:
                 ),
                 actions_taken_summary=agent_result.get("actions_taken"),
                 mcp_usage_logs=agent_result.get("mcp_usage_logs"),
-                result=agent_result.get("result"),
+                result=merged_result,
                 end_time=datetime.now(timezone.utc),
                 tool_calls_count=self.tool_calls_count,
                 total_tokens=self.total_tokens,

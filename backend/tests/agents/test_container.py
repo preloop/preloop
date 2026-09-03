@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from preloop.agents.base import AgentExecutionResult, AgentStatus
-from preloop.agents.container import ContainerAgentExecutor
+from preloop.agents.container import ContainerAgentExecutor, _validated_git_ref
 
 pytestmark = pytest.mark.asyncio
 
@@ -1270,6 +1270,37 @@ class TestGitCloneCredentialsNotInUrl:
         assert command.index("credential.helper") < command.index("git clone")
 
 
+class TestValidatedGitRef:
+    """Branch names interpolated into origin/<ref>..HEAD must match git rules."""
+
+    @pytest.mark.parametrize(
+        "name",
+        ["main", "preloop/fix", "preloop/issue-353", "feat/foo-bar_1.2"],
+    )
+    def test_accepts_normal_names(self, name):
+        assert _validated_git_ref(name) == name
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "foo..bar",
+            "-d",
+            "preloop/fix.",
+            "foo~1",
+            "foo^2",
+            "foo:bar",
+            ".hidden",
+            "feat/.dot",
+            "heads/foo.lock",
+            "/abs",
+            "trailing/",
+            "a//b",
+        ],
+    )
+    def test_rejects_git_forbidden_names(self, name):
+        assert _validated_git_ref(name) is None
+
+
 class TestGitApiTokensNotInScript:
     """The PR/MR creation curls used to interpolate the raw token into the
     generated shell script (issue #173).
@@ -1345,6 +1376,47 @@ class TestGitApiTokensNotInScript:
         assert "username=x-access-token" in commands
         assert "username=oauth2" not in commands
 
+    def test_resume_commit_count_uses_origin_target_head(self, container_executor):
+        context = self._context()
+        context["_git_source_branch"] = "preloop/issue-353"
+        context["_git_target_branch"] = "preloop/issue-353"
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "origin/preloop/issue-353..HEAD" in commands
+        assert "origin/'preloop" not in commands
+
+    def test_normal_commit_count_falls_back_to_source_target(self, container_executor):
+        context = self._context()
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "origin/preloop/fix..HEAD" in commands
+        assert "main..preloop/fix" in commands
+        assert "origin/'preloop" not in commands
+
+    def test_unsafe_target_branch_skips_post_execution(self, container_executor):
+        context = self._context()
+        context["_git_target_branch"] = "feat/x; rm -rf /"
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert commands == ""
+
+    @pytest.mark.parametrize(
+        "unsafe",
+        ["foo..bar", "-d", "preloop/fix.", "foo~1", "foo^2", "foo:bar"],
+    )
+    def test_git_forbidden_target_ref_skips_post_execution(
+        self, container_executor, unsafe
+    ):
+        context = self._context()
+        context["_git_target_branch"] = unsafe
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert commands == ""
+        assert f"origin/{unsafe}" not in commands
+
+    def test_unsafe_source_branch_skips_post_execution(self, container_executor):
+        context = self._context()
+        context["_git_source_branch"] = "foo..bar"
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert commands == ""
+        assert "origin/preloop/fix" not in commands
+
 
 class TestLogScrubbing:
     """Logs are scrubbed on read as well, so a token already present in a
@@ -1388,3 +1460,65 @@ class TestLogScrubbing:
         assert streamed == [
             "origin\thttps://[REDACTED]@github.com/acme/private.git (push)"
         ]
+
+
+class TestResolveGitBranchPlan:
+    def test_resume_overrides_config_source_branch(self, container_executor):
+        source, target, _, _, _ = container_executor._resolve_git_branch_plan(
+            {
+                "flow_name": "Automated Issue Implementation",
+                "execution_id": "83021dcc-4658-45a3-814c-0e67d07642f6",
+                "trigger_event_data": {
+                    "_resume": {
+                        "execution_id": "prior",
+                        "source_branch": "preloop/issue-353",
+                    }
+                },
+            },
+            {"source_branch": "main", "target_branch": None},
+        )
+        assert source == "preloop/issue-353"
+        assert target == "preloop/issue-353"
+
+    def test_default_target_when_not_resuming(self, container_executor):
+        source, target, _, _, _ = container_executor._resolve_git_branch_plan(
+            {
+                "flow_name": "Automated Issue Implementation",
+                "execution_id": "83021dcc-4658-45a3-814c-0e67d07642f6",
+                "trigger_event_data": {},
+            },
+            {"source_branch": None, "target_branch": None},
+        )
+        assert source == "main"
+        assert target == "preloop/automated-issue-implementation-83021dcc"
+
+
+class TestExtractMergeRequestRef:
+    def test_github_pr_comment_issue_stub(self, container_executor):
+        ref = container_executor._extract_merge_request_ref_from_trigger(
+            {
+                "payload": {
+                    "issue": {
+                        "number": 353,
+                        "pull_request": {
+                            "html_url": "https://github.com/preloop/preloop/pull/353"
+                        },
+                    }
+                }
+            }
+        )
+        assert ref == "pull/353/head"
+
+    def test_gitlab_mr_note(self, container_executor):
+        ref = container_executor._extract_merge_request_ref_from_trigger(
+            {"payload": {"merge_request": {"iid": 10}}}
+        )
+        assert ref == "refs/merge-requests/10/head"
+
+
+class TestExtractSourceBranch:
+    def test_gitlab_mr_note_source_branch(self, container_executor):
+        branch = container_executor._extract_source_branch_from_trigger(
+            {"payload": {"merge_request": {"source_branch": "feat/x"}}}
+        )
+        assert branch == "feat/x"
