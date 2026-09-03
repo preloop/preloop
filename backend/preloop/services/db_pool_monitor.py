@@ -74,7 +74,9 @@ def collect_pool_stats() -> List[Dict[str, Any]]:
         get_engine_if_initialized,
     )
 
-    max_overflow = _env_int("DATABASE_MAX_OVERFLOW", 40)
+    # Same default as models/db/session.py so the reported ceiling matches
+    # the pool that is actually built.
+    max_overflow = _env_int("DATABASE_MAX_OVERFLOW", 20)
     stats: List[Dict[str, Any]] = []
     sync_engine = get_engine_if_initialized()
     if sync_engine is not None:

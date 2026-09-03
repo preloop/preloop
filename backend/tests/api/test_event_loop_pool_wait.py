@@ -263,9 +263,10 @@ async def test_pool_timeout_on_a_burst_path_does_not_stall_ping(app: FastAPI) ->
         f"the event loop stalled for {heartbeat.longest_stall:.2f}s during the "
         "burst; database work is running on the loop again"
     )
-    # The burst itself is allowed to fail: the pool really is exhausted. Only
-    # the probe has to stay honest.
-    assert all(getattr(result, "status_code", 0) >= 500 for result in results)
+    # The burst itself is allowed to fail: the pool really is exhausted. It
+    # must fail as a 503 with Retry-After, not as an opaque 500.
+    assert all(getattr(result, "status_code", 0) == 503 for result in results)
+    assert all(result.headers.get("Retry-After") for result in results)
 
 
 @pytest.mark.asyncio

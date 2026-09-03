@@ -21,6 +21,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, RedirectResponse
 from pyinstrument import Profiler
 from pyinstrument.renderers import SpeedscopeRenderer
+from sqlalchemy.exc import TimeoutError as SQLAlchemyPoolTimeout
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from preloop import __version__
@@ -653,6 +654,30 @@ def create_app() -> FastAPI:
             status_code=exc.status_code,
             content=exc.to_payload(),
             headers=exc.response_headers(),
+        )
+
+    @app.exception_handler(SQLAlchemyPoolTimeout)
+    async def pool_timeout_exception_handler(
+        request: Request, exc: SQLAlchemyPoolTimeout
+    ) -> JSONResponse:
+        """Turn a connection-pool timeout into a fast, honest 503.
+
+        A saturated pool is a capacity problem, not a server bug. Reporting it
+        as 503 with ``Retry-After`` lets clients and load balancers back off,
+        and keeps it out of the 500 rate that pages someone.
+        """
+        logger.warning(
+            "Database pool exhausted serving %s %s: %s",
+            request.method,
+            request.url.path,
+            exc,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": ("Database connections are saturated. Please retry shortly.")
+            },
+            headers={"Retry-After": "1"},
         )
 
     @app.exception_handler(Exception)
