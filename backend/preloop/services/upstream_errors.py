@@ -110,6 +110,10 @@ def _exception_text(exc: Exception) -> str:
 
 def _status_code(exc: Exception) -> Optional[int]:
     raw = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if raw is None:
+        # google.api_core.exceptions.ResourceExhausted stores HTTP 429 on
+        # ``code``, not ``status_code``.
+        raw = getattr(exc, "code", None)
     try:
         status = int(raw)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -205,7 +209,12 @@ def classify_upstream_error(exc: Exception) -> Optional[UpstreamErrorClass]:
             retry_after_seconds=retry_after,
         )
 
-    if status == 429 or _mro_contains(exc, "RateLimitError"):
+    if (
+        status == 429
+        or _mro_contains(exc, "RateLimitError")
+        or _mro_contains(exc, "ResourceExhausted")
+        or _mro_contains(exc, "TooManyRequests")
+    ):
         if _contains(text, _QUOTA_MARKERS):
             return UpstreamErrorClass(
                 error_class=ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,

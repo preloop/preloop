@@ -357,7 +357,9 @@ class TestGoogleSdkRetry:
 
     @staticmethod
     def _rate_limit_error() -> Exception:
-        return TestOpenaiSdkRetry._rate_limit_error()
+        from google.api_core.exceptions import ResourceExhausted
+
+        return ResourceExhausted("429 Resource exhausted")
 
     @pytest.mark.asyncio
     async def test_transient_429_is_retried(self, service: AIApprovalService) -> None:

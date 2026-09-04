@@ -1,5 +1,6 @@
-from typing import List, Optional, Union
+import asyncio
 import logging
+from typing import List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -191,7 +192,11 @@ async def perform_search(
         try:
 
             async def _embed_query() -> list:
-                return crud_issue_embedding._generate_embedding_vector(query, model)
+                return await asyncio.to_thread(
+                    crud_issue_embedding._generate_embedding_vector,
+                    query,
+                    model,
+                )
 
             query_vector = await call_with_aux_retry_async(
                 _embed_query,

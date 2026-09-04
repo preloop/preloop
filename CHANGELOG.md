@@ -81,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Similarity search embeddings no longer block the event loop**: comment,
+  issue, and generic search query embeddings run in a worker thread so a
+  slow OpenAI embedding call cannot serialize concurrent requests. Gemini
+  aux 429s (`google.api_core.exceptions.ResourceExhausted`) classify as
+  retryable rate limits, matching the OpenAI SDK path.
 - **Spending-limit save no longer posts a null notify user**: `/auth/users/me`
   has no `id`, so the limits editor used to send `notification_user_ids: [null]`
   and the API rejected the create. Recipients now come from the users list

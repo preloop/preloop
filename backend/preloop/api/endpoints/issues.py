@@ -1,5 +1,6 @@
 """Endpoints for managing issues across trackers."""
 
+import asyncio
 import logging
 from typing import Optional, List, Dict
 
@@ -346,7 +347,11 @@ async def search_issues(
                 model_id = model.id
 
                 async def _embed_query() -> list:
-                    return crud_issue_embedding._generate_embedding_vector(query, model)
+                    return await asyncio.to_thread(
+                        crud_issue_embedding._generate_embedding_vector,
+                        query,
+                        model,
+                    )
 
                 query_vector = await call_with_aux_retry_async(
                     _embed_query,
