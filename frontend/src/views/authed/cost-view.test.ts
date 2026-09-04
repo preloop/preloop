@@ -3,7 +3,7 @@ import type { LitElement } from 'lit';
 import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './cost-view.ts';
-import type { CostView } from './cost-view';
+import { CostView } from './cost-view';
 import { invalidateApiCaches } from '../../api';
 
 describe('CostView', () => {
@@ -11,6 +11,14 @@ describe('CostView', () => {
   // Per-test copy of the payload so a test can add fields (e.g. the imported
   // usage block) without leaking into the others.
   let summaryPayload: Record<string, unknown>;
+  // Per-test feature flags; banner tests enable the override UI.
+  let featuresPayload: Record<string, unknown>;
+  // Per-test reprice POST response; set by banner tests.
+  let repriceResult: Record<string, unknown>;
+  // Optional per-test hooks: onReprice runs when the reprice POST arrives,
+  // summaryResponder (when set) replaces the summary payload per fetch.
+  let onReprice: (() => void) | null;
+  let summaryResponder: (() => Record<string, unknown>) | null;
 
   const summary = {
     period_start: '2026-03-01T00:00:00Z',
@@ -77,12 +85,38 @@ describe('CostView', () => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
     summaryPayload = { ...summary };
+    featuresPayload = { billing: true };
+    onReprice = null;
+    summaryResponder = null;
+    repriceResult = {
+      submitted_async: false,
+      rows_examined: 0,
+      rows_updated: 0,
+      rows_skipped: 0,
+      cost_before: null,
+      cost_after: null,
+      dry_run: false,
+    };
     fetchStub = sinon.stub(window, 'fetch');
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
+      if (url.includes('/api/v1/billing/cost/reprice')) {
+        onReprice?.();
+        return new Response(JSON.stringify(repriceResult), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/v1/billing/cost/pricing-overrides')) {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       if (url.includes('/api/v1/cost/summary')) {
-        return new Response(JSON.stringify(summaryPayload), {
+        const payload = summaryResponder ? summaryResponder() : summaryPayload;
+        return new Response(JSON.stringify(payload), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -94,7 +128,7 @@ describe('CostView', () => {
         });
       }
       if (url.includes('/api/v1/features')) {
-        return new Response(JSON.stringify({ features: { billing: true } }), {
+        return new Response(JSON.stringify({ features: featuresPayload }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -409,5 +443,227 @@ describe('CostView', () => {
     expect(description?.textContent).to.contain(
       'Understand gateway spend by model, agent, session, flow, and API key.'
     );
+  });
+
+  describe('unpriced reprice banner', () => {
+    const unpricedSummary = {
+      unpriced_requests: 2,
+      unpriced_tokens: 6000,
+      unpriced_models: [
+        {
+          model: 'openai-compatible/muse-spark',
+          requests: 2,
+          tokens: 6000,
+        },
+      ],
+    };
+
+    let originalInterval: number;
+    let originalAttempts: number;
+
+    beforeEach(() => {
+      // Shrink the async poll so tests do not wait real minutes. The
+      // statics are readonly at compile time only; restore them after.
+      const viewClass = CostView as unknown as {
+        REPRICE_POLL_INTERVAL_MS: number;
+        REPRICE_POLL_MAX_ATTEMPTS: number;
+      };
+      originalInterval = viewClass.REPRICE_POLL_INTERVAL_MS;
+      originalAttempts = viewClass.REPRICE_POLL_MAX_ATTEMPTS;
+      viewClass.REPRICE_POLL_INTERVAL_MS = 1;
+      featuresPayload = { billing: true, model_price_overrides: true };
+      summaryPayload = { ...summary, ...unpricedSummary };
+    });
+
+    afterEach(() => {
+      const viewClass = CostView as unknown as {
+        REPRICE_POLL_INTERVAL_MS: number;
+        REPRICE_POLL_MAX_ATTEMPTS: number;
+      };
+      viewClass.REPRICE_POLL_INTERVAL_MS = originalInterval;
+      viewClass.REPRICE_POLL_MAX_ATTEMPTS = originalAttempts;
+    });
+
+    async function loadView(): Promise<CostView> {
+      const element = (await fixture(
+        html`<cost-view></cost-view>`
+      )) as CostView;
+      await waitUntil(
+        () => (element as unknown as { loading: boolean }).loading === false
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    function banner(element: CostView) {
+      return element.shadowRoot?.querySelector('#panel-pricing-catalog');
+    }
+
+    function bannerButton(element: CostView, label: string) {
+      return [...(banner(element)?.querySelectorAll('sl-button') ?? [])].find(
+        (button) => button.textContent?.trim() === label
+      );
+    }
+
+    it('renders the unpriced count and names the affected models', async () => {
+      const element = await loadView();
+
+      const text = banner(element)?.textContent ?? '';
+      expect(text).to.contain('2');
+      expect(text).to.contain('6,000');
+      expect(text).to.contain('openai-compatible/muse-spark');
+      expect(text).to.contain('missing from the price catalog');
+      expect(bannerButton(element, 'Reprice now')).to.exist;
+    });
+
+    it('wires the override CTA to the price override dialog, pre-filled', async () => {
+      const element = await loadView();
+
+      const cta = bannerButton(element, 'Set price override');
+      expect(cta, 'override CTA must be present').to.exist;
+      (cta as HTMLElement).click();
+      await element.updateComplete;
+
+      const state = element as unknown as {
+        priceDialogOpen: boolean;
+        priceModelAlias: string;
+      };
+      expect(state.priceDialogOpen).to.equal(true);
+      expect(state.priceModelAlias).to.equal('openai-compatible/muse-spark');
+
+      const dialog = element.shadowRoot?.querySelector(
+        'sl-dialog[label="Add Price Override"]'
+      );
+      expect(dialog).to.exist;
+      expect((dialog as unknown as { open: boolean }).open).to.equal(true);
+    });
+
+    it('sync reprice reports the actual counts and reloads the banner', async () => {
+      repriceResult = {
+        ...repriceResult,
+        submitted_async: false,
+        rows_examined: 2,
+        rows_updated: 2,
+      };
+      // The reprice "works": after the POST the window is fully priced.
+      onReprice = () => {
+        summaryPayload = {
+          ...summaryPayload,
+          unpriced_requests: 0,
+          unpriced_tokens: 0,
+          unpriced_models: [],
+        };
+      };
+      const element = await loadView();
+
+      const reprice = bannerButton(element, 'Reprice now');
+      expect(reprice).to.exist;
+      (reprice as HTMLElement).click();
+
+      await waitUntil(() => {
+        const state = element as unknown as {
+          repriceNotice: string | null;
+          repricing: boolean;
+        };
+        return (
+          !state.repricing && state.repriceNotice?.includes('Reprice finished')
+        );
+      });
+      await element.updateComplete;
+
+      const state = element as unknown as { repriceNotice: string | null };
+      expect(state.repriceNotice).to.contain('2 of 2 requests priced');
+
+      // The reloaded summary has nothing unpriced: the warning banner is
+      // replaced by the success notice.
+      expect(banner(element)).to.not.exist;
+      const success = element.shadowRoot?.querySelector(
+        'sl-alert[variant="success"]'
+      );
+      expect(success?.textContent).to.contain('2 of 2 requests priced');
+    });
+
+    it('async reprice polls the summary, then reloads and reports', async () => {
+      repriceResult = {
+        ...repriceResult,
+        submitted_async: true,
+        rows_examined: null,
+        rows_updated: null,
+        rows_skipped: null,
+      };
+      // The background worker finishes before the first poll: from the
+      // second summary fetch on, the window comes back fully priced.
+      let summaryFetches = 0;
+      summaryResponder = () => {
+        summaryFetches += 1;
+        return summaryFetches > 1
+          ? {
+              ...summaryPayload,
+              unpriced_requests: 0,
+              unpriced_tokens: 0,
+              unpriced_models: [],
+            }
+          : summaryPayload;
+      };
+      const element = await loadView();
+
+      const reprice = bannerButton(element, 'Reprice now');
+      expect(reprice).to.exist;
+      (reprice as HTMLElement).click();
+
+      await waitUntil(() => {
+        const state = element as unknown as {
+          repriceNotice: string | null;
+          repricing: boolean;
+        };
+        return (
+          !state.repricing && state.repriceNotice?.includes('Reprice finished')
+        );
+      });
+      await element.updateComplete;
+
+      const state = element as unknown as { repriceNotice: string | null };
+      expect(state.repriceNotice).to.contain(
+        'every request in this window now has a cost estimate'
+      );
+      // The summary was polled and then reloaded, not left stale.
+      expect(summaryFetches).to.be.greaterThan(1);
+      expect(banner(element)).to.not.exist;
+    });
+
+    it('async reprice with no change says so instead of claiming success', async () => {
+      const viewClass = CostView as unknown as {
+        REPRICE_POLL_MAX_ATTEMPTS: number;
+      };
+      viewClass.REPRICE_POLL_MAX_ATTEMPTS = 3;
+      repriceResult = {
+        ...repriceResult,
+        submitted_async: true,
+        rows_examined: null,
+        rows_updated: null,
+        rows_skipped: null,
+      };
+      const element = await loadView();
+
+      const reprice = bannerButton(element, 'Reprice now');
+      expect(reprice).to.exist;
+      (reprice as HTMLElement).click();
+
+      await waitUntil(() => {
+        const state = element as unknown as {
+          repriceNotice: string | null;
+          repricing: boolean;
+        };
+        return !state.repricing && state.repriceNotice?.includes('No change');
+      });
+      await element.updateComplete;
+
+      const state = element as unknown as { repriceNotice: string | null };
+      expect(state.repriceNotice).to.contain('price override');
+      // The banner stays, still naming the unpriceable model.
+      expect(banner(element)?.textContent).to.contain(
+        'openai-compatible/muse-spark'
+      );
+    });
   });
 });

@@ -119,6 +119,11 @@ const DATE_RANGE_PRESETS: DateRangePreset[] = [
 
 @customElement('cost-view')
 export class CostView extends AuthedElement {
+  // Async reprice follow-up: check the summary every 5s for up to about a
+  // minute, then stop and say so instead of polling forever.
+  private static readonly REPRICE_POLL_INTERVAL_MS = 5000;
+  private static readonly REPRICE_POLL_MAX_ATTEMPTS = 12;
+
   @state() private summary: CostAnalyticsSummaryResponse | null = null;
   @state() private previousRangeSummary: CostAnalyticsSummaryResponse | null =
     null;
@@ -857,15 +862,27 @@ export class CostView extends AuthedElement {
     this.repriceNotice = null;
     try {
       const range = this.getDateParams();
+      const previousUnpriced = this.summary?.unpriced_requests ?? 0;
       const result = await repriceCost({
         start_date: range.startDate,
         end_date: range.endDate,
         only_unpriced: true,
       });
-      this.repriceNotice = result.submitted_async
-        ? 'Repricing scheduled in the background; refresh in a few minutes.'
-        : `Repriced ${result.rows_updated} of ${result.rows_examined} rows.`;
-      if (!result.submitted_async) {
+      if (result.submitted_async) {
+        this.repriceNotice =
+          'Repricing is running in the background. Checking for results...';
+        const changed = await this.pollRepriceOutcome(previousUnpriced);
+        await this.load();
+        const remaining = this.summary?.unpriced_requests ?? 0;
+        this.repriceNotice = this.repriceOutcomeNotice(
+          previousUnpriced,
+          remaining,
+          changed
+        );
+      } else {
+        this.repriceNotice =
+          `Reprice finished: ${result.rows_updated ?? 0} of ` +
+          `${result.rows_examined ?? 0} requests priced.`;
         await this.load();
       }
     } catch (error) {
@@ -874,6 +891,66 @@ export class CostView extends AuthedElement {
     } finally {
       this.repricing = false;
     }
+  }
+
+  // The async reprice path (windows over 7 days) acknowledges before anything
+  // is scanned, so the response carries no counts. Poll the summary on a
+  // bounded interval until the unpriced count moves or the attempts run out;
+  // the notice must reflect what actually happened, not a bare "scheduled".
+  private async pollRepriceOutcome(previousUnpriced: number): Promise<boolean> {
+    for (
+      let attempt = 0;
+      attempt < CostView.REPRICE_POLL_MAX_ATTEMPTS;
+      attempt++
+    ) {
+      await new Promise((resolve) =>
+        window.setTimeout(resolve, CostView.REPRICE_POLL_INTERVAL_MS)
+      );
+      try {
+        const summary = await getCostAnalyticsSummary(this.getDateParams());
+        if ((summary.unpriced_requests ?? 0) !== previousUnpriced) {
+          return true;
+        }
+      } catch {
+        // A failed poll is not a failed reprice; keep watching.
+      }
+    }
+    return false;
+  }
+
+  private repriceOutcomeNotice(
+    previousUnpriced: number,
+    remaining: number,
+    changed: boolean
+  ): string {
+    if (remaining === 0) {
+      return 'Reprice finished: every request in this window now has a cost estimate.';
+    }
+    if (changed) {
+      return (
+        `Reprice finished: ${this.formatNumber(previousUnpriced - remaining)} ` +
+        `requests priced, ${this.formatNumber(remaining)} still unpriced. ` +
+        'Set a price override for the models named below, then reprice again.'
+      );
+    }
+    return (
+      'No change after checking for about a minute. If the models named ' +
+      'below are missing from the price catalog, repricing cannot price ' +
+      'them: set a price override (a $0 price is fine for free models), ' +
+      'then reprice again.'
+    );
+  }
+
+  // Route from the unpriced banner into the existing price-override dialog
+  // with the highest-volume unpriced model pre-filled. A $0 override is
+  // honored by repricing, which is the supported escape hatch for custom
+  // models that will never appear in a shared price catalog.
+  private openPriceOverrideForUnpriced() {
+    const top = this.summary?.unpriced_models?.[0];
+    if (top) {
+      this.priceModelAlias = top.model;
+    }
+    this.priceDialogOpen = true;
   }
 
   private formatCurrency(value?: number | null): string {
@@ -1138,7 +1215,9 @@ export class CostView extends AuthedElement {
 
   // Warning banner when usage rows carry tokens but no cost (model missing
   // from the price catalog at request time). Repricing re-derives their cost
-  // from stored tokens against current prices/overrides (billing flag).
+  // from stored tokens against current prices/overrides (billing flag), and
+  // the named models route into the price-override dialog for the models no
+  // catalog will ever price.
   private renderUnpricedNotice() {
     const unpricedRequests = this.summary?.unpriced_requests ?? 0;
     if (!unpricedRequests) {
@@ -1153,14 +1232,35 @@ export class CostView extends AuthedElement {
           >`
         : nothing;
     }
+    const unpricedModels = this.summary?.unpriced_models ?? [];
     return html`
       <sl-alert id="panel-pricing-catalog" variant="warning" open role="alert">
         <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
         ${this.formatNumber(unpricedRequests)}
         request${unpricedRequests === 1 ? '' : 's'}
         (${this.formatNumber(this.summary?.unpriced_tokens)} tokens) in this
-        window have no cost estimate: their model was missing from the price
-        catalog when recorded, so total spend is understated.
+        window have no cost estimate, so total spend is understated.
+        ${
+          unpricedModels.length
+            ? html`<div class="unpriced-models">
+                These models are missing from the price catalog, so their cost
+                cannot be estimated automatically:
+                ${unpricedModels.map(
+                  (entry, index) =>
+                    html`${index > 0 ? ', ' : ''}<code>${entry.model}</code>
+                      (${this.formatNumber(entry.tokens)} tokens)`
+                )}.
+              </div>`
+            : nothing
+        }
+        ${
+          unpricedModels.length && this.modelPriceOverridesEnabled
+            ? html`<div>
+                Set a price override (a $0 price is fine for free models), then
+                reprice.
+              </div>`
+            : nothing
+        }
         ${
           this.billingEnabled
             ? html`<sl-button
@@ -1169,6 +1269,17 @@ export class CostView extends AuthedElement {
                 .loading=${this.repricing}
                 @click=${() => void this.handleReprice()}
                 >Reprice now</sl-button
+              >`
+            : nothing
+        }
+        ${
+          unpricedModels.length && this.modelPriceOverridesEnabled
+            ? html`<sl-button
+                size="small"
+                variant="warning"
+                outline
+                @click=${() => this.openPriceOverrideForUnpriced()}
+                >Set price override</sl-button
               >`
             : nothing
         }
