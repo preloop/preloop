@@ -85,6 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   busy**: a busy runner cannot be leased, so it no longer counts as online
   capacity for the account default pool. The Runners page still shows a
   saved default that is currently offline.
+- **Unpriced-model admin mail skips customer-owned endpoints**:
+  ``openai-compatible`` / ``custom`` models on a host we do not catalog
+  (home LiteLLM, OpenCode Zen, a private proxy) stay unpriced on the
+  Attention page, but no longer page an admin to add a global price.
+  OpenRouter- and DashScope-fronted configs still alert.
 - **Spending-limit save no longer posts a null notify user**: `/auth/users/me`
   has no `id`, so the limits editor used to send `notification_user_ids: [null]`
   and the API rejected the create. Recipients now come from the users list
