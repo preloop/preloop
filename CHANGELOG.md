@@ -81,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Similarity search embeddings no longer block the event loop**: comment,
+  issue, and generic search query embeddings run in a worker thread so a
+  slow OpenAI embedding call cannot serialize concurrent requests. Gemini
+  aux 429s (`google.api_core.exceptions.ResourceExhausted`) classify as
+  retryable rate limits, matching the OpenAI SDK path.
 - **Unpriced-model admin mail skips customer-owned endpoints**:
   ``openai-compatible`` / ``custom`` models on a host we do not catalog
   (home LiteLLM, OpenCode Zen, a private proxy) stay unpriced on the

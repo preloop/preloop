@@ -1,8 +1,10 @@
 """Tests for search endpoint."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import httpx
+import openai
 import pytest
 from fastapi import HTTPException
 from preloop.models.models.user import User
@@ -494,3 +496,91 @@ class TestPerformSearch:
         # Verify similarity_search was called with status parameter
         call_args = mock_crud_issue_embed.similarity_search.call_args
         assert call_args[1]["status"] == "open"
+
+
+def _openai_rate_limit_error(retry_after: str = "3") -> openai.RateLimitError:
+    request = httpx.Request("POST", "https://example.com/v1/embeddings")
+    response = httpx.Response(
+        429, headers={"retry-after": retry_after}, request=request
+    )
+    return openai.RateLimitError(
+        "Error code: 429 - Too Many Requests", response=response, body=None
+    )
+
+
+class TestPerformSearchRateLimit:
+    """Transient 429 handling for generic similarity search (#269)."""
+
+    @pytest.mark.asyncio
+    @patch("preloop.api.endpoints.search.get_accessible_projects", return_value=[])
+    @patch("preloop.api.endpoints.search.crud_issue_embedding")
+    @patch("preloop.api.endpoints.search.crud_embedding_model")
+    async def test_similarity_search_embedding_429_is_retried(
+        self, mock_crud_embed_model, mock_crud_issue_embed, mock_get_accessible
+    ) -> None:
+        from preloop.api.endpoints.search import perform_search
+
+        mock_user = MagicMock(spec=User)
+        mock_user.account_id = uuid4()
+        mock_model = MagicMock()
+        mock_model.id = uuid4()
+        mock_model.provider = "openai"
+        mock_crud_embed_model.get_active.return_value = [mock_model]
+        mock_crud_issue_embed._generate_embedding_vector.side_effect = [
+            _openai_rate_limit_error(),
+            [0.1, 0.2, 0.3],
+        ]
+        mock_crud_issue_embed.similarity_search.return_value = []
+
+        with patch(
+            "preloop.services.aux_model_retry.asyncio.sleep",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await perform_search(
+                query="test query",
+                db=MagicMock(),
+                current_user=mock_user,
+                search_type="similarity",
+                limit=10,
+                skip=0,
+            )
+
+        assert result.results == []
+        assert mock_crud_issue_embed._generate_embedding_vector.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch("preloop.api.endpoints.search.get_accessible_projects", return_value=[])
+    @patch("preloop.api.endpoints.search.crud_issue_embedding")
+    @patch("preloop.api.endpoints.search.crud_embedding_model")
+    async def test_similarity_search_embedding_429_surfaces_retry_after(
+        self, mock_crud_embed_model, mock_crud_issue_embed, mock_get_accessible
+    ) -> None:
+        from preloop.api.endpoints.search import perform_search
+
+        mock_user = MagicMock(spec=User)
+        mock_user.account_id = uuid4()
+        mock_model = MagicMock()
+        mock_model.id = uuid4()
+        mock_model.provider = "openai"
+        mock_crud_embed_model.get_active.return_value = [mock_model]
+        mock_crud_issue_embed._generate_embedding_vector.side_effect = (
+            _openai_rate_limit_error(retry_after="3")
+        )
+
+        with patch(
+            "preloop.services.aux_model_retry.asyncio.sleep",
+            new=AsyncMock(return_value=None),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await perform_search(
+                    query="test query",
+                    db=MagicMock(),
+                    current_user=mock_user,
+                    search_type="similarity",
+                    limit=10,
+                    skip=0,
+                )
+
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.headers is not None
+        assert exc_info.value.headers.get("Retry-After") == "3"

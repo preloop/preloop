@@ -12,9 +12,10 @@ so aux paths share the gateway taxonomy instead of growing a parallel one.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from typing import Callable, Optional, TypeVar
+from typing import Awaitable, Callable, Optional, TypeVar
 
 from preloop.services.model_gateway_errors import (
     GatewayProvider,
@@ -79,6 +80,13 @@ def _to_gateway_error(
     )
     status_code = classified.status_code if classified is not None else 429
     retry_after = classified.retry_after_seconds if classified is not None else None
+    if retry_after is None:
+        # An already-classified gateway error carries its own Retry-After as
+        # a structured attribute; re-classification cannot see it because
+        # there is no httpx response attached to read headers from.
+        fallback = getattr(exc, "retry_after_seconds", None)
+        if isinstance(fallback, int) and fallback >= 0:
+            retry_after = fallback
     terminal = classified.terminal if classified is not None else False
     return ModelGatewayAPIError(
         provider=_as_gateway_provider(provider),
@@ -134,6 +142,53 @@ def call_with_aux_retry(
                 type(exc).__name__,
             )
             sleeper(delay)
+
+    assert last_exc is not None
+    raise _to_gateway_error(last_exc, provider=provider) from last_exc
+
+
+async def call_with_aux_retry_async(
+    fn: Callable[[], Awaitable[T]],
+    *,
+    operation_name: str = "aux_model",
+    provider: Optional[str] = None,
+    sleep: Optional[Callable[[float], Awaitable[None]]] = None,
+) -> T:
+    """Async twin of :func:`call_with_aux_retry` for awaited provider calls.
+
+    Same bounded, Retry-After-aware behaviour as the sync helper: one retry
+    on a transient upstream fault, terminal quota / auth failures fail fast,
+    and an exhausted transient is re-raised as :class:`ModelGatewayAPIError`
+    with the raw exception chained as ``__cause__``. Designed for call sites
+    that use async provider SDKs directly (AsyncOpenAI, AsyncAnthropic).
+
+    ``sleep`` is resolved at call time so tests can inject an awaitable fake
+    instead of patching ``asyncio.sleep``.
+    """
+
+    sleeper = asyncio.sleep if sleep is None else sleep
+    last_exc: Optional[Exception] = None
+
+    for attempt in range(AUX_RETRY_COUNT + 1):
+        try:
+            return await fn()
+        except Exception as exc:
+            last_exc = exc
+            classified = classify_upstream_error(exc)
+            if classified is not None and classified.terminal:
+                raise
+            if not is_retryable_upstream_failure(exc):
+                raise
+            if attempt >= AUX_RETRY_COUNT:
+                break
+            delay = _backoff_seconds(classified, attempt)
+            logger.info(
+                "Retrying %s after %.2fs (%s)",
+                operation_name,
+                delay,
+                type(exc).__name__,
+            )
+            await sleeper(delay)
 
     assert last_exc is not None
     raise _to_gateway_error(last_exc, provider=provider) from last_exc

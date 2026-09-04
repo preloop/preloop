@@ -1,10 +1,14 @@
 import pytest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Tuple
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from uuid import uuid4
 from fastapi import HTTPException
 from pytest_mock import MockerFixture
+
+import httpx
+import openai
 
 from preloop.api.endpoints.issue_duplicates import (
     _find_issue_duplicates_logic,
@@ -1548,3 +1552,156 @@ def test_get_resolution_suggestion_no_credentials_raises_500(
 
     assert excinfo.value.status_code == 500
     mock_openai_class.assert_not_called()
+
+
+# --- Transient 429 handling on the direct-SDK aux calls (#269) ---------------
+
+
+def _openai_rate_limit_error(retry_after: str = "3") -> openai.RateLimitError:
+    request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+    response = httpx.Response(
+        429, headers={"retry-after": retry_after}, request=request
+    )
+    return openai.RateLimitError(
+        "Error code: 429 - Too Many Requests", response=response, body=None
+    )
+
+
+def _setup_check_or_create_duplicate(
+    mocker: MockerFixture,
+    mock_openai_class: MagicMock,
+    create_side_effect,
+) -> MagicMock:
+    """Common wiring for check_or_create_issue_duplicate model-call tests."""
+    issue_a = MagicMock()
+    issue_a.id = uuid4()
+    issue_a.key = "PROJ-1"
+    issue_a.title = "Title A"
+    issue_a.description = "Description A"
+
+    issue_b = MagicMock()
+    issue_b.id = uuid4()
+    issue_b.key = "PROJ-2"
+    issue_b.title = "Title B"
+    issue_b.description = "Description B"
+
+    model = MagicMock(model_identifier="gpt-5.4", provider_name="openai")
+    model.id = uuid4()
+
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_issue_duplicate",
+        new_callable=MagicMock,
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_issue_duplicate.get_by_issue_ids",
+        return_value=None,
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_issue.get",
+        side_effect=[issue_a, issue_b],
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_ai_model.get_default_active_model",
+        return_value=model,
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.load_duplicates_prompts_config",
+        return_value={
+            "duplicate_classification_v1": {
+                "system": "You classify duplicate issues.",
+                "user": "Compare {issue1_title} with {issue2_title}.",
+            }
+        },
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.resolve_model_call_credentials",
+        return_value={"api_key": "sk-test", "api_base": None},
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.get_aux_openai_sdk_extra_kwargs",
+        return_value={},
+    )
+    mocker.patch("preloop.services.aux_model_retry.time.sleep", lambda _: None)
+
+    mock_client = MagicMock()
+    mock_openai_class.return_value = mock_client
+    mock_client.chat.completions.create.side_effect = create_side_effect
+    return mock_client
+
+
+@patch("preloop.api.endpoints.issue_duplicates.openai.OpenAI")
+def test_check_or_create_duplicate_retries_transient_429(
+    mock_openai_class: MagicMock, mocker: MockerFixture
+) -> None:
+    """A single provider 429 must not fail the check; the retry succeeds."""
+    completion = MagicMock(
+        choices=[
+            MagicMock(
+                message=MagicMock(
+                    content=(
+                        '{"classification": "DUPLICATE", "reason": "same root cause",'
+                        ' "suggestion": "merge"}'
+                    )
+                )
+            )
+        ]
+    )
+    created = SimpleNamespace(
+        id=uuid4(),
+        issue1_id=uuid4(),
+        issue2_id=uuid4(),
+        decision="duplicate",
+        reason="same root cause",
+        suggestion="merge",
+    )
+
+    _setup_check_or_create_duplicate(
+        mocker,
+        mock_openai_class,
+        create_side_effect=[
+            _openai_rate_limit_error(),
+            completion,
+        ],
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_issue_duplicate.create",
+        return_value=created,
+    )
+
+    result = check_or_create_issue_duplicate(
+        db=MagicMock(),
+        issue1_id=str(uuid4()),
+        issue2_id=str(uuid4()),
+        current_user=MagicMock(),
+        settings=MagicMock(PROMPTS_FILE="prompts.yaml"),
+    )
+
+    assert result.decision == "duplicate"
+    assert mock_openai_class.return_value.chat.completions.create.call_count == 2
+
+
+@patch("preloop.api.endpoints.issue_duplicates.openai.OpenAI")
+def test_check_or_create_duplicate_persistent_429_surfaces_retry_after(
+    mock_openai_class: MagicMock, mocker: MockerFixture
+) -> None:
+    """An exhausted transient 429 surfaces as a clean 429 with Retry-After."""
+    _setup_check_or_create_duplicate(
+        mocker,
+        mock_openai_class,
+        create_side_effect=_openai_rate_limit_error(retry_after="3"),
+    )
+    mocker.patch("preloop.api.endpoints.issue_duplicates.crud_issue_duplicate.create")
+
+    with pytest.raises(HTTPException) as excinfo:
+        check_or_create_issue_duplicate(
+            db=MagicMock(),
+            issue1_id=str(uuid4()),
+            issue2_id=str(uuid4()),
+            current_user=MagicMock(),
+            settings=MagicMock(PROMPTS_FILE="prompts.yaml"),
+        )
+
+    assert excinfo.value.status_code == 429
+    assert excinfo.value.headers is not None
+    assert excinfo.value.headers.get("Retry-After") == "3"
+    assert mock_openai_class.return_value.chat.completions.create.call_count == 2
