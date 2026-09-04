@@ -28,6 +28,8 @@ RUNNER_OVERRIDE_KEY = "_runner"
 DEFAULT_QUEUE_TIMEOUT = timedelta(minutes=15)
 SERVER_RUNNER_POOL = "server"
 AUTO_RUNNER_POOL = "auto"
+HOSTED_RUNNER_NAME = "Preloop hosted"
+PRIVATE_RUNNER_FALLBACK_NAME = "Private runner"
 
 
 def hash_runner_token(token: str) -> str:
@@ -96,6 +98,70 @@ def _has_online_private_runner(db: Session, account_id: Any) -> bool:
         and not getattr(row, "pending_job", None)
         for row in (matches or [])
     )
+
+
+def runner_id_from_session_reference(ref: Optional[str]) -> Optional[UUID]:
+    """Parse ``runner:{runner_id}:{execution_id}`` assigned-lease references.
+
+    Queued forms (``runner:queued:{pool}:{execution_id}``) have no runner yet
+    and return None. Non-strings are ignored so mocked endpoint tests stay
+    hosted rather than querying the database.
+    """
+    if not isinstance(ref, str) or not ref.startswith("runner:"):
+        return None
+    parts = ref.split(":")
+    if len(parts) >= 3 and parts[1] != "queued":
+        try:
+            return UUID(parts[1])
+        except ValueError:
+            return None
+    return None
+
+
+def pool_from_session_reference(ref: Optional[str]) -> Optional[str]:
+    """Pool string from ``runner:queued:{pool}:{execution_id}``."""
+    if not isinstance(ref, str) or not ref.startswith("runner:"):
+        return None
+    parts = ref.split(":")
+    if len(parts) >= 4 and parts[1] == "queued" and parts[2].strip():
+        return parts[2].strip()
+    return None
+
+
+def derive_execution_runner(
+    *,
+    runner_id: Optional[UUID] = None,
+    agent_session_reference: Optional[str] = None,
+    runner_name: Optional[str] = None,
+    pool: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Where an execution ran, derived from the row rather than a new column.
+
+    Private when ``runner_id`` is set or ``agent_session_reference`` uses a
+    ``runner:...`` form (assigned or queued). Everything else is the built-in
+    hosted executor, which the console still names so the page is never
+    silent about where the work ran.
+    """
+    resolved_id = runner_id or runner_id_from_session_reference(agent_session_reference)
+    resolved_pool = pool or pool_from_session_reference(agent_session_reference)
+    is_private = resolved_id is not None or (
+        isinstance(agent_session_reference, str)
+        and agent_session_reference.startswith("runner:")
+    )
+    if is_private:
+        name = runner_name.strip() if isinstance(runner_name, str) else ""
+        return {
+            "kind": "private",
+            "id": resolved_id,
+            "name": name or PRIVATE_RUNNER_FALLBACK_NAME,
+            "pool": resolved_pool,
+        }
+    return {
+        "kind": "hosted",
+        "id": None,
+        "name": HOSTED_RUNNER_NAME,
+        "pool": None,
+    }
 
 
 def resolve_runner_pool(

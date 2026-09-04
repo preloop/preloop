@@ -85,6 +85,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   busy**: a busy runner cannot be leased, so it no longer counts as online
   capacity for the account default pool. The Runners page still shows a
   saved default that is currently offline.
+- **Native tool approval workflow select reverts on a failed save**: the
+  dropdown no longer keeps an unsaved pick after "Could not save", and the
+  account default workflow is listed once (the empty option).
 - **Automated Issue Implementation prompt uses normalized issue fields**:
   title, description, and number come from
   ``trigger_event.payload.object_attributes`` so GitHub ``issue.body`` and

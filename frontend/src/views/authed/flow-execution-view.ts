@@ -38,8 +38,10 @@ import {
   executionStatusVariant,
   formatEstimatedCost,
   renderExecutionModel,
+  renderExecutionRunner,
   type ExecutionModelSource,
   type ExecutionModelUsage,
+  type ExecutionRunner,
 } from '../../utils/execution-presentation';
 import { renderFailureCategoryChip } from '../../utils/failure-category';
 import '../../components/preloop-gateway-event.ts';
@@ -80,6 +82,7 @@ interface FlowExecution {
   model_alias?: string | null;
   provider_name?: string | null;
   models_used?: ExecutionModelUsage[] | null;
+  runner?: ExecutionRunner | null;
   actions_taken_summary?: any[];
   model_output_summary?: string;
   resolved_input_prompt?: string;
@@ -2401,6 +2404,12 @@ ${execution.resolved_input_prompt}</pre>
           <span class="strip-label">Duration</span>
           <span class="strip-value" data-testid="strip-duration"
             >${this.renderDurationText()}</span
+          >
+        </div>
+        <div class="strip-item">
+          <span class="strip-label">Ran on</span>
+          <span class="strip-value" data-testid="strip-runner"
+            >${renderExecutionRunner(execution.runner)}</span
           >
         </div>
         ${

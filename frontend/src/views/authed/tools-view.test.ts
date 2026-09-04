@@ -7,8 +7,18 @@ import { invalidateApiCaches } from '../../api';
 
 describe('ToolsView (approvals + conditions)', () => {
   let fetchStub: sinon.SinonStub;
+  let overrideAgentIds: string[];
+  let accountAgents: { id: string; display_name: string }[];
+  let failGovernanceGet: boolean;
+  let failGovernancePut: boolean;
 
   beforeEach(() => {
+    overrideAgentIds = ['agent-override-1'];
+    accountAgents = [
+      { id: 'agent-override-1', display_name: 'Claude Code Workspace' },
+    ];
+    failGovernanceGet = false;
+    failGovernancePut = false;
     // fetchWithAuth requires an access token to exist
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -36,6 +46,13 @@ describe('ToolsView (approvals + conditions)', () => {
       approval_type: 'standard',
       is_default: true,
     };
+    const extraPolicy = {
+      id: 'policy-2',
+      name: 'Security',
+      description: 'Security policy',
+      approval_type: 'standard',
+      is_default: false,
+    };
 
     fetchStub.callsFake(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -58,7 +75,7 @@ describe('ToolsView (approvals + conditions)', () => {
         }
 
         if (url.endsWith('/api/v1/approval-workflows') && method === 'GET') {
-          return new Response(JSON.stringify([defaultPolicy]), {
+          return new Response(JSON.stringify([defaultPolicy, extraPolicy]), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
@@ -89,6 +106,13 @@ describe('ToolsView (approvals + conditions)', () => {
         // Native tool approvals account-defaults card
         if (url.endsWith('/api/v1/account/governance-defaults')) {
           if (method === 'PUT') {
+            if (failGovernancePut) {
+              failGovernancePut = false;
+              return new Response(
+                JSON.stringify({ detail: 'Simulated PUT failure' }),
+                { status: 500, headers: { 'Content-Type': 'application/json' } }
+              );
+            }
             return new Response(
               JSON.stringify({
                 defaults: JSON.parse(String(init?.body)),
@@ -97,13 +121,20 @@ describe('ToolsView (approvals + conditions)', () => {
               { status: 200, headers: { 'Content-Type': 'application/json' } }
             );
           }
+          if (failGovernanceGet) {
+            failGovernanceGet = false;
+            return new Response(
+              JSON.stringify({ detail: 'Simulated GET failure' }),
+              { status: 500, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
           return new Response(
             JSON.stringify({
               defaults: {
                 native_tool_approvals: null,
                 approval_workflow_id: null,
               },
-              override_agent_ids: ['agent-override-1'],
+              override_agent_ids: overrideAgentIds,
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           );
@@ -116,15 +147,10 @@ describe('ToolsView (approvals + conditions)', () => {
               agent_kind: null,
               last_seen_after: null,
               status: 'all',
-              total: 1,
+              total: accountAgents.length,
               limit: 100,
               offset: 0,
-              items: [
-                {
-                  id: 'agent-override-1',
-                  display_name: 'Claude Code Workspace',
-                },
-              ],
+              items: accountAgents,
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           );
@@ -250,8 +276,12 @@ describe('ToolsView (approvals + conditions)', () => {
       '#native-approvals-defaults-card'
     );
     expect(card).to.exist;
+    expect(card?.textContent).to.not.include('\u2014');
+    expect(card?.textContent?.replace(/\s+/g, ' ')).to.include(
+      'Ask a human before running'
+    );
 
-    // Default (null) renders as enforce: switch on, no bypass warning.
+    // Default (null) renders as enforce: switch on, no bypass notice.
     const switchEl = element.shadowRoot?.querySelector(
       '#native-approvals-default-switch'
     ) as any;
@@ -263,6 +293,7 @@ describe('ToolsView (approvals + conditions)', () => {
       '#native-approvals-override-list'
     );
     expect(overrides).to.exist;
+    expect(overrides?.textContent).to.include('1 agent uses its own setting');
     const link = overrides?.querySelector('a');
     expect(link?.getAttribute('href')).to.equal(
       '/console/agents/agent-override-1'
@@ -285,6 +316,218 @@ describe('ToolsView (approvals + conditions)', () => {
     expect(
       JSON.parse(String(putCall!.args[1]!.body)).native_tool_approvals
     ).to.equal('off');
+  });
+
+  it('shows the resolved default workflow name in the workflow select', async () => {
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        !(element as any).loading &&
+        (element as any).governanceDefaults !== null,
+      'Tools view did not load governance defaults'
+    );
+    await element.updateComplete;
+
+    const select = element.shadowRoot?.querySelector(
+      '#native-approvals-default-workflow'
+    );
+    expect(select).to.exist;
+    const options = Array.from(select!.querySelectorAll('sl-option'));
+    expect(options.map((option) => option.getAttribute('value'))).to.deep.equal(
+      ['', 'policy-2']
+    );
+    expect(options[0]?.textContent).to.include('Default workflow (Default)');
+    expect(options[1]?.textContent).to.include('Security');
+    for (const option of options) {
+      expect(option.textContent).to.not.include('(account default)');
+    }
+  });
+
+  it('hides the workflow select and shows a notice when approvals are off', async () => {
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        !(element as any).loading &&
+        (element as any).governanceDefaults !== null,
+      'Tools view did not load governance defaults'
+    );
+    await element.updateComplete;
+
+    await (element as any)._saveGovernanceDefaults({
+      native_tool_approvals: 'off',
+    });
+    await element.updateComplete;
+
+    expect(
+      element.shadowRoot?.querySelector('#native-approvals-default-workflow')
+    ).to.be.null;
+    const notice = element.shadowRoot?.querySelector('.governance-notice');
+    expect(notice).to.exist;
+    expect(notice?.textContent).to.include('run without asking');
+
+    await (element as any)._saveGovernanceDefaults({
+      native_tool_approvals: 'enforce',
+    });
+    await element.updateComplete;
+
+    expect(
+      element.shadowRoot?.querySelector('#native-approvals-default-workflow')
+    ).to.exist;
+    expect(element.shadowRoot?.querySelector('.governance-notice')).to.be.null;
+  });
+
+  it('caps the override list at 5 agents and links the remainder', async () => {
+    overrideAgentIds = [
+      'agent-1',
+      'agent-2',
+      'agent-3',
+      'agent-4',
+      'agent-5',
+      'agent-6',
+      'agent-7',
+    ];
+    accountAgents = overrideAgentIds.map((id, index) => ({
+      id,
+      display_name: `Agent ${index + 1}`,
+    }));
+
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        !(element as any).loading &&
+        (element as any).governanceDefaults !== null,
+      'Tools view did not load governance defaults'
+    );
+    await element.updateComplete;
+
+    const overrides = element.shadowRoot?.querySelector(
+      '#native-approvals-override-list'
+    );
+    expect(overrides).to.exist;
+    expect(overrides?.textContent).to.include('7 agents use their own setting');
+
+    const links = Array.from(overrides!.querySelectorAll('a'));
+    expect(links.length).to.equal(6);
+    const agentLinks = links.slice(0, 5);
+    agentLinks.forEach((agentLink, index) => {
+      expect(agentLink.getAttribute('href')).to.equal(
+        `/console/agents/agent-${index + 1}`
+      );
+    });
+    const moreLink = links[5];
+    expect(moreLink.getAttribute('href')).to.equal('/console/agents');
+    expect(moreLink.textContent).to.include('and 2 more');
+  });
+
+  it('shows an inline error and reverts the switch when saving fails', async () => {
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        !(element as any).loading &&
+        (element as any).governanceDefaults !== null,
+      'Tools view did not load governance defaults'
+    );
+    await element.updateComplete;
+
+    failGovernancePut = true;
+
+    const switchEl = element.shadowRoot?.querySelector(
+      '#native-approvals-default-switch'
+    ) as any;
+    expect(switchEl).to.exist;
+    expect(switchEl.checked).to.be.true;
+
+    switchEl.checked = false;
+    switchEl.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(
+      () => !(element as any).savingGovernanceDefaults,
+      'Save did not finish'
+    );
+    await element.updateComplete;
+
+    const saveError = element.shadowRoot?.querySelector('.governance-error');
+    expect(saveError).to.exist;
+    expect(saveError?.textContent).to.include('Could not save');
+    expect(switchEl.checked).to.be.true;
+    expect((element as any).error).to.equal(null);
+  });
+
+  it('reverts the workflow select when saving fails', async () => {
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        !(element as any).loading &&
+        (element as any).governanceDefaults !== null,
+      'Tools view did not load governance defaults'
+    );
+    await element.updateComplete;
+
+    failGovernancePut = true;
+
+    const select = element.shadowRoot?.querySelector(
+      '#native-approvals-default-workflow'
+    ) as HTMLSelectElement;
+    expect(select).to.exist;
+    expect(select.value || '').to.equal('');
+
+    select.value = 'policy-2';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(
+      () => !(element as any).savingGovernanceDefaults,
+      'Save did not finish'
+    );
+    await element.updateComplete;
+
+    expect(select.value || '').to.equal('');
+    const saveError = element.shadowRoot?.querySelector('.governance-error');
+    expect(saveError?.textContent).to.include('Could not save');
+  });
+
+  it('renders a retry fallback when governance defaults fail to load', async () => {
+    failGovernanceGet = true;
+
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () => !(element as any).loading && (element as any).governanceLoadFailed,
+      'Governance load failure was not recorded'
+    );
+    await element.updateComplete;
+
+    const card = element.shadowRoot?.querySelector(
+      '#native-approvals-defaults-card'
+    );
+    expect(card).to.exist;
+    expect(card?.textContent).to.include('Could not load this setting');
+
+    const governanceGetCalls = () =>
+      fetchStub
+        .getCalls()
+        .filter(
+          (call) =>
+            String(call.args[0]).endsWith(
+              '/api/v1/account/governance-defaults'
+            ) &&
+            String(
+              (call.args[1] as RequestInit | undefined)?.method || 'GET'
+            ).toUpperCase() === 'GET'
+        );
+    expect(governanceGetCalls().length).to.equal(1);
+
+    const retry = card?.querySelector('a') as HTMLElement;
+    expect(retry).to.exist;
+    expect(retry.textContent).to.include('Retry');
+    retry.click();
+
+    await waitUntil(
+      () => (element as any).governanceDefaults !== null,
+      'Retry did not reload governance defaults'
+    );
+    await element.updateComplete;
+
+    expect(governanceGetCalls().length).to.equal(2);
+    expect(
+      element.shadowRoot?.querySelector('#native-approvals-default-switch')
+    ).to.exist;
   });
 
   it('does not create tool configuration twice when adding a rule immediately after toggling enabled', async () => {

@@ -588,6 +588,7 @@ describe('FlowExecutionView', () => {
       expect(labels).to.eql([
         'Started',
         'Duration',
+        'Ran on',
         'Model',
         'Tokens',
         '$ est.',
@@ -636,6 +637,49 @@ describe('FlowExecutionView', () => {
       expect(chip.closest('sl-tooltip')!.getAttribute('content')).to.contain(
         'quota'
       );
+    });
+
+    it('names the hosted executor when the run has no private runner', async () => {
+      const element = await load('exec-1');
+
+      expect(stripValue(element, 'strip-runner')).to.contain('Preloop hosted');
+      const badge = element.shadowRoot!.querySelector(
+        '[data-testid="strip-runner"] [data-testid="runner-kind-badge"]'
+      )!;
+      expect(badge.textContent!.trim()).to.equal('Hosted');
+      expect(badge.getAttribute('data-runner-kind')).to.equal('hosted');
+      expect(
+        element.shadowRoot!.querySelector(
+          '[data-testid="strip-runner"] a[href="/console/settings/runners"]'
+        )
+      ).to.equal(null);
+    });
+
+    it('names a private runner, its pool, and links to Runners', async () => {
+      const element = await load('exec-1');
+      (element as any).execution = {
+        ...(element as any).execution,
+        runner: {
+          kind: 'private',
+          id: '11111111-1111-1111-1111-111111111111',
+          name: 'Office Mac',
+          pool: 'gpu',
+        },
+      };
+      await element.updateComplete;
+
+      expect(stripValue(element, 'strip-runner')).to.contain('Office Mac');
+      expect(stripValue(element, 'strip-runner')).to.contain('gpu');
+      const badge = element.shadowRoot!.querySelector(
+        '[data-testid="strip-runner"] [data-testid="runner-kind-badge"]'
+      )!;
+      expect(badge.textContent!.trim()).to.equal('Private');
+      expect(badge.getAttribute('data-runner-kind')).to.equal('private');
+      const link = element.shadowRoot!.querySelector(
+        '[data-testid="strip-runner"] a[href="/console/settings/runners"]'
+      );
+      expect(link).to.exist;
+      expect(link!.textContent!.trim()).to.equal('Office Mac');
     });
 
     it('names the model that served the run in the strip', async () => {

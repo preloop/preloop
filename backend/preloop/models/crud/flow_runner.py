@@ -64,6 +64,23 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
             return []
         return [row for row in rows if runner_matches_pool(row, pool)]
 
+    def get_by_ids(self, db: Session, *, ids: List[UUID]) -> List[FlowRunner]:
+        """Load many runners in one query.
+
+        Empty ``ids`` returns an empty list. Duplicate ids are queried once.
+
+        Args:
+            db: Database session.
+            ids: Runner primary keys to load.
+
+        Returns:
+            Matching rows (order not guaranteed).
+        """
+        unique = list(dict.fromkeys(ids))
+        if not unique:
+            return []
+        return db.query(FlowRunner).filter(FlowRunner.id.in_(unique)).all()
+
     def claim_idle(self, db: Session, *, runner_id: UUID) -> Optional[FlowRunner]:
         """Lock one idle runner so concurrent leases cannot double-claim it.
 

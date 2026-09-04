@@ -31,8 +31,12 @@ import {
   executionStatusVariant,
   formatEstimatedCost,
   renderExecutionModel,
+  renderExecutionRunnerKind,
 } from '../../utils/execution-presentation';
-import type { ExecutionModelUsage } from '../../utils/execution-presentation';
+import type {
+  ExecutionModelUsage,
+  ExecutionRunner,
+} from '../../utils/execution-presentation';
 import { renderFailureCategoryChip } from '../../utils/failure-category';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
@@ -67,6 +71,7 @@ interface FlowExecution {
   model_alias?: string | null;
   provider_name?: string | null;
   models_used?: ExecutionModelUsage[] | null;
+  runner?: ExecutionRunner | null;
 }
 
 /** How often the elapsed time of running rows is recomputed. */
@@ -135,7 +140,11 @@ export class FlowExecutionsView extends AuthedElement {
         text-decoration: underline;
       }
       .flow-cell {
-        max-width: 220px;
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        max-width: 280px;
       }
       /* The subject is the primary way to tell executions apart, so give it
          room while keeping long repo/branch names from widening the table. */
@@ -850,6 +859,7 @@ export class FlowExecutionsView extends AuthedElement {
           <a class="row-link" href=${this.executionUrl(exec)}
             >${exec.flow_name || 'Unnamed flow'}</a
           >
+          ${renderExecutionRunnerKind(exec.runner)}
         </td>
         <td class="subject-cell">${renderExecutionSubject(exec)}</td>
         <td>

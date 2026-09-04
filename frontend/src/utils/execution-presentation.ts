@@ -152,6 +152,72 @@ export function renderExecutionModel(
   >`;
 }
 
+/** Where a run executed, as both execution endpoints project it. */
+export interface ExecutionRunner {
+  kind: 'private' | 'hosted';
+  id?: string | null;
+  name: string;
+  pool?: string | null;
+}
+
+/** Hosted is the default so an older payload still names the executor. */
+export function executionRunner(
+  runner?: ExecutionRunner | null
+): ExecutionRunner {
+  if (runner && (runner.kind === 'private' || runner.kind === 'hosted')) {
+    const fallback =
+      runner.kind === 'hosted' ? 'Preloop hosted' : 'Private runner';
+    return {
+      kind: runner.kind,
+      id: runner.id ?? null,
+      name: runner.name || fallback,
+      pool: runner.pool ?? null,
+    };
+  }
+  return { kind: 'hosted', id: null, name: 'Preloop hosted', pool: null };
+}
+
+/** Small Hosted / Private chip used on the list and the run page. */
+export function renderExecutionRunnerKind(
+  runner?: ExecutionRunner | null
+): TemplateResult {
+  const resolved = executionRunner(runner);
+  const label = resolved.kind === 'private' ? 'Private' : 'Hosted';
+  return html`<sl-badge
+    class="chip runner-kind-badge"
+    pill
+    variant="neutral"
+    data-testid="runner-kind-badge"
+    data-runner-kind=${resolved.kind}
+    >${label}</sl-badge
+  >`;
+}
+
+/**
+ * The "Ran on" value: runner name, kind chip, pool when set. Private names
+ * link to the Runners settings page.
+ */
+export function renderExecutionRunner(
+  runner?: ExecutionRunner | null
+): TemplateResult {
+  const resolved = executionRunner(runner);
+  const name =
+    resolved.kind === 'private'
+      ? html`<a
+          class="execution-runner-name strip-link"
+          href="/console/settings/runners"
+          >${resolved.name}</a
+        >`
+      : html`<span class="execution-runner-name">${resolved.name}</span>`;
+  return html`<span class="execution-runner" data-testid="execution-runner"
+    >${name}${renderExecutionRunnerKind(resolved)}${
+      resolved.pool
+        ? html`<span class="execution-runner-pool">${resolved.pool}</span>`
+        : ''
+    }</span
+  >`;
+}
+
 /** Shared styling for the cell above, as a plain CSS string. */
 export const executionModelCss = `
   .execution-model {
@@ -170,6 +236,23 @@ export const executionModelCss = `
   .execution-model-provider,
   .execution-model-more,
   .execution-model.is-empty {
+    color: var(--console-meta-color);
+    font-size: var(--console-text-meta);
+    white-space: nowrap;
+  }
+  .execution-runner {
+    align-items: baseline;
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .execution-runner-name {
+    min-width: 0;
+  }
+  .execution-runner-pool,
+  .runner-kind-badge {
     color: var(--console-meta-color);
     font-size: var(--console-text-meta);
     white-space: nowrap;
