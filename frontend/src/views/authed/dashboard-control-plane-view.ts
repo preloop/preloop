@@ -1860,12 +1860,10 @@ export class DashboardView extends AuthedElement {
    */
   private async refreshBackgroundInputs(): Promise<void> {
     const startDateStr = this.getGatewayStartDate();
-    const breakdown = await this.refreshUsageBreakdown(startDateStr);
-    await this.refreshAttentionInputs({
-      usageSummary:
-        this.gatewayTimeRange === 'month' ? breakdown || undefined : undefined,
-    });
+    await this.refreshUsageBreakdown(startDateStr);
+    await this.refreshAttentionInputs();
     await this.refreshAuditExceptions();
+    this.lastUpdatedAt = new Date().toISOString();
     this.scheduleCacheWrite();
   }
 
@@ -2171,21 +2169,14 @@ export class DashboardView extends AuthedElement {
     const breakdownPromise = this.refreshUsageBreakdown(startDateStr);
     const secondaryPromise = this.fetchSecondaryDashboardData();
 
-    const [, breakdown] = await Promise.all([
-      inventoryPromise,
-      breakdownPromise,
-    ]);
+    await Promise.all([inventoryPromise, breakdownPromise]);
     markOverviewTiming('overview-inventory-ready');
     // The policies are one of the attention inputs, so this is the one place
     // that does wait for them.
     await this.budgetReady.catch(() => undefined);
-    await this.refreshAttentionInputs({
-      // The attention rules want a 30-day breakdown. When the page is on its
-      // default month range that is the request that just ran, give or take
-      // a day, so the second copy of it is not worth a second heavy query.
-      usageSummary:
-        this.gatewayTimeRange === 'month' ? breakdown || undefined : undefined,
-    });
+    // Attention always uses its own rolling 30-day window. The Overview
+    // "month" range is a calendar month, which is not the same 30 days.
+    await this.refreshAttentionInputs();
     await secondaryPromise;
     this.scheduleCacheWrite();
     markOverviewTiming('overview-deferred-ready');

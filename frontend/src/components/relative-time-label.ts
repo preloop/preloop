@@ -1,4 +1,4 @@
-import { LitElement, html } from 'lit';
+import { LitElement, html, PropertyValues } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { parseUTCDate } from '../utils/date';
 
@@ -33,17 +33,37 @@ export class RelativeTimeLabel extends LitElement {
 
   connectedCallback(): void {
     super.connectedCallback();
-    this.timer = window.setInterval(() => {
-      this.tick += 1;
-    }, TICK_MS);
+    this.syncTimer();
   }
 
   disconnectedCallback(): void {
+    this.clearTimer();
+    super.disconnectedCallback();
+  }
+
+  protected updated(changed: PropertyValues): void {
+    if (changed.has('timestamp')) {
+      this.syncTimer();
+    }
+  }
+
+  private syncTimer(): void {
+    if (this.timestamp) {
+      if (this.timer === null) {
+        this.timer = window.setInterval(() => {
+          this.tick += 1;
+        }, TICK_MS);
+      }
+      return;
+    }
+    this.clearTimer();
+  }
+
+  private clearTimer(): void {
     if (this.timer !== null) {
       window.clearInterval(this.timer);
       this.timer = null;
     }
-    super.disconnectedCallback();
   }
 
   render() {

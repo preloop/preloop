@@ -24,6 +24,20 @@ describe('relative-time-label', () => {
       html`<relative-time-label .fallback=${'Loading…'}></relative-time-label>`
     );
     expect(el.textContent).to.equal('Loading…');
+    expect((el as unknown as { timer: number | null }).timer).to.equal(null);
+  });
+
+  it('starts its clock once a timestamp is set', async () => {
+    const el = (await fixture(
+      html`<relative-time-label fallback="Never"></relative-time-label>`
+    )) as HTMLElement & { updateComplete: Promise<unknown> };
+    expect((el as unknown as { timer: number | null }).timer).to.equal(null);
+    (el as unknown as { timestamp: string }).timestamp =
+      new Date().toISOString();
+    await el.updateComplete;
+    expect((el as unknown as { timer: number | null }).timer).to.not.equal(
+      null
+    );
   });
 
   it('ages on its own clock', async () => {
