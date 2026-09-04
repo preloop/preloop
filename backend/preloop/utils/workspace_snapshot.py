@@ -24,6 +24,7 @@ byte) to disk and never travels to the control plane.
 
 from __future__ import annotations
 
+import posixpath
 import shlex
 from typing import Iterable, Sequence
 
@@ -64,6 +65,7 @@ def build_workspace_snapshot_shell(
     *,
     max_bytes: int,
     out_path: str = WORKSPACE_SNAPSHOT_PATH,
+    workspace_dir: str = "/workspace",
     excludes: Iterable[str] = WORKSPACE_SNAPSHOT_EXCLUDES,
 ) -> str:
     """Return sh that writes a capped tar.gz of /workspace to ``out_path``.
@@ -75,11 +77,15 @@ def build_workspace_snapshot_shell(
 
     exclude_args = " ".join(f"--exclude={shlex.quote(pattern)}" for pattern in excludes)
     quoted_out = shlex.quote(out_path)
+    workspace = workspace_dir.rstrip("/") or "/workspace"
+    parent = posixpath.dirname(workspace) or "/"
+    base = posixpath.basename(workspace)
+    quoted_ws = shlex.quote(workspace)
     limit = int(max_bytes)
     return f"""
 _preloop_snapshot_workspace() {{
-    [ -d /workspace ] || return 0
-    for _pl_repo in /workspace /workspace/*; do
+    [ -d {quoted_ws} ] || return 0
+    for _pl_repo in {quoted_ws} {quoted_ws}/*; do
         if [ -d "$_pl_repo/.git" ]; then
             git -C "$_pl_repo" bundle create \
                 "$_pl_repo/.git/preloop-workspace.bundle" --all \
@@ -87,14 +93,13 @@ _preloop_snapshot_workspace() {{
         fi
     done
     rm -f {quoted_out}
-    tar -czf - {exclude_args} -C / workspace 2>/dev/null \
-        | head -c {limit + 1} > {quoted_out} 2>/dev/null
+    tar -czf - {exclude_args} -C {shlex.quote(parent)} {shlex.quote(base)} \
+        2>/dev/null | head -c {limit + 1} > {quoted_out} 2>/dev/null
     _pl_wsize=$(wc -c < {quoted_out} 2>/dev/null | tr -d ' ')
     [ -n "$_pl_wsize" ] || _pl_wsize=0
     if [ "$_pl_wsize" -gt {limit} ] 2>/dev/null; then
         rm -f {quoted_out}
-        echo "{WORKSPACE_SNAPSHOT_SKIPPED_MARKER} \
-size_exceeds_limit limit={limit}"
+        echo "{WORKSPACE_SNAPSHOT_SKIPPED_MARKER} size_exceeds_limit limit={limit}"
         return 0
     fi
     if [ "$_pl_wsize" -eq 0 ] 2>/dev/null; then
