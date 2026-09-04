@@ -150,7 +150,7 @@ git_clone_config:
   enabled: true
   repositories: []
   git_user_name: Preloop
-  git_user_email: git@preloop.ai
+  git_user_email: hello@preloop.ai
   source_branch: null
   target_branch: null
   create_pull_request: true
