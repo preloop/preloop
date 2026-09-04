@@ -86,6 +86,73 @@ EVIDENCE_DIR_PATH = "/workspace/evidence"
 # inside the kubelet's default 10 MiB container-log rotation limit.
 MAX_EVIDENCE_ARCHIVE_BYTES = 2 * 1024 * 1024
 
+# The wrapper opens PRs/MRs itself (post-execution curl). The response is kept
+# under the evidence dir and the resulting URL is echoed on one line so the
+# orchestrator can bind the execution to the PR it opened.
+PR_RESPONSE_FILE = f"{EVIDENCE_DIR_PATH}/pr.json"
+PR_LOOKUP_FILE = f"{EVIDENCE_DIR_PATH}/pr-lookup.json"
+PR_OPENED_LOG_MARKER = "PRELOOP_PR_OPENED"
+
+
+def build_github_pr_capture_shell(
+    *, token_ref: str, owner: str, repo: str, branch: str
+) -> str:
+    """Shell that turns the create-PR response into one recognizable line.
+
+    Falls back to a head-branch lookup so an already-existing PR (the
+    "may already exist" branch) still binds to this execution.
+    """
+
+    grep_pr = 'grep -o \'"html_url"[[:space:]]*:[[:space:]]*"[^"]*/pull/[0-9]*"\''
+    sed_url = 'sed \'s/.*"\\(https[^"]*\\)"$/\\1/\''
+    return f"""
+    PR_URL=$({grep_pr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url})
+    if [ -z "$PR_URL" ]; then
+      echo "No PR URL in the create response; looking it up by head branch"
+      curl -sS \\
+        -H "Authorization: token {token_ref}" \\
+        -H "Accept: application/vnd.github.v3+json" \\
+        -o {PR_LOOKUP_FILE} \\
+        "https://api.github.com/repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}" \\
+        || echo "PR lookup by head branch failed"
+      PR_URL=$({grep_pr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
+    fi
+    if [ -n "$PR_URL" ]; then
+      echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$PR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"github\\"}}"
+    else
+      echo "No pull request URL could be resolved for branch {branch}"
+    fi
+"""
+
+
+def build_gitlab_mr_capture_shell(
+    *, token_ref: str, gitlab_host: str, encoded_path: str, branch: str
+) -> str:
+    """GitLab counterpart of :func:`build_github_pr_capture_shell`."""
+
+    grep_mr = (
+        'grep -o \'"web_url"[[:space:]]*:[[:space:]]*"[^"]*/merge_requests/[0-9]*"\''
+    )
+    sed_url = 'sed \'s/.*"\\(https[^"]*\\)"$/\\1/\''
+    return f"""
+    MR_URL=$({grep_mr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url})
+    if [ -z "$MR_URL" ]; then
+      echo "No MR URL in the create response; looking it up by source branch"
+      curl -sS \\
+        -H "PRIVATE-TOKEN: {token_ref}" \\
+        -o {PR_LOOKUP_FILE} \\
+        "https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests?state=opened&source_branch={branch}" \\
+        || echo "MR lookup by source branch failed"
+      MR_URL=$({grep_mr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
+    fi
+    if [ -n "$MR_URL" ]; then
+      echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$MR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"gitlab\\"}}"
+    else
+      echo "No merge request URL could be resolved for branch {branch}"
+    fi
+"""
+
+
 # Bounded tail for terminal-path pod log reads on Kubernetes. The artifact
 # emission always TRAILS the agent output and its payload is capped by the two
 # byte limits above, so a window of (worst-case emission lines + a generous
@@ -2327,6 +2394,11 @@ class ContainerAgentExecutor(AgentExecutor):
             # the existing review, not a new branch off main.
             source_branch = resume_branch
             target_branch = resume_branch
+            if not execution_context.get("resume_from"):
+                prior = resume.get("execution_id") if isinstance(resume, dict) else None
+                execution_context["resume_from"] = (
+                    str(prior) if prior else resume_branch
+                )
             self.logger.info(
                 "Resume clone: using existing PR branch %s as source and target",
                 resume_branch,
@@ -2350,6 +2422,39 @@ class ContainerAgentExecutor(AgentExecutor):
             )
 
         return source_branch, target_branch, commit_sha, git_user_name, git_user_email
+
+    def _is_resume_execution(self, execution_context: Dict[str, Any]) -> bool:
+        """True when this run continues a prior PR-comment execution."""
+
+        if execution_context.get("resume_from"):
+            return True
+        trigger_data = execution_context.get("trigger_event_data")
+        if not isinstance(trigger_data, dict):
+            return False
+        resume = trigger_data.get("_resume")
+        return isinstance(resume, dict) and bool(
+            resume.get("execution_id") or resume.get("source_branch")
+        )
+
+    def _resolve_resume_base_branch(
+        self,
+        git_config: Dict[str, Any],
+        repo_config: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Return the flow base branch a resume rebase should land on.
+
+        Prefers ``repositories[].branch``, then top-level ``git_clone_config.branch``,
+        then ``source_branch``, then ``main``.
+        """
+
+        if repo_config:
+            repo_branch = repo_config.get("branch")
+            if repo_branch:
+                return str(repo_branch)
+        configured = git_config.get("branch") or git_config.get("source_branch")
+        if configured:
+            return str(configured)
+        return "main"
 
     def _build_git_global_setup_commands(
         self, git_user_name: str, git_user_email: str
@@ -2699,6 +2804,72 @@ echo "  Branch: {q_target} (from {q_source})"{sha_display}
 echo "========================================="
 """.strip()
 
+    def _build_git_resume_rebase_shell(
+        self, *, full_path: str, base_branch: str
+    ) -> str:
+        """Fetch the flow base branch and rebase the cloned PR branch onto it.
+
+        On conflict the rebase is aborted (not auto-resolved). Conflicting
+        paths are written to ``/workspace/evidence/rebase-conflict.txt``
+        (prefixed with an instruction to resolve them). Resume prompts tell
+        the agent to inspect that file if it exists. ``PRELOOP_RESUME_REBASE_CONFLICT=1``
+        is exported in the container for in-container processes. The block
+        always exits 0 so a conflict does not abort init.
+        """
+
+        safe_base = _validated_git_ref(base_branch)
+        if not safe_base:
+            self.logger.warning(
+                "Skipping resume rebase: unsafe base branch %r", base_branch
+            )
+            return ""
+
+        q_path = shlex.quote(full_path)
+        conflict_file = f"{EVIDENCE_DIR_PATH}/rebase-conflict.txt"
+        rebased_marker = f"{EVIDENCE_DIR_PATH}/resume-rebased"
+        return f"""
+cd {q_path}
+echo "Resume rebase: fetching origin/{safe_base} and rebasing the PR branch onto it"
+if git fetch origin {safe_base}; then
+    if git rebase origin/{safe_base}; then
+        echo "Resume rebase onto origin/{safe_base} succeeded"
+        mkdir -p {EVIDENCE_DIR_PATH}
+        touch {rebased_marker}
+        export PRELOOP_RESUME_REBASED=1
+    else
+        echo "Resume rebase onto origin/{safe_base} conflicted; leaving rebase aborted"
+        mkdir -p {EVIDENCE_DIR_PATH}
+        {{
+            echo "git rebase onto the flow base branch conflicted and was aborted."
+            echo "Resolve these paths before continuing:"
+            git diff --name-only --diff-filter=U 2>/dev/null || true
+        }} > {conflict_file}
+        git rebase --abort || true
+        export PRELOOP_RESUME_REBASE_CONFLICT=1
+        echo "Wrote conflicting files to {conflict_file}"
+    fi
+else
+    echo "Resume rebase: could not fetch origin/{safe_base}; skipping rebase"
+fi
+cd /workspace
+true
+""".strip()
+
+    def _build_git_push_shell(self, safe_target: str, *, resume_rebase: bool) -> str:
+        """Build the post-exec push. Force-with-lease only after a resume rebase."""
+
+        if not resume_rebase:
+            return f"  git push origin {safe_target}"
+        rebased_marker = f"{EVIDENCE_DIR_PATH}/resume-rebased"
+        return (
+            f"  if [ -f {rebased_marker} ] || "
+            f'[ "${{PRELOOP_RESUME_REBASED:-}}" = "1" ]; then\n'
+            f"    git push --force-with-lease origin {safe_target}\n"
+            f"  else\n"
+            f"    git push origin {safe_target}\n"
+            f"  fi"
+        )
+
     def _build_repository_clone_command_block(
         self,
         *,
@@ -2747,7 +2918,7 @@ echo "========================================="
             trigger_data=trigger_data,
         )
 
-        return [
+        commands = [
             self._build_git_pre_clone_shell(full_path),
             self._build_git_clone_shell(repo_url, full_path, clone_branch),
             self._build_git_branch_setup_shell(
@@ -2764,6 +2935,18 @@ echo "========================================="
                 commit_sha=commit_sha,
             ),
         ]
+        if self._is_resume_execution(execution_context):
+            git_config = execution_context.get("git_clone_config") or {}
+            if not isinstance(git_config, dict):
+                git_config = {}
+            base_branch = self._resolve_resume_base_branch(git_config, repo_config)
+            rebase_shell = self._build_git_resume_rebase_shell(
+                full_path=full_path, base_branch=base_branch
+            )
+            if rebase_shell:
+                commands.append(rebase_shell)
+                execution_context["_git_resume_rebase"] = True
+        return commands
 
     def _prepare_git_clone_command(self, execution_context: Dict[str, Any]) -> str:
         """
@@ -2973,7 +3156,13 @@ echo "========================================="
                     ),
                     f'  echo "Wrote git recovery artifacts under {EVIDENCE_DIR_PATH}"',
                     push_auth,
-                    f"  git push origin {safe_target}",
+                    self._build_git_push_shell(
+                        safe_target,
+                        resume_rebase=bool(
+                            execution_context.get("_git_resume_rebase")
+                            or self._is_resume_execution(execution_context)
+                        ),
+                    ),
                 ]
 
                 # Add PR/MR creation if enabled
@@ -3023,9 +3212,10 @@ echo "========================================="
                                 if use_custom:
                                     # Use custom title and description
                                     pr_create_cmd = f"""
-    curl -X POST \\
+    curl -sS -X POST \\
       -H "Authorization: token {token_ref}" \\
       -H "Accept: application/vnd.github.v3+json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://api.github.com/repos/{owner}/{repo}/pulls \\
       -d "$(cat <<'PREOF'
 {{
@@ -3037,7 +3227,12 @@ echo "========================================="
 PREOF
 )" \\
       || echo "Failed to create PR (may already exist)"
-"""
+""" + build_github_pr_capture_shell(
+                                        token_ref=token_ref,
+                                        owner=owner,
+                                        repo=repo,
+                                        branch=target_branch,
+                                    )
                                 else:
                                     # Build title and description from commits
                                     execution_link = f"{preloop_url}/console/flows/executions/{execution_id}"
@@ -3056,9 +3251,10 @@ PREOF
     fi
 
     # Create PR with dynamic title/body
-    curl -X POST \\
+    curl -sS -X POST \\
       -H "Authorization: token {token_ref}" \\
       -H "Accept: application/vnd.github.v3+json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://api.github.com/repos/{owner}/{repo}/pulls \\
       -d "$(cat <<PREOF
 {{
@@ -3070,7 +3266,12 @@ PREOF
 PREOF
 )" \\
       || echo "Failed to create PR (may already exist)"
-"""
+""" + build_github_pr_capture_shell(
+                                        token_ref=token_ref,
+                                        owner=owner,
+                                        repo=repo,
+                                        branch=target_branch,
+                                    )
                                 repo_post_commands.append(pr_create_cmd)
 
                     elif tracker_type == "gitlab":
@@ -3125,9 +3326,10 @@ PREOF
                                 # Use custom title and description
                                 mr_create_cmd = f"""
     echo "Creating Merge Request on {gitlab_host}..."
-    curl -X POST \\
+    curl -sS -X POST \\
       -H "PRIVATE-TOKEN: {token_ref}" \\
       -H "Content-Type: application/json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests \\
       -d "$(cat <<'MREOF'
 {{
@@ -3139,7 +3341,12 @@ PREOF
 MREOF
 )" \\
       || echo "Failed to create MR (may already exist)"
-"""
+""" + build_gitlab_mr_capture_shell(
+                                    token_ref=token_ref,
+                                    gitlab_host=gitlab_host,
+                                    encoded_path=encoded_path,
+                                    branch=target_branch,
+                                )
                             else:
                                 # Build title and description from commits
                                 execution_link = f"{preloop_url}/console/flows/executions/{execution_id}"
@@ -3158,9 +3365,10 @@ MREOF
     fi
 
     echo "Creating Merge Request on {gitlab_host}..."
-    curl -X POST \\
+    curl -sS -X POST \\
       -H "PRIVATE-TOKEN: {token_ref}" \\
       -H "Content-Type: application/json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests \\
       -d "$(cat <<MREOF
 {{
@@ -3172,7 +3380,12 @@ MREOF
 MREOF
 )" \\
       || echo "Failed to create MR (may already exist)"
-"""
+""" + build_gitlab_mr_capture_shell(
+                                    token_ref=token_ref,
+                                    gitlab_host=gitlab_host,
+                                    encoded_path=encoded_path,
+                                    branch=target_branch,
+                                )
                             repo_post_commands.append(mr_create_cmd)
 
                 repo_post_commands.extend(

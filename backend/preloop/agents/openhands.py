@@ -18,6 +18,7 @@ from preloop.utils.git_credentials import (
 )
 
 from .container import ContainerAgentExecutor
+from .images import default_agent_image
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +41,7 @@ class OpenHandsAgent(ContainerAgentExecutor):
                 - max_iterations: Maximum number of agent iterations
                 - custom settings for OpenHands
         """
-        # Use OpenHands Docker image (custom build with tmux for local runtime)
-        image = os.getenv("OPENHANDS_IMAGE", "spacebridge/openhands:latest-tmux")
+        image = default_agent_image("openhands") or "spacebridge/openhands:latest-tmux"
 
         super().__init__(
             agent_type="openhands",

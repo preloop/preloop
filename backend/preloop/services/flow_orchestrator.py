@@ -49,7 +49,17 @@ from preloop.services.flow_execution_notifications import (
 )
 from preloop.services.prompt_resolvers.execution import execution_console_url
 from preloop.config import settings
-from preloop.services.flow_pr_binding import merge_result_preserving_pr_binding
+from preloop.services.flow_pr_binding import (
+    PR_OPENED_MARKER,
+    find_bound_execution,
+    max_resumes_per_pr,
+    merge_result_preserving_pr_binding,
+    note_resume_started,
+    parse_pr_opened_marker,
+    record_opened_pr,
+    resume_count,
+    take_pending_followup,
+)
 from preloop.services.prompt_resolvers import (
     resolver_registry,
     ResolverContext,
@@ -58,6 +68,7 @@ from preloop.services.prompt_resolvers import (
     AccountResolver,
     ExecutionResolver,
 )
+from preloop.services.prompt_resolvers.execution import resume_rebase_conflict_hint
 from preloop.services.flow_execution_logger import FlowExecutionLogger
 from preloop.services.flow_runtime_token import (
     create_flow_runtime_token,
@@ -400,6 +411,9 @@ class FlowExecutionOrchestrator:
         self._command_subscription: Optional[Any] = None
         self._stop_requested = asyncio.Event()
         self._success_sentinel_seen = asyncio.Event()
+        # PR/MR the container wrapper opened in its post-execution step, read
+        # from the PRELOOP_PR_OPENED log line and bound at terminal status.
+        self._opened_pr: Optional[Dict[str, str]] = None
         self._agent_exec_started = (
             False  # Set when AGENT_EXEC_START_MARKER seen in logs
         )
@@ -1113,6 +1127,13 @@ class FlowExecutionOrchestrator:
                     logger.warning(
                         f"No resolver found for prefix '{prefix}' and simple resolution failed for {{{{{placeholder}}}}}"
                     )
+
+        # Resume runs always learn to inspect rebase-conflict.txt, because
+        # the rebase happens after this prompt is resolved. Keep this before
+        # the success-confirmation instruction, which must stay last.
+        resolved_prompt = resolved_prompt + resume_rebase_conflict_hint(
+            self.trigger_event_data
+        )
 
         # Append the success-confirmation instruction so the agent can signal
         # completion. MUST stay at the very END of the prompt (recency): after
@@ -2153,6 +2174,12 @@ class FlowExecutionOrchestrator:
                         )
                         self._success_sentinel_seen.set()
 
+                # PR/MR opened by the wrapper's post-execution curl. The
+                # response never reaches Python, so the line is the binding
+                # channel (MCP create_pull_request binds directly instead).
+                if PR_OPENED_MARKER in stripped_line:
+                    self._note_opened_pr(stripped_line)
+
                 # In-place completion nudge markers printed by the agent
                 # script. Order matters: the result marker shares the start
                 # marker's prefix, so the exact match is tested first.
@@ -2606,6 +2633,111 @@ class FlowExecutionOrchestrator:
         if not isinstance(logs, list):
             return []
         return [line for line in logs if isinstance(line, str)]
+
+    def _note_opened_pr(self, line: str) -> None:
+        """Remember the PR/MR the wrapper opened (first one wins)."""
+        parsed = parse_pr_opened_marker(line)
+        if not parsed:
+            return
+        if self._opened_pr is not None:
+            return
+        self._opened_pr = parsed
+        logger.info("Wrapper opened a pull request for this execution")
+        self.execution_logger.log_milestone(
+            "pull_request_opened",
+            {
+                "pr_url": parsed.get("url"),
+                "branch": parsed.get("branch"),
+                "provider": parsed.get("provider"),
+            },
+        )
+
+    def _bind_opened_pr(self, output_summary: Optional[str]) -> None:
+        """Persist the wrapper-opened PR on this execution's result.
+
+        Runs on the terminal path so a later comment on that PR can resume
+        this flow. ``output_summary`` is rescanned when the live stream
+        missed the marker line (reconnects can drop the tail).
+        """
+        if self._opened_pr is None and output_summary:
+            for line in output_summary.splitlines():
+                if PR_OPENED_MARKER in line:
+                    self._note_opened_pr(line)
+                    break
+        if self._opened_pr is None or self.execution_log is None:
+            return
+        record_opened_pr(
+            self.db,
+            self.execution_log.id,
+            self._opened_pr.get("url", ""),
+            source_branch=self._opened_pr.get("branch"),
+        )
+
+    async def _start_queued_followup(self) -> None:
+        """Start the single follow-up resume queued while this run was going.
+
+        Comments that arrive during a run set ``result.pending_followup``
+        instead of starting a competing execution; many comments collapse into
+        one flag, so exactly one follow-up run is started here.
+        """
+        if self.execution_log is None or self.flow is None:
+            return
+        try:
+            followup = take_pending_followup(self.db, self.execution_log)
+            if not followup:
+                return
+            event_data = dict(self.execution_log.trigger_event_details or {})
+            resume = dict(event_data.get("_resume") or {})
+            resume["execution_id"] = str(self.execution_log.id)
+            if followup.get("pr_url"):
+                resume["pr_url"] = followup["pr_url"]
+            if followup.get("source_branch"):
+                resume["source_branch"] = followup["source_branch"]
+            if followup.get("comment_url"):
+                resume["comment_url"] = followup["comment_url"]
+            resume["followup_of_execution_id"] = str(self.execution_log.id)
+            event_data["_resume"] = resume
+            event_data.pop("test_mode", None)
+
+            pr_url = resume.get("pr_url")
+            opener = self.execution_log
+            if pr_url:
+                found = find_bound_execution(self.db, self.flow.id, pr_url)
+                if found is not None:
+                    opener = found
+            cap = max_resumes_per_pr(self.flow)
+            started = resume_count(opener)
+            if started >= cap:
+                logger.info(
+                    "Skipping queued follow-up for execution %s: already "
+                    "started %s/%s resumes for this PR",
+                    self.execution_log.id,
+                    started,
+                    cap,
+                )
+                return
+            resume["resume_index"] = note_resume_started(self.db, opener)
+            event_data["_resume"] = resume
+
+            from preloop.services.flow_trigger_service import FlowTriggerService
+
+            trigger_service = FlowTriggerService(self.db)
+            await trigger_service._start_flow_execution(
+                flow=self.flow,
+                event_data=event_data,
+                nats_client=self.nats_client,
+            )
+            logger.info(
+                "Started queued follow-up resume after execution %s (index %s)",
+                self.execution_log.id,
+                resume.get("resume_index"),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to start the queued follow-up resume for execution %s",
+                getattr(self.execution_log, "id", None),
+                exc_info=True,
+            )
 
     def _note_inplace_nudge(self, *, source: str) -> None:
         """Record that the agent script ran its own completion reminder.
@@ -4022,6 +4154,11 @@ class FlowExecutionOrchestrator:
                     # (expire + rebind the execution row) instead.
                     self.db.rollback()
 
+            # The wrapper opens PRs with a raw curl whose response never
+            # reaches Python; bind it here, before the refresh below, so the
+            # merged result keeps pr_url for comment-driven resume.
+            self._bind_opened_pr(output_summary)
+
             # MCP create_pull_request writes pr_url onto result in another
             # session. Refresh so a None agent result cannot wipe the binding.
             try:
@@ -4086,6 +4223,10 @@ class FlowExecutionOrchestrator:
             logger.info(
                 f"Flow execution completed with status {final_status}: {self.execution_log.id}"
             )
+
+            # Comments that arrived while this run was going were queued as a
+            # single follow-up; start it now that the run is terminal.
+            await self._start_queued_followup()
 
         except asyncio.CancelledError:
             # Deploy drain: the worker cancels in-flight handlers, releases the
@@ -4165,6 +4306,9 @@ class FlowExecutionOrchestrator:
                         f"Failed to update execution log after error: {update_error}",
                         exc_info=True,
                     )
+                # A failed run is still terminal: release the queued
+                # follow-up so a review comment is not lost with it.
+                await self._start_queued_followup()
             else:
                 logger.error("Cannot update execution log - not created yet")
         finally:

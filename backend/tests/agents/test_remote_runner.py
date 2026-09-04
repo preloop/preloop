@@ -10,7 +10,11 @@ import pytest
 
 from preloop.agents.factory import create_executor_for_execution
 from preloop.agents.codex import CodexAgent
-from preloop.agents.remote_runner import RemoteRunnerExecutor
+from preloop.agents.images import default_agent_image
+from preloop.agents.remote_runner import (
+    RemoteRunnerExecutor,
+    payload_for_log,
+)
 from preloop.agents.base import AgentStatus
 from preloop.services.runner_service import persistable_job_payload
 
@@ -187,6 +191,127 @@ def test_factory_uses_remote_runner_when_pool_set() -> None:
     )
     assert isinstance(executor, RemoteRunnerExecutor)
     assert executor.pool == "local"
+
+
+def test_lease_payload_injects_default_image() -> None:
+    execution_id = uuid4()
+    flow_id = uuid4()
+    executor = RemoteRunnerExecutor(
+        "opencode", {}, db=MagicMock(), pool="local", account_id=uuid4()
+    )
+    payload = executor._lease_payload(
+        execution_id=execution_id,
+        flow_id=flow_id,
+        prompt="review",
+        execution_context={"agent_type": "opencode", "agent_config": {}},
+    )
+    image = default_agent_image("opencode")
+    assert image
+    assert payload["agent_config"]["image"] == image
+
+
+def test_lease_payload_keeps_explicit_image() -> None:
+    executor = RemoteRunnerExecutor(
+        "codex", {}, db=MagicMock(), pool="local", account_id=uuid4()
+    )
+    payload = executor._lease_payload(
+        execution_id=uuid4(),
+        flow_id=uuid4(),
+        prompt="review",
+        execution_context={
+            "agent_type": "codex",
+            "agent_config": {"docker_image": "custom/codex:dev"},
+        },
+    )
+    assert payload["agent_config"]["docker_image"] == "custom/codex:dev"
+    assert "image" not in payload["agent_config"]
+
+
+def test_lease_payload_includes_resume_from() -> None:
+    prior = uuid4()
+    executor = RemoteRunnerExecutor(
+        "codex", {}, db=MagicMock(), pool="local", account_id=uuid4()
+    )
+    payload = executor._lease_payload(
+        execution_id=uuid4(),
+        flow_id=uuid4(),
+        prompt="continue",
+        execution_context={
+            "agent_type": "codex",
+            "agent_config": {"image": "preloop/codex:latest"},
+            "trigger_event_data": {"_resume": {"execution_id": str(prior)}},
+        },
+    )
+    assert payload["resume_from"] == str(prior)
+
+
+def test_payload_for_log_omits_credentials() -> None:
+    token = "live-runtime-token-should-never-log"
+    api_key = "sk-live-openai-key-should-never-log"
+    redacted = payload_for_log(
+        {
+            "execution_id": "exec-1",
+            "agent_type": "codex",
+            "account_api_token": token,
+            "prompt": "do the work",
+            "agent_config": {
+                "image": "preloop/agent:dev",
+                "openai_api_key": api_key,
+                "api_key": api_key,
+            },
+        }
+    )
+    dumped = str(redacted)
+    assert token not in dumped
+    assert api_key not in dumped
+    assert "account_api_token" not in redacted
+    assert "agent_config" not in redacted
+    assert redacted["agent_type"] == "codex"
+    assert redacted["image"] == "preloop/agent:dev"
+
+
+@pytest.mark.asyncio
+async def test_start_logs_do_not_include_token(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    token = "super-secret-runtime-token"
+    api_key = "sk-live-openai-key-should-never-log"
+    execution_id = uuid4()
+    runner = SimpleNamespace(id=uuid4(), pending_job=None)
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.lease_job",
+        lambda *args, **kwargs: runner,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_execution.get",
+        lambda *args, **kwargs: SimpleNamespace(
+            id=execution_id,
+            runner_id=None,
+            agent_session_reference=None,
+        ),
+    )
+
+    async def fake_push(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr("preloop.agents.remote_runner._push_job", fake_push)
+    executor = RemoteRunnerExecutor(
+        "codex", {}, db=MagicMock(), pool="local", account_id=uuid4()
+    )
+    with caplog.at_level(logging.DEBUG):
+        await executor.start(
+            {
+                "execution_id": str(execution_id),
+                "account_api_token": token,
+                "agent_type": "codex",
+                "agent_config": {"openai_api_key": api_key, "api_key": api_key},
+            }
+        )
+    assert token not in caplog.text
+    assert api_key not in caplog.text
+    assert f"Leased execution {execution_id}" in caplog.text
 
 
 def test_factory_keeps_hosted_executor_without_pool() -> None:

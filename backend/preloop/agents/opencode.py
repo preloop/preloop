@@ -20,6 +20,7 @@ from .completion_nudge import (
     completion_nudge_timeout_seconds,
 )
 from .container import ContainerAgentExecutor
+from .images import default_agent_image
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ class OpenCodeAgent(ContainerAgentExecutor):
                 - model: Model identifier to use (required, no default)
                 - custom settings for OpenCode CLI
         """
-        image = os.getenv("OPENCODE_IMAGE", "docker/sandbox-templates:opencode")
+        image = default_agent_image("opencode") or "docker/sandbox-templates:opencode"
 
         # Auto-detect Kubernetes environment or use explicit env var
         use_k8s = self._detect_kubernetes_environment()
