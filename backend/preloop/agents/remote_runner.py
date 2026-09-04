@@ -16,7 +16,6 @@ from preloop.services.runner_service import (
     DEFAULT_QUEUE_TIMEOUT,
     lease_job,
     mark_queued_or_fail,
-    persistable_job_payload,
 )
 
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
@@ -68,12 +67,13 @@ class RemoteRunnerExecutor(AgentExecutor):
                 execution.agent_session_reference = f"runner:{runner.id}:{execution_id}"
                 self.db.add(execution)
                 self.db.commit()
+            summary = payload_for_log(payload)
             logger.info(
-                "Leased execution %s to runner %s (pool %s) payload=%s",
+                "Leased execution %s to runner %s (pool %s) agent_type=%s",
                 execution_id,
                 runner.id,
                 self.pool,
-                payload_for_log(payload),
+                summary.get("agent_type"),
             )
             await _push_job(runner.id, payload)
             return f"runner:{runner.id}:{execution_id}"
@@ -338,8 +338,19 @@ def _resume_from_execution_id(
 
 
 def payload_for_log(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a lease payload safe to write to logs (no live token)."""
-    return persistable_job_payload(payload)
+    """Identifiers only — never tokens, prompt, git config, or agent_config."""
+
+    agent_config = payload.get("agent_config")
+    image = None
+    if isinstance(agent_config, dict):
+        raw = agent_config.get("image")
+        if isinstance(raw, str) and raw.strip():
+            image = raw.strip()
+    return {
+        "execution_id": payload.get("execution_id"),
+        "agent_type": payload.get("agent_type"),
+        "image": image,
+    }
 
 
 def _execution_id_from_ref(session_reference: str) -> Optional[UUID]:

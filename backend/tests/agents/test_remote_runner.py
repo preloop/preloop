@@ -245,17 +245,29 @@ def test_lease_payload_includes_resume_from() -> None:
     assert payload["resume_from"] == str(prior)
 
 
-def test_payload_for_log_strips_account_api_token() -> None:
+def test_payload_for_log_omits_credentials() -> None:
     token = "live-runtime-token-should-never-log"
+    api_key = "sk-live-openai-key-should-never-log"
     redacted = payload_for_log(
         {
             "execution_id": "exec-1",
+            "agent_type": "codex",
             "account_api_token": token,
-            "agent_config": {"image": "preloop/agent:dev"},
+            "prompt": "do the work",
+            "agent_config": {
+                "image": "preloop/agent:dev",
+                "openai_api_key": api_key,
+                "api_key": api_key,
+            },
         }
     )
-    assert token not in str(redacted)
+    dumped = str(redacted)
+    assert token not in dumped
+    assert api_key not in dumped
     assert "account_api_token" not in redacted
+    assert "agent_config" not in redacted
+    assert redacted["agent_type"] == "codex"
+    assert redacted["image"] == "preloop/agent:dev"
 
 
 @pytest.mark.asyncio
@@ -265,6 +277,7 @@ async def test_start_logs_do_not_include_token(
     import logging
 
     token = "super-secret-runtime-token"
+    api_key = "sk-live-openai-key-should-never-log"
     execution_id = uuid4()
     runner = SimpleNamespace(id=uuid4(), pending_job=None)
     monkeypatch.setattr(
@@ -292,10 +305,13 @@ async def test_start_logs_do_not_include_token(
             {
                 "execution_id": str(execution_id),
                 "account_api_token": token,
-                "agent_config": {},
+                "agent_type": "codex",
+                "agent_config": {"openai_api_key": api_key, "api_key": api_key},
             }
         )
     assert token not in caplog.text
+    assert api_key not in caplog.text
+    assert f"Leased execution {execution_id}" in caplog.text
 
 
 def test_factory_keeps_hosted_executor_without_pool() -> None:
