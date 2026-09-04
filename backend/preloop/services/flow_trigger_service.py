@@ -1086,6 +1086,35 @@ class FlowTriggerService:
                                 resume.get("execution_id"),
                                 resume.get("pr_url"),
                             )
+                    from preloop.services.flow_ci_feedback import (
+                        CI_FAILURE_EVENT_TYPES,
+                        bind_ci_failure_resume_or_skip,
+                        flow_requires_ci_failure_resume,
+                    )
+
+                    if (
+                        event_type in CI_FAILURE_EVENT_TYPES
+                        and flow_requires_ci_failure_resume(flow)
+                    ):
+                        ci_resume = bind_ci_failure_resume_or_skip(
+                            self.db, flow, event_type, event_copy
+                        )
+                        if ci_resume is None:
+                            logger.info(
+                                "Skipping %s on flow '%s' (%s): no failing CI run "
+                                "bound to a PR this flow opened, or the resume "
+                                "cap was reached",
+                                event_type,
+                                flow.name,
+                                flow.id,
+                            )
+                            continue
+                        logger.info(
+                            "Resuming flow '%s' from execution %s after CI failure on %s",
+                            flow.name,
+                            ci_resume.get("execution_id"),
+                            ci_resume.get("pr_url"),
+                        )
                     await self._start_flow_execution(
                         flow=flow,
                         event_data=event_copy,
