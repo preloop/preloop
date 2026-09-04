@@ -33,7 +33,6 @@ class ParsedNotifications:
     """Resolved on/off flags for one terminal notification pass."""
 
     on_failure_comment: bool
-    on_failure_attention: bool
     on_success_comment: bool
 
 
@@ -43,7 +42,6 @@ class NotificationOutcome:
 
     failure_comment_posted: bool = False
     success_comment_posted: bool = False
-    attention_item_raised: bool = False
     skipped_reason: Optional[str] = None
 
 
@@ -74,14 +72,9 @@ def parse_notifications(raw: Any) -> Optional[ParsedNotifications]:
 
     parsed = ParsedNotifications(
         on_failure_comment=bool(on_failure.get("comment_on_trigger_issue")),
-        on_failure_attention=bool(on_failure.get("attention_item")),
         on_success_comment=bool(on_success.get("comment_on_trigger_issue")),
     )
-    if not (
-        parsed.on_failure_comment
-        or parsed.on_failure_attention
-        or parsed.on_success_comment
-    ):
+    if not (parsed.on_failure_comment or parsed.on_success_comment):
         return None
     return parsed
 

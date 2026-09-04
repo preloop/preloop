@@ -95,7 +95,7 @@ class TestParseNotifications:
         parsed = parse_notifications(_notifications(failure_comment=True))
         assert parsed is not None
         assert parsed.on_failure_comment is True
-        assert parsed.on_failure_attention is False
+        assert parsed.on_success_comment is False
 
         model = FlowNotifications(
             on_failure=FlowFailureNotifications(
@@ -106,8 +106,10 @@ class TestParseNotifications:
         )
         parsed_model = parse_notifications(model)
         assert parsed_model is not None
-        assert parsed_model.on_failure_attention is True
         assert parsed_model.on_success_comment is True
+        assert parsed_model.on_failure_comment is False
+
+        assert parse_notifications(_notifications(attention=True)) is None
 
 
 class TestTriggerTarget:
@@ -245,7 +247,6 @@ class TestNotifyTerminalExecution:
         )
         assert outcome.failure_comment_posted is True
         assert outcome.success_comment_posted is False
-        assert outcome.attention_item_raised is False
         assert tracker.add_comment.await_count == 1
         issue_id, comment = tracker.calls[0]
         assert issue_id == "42"
@@ -285,7 +286,6 @@ class TestNotifyTerminalExecution:
             tracker_client=tracker,
         )
         assert outcome.failure_comment_posted is False
-        assert outcome.attention_item_raised is False
         tracker.add_comment.assert_not_awaited()
 
     async def test_success_posts_pr_opened_comment(self) -> None:

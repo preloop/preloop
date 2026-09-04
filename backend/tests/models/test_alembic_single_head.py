@@ -98,4 +98,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert flow_timeout.down_revision == "20260903_failure_category"
     account_runner_pool = script.get_revision("20260904_acct_runner_pool")
     assert account_runner_pool.down_revision == "20260903_flow_timeout"
-    assert script.get_heads() == ["20260904_acct_runner_pool"]
+    notifications = script.get_revision("20260904_flow_notifications")
+    assert notifications.down_revision == "20260904_acct_runner_pool"
+    assert script.get_heads() == ["20260904_flow_notifications"]
