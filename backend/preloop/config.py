@@ -419,6 +419,27 @@ class Settings(BaseSettings):
             "penny-sized spend where drift percentages are meaningless."
         ),
     )
+    workspace_snapshot_max_bytes: int = Field(
+        512 * 1024 * 1024,
+        description=(
+            "Cap on the workspace snapshot (tar.gz of /workspace) captured at "
+            "the end of every hosted flow run so an execution that failed "
+            "before pushing can be restored. Workspaces larger than this are "
+            "skipped with a logged reason. On Kubernetes the snapshot travels "
+            "through the pod log stream and is additionally capped at 2 MiB "
+            "(WORKSPACE_SNAPSHOT_MAX_BYTES)."
+        ),
+    )
+    workspace_snapshot_ttl_hours: int = Field(
+        24,
+        description=(
+            "How long captured workspace snapshots (and Docker "
+            "agent-workspace-* volumes) are retained before the janitor "
+            "deletes them, in hours. 0 disables retention: snapshots are "
+            "deleted on the next janitor pass "
+            "(WORKSPACE_SNAPSHOT_TTL_HOURS)."
+        ),
+    )
     cost_digest_enabled: bool = Field(
         True,
         description=(

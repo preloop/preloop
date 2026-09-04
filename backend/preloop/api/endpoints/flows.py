@@ -729,6 +729,42 @@ def get_flow_execution_evidence(
     )
 
 
+@router.get("/flows/executions/{execution_id}/workspace")
+@require_permission("view_flows")
+def get_flow_execution_workspace(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> Response:
+    """Download the workspace snapshot captured for a flow execution.
+
+    Every hosted run leaves a size-capped tar.gz of ``/workspace`` (``.git``
+    included, so commits that were never pushed are in it) behind. Returns 404
+    if the execution does not exist, if the workspace was too large to keep,
+    or if the retention window has passed and the janitor reaped it.
+    """
+    execution = crud_flow_execution.get(
+        db=db, id=execution_id, account_id=current_user.account_id
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Flow execution not found")
+    if not execution.workspace_snapshot:
+        raise HTTPException(
+            status_code=404,
+            detail="Flow execution has no captured workspace snapshot",
+        )
+    return Response(
+        content=bytes(execution.workspace_snapshot),
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="workspace-{execution.id}.tar.gz"'
+            )
+        },
+    )
+
+
 @router.get("/flows/executions/{execution_id}/logs")
 @require_permission("view_flows")
 async def get_flow_execution_logs(

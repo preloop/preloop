@@ -91,6 +91,15 @@ class FlowExecution(Base):
     # GET /flows/executions/{id}/evidence. Deliberately NOT exposed on the
     # execution response schemas.
     evidence_archive = Column(LargeBinary, nullable=True)
+    # Workspace snapshot (tar.gz of /workspace, .git included) captured by the
+    # runner on every terminal path so work that was never pushed survives the
+    # container. Size-capped at capture time
+    # (settings.workspace_snapshot_max_bytes); served by
+    # GET /flows/executions/{id}/workspace, restored on a correlated resume,
+    # and reaped by the workspace janitor after
+    # settings.workspace_snapshot_ttl_hours. Deliberately NOT exposed on the
+    # execution response schemas.
+    workspace_snapshot = Column(LargeBinary, nullable=True)
     execution_logs = Column(
         JSONB, nullable=True
     )  # Full execution logs (array of log messages)

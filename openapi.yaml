@@ -7528,6 +7528,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/executions/{execution_id}/workspace:
+    get:
+      tags:
+      - Flows
+      summary: Get Flow Execution Workspace
+      description: 'Download the workspace snapshot captured for a flow execution.
+
+
+        Every hosted run leaves a size-capped tar.gz of ``/workspace`` (``.git``
+
+        included, so commits that were never pushed are in it) behind. Returns 404
+
+        if the execution does not exist, if the workspace was too large to keep,
+
+        or if the retention window has passed and the janitor reaped it.'
+      operationId: get_flow_execution_workspace_api_v1_flows_executions__execution_id__workspace_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/flows/executions/{execution_id}/logs:
     get:
       tags:
@@ -14702,6 +14740,15 @@ components:
           - type: 'null'
           title: Target Branch
           description: Branch to create for commits (auto-generated if empty)
+        setup_commands:
+          items:
+            type: string
+          type: array
+          title: Setup Commands
+          description: Shell commands run inside the container after clone/restore
+            and before the agent starts (dependency install, service bring-up). Output
+            is captured to /workspace/evidence/setup.log; a failure fails the execution
+            with failure_category 'setup_failed'.
         create_pull_request:
           anyOf:
           - type: boolean
@@ -14764,6 +14811,15 @@ components:
           - type: 'null'
           title: Target Branch
           description: Branch to create for commits (auto-generated if empty)
+        setup_commands:
+          items:
+            type: string
+          type: array
+          title: Setup Commands
+          description: Shell commands run inside the container after clone/restore
+            and before the agent starts (dependency install, service bring-up). Output
+            is captured to /workspace/evidence/setup.log; a failure fails the execution
+            with failure_category 'setup_failed'.
         create_pull_request:
           anyOf:
           - type: boolean
