@@ -665,5 +665,44 @@ describe('CostView', () => {
         'openai-compatible/muse-spark'
       );
     });
+
+    it('async reprice never reports a negative priced count', async () => {
+      repriceResult = {
+        ...repriceResult,
+        submitted_async: true,
+        rows_examined: null,
+        rows_updated: null,
+        rows_skipped: null,
+      };
+      // Live traffic adds unpriced rows during the poll window: the count
+      // moves (2 -> 5), so the poll stops early, but nothing was priced.
+      let summaryFetches = 0;
+      summaryResponder = () => {
+        summaryFetches += 1;
+        return summaryFetches > 1
+          ? { ...summaryPayload, unpriced_requests: 5, unpriced_tokens: 9000 }
+          : summaryPayload;
+      };
+      const element = await loadView();
+
+      const reprice = bannerButton(element, 'Reprice now');
+      expect(reprice).to.exist;
+      (reprice as HTMLElement).click();
+
+      await waitUntil(() => {
+        const state = element as unknown as {
+          repriceNotice: string | null;
+          repricing: boolean;
+        };
+        return !state.repricing && state.repriceNotice?.includes('No change');
+      });
+      await element.updateComplete;
+
+      const state = element as unknown as { repriceNotice: string | null };
+      expect(state.repriceNotice).to.not.match(/-\d+ requests priced/);
+      expect(state.repriceNotice).to.contain('price override');
+      // The banner reloads to the grown count, still naming the model.
+      expect(banner(element)?.textContent).to.contain('5');
+    });
   });
 });

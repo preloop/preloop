@@ -926,7 +926,11 @@ export class CostView extends AuthedElement {
     if (remaining === 0) {
       return 'Reprice finished: every request in this window now has a cost estimate.';
     }
-    if (changed) {
+    // Live traffic can add unpriced rows during the poll window, leaving
+    // `remaining` at or above `previousUnpriced` even when the count moved.
+    // A negative "requests priced" would be nonsense, so only the strictly
+    // decreased case reports a priced count; the rest reads as no change.
+    if (changed && remaining < previousUnpriced) {
       return (
         `Reprice finished: ${this.formatNumber(previousUnpriced - remaining)} ` +
         `requests priced, ${this.formatNumber(remaining)} still unpriced. ` +
