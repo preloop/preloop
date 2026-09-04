@@ -13,6 +13,7 @@ from preloop.services.mcp_config_service import MCPConfigService
 from preloop.services.model_runtime_resolver import gateway_url_for_api
 
 from .container import ContainerAgentExecutor
+from .images import default_agent_image
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +74,7 @@ class GeminiAgent(ContainerAgentExecutor):
                 - model: Gemini model to use (default: gemini-3-pro-preview)
                 - custom settings for Gemini CLI
         """
-        # Use the Gemini CLI sandbox image that supports `gemini mcp add`
-        image = os.getenv(
-            "GEMINI_IMAGE",
-            "docker/sandbox-templates:gemini",
-        )
+        image = default_agent_image("gemini") or "docker/sandbox-templates:gemini"
 
         # Auto-detect Kubernetes environment or use explicit env var
         use_k8s = self._detect_kubernetes_environment()

@@ -79,14 +79,15 @@ func TestRunnerJobEnvMatchesHostedContract(t *testing.T) {
 	}
 	env := runnerJobEnv(job, "https://review.preloop.ai")
 	want := map[string]string{
-		"EXECUTION_ID":      "exec-1",
-		"FLOW_ID":           "flow-1",
-		"AGENT_PROMPT":      "review the PR",
-		"AI_MODEL":          "claude-sonnet-4-5",
-		"AI_MODEL_PROVIDER": "anthropic",
-		"PRELOOP_API_TOKEN": "secret-token",
-		"PRELOOP_URL":       "https://review.preloop.ai",
-		"AGENT_CONFIG":      `{"image":"preloop/agent:dev"}`,
+		"EXECUTION_ID":         "exec-1",
+		"FLOW_ID":              "flow-1",
+		"AGENT_PROMPT":         "review the PR",
+		"AI_MODEL":             "claude-sonnet-4-5",
+		"AI_MODEL_PROVIDER":    "anthropic",
+		"PRELOOP_API_TOKEN":    "secret-token",
+		"PRELOOP_URL":          "https://review.preloop.ai",
+		"AGENT_CONFIG":         `{"image":"preloop/agent:dev"}`,
+		"COMPOSE_PROJECT_NAME": "preloop-exec1",
 	}
 	if len(env) != len(want) {
 		t.Fatalf("env = %v, want %v", env, want)
@@ -100,7 +101,10 @@ func TestRunnerJobEnvMatchesHostedContract(t *testing.T) {
 
 func TestRunnerJobEnvSkipsMissingFields(t *testing.T) {
 	env := runnerJobEnv(map[string]any{"execution_id": "exec-1"}, "")
-	if len(env) != 1 || env["EXECUTION_ID"] != "exec-1" {
+	if env["EXECUTION_ID"] != "exec-1" || env["COMPOSE_PROJECT_NAME"] != "preloop-exec1" {
+		t.Fatalf("env = %v", env)
+	}
+	if len(env) != 2 {
 		t.Fatalf("env = %v", env)
 	}
 }
@@ -109,7 +113,7 @@ func TestDockerRunArgsUsesBareEnvFlags(t *testing.T) {
 	args := dockerRunArgs("preloop/agent:dev", map[string]string{
 		"PRELOOP_API_TOKEN": "secret-token",
 		"EXECUTION_ID":      "exec-1",
-	})
+	}, runnerDockerOpts{})
 	want := []string{
 		"run", "--rm",
 		"-e", "EXECUTION_ID",
@@ -773,7 +777,7 @@ func TestRunnerFgInterruptDuringBackoffKillsJob(t *testing.T) {
 	oldDocker, oldCmd := runnerHasDocker, newRunnerJobCmd
 	pidPath := filepath.Join(t.TempDir(), "job.pid")
 	runnerHasDocker = func() bool { return true }
-	newRunnerJobCmd = func(image string, env map[string]string) *exec.Cmd {
+	newRunnerJobCmd = func(image string, env map[string]string, opts runnerDockerOpts) *exec.Cmd {
 		// Pid file instead of sharing *exec.Cmd: the runner calls Start/Wait
 		// on that Cmd, and -race flags unsynchronized reads of Process /
 		// ProcessState from the test goroutine (GitLab test:unit:cli).
@@ -983,4 +987,182 @@ func TestRunnerControlPlaneURLFailsClosedOnBadConfig(t *testing.T) {
 	if _, err := runnerControlPlaneURL(); err == nil {
 		t.Fatal("expected resolve failure")
 	}
+}
+
+func TestDockerRunArgsHonorTrustedRunnerFlags(t *testing.T) {
+	args := dockerRunArgs("preloop/agent:dev", map[string]string{
+		"COMPOSE_PROJECT_NAME": "preloop-abcd1234",
+		"EXECUTION_ID":         "abcd1234-0000-4000-8000-000000000001",
+	}, runnerDockerOpts{
+		MountDockerSocket: true,
+		PersistWorkspace:  true,
+		WorkspaceHostDir:  "/tmp/preloop-workspaces/exec-1",
+		ExtraMounts:       []string{"/var/cache/builds:/cache:ro"},
+		Network:           "preloop-trusted",
+	})
+	joined := strings.Join(args, " ")
+	if args[0] != "run" || args[1] != "--rm" {
+		t.Fatalf("jobs must keep docker run --rm: %v", args)
+	}
+	if !containsPair(args, "-v", "/var/run/docker.sock:/var/run/docker.sock") {
+		t.Fatalf("missing docker.sock mount: %v", args)
+	}
+	if !containsPair(args, "-v", "/tmp/preloop-workspaces/exec-1:/workspace") {
+		t.Fatalf("missing workspace mount: %v", args)
+	}
+	if !containsPair(args, "-v", "/var/cache/builds:/cache:ro") {
+		t.Fatalf("missing extra mount: %v", args)
+	}
+	if !containsPair(args, "--network", "preloop-trusted") {
+		t.Fatalf("missing network: %v", args)
+	}
+	if !containsPair(args, "-e", "COMPOSE_PROJECT_NAME") {
+		t.Fatalf("missing compose project env flag: %v", args)
+	}
+	if strings.Contains(joined, "secret") {
+		t.Fatalf("unexpected secret in argv: %v", args)
+	}
+}
+
+func TestDockerRunArgsOmitsTrustMountsWhenDisabled(t *testing.T) {
+	args := dockerRunArgs("preloop/agent:dev", map[string]string{"EXECUTION_ID": "e1"}, runnerDockerOpts{})
+	joined := strings.Join(args, " ")
+	if !strings.HasPrefix(joined, "run --rm ") {
+		t.Fatalf("default job must use docker run --rm: %v", args)
+	}
+	if strings.Contains(joined, "/var/run/docker.sock") || strings.Contains(joined, "/workspace") {
+		t.Fatalf("trust mounts must default off: %v", args)
+	}
+}
+
+func TestValidateExtraMountRequiresAbsoluteHost(t *testing.T) {
+	if _, err := validateExtraMount("/var/cache:/cache:ro"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateExtraMount("cache:/cache"); err == nil {
+		t.Fatal("relative host path must be rejected")
+	}
+	if _, err := validateExtraMount("/var/cache"); err == nil {
+		t.Fatal("container path is required")
+	}
+	if _, err := validateExtraMount("/var/cache:/cache:shared"); err == nil {
+		t.Fatal("unknown mode must be rejected")
+	}
+}
+
+func TestValidateWorkspaceIDRejectsTraversal(t *testing.T) {
+	if _, err := validateWorkspaceID("../../.."); err == nil {
+		t.Fatal("parent traversal must be rejected")
+	}
+	if _, err := validateWorkspaceID("exec-prior"); err == nil {
+		t.Fatal("non-UUID workspace id must be rejected")
+	}
+	if _, err := validateWorkspaceID("11111111-1111-4111-8111-111111111111"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunnerDockerOptsFromJobDefaultsOff(t *testing.T) {
+	opts, err := runnerDockerOptsFromJob(map[string]any{
+		"execution_id": "11111111-1111-4111-8111-111111111111",
+		"agent_config": map[string]any{"image": "preloop/agent:dev"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.MountDockerSocket || opts.PersistWorkspace || opts.Network != "" || len(opts.ExtraMounts) != 0 {
+		t.Fatalf("opts = %#v", opts)
+	}
+	if opts.ComposeProject != "preloop-11111111111141118111111111111111" {
+		t.Fatalf("compose project = %q", opts.ComposeProject)
+	}
+}
+
+func TestPreparePersistWorkspaceReusesResumeFrom(t *testing.T) {
+	testenv.SetTempHome(t)
+	prior := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	current := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	src, err := runnerWorkspaceDir(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(src, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(src, "notes.txt")
+	if err := os.WriteFile(marker, []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dest, err := preparePersistWorkspace(current, prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Fatalf("resume_from dir should be moved, stat err = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "notes.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "kept" {
+		t.Fatalf("workspace contents = %q", got)
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+		t.Fatalf("workspace mode = %o", info.Mode().Perm())
+	}
+}
+
+func TestCleanupStaleWorkspacesHonorsTTLAndKeep(t *testing.T) {
+	root := t.TempDir()
+	stale := filepath.Join(root, "old-exec")
+	fresh := filepath.Join(root, "fresh-exec")
+	current := filepath.Join(root, "current-exec")
+	for _, dir := range []string{stale, fresh, current} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(current, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupStaleWorkspacesAt(root, 24*time.Hour, time.Now(), map[string]bool{"current-exec": true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("stale workspace older than TTL should be removed")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh workspace should remain: %v", err)
+	}
+	if _, err := os.Stat(current); err != nil {
+		t.Fatalf("current job workspace should remain: %v", err)
+	}
+}
+
+func TestWorkspaceTTLReadsEnv(t *testing.T) {
+	t.Setenv(workspaceTTLHoursEnv, "6")
+	if workspaceTTL() != 6*time.Hour {
+		t.Fatalf("ttl = %s", workspaceTTL())
+	}
+	t.Setenv(workspaceTTLHoursEnv, "nope")
+	if workspaceTTL() != 24*time.Hour {
+		t.Fatalf("invalid ttl should default, got %s", workspaceTTL())
+	}
+}
+
+func containsPair(args []string, flag, value string) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }

@@ -27,6 +27,7 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "sync_model_catalog",
     "execute_flow",
     "resume_flow_execution",
+    "cleanup_flow_workspaces",
 )
 
 
@@ -341,6 +342,27 @@ async def sync_model_catalog(account_id: str | None = None) -> dict[str, int] | 
         return await sync_all_account_model_catalogs(db)
     except Exception as e:
         logger.error("Scheduled model catalog sync failed: %s", e, exc_info=True)
+        return None
+    finally:
+        db.close()
+
+
+async def cleanup_flow_workspaces() -> dict[str, int] | None:
+    """Retention pass over workspace snapshots and Docker workspace volumes.
+
+    Deletes snapshots (and ``agent-workspace-*`` Docker volumes) older than
+    ``WORKSPACE_SNAPSHOT_TTL_HOURS``. Scheduled hourly; safe to run anywhere,
+    since the volume half no-ops without a Docker socket.
+    """
+    from preloop.services.workspace_snapshot_cleanup import (
+        cleanup_workspace_artifacts,
+    )
+
+    db = next(get_db_session())
+    try:
+        return await cleanup_workspace_artifacts(db)
+    except Exception as e:
+        logger.error("Workspace retention pass failed: %s", e, exc_info=True)
         return None
     finally:
         db.close()

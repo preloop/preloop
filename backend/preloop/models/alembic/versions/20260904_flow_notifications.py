@@ -1,7 +1,7 @@
 """Add notifications JSONB to flow.
 
 Revision ID: 20260904_flow_notifications
-Revises: 20260904_acct_runner_pool
+Revises: 20260904_flow_exec_workspace
 Create Date: 2026-09-04
 
 Failure and success notifications belong on the flow, not in agent prompts.
@@ -20,7 +20,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 # revision identifiers, used by Alembic.
 revision: str = "20260904_flow_notifications"
-down_revision: Union[str, None] = "20260904_acct_runner_pool"
+down_revision: Union[str, None] = "20260904_flow_exec_workspace"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

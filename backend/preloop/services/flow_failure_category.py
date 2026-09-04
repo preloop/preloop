@@ -39,6 +39,11 @@ it*, not about severity:
     The agent exited 0 but never confirmed completion on either channel. The
     work may well have succeeded; this is Preloop's contract failing, not the
     provider's.
+``setup_failed``
+    A repository setup command (``git_clone_config.setup_commands``) failed
+    after the clone/restore and before the agent ever started. Nothing the
+    agent did caused it, and nothing it could have done would have avoided
+    it.
 ``tool_error``
     A command or script the agent ran inside the workspace failed.
 ``agent_error``
@@ -74,6 +79,7 @@ FAILURE_CATEGORY_MODEL_AUTH = "model_auth"
 FAILURE_CATEGORY_MODEL_QUOTA = "model_quota"
 FAILURE_CATEGORY_MODEL_CONFIG = "model_config"
 FAILURE_CATEGORY_NO_CONFIRMATION = "no_confirmation"
+FAILURE_CATEGORY_SETUP_FAILED = "setup_failed"
 FAILURE_CATEGORY_TOOL_ERROR = "tool_error"
 FAILURE_CATEGORY_AGENT_ERROR = "agent_error"
 FAILURE_CATEGORY_TIMEOUT = "timeout"
@@ -88,6 +94,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_MODEL_QUOTA,
     FAILURE_CATEGORY_MODEL_CONFIG,
     FAILURE_CATEGORY_NO_CONFIRMATION,
+    FAILURE_CATEGORY_SETUP_FAILED,
     FAILURE_CATEGORY_TOOL_ERROR,
     FAILURE_CATEGORY_AGENT_ERROR,
     FAILURE_CATEGORY_TIMEOUT,
@@ -189,6 +196,12 @@ _MODEL_TRANSIENT_RE = re.compile(
     r"|typeerror:\s*terminated|fetch failed",
     re.IGNORECASE,
 )
+# The container-side setup block's marker, and the sentence
+# analyze_agent_failure builds from it.
+_SETUP_FAILED_RE = re.compile(
+    r"PRELOOP_SETUP_FAILED|setup commands? failed",
+    re.IGNORECASE,
+)
 # The completion-contract message written by the orchestrator.
 _NO_CONFIRMATION_RE = re.compile(
     r"success sentinel|flow_execution_success|did not confirm\s+success",
@@ -221,6 +234,7 @@ _AGENT_ERROR_RE = re.compile(
 # the completion contract is that thing even if the logs also contain a
 # transient blip the executor's analyser latched onto.
 _STRUCTURAL_MESSAGE_RULES = (
+    (_SETUP_FAILED_RE, FAILURE_CATEGORY_SETUP_FAILED),
     (_RUNNER_CONFLICT_RE, FAILURE_CATEGORY_RUNNER_CONFLICT),
     (_RUNNER_ERROR_RE, FAILURE_CATEGORY_RUNNER_ERROR),
     (_TIMEOUT_RE, FAILURE_CATEGORY_TIMEOUT),

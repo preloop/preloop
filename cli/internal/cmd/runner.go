@@ -537,6 +537,17 @@ func beginLeasedJob(
 		return writeJobOutcome(conn, outcome)
 	}
 
+	opts, optsErr := runnerDockerOptsFromJob(job)
+	resumeFrom := jobResumeFrom(job)
+	if optsErr == nil && opts.PersistWorkspace {
+		if hostDir, persistErr := preparePersistWorkspace(executionID, resumeFrom); persistErr == nil {
+			opts.WorkspaceHostDir = hostDir
+		} else {
+			optsErr = fmt.Errorf("persist workspace: %w", persistErr)
+		}
+	}
+	_ = cleanupStaleWorkspaces(map[string]bool{executionID: true})
+
 	image := runnerImageFromJob(job)
 	dockerOK := image != "" && runnerHasDocker()
 	if reason := leasedJobFailureReason(job, dockerOK); reason != "" {
@@ -564,7 +575,31 @@ func beginLeasedJob(
 	}
 
 	env := runnerJobEnv(job, apiURL)
-	cmd := newRunnerJobCmd(image, env)
+	if optsErr != nil {
+		reason := optsErr.Error()
+		outcome := leasedJobOutcome{
+			executionID: executionID,
+			status:      "FAILED",
+			errMsg:      reason,
+			lines:       []string{reason},
+		}
+		rememberOutcome(lastComplete, outcome)
+		return writeJobOutcome(conn, outcome)
+	}
+	if opts.Network != "" {
+		if netErr := ensureDockerNetwork(opts.Network); netErr != nil {
+			reason := netErr.Error()
+			outcome := leasedJobOutcome{
+				executionID: executionID,
+				status:      "FAILED",
+				errMsg:      reason,
+				lines:       []string{reason},
+			}
+			rememberOutcome(lastComplete, outcome)
+			return writeJobOutcome(conn, outcome)
+		}
+	}
+	cmd := newRunnerJobCmd(image, env, opts)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
@@ -669,6 +704,9 @@ func runnerJobEnv(job map[string]any, apiURL string) map[string]string {
 	if apiURL != "" {
 		env["PRELOOP_URL"] = apiURL
 	}
+	if executionID, ok := job["execution_id"].(string); ok && executionID != "" {
+		env["COMPOSE_PROJECT_NAME"] = composeProjectName(executionID)
+	}
 	if cfg, ok := job["agent_config"].(map[string]any); ok && len(cfg) > 0 {
 		sanitized := sanitizeAgentConfig(cfg)
 		if len(sanitized) > 0 {
@@ -708,21 +746,6 @@ func isAgentConfigSecretKey(key string) bool {
 	}
 }
 
-// dockerRunArgs passes env keys with bare -e flags so values are read
-// from the runner process environment and never show up in `ps` output.
-func dockerRunArgs(image string, env map[string]string) []string {
-	args := []string{"run", "--rm"}
-	keys := make([]string, 0, len(env))
-	for key := range env {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		args = append(args, "-e", key)
-	}
-	return append(args, image)
-}
-
 func formatJobEnv(env map[string]string) []string {
 	pairs := make([]string, 0, len(env))
 	for key, value := range env {
@@ -747,12 +770,6 @@ func runnerControlPlaneURL() (string, error) {
 func dockerAvailable() bool {
 	cmd := exec.Command("docker", "info")
 	return cmd.Run() == nil
-}
-
-func defaultNewRunnerJobCmd(image string, env map[string]string) *exec.Cmd {
-	cmd := exec.Command("docker", dockerRunArgs(image, env)...)
-	cmd.Env = append(os.Environ(), formatJobEnv(env)...)
-	return cmd
 }
 
 func runnerWebsocketURL(runnerID string) (string, error) {

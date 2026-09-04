@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import binascii
+import gzip
 import io
 import json
 import logging
@@ -42,6 +43,12 @@ from preloop.utils.secret_scrubbing import scrub_secret_lines, scrub_secrets
 from preloop.utils.workspace_seed import (
     build_workspace_seed_shell,
     parse_workspace_files,
+)
+from preloop.utils.workspace_snapshot import (
+    WORKSPACE_SNAPSHOT_PATH,
+    WORKSPACE_VOLUME_PREFIX,
+    build_setup_commands_shell,
+    build_workspace_snapshot_shell,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,6 +93,73 @@ EVIDENCE_DIR_PATH = "/workspace/evidence"
 # inside the kubelet's default 10 MiB container-log rotation limit.
 MAX_EVIDENCE_ARCHIVE_BYTES = 2 * 1024 * 1024
 
+# The wrapper opens PRs/MRs itself (post-execution curl). The response is kept
+# under the evidence dir and the resulting URL is echoed on one line so the
+# orchestrator can bind the execution to the PR it opened.
+PR_RESPONSE_FILE = f"{EVIDENCE_DIR_PATH}/pr.json"
+PR_LOOKUP_FILE = f"{EVIDENCE_DIR_PATH}/pr-lookup.json"
+PR_OPENED_LOG_MARKER = "PRELOOP_PR_OPENED"
+
+
+def build_github_pr_capture_shell(
+    *, token_ref: str, owner: str, repo: str, branch: str
+) -> str:
+    """Shell that turns the create-PR response into one recognizable line.
+
+    Falls back to a head-branch lookup so an already-existing PR (the
+    "may already exist" branch) still binds to this execution.
+    """
+
+    grep_pr = 'grep -o \'"html_url"[[:space:]]*:[[:space:]]*"[^"]*/pull/[0-9]*"\''
+    sed_url = 'sed \'s/.*"\\(https[^"]*\\)"$/\\1/\''
+    return f"""
+    PR_URL=$({grep_pr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url})
+    if [ -z "$PR_URL" ]; then
+      echo "No PR URL in the create response; looking it up by head branch"
+      curl -sS \\
+        -H "Authorization: token {token_ref}" \\
+        -H "Accept: application/vnd.github.v3+json" \\
+        -o {PR_LOOKUP_FILE} \\
+        "https://api.github.com/repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}" \\
+        || echo "PR lookup by head branch failed"
+      PR_URL=$({grep_pr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
+    fi
+    if [ -n "$PR_URL" ]; then
+      echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$PR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"github\\"}}"
+    else
+      echo "No pull request URL could be resolved for branch {branch}"
+    fi
+"""
+
+
+def build_gitlab_mr_capture_shell(
+    *, token_ref: str, gitlab_host: str, encoded_path: str, branch: str
+) -> str:
+    """GitLab counterpart of :func:`build_github_pr_capture_shell`."""
+
+    grep_mr = (
+        'grep -o \'"web_url"[[:space:]]*:[[:space:]]*"[^"]*/merge_requests/[0-9]*"\''
+    )
+    sed_url = 'sed \'s/.*"\\(https[^"]*\\)"$/\\1/\''
+    return f"""
+    MR_URL=$({grep_mr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url})
+    if [ -z "$MR_URL" ]; then
+      echo "No MR URL in the create response; looking it up by source branch"
+      curl -sS \\
+        -H "PRIVATE-TOKEN: {token_ref}" \\
+        -o {PR_LOOKUP_FILE} \\
+        "https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests?state=opened&source_branch={branch}" \\
+        || echo "MR lookup by source branch failed"
+      MR_URL=$({grep_mr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
+    fi
+    if [ -n "$MR_URL" ]; then
+      echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$MR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"gitlab\\"}}"
+    else
+      echo "No merge request URL could be resolved for branch {branch}"
+    fi
+"""
+
+
 # Bounded tail for terminal-path pod log reads on Kubernetes. The artifact
 # emission always TRAILS the agent output and its payload is capped by the two
 # byte limits above, so a window of (worst-case emission lines + a generous
@@ -93,8 +167,46 @@ MAX_EVIDENCE_ARCHIVE_BYTES = 2 * 1024 * 1024
 # least as much real agent output as the pre-wrapper tail=1000 status read
 # inspected. Worst case emission: both byte caps base64-encoded at the
 # narrowest wrap width in the wild (60 cols), plus marker lines.
+# Cap on the workspace snapshot that travels through the Kubernetes pod log
+# stream. The configured WORKSPACE_SNAPSHOT_MAX_BYTES (512 MiB by default) is
+# a Docker-path budget: there the archive is copied out of the container over
+# the Docker API. On Kubernetes the only channel a finished pod still has is
+# its log, so the snapshot must stay inside the same kubelet log-rotation
+# budget as the evidence pack. Larger workspaces are skipped on Kubernetes
+# with a logged reason until snapshots move to object storage.
+K8S_WORKSPACE_STREAM_MAX_BYTES = 2 * 1024 * 1024
+
+
+# Docker named volume holding /workspace for one execution. Created on start,
+# reaped by the workspace janitor once WORKSPACE_SNAPSHOT_TTL_HOURS has passed.
+# Prefix lives in preloop.utils.workspace_snapshot so the janitor does not
+# import this module.
+
+
+def workspace_volume_name(execution_id: str) -> str:
+    """Return the Docker volume name backing /workspace for an execution."""
+
+    return f"{WORKSPACE_VOLUME_PREFIX}{execution_id}"
+
+
+def k8s_workspace_snapshot_limit() -> int:
+    """Effective workspace-snapshot cap for the Kubernetes log channel."""
+
+    configured = int(
+        getattr(
+            settings, "workspace_snapshot_max_bytes", K8S_WORKSPACE_STREAM_MAX_BYTES
+        )
+        or 0
+    )
+    if configured <= 0:
+        return 0
+    return min(configured, K8S_WORKSPACE_STREAM_MAX_BYTES)
+
+
 _WORST_CASE_EMISSION_LINES = (
-    MAX_RESULT_ARTIFACT_BYTES + MAX_EVIDENCE_ARCHIVE_BYTES
+    MAX_RESULT_ARTIFACT_BYTES
+    + MAX_EVIDENCE_ARCHIVE_BYTES
+    + K8S_WORKSPACE_STREAM_MAX_BYTES
 ) * 4 // (3 * 60) + 64
 K8S_TERMINAL_LOG_TAIL_LINES = _WORST_CASE_EMISSION_LINES + 2000
 
@@ -227,6 +339,16 @@ _preloop_emit_artifacts() {{
     else
         echo "PRELOOP_ARTIFACT_BEGIN evidence absent"
         echo "PRELOOP_ARTIFACT_END evidence"
+    fi
+{build_workspace_snapshot_shell(max_bytes=k8s_workspace_snapshot_limit())}
+    if [ -f {WORKSPACE_SNAPSHOT_PATH} ]; then
+        _pl_wssize=$(wc -c < {WORKSPACE_SNAPSHOT_PATH} | tr -d ' ')
+        echo "PRELOOP_ARTIFACT_BEGIN workspace present $_pl_wssize"
+        base64 < {WORKSPACE_SNAPSHOT_PATH} | sed 's/^/PRELOOP_ARTIFACT_B64 /'
+        echo "PRELOOP_ARTIFACT_END workspace"
+    else
+        echo "PRELOOP_ARTIFACT_BEGIN workspace absent"
+        echo "PRELOOP_ARTIFACT_END workspace"
     fi
 }}
 if [ -z "${{{K8S_INNER_SCRIPT_ENV}}}" ]; then
@@ -427,7 +549,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
         # Create a writable workspace volume for the container
         # This ensures the agent has write permissions
-        workspace_volume = f"agent-workspace-{execution_id}"
+        workspace_volume = workspace_volume_name(execution_id)
 
         # Determine working directory based on git clone configuration
         working_dir = "/workspace"
@@ -491,6 +613,11 @@ class ContainerAgentExecutor(AgentExecutor):
             container = await docker.containers.create(config=container_config)
             container_id = container.id
 
+            # Restore a prior execution's workspace (correlated resume) into
+            # the fresh volume BEFORE the entrypoint runs, so the init script
+            # finds the repository already checked out and skips the clone.
+            await self._restore_docker_workspace(container, execution_context)
+
             await container.start()
 
             self._containers[container_id] = container
@@ -505,6 +632,68 @@ class ContainerAgentExecutor(AgentExecutor):
                 f"Failed to start container for execution {execution_id}: {e}"
             )
             raise RuntimeError(f"Failed to start agent container: {e}")
+
+    @staticmethod
+    def _workspace_restore_archive(
+        execution_context: Dict[str, Any],
+    ) -> Optional[bytes]:
+        """Return the prior-execution workspace snapshot to restore, if any."""
+
+        archive = execution_context.get("workspace_restore_archive")
+        if isinstance(archive, (bytes, bytearray)) and archive:
+            return bytes(archive)
+        return None
+
+    def workspace_restore_planned(self, execution_context: Dict[str, Any]) -> bool:
+        """Whether this run starts from a restored workspace.
+
+        Only the Docker runner can seed the workspace before the entrypoint
+        runs (the volume is writable through the Docker API while the
+        container is created but not started). On Kubernetes ``/workspace`` is
+        an emptyDir with no pre-start write path, so a resume there falls back
+        to the clone until snapshots move to object storage.
+        """
+
+        if self._workspace_restore_archive(execution_context) is None:
+            return False
+        if self.use_kubernetes:
+            self.logger.info(
+                "Workspace snapshot available but the Kubernetes runner cannot "
+                "seed an emptyDir before start; falling back to git clone"
+            )
+            return False
+        return True
+
+    async def _restore_docker_workspace(
+        self, container: Any, execution_context: Dict[str, Any]
+    ) -> bool:
+        """Unpack a prior workspace snapshot into the created container.
+
+        Best effort: a failure here leaves the workspace empty, and the init
+        script's restore guard falls back to the normal clone.
+        """
+
+        archive = self._workspace_restore_archive(execution_context)
+        if archive is None or self.use_kubernetes:
+            return False
+        try:
+            tar_bytes = gzip.decompress(archive)
+            # The snapshot is `tar -C / workspace`, so members are
+            # "workspace/..." and the extraction root is "/".
+            await container.put_archive("/", tar_bytes)
+        except Exception as e:
+            self.logger.warning(
+                "Failed to restore workspace snapshot for execution %s: %s",
+                execution_context.get("execution_id"),
+                _exception_message(e),
+            )
+            return False
+        self.logger.info(
+            "Restored workspace snapshot (%d bytes compressed) for execution %s",
+            len(archive),
+            execution_context.get("execution_id"),
+        )
+        return True
 
     async def _start_kubernetes_pod(self, execution_context: Dict[str, Any]) -> str:
         """
@@ -1626,6 +1815,154 @@ class ContainerAgentExecutor(AgentExecutor):
             return None
         return data
 
+    async def get_workspace_snapshot(self, session_reference: str) -> Optional[bytes]:
+        """Capture ``/workspace`` as a size-capped tar.gz for later restore.
+
+        Runs on every terminal path, success or failure, so an execution that
+        died before its push still leaves the commits somewhere recoverable
+        (issue #386). Docker: a short-lived helper container mounts the
+        execution's workspace volume and builds the archive there, so the cap
+        is enforced before any bytes cross the Docker API. Kubernetes: the
+        archive is decoded from the artifact log channel written by
+        ``K8S_ARTIFACT_WRAPPER_SCRIPT``.
+
+        Best effort: returns ``None`` when there is nothing to capture, when
+        the workspace exceeds ``WORKSPACE_SNAPSHOT_MAX_BYTES``, or on any
+        error (all logged).
+        """
+        limit = int(getattr(settings, "workspace_snapshot_max_bytes", 0) or 0)
+        if limit <= 0:
+            self.logger.info(
+                "Workspace snapshot disabled (workspace_snapshot_max_bytes=%s)",
+                limit,
+            )
+            return None
+        if self.use_kubernetes:
+            return await self._get_kubernetes_workspace_snapshot(session_reference)
+        return await self._get_docker_workspace_snapshot(session_reference, limit)
+
+    async def _get_kubernetes_workspace_snapshot(
+        self, job_name: str
+    ) -> Optional[bytes]:
+        try:
+            lines = await self._get_kubernetes_terminal_logs(job_name)
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to read logs for workspace snapshot of Job {job_name}: "
+                f"{_exception_message(e)}"
+            )
+            return None
+        stream = self._extract_artifact_stream(lines, "workspace")
+        if stream is None or stream["status"] == "absent":
+            self.logger.info(
+                f"No workspace snapshot emitted by Job {job_name} "
+                "(too large for the log channel, or wrapper not applied)"
+            )
+            return None
+        if stream["status"] != "present":
+            self.logger.warning(
+                f"Workspace snapshot from Job {job_name} not captured "
+                f"(status={stream['status']}, size={stream['size']})"
+            )
+            return None
+        return bytes(stream["data"])
+
+    async def _get_docker_workspace_snapshot(
+        self, session_reference: str, limit: int
+    ) -> Optional[bytes]:
+        """Build and fetch the snapshot through a helper container.
+
+        The agent container has already exited, so its filesystem cannot run
+        `tar`; the workspace itself lives on the named volume
+        ``agent-workspace-<execution_id>`` which outlives it. A helper
+        container from the same image mounts that volume, writes the capped
+        archive to its own /tmp, and is removed afterwards.
+        """
+        docker = None
+        helper = None
+        try:
+            docker = await self._get_docker_client()
+            container = await docker.containers.get(session_reference)
+            info = await container.show()
+            labels = (info.get("Config") or {}).get("Labels") or {}
+            execution_id = labels.get("preloop.execution_id")
+            if not execution_id:
+                self.logger.warning(
+                    f"Container {session_reference[:12]} has no execution label; "
+                    "cannot locate its workspace volume"
+                )
+                return None
+            volume_name = workspace_volume_name(execution_id)
+            snapshot_shell = build_workspace_snapshot_shell(max_bytes=limit)
+            helper = await docker.containers.create(
+                config={
+                    "Image": self.image,
+                    "Entrypoint": ["/bin/sh", "-c"],
+                    "Cmd": [snapshot_shell],
+                    "Labels": {
+                        "preloop.execution_id": execution_id,
+                        "preloop.role": "workspace-snapshot",
+                    },
+                    "HostConfig": {
+                        "AutoRemove": False,
+                        "NetworkMode": "none",
+                        "Binds": [f"{volume_name}:/workspace:rw"],
+                    },
+                }
+            )
+            await helper.start()
+            await helper.wait()
+            tar = await helper.get_archive(WORKSPACE_SNAPSHOT_PATH)
+        except DockerError as e:
+            if e.status != 404:
+                self.logger.warning(
+                    f"Failed to build workspace snapshot for container "
+                    f"{session_reference[:12]}: {_exception_message(e)}"
+                )
+            else:
+                self.logger.info(
+                    f"No workspace snapshot produced for container "
+                    f"{session_reference[:12]} (nothing to capture or over cap)"
+                )
+            return None
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to build workspace snapshot for container "
+                f"{session_reference[:12]}: {_exception_message(e)}"
+            )
+            return None
+        finally:
+            if helper is not None:
+                try:
+                    await helper.delete(force=True)
+                except Exception as cleanup_error:
+                    self.logger.debug(
+                        f"Failed to remove workspace snapshot helper: "
+                        f"{_exception_message(cleanup_error)}"
+                    )
+
+        try:
+            data = None
+            for member in tar.getmembers():
+                if not member.isfile():
+                    continue
+                fileobj = tar.extractfile(member)
+                if fileobj is not None:
+                    data = fileobj.read()
+                    break
+        finally:
+            tar.close()
+
+        if not data:
+            return None
+        if len(data) > limit:
+            self.logger.warning(
+                f"Workspace snapshot for container {session_reference[:12]} "
+                f"is too large ({len(data)} bytes > {limit}), not capturing"
+            )
+            return None
+        return data
+
     def _detect_error_in_logs(self, logs_text: str) -> bool:
         """
         Detect if logs contain critical error patterns that indicate failure.
@@ -2219,6 +2556,9 @@ class ContainerAgentExecutor(AgentExecutor):
                 )
                 git_cmd = self._prepare_git_clone_command(execution_context)
                 if git_cmd:
+                    git_cmd = self._wrap_clone_with_workspace_restore(
+                        git_cmd, execution_context
+                    )
                     commands.append(git_cmd)
                     self.logger.info(
                         "Git clone commands added (length=%d)", len(git_cmd)
@@ -2253,6 +2593,13 @@ class ContainerAgentExecutor(AgentExecutor):
                 # Note: These commands come from admin-only configuration
                 commands.append(cmd)
 
+        # Repository setup (dependency install, service bring-up) declared on
+        # git_clone_config.setup_commands: after clone/restore, before the
+        # agent, output captured to the evidence pack.
+        setup_cmd = self._prepare_setup_commands(execution_context)
+        if setup_cmd:
+            commands.append(setup_cmd)
+
         # Join all commands with &&
         if commands:
             return " && ".join(commands)
@@ -2280,6 +2627,95 @@ class ContainerAgentExecutor(AgentExecutor):
             [seed.path for seed in seeds],
         )
         return build_workspace_seed_shell(seeds)
+
+    def _prepare_setup_commands(self, execution_context: Dict[str, Any]) -> str:
+        """Build the ``git_clone_config.setup_commands`` block, if declared."""
+
+        git_config = execution_context.get("git_clone_config") or {}
+        if not isinstance(git_config, dict):
+            return ""
+        setup_commands = git_config.get("setup_commands") or []
+        if not isinstance(setup_commands, (list, tuple)):
+            self.logger.warning(
+                "Ignoring git_clone_config.setup_commands: expected a list, got %s",
+                type(setup_commands).__name__,
+            )
+            return ""
+        working_dir = self._primary_workspace_path(execution_context, git_config)
+        shell = build_setup_commands_shell(setup_commands, working_dir=working_dir)
+        if shell:
+            self.logger.info(
+                "Prepared %d setup command(s) running in %s",
+                len(setup_commands),
+                working_dir,
+            )
+        return shell
+
+    def _primary_workspace_path(
+        self, execution_context: Dict[str, Any], git_config: Dict[str, Any]
+    ) -> str:
+        """Absolute path of the first cloned repository (or /workspace)."""
+
+        repositories = self._resolve_git_clone_repositories(
+            execution_context, git_config
+        )
+        if not repositories:
+            return "/workspace"
+        return self._resolve_repository_clone_path(repositories[0], 0)
+
+    def _wrap_clone_with_workspace_restore(
+        self, clone_command: str, execution_context: Dict[str, Any]
+    ) -> str:
+        """Skip the clone when a prior workspace was restored into the volume.
+
+        A correlated resume seeds ``/workspace`` from the previous execution's
+        snapshot, which keeps commits that were never pushed. In that case the
+        repository is already there: fetch and check out the PR branch inside
+        it instead of cloning over the top. The check is made in the container
+        (``[ -d <repo>/.git ]``) rather than in Python, so a restore that
+        failed silently still falls back to the clone.
+        """
+
+        if not self.workspace_restore_planned(execution_context):
+            return clone_command
+
+        git_config = execution_context.get("git_clone_config") or {}
+        repo_path = self._primary_workspace_path(execution_context, git_config)
+        branch = _validated_git_ref(execution_context.get("_git_source_branch"))
+        git_user_name = git_config.get("git_user_name", "Preloop")
+        git_user_email = git_config.get("git_user_email", "git@preloop.ai")
+
+        restore_steps = [
+            f'echo "Restored workspace found at {repo_path}, skipping git clone"',
+            f"git config --global user.name {shlex.quote(git_user_name)}",
+            f"git config --global user.email {shlex.quote(git_user_email)}",
+            "git config --global --add safe.directory '*'",
+            build_credential_setup_shell(),
+            f"cd {shlex.quote(repo_path)}",
+        ]
+        if branch:
+            restore_steps.extend(
+                [
+                    f"git fetch origin {branch} || true",
+                    (
+                        f"git checkout {branch} "
+                        f"|| git checkout -b {branch} origin/{branch} || true"
+                    ),
+                    # Fast-forward only: a resume must never discard the local
+                    # commits that are the reason the snapshot was kept.
+                    f"git merge --ff-only origin/{branch} || true",
+                ]
+            )
+        restore_steps.append("git log --oneline -3 || true")
+
+        restore_block = " && ".join(restore_steps)
+        return (
+            f"if [ -d {shlex.quote(repo_path)}/.git ]; then\n"
+            f"{restore_block}\n"
+            "else\n"
+            f"{clone_command}\n"
+            "fi"
+        )
 
     def _resolve_git_clone_repositories(
         self, execution_context: Dict[str, Any], git_config: Dict[str, Any]
@@ -2327,6 +2763,11 @@ class ContainerAgentExecutor(AgentExecutor):
             # the existing review, not a new branch off main.
             source_branch = resume_branch
             target_branch = resume_branch
+            if not execution_context.get("resume_from"):
+                prior = resume.get("execution_id") if isinstance(resume, dict) else None
+                execution_context["resume_from"] = (
+                    str(prior) if prior else resume_branch
+                )
             self.logger.info(
                 "Resume clone: using existing PR branch %s as source and target",
                 resume_branch,
@@ -2350,6 +2791,39 @@ class ContainerAgentExecutor(AgentExecutor):
             )
 
         return source_branch, target_branch, commit_sha, git_user_name, git_user_email
+
+    def _is_resume_execution(self, execution_context: Dict[str, Any]) -> bool:
+        """True when this run continues a prior PR-comment execution."""
+
+        if execution_context.get("resume_from"):
+            return True
+        trigger_data = execution_context.get("trigger_event_data")
+        if not isinstance(trigger_data, dict):
+            return False
+        resume = trigger_data.get("_resume")
+        return isinstance(resume, dict) and bool(
+            resume.get("execution_id") or resume.get("source_branch")
+        )
+
+    def _resolve_resume_base_branch(
+        self,
+        git_config: Dict[str, Any],
+        repo_config: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Return the flow base branch a resume rebase should land on.
+
+        Prefers ``repositories[].branch``, then top-level ``git_clone_config.branch``,
+        then ``source_branch``, then ``main``.
+        """
+
+        if repo_config:
+            repo_branch = repo_config.get("branch")
+            if repo_branch:
+                return str(repo_branch)
+        configured = git_config.get("branch") or git_config.get("source_branch")
+        if configured:
+            return str(configured)
+        return "main"
 
     def _build_git_global_setup_commands(
         self, git_user_name: str, git_user_email: str
@@ -2699,6 +3173,72 @@ echo "  Branch: {q_target} (from {q_source})"{sha_display}
 echo "========================================="
 """.strip()
 
+    def _build_git_resume_rebase_shell(
+        self, *, full_path: str, base_branch: str
+    ) -> str:
+        """Fetch the flow base branch and rebase the cloned PR branch onto it.
+
+        On conflict the rebase is aborted (not auto-resolved). Conflicting
+        paths are written to ``/workspace/evidence/rebase-conflict.txt``
+        (prefixed with an instruction to resolve them). Resume prompts tell
+        the agent to inspect that file if it exists. ``PRELOOP_RESUME_REBASE_CONFLICT=1``
+        is exported in the container for in-container processes. The block
+        always exits 0 so a conflict does not abort init.
+        """
+
+        safe_base = _validated_git_ref(base_branch)
+        if not safe_base:
+            self.logger.warning(
+                "Skipping resume rebase: unsafe base branch %r", base_branch
+            )
+            return ""
+
+        q_path = shlex.quote(full_path)
+        conflict_file = f"{EVIDENCE_DIR_PATH}/rebase-conflict.txt"
+        rebased_marker = f"{EVIDENCE_DIR_PATH}/resume-rebased"
+        return f"""
+cd {q_path}
+echo "Resume rebase: fetching origin/{safe_base} and rebasing the PR branch onto it"
+if git fetch origin {safe_base}; then
+    if git rebase origin/{safe_base}; then
+        echo "Resume rebase onto origin/{safe_base} succeeded"
+        mkdir -p {EVIDENCE_DIR_PATH}
+        touch {rebased_marker}
+        export PRELOOP_RESUME_REBASED=1
+    else
+        echo "Resume rebase onto origin/{safe_base} conflicted; leaving rebase aborted"
+        mkdir -p {EVIDENCE_DIR_PATH}
+        {{
+            echo "git rebase onto the flow base branch conflicted and was aborted."
+            echo "Resolve these paths before continuing:"
+            git diff --name-only --diff-filter=U 2>/dev/null || true
+        }} > {conflict_file}
+        git rebase --abort || true
+        export PRELOOP_RESUME_REBASE_CONFLICT=1
+        echo "Wrote conflicting files to {conflict_file}"
+    fi
+else
+    echo "Resume rebase: could not fetch origin/{safe_base}; skipping rebase"
+fi
+cd /workspace
+true
+""".strip()
+
+    def _build_git_push_shell(self, safe_target: str, *, resume_rebase: bool) -> str:
+        """Build the post-exec push. Force-with-lease only after a resume rebase."""
+
+        if not resume_rebase:
+            return f"  git push origin {safe_target}"
+        rebased_marker = f"{EVIDENCE_DIR_PATH}/resume-rebased"
+        return (
+            f"  if [ -f {rebased_marker} ] || "
+            f'[ "${{PRELOOP_RESUME_REBASED:-}}" = "1" ]; then\n'
+            f"    git push --force-with-lease origin {safe_target}\n"
+            f"  else\n"
+            f"    git push origin {safe_target}\n"
+            f"  fi"
+        )
+
     def _build_repository_clone_command_block(
         self,
         *,
@@ -2747,7 +3287,7 @@ echo "========================================="
             trigger_data=trigger_data,
         )
 
-        return [
+        commands = [
             self._build_git_pre_clone_shell(full_path),
             self._build_git_clone_shell(repo_url, full_path, clone_branch),
             self._build_git_branch_setup_shell(
@@ -2764,6 +3304,18 @@ echo "========================================="
                 commit_sha=commit_sha,
             ),
         ]
+        if self._is_resume_execution(execution_context):
+            git_config = execution_context.get("git_clone_config") or {}
+            if not isinstance(git_config, dict):
+                git_config = {}
+            base_branch = self._resolve_resume_base_branch(git_config, repo_config)
+            rebase_shell = self._build_git_resume_rebase_shell(
+                full_path=full_path, base_branch=base_branch
+            )
+            if rebase_shell:
+                commands.append(rebase_shell)
+                execution_context["_git_resume_rebase"] = True
+        return commands
 
     def _prepare_git_clone_command(self, execution_context: Dict[str, Any]) -> str:
         """
@@ -2973,7 +3525,13 @@ echo "========================================="
                     ),
                     f'  echo "Wrote git recovery artifacts under {EVIDENCE_DIR_PATH}"',
                     push_auth,
-                    f"  git push origin {safe_target}",
+                    self._build_git_push_shell(
+                        safe_target,
+                        resume_rebase=bool(
+                            execution_context.get("_git_resume_rebase")
+                            or self._is_resume_execution(execution_context)
+                        ),
+                    ),
                 ]
 
                 # Add PR/MR creation if enabled
@@ -3023,9 +3581,10 @@ echo "========================================="
                                 if use_custom:
                                     # Use custom title and description
                                     pr_create_cmd = f"""
-    curl -X POST \\
+    curl -sS -X POST \\
       -H "Authorization: token {token_ref}" \\
       -H "Accept: application/vnd.github.v3+json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://api.github.com/repos/{owner}/{repo}/pulls \\
       -d "$(cat <<'PREOF'
 {{
@@ -3037,7 +3596,12 @@ echo "========================================="
 PREOF
 )" \\
       || echo "Failed to create PR (may already exist)"
-"""
+""" + build_github_pr_capture_shell(
+                                        token_ref=token_ref,
+                                        owner=owner,
+                                        repo=repo,
+                                        branch=target_branch,
+                                    )
                                 else:
                                     # Build title and description from commits
                                     execution_link = f"{preloop_url}/console/flows/executions/{execution_id}"
@@ -3056,9 +3620,10 @@ PREOF
     fi
 
     # Create PR with dynamic title/body
-    curl -X POST \\
+    curl -sS -X POST \\
       -H "Authorization: token {token_ref}" \\
       -H "Accept: application/vnd.github.v3+json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://api.github.com/repos/{owner}/{repo}/pulls \\
       -d "$(cat <<PREOF
 {{
@@ -3070,7 +3635,12 @@ PREOF
 PREOF
 )" \\
       || echo "Failed to create PR (may already exist)"
-"""
+""" + build_github_pr_capture_shell(
+                                        token_ref=token_ref,
+                                        owner=owner,
+                                        repo=repo,
+                                        branch=target_branch,
+                                    )
                                 repo_post_commands.append(pr_create_cmd)
 
                     elif tracker_type == "gitlab":
@@ -3125,9 +3695,10 @@ PREOF
                                 # Use custom title and description
                                 mr_create_cmd = f"""
     echo "Creating Merge Request on {gitlab_host}..."
-    curl -X POST \\
+    curl -sS -X POST \\
       -H "PRIVATE-TOKEN: {token_ref}" \\
       -H "Content-Type: application/json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests \\
       -d "$(cat <<'MREOF'
 {{
@@ -3139,7 +3710,12 @@ PREOF
 MREOF
 )" \\
       || echo "Failed to create MR (may already exist)"
-"""
+""" + build_gitlab_mr_capture_shell(
+                                    token_ref=token_ref,
+                                    gitlab_host=gitlab_host,
+                                    encoded_path=encoded_path,
+                                    branch=target_branch,
+                                )
                             else:
                                 # Build title and description from commits
                                 execution_link = f"{preloop_url}/console/flows/executions/{execution_id}"
@@ -3158,9 +3734,10 @@ MREOF
     fi
 
     echo "Creating Merge Request on {gitlab_host}..."
-    curl -X POST \\
+    curl -sS -X POST \\
       -H "PRIVATE-TOKEN: {token_ref}" \\
       -H "Content-Type: application/json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests \\
       -d "$(cat <<MREOF
 {{
@@ -3172,7 +3749,12 @@ MREOF
 MREOF
 )" \\
       || echo "Failed to create MR (may already exist)"
-"""
+""" + build_gitlab_mr_capture_shell(
+                                    token_ref=token_ref,
+                                    gitlab_host=gitlab_host,
+                                    encoded_path=encoded_path,
+                                    branch=target_branch,
+                                )
                             repo_post_commands.append(mr_create_cmd)
 
                 repo_post_commands.extend(
