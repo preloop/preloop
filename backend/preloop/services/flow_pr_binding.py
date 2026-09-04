@@ -249,6 +249,10 @@ def max_resumes_per_pr(flow: Any) -> int:
     """Flow-level cap on resumes started from one PR (default 5)."""
 
     raw = getattr(flow, "max_resumes_per_pr", None)
+    # Only a real number-shaped value counts; a future column, a test double
+    # or a stray attribute must not silently become the cap.
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        raw = None
     if raw is None:
         config = getattr(flow, "agent_config", None)
         if isinstance(config, dict):
