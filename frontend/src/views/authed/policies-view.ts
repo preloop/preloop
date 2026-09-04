@@ -165,9 +165,28 @@ export const MODEL_IO_PRESETS = [
   },
 ];
 
-/** CEL when the expression uses grouping or boolean operators. */
+/** CEL when the expression uses CEL functions or operators. */
 export function conditionTypeFor(expr: string): 'cel' | 'simple' {
-  return /[()&|]/.test(expr) ? 'cel' : 'simple';
+  if (!expr) return 'simple';
+  const lower = expr.toLowerCase();
+  const celFunctions = [
+    'contains(',
+    'startswith(',
+    'endswith(',
+    'matches(',
+    'exists(',
+    'all(',
+    'filter(',
+    'map(',
+    'size(',
+    'type(',
+    'has(',
+    '.in(',
+    ' in ',
+  ];
+  if (celFunctions.some((fn) => lower.includes(fn))) return 'cel';
+  if (/&&|\|\||\?|\[|\{|(?<!=)!(?!=)/.test(expr)) return 'cel';
+  return 'simple';
 }
 
 /** What each detector adds to the attributes a condition can read. */

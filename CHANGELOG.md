@@ -154,7 +154,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upload-read path.
 - **Describe a change no longer opens against a stale policy**: the button
   refetches the current export first and reports an error instead of
-  silently opening an empty dialog when the export fails.
+  silently opening an empty dialog when the export fails. Closing the dialog
+  (including a programmatic hide after Save) resets the prompt and YAML so
+  the next open is a fresh form; nested `sl-details` toggles do not reset it.
+- **Tool-rule CEL detection matches the backend**: the Policies editor and
+  the access-rule create/update endpoints classify `!`, ` in `, ternaries,
+  and CEL functions as `cel`, so a deny rule cannot be stored as `simple`
+  and silently fail closed to an approval prompt.
 - **Add rule dialog no longer closes on every choice**: the dialog listened
   for `sl-hide`, which every inner `sl-select` emits when its dropdown
   closes, so picking a target or action dismissed the form. It now listens

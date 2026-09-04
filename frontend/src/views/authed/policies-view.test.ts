@@ -3,7 +3,26 @@ import sinon from 'sinon';
 
 import '../../components/view-header.ts';
 import './policies-view';
+import { conditionTypeFor } from './policies-view';
 import type { PoliciesView } from './policies-view';
+
+describe('conditionTypeFor', () => {
+  it('classifies simple comparisons as simple', () => {
+    expect(conditionTypeFor('moderation.flagged == true')).to.equal('simple');
+    expect(conditionTypeFor('injection.score > 0.7')).to.equal('simple');
+    expect(conditionTypeFor('pii.found != true')).to.equal('simple');
+  });
+
+  it('classifies CEL operators and functions as cel', () => {
+    expect(conditionTypeFor('!args.enabled')).to.equal('cel');
+    expect(conditionTypeFor("args.priority in ['critical','high']")).to.equal(
+      'cel'
+    );
+    expect(conditionTypeFor('args.ok ? true : false')).to.equal('cel');
+    expect(conditionTypeFor('args.name.contains("x")')).to.equal('cel');
+    expect(conditionTypeFor('a && b')).to.equal('cel');
+  });
+});
 
 describe('PoliciesView', () => {
   let fetchStub: sinon.SinonStub;

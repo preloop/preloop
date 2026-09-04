@@ -310,6 +310,32 @@ describe('PolicyGenerateDialog', () => {
     expect(el.open).to.be.false;
   });
 
+  it('resets state when the dialog itself hides, not nested details', async () => {
+    stubGenerate('');
+    const el = (await fixture(
+      html`<policy-generate-dialog .open=${true}></policy-generate-dialog>`
+    )) as PolicyGenerateDialog;
+    await el.updateComplete;
+
+    (el as any)._generatedYaml = 'version: "1.0"';
+    el.requestUpdate();
+    await el.updateComplete;
+
+    const nested = document.createElement('div');
+    el.shadowRoot!.querySelector('sl-dialog')!.appendChild(nested);
+    nested.dispatchEvent(
+      new Event('sl-after-hide', { bubbles: true, composed: true })
+    );
+    await el.updateComplete;
+    expect((el as any)._generatedYaml).to.equal('version: "1.0"');
+
+    const dialog = el.shadowRoot!.querySelector('sl-dialog') as HTMLElement;
+    dialog.dispatchEvent(new Event('sl-after-hide', { bubbles: true }));
+    await el.updateComplete;
+    expect((el as any)._generatedYaml).to.equal('');
+    expect(el.open).to.be.false;
+  });
+
   it('shows a unified YAML diff before Save and does not apply on Discard', async () => {
     const current = 'version: "1.0"\nmetadata:\n  name: current';
     const yamlContent = 'version: "1.0"\nmetadata:\n  name: edited';
