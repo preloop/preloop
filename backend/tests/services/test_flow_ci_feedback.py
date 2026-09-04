@@ -53,6 +53,7 @@ def crud(monkeypatch):
     fake.get_running_by_flow.return_value = []
     fake.get_by_result_pr_url.return_value = None
     monkeypatch.setattr(mod, "crud_flow_execution", fake)
+    monkeypatch.setattr("preloop.services.flow_pr_binding.crud_flow_execution", fake)
     return fake
 
 
@@ -60,7 +61,10 @@ def github_check_run(conclusion="failure", status="completed"):
     return {
         "payload": {
             "action": "completed",
-            "repository": {"html_url": "https://github.com/preloop/preloop"},
+            "repository": {
+                "html_url": "https://github.com/preloop/preloop",
+                "full_name": "preloop/preloop",
+            },
             "check_run": {
                 "name": "backend-tests",
                 "status": status,
@@ -68,9 +72,16 @@ def github_check_run(conclusion="failure", status="completed"):
                 "head_sha": "abc123def456",
                 "html_url": "https://github.com/preloop/preloop/runs/9",
                 "check_suite": {"head_branch": BRANCH},
+                "pull_requests": [{"html_url": PR_URL, "number": 353}],
             },
         }
     }
+
+
+def github_check_run_without_pr(conclusion="failure"):
+    event = github_check_run(conclusion)
+    event["payload"]["check_run"].pop("pull_requests", None)
+    return event
 
 
 def github_workflow_run(conclusion="failure"):
@@ -142,6 +153,8 @@ class TestExtractCiFailure:
         assert failure["conclusion"] == "failure"
         assert failure["head_sha"] == "abc123def456"
         assert failure["branch"] == BRANCH
+        assert failure["pr_url"] == PR_URL
+        assert failure["repo"] == "preloop/preloop"
 
     def test_github_check_run_success_ignored(self):
         assert extract_ci_failure("check_run", github_check_run("success")) is None
@@ -200,6 +213,10 @@ class TestFlowRequiresCiFailureResume:
         flow = FakeFlow(trigger_event_types=["pipeline"])
         assert flow_requires_ci_failure_resume(flow) is False
 
+    def test_gitlab_issue_and_pipeline_does_not_require_resume(self):
+        flow = FakeFlow(trigger_event_types=["issue_labeled", "pipeline"])
+        assert flow_requires_ci_failure_resume(flow) is False
+
     def test_flow_without_ci_types(self):
         flow = FakeFlow(trigger_event_types=["issue_labeled", "comment_created"])
         assert flow_requires_ci_failure_resume(flow) is False
@@ -212,11 +229,11 @@ class TestCiFailureCap:
     def test_default(self):
         assert ci_failure_cap(FakeFlow()) == DEFAULT_CI_FAILURE_CAP
 
-    def test_flow_setting_wins(self):
-        assert ci_failure_cap(FakeFlow(ci_failure_resume_limit=2)) == 2
-
-    def test_ignores_non_int_setting(self):
-        assert ci_failure_cap(FakeFlow(pr_resume_limit=True)) == DEFAULT_CI_FAILURE_CAP
+    def test_speculative_flow_attrs_are_ignored(self):
+        assert (
+            ci_failure_cap(FakeFlow(ci_failure_resume_limit=2))
+            == DEFAULT_CI_FAILURE_CAP
+        )
 
 
 class TestBindCiFailureResumeOrSkip:
@@ -268,7 +285,12 @@ class TestBindCiFailureResumeOrSkip:
 
     def test_unbound_pr_is_ignored(self, crud):
         crud.get_by_flow.return_value = [
-            FakeExecution(result={"pr_url": PR_URL, "pr_source_branch": "other"})
+            FakeExecution(
+                result={
+                    "pr_url": "https://github.com/preloop/preloop/pull/999",
+                    "pr_source_branch": BRANCH,
+                }
+            )
         ]
         event = github_check_run()
 
@@ -355,19 +377,24 @@ class TestBindCiFailureResumeOrSkip:
             is not None
         )
 
-    def test_flow_cap_setting_is_honored(self, crud):
-        execution = bound_execution()
-        prior = [
-            FakeExecution(trigger_event_details={CI_FAILURE_KEY: {"pr_url": PR_URL}})
+    def test_branch_fallback_scopes_to_the_same_repo(self, crud):
+        crud.get_by_flow.return_value = [
+            bound_execution(pr_url="https://github.com/other/other/pull/1")
         ]
-        crud.get_by_flow.return_value = [execution, *prior]
-        flow = FakeFlow(ci_failure_resume_limit=1)
         assert (
             bind_ci_failure_resume_or_skip(
-                MagicMock(), flow, "check_run", github_check_run()
+                MagicMock(), FakeFlow(), "check_run", github_check_run_without_pr()
             )
             is None
         )
+
+    def test_branch_fallback_matches_same_repo(self, crud):
+        execution = bound_execution()
+        crud.get_by_flow.return_value = [execution]
+        resume = bind_ci_failure_resume_or_skip(
+            MagicMock(), FakeFlow(), "check_run", github_check_run_without_pr()
+        )
+        assert resume["execution_id"] == str(execution.id)
 
     def test_cap_counts_only_the_same_pr(self, crud):
         execution = bound_execution()

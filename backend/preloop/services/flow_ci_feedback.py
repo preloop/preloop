@@ -50,15 +50,6 @@ CI_FAILURE_KEY = "_ci_failure"
 # grows a configurable setting (see flow_pr_binding / flow settings).
 DEFAULT_CI_FAILURE_CAP = 5
 
-# Attribute names a flow may expose for the per-PR resume cap. The first one
-# that holds a positive int wins; otherwise DEFAULT_CI_FAILURE_CAP applies.
-_FLOW_CAP_ATTRS = (
-    "ci_failure_resume_limit",
-    "pr_resume_limit",
-    "max_resumes_per_pr",
-    "resume_limit",
-)
-
 _LOOKBACK = 50
 
 
@@ -98,6 +89,33 @@ def _github_project_url(payload: Dict[str, Any]) -> Optional[str]:
     repo = payload.get("repository")
     if isinstance(repo, dict):
         return _text(repo.get("html_url"))
+    return None
+
+
+def _github_repo_full_name(payload: Dict[str, Any]) -> Optional[str]:
+    repo = payload.get("repository")
+    if isinstance(repo, dict):
+        return _text(repo.get("full_name"))
+    return None
+
+
+def _github_pr_url(payload: Dict[str, Any], obj: Dict[str, Any]) -> Optional[str]:
+    """HTML PR URL from ``pull_requests[]``, or constructed from repo + number."""
+
+    for source in (obj, payload):
+        prs = source.get("pull_requests") if isinstance(source, dict) else None
+        if not isinstance(prs, list):
+            continue
+        for pr in prs:
+            if not isinstance(pr, dict):
+                continue
+            html = normalize_pr_url(_text(pr.get("html_url")))
+            if html:
+                return html
+            number = pr.get("number")
+            repo = _github_repo_full_name(payload)
+            if number is not None and repo:
+                return f"https://github.com/{repo}/pull/{number}"
     return None
 
 
@@ -158,7 +176,8 @@ def _github_failure(
         "conclusion": conclusion,
         "head_sha": head_sha,
         "branch": branch,
-        "pr_url": None,
+        "pr_url": _github_pr_url(payload, obj),
+        "repo": _github_repo_full_name(payload),
     }
 
 
@@ -236,32 +255,31 @@ def extract_ci_failure(
 
 
 def flow_requires_ci_failure_resume(flow: Any) -> bool:
-    """True when a CI event on this flow must correlate to a PR it opened.
+    """True when a GitHub CI event on this flow must correlate to a PR it opened.
 
-    Mirrors ``flow_pr_binding.flow_requires_pr_comment_resume``: only
-    implementation flows (those also listening to issue intake) route CI
-    events through the resume path. Plain pipeline/job flows keep firing on
-    every event, unchanged.
+    Only GitHub ``check_run`` / ``check_suite`` / ``workflow_run`` events
+    take this path. GitLab ``pipeline`` / ``job`` flows (including those
+    that also listen to issue intake) keep firing on every event, so
+    existing GitLab implementations are unchanged.
     """
 
     types = getattr(flow, "trigger_event_types", None)
     if not isinstance(types, (list, tuple, set)):
         return False
     type_set = set(types)
-    if not (type_set & CI_FAILURE_EVENT_TYPES):
+    if not (type_set & GITHUB_CI_EVENT_TYPES):
         return False
     return bool(type_set & {"issue_labeled", "issue_opened"})
 
 
-def ci_failure_cap(flow: Any) -> int:
-    """Per-PR cap on CI-failure resumes, from the flow when it exposes one."""
+def ci_failure_cap(_flow: Any) -> int:
+    """Per-PR cap on CI-failure resumes.
 
-    for attr in _FLOW_CAP_ATTRS:
-        value = getattr(flow, attr, None)
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, int) and value > 0:
-            return value
+    No flow-level setting exists yet; every flow uses
+    ``DEFAULT_CI_FAILURE_CAP``. ``flow`` is accepted so the call site can
+    pass the flow once a real setting lands.
+    """
+
     return DEFAULT_CI_FAILURE_CAP
 
 
@@ -290,28 +308,35 @@ def find_execution_for_ci_failure(
 ) -> Optional[FlowExecution]:
     """Return the execution of ``flow`` that opened the PR this CI run tested.
 
-    Matches on the PR URL when the payload carries one (GitLab MR pipelines),
-    otherwise on the recorded PR head branch.
+    Matches on the PR URL when the payload carries one (GitHub
+    ``pull_requests[]`` or a GitLab MR pipeline). When the payload has a
+    PR URL, a miss is a miss — we do not fall back to branch name, which
+    would collide across repositories. Branch fallback is only for GitHub
+    check events that are not attached to a pull request, and is then
+    scoped to the same ``owner/repo`` as the recorded ``pr_url``.
     """
 
     pr_url = failure.get("pr_url")
     if pr_url:
-        found = find_bound_execution(db, flow.id, pr_url)
-        if found is not None:
-            return found
+        return find_bound_execution(db, flow.id, pr_url)
 
     branch = failure.get("branch")
     if not branch:
         return None
+    repo = (failure.get("repo") or "").lower()
     executions = crud_flow_execution.get_by_flow(
         db, flow_id=flow.id, skip=0, limit=_LOOKBACK
     )
     for execution in executions:
         result = execution.result if isinstance(execution.result, dict) else {}
-        if not result.get("pr_url"):
+        recorded = result.get("pr_url")
+        if not recorded:
             continue
-        if result.get("pr_source_branch") == branch:
-            return execution
+        if result.get("pr_source_branch") != branch:
+            continue
+        if repo and repo not in str(recorded).lower():
+            continue
+        return execution
     logger.info(
         "No execution of flow %s opened a PR from branch %s (lookback=%s)",
         getattr(flow, "id", None),

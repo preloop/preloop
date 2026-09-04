@@ -9,6 +9,11 @@ from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models.models import Flow
 from preloop.models.models.flow_execution import FlowExecution, MATRIX_OVERRIDES_KEY
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
+from preloop.services.flow_ci_feedback import (
+    GITHUB_CI_EVENT_TYPES,
+    bind_ci_failure_resume_or_skip,
+    flow_requires_ci_failure_resume,
+)
 from .flow_orchestrator import FlowExecutionOrchestrator
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.sync.services.event_bus import get_nats_client
@@ -1086,14 +1091,8 @@ class FlowTriggerService:
                                 resume.get("execution_id"),
                                 resume.get("pr_url"),
                             )
-                    from preloop.services.flow_ci_feedback import (
-                        CI_FAILURE_EVENT_TYPES,
-                        bind_ci_failure_resume_or_skip,
-                        flow_requires_ci_failure_resume,
-                    )
-
                     if (
-                        event_type in CI_FAILURE_EVENT_TYPES
+                        event_type in GITHUB_CI_EVENT_TYPES
                         and flow_requires_ci_failure_resume(flow)
                     ):
                         ci_resume = bind_ci_failure_resume_or_skip(
