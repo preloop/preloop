@@ -212,7 +212,7 @@ describe('Policies page repro', () => {
     expect(ruleDialog(m.element).textContent).to.contain('Permission denied');
   });
 
-  it('R4 picking a second preset keeps the first preset id', async () => {
+  it('R4 picking a second preset updates the id to match', async () => {
     const m = await mount();
     stub = m.stub;
     headerButton(m.element, 'Add rule').click();
@@ -227,7 +227,7 @@ describe('Policies page repro', () => {
     await m.element.updateComplete;
     const form = (m.element as any)._modelIOForm;
     expect(form.presetId).to.equal('flag-injection');
-    expect(form.id).to.equal('block-pii-prompts');
+    expect(form.id).to.equal('flag-injection');
   });
 
   it('R5 a saved tool access rule is shown as allow / true', async () => {

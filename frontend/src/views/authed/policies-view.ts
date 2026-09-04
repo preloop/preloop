@@ -234,6 +234,7 @@ export class PoliciesView extends LitElement {
     onDetectorTimeout: 'deny' as 'allow' | 'deny',
     conditionMode: 'preset' as 'preset' | 'custom',
     presetId: MODEL_IO_PRESETS[0].id,
+    idTouched: false,
   };
 
   // Approval workflows state
@@ -1115,6 +1116,7 @@ export class PoliciesView extends LitElement {
       onDetectorTimeout: 'deny' as 'allow' | 'deny',
       conditionMode: 'preset' as 'preset' | 'custom',
       presetId: preset.id,
+      idTouched: false,
     };
   }
 
@@ -1141,6 +1143,7 @@ export class PoliciesView extends LitElement {
         // An existing rule is shown as it is stored, not as a preset.
         conditionMode: 'custom',
         presetId: '',
+        idTouched: true,
       };
     } else {
       this._editingModelIOId = null;
@@ -1188,7 +1191,10 @@ export class PoliciesView extends LitElement {
       detectPii: preset.detectPii,
       detectInjection: preset.detectInjection,
       detectModeration: preset.detectModeration,
-      id: this._modelIOForm.id.trim() || preset.id,
+      id:
+        this._modelIOForm.idTouched && this._modelIOForm.id.trim()
+          ? this._modelIOForm.id
+          : preset.id,
     });
   }
 
@@ -2250,7 +2256,10 @@ export class PoliciesView extends LitElement {
                     placeholder="deny-pii-in-prompts"
                     ?disabled=${Boolean(this._editingModelIOId)}
                     @sl-input=${(e: any) =>
-                      this._patchModelIOForm({ id: e.target.value })}
+                      this._patchModelIOForm({
+                        id: e.target.value,
+                        idTouched: true,
+                      })}
                   ></sl-input>
                 </div>
               `
