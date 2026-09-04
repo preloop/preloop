@@ -2148,9 +2148,9 @@ export class DashboardView extends AuthedElement {
    * Everything below the fold, after the first paint.
    *
    * The three groups run in parallel; the attention loader runs last because
-   * it is handed the approvals, agents, policies and breakdown the rest of
-   * this pass already fetched, instead of fetching its own copies of all
-   * four.
+   * it is handed the approvals, agents, and budget policies this pass already
+   * fetched. The usage breakdown is not shared: attention always loads its
+   * own rolling 30-day window, which is not the Overview calendar-month range.
    */
   private async fetchDeferredData(
     startDateStr: string,
@@ -2662,12 +2662,11 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
-   * Same loader, same rules as the Attention page, over the inputs this page
-   * already has where it has them: approvals, agents and budget policies come
-   * from the fold, and on the default month range the usage breakdown comes
-   * from the deferred pass. The rest is fetched exactly as before. Starts
-   * after the first paint so a slow attention input never holds up the cards
-   * above the fold.
+   * Same loader, same rules as the Attention page. Approvals, agents and
+   * budget policies come from the fold; the usage breakdown is never reused
+   * from the Overview range (a calendar month is not a rolling 30 days).
+   * Starts after the first paint so a slow attention input never holds up
+   * the cards above the fold.
    */
   private async refreshAttentionInputs(
     shared: PrefetchedAttentionInputs = {}
