@@ -8,8 +8,10 @@ session resume (``--resume``) is a separate follow-up.
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Dict, Optional
+import re
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
@@ -22,6 +24,22 @@ logger = logging.getLogger(__name__)
 
 _RESUME_LOOKBACK = 50
 _GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
+
+# Single line the container wrapper prints after creating (or finding) the PR:
+#   PRELOOP_PR_OPENED {"url": "...", "branch": "...", "provider": "github"}
+PR_OPENED_MARKER = "PRELOOP_PR_OPENED"
+
+# Comment marker written by the PR reviewer flow, e.g.
+#   <!-- preloop-review:flow-id:pr-reviewer:severity:HIGH -->
+REVIEW_MARKER_RE = re.compile(
+    r"<!--\s*preloop-review:flow-id:([^\s:>]+)(?::severity:([^\s>]+))?\s*-->"
+)
+
+# Cap on how many times one PR may restart its implementer flow. Flows can
+# override it (see :func:`max_resumes_per_pr`).
+DEFAULT_MAX_RESUMES_PER_PR = 5
+
+_RUNNING_STATUSES = ("PENDING", "INITIALIZING", "STARTING", "RUNNING")
 
 
 def _is_github_host(host: str) -> bool:
@@ -104,6 +122,272 @@ def extract_pr_url_from_comment_event(event_data: Dict[str, Any]) -> Optional[st
             return found
 
     return None
+
+
+def parse_pr_opened_marker(line: str) -> Optional[Dict[str, str]]:
+    """Parse the wrapper's ``PRELOOP_PR_OPENED {...}`` log line.
+
+    Returns ``{"url": ..., "branch": ..., "provider": ...}`` or None when the
+    line is not the marker or carries no usable URL.
+    """
+
+    if not line or not isinstance(line, str):
+        return None
+    idx = line.find(PR_OPENED_MARKER)
+    if idx < 0:
+        return None
+    payload = line[idx + len(PR_OPENED_MARKER) :].strip()
+    start = payload.find("{")
+    end = payload.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        parsed = json.loads(payload[start : end + 1])
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    url = parsed.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return None
+    out: Dict[str, str] = {"url": url.strip()}
+    branch = parsed.get("branch")
+    if isinstance(branch, str) and branch.strip():
+        out["branch"] = branch.strip()
+    provider = parsed.get("provider")
+    if isinstance(provider, str) and provider.strip():
+        out["provider"] = provider.strip()
+    return out
+
+
+def parse_review_marker(body: Optional[str]) -> Optional[str]:
+    """Return the flow id carried by a ``preloop-review`` comment marker."""
+
+    if not body or not isinstance(body, str):
+        return None
+    match = REVIEW_MARKER_RE.search(body)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def extract_comment_body(event_data: Dict[str, Any]) -> str:
+    """Best-effort comment body for GitHub and GitLab comment events."""
+
+    payload = event_data.get("payload") or event_data
+    if not isinstance(payload, dict):
+        return ""
+    comment = payload.get("comment")
+    if isinstance(comment, dict):
+        for key in ("body", "note"):
+            value = comment.get(key)
+            if isinstance(value, str) and value:
+                return value
+    elif isinstance(comment, str) and comment:
+        return comment
+    obj_attrs = payload.get("object_attributes")
+    if isinstance(obj_attrs, dict):
+        for key in ("note", "description", "body"):
+            value = obj_attrs.get(key)
+            if isinstance(value, str) and value:
+                return value
+    for key in ("body", "note"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def extract_comment_url(event_data: Dict[str, Any]) -> Optional[str]:
+    """Best-effort browser URL of the comment that triggered the event."""
+
+    payload = event_data.get("payload") or event_data
+    if not isinstance(payload, dict):
+        return None
+    comment = payload.get("comment")
+    if isinstance(comment, dict):
+        for key in ("html_url", "url", "web_url"):
+            value = comment.get(key)
+            if isinstance(value, str) and value:
+                return value
+    obj_attrs = payload.get("object_attributes")
+    if isinstance(obj_attrs, dict):
+        for key in ("url", "web_url"):
+            value = obj_attrs.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _flow_slug(name: Any) -> str:
+    if not isinstance(name, str):
+        return ""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def marker_flow_id_matches(flow: Any, marker_flow_id: Optional[str]) -> bool:
+    """True when a review marker names the flow that is about to receive it.
+
+    The marker carries whatever identifier the reviewer flow was told to write
+    (its UUID, or a preset slug like ``pr-reviewer``), so both forms count.
+    """
+
+    if not marker_flow_id:
+        return False
+    needle = marker_flow_id.strip().lower()
+    if not needle:
+        return False
+    candidates = {str(getattr(flow, "id", "") or "").lower()}
+    slug = _flow_slug(getattr(flow, "name", None))
+    if slug:
+        candidates.add(slug)
+    candidates.discard("")
+    return needle in candidates
+
+
+def max_resumes_per_pr(flow: Any) -> int:
+    """Flow-level cap on resumes started from one PR (default 5)."""
+
+    raw = getattr(flow, "max_resumes_per_pr", None)
+    if raw is None:
+        config = getattr(flow, "agent_config", None)
+        if isinstance(config, dict):
+            raw = config.get("max_resumes_per_pr")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_RESUMES_PER_PR
+    return value if value >= 0 else DEFAULT_MAX_RESUMES_PER_PR
+
+
+def resume_count(execution: Any) -> int:
+    """Resumes already started from the PR this execution opened."""
+
+    result = getattr(execution, "result", None)
+    if not isinstance(result, dict):
+        return 0
+    try:
+        return max(int(result.get("resume_count") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _write_result(db: Session, execution: Any, updates: Dict[str, Any]) -> bool:
+    """Merge ``updates`` onto ``execution.result`` and commit. Never raises."""
+
+    try:
+        current = dict(execution.result) if isinstance(execution.result, dict) else {}
+        current.update(updates)
+        execution.result = current
+        flag_modified(execution, "result")
+        db.commit()
+        return True
+    except Exception:
+        logger.warning(
+            "Failed to update result on execution %s",
+            getattr(execution, "id", None),
+            exc_info=True,
+        )
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug(
+                "Could not roll back after a failed result write", exc_info=True
+            )
+        return False
+
+
+def note_resume_started(db: Session, execution: Any) -> int:
+    """Increment and persist the resume counter on the bound execution."""
+
+    count = resume_count(execution) + 1
+    _write_result(db, execution, {"resume_count": count})
+    return count
+
+
+def find_running_executions_for_pr(
+    db: Session, flow: Any, pr_url: str
+) -> List[FlowExecution]:
+    """Running executions of ``flow`` that belong to ``pr_url``.
+
+    Matches both the execution that opened the PR (``result.pr_url``) and any
+    resume started from it (``trigger_event_details._resume.pr_url``).
+    """
+
+    needle = normalize_pr_url(pr_url)
+    if not needle:
+        return []
+    try:
+        executions = crud_flow_execution.get_running_by_flow(
+            db, flow_id=flow.id, running_statuses=list(_RUNNING_STATUSES)
+        )
+    except Exception:
+        logger.warning(
+            "Could not list running executions for PR follow-up", exc_info=True
+        )
+        return []
+    matches: List[FlowExecution] = []
+    for execution in executions:
+        result = execution.result if isinstance(execution.result, dict) else {}
+        if normalize_pr_url(result.get("pr_url")) == needle:
+            matches.append(execution)
+            continue
+        details = execution.trigger_event_details or {}
+        resume = details.get("_resume") if isinstance(details, dict) else None
+        if (
+            isinstance(resume, dict)
+            and normalize_pr_url(resume.get("pr_url")) == needle
+        ):
+            matches.append(execution)
+    return matches
+
+
+def queue_pending_followup(
+    db: Session, execution: Any, comment_url: Optional[str]
+) -> bool:
+    """Flag one pending follow-up on a running execution (coalescing).
+
+    Later comments during the same run keep the first flag: one run produces
+    exactly one follow-up.
+    """
+
+    result = execution.result if isinstance(execution.result, dict) else {}
+    if result.get("pending_followup"):
+        logger.info(
+            "Follow-up already queued on execution %s; coalescing this comment",
+            getattr(execution, "id", None),
+        )
+        return False
+    updates: Dict[str, Any] = {"pending_followup": True}
+    if comment_url:
+        updates["pending_followup_comment_url"] = comment_url
+    return _write_result(db, execution, updates)
+
+
+def take_pending_followup(db: Session, execution: Any) -> Optional[Dict[str, Any]]:
+    """Clear the pending flag and return what the follow-up needs, or None."""
+
+    result = execution.result if isinstance(execution.result, dict) else {}
+    if not result.get("pending_followup"):
+        return None
+    comment_url = result.get("pending_followup_comment_url")
+    _write_result(
+        db,
+        execution,
+        {"pending_followup": False, "pending_followup_taken_at_comment": comment_url},
+    )
+    details = execution.trigger_event_details or {}
+    resume = details.get("_resume") if isinstance(details, dict) else None
+    pr_url = result.get("pr_url")
+    source_branch = result.get("pr_source_branch")
+    if isinstance(resume, dict):
+        pr_url = pr_url or resume.get("pr_url")
+        source_branch = source_branch or resume.get("source_branch")
+    return {
+        "comment_url": comment_url,
+        "pr_url": pr_url,
+        "source_branch": source_branch,
+    }
 
 
 def merge_result_preserving_pr_binding(
@@ -226,19 +510,67 @@ def bind_resume_or_skip(
     """Attach ``_resume`` when this comment belongs to a PR this flow opened.
 
     Returns the resume dict, or None when the event should not start a run.
+    Three guards can drop an otherwise-correlated comment:
+
+    * self-loop: the comment carries this flow's own review marker,
+    * cap: the PR already started ``max_resumes_per_pr`` resumes,
+    * in flight: a run for this PR is still going, so the comment is queued
+      as a single follow-up instead of starting a second run.
     """
 
     pr_url = extract_pr_url_from_comment_event(event_data)
     if not pr_url:
         return None
+
+    marker_flow_id = parse_review_marker(extract_comment_body(event_data))
+    if marker_flow_id and marker_flow_id_matches(flow, marker_flow_id):
+        logger.info(
+            "Skipping comment on %s: its review marker names the receiving "
+            "flow %s (self-loop guard)",
+            pr_url,
+            marker_flow_id,
+        )
+        return None
+
     execution = find_bound_execution(db, flow.id, pr_url)
     if execution is None:
         return None
+
+    # Any still-running execution for this PR (the run that opened it, or a
+    # resume already started from it) takes the comment as a follow-up.
+    running = find_running_executions_for_pr(db, flow, pr_url)
+    if running:
+        target = running[0]
+        queue_pending_followup(db, target, extract_comment_url(event_data))
+        logger.info(
+            "Queued one follow-up on running execution %s for %s",
+            target.id,
+            pr_url,
+        )
+        return None
+
+    cap = max_resumes_per_pr(flow)
+    started = resume_count(execution)
+    if started >= cap:
+        logger.info(
+            "Skipping comment on %s: flow %s already started %s/%s resumes "
+            "for this PR (max_resumes_per_pr)",
+            pr_url,
+            flow.id,
+            started,
+            cap,
+        )
+        return None
+
     result = execution.result if isinstance(execution.result, dict) else {}
     resume = {
         "execution_id": str(execution.id),
         "pr_url": result.get("pr_url") or pr_url,
         "source_branch": result.get("pr_source_branch"),
+        "resume_index": note_resume_started(db, execution),
+        "comment_url": extract_comment_url(event_data),
     }
+    if marker_flow_id:
+        resume["review_flow_id"] = marker_flow_id
     event_data["_resume"] = resume
     return resume
