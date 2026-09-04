@@ -46,6 +46,13 @@ describe('ToolsView (approvals + conditions)', () => {
       approval_type: 'standard',
       is_default: true,
     };
+    const extraPolicy = {
+      id: 'policy-2',
+      name: 'Security',
+      description: 'Security policy',
+      approval_type: 'standard',
+      is_default: false,
+    };
 
     fetchStub.callsFake(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -68,7 +75,7 @@ describe('ToolsView (approvals + conditions)', () => {
         }
 
         if (url.endsWith('/api/v1/approval-workflows') && method === 'GET') {
-          return new Response(JSON.stringify([defaultPolicy]), {
+          return new Response(JSON.stringify([defaultPolicy, extraPolicy]), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
@@ -326,8 +333,11 @@ describe('ToolsView (approvals + conditions)', () => {
     );
     expect(select).to.exist;
     const options = Array.from(select!.querySelectorAll('sl-option'));
-    expect(options.length).to.be.greaterThan(0);
+    expect(options.map((option) => option.getAttribute('value'))).to.deep.equal(
+      ['', 'policy-2']
+    );
     expect(options[0]?.textContent).to.include('Default workflow (Default)');
+    expect(options[1]?.textContent).to.include('Security');
     for (const option of options) {
       expect(option.textContent).to.not.include('(account default)');
     }
@@ -440,6 +450,37 @@ describe('ToolsView (approvals + conditions)', () => {
     expect(saveError?.textContent).to.include('Could not save');
     expect(switchEl.checked).to.be.true;
     expect((element as any).error).to.equal(null);
+  });
+
+  it('reverts the workflow select when saving fails', async () => {
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        !(element as any).loading &&
+        (element as any).governanceDefaults !== null,
+      'Tools view did not load governance defaults'
+    );
+    await element.updateComplete;
+
+    failGovernancePut = true;
+
+    const select = element.shadowRoot?.querySelector(
+      '#native-approvals-default-workflow'
+    ) as HTMLSelectElement;
+    expect(select).to.exist;
+    expect(select.value || '').to.equal('');
+
+    select.value = 'policy-2';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(
+      () => !(element as any).savingGovernanceDefaults,
+      'Save did not finish'
+    );
+    await element.updateComplete;
+
+    expect(select.value || '').to.equal('');
+    const saveError = element.shadowRoot?.querySelector('.governance-error');
+    expect(saveError?.textContent).to.include('Could not save');
   });
 
   it('renders a retry fallback when governance defaults fail to load', async () => {

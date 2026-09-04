@@ -1737,6 +1737,14 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     return name ? `Default workflow (${name})` : 'Default workflow';
   }
 
+  private _nativeWorkflowSelectValue(defaults: {
+    approval_workflow_id?: string | null;
+  }): string {
+    const selected = defaults.approval_workflow_id ?? '';
+    const defaultId = this.approvalPolicies.find((p) => p.is_default)?.id;
+    return selected && selected === defaultId ? '' : selected;
+  }
+
   /**
    * Account-default card for native tool-call approvals (hook-based Bash /
    * Edit / shell approvals), rendered above the MCP tool groups so both
@@ -1828,23 +1836,32 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
                     label="Send requests to"
                     style="min-width: 260px;"
                     ?disabled=${this.savingGovernanceDefaults}
-                    .value=${defaults.approval_workflow_id ?? ''}
-                    @sl-change=${(e: Event) =>
-                      this._saveGovernanceDefaults({
-                        approval_workflow_id:
-                          (e.target as HTMLSelectElement).value || null,
-                      })}
+                    .value=${this._nativeWorkflowSelectValue(defaults)}
+                    @sl-change=${(e: Event) => {
+                      const select = e.target as HTMLSelectElement;
+                      const previous =
+                        this._nativeWorkflowSelectValue(defaults);
+                      void this._saveGovernanceDefaults({
+                        approval_workflow_id: select.value || null,
+                      }).then((saved) => {
+                        if (!saved) {
+                          select.value = previous;
+                        }
+                      });
+                    }}
                   >
                     <sl-option value=""
                       >${this._defaultWorkflowLabel()}</sl-option
                     >
-                    ${this.approvalPolicies.map(
-                      (workflow) => html`
-                        <sl-option value=${workflow.id}>
-                          ${workflow.name}
-                        </sl-option>
-                      `
-                    )}
+                    ${this.approvalPolicies
+                      .filter((workflow) => !workflow.is_default)
+                      .map(
+                        (workflow) => html`
+                          <sl-option value=${workflow.id}>
+                            ${workflow.name}
+                          </sl-option>
+                        `
+                      )}
                   </sl-select>
                 `
               : ''
