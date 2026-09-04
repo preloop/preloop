@@ -85,6 +85,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   busy**: a busy runner cannot be leased, so it no longer counts as online
   capacity for the account default pool. The Runners page still shows a
   saved default that is currently offline.
+- **Automated Issue Implementation prompt uses normalized issue fields**:
+  title, description, and number come from
+  ``trigger_event.payload.object_attributes`` so GitHub ``issue.body`` and
+  GitLab ``description`` both resolve. Label filters match GitHub
+  ``issue.labels[].name`` and GitLab ``labels[].title`` as well as
+  already-enriched string lists.
 - **Similarity search embeddings no longer block the event loop**: comment,
   issue, and generic search query embeddings run in a worker thread so a
   slow OpenAI embedding call cannot serialize concurrent requests. Gemini

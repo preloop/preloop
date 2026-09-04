@@ -304,6 +304,54 @@ class TestMatchesTriggerConfig:
 
         assert result is True
 
+    def test_github_issue_labels_objects_match_filter(
+        self, flow_trigger_service, sample_flow
+    ):
+        """Raw GitHub ``issue.labels[].name`` objects satisfy labels filters."""
+        from preloop.sync.webhook_payloads import GITHUB_ISSUE_OPENED
+
+        sample_flow.trigger_config = {"filter_conditions": {"labels": ["bug"]}}
+        event_data = {"payload": GITHUB_ISSUE_OPENED}
+
+        assert (
+            flow_trigger_service._matches_trigger_config(sample_flow, event_data)
+            is True
+        )
+
+    def test_gitlab_issue_labels_objects_match_filter(
+        self, flow_trigger_service, sample_flow
+    ):
+        """Raw GitLab ``labels[].title`` objects satisfy labels filters."""
+        from preloop.sync.webhook_payloads import GITLAB_ISSUE_OPENED
+
+        sample_flow.trigger_config = {"filter_conditions": {"labels": ["API"]}}
+        event_data = {"payload": GITLAB_ISSUE_OPENED}
+
+        assert (
+            flow_trigger_service._matches_trigger_config(sample_flow, event_data)
+            is True
+        )
+
+    def test_enriched_filter_fields_labels_still_match(
+        self, flow_trigger_service, sample_flow
+    ):
+        """Webhook path merges extract_filter_fields strings into the payload."""
+        from preloop.sync.event_normalizer import extract_filter_fields
+        from preloop.sync.webhook_payloads import GITHUB_ISSUE_OPENED
+
+        sample_flow.trigger_config = {"filter_conditions": {"labels": ["bug"]}}
+        event_data = {
+            "payload": {
+                **GITHUB_ISSUE_OPENED,
+                **extract_filter_fields("github", "issues", GITHUB_ISSUE_OPENED),
+            }
+        }
+
+        assert (
+            flow_trigger_service._matches_trigger_config(sample_flow, event_data)
+            is True
+        )
+
 
 class TestHasRunningExecution:
     """Tests for _has_running_execution method."""
