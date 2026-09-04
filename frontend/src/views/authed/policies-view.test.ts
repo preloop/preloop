@@ -901,7 +901,7 @@ describe('PoliciesView', () => {
       });
       await (element as any).saveModelIORule();
 
-      expect((element as any)._error).to.contain('needs a condition');
+      expect((element as any)._ruleDialogError).to.contain('needs a condition');
       expect((element as any)._showModelIODialog).to.be.true;
       const posted = fetchStub
         .getCalls()

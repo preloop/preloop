@@ -218,6 +218,7 @@ export class PoliciesView extends LitElement {
   @state() private _showModelIODialog = false;
   @state() private _editingModelIOId: string | null = null;
   @state() private _savingModelIO = false;
+  @state() private _ruleDialogError = '';
   @state() private _modelIOForm = {
     id: '',
     ruleType: 'model' as 'tool' | 'model',
@@ -1118,6 +1119,7 @@ export class PoliciesView extends LitElement {
   }
 
   private openModelIODialog(rule: ModelIORule | null = null) {
+    this._ruleDialogError = '';
     if (rule) {
       const condition = rule.conditions?.[0];
       const action = (condition?.action || 'deny') as
@@ -1150,6 +1152,7 @@ export class PoliciesView extends LitElement {
   private closeModelIODialog() {
     this._showModelIODialog = false;
     this._editingModelIOId = null;
+    this._ruleDialogError = '';
   }
 
   /**
@@ -1274,14 +1277,14 @@ export class PoliciesView extends LitElement {
       return;
     }
     if (!form.expression.trim() && form.action !== 'allow') {
-      this._error =
+      this._ruleDialogError =
         `A ${form.action} rule needs a condition. An empty condition would ` +
         'match every scanned request.';
       return;
     }
     const rule = this.buildModelIORuleFromForm();
     if (!rule.id) {
-      this._error = 'Rule id is required';
+      this._ruleDialogError = 'Rule id is required';
       return;
     }
     this._savingModelIO = true;
@@ -1294,7 +1297,7 @@ export class PoliciesView extends LitElement {
       this.closeModelIODialog();
       await this.loadData();
     } catch (err: any) {
-      this._error = err.message || 'Failed to save model I/O rule';
+      this._ruleDialogError = err.message || 'Failed to save model I/O rule';
     } finally {
       this._savingModelIO = false;
     }
@@ -1304,7 +1307,7 @@ export class PoliciesView extends LitElement {
     const form = this._modelIOForm;
     const tool = this._tools.find((item) => item.name === form.toolName);
     if (!tool) {
-      this._error = 'Choose a tool';
+      this._ruleDialogError = 'Choose a tool';
       return;
     }
     this._savingModelIO = true;
@@ -1343,7 +1346,7 @@ export class PoliciesView extends LitElement {
       this.closeModelIODialog();
       await this.loadData();
     } catch (err: any) {
-      this._error = err.message || 'Failed to save tool rule';
+      this._ruleDialogError = err.message || 'Failed to save tool rule';
     } finally {
       this._savingModelIO = false;
     }
@@ -2325,6 +2328,16 @@ export class PoliciesView extends LitElement {
               `
             : ''
         }
+        ${
+          this._ruleDialogError
+            ? html`
+                <sl-alert variant="danger" open data-testid="rule-dialog-error">
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  ${this._ruleDialogError}
+                </sl-alert>
+              `
+            : ''
+        }
 
         <sl-button slot="footer" @click=${this.closeModelIODialog}>
           Cancel
@@ -2333,6 +2346,7 @@ export class PoliciesView extends LitElement {
           slot="footer"
           variant="primary"
           ?loading=${this._savingModelIO}
+          ?disabled=${form.ruleType === 'model' && !form.id.trim()}
           @click=${() => this.saveModelIORule()}
         >
           Save

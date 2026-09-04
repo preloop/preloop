@@ -167,29 +167,30 @@ describe('Policies page repro', () => {
     expect(ruleDialog(m.element).open).to.be.true;
   });
 
-  it('R2 Save with the default form gives no feedback inside the dialog', async () => {
+  it('R2 Save with the default form shows the error inside the dialog', async () => {
     const m = await mount();
     stub = m.stub;
     headerButton(m.element, 'Add rule').click();
     await m.element.updateComplete;
-    // Default form: preset selected, id empty. A user clicks Save.
-    dialogSave(m.element).click();
-    await waitUntil(() => Boolean((m.element as any)._error), 'no error set');
+    // Default form: preset selected, id empty. Save is disabled; calling
+    // save still writes the message into the dialog, not the page overlay.
+    const save = dialogSave(m.element) as HTMLButtonElement;
+    expect(save.disabled, 'Save stays off until the id is filled').to.be.true;
+    await (m.element as any).saveModelIORule();
     await m.element.updateComplete;
 
     const posted = m.calls.filter(
       (c) => c.url.endsWith('/policies/model-io-rules') && c.method === 'POST'
     );
     expect(posted).to.have.length(0);
-    expect((m.element as any)._error).to.contain('Rule id is required');
-    expect(ruleDialog(m.element).open, 'dialog stays open').to.be.true;
-    // The message is rendered outside the modal, behind the overlay.
-    expect(ruleDialog(m.element).textContent).to.not.contain(
+    expect((m.element as any)._ruleDialogError).to.contain(
       'Rule id is required'
     );
+    expect(ruleDialog(m.element).open, 'dialog stays open').to.be.true;
+    expect(ruleDialog(m.element).textContent).to.contain('Rule id is required');
   });
 
-  it('R3 API 403 on Save leaves the dialog open with the error behind it', async () => {
+  it('R3 API 403 on Save shows the error inside the dialog', async () => {
     const m = await mount({ createStatus: 403 });
     stub = m.stub;
     headerButton(m.element, 'Add rule').click();
@@ -200,14 +201,15 @@ describe('Policies page repro', () => {
     await m.element.updateComplete;
 
     dialogSave(m.element).click();
-    await waitUntil(() => Boolean((m.element as any)._error), 'no error set');
+    await waitUntil(
+      () => Boolean((m.element as any)._ruleDialogError),
+      'no error set'
+    );
     await m.element.updateComplete;
 
-    expect((m.element as any)._error).to.contain('Permission denied');
+    expect((m.element as any)._ruleDialogError).to.contain('Permission denied');
     expect(ruleDialog(m.element).open).to.be.true;
-    expect(ruleDialog(m.element).textContent).to.not.contain(
-      'Permission denied'
-    );
+    expect(ruleDialog(m.element).textContent).to.contain('Permission denied');
   });
 
   it('R4 picking a second preset keeps the first preset id', async () => {
