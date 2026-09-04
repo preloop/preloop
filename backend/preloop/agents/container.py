@@ -2879,7 +2879,6 @@ true
             if rebase_shell:
                 commands.append(rebase_shell)
                 execution_context["_git_resume_rebase"] = True
-                execution_context["_git_base_branch"] = base_branch
         return commands
 
     def _prepare_git_clone_command(self, execution_context: Dict[str, Any]) -> str:
