@@ -75,7 +75,7 @@ def test_backend_coverage_job_combines_shards_before_floor() -> None:
     """The 60% floor applies only to the combined coverage data."""
     jobs = _load_ci_jobs()
     coverage = jobs["test-backend-coverage"]
-    assert coverage["needs"] == "test-backend"
+    assert coverage["needs"] == ["changes", "test-backend"]
 
     install = _step_script(coverage, "Install coverage")
     assert ".github/requirements/coverage.txt" in install
@@ -127,3 +127,16 @@ def test_build_and_push_waits_for_combined_backend_coverage() -> None:
     needs = _load_ci_jobs()["build-and-push"]["needs"]
     assert "test-backend-coverage" in needs
     assert "test-backend" not in needs
+
+
+def test_ci_aggregator_fails_when_changes_fails() -> None:
+    """A crashed path-filter job must not leave the required check green."""
+    jobs = _load_ci_jobs()
+    aggregator = jobs["ci"]
+    assert aggregator["needs"][0] == "changes"
+    assert "changes" in aggregator["needs"]
+    script = _step_script(
+        aggregator, "Require every suite to have passed or been skipped"
+    )
+    assert "check changes" in script
+    assert "needs.changes.result" in str(aggregator)

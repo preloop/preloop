@@ -530,6 +530,7 @@ describe('DashboardView', () => {
     connectStub.restore();
     subscribeStub.restore();
     localStorage.clear();
+    sessionStorage.clear();
   });
 
   async function mountDashboard(): Promise<DashboardView> {
@@ -1678,6 +1679,13 @@ describe('DashboardView', () => {
         const first = await mountLoaded();
         expect(first['aiModels'].length).to.equal(1);
 
+        // Writes are coalesced onto requestIdleCallback (2s timeout), so a
+        // busy CI runner can finish the second pass before the cache lands.
+        await waitUntil(
+          () => JSON.parse(sessionStorage.getItem(key) || '{}').tools != null,
+          'dashboard cache did not persist tools',
+          { timeout: 4000 }
+        );
         const cached = JSON.parse(sessionStorage.getItem(key) || '{}');
         expect(cached.tools, 'tools were already cached').to.exist;
         expect(cached.aiModels?.[0]?.name).to.equal('OpenAI GPT-5.4');

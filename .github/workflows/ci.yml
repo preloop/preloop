@@ -63,9 +63,6 @@ jobs:
           filters: |
             backend:
               - 'backend/**'
-              - 'tests/**'
-              - 'presets/**'
-              - 'test_agent_overrides.py'
               - 'pyproject.toml'
               - 'requirements/**'
               - '.github/requirements/app-dev.txt'
@@ -584,12 +581,14 @@ jobs:
 
   # Required check. Per-suite jobs may skip when their tree did not change;
   # a failed suite must still fail this job (skipped-because-needs-failed
-  # would otherwise look like a path-filter skip).
+  # would otherwise look like a path-filter skip). `changes` is in `needs`
+  # so a checkout/filter crash cannot leave this job green with no tests.
   ci:
     name: CI
     runs-on: ubuntu-latest
     if: always() && !cancelled()
     needs:
+      - changes
       - lint
       - helm-lint
       - test-backend
@@ -599,6 +598,7 @@ jobs:
     steps:
       - name: Require every suite to have passed or been skipped
         env:
+          CHANGES: ${{ needs.changes.result }}
           LINT: ${{ needs.lint.result }}
           HELM: ${{ needs.helm-lint.result }}
           BACKEND: ${{ needs.test-backend.result }}
@@ -619,6 +619,7 @@ jobs:
                 ;;
             esac
           }
+          check changes "$CHANGES"
           check lint "$LINT"
           check helm-lint "$HELM"
           check test-backend "$BACKEND"
