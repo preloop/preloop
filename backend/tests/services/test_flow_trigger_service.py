@@ -644,7 +644,7 @@ class TestProcessEvent:
     @patch("preloop.services.flow_trigger_service.asyncio.create_task")
     @patch("preloop.services.flow_trigger_service.get_nats_client")
     @patch("preloop.services.flow_trigger_service.crud_flow")
-    @patch("preloop.services.flow_ci_feedback.bind_ci_failure_resume_or_skip")
+    @patch("preloop.services.flow_trigger_service.bind_ci_failure_resume_or_skip")
     @patch.object(FlowTriggerService, "_find_running_execution_for_commit")
     async def test_failed_check_run_on_bound_pr_resumes(
         self,
