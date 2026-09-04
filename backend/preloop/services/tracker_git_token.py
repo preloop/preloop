@@ -87,7 +87,9 @@ async def resolve_tracker_git_token(tracker: Any) -> Optional[str]:
         return None
 
     logger.info(
-        "Resolved a GitHub App installation token for tracker %s (expires within the hour)",
+        "Resolved a GitHub App installation token for tracker %s "
+        "(expires within the hour; minted at execution start and consumed "
+        "by the same container's post-execution git push)",
         getattr(tracker, "id", "unknown"),
     )
     return token
