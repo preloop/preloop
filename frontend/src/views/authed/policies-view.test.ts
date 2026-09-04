@@ -83,6 +83,23 @@ describe('PoliciesView', () => {
           });
         }
 
+        if (
+          url.includes('/api/v1/policies/versions/') &&
+          url.includes('/rollback') &&
+          method === 'POST'
+        ) {
+          return json({
+            success: true,
+            message: 'preview',
+            preview_only: true,
+            changes: {
+              summary: '1 change',
+              has_changes: true,
+              changes: { added: [], removed: [], modified: [] },
+            },
+          });
+        }
+
         if (url.includes('/api/v1/policies/versions')) {
           if (opts.emptyVersions) {
             return json([]);
@@ -767,6 +784,18 @@ describe('PoliciesView', () => {
       return element;
     }
 
+    it('encodes tool option values so names with spaces stay intact', async () => {
+      const element = await mountWithDialog();
+      (element as any)._patchModelIOForm({ ruleType: 'tool' });
+      await element.updateComplete;
+      const option = element.shadowRoot?.querySelector(
+        '[data-testid="rule-dialog"] sl-option'
+      );
+      expect(option?.getAttribute('value')).to.equal(
+        encodeURIComponent('search_issues')
+      );
+    });
+
     it('shows Manage workflows when the action is require_approval', async () => {
       const element = await mountWithDialog();
       (element as any)._patchModelIOForm({ action: 'require_approval' });
@@ -941,5 +970,44 @@ describe('PoliciesView', () => {
         );
       expect(posted).to.have.length(0);
     });
+  });
+
+  it('View Diff opens the preview without a Confirm Rollback button', async () => {
+    fetchStub = createFetchStub();
+    const element = (await fixture(
+      html`<policies-view></policies-view>`
+    )) as PoliciesView;
+    await waitUntil(() => !(element as any)._loading, 'still loading');
+    (element as any)._activeTab = 'files';
+    await (element as any).loadVersions();
+    await element.updateComplete;
+
+    const version = {
+      id: 'ver-2',
+      version_number: 2,
+      tag: null,
+      description: 'Older',
+      created_at: '2026-05-01T10:00:00Z',
+      created_by_username: 'alice',
+      is_active: false,
+      snapshot_summary: {
+        mcp_servers_count: 0,
+        tools_count: 1,
+        policies_count: 0,
+      },
+    };
+    await (element as any).openRollbackPreview(version, false);
+    await waitUntil(
+      () => (element as any)._showRollbackDialog === true,
+      'diff dialog did not open'
+    );
+    await element.updateComplete;
+
+    const dialog = element.shadowRoot?.querySelector(
+      'sl-dialog[label="Version Diff"]'
+    );
+    expect(dialog).to.exist;
+    expect(dialog?.textContent).to.not.contain('Confirm Rollback');
+    expect((element as any)._rollbackConfirmVisible).to.be.false;
   });
 });

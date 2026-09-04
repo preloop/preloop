@@ -264,6 +264,7 @@ export class PoliciesView extends LitElement {
   @state() private _showPruneDialog = false;
   @state() private _showTagDialog = false;
   @state() private _showRollbackDialog = false;
+  @state() private _rollbackConfirmVisible = true;
   @state() private _rollbackPreview: RollbackResponse | null = null;
   @state() private _savingVersion = false;
   @state() private _pruningVersions = false;
@@ -1723,7 +1724,8 @@ export class PoliciesView extends LitElement {
     this._showTagDialog = true;
   }
 
-  private openRollbackPreview(version: PolicyVersion) {
+  private openRollbackPreview(version: PolicyVersion, confirmRollback = true) {
+    this._rollbackConfirmVisible = confirmRollback;
     this._versionToRollback = version;
     this.rollbackToVersion(version.id, true);
   }
@@ -1982,7 +1984,7 @@ export class PoliciesView extends LitElement {
           <p class="model-io-hint">
             ${
               isTool
-                ? 'Runs when an agent calls a tool through the firewall.'
+                ? 'Runs when an agent calls a tool through the firewall. Saving a tool rule needs the Tools permission, not only Policies.'
                 : 'Runs on text going to or coming back from a model.'
             }
           </p>
@@ -1994,13 +1996,17 @@ export class PoliciesView extends LitElement {
                 <div class="form-group">
                   <label>Tool</label>
                   <sl-select
-                    .value=${form.toolName}
+                    .value=${
+                      form.toolName ? encodeURIComponent(form.toolName) : ''
+                    }
                     @sl-change=${(e: any) =>
-                      this._patchModelIOForm({ toolName: e.target.value })}
+                      this._patchModelIOForm({
+                        toolName: decodeURIComponent(e.target.value),
+                      })}
                   >
                     ${this._tools.map(
                       (tool) =>
-                        html`<sl-option value=${tool.name}
+                        html`<sl-option value=${encodeURIComponent(tool.name)}
                           >${tool.name}</sl-option
                         >`
                     )}
@@ -2572,14 +2578,14 @@ defaults:
             <sl-tooltip content="View Diff">
               <sl-icon-button
                 name="file-diff"
-                @click=${() => this.openRollbackPreview(version)}
+                @click=${() => this.openRollbackPreview(version, false)}
                 ?disabled=${version.is_active}
               ></sl-icon-button>
             </sl-tooltip>
             <sl-tooltip content="Rollback to this version">
               <sl-icon-button
                 name="arrow-counterclockwise"
-                @click=${() => this.openRollbackPreview(version)}
+                @click=${() => this.openRollbackPreview(version, true)}
                 ?disabled=${version.is_active}
               ></sl-icon-button>
             </sl-tooltip>
@@ -2824,7 +2830,9 @@ defaults:
   private renderRollbackConfirmDialog() {
     return html`
       <sl-dialog
-        label="Rollback to Version"
+        label=${
+          this._rollbackConfirmVisible ? 'Rollback to Version' : 'Version Diff'
+        }
         ?open=${this._showRollbackDialog}
         @sl-request-close=${() => {
           this._showRollbackDialog = false;
@@ -2836,16 +2844,27 @@ defaults:
         ${
           this._versionToRollback
             ? html`
-                <div class="rollback-warning">
-                  <sl-icon name="exclamation-triangle"></sl-icon>
-                  <div>
-                    <strong>Warning:</strong> Rolling back will replace your
-                    current policy configuration with the snapshot from version
-                    ${this._versionToRollback.version_number}. This action
-                    cannot be automatically undone.
-                  </div>
-                </div>
-
+                ${
+                  this._rollbackConfirmVisible
+                    ? html`
+                        <div class="rollback-warning">
+                          <sl-icon name="exclamation-triangle"></sl-icon>
+                          <div>
+                            <strong>Warning:</strong> Rolling back will replace
+                            your current policy configuration with the snapshot
+                            from version
+                            ${this._versionToRollback.version_number}. This
+                            action cannot be automatically undone.
+                          </div>
+                        </div>
+                      `
+                    : html`
+                        <p style="margin-top: 0;">
+                          Diff for version
+                          ${this._versionToRollback.version_number}.
+                        </p>
+                      `
+                }
                 ${
                   this._rollbackPreview
                     ? html`
@@ -2973,18 +2992,25 @@ defaults:
                   >
                     Cancel
                   </sl-button>
-                  <sl-button
-                    variant="danger"
-                    @click=${() =>
-                      this.rollbackToVersion(
-                        this._versionToRollback!.id,
-                        false
-                      )}
-                    ?loading=${this._rollingBack}
-                    ?disabled=${!this._rollbackPreview?.changes?.has_changes}
-                  >
-                    Confirm Rollback
-                  </sl-button>
+                  ${
+                    this._rollbackConfirmVisible
+                      ? html`
+                          <sl-button
+                            variant="danger"
+                            @click=${() =>
+                              this.rollbackToVersion(
+                                this._versionToRollback!.id,
+                                false
+                              )}
+                            ?loading=${this._rollingBack}
+                            ?disabled=${!this._rollbackPreview?.changes
+                              ?.has_changes}
+                          >
+                            Confirm Rollback
+                          </sl-button>
+                        `
+                      : ''
+                  }
                 </div>
               `
             : ''
