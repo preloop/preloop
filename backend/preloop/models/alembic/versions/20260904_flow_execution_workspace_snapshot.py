@@ -1,7 +1,7 @@
 """Add flow_execution.workspace_snapshot for captured workspaces.
 
 Revision ID: 20260904_flow_exec_workspace
-Revises: 20260903_flow_timeout
+Revises: 20260904_acct_runner_pool
 Create Date: 2026-09-04
 
 Every hosted run now leaves a size-capped tar.gz of ``/workspace`` behind so
@@ -18,7 +18,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "20260904_flow_exec_workspace"
-down_revision: Union[str, None] = "20260903_flow_timeout"
+down_revision: Union[str, None] = "20260904_acct_runner_pool"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 # Alembic reads these module globals by name; keep a local reference so static
