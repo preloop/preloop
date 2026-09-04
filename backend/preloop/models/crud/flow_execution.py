@@ -334,6 +334,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     # failures; omitting it here would make the schema
                     # projection lazy-load it one row at a time.
                     FlowExecution.failure_category,
+                    FlowExecution.runner_id,
+                    FlowExecution.agent_session_reference,
                     FlowExecution.retry_of_execution_id,
                     FlowExecution.batch_id,
                     FlowExecution.tool_calls_count,

@@ -373,6 +373,39 @@ describe('FlowExecutionsView', () => {
       ).to.contain('openai/gpt-5');
     });
 
+    it('chips hosted and private runner kinds on the list', async () => {
+      const el = await renderRows([
+        {
+          id: 'exec-hosted',
+          flow_id: 'flow-1',
+          flow_name: 'Nightly Sync',
+          status: 'SUCCEEDED',
+          start_time: '2026-03-09T10:00:00Z',
+          end_time: '2026-03-09T10:01:00Z',
+          runner: { kind: 'hosted', name: 'Preloop hosted' },
+        },
+        {
+          id: 'exec-private',
+          flow_id: 'flow-2',
+          flow_name: 'Triage',
+          status: 'SUCCEEDED',
+          start_time: '2026-03-09T10:00:00Z',
+          end_time: '2026-03-09T10:01:00Z',
+          runner: { kind: 'private', name: 'Office Mac' },
+        },
+      ]);
+
+      const badges = Array.from(
+        el.shadowRoot!.querySelectorAll('[data-testid="runner-kind-badge"]')
+      );
+      expect(badges.map((badge) => badge.textContent!.trim())).to.eql([
+        'Hosted',
+        'Private',
+      ]);
+      expect(badges[0]!.getAttribute('data-runner-kind')).to.equal('hosted');
+      expect(badges[1]!.getAttribute('data-runner-kind')).to.equal('private');
+    });
+
     it('shows a dash when a run has no attributable model', async () => {
       const el = await renderRows([
         {
@@ -393,7 +426,9 @@ describe('FlowExecutionsView', () => {
     it('writes the status as a soft title case chip', async () => {
       const el = await renderRows(EXECUTIONS);
       const chips = Array.from(
-        el.shadowRoot?.querySelectorAll('tbody sl-badge') || []
+        el.shadowRoot?.querySelectorAll(
+          'tbody .status-cell sl-badge:not([data-testid="runner-kind-badge"])'
+        ) || []
       );
 
       expect(chips[0]?.textContent?.trim()).to.equal('Succeeded');

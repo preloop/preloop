@@ -789,6 +789,8 @@ def test_flow_execution_schemas_expose_failure_category():
     """
     assert "failure_category" in schemas.FlowExecutionListResponse.model_fields
     assert "failure_category" in schemas.FlowExecutionResponse.model_fields
+    assert "runner" in schemas.FlowExecutionListResponse.model_fields
+    assert "runner" in schemas.FlowExecutionResponse.model_fields
 
 
 def test_lightweight_execution_list_loads_the_failure_category():
@@ -799,6 +801,8 @@ def test_lightweight_execution_list_loads_the_failure_category():
 
     source = inspect.getsource(CRUDFlowExecution.get_multi)
     assert "FlowExecution.failure_category" in source
+    assert "FlowExecution.runner_id" in source
+    assert "FlowExecution.agent_session_reference" in source
 
 
 @pytest.mark.asyncio
