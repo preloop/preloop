@@ -440,6 +440,70 @@ class TestQueueOneFollowUp:
         assert execution.result["pending_followup"] is False
         assert take_pending_followup(db, execution) is None
 
+    def test_take_pending_followup_refreshes_stale_object(self):
+        execution = _bound_execution(
+            {
+                "pr_url": "https://github.com/acme/app/pull/7",
+                "pr_source_branch": "preloop/fix-1",
+            }
+        )
+        db = MagicMock()
+
+        def _refresh(obj):
+            obj.result["pending_followup"] = True
+            obj.result["pending_followup_comment_url"] = "c-late"
+
+        db.refresh.side_effect = _refresh
+        taken = take_pending_followup(db, execution)
+        db.refresh.assert_called_once_with(execution)
+        assert taken["comment_url"] == "c-late"
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_follow_up_respects_resume_cap(self, monkeypatch):
+        from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+        opener = _bound_execution(
+            {
+                "pr_url": "https://github.com/acme/app/pull/7",
+                "pr_source_branch": "preloop/fix-1",
+                "resume_count": 5,
+            }
+        )
+        running = _bound_execution(
+            {
+                "pr_url": "https://github.com/acme/app/pull/7",
+                "pending_followup": True,
+                "pending_followup_comment_url": "c1",
+            }
+        )
+        orchestrator = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
+        orchestrator.db = MagicMock()
+        orchestrator.nats_client = MagicMock()
+        orchestrator.flow = _flow()
+        orchestrator.execution_log = running
+        orchestrator.execution_log.trigger_event_details = {"payload": {}}
+
+        started = []
+
+        class _Service:
+            def __init__(self, db):
+                self.db = db
+
+            async def _start_flow_execution(self, *, flow, event_data, nats_client):
+                started.append(event_data)
+
+        monkeypatch.setattr(
+            "preloop.services.flow_trigger_service.FlowTriggerService", _Service
+        )
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.find_bound_execution",
+            lambda *a, **k: opener,
+        )
+
+        await orchestrator._start_queued_followup()
+        assert started == []
+        assert opener.result["resume_count"] == 5
+
     @pytest.mark.asyncio
     async def test_orchestrator_starts_exactly_one_follow_up(self, monkeypatch):
         from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
@@ -475,6 +539,10 @@ class TestQueueOneFollowUp:
         monkeypatch.setattr(
             "preloop.services.flow_trigger_service.FlowTriggerService", _Service
         )
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.find_bound_execution",
+            lambda *a, **k: orchestrator.execution_log,
+        )
 
         await orchestrator._start_queued_followup()
         await orchestrator._start_queued_followup()
@@ -485,3 +553,5 @@ class TestQueueOneFollowUp:
         assert resume["source_branch"] == "preloop/fix-1"
         assert resume["comment_url"] == "c1"
         assert resume["execution_id"] == str(orchestrator.execution_log.id)
+        assert resume["resume_index"] == 1
+        assert orchestrator.execution_log.result["resume_count"] == 1

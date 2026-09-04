@@ -46,9 +46,13 @@ from preloop.services.flow_failure_category import (
 from preloop.config import settings
 from preloop.services.flow_pr_binding import (
     PR_OPENED_MARKER,
+    find_bound_execution,
+    max_resumes_per_pr,
     merge_result_preserving_pr_binding,
+    note_resume_started,
     parse_pr_opened_marker,
     record_opened_pr,
+    resume_count,
     take_pending_followup,
 )
 from preloop.services.prompt_resolvers import (
@@ -2625,11 +2629,7 @@ class FlowExecutionOrchestrator:
         if self._opened_pr is not None:
             return
         self._opened_pr = parsed
-        logger.info(
-            "Wrapper opened %s for branch %s",
-            parsed.get("url"),
-            parsed.get("branch"),
-        )
+        logger.info("Wrapper opened a pull request for this execution")
         self.execution_logger.log_milestone(
             "pull_request_opened",
             {
@@ -2686,6 +2686,26 @@ class FlowExecutionOrchestrator:
             event_data["_resume"] = resume
             event_data.pop("test_mode", None)
 
+            pr_url = resume.get("pr_url")
+            opener = self.execution_log
+            if pr_url:
+                found = find_bound_execution(self.db, self.flow.id, pr_url)
+                if found is not None:
+                    opener = found
+            cap = max_resumes_per_pr(self.flow)
+            started = resume_count(opener)
+            if started >= cap:
+                logger.info(
+                    "Skipping queued follow-up for execution %s: already "
+                    "started %s/%s resumes for this PR",
+                    self.execution_log.id,
+                    started,
+                    cap,
+                )
+                return
+            resume["resume_index"] = note_resume_started(self.db, opener)
+            event_data["_resume"] = resume
+
             from preloop.services.flow_trigger_service import FlowTriggerService
 
             trigger_service = FlowTriggerService(self.db)
@@ -2695,9 +2715,9 @@ class FlowExecutionOrchestrator:
                 nats_client=self.nats_client,
             )
             logger.info(
-                "Started queued follow-up resume for %s after execution %s",
-                resume.get("pr_url"),
+                "Started queued follow-up resume after execution %s (index %s)",
                 self.execution_log.id,
+                resume.get("resume_index"),
             )
         except Exception:
             logger.warning(

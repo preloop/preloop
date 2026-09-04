@@ -369,7 +369,21 @@ def queue_pending_followup(
 
 
 def take_pending_followup(db: Session, execution: Any) -> Optional[Dict[str, Any]]:
-    """Clear the pending flag and return what the follow-up needs, or None."""
+    """Clear the pending flag and return what the follow-up needs, or None.
+
+    Refreshes ``execution`` first: the flag is written from a different DB
+    session (the trigger service) while this object may be stale after
+    commit-status I/O on the terminal path.
+    """
+
+    try:
+        db.refresh(execution)
+    except Exception:
+        logger.debug(
+            "Could not refresh execution %s before taking a follow-up",
+            getattr(execution, "id", None),
+            exc_info=True,
+        )
 
     result = execution.result if isinstance(execution.result, dict) else {}
     if not result.get("pending_followup"):
