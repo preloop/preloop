@@ -82,11 +82,31 @@ export interface LoadedAttentionInputs extends AttentionInputs {
   dismissalsSupported: boolean;
 }
 
+/**
+ * Inputs the caller already has in hand.
+ *
+ * The Overview fetches approvals, agents, budget policies and a usage
+ * breakdown for its own cards, and used to make the attention loader fetch
+ * all four again a second later. Anything passed here is used as-is and
+ * costs no request; anything left out is fetched exactly as before, so a
+ * caller with nothing to share behaves identically.
+ */
+export interface PrefetchedAttentionInputs {
+  approvals?: AttentionApproval[];
+  agents?: ManagedAgentSummary[];
+  sessions?: RuntimeSessionSummary[];
+  executions?: AttentionFlowExecution[];
+  budgetPolicies?: BudgetPolicy[];
+  usageSummary?: AccountGatewayUsageSummaryResponse | null;
+}
+
 export interface LoadAttentionInputsOptions {
   /** Injected in tests and by callers that already know "now". */
   now?: Date;
   /** Skip the budget policies call when billing is off (it 403s). */
   includeBudgetPolicies?: boolean;
+  /** Data the caller already fetched; each entry removes one request. */
+  prefetched?: PrefetchedAttentionInputs;
 }
 
 /**
@@ -105,6 +125,7 @@ export async function loadAttentionInputs(
   const usageStart = new Date(
     now.getTime() - ATTENTION_QUERY.usageWindowDays * DAY_MS
   ).toISOString();
+  const prefetched = options.prefetched || {};
 
   const [
     approvals,
@@ -117,34 +138,47 @@ export async function loadAttentionInputs(
     dismissals,
     priceOverrides,
   ] = await Promise.allSettled([
-    listApprovalRequests({
-      status: 'pending',
-      limit: ATTENTION_QUERY.approvalsLimit,
-    }),
-    getAccountAgents({ status: 'all', limit: ATTENTION_QUERY.agentsLimit }),
-    getAccountRuntimeSessions({
-      status: 'all',
-      limit: ATTENTION_QUERY.sessionsLimit,
-      startDate: sessionsStart,
-    }),
-    getFlowExecutions({
-      status: 'FAILED',
-      limit: ATTENTION_QUERY.executionsLimit,
-    }),
+    prefetched.approvals
+      ? Promise.resolve(prefetched.approvals)
+      : listApprovalRequests({
+          status: 'pending',
+          limit: ATTENTION_QUERY.approvalsLimit,
+        }),
+    prefetched.agents
+      ? Promise.resolve({ items: prefetched.agents })
+      : getAccountAgents({ status: 'all', limit: ATTENTION_QUERY.agentsLimit }),
+    prefetched.sessions
+      ? Promise.resolve({ items: prefetched.sessions })
+      : getAccountRuntimeSessions({
+          status: 'all',
+          limit: ATTENTION_QUERY.sessionsLimit,
+          startDate: sessionsStart,
+        }),
+    prefetched.executions
+      ? Promise.resolve(prefetched.executions)
+      : getFlowExecutions({
+          status: 'FAILED',
+          limit: ATTENTION_QUERY.executionsLimit,
+        }),
     getAccountGatewayUsageSearch({
       limit: ATTENTION_QUERY.gatewayFailuresLimit,
     }),
-    options.includeBudgetPolicies === false
-      ? Promise.resolve([] as BudgetPolicy[])
-      : getBudgetPolicies(),
+    prefetched.budgetPolicies
+      ? Promise.resolve(prefetched.budgetPolicies)
+      : options.includeBudgetPolicies === false
+        ? Promise.resolve([] as BudgetPolicy[])
+        : getBudgetPolicies(),
     // The breakdown is what turns "336 requests unpriced" into "these seven
     // models have no price", which is the part somebody can act on. Always
     // a fixed ATTENTION_QUERY.usageWindowDays window so Overview and
-    // /console/attention agree; do not reuse the dashboard's selected range.
-    getAccountGatewayUsageSummary({
-      startDate: usageStart,
-      includeBreakdown: true,
-    }),
+    // /console/attention agree, unless the caller already holds a breakdown
+    // over the same window and hands it in.
+    prefetched.usageSummary
+      ? Promise.resolve(prefetched.usageSummary)
+      : getAccountGatewayUsageSummary({
+          startDate: usageStart,
+          includeBreakdown: true,
+        }),
     getAttentionDismissals(),
     // An override is a price, including one of $0. Without this the console
     // asks for a price somebody set a month ago. A 403 on an account without

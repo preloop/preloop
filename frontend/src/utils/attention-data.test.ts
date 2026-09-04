@@ -249,4 +249,85 @@ describe('loadAttentionInputs', () => {
       requestedUrls().some((url) => url.startsWith('/api/v1/budget/policies'))
     ).to.be.false;
   });
+
+  it('does not fetch an input the caller passed', async () => {
+    const inputs = await loadAttentionInputs({
+      prefetched: {
+        approvals: [{ id: 'shared-approval', status: 'pending' } as any],
+        agents: [{ id: 'shared-agent' } as any],
+        sessions: [{ id: 'shared-session' } as any],
+        executions: [{ id: 'shared-execution', status: 'FAILED' } as any],
+        budgetPolicies: [{ id: 'shared-policy' } as any],
+        usageSummary: { total_requests: 99 } as any,
+      },
+    });
+    const urls = requestedUrls();
+
+    expect(urls.some((url) => url.startsWith('/api/v1/approval-requests'))).to
+      .be.false;
+    expect(urls.some((url) => url.startsWith('/api/v1/agents'))).to.be.false;
+    expect(urls.some((url) => url.startsWith('/api/v1/runtime-sessions'))).to.be
+      .false;
+    expect(urls.some((url) => url.startsWith('/api/v1/flows/executions'))).to.be
+      .false;
+    expect(urls.some((url) => url.startsWith('/api/v1/budget/policies'))).to.be
+      .false;
+    expect(
+      urls.some((url) =>
+        url.startsWith('/api/v1/account/gateway-usage/summary')
+      )
+    ).to.be.false;
+
+    // The two inputs nobody shared are still fetched.
+    expect(
+      urls.some((url) =>
+        url.startsWith('/api/v1/account/gateway-usage/search')
+      ),
+      'gateway failures still fetched'
+    ).to.be.true;
+    expect(urls.some((url) => url.startsWith('/api/v1/attention/dismissals')))
+      .to.be.true;
+
+    expect(inputs.approvals?.map((approval) => approval.id)).to.eql([
+      'shared-approval',
+    ]);
+    expect(inputs.agents?.[0].id).to.equal('shared-agent');
+    expect(inputs.sessions?.[0].id).to.equal('shared-session');
+    expect(inputs.executions?.[0].id).to.equal('shared-execution');
+    expect(inputs.budgetPolicies?.[0].id).to.equal('shared-policy');
+    expect(inputs.usageSummary?.total_requests).to.equal(99);
+  });
+
+  it('still filters expired approvals the caller passed', async () => {
+    const inputs = await loadAttentionInputs({
+      prefetched: {
+        approvals: [
+          { id: 'live', status: 'pending' } as any,
+          {
+            id: 'expired',
+            status: 'pending',
+            expires_at: new Date(Date.now() - 3600_000).toISOString(),
+          } as any,
+        ],
+      },
+    });
+
+    expect(inputs.approvals?.map((approval) => approval.id)).to.eql(['live']);
+  });
+
+  it('fetches the inputs the caller did not pass', async () => {
+    await loadAttentionInputs({ prefetched: { agents: [] } });
+    const urls = requestedUrls();
+
+    expect(urls.some((url) => url.startsWith('/api/v1/agents'))).to.be.false;
+    expect(urls.some((url) => url.startsWith('/api/v1/approval-requests'))).to
+      .be.true;
+    expect(urls.some((url) => url.startsWith('/api/v1/runtime-sessions'))).to.be
+      .true;
+    expect(
+      urls.some((url) =>
+        url.startsWith('/api/v1/account/gateway-usage/summary')
+      )
+    ).to.be.true;
+  });
 });
