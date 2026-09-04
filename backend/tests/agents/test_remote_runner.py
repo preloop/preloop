@@ -213,7 +213,9 @@ def test_factory_uses_remote_runner_when_online_private_runner(
     )
     monkeypatch.setattr(
         "preloop.services.runner_service.crud_flow_runner.find_matching",
-        lambda db, **kwargs: [SimpleNamespace(id=uuid4())],
+        lambda db, **kwargs: [
+            SimpleNamespace(id=uuid4(), status="online", pending_job=None)
+        ],
     )
     executor = create_executor_for_execution(
         "codex",
