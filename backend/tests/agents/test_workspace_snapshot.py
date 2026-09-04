@@ -48,7 +48,10 @@ def _run_sh(script: str, cwd: str) -> subprocess.CompletedProcess:
 def _make_workspace(tmp_path, payload_bytes: int = 512) -> str:
     workspace = tmp_path / "workspace"
     (workspace / "repo").mkdir(parents=True)
-    (workspace / "repo" / "main.py").write_bytes(b"x" * payload_bytes)
+    # Repeated bytes gzip to almost nothing; the over-cap test needs a
+    # payload that stays large after `tar -czf`.
+    payload = bytes((i * 17) % 256 for i in range(payload_bytes))
+    (workspace / "repo" / "main.py").write_bytes(payload)
     (workspace / "node_modules").mkdir()
     (workspace / "node_modules" / "huge.bin").write_bytes(b"y" * 200_000)
     return str(workspace)
