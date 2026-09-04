@@ -86,6 +86,73 @@ EVIDENCE_DIR_PATH = "/workspace/evidence"
 # inside the kubelet's default 10 MiB container-log rotation limit.
 MAX_EVIDENCE_ARCHIVE_BYTES = 2 * 1024 * 1024
 
+# The wrapper opens PRs/MRs itself (post-execution curl). The response is kept
+# under the evidence dir and the resulting URL is echoed on one line so the
+# orchestrator can bind the execution to the PR it opened.
+PR_RESPONSE_FILE = f"{EVIDENCE_DIR_PATH}/pr.json"
+PR_LOOKUP_FILE = f"{EVIDENCE_DIR_PATH}/pr-lookup.json"
+PR_OPENED_LOG_MARKER = "PRELOOP_PR_OPENED"
+
+
+def build_github_pr_capture_shell(
+    *, token_ref: str, owner: str, repo: str, branch: str
+) -> str:
+    """Shell that turns the create-PR response into one recognizable line.
+
+    Falls back to a head-branch lookup so an already-existing PR (the
+    "may already exist" branch) still binds to this execution.
+    """
+
+    grep_pr = 'grep -o \'"html_url"[[:space:]]*:[[:space:]]*"[^"]*/pull/[0-9]*"\''
+    sed_url = 'sed \'s/.*"\\(https[^"]*\\)"$/\\1/\''
+    return f"""
+    PR_URL=$({grep_pr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url})
+    if [ -z "$PR_URL" ]; then
+      echo "No PR URL in the create response; looking it up by head branch"
+      curl -sS \\
+        -H "Authorization: token {token_ref}" \\
+        -H "Accept: application/vnd.github.v3+json" \\
+        -o {PR_LOOKUP_FILE} \\
+        "https://api.github.com/repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}" \\
+        || echo "PR lookup by head branch failed"
+      PR_URL=$({grep_pr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
+    fi
+    if [ -n "$PR_URL" ]; then
+      echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$PR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"github\\"}}"
+    else
+      echo "No pull request URL could be resolved for branch {branch}"
+    fi
+"""
+
+
+def build_gitlab_mr_capture_shell(
+    *, token_ref: str, gitlab_host: str, encoded_path: str, branch: str
+) -> str:
+    """GitLab counterpart of :func:`build_github_pr_capture_shell`."""
+
+    grep_mr = (
+        'grep -o \'"web_url"[[:space:]]*:[[:space:]]*"[^"]*/merge_requests/[0-9]*"\''
+    )
+    sed_url = 'sed \'s/.*"\\(https[^"]*\\)"$/\\1/\''
+    return f"""
+    MR_URL=$({grep_mr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url})
+    if [ -z "$MR_URL" ]; then
+      echo "No MR URL in the create response; looking it up by source branch"
+      curl -sS \\
+        -H "PRIVATE-TOKEN: {token_ref}" \\
+        -o {PR_LOOKUP_FILE} \\
+        "https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests?state=opened&source_branch={branch}" \\
+        || echo "MR lookup by source branch failed"
+      MR_URL=$({grep_mr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
+    fi
+    if [ -n "$MR_URL" ]; then
+      echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$MR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"gitlab\\"}}"
+    else
+      echo "No merge request URL could be resolved for branch {branch}"
+    fi
+"""
+
+
 # Bounded tail for terminal-path pod log reads on Kubernetes. The artifact
 # emission always TRAILS the agent output and its payload is capped by the two
 # byte limits above, so a window of (worst-case emission lines + a generous
@@ -3023,9 +3090,10 @@ echo "========================================="
                                 if use_custom:
                                     # Use custom title and description
                                     pr_create_cmd = f"""
-    curl -X POST \\
+    curl -sS -X POST \\
       -H "Authorization: token {token_ref}" \\
       -H "Accept: application/vnd.github.v3+json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://api.github.com/repos/{owner}/{repo}/pulls \\
       -d "$(cat <<'PREOF'
 {{
@@ -3037,7 +3105,12 @@ echo "========================================="
 PREOF
 )" \\
       || echo "Failed to create PR (may already exist)"
-"""
+""" + build_github_pr_capture_shell(
+                                        token_ref=token_ref,
+                                        owner=owner,
+                                        repo=repo,
+                                        branch=target_branch,
+                                    )
                                 else:
                                     # Build title and description from commits
                                     execution_link = f"{preloop_url}/console/flows/executions/{execution_id}"
@@ -3056,9 +3129,10 @@ PREOF
     fi
 
     # Create PR with dynamic title/body
-    curl -X POST \\
+    curl -sS -X POST \\
       -H "Authorization: token {token_ref}" \\
       -H "Accept: application/vnd.github.v3+json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://api.github.com/repos/{owner}/{repo}/pulls \\
       -d "$(cat <<PREOF
 {{
@@ -3070,7 +3144,12 @@ PREOF
 PREOF
 )" \\
       || echo "Failed to create PR (may already exist)"
-"""
+""" + build_github_pr_capture_shell(
+                                        token_ref=token_ref,
+                                        owner=owner,
+                                        repo=repo,
+                                        branch=target_branch,
+                                    )
                                 repo_post_commands.append(pr_create_cmd)
 
                     elif tracker_type == "gitlab":
@@ -3125,9 +3204,10 @@ PREOF
                                 # Use custom title and description
                                 mr_create_cmd = f"""
     echo "Creating Merge Request on {gitlab_host}..."
-    curl -X POST \\
+    curl -sS -X POST \\
       -H "PRIVATE-TOKEN: {token_ref}" \\
       -H "Content-Type: application/json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests \\
       -d "$(cat <<'MREOF'
 {{
@@ -3139,7 +3219,12 @@ PREOF
 MREOF
 )" \\
       || echo "Failed to create MR (may already exist)"
-"""
+""" + build_gitlab_mr_capture_shell(
+                                    token_ref=token_ref,
+                                    gitlab_host=gitlab_host,
+                                    encoded_path=encoded_path,
+                                    branch=target_branch,
+                                )
                             else:
                                 # Build title and description from commits
                                 execution_link = f"{preloop_url}/console/flows/executions/{execution_id}"
@@ -3158,9 +3243,10 @@ MREOF
     fi
 
     echo "Creating Merge Request on {gitlab_host}..."
-    curl -X POST \\
+    curl -sS -X POST \\
       -H "PRIVATE-TOKEN: {token_ref}" \\
       -H "Content-Type: application/json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests \\
       -d "$(cat <<MREOF
 {{
@@ -3172,7 +3258,12 @@ MREOF
 MREOF
 )" \\
       || echo "Failed to create MR (may already exist)"
-"""
+""" + build_gitlab_mr_capture_shell(
+                                    token_ref=token_ref,
+                                    gitlab_host=gitlab_host,
+                                    encoded_path=encoded_path,
+                                    branch=target_branch,
+                                )
                             repo_post_commands.append(mr_create_cmd)
 
                 repo_post_commands.extend(

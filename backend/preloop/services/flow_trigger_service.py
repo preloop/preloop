@@ -876,6 +876,28 @@ class FlowTriggerService:
         if event_type in self._LOOP_GUARD_EXEMPT_EVENT_TYPES:
             return False
 
+        # Reviewer comments are the hand-off hop back onto the implementer
+        # flow, and the reviewer posts as the Preloop bot.  Only comments
+        # that carry the reviewer's own marker
+        # (``<!-- preloop-review:flow-id:... -->``) are let through; every
+        # other bot comment stays dropped, so a chatty bot cannot restart a
+        # flow.  Self-loops and runaway resumes are guarded separately in
+        # bind_resume_or_skip (marker flow id, max_resumes_per_pr).
+        if event_type == "comment_created":
+            from preloop.services.flow_pr_binding import (
+                extract_comment_body,
+                parse_review_marker,
+            )
+
+            marker_flow_id = parse_review_marker(extract_comment_body(event_data))
+            if marker_flow_id:
+                logger.info(
+                    "Allowing marked review comment from flow id %s past the "
+                    "bot filter",
+                    marker_flow_id,
+                )
+                return False
+
         # Get the sender/actor who triggered the event.
         # Note: payload may be enriched with filter_fields which can
         # overwrite dict values (e.g. sender) with strings, so handle
@@ -1078,9 +1100,15 @@ class FlowTriggerService:
                         if flow_requires_pr_comment_resume(flow):
                             resume = bind_resume_or_skip(self.db, flow, event_copy)
                             if resume is None:
+                                # No opened PR for this comment, the comment
+                                # carries this flow's own review marker, the
+                                # PR hit max_resumes_per_pr, or a run for it
+                                # is still going and took the comment as its
+                                # single queued follow-up. bind_resume_or_skip
+                                # logs which one it was.
                                 logger.info(
                                     "Skipping comment_created on flow '%s' (%s): "
-                                    "no matching opened PR for this comment",
+                                    "no resume started for this comment",
                                     flow.name,
                                     flow.id,
                                 )
