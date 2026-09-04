@@ -14,14 +14,60 @@ import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import '@shoelace-style/shoelace/dist/components/option/option.js';
+import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '../../../components/add-ai-model-modal';
+import '../../../components/list-toolbar';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
 import { formatRelativeTime } from '../../../utils/date';
+import {
+  effectiveViewMode,
+  loadViewMode,
+  saveViewMode,
+  subscribeNarrowViewport,
+  type ListViewMode,
+  type NarrowViewportSubscription,
+} from '../../../utils/view-mode';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
+
+const VIEW_MODE_KEY = 'preloop.models.view_mode';
+
+export function isGatewayEnabled(model: AIModel): boolean {
+  const gateway = model.meta_data?.gateway;
+  if (!gateway || typeof gateway !== 'object') {
+    return true;
+  }
+  return (gateway as { enabled?: boolean }).enabled !== false;
+}
+
+export function filterModels(
+  models: AIModel[],
+  search: string,
+  provider: string,
+  status: string
+): AIModel[] {
+  const query = search.trim().toLowerCase();
+  return models.filter((model) => {
+    if (provider && model.provider_name !== provider) {
+      return false;
+    }
+    if (status === 'enabled' && !isGatewayEnabled(model)) {
+      return false;
+    }
+    if (status === 'disabled' && isGatewayEnabled(model)) {
+      return false;
+    }
+    if (!query) {
+      return true;
+    }
+    const haystack = [model.name, model.provider_name].join(' ').toLowerCase();
+    return haystack.includes(query);
+  });
+}
 
 @customElement('ai-models-view')
 export class AIModelsView extends LitElement {
@@ -57,9 +103,25 @@ export class AIModelsView extends LitElement {
   @state()
   private modelOverview = new Map<string, AIModelOverviewItem>();
 
+  @state()
+  private search = '';
+
+  @state()
+  private providerFilter = '';
+
+  @state()
+  private statusFilter = '';
+
+  @state()
+  private currentView: ListViewMode = loadViewMode(VIEW_MODE_KEY);
+
+  @state()
+  private narrowViewport = false;
+
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
   private refreshInFlight = false;
+  private narrowViewportSubscription: NarrowViewportSubscription | null = null;
 
   static styles = [
     consoleDialogStyles,
@@ -73,6 +135,9 @@ export class AIModelsView extends LitElement {
         display: flex;
         flex-direction: column;
         gap: var(--sl-spacing-large);
+      }
+      .toolbar-wrap {
+        width: 100%;
       }
       .summary-grid {
         display: grid;
@@ -103,10 +168,10 @@ export class AIModelsView extends LitElement {
       .styled-table td {
         padding: var(--sl-spacing-medium);
         text-align: left;
-        border-bottom: 1px solid var(--sl-color-neutral-200);
+        border-bottom: 1px solid var(--console-hairline);
       }
       .styled-table th {
-        background-color: var(--sl-color-neutral-50);
+        background-color: transparent;
         font-weight: var(--sl-font-weight-semibold);
       }
       .styled-table td {
@@ -222,6 +287,33 @@ export class AIModelsView extends LitElement {
         color: var(--sl-color-neutral-600);
         font-size: var(--sl-font-size-small);
       }
+      .filter-empty {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-body);
+        padding: var(--sl-spacing-large) 0;
+      }
+      .models-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: var(--sl-spacing-large);
+      }
+      .model-card-body {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-small);
+      }
+      .model-card-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--sl-spacing-small);
+      }
+      .model-card-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-x-small);
+        justify-content: flex-end;
+      }
     `,
   ];
 
@@ -229,12 +321,18 @@ export class AIModelsView extends LitElement {
     super.connectedCallback();
     const isDismissed = localStorage.getItem(this.INFO_ALERT_DISMISSED_KEY);
     this._isInfoAlertOpen = isDismissed !== 'true';
+    this.narrowViewportSubscription = subscribeNarrowViewport((narrow) => {
+      this.narrowViewport = narrow;
+    });
+    this.narrowViewport = this.narrowViewportSubscription.matches;
     void this.fetchModels();
     this.connectRealtime();
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.narrowViewportSubscription?.disconnect();
+    this.narrowViewportSubscription = null;
     this.unsubscribeRealtime?.();
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
@@ -432,6 +530,56 @@ export class AIModelsView extends LitElement {
     }
   }
 
+  private get visibleModels(): AIModel[] {
+    return filterModels(
+      this.models,
+      this.search,
+      this.providerFilter,
+      this.statusFilter
+    );
+  }
+
+  private get effectiveView(): ListViewMode {
+    return effectiveViewMode(this.currentView, this.narrowViewport);
+  }
+
+  private get providerOptions(): string[] {
+    return [...new Set(this.models.map((model) => model.provider_name))]
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  private get resultsLabel(): string {
+    const shown = this.visibleModels.length;
+    const total = this.models.length;
+    const noun = total === 1 ? 'model' : 'models';
+    if (shown === total) {
+      return `${shown} ${noun}`;
+    }
+    return `${shown} of ${total} ${noun}`;
+  }
+
+  private handleSearchChange(event: CustomEvent<{ value: string }>) {
+    this.search = event.detail.value;
+  }
+
+  private handleViewChange(event: CustomEvent<{ value: ListViewMode }>) {
+    this.currentView = event.detail.value;
+    saveViewMode(VIEW_MODE_KEY, event.detail.value);
+  }
+
+  private handleProviderChange(event: Event) {
+    const select = event.target as HTMLElement & { value: string | string[] };
+    const value = Array.isArray(select.value) ? select.value[0] : select.value;
+    this.providerFilter = value || '';
+  }
+
+  private handleStatusChange(event: Event) {
+    const select = event.target as HTMLElement & { value: string | string[] };
+    const value = Array.isArray(select.value) ? select.value[0] : select.value;
+    this.statusFilter = value || '';
+  }
+
   private renderFleetOverview() {
     return html`
       <div class="summary-grid">
@@ -519,6 +667,7 @@ export class AIModelsView extends LitElement {
                 ? null
                 : this.renderFleetOverview()
             }
+            ${this.models.length > 0 ? this.renderToolbar() : null}
             ${renderContent()}
           </div>
         </div>
@@ -534,6 +683,45 @@ export class AIModelsView extends LitElement {
       ${this.renderDeleteConfirm()}
     `;
   }
+  private renderToolbar() {
+    return html`
+      <div class="toolbar-wrap">
+        <list-toolbar
+          .search=${this.search}
+          searchPlaceholder="Search models"
+          .view=${this.currentView}
+          .views=${['list', 'cards']}
+          @search-change=${this.handleSearchChange}
+          @view-change=${this.handleViewChange}
+        >
+          <sl-select
+            class="provider-filter"
+            clearable
+            placeholder="All providers"
+            .value=${this.providerFilter}
+            @sl-change=${this.handleProviderChange}
+          >
+            ${this.providerOptions.map(
+              (provider) =>
+                html`<sl-option value=${provider}>${provider}</sl-option>`
+            )}
+          </sl-select>
+          <sl-select
+            class="status-filter"
+            clearable
+            placeholder="Any status"
+            .value=${this.statusFilter}
+            @sl-change=${this.handleStatusChange}
+          >
+            <sl-option value="enabled">Enabled</sl-option>
+            <sl-option value="disabled">Disabled</sl-option>
+          </sl-select>
+          <span slot="count">${this.resultsLabel}</span>
+        </list-toolbar>
+      </div>
+    `;
+  }
+
   renderModelsList() {
     return html`
       ${when(
@@ -562,179 +750,235 @@ export class AIModelsView extends LitElement {
             </sl-card>
           </div>
         `,
-        () => html`
-          <sl-card class="table-card">
-            <table class="styled-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Provider</th>
-                  <th>Fleet health</th>
-                  <th>Usage</th>
-                  <th>Default</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${repeat(
-                  this.models,
-                  (model) => model.id,
-                  (model) => html`
-                    <tr>
-                      <td>
-                        <a
-                          class="model-link"
-                          href=${`/console/ai-models/${model.id}`}
-                        >
-                          ${model.name}
-                        </a>
-                        <div class="model-meta">${model.model_identifier}</div>
-                        ${
-                          this.getGatewayAlias(model)
-                            ? html`
-                                <div class="model-meta">
-                                  Gateway alias:
-                                  <code>${this.getGatewayAlias(model)}</code>
-                                </div>
-                              `
-                            : null
-                        }
-                        ${
-                          this.getManagedAgentDisplayName(model)
-                            ? html`
-                                <div class="model-meta">
-                                  Managed agent:
-                                  ${this.getManagedAgentDisplayName(model)}
-                                </div>
-                              `
-                            : null
-                        }
-                      </td>
-                      <td>
-                        <div class="cell-stack">
-                          <div class="cell-primary">${model.provider_name}</div>
-                          <div class="cell-secondary">
-                            ${this.getModelKindLabel(model)}
-                          </div>
-                          <div class="cell-secondary">
-                            ${this.getPricingSourceLabel(model.id)}
-                          </div>
-                        </div>
-                      </td>
-                      <td>
-                        <div class="cell-stack">
-                          <div class="badge-row">
-                            <sl-badge
-                              variant=${this.getHealthVariant(model.id)}
-                              pill
-                            >
-                              ${this.getHealthLabel(model.id)}
-                            </sl-badge>
-                            ${
-                              this.getModelOverview(model.id)
-                                ?.active_session_count
-                                ? html`
-                                    <sl-badge variant="primary" pill>
-                                      ${this.formatNumber(
-                                        this.getModelOverview(model.id)
-                                          ?.active_session_count
-                                      )}
-                                      active sessions
-                                    </sl-badge>
-                                  `
-                                : null
-                            }
-                          </div>
-                          <div class="cell-secondary">
-                            ${this.formatNumber(
-                              this.getModelOverview(model.id)
-                                ?.successful_requests
-                            )}
-                            successful ·
-                            ${this.formatNumber(
-                              this.getModelOverview(model.id)?.failed_requests
-                            )}
-                            failed
-                          </div>
-                        </div>
-                      </td>
-                      <td>
-                        <div class="cell-stack">
-                          <div class="cell-primary">
-                            ${this.formatNumber(
-                              this.getModelOverview(model.id)?.total_requests
-                            )}
-                            requests
-                          </div>
-                          <div class="cell-secondary">
-                            ${this.formatNumber(
-                              this.getModelOverview(model.id)?.token_usage
-                                .total_tokens
-                            )}
-                            tokens ·
-                            ${this.formatCurrency(
-                              this.getModelOverview(model.id)?.estimated_cost
-                            )}
-                          </div>
-                          ${
-                            this.getLastRequestLabel(model.id)
-                              ? html`<div class="cell-secondary">
-                                  ${this.getLastRequestLabel(model.id)}
-                                </div>`
-                              : null
-                          }
-                        </div>
-                      </td>
-                      <td>
-                        ${when(
-                          model.is_default,
-                          () =>
-                            html`<sl-badge variant="success" pill
-                              >Default</sl-badge
-                            >`,
-                          () => html`
-                            <sl-button
-                              size="small"
-                              @click=${() => this.handleSetDefault(model)}
-                            >
-                              Set as default
-                            </sl-button>
-                          `
-                        )}
-                      </td>
-                      <td>
-                        <div class="actions">
-                          <sl-button
-                            size="small"
-                            href=${`/console/ai-models/${model.id}`}
-                          >
-                            View
-                          </sl-button>
-                          <sl-button
-                            size="small"
-                            circle
-                            @click=${() => this.openEditModal(model)}
-                          >
-                            <sl-icon name="pencil"></sl-icon>
-                          </sl-button>
-                          <sl-button
-                            variant="danger"
-                            size="small"
-                            circle
-                            @click=${() => this.openDeleteConfirm(model)}
-                          >
-                            <sl-icon name="trash"></sl-icon>
-                          </sl-button>
-                        </div>
-                      </td>
-                    </tr>
-                  `
-                )}
-              </tbody>
-            </table>
-          </sl-card>
-        `
+        () => this.renderFilteredModels()
       )}
+    `;
+  }
+
+  private renderFilteredModels() {
+    const models = this.visibleModels;
+    if (models.length === 0) {
+      return html`<div class="filter-empty">
+        No models match these filters.
+      </div>`;
+    }
+    return this.effectiveView === 'cards'
+      ? this.renderCardsView(models)
+      : this.renderListView(models);
+  }
+
+  private renderDefaultControl(model: AIModel) {
+    return when(
+      model.is_default,
+      () => html`<sl-badge variant="success" pill>Default</sl-badge>`,
+      () => html`
+        <sl-button size="small" @click=${() => this.handleSetDefault(model)}>
+          Set as default
+        </sl-button>
+      `
+    );
+  }
+
+  private renderModelActions(model: AIModel) {
+    return html`
+      <div class="actions">
+        <sl-button size="small" href=${`/console/ai-models/${model.id}`}>
+          View
+        </sl-button>
+        <sl-button
+          size="small"
+          circle
+          @click=${() => this.openEditModal(model)}
+        >
+          <sl-icon name="pencil"></sl-icon>
+        </sl-button>
+        <sl-button
+          variant="danger"
+          size="small"
+          circle
+          @click=${() => this.openDeleteConfirm(model)}
+        >
+          <sl-icon name="trash"></sl-icon>
+        </sl-button>
+      </div>
+    `;
+  }
+
+  private renderListView(models: AIModel[]) {
+    return html`
+      <sl-card class="table-card">
+        <table class="styled-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Provider</th>
+              <th>Fleet health</th>
+              <th>Usage</th>
+              <th>Default</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${repeat(
+              models,
+              (model) => model.id,
+              (model) => this.renderModelRow(model)
+            )}
+          </tbody>
+        </table>
+      </sl-card>
+    `;
+  }
+
+  private renderModelRow(model: AIModel) {
+    return html`
+      <tr class="model-row" data-model-id=${model.id}>
+        <td>
+          <a class="model-link" href=${`/console/ai-models/${model.id}`}>
+            ${model.name}
+          </a>
+          <div class="model-meta">${model.model_identifier}</div>
+          ${
+            this.getGatewayAlias(model)
+              ? html`
+                  <div class="model-meta">
+                    Gateway alias:
+                    <code>${this.getGatewayAlias(model)}</code>
+                  </div>
+                `
+              : null
+          }
+          ${
+            this.getManagedAgentDisplayName(model)
+              ? html`
+                  <div class="model-meta">
+                    Managed agent: ${this.getManagedAgentDisplayName(model)}
+                  </div>
+                `
+              : null
+          }
+        </td>
+        <td>
+          <div class="cell-stack">
+            <div class="cell-primary">${model.provider_name}</div>
+            <div class="cell-secondary">${this.getModelKindLabel(model)}</div>
+            <div class="cell-secondary">
+              ${this.getPricingSourceLabel(model.id)}
+            </div>
+          </div>
+        </td>
+        <td>
+          <div class="cell-stack">
+            <div class="badge-row">
+              <sl-badge variant=${this.getHealthVariant(model.id)} pill>
+                ${this.getHealthLabel(model.id)}
+              </sl-badge>
+              ${
+                this.getModelOverview(model.id)?.active_session_count
+                  ? html`
+                      <sl-badge variant="primary" pill>
+                        ${this.formatNumber(
+                          this.getModelOverview(model.id)?.active_session_count
+                        )}
+                        active sessions
+                      </sl-badge>
+                    `
+                  : null
+              }
+            </div>
+            <div class="cell-secondary">
+              ${this.formatNumber(
+                this.getModelOverview(model.id)?.successful_requests
+              )}
+              successful ·
+              ${this.formatNumber(
+                this.getModelOverview(model.id)?.failed_requests
+              )}
+              failed
+            </div>
+          </div>
+        </td>
+        <td>
+          <div class="cell-stack">
+            <div class="cell-primary">
+              ${this.formatNumber(
+                this.getModelOverview(model.id)?.total_requests
+              )}
+              requests
+            </div>
+            <div class="cell-secondary">
+              ${this.formatNumber(
+                this.getModelOverview(model.id)?.token_usage.total_tokens
+              )}
+              tokens ·
+              ${this.formatCurrency(
+                this.getModelOverview(model.id)?.estimated_cost
+              )}
+            </div>
+            ${
+              this.getLastRequestLabel(model.id)
+                ? html`<div class="cell-secondary">
+                    ${this.getLastRequestLabel(model.id)}
+                  </div>`
+                : null
+            }
+          </div>
+        </td>
+        <td>${this.renderDefaultControl(model)}</td>
+        <td>${this.renderModelActions(model)}</td>
+      </tr>
+    `;
+  }
+
+  private renderCardsView(models: AIModel[]) {
+    return html`
+      <div class="models-grid">
+        ${repeat(
+          models,
+          (model) => model.id,
+          (model) => this.renderModelCard(model)
+        )}
+      </div>
+    `;
+  }
+
+  private renderModelCard(model: AIModel) {
+    return html`
+      <sl-card class="model-card" data-model-id=${model.id}>
+        <div class="model-card-body">
+          <div class="model-card-header">
+            <a class="model-link" href=${`/console/ai-models/${model.id}`}>
+              ${model.name}
+            </a>
+            ${this.renderDefaultControl(model)}
+          </div>
+          <div class="cell-primary">${model.provider_name}</div>
+          <div class="cell-secondary">${this.getModelKindLabel(model)}</div>
+          <div class="cell-secondary">
+            ${this.getPricingSourceLabel(model.id)}
+          </div>
+          <div class="badge-row">
+            <sl-badge variant=${this.getHealthVariant(model.id)} pill>
+              ${this.getHealthLabel(model.id)}
+            </sl-badge>
+            ${
+              isGatewayEnabled(model)
+                ? html`<sl-badge variant="neutral" pill>Enabled</sl-badge>`
+                : html`<sl-badge variant="neutral" pill>Disabled</sl-badge>`
+            }
+          </div>
+          <div class="cell-secondary">
+            ${this.formatNumber(this.getModelOverview(model.id)?.total_requests)}
+            requests ·
+            ${this.formatCurrency(
+              this.getModelOverview(model.id)?.estimated_cost
+            )}
+          </div>
+          <div class="model-card-actions">
+            ${this.renderModelActions(model)}
+          </div>
+        </div>
+      </sl-card>
     `;
   }
 
