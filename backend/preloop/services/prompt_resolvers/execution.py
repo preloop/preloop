@@ -24,6 +24,9 @@ class ExecutionResolver(PromptResolver):
     - ``{{execution.url}}`` — console URL
     - ``{{execution.resume_from}}`` — prior execution id when this run
       was started from a PR comment on a PR this flow opened
+    - ``{{execution.rebase_conflict}}``: ``1`` when the resume rebase
+      onto the flow base branch was aborted due to conflicts
+      (``PRELOOP_RESUME_REBASE_CONFLICT=1``). Empty otherwise.
     """
 
     @property
@@ -41,5 +44,8 @@ class ExecutionResolver(PromptResolver):
             resume = context.trigger_event_data.get("_resume") or {}
             prior = resume.get("execution_id")
             return str(prior) if prior else None
+        if path == "rebase_conflict":
+            flag = os.getenv("PRELOOP_RESUME_REBASE_CONFLICT")
+            return flag if flag else None
         self.logger.warning("Unknown execution field: %s", path)
         return None
