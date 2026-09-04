@@ -107,6 +107,18 @@ def test_transient_429_maps_to_rate_limited():
     assert result.terminal is False
 
 
+def test_google_resource_exhausted_maps_to_rate_limited():
+    """Gemini SDK 429s are ResourceExhausted, not openai.RateLimitError."""
+    from google.api_core.exceptions import ResourceExhausted
+
+    result = classify_upstream_error(ResourceExhausted("429 Resource exhausted"))
+    assert result is not None
+    assert result.error_class == ERROR_CLASS_UPSTREAM_RATE_LIMITED
+    assert result.status_code == 429
+    assert result.terminal is False
+    assert is_retryable_upstream_failure(ResourceExhausted("429 Resource exhausted"))
+
+
 def test_quota_exhausted_429_is_terminal():
     """#114: daily TPD / rate_limit_reached_error must fail fast."""
     exc = _FakeHTTPError(

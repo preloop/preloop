@@ -150,8 +150,16 @@ export const FEED_INITIAL_ROWS = 12;
  * until it has enough rows or it runs out of patience.
  */
 export const AUDIT_PAGE_SIZE = 50;
-export const AUDIT_MAX_PAGES = 4;
+/**
+ * Three pages, and only the first one is on its own: page 0 decides whether
+ * more are needed, and pages 1 and 2 are then asked for together rather than
+ * one after the other. A fourth page was two more round trips for rows that
+ * were already off the bottom of a 12-row rail.
+ */
+export const AUDIT_MAX_PAGES = 3;
 const AUDIT_WINDOW_HOURS = 24;
+/** How long the feed waits for a host that says it is fetching the users. */
+const HOST_USERS_WAIT_MS = 1500;
 
 /**
  * Consecutive identical lines become one row with a count.
@@ -1166,18 +1174,39 @@ export class ActivityFeed extends LitElement {
   @property({ type: Array }) budgetPolicies: FeedContext['budgetPolicies'] = [];
   /** Skips the audit fetch in tests and in previews. */
   @property({ type: Boolean }) autoload = true;
+  /**
+   * The account's people, when the host already has them.
+   *
+   * `null` means nobody handed them over and the feed looks them up itself,
+   * which is what a standalone feed does. The Overview fetches the same list
+   * for its Inventory, and two components asking the same endpoint for the
+   * same list is one request too many.
+   */
+  @property({ type: Array }) users: FeedContext['users'] | null = null;
+  /**
+   * True when the host fetches the people list itself and will set `users`.
+   *
+   * The feed then waits briefly for that list instead of asking for the same
+   * one. It still falls back to its own lookup if the host comes back with
+   * nothing (an operator without `view_users`, an older server), so the
+   * standalone behaviour is never lost.
+   */
+  @property({ type: Boolean }) usersFromHost = false;
 
   @state() private events: FeedEvent[] = [];
   /** The one open row, by row id. One at a time: this is a rail, not a page. */
   @state() private openId: string | null = null;
   @state() private loading = true;
   @state() private connected = false;
-  @state() private users: FeedContext['users'] = [];
+  /** The list the feed looked up itself, when the host provided none. */
+  @state() private fetchedUsers: FeedContext['users'] = [];
 
   private unsubscribes: (() => void)[] = [];
   private seen = new Set<string>();
   /** Resolved (never rejected) once the user lookup has had its turn. */
   private usersReady: Promise<void> = Promise.resolve();
+  /** Called when the host sets a non-empty `users`, so the wait can end. */
+  private hostUsersArrived: (() => void) | null = null;
   private scrollAnchor: { top: number; height: number } | null = null;
 
   static styles = [
@@ -1542,7 +1571,7 @@ export class ActivityFeed extends LitElement {
       );
     }
     if (this.autoload) {
-      this.usersReady = this.loadUsers();
+      this.usersReady = this.resolveUsers();
       void this.loadInitial();
     } else {
       this.loading = false;
@@ -1566,7 +1595,7 @@ export class ActivityFeed extends LitElement {
       flows: this.flows,
       agents: this.agents,
       executions: this.executions,
-      users: this.users,
+      users: this.users?.length ? this.users : this.fetchedUsers,
       budgetPolicies: this.budgetPolicies,
     };
   }
@@ -1578,13 +1607,35 @@ export class ActivityFeed extends LitElement {
    * a nicety, and a lookup that fails, 403s or answers in a shape nobody
    * expected must not cost the operator the whole timeline.
    */
+  /**
+   * The people list, from the host when it has one and from the API when it
+   * does not. Never rejects: a name is a nicety, not a row.
+   */
+  private async resolveUsers(): Promise<void> {
+    if (this.users?.length) return;
+    if (this.usersFromHost) {
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          this.hostUsersArrived = resolve;
+        }),
+        new Promise((resolve) => setTimeout(resolve, HOST_USERS_WAIT_MS)),
+      ]);
+      if (this.users?.length) return;
+    }
+    await this.loadUsers();
+  }
+
   private async loadUsers(): Promise<void> {
     try {
-      const response = await fetchWithAuth('/api/v1/users');
+      // The same URL the console's other readers use, so a lookup that
+      // overlaps one of theirs is coalesced into a single request.
+      const response = await fetchWithAuth('/api/v1/users?skip=0&limit=100');
       if (!response.ok) return;
       const data = await response.json();
       const users = Array.isArray(data) ? data : data?.users;
-      this.users = Array.isArray(users) ? (users as FeedContext['users']) : [];
+      this.fetchedUsers = Array.isArray(users)
+        ? (users as FeedContext['users'])
+        : [];
     } catch {
       // The feed degrades to "by" nothing rather than failing.
     }
@@ -1634,25 +1685,45 @@ export class ActivityFeed extends LitElement {
 
   private async loadInitial(): Promise<void> {
     this.loading = true;
-    // The actor's name belongs on the first paint, not the second, but a
-    // lookup that never answers must not hold the timeline hostage either.
-    await Promise.race([
-      this.usersReady,
-      new Promise((resolve) => setTimeout(resolve, 2000)),
-    ]);
     try {
       const since = new Date(
         Date.now() - AUDIT_WINDOW_HOURS * 60 * 60 * 1000
       ).toISOString();
+      // The timeline and the actor names are asked for at the same time:
+      // the names used to be awaited first, so the feed's first row waited
+      // on a request it does not need in order to draw a row.
+      const firstPage = await this.fetchAuditPage(0, since);
+      // The actor's name belongs on the first paint, not the second, but a
+      // lookup that never answers must not hold the timeline hostage either.
+      await Promise.race([
+        this.usersReady,
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
       const events: FeedEvent[] = [];
       let emptyWindow = false;
-      for (let page = 0; page < AUDIT_MAX_PAGES; page += 1) {
-        const groups = await this.fetchAuditPage(page * AUDIT_PAGE_SIZE, since);
-        if (groups === null) break;
-        if (page === 0 && groups.length === 0) emptyWindow = true;
-        this.rowsFrom(groups, events);
-        if (foldRows(events).length >= FEED_INITIAL_ROWS) break;
-        if (groups.length < AUDIT_PAGE_SIZE) break;
+      if (firstPage !== null) {
+        emptyWindow = firstPage.length === 0;
+        this.rowsFrom(firstPage, events);
+        // Page 0 decides whether the rest are needed. When they are, they
+        // are asked for together instead of one after the other, and there
+        // are two of them: a fourth page was two more round trips for rows
+        // that were already off the bottom of a twelve-row rail.
+        if (
+          firstPage.length >= AUDIT_PAGE_SIZE &&
+          foldRows(events).length < FEED_INITIAL_ROWS
+        ) {
+          const more = await Promise.all(
+            Array.from({ length: AUDIT_MAX_PAGES - 1 }, (_, index) =>
+              this.fetchAuditPage((index + 1) * AUDIT_PAGE_SIZE, since)
+            )
+          );
+          for (const groups of more) {
+            if (groups === null) break;
+            if (foldRows(events).length >= FEED_INITIAL_ROWS) break;
+            this.rowsFrom(groups, events);
+            if (groups.length < AUDIT_PAGE_SIZE) break;
+          }
+        }
       }
       // A quiet account has nothing in the last day and still has a history.
       // Rather than say "Nothing yet" to an account that worked yesterday,
@@ -1679,6 +1750,11 @@ export class ActivityFeed extends LitElement {
    * exactly the height that was added.
    */
   protected willUpdate(changed: Map<string, unknown>): void {
+    if (changed.has('users') && this.users?.length && this.hostUsersArrived) {
+      const arrived = this.hostUsersArrived;
+      this.hostUsersArrived = null;
+      arrived();
+    }
     if (!changed.has('events')) return;
     const list = this.renderRoot?.querySelector<HTMLElement>('.rows');
     this.scrollAnchor = list

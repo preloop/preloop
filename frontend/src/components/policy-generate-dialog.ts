@@ -172,7 +172,7 @@ export class PolicyGenerateDialog extends LitElement {
         label="Describe a change"
         ?open=${this.open}
         @sl-request-close=${this._handleClose}
-        @sl-after-hide=${this._handleClose}
+        @sl-after-hide=${this._handleAfterHide}
       >
         <p class="description">
           Describe the policy you want, or the edits to the current policy. The
@@ -490,6 +490,19 @@ export class PolicyGenerateDialog extends LitElement {
 
   private _handleClose() {
     this.open = false;
+    this._resetGenerateState();
+    this.dispatchEvent(new CustomEvent('closed'));
+  }
+
+  private _handleAfterHide(event: Event) {
+    // Nested sl-details also fire sl-after-hide; only reset when the dialog
+    // itself hides (including a programmatic close that skips request-close).
+    if (event.target !== event.currentTarget) return;
+    this.open = false;
+    this._resetGenerateState();
+  }
+
+  private _resetGenerateState() {
     this._prompt = '';
     this._generatedYaml = '';
     this._unifiedDiff = '';
@@ -498,7 +511,6 @@ export class PolicyGenerateDialog extends LitElement {
     this._error = '';
     this._warnings = [];
     this._loading = false;
-    this.dispatchEvent(new CustomEvent('closed'));
   }
 }
 

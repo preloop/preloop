@@ -3,7 +3,26 @@ import sinon from 'sinon';
 
 import '../../components/view-header.ts';
 import './policies-view';
+import { conditionTypeFor } from './policies-view';
 import type { PoliciesView } from './policies-view';
+
+describe('conditionTypeFor', () => {
+  it('classifies simple comparisons as simple', () => {
+    expect(conditionTypeFor('moderation.flagged == true')).to.equal('simple');
+    expect(conditionTypeFor('injection.score > 0.7')).to.equal('simple');
+    expect(conditionTypeFor('pii.found != true')).to.equal('simple');
+  });
+
+  it('classifies CEL operators and functions as cel', () => {
+    expect(conditionTypeFor('!args.enabled')).to.equal('cel');
+    expect(conditionTypeFor("args.priority in ['critical','high']")).to.equal(
+      'cel'
+    );
+    expect(conditionTypeFor('args.ok ? true : false')).to.equal('cel');
+    expect(conditionTypeFor('args.name.contains("x")')).to.equal('cel');
+    expect(conditionTypeFor('a && b')).to.equal('cel');
+  });
+});
 
 describe('PoliciesView', () => {
   let fetchStub: sinon.SinonStub;
@@ -80,6 +99,23 @@ describe('PoliciesView', () => {
           return new Response('version: "1.0"\n', {
             status: 200,
             headers: { 'Content-Type': 'application/x-yaml' },
+          });
+        }
+
+        if (
+          url.includes('/api/v1/policies/versions/') &&
+          url.includes('/rollback') &&
+          method === 'POST'
+        ) {
+          return json({
+            success: true,
+            message: 'preview',
+            preview_only: true,
+            changes: {
+              summary: '1 change',
+              has_changes: true,
+              changes: { added: [], removed: [], modified: [] },
+            },
           });
         }
 
@@ -406,6 +442,8 @@ describe('PoliciesView', () => {
     const current = 'version: "1.0"\nmetadata:\n  name: current';
     const generated = 'version: "1.0"\nmetadata:\n  name: edited';
     let uploaded = false;
+    let previewed = false;
+    let uploadBeforeDiff = false;
     fetchStub = sinon
       .stub(window, 'fetch')
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -433,9 +471,17 @@ describe('PoliciesView', () => {
           return json({ yaml: generated, warnings: [] });
         }
         if (url.endsWith('/api/v1/policies/diff') && method === 'POST') {
-          return json({ summary: '1 modified', has_changes: true });
+          previewed = true;
+          return json({
+            summary: '1 modified',
+            has_changes: true,
+            changes: { added: [], removed: [], modified: [] },
+          });
         }
         if (url.endsWith('/api/v1/policies/upload') && method === 'POST') {
+          if (!previewed) {
+            uploadBeforeDiff = true;
+          }
           uploaded = true;
           return json({ success: true, policy_name: 'edited' });
         }
@@ -471,8 +517,19 @@ describe('PoliciesView', () => {
     await dialog._generate();
     await dialog.updateComplete;
     dialog._applyPolicy();
-    await waitUntil(() => uploaded, 'Save did not apply');
+    await waitUntil(
+      () => (element as any)._showDiffDialog === true,
+      'Save did not open the diff dialog'
+    );
+    expect(previewed).to.be.true;
+    expect(uploaded).to.be.false;
+    expect((element as any)._showGenerateDialog).to.be.true;
+
+    await (element as any).applyPolicyFile();
+    await waitUntil(() => uploaded, 'Confirm did not apply');
     expect(uploaded).to.be.true;
+    expect(uploadBeforeDiff).to.be.false;
+    expect((element as any)._showGenerateDialog).to.be.false;
   });
 
   describe('YAML tab', () => {
@@ -746,6 +803,26 @@ describe('PoliciesView', () => {
       return element;
     }
 
+    it('encodes tool option values so names with spaces stay intact', async () => {
+      const element = await mountWithDialog();
+      (element as any)._patchModelIOForm({ ruleType: 'tool' });
+      await element.updateComplete;
+      const option = element.shadowRoot?.querySelector(
+        '[data-testid="rule-dialog"] sl-option'
+      );
+      expect(option?.getAttribute('value')).to.equal(
+        encodeURIComponent('search_issues')
+      );
+    });
+
+    it('shows Manage workflows when the action is require_approval', async () => {
+      const element = await mountWithDialog();
+      (element as any)._patchModelIOForm({ action: 'require_approval' });
+      await element.updateComplete;
+
+      expect(element.shadowRoot?.textContent).to.contain('Manage workflows');
+    });
+
     it('stays open when an inner select hides', async () => {
       const element = await mountWithDialog();
 
@@ -901,7 +978,7 @@ describe('PoliciesView', () => {
       });
       await (element as any).saveModelIORule();
 
-      expect((element as any)._error).to.contain('needs a condition');
+      expect((element as any)._ruleDialogError).to.contain('needs a condition');
       expect((element as any)._showModelIODialog).to.be.true;
       const posted = fetchStub
         .getCalls()
@@ -912,5 +989,44 @@ describe('PoliciesView', () => {
         );
       expect(posted).to.have.length(0);
     });
+  });
+
+  it('View Diff opens the preview without a Confirm Rollback button', async () => {
+    fetchStub = createFetchStub();
+    const element = (await fixture(
+      html`<policies-view></policies-view>`
+    )) as PoliciesView;
+    await waitUntil(() => !(element as any)._loading, 'still loading');
+    (element as any)._activeTab = 'files';
+    await (element as any).loadVersions();
+    await element.updateComplete;
+
+    const version = {
+      id: 'ver-2',
+      version_number: 2,
+      tag: null,
+      description: 'Older',
+      created_at: '2026-05-01T10:00:00Z',
+      created_by_username: 'alice',
+      is_active: false,
+      snapshot_summary: {
+        mcp_servers_count: 0,
+        tools_count: 1,
+        policies_count: 0,
+      },
+    };
+    await (element as any).openRollbackPreview(version, false);
+    await waitUntil(
+      () => (element as any)._showRollbackDialog === true,
+      'diff dialog did not open'
+    );
+    await element.updateComplete;
+
+    const dialog = element.shadowRoot?.querySelector(
+      'sl-dialog[label="Version Diff"]'
+    );
+    expect(dialog).to.exist;
+    expect(dialog?.textContent).to.not.contain('Confirm Rollback');
+    expect((element as any)._rollbackConfirmVisible).to.be.false;
   });
 });
