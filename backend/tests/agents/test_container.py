@@ -1418,6 +1418,120 @@ class TestGitApiTokensNotInScript:
         assert "origin/preloop/fix" not in commands
 
 
+class TestPushCredentialsWithoutRepositoryTracker:
+    """Reproduces the post-execution push that had no credentials.
+
+    Production execution 85b67a24: the repository entry declared no
+    ``tracker_id`` and the triggering project's tracker was a GitHub App
+    installation, which stores no API key. Both the clone credential and the
+    push token resolved empty, the public repository still cloned, and the push
+    printed "WARNING: no git credentials available for push" followed by
+    "could not read Username for 'https://github.com'".
+
+    The orchestrator now resolves that tracker (minting an installation token
+    when needed) and passes it as ``trigger_tracker_id``.
+    """
+
+    APP_TOKEN = "ghs_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+    def _context(self, *, with_trigger_tracker=True):
+        context = {
+            "flow_id": "flow-1",
+            "execution_id": "exec-1",
+            "flow_name": "Automated Issue Implementation (GitHub)",
+            "account_id": "account-1",
+            "_git_target_branch": "preloop/automated-issue-implementation-85b67a24",
+            "_git_source_branch": "main",
+            "trigger_project_id": "daa4a88a-0dfa-4fd6-95bc-664f363ad033",
+            "git_clone_config": {
+                "enabled": True,
+                "repositories": [
+                    {
+                        "repository_url": "https://github.com/preloop/preloop.git",
+                        "clone_path": "workspace",
+                    }
+                ],
+            },
+            "trigger_event_data": {},
+        }
+        if with_trigger_tracker:
+            context["trigger_tracker_id"] = "tracker-app"
+            context["git_credentials_map"] = {
+                "tracker-app": {
+                    "token": self.APP_TOKEN,
+                    "tracker_type": "github",
+                }
+            }
+        return context
+
+    def test_push_token_reaches_the_container_environment(self, container_executor):
+        context = self._context()
+        with patch.object(
+            container_executor, "_get_token_from_project", return_value=(None, None)
+        ):
+            commands = container_executor._prepare_git_post_execution_commands(context)
+
+        assert "${PRELOOP_GIT_TOKEN_1}" in commands
+        assert self.APP_TOKEN not in commands
+        env = container_executor._apply_git_credential_env({}, context)
+        assert env["PRELOOP_GIT_TOKEN_1"] == self.APP_TOKEN
+
+    def test_clone_installs_the_credential_helper(self, container_executor):
+        context = self._context()
+        with patch.object(
+            container_executor, "_get_token_from_project", return_value=(None, None)
+        ):
+            command = container_executor._prepare_git_clone_command(context)
+
+        assert self.APP_TOKEN not in command
+        env = container_executor._git_credential_env(context)
+        assert self.APP_TOKEN in env["PRELOOP_GIT_CREDENTIALS"]
+        assert "x-access-token" in env["PRELOOP_GIT_CREDENTIALS"]
+
+    def test_without_the_trigger_tracker_the_push_has_no_token(
+        self, container_executor
+    ):
+        """The pre-fix behaviour, kept as the contrast case."""
+        context = self._context(with_trigger_tracker=False)
+        with patch.object(
+            container_executor, "_get_token_from_project", return_value=(None, None)
+        ):
+            commands = container_executor._prepare_git_post_execution_commands(context)
+
+        assert "${PRELOOP_GIT_TOKEN_1}" not in commands
+        assert "no git credentials available for push" in commands
+        assert container_executor._apply_git_credential_env({}, context) == {}
+
+    def test_repository_tracker_still_wins(self, container_executor):
+        """A repository with its own tracker keeps using that tracker's token."""
+        context = self._context()
+        context["git_clone_config"]["repositories"][0]["tracker_id"] = "tracker-repo"
+        context["git_credentials_map"]["tracker-repo"] = {
+            "token": "github_pat_repo_specific_token",
+            "tracker_type": "github",
+        }
+        container_executor._prepare_git_post_execution_commands(context)
+
+        env = container_executor._apply_git_credential_env({}, context)
+        assert env["PRELOOP_GIT_TOKEN_1"] == "github_pat_repo_specific_token"
+
+    def test_empty_map_entry_falls_through_to_the_project_lookup(
+        self, container_executor
+    ):
+        """A tracker recorded without a token must not shadow other sources."""
+        context = self._context()
+        context["git_credentials_map"]["tracker-app"]["token"] = ""
+        with patch.object(
+            container_executor,
+            "_get_token_from_project",
+            return_value=("github_pat_from_project", "github"),
+        ):
+            container_executor._prepare_git_post_execution_commands(context)
+
+        env = container_executor._apply_git_credential_env({}, context)
+        assert env["PRELOOP_GIT_TOKEN_1"] == "github_pat_from_project"
+
+
 class TestLogScrubbing:
     """Logs are scrubbed on read as well, so a token already present in a
     running container's output never reaches the API or the console (#173).
