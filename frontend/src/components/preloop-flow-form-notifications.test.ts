@@ -79,6 +79,7 @@ describe('PreloopFlowForm notifications behaviour', () => {
     fixtureCleanup();
     sandbox.restore();
     localStorage.clear();
+    sessionStorage.clear();
   });
 
   const mount = async (flow: Record<string, unknown>) => {
