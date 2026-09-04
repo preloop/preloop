@@ -1625,6 +1625,136 @@ class TestLogScrubbing:
         ]
 
 
+class TestResumeRebaseShell:
+    """Resume rebase is present only on resume; force-with-lease only after rebase."""
+
+    def _clone_context(self, **overrides):
+        context = {
+            "flow_id": "flow-1",
+            "execution_id": "exec-1",
+            "flow_name": "Automated Issue Implementation",
+            "git_clone_config": {
+                "enabled": True,
+                "source_branch": "main",
+                "repositories": [
+                    {
+                        "repository_url": "https://github.com/acme/private.git",
+                        "clone_path": "/workspace",
+                    }
+                ],
+            },
+            "trigger_event_data": {},
+        }
+        context.update(overrides)
+        return context
+
+    def _post_context(self, **overrides):
+        context = {
+            "flow_id": "flow-1",
+            "execution_id": "exec-1",
+            "flow_name": "PR Reviewer",
+            "_git_target_branch": "preloop/issue-353",
+            "_git_source_branch": "preloop/issue-353",
+            "git_clone_config": {
+                "enabled": True,
+                "source_branch": "main",
+                "repositories": [
+                    {
+                        "repository_url": "https://github.com/acme/private.git",
+                        "clone_path": "/workspace",
+                    }
+                ],
+            },
+            "trigger_event_data": {},
+        }
+        context.update(overrides)
+        return context
+
+    def test_clone_omits_rebase_when_not_resuming(self, container_executor):
+        command = container_executor._prepare_git_clone_command(self._clone_context())
+        assert "git rebase" not in command
+        assert "PRELOOP_RESUME_REBASE_CONFLICT" not in command
+
+    def test_clone_rebases_when_resume_from_set(self, container_executor):
+        context = self._clone_context(resume_from="prior-exec")
+        command = container_executor._prepare_git_clone_command(context)
+        assert "git fetch origin main" in command
+        assert "git rebase origin/main" in command
+        assert "/workspace/evidence/rebase-conflict.txt" in command
+        assert "git rebase --abort" in command
+        assert "export PRELOOP_RESUME_REBASE_CONFLICT=1" in command
+        assert context.get("_git_resume_rebase") is True
+
+    def test_clone_rebases_when_resume_metadata_present(self, container_executor):
+        context = self._clone_context(
+            trigger_event_data={
+                "_resume": {
+                    "execution_id": "prior-exec",
+                    "source_branch": "preloop/issue-353",
+                }
+            }
+        )
+        command = container_executor._prepare_git_clone_command(context)
+        assert "git rebase origin/main" in command
+        assert context.get("resume_from") == "prior-exec"
+
+    def test_clone_rebases_onto_repo_branch(self, container_executor):
+        context = self._clone_context()
+        context["git_clone_config"]["repositories"][0]["branch"] = "develop"
+        context["resume_from"] = "prior-exec"
+        command = container_executor._prepare_git_clone_command(context)
+        assert "git fetch origin develop" in command
+        assert "git rebase origin/develop" in command
+        assert "git rebase origin/main" not in command
+
+    def test_clone_rebases_onto_config_branch(self, container_executor):
+        context = self._clone_context(resume_from="prior-exec")
+        context["git_clone_config"]["branch"] = "release"
+        command = container_executor._prepare_git_clone_command(context)
+        assert "git rebase origin/release" in command
+
+    def test_unsafe_base_branch_skips_rebase(self, container_executor):
+        context = self._clone_context(resume_from="prior-exec")
+        context["git_clone_config"]["source_branch"] = "main; echo pwned"
+        command = container_executor._prepare_git_clone_command(context)
+        assert "git rebase" not in command
+        assert "origin/main; echo pwned" not in command
+
+    def test_post_exec_omits_force_with_lease_when_not_resuming(
+        self, container_executor
+    ):
+        commands = container_executor._prepare_git_post_execution_commands(
+            self._post_context(
+                _git_target_branch="preloop/fix",
+                _git_source_branch="main",
+            )
+        )
+        assert "--force-with-lease" not in commands
+        assert "git push origin preloop/fix" in commands
+
+    def test_post_exec_force_with_lease_only_after_rebase(self, container_executor):
+        commands = container_executor._prepare_git_post_execution_commands(
+            self._post_context(resume_from="prior-exec")
+        )
+        assert "git push --force-with-lease origin preloop/issue-353" in commands
+        assert "/workspace/evidence/resume-rebased" in commands
+        assert "PRELOOP_RESUME_REBASED" in commands
+        force_at = commands.index("git push --force-with-lease origin")
+        plain_at = commands.index("git push origin preloop/issue-353")
+        assert force_at < plain_at
+
+    def test_resume_rebase_shell_records_conflict_and_aborts(self, container_executor):
+        shell = container_executor._build_git_resume_rebase_shell(
+            full_path="/workspace", base_branch="main"
+        )
+        assert "git fetch origin main" in shell
+        assert "git rebase origin/main" in shell
+        assert "git rebase --abort" in shell
+        assert "/workspace/evidence/rebase-conflict.txt" in shell
+        assert "export PRELOOP_RESUME_REBASE_CONFLICT=1" in shell
+        assert "export PRELOOP_RESUME_REBASED=1" in shell
+
+
 class TestResolveGitBranchPlan:
     def test_resume_overrides_config_source_branch(self, container_executor):
         source, target, _, _, _ = container_executor._resolve_git_branch_plan(
