@@ -29,14 +29,13 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from urllib.parse import urlsplit
-
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_audit_log
 from preloop.models.models.ai_model import AIModel
 from preloop.services.litellm_routing import (
     OPENAI_COMPATIBLE_PROVIDERS,
+    endpoint_host,
     is_openrouter_endpoint,
 )
 from preloop.services.model_runtime_resolver import gateway_model_alias_candidates
@@ -126,26 +125,11 @@ def _dedupe_key(
     return f"{(provider_name or 'unknown').strip().lower()}|{model_alias.strip()}"
 
 
-def _endpoint_host(endpoint: Optional[str]) -> str:
-    """Return the lowercase hostname of an endpoint URL, or "" if unparseable."""
-    if not isinstance(endpoint, str):
-        return ""
-    raw = endpoint.strip()
-    if not raw:
-        return ""
-    if "//" not in raw:
-        raw = f"//{raw}"
-    try:
-        return (urlsplit(raw).hostname or "").lower()
-    except ValueError:  # pragma: no cover - malformed URLs
-        return ""
-
-
 def _is_cataloged_marketplace_endpoint(endpoint: Optional[str]) -> bool:
     """True when this endpoint is a host whose prices we maintain."""
     if is_openrouter_endpoint(endpoint):
         return True
-    host = _endpoint_host(endpoint)
+    host = endpoint_host(endpoint)
     if not host:
         return False
     return any(
@@ -162,6 +146,10 @@ def should_page_unpriced_model(ai_model: Optional[AIModel]) -> bool:
     so the account can set an override. OpenRouter- and DashScope-fronted
     configs still page, because those hosts are ones we catalog.
 
+    A missing or unparseable ``api_endpoint`` still pages: the identifier
+    prefix can still route to a cataloged marketplace
+    (``to_litellm_model``), so "unknown host" is not "customer-owned".
+
     Args:
         ai_model: The resolved model. ``None`` keeps the previous contract
             (page), used by callers that only have the alias.
@@ -173,6 +161,9 @@ def should_page_unpriced_model(ai_model: Optional[AIModel]) -> bool:
         return True
     provider = (ai_model.provider_name or "").strip().lower()
     if provider not in OPENAI_COMPATIBLE_PROVIDERS:
+        return True
+    host = endpoint_host(ai_model.api_endpoint)
+    if not host:
         return True
     return _is_cataloged_marketplace_endpoint(ai_model.api_endpoint)
 

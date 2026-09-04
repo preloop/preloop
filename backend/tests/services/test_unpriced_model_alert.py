@@ -463,3 +463,21 @@ def test_openai_compatible_openrouter_and_dashscope_still_page():
 def test_missing_ai_model_keeps_previous_page_contract():
     """Callers that only have the alias still page (dedup is on the alias)."""
     assert should_notify_unpriced_model(**_notify_kwargs()) is True
+
+
+def test_openai_compatible_without_endpoint_still_pages():
+    """Empty or unparseable endpoint is unknown, not customer-owned."""
+    from preloop.models.models.ai_model import AIModel
+
+    missing = AIModel(
+        provider_name="openai-compatible",
+        model_identifier="openrouter/auto-beta",
+        api_endpoint=None,
+    )
+    blank = AIModel(
+        provider_name="openai-compatible",
+        model_identifier="openrouter/auto-beta",
+        api_endpoint="   ",
+    )
+    assert should_notify_unpriced_model(ai_model=missing, **_notify_kwargs()) is True
+    assert should_notify_unpriced_model(ai_model=blank, **_notify_kwargs()) is True
