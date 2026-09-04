@@ -22,6 +22,33 @@ export interface FlowCustomCommands {
   commands?: string[];
 }
 
+export interface FlowFailureNotifications {
+  comment_on_trigger_issue?: boolean;
+  attention_item?: boolean;
+}
+
+export interface FlowSuccessNotifications {
+  comment_on_trigger_issue?: boolean;
+}
+
+/** Per-flow terminal notifications. Null means no comments or attention items. */
+export interface FlowNotifications {
+  on_failure?: FlowFailureNotifications;
+  on_success?: FlowSuccessNotifications;
+}
+
+export function defaultFlowNotifications(): FlowNotifications {
+  return {
+    on_failure: {
+      comment_on_trigger_issue: false,
+      attention_item: false,
+    },
+    on_success: {
+      comment_on_trigger_issue: false,
+    },
+  };
+}
+
 export interface FlowWebhookConfig {
   webhook_secret: string;
 }
@@ -71,6 +98,7 @@ export interface Flow {
   allowed_mcp_servers?: string[];
   allowed_mcp_tools?: Array<{ server_name: string; tool_name: string }>;
   git_clone_config?: GitCloneConfig;
+  notifications?: FlowNotifications | null;
   custom_commands?: FlowCustomCommands;
   max_iterations?: number | null;
   max_budget?: number | null;

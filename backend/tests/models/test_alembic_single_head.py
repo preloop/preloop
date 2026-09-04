@@ -100,4 +100,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert account_runner_pool.down_revision == "20260903_flow_timeout"
     workspace = script.get_revision("20260904_flow_exec_workspace")
     assert workspace.down_revision == "20260904_acct_runner_pool"
-    assert script.get_heads() == ["20260904_flow_exec_workspace"]
+    notifications = script.get_revision("20260904_flow_notifications")
+    assert notifications.down_revision == "20260904_flow_exec_workspace"
+    assert script.get_heads() == ["20260904_flow_notifications"]

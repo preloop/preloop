@@ -14,6 +14,7 @@ import {
   type RunnerRecord,
 } from '../api';
 import type { Flow } from '../types';
+import { defaultFlowNotifications } from '../types';
 import {
   buildRunnerPoolOptions,
   describeNextRunnerPool,
@@ -109,6 +110,12 @@ export class PreloopFlowForm extends LitElement {
         gap: var(--sl-spacing-small);
         font-weight: 600;
         font-size: var(--sl-font-size-large);
+      }
+
+      .notifications-help {
+        margin: 0 0 var(--sl-spacing-medium) 0;
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
       }
 
       .creation-mode-toggle {
@@ -351,6 +358,9 @@ export class PreloopFlowForm extends LitElement {
       }
       if (!this.flow.git_clone_config) {
         this.flow.git_clone_config = { enabled: false };
+      }
+      if (!this.flow.notifications) {
+        this.flow.notifications = defaultFlowNotifications();
       }
 
       // Determine initial execution path and target agent
@@ -623,6 +633,22 @@ export class PreloopFlowForm extends LitElement {
     this.requestUpdate();
   }
 
+  private handleNotificationToggle(
+    group: 'on_failure' | 'on_success',
+    field: 'comment_on_trigger_issue',
+    checked: boolean
+  ) {
+    const current = this.flow.notifications || defaultFlowNotifications();
+    this.flow.notifications = {
+      ...current,
+      [group]: {
+        ...(current[group] || {}),
+        [field]: checked,
+      },
+    };
+    this.requestUpdate();
+  }
+
   private async handleFormSubmit(e: Event) {
     e.preventDefault();
     this.formError = null;
@@ -664,6 +690,7 @@ export class PreloopFlowForm extends LitElement {
             ? this.flow.schedule_config || defaultScheduleConfig()
             : null,
         git_clone_config: this.flow.git_clone_config || { enabled: false },
+        notifications: this.flow.notifications || defaultFlowNotifications(),
         max_iterations: this.flow.max_iterations || undefined,
         max_budget: this.flow.max_budget || undefined,
         is_enabled: this.flow.is_enabled ?? true,
@@ -1897,6 +1924,48 @@ export class PreloopFlowForm extends LitElement {
                 `
               : nothing
           }
+        </sl-card>
+
+        <sl-card>
+          <div slot="header" class="card-header-title">
+            <sl-icon name="bell"></sl-icon> Notifications
+          </div>
+          <p class="notifications-help">
+            Tell someone when this flow finishes. Comments go on the issue or
+            pull request that triggered the run. Failed executions always appear
+            on Overview.
+          </p>
+          <sl-checkbox
+            data-notification="on_failure_comment"
+            .checked=${
+              this.flow.notifications?.on_failure?.comment_on_trigger_issue ||
+              false
+            }
+            @sl-change=${(e: any) =>
+              this.handleNotificationToggle(
+                'on_failure',
+                'comment_on_trigger_issue',
+                e.target.checked
+              )}
+            style="margin-bottom: var(--sl-spacing-small);"
+          >
+            Comment on the triggering issue when this flow fails
+          </sl-checkbox>
+          <sl-checkbox
+            data-notification="on_success_comment"
+            .checked=${
+              this.flow.notifications?.on_success?.comment_on_trigger_issue ||
+              false
+            }
+            @sl-change=${(e: any) =>
+              this.handleNotificationToggle(
+                'on_success',
+                'comment_on_trigger_issue',
+                e.target.checked
+              )}
+          >
+            Comment on the triggering issue when a pull request is opened
+          </sl-checkbox>
         </sl-card>
 
         <sl-card>

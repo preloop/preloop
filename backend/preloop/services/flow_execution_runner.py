@@ -17,6 +17,7 @@ from preloop.services.flow_execution_dispatcher import (
 )
 from preloop.services.flow_failure_category import derive_failure_category
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+from preloop.services.flow_pr_binding import merge_result_preserving_pr_binding
 from preloop.sync.services.event_bus import get_nats_client
 
 logger = logging.getLogger(__name__)
@@ -76,21 +77,31 @@ async def resume_existing_execution(
             session_reference, agent_executor
         )
         final_status = agent_result.get("status", "FAILED")
+        resume_category = derive_failure_category(
+            status=final_status,
+            error_message=agent_result.get("error_message"),
+            failure_analysis=agent_result.get("failure_analysis"),
+        )
+        merged_result = merge_result_preserving_pr_binding(
+            getattr(orchestrator.execution_log, "result", None),
+            agent_result.get("result"),
+        )
         await orchestrator._update_execution_log(
             status=final_status,
             model_output_summary=agent_result.get("output_summary"),
             error_message=agent_result.get("error_message"),
             # Same reasoning as the initial-run terminal update: the executor's
             # verdict over the full logs beats re-deriving from the summary.
-            failure_category=derive_failure_category(
-                status=final_status,
-                error_message=agent_result.get("error_message"),
-                failure_analysis=agent_result.get("failure_analysis"),
-            ),
+            failure_category=resume_category,
             actions_taken_summary=agent_result.get("actions_taken"),
             mcp_usage_logs=agent_result.get("mcp_usage_logs"),
-            result=agent_result.get("result"),
+            result=merged_result,
             end_time=datetime.now(timezone.utc),
+        )
+        await orchestrator._notify_terminal(
+            status=final_status,
+            failure_category=resume_category,
+            result=merged_result,
         )
         # The worker that finishes a run owns its teardown, even though it did
         # not mint the credential: close the runtime session and revoke every

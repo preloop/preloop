@@ -360,3 +360,46 @@ async def test_evacuate_owned_claims_redispatches(
     refreshed = crud_flow_execution.get(db_session, id=running.id)
     assert refreshed is not None
     assert refreshed.orchestrator_worker_id is None
+
+
+@pytest.mark.asyncio
+async def test_resume_terminal_merges_pr_binding_into_notify() -> None:
+    """A drained resume must keep the MCP-recorded pr_url for success comments."""
+
+    from types import SimpleNamespace
+
+    from preloop.services.flow_execution_runner import resume_existing_execution
+
+    orchestrator = MagicMock()
+    orchestrator.execution_log = SimpleNamespace(
+        id=uuid.uuid4(),
+        result={"pr_url": "https://github.com/acme/app/pull/7"},
+    )
+    orchestrator.flow = SimpleNamespace(agent_type="codex", agent_config={})
+    orchestrator.agent_type = "codex"
+    orchestrator._get_flow_details = MagicMock()
+    orchestrator._monitor_agent_execution = AsyncMock(
+        return_value={"status": "SUCCEEDED", "result": {"ok": True}}
+    )
+    orchestrator._update_execution_log = AsyncMock()
+    orchestrator._notify_terminal = AsyncMock()
+    orchestrator._sync_runtime_session = MagicMock()
+    orchestrator._revoke_execution_runtime_tokens = MagicMock()
+
+    executor = MagicMock()
+    executor.aclose = None
+    executor.cleanup = None
+
+    with patch(
+        "preloop.agents.create_agent_executor",
+        return_value=executor,
+    ):
+        await resume_existing_execution(orchestrator, "agent-session-ref")
+
+    merged = orchestrator._notify_terminal.await_args.kwargs["result"]
+    assert merged["pr_url"] == "https://github.com/acme/app/pull/7"
+    assert merged["ok"] is True
+    assert (
+        orchestrator._update_execution_log.await_args.kwargs["result"]["pr_url"]
+        == "https://github.com/acme/app/pull/7"
+    )
