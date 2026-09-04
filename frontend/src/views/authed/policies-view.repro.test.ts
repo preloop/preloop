@@ -297,7 +297,7 @@ describe('Policies page repro', () => {
     expect(post.body.condition_expression).to.contain('contains(');
   });
 
-  it('R8 editing a rule then choosing Start from a preset selects nothing', async () => {
+  it('R8 editing a rule then choosing Start from a preset selects one', async () => {
     const rule = {
       id: 'r1',
       target: 'model.request',
@@ -316,7 +316,7 @@ describe('Policies page repro', () => {
     (m.element as any)._setConditionMode('preset');
     await m.element.updateComplete;
     expect((m.element as any)._modelIOForm.conditionMode).to.equal('preset');
-    expect(ruleDialog(m.element).querySelector('.preset-card.selected')).to.not
+    expect(ruleDialog(m.element).querySelector('.preset-card.selected')).to
       .exist;
   });
 

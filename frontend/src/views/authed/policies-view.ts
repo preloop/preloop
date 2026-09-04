@@ -1267,8 +1267,16 @@ export class PoliciesView extends LitElement {
    * still looks selected, and Save would persist a mismatch.
    */
   private _setConditionMode(mode: 'preset' | 'custom') {
-    if (mode === 'preset' && this._modelIOForm.presetId) {
-      this._applyPreset(this._modelIOForm.presetId);
+    if (mode === 'preset') {
+      const matching =
+        MODEL_IO_PRESETS.find(
+          (item) => item.id === this._modelIOForm.presetId
+        ) ||
+        MODEL_IO_PRESETS.find(
+          (item) => item.target === this._modelIOForm.target
+        ) ||
+        MODEL_IO_PRESETS[0];
+      this._applyPreset(matching.id);
       return;
     }
     this._patchModelIOForm({ conditionMode: mode });
