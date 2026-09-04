@@ -761,7 +761,8 @@ describe('DashboardView', () => {
         !element['loading'] &&
         !element['fetchingApprovals'] &&
         !element['fetchingAudit'] &&
-        !element['fetchingMCPAndTools'],
+        !element['fetchingMCPAndTools'] &&
+        element['attentionInputs'] != null,
       'dashboard did not finish loading'
     );
     await element.updateComplete;
@@ -784,7 +785,8 @@ describe('DashboardView', () => {
         !element['loading'] &&
         !element['fetchingApprovals'] &&
         !element['fetchingAudit'] &&
-        !element['fetchingMCPAndTools'],
+        !element['fetchingMCPAndTools'] &&
+        element['attentionInputs'] != null,
       'dashboard did not finish loading'
     );
     await element.updateComplete;
@@ -807,7 +809,8 @@ describe('DashboardView', () => {
         !element['loading'] &&
         !element['fetchingApprovals'] &&
         !element['fetchingAudit'] &&
-        !element['fetchingMCPAndTools'],
+        !element['fetchingMCPAndTools'] &&
+        element['attentionInputs'] != null,
       'dashboard did not finish loading'
     );
     await element.updateComplete;
@@ -839,7 +842,8 @@ describe('DashboardView', () => {
         !element['loading'] &&
         !element['fetchingApprovals'] &&
         !element['fetchingAudit'] &&
-        !element['fetchingMCPAndTools'],
+        !element['fetchingMCPAndTools'] &&
+        element['attentionInputs'] != null,
       'dashboard did not finish loading'
     );
     element['attentionInputs'] = {
@@ -874,7 +878,8 @@ describe('DashboardView', () => {
         !element['loading'] &&
         !element['fetchingApprovals'] &&
         !element['fetchingAudit'] &&
-        !element['fetchingMCPAndTools'],
+        !element['fetchingMCPAndTools'] &&
+        element['attentionInputs'] != null,
       'dashboard did not finish loading'
     );
     element['attentionInputs'] = {
@@ -901,7 +906,8 @@ describe('DashboardView', () => {
         !element['loading'] &&
         !element['fetchingApprovals'] &&
         !element['fetchingAudit'] &&
-        !element['fetchingMCPAndTools'],
+        !element['fetchingMCPAndTools'] &&
+        element['attentionInputs'] != null,
       'dashboard did not finish loading'
     );
     // A quiet account: the same shape the loader returns, with nothing in it.
