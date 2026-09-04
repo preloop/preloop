@@ -7,9 +7,11 @@ what it contains, and that secrets in the log tail are redacted.
 from __future__ import annotations
 
 from typing import Any, List
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
+from sqlalchemy.orm import Session
 
 from preloop.models.schemas.flow import (
     FlowCreate,
@@ -403,3 +405,51 @@ class TestFlowNotificationsSchema:
         assert dumped["notifications"]["on_failure"]["comment_on_trigger_issue"] is True
         assert dumped["notifications"]["on_failure"]["attention_item"] is True
         assert dumped["notifications"]["on_success"]["comment_on_trigger_issue"] is True
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_notify_terminal_posts_via_flow_notifications() -> None:
+    """``_notify_terminal`` must resolve tracker + log tail from the orchestrator."""
+
+    from types import SimpleNamespace
+
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    tracker = StubTracker()
+    execution_id = uuid4()
+    orchestrator = FlowExecutionOrchestrator(
+        db=MagicMock(spec=Session),
+        flow_id=uuid4(),
+        trigger_event_data=_issue_trigger(42),
+        nats_client=MagicMock(),
+    )
+    orchestrator.flow = SimpleNamespace(
+        notifications=_notifications(failure_comment=True),
+    )
+    orchestrator.execution_log = SimpleNamespace(
+        id=execution_id,
+        trigger_event_details=_issue_trigger(42),
+        failure_category="agent_error",
+        result=None,
+    )
+    orchestrator.execution_logger = MagicMock()
+    orchestrator.execution_logger.get_agent_output_summary.return_value = (
+        f"boom\ntoken {GITHUB_PAT}"
+    )
+
+    with patch.object(
+        orchestrator,
+        "_get_tracker_client_for_status",
+        new=AsyncMock(return_value=tracker),
+    ):
+        await orchestrator._notify_terminal(
+            status="FAILED", failure_category="agent_error"
+        )
+
+    tracker.add_comment.assert_awaited_once()
+    issue_id, comment = tracker.calls[0]
+    assert issue_id == "42"
+    assert "Status: FAILED" in comment
+    assert str(execution_id) in comment
+    assert GITHUB_PAT not in comment
+    orchestrator.execution_logger.get_agent_output_summary.assert_called_once()
