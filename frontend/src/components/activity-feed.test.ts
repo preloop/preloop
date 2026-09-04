@@ -483,6 +483,49 @@ describe('activity-feed', () => {
       localStorage.removeItem('accessToken');
     });
 
+    it('asks for at most three audit pages, the last two together', async () => {
+      // A busy account whose whole timeline is successful gateway calls: the
+      // fill used to walk four pages one after the other for rows that were
+      // never going to be news.
+      localStorage.setItem('accessToken', 'test-token');
+      const { restore, urls } = stubFetch([gatewayNoise(AUDIT_PAGE_SIZE)]);
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed></activity-feed>`
+      );
+      await waitUntil(
+        () => !el.shadowRoot!.querySelector('.skeleton-row'),
+        'the fill finishes'
+      );
+      const audit = urls.filter((url) => url.includes('/audit-logs/grouped'));
+      expect(audit.length).to.equal(3);
+      expect(audit[1]).to.contain(`skip=${AUDIT_PAGE_SIZE}`);
+      expect(audit[2]).to.contain(`skip=${AUDIT_PAGE_SIZE * 2}`);
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
+    it('uses the people list the host already fetched', async () => {
+      localStorage.setItem('accessToken', 'test-token');
+      const { restore, urls } = stubFetch([
+        [auditGroup('api_key_created', { id: 'k3' }, 'success')],
+      ]);
+      const el = await fixture<ActivityFeed>(html`
+        <activity-feed
+          usersFromHost
+          .users=${[{ id: 'user-1', username: 'dimo' }]}
+        ></activity-feed>
+      `);
+      await waitUntil(() => rowText(el).length === 1, 'the row is there');
+
+      expect(rowText(el)[0]).to.contain('API key created by dimo');
+      expect(
+        urls.some((url) => url.includes('/api/v1/users')),
+        'no second users request'
+      ).to.be.false;
+      restore();
+      localStorage.removeItem('accessToken');
+    });
+
     it('keeps paging when a page folds down to one row', async () => {
       // Staging at 03:00: twelve events, all of them the same agent calling
       // the same two tools, so the fill hit its twelve and the rail showed
