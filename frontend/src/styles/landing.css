@@ -120,6 +120,15 @@ p.lead {
   font-size: 3.4rem;
 }
 
+/* Two-column only: zero the UA h1 margin-top (measured 0.67em / 36.4px)
+   so the copy column top is the H1 box top and the 0.12em visual offset
+   hits the cap line. Stacked hero keeps its own h1 margins (D18). */
+@media (min-width: 1151px) {
+  .hero-inner.has-visual .hero-content h1 {
+    margin-top: 0;
+  }
+}
+
 .hero-visual {
   flex: 1.75 1 0;
   min-width: 0;
