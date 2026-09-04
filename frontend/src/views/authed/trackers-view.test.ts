@@ -13,7 +13,26 @@ describe('TrackersView', () => {
   let element: TrackersView;
   let fetchStub: sinon.SinonStub;
 
-  function createFetchStub() {
+  const mockTrackers = [
+    {
+      id: 'tracker-1',
+      name: 'Jira Production',
+      tracker_type: 'jira',
+      created: '2024-01-01T00:00:00Z',
+      is_valid: true,
+      url: 'https://jira.example.com',
+    },
+    {
+      id: 'tracker-2',
+      name: 'GitHub Repos',
+      tracker_type: 'github',
+      created: '2024-01-02T00:00:00Z',
+      is_valid: true,
+      url: 'https://github.com/example',
+    },
+  ];
+
+  function createFetchStub(trackers: unknown[] = []) {
     return sinon
       .stub(window, 'fetch')
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -27,7 +46,7 @@ describe('TrackersView', () => {
           });
 
         if (url.includes('/api/v1/trackers') && method === 'GET') {
-          return json([]);
+          return json(trackers);
         }
         if (url.includes('/api/v1/tools') && method === 'GET') {
           return json([
@@ -260,5 +279,68 @@ describe('TrackersView', () => {
     ) as UnlockedToolsReviewDialog;
     expect(review.open).to.be.true;
     expect(review.toolNames).to.deep.equal(['get_issue']);
+  });
+
+  async function renderWithTrackers() {
+    fetchStub.restore();
+    fetchStub = createFetchStub(mockTrackers);
+    element = await fixture(html`<trackers-view></trackers-view>`);
+    const trackerList = element.shadowRoot?.querySelector(
+      'tracker-list'
+    ) as any;
+    await waitUntil(
+      () => !trackerList.isLoading,
+      'Tracker list did not finish loading'
+    );
+    await trackerList.updateComplete;
+    await element.updateComplete;
+    return trackerList;
+  }
+
+  it('narrows list rows when search matches one tracker', async () => {
+    const trackerList = await renderWithTrackers();
+    expect(
+      trackerList.shadowRoot?.querySelectorAll('.tracker-row')
+    ).to.have.lengthOf(2);
+
+    const toolbar = trackerList.shadowRoot?.querySelector('list-toolbar');
+    toolbar!.dispatchEvent(
+      new CustomEvent('search-change', {
+        detail: { value: 'github' },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await trackerList.updateComplete;
+
+    const rows = trackerList.shadowRoot?.querySelectorAll('.tracker-row');
+    expect(rows).to.have.lengthOf(1);
+    expect(rows?.[0].textContent).to.include('GitHub Repos');
+  });
+
+  it('switches from list rows to the existing cards template', async () => {
+    const trackerList = await renderWithTrackers();
+    expect(trackerList.shadowRoot?.querySelector('.tracker-row')).to.exist;
+    expect(trackerList.shadowRoot?.querySelector('.tracker-grid')).to.equal(
+      null
+    );
+
+    const toolbar = trackerList.shadowRoot?.querySelector('list-toolbar');
+    toolbar!.dispatchEvent(
+      new CustomEvent('view-change', {
+        detail: { value: 'cards' },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await trackerList.updateComplete;
+
+    expect(trackerList.shadowRoot?.querySelector('.tracker-grid')).to.exist;
+    expect(
+      trackerList.shadowRoot?.querySelectorAll('tracker-item')
+    ).to.have.lengthOf(2);
+    expect(trackerList.shadowRoot?.querySelector('.tracker-row')).to.equal(
+      null
+    );
   });
 });

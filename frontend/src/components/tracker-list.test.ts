@@ -2,8 +2,79 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import './tracker-list';
-import type { TrackerList } from './tracker-list';
+import {
+  filterTrackers,
+  trackerKindLabel,
+  trackerProjectsCount,
+  type TrackerList,
+} from './tracker-list';
 import type { Tracker } from './tracker-item';
+
+describe('filterTrackers', () => {
+  const trackers: Tracker[] = [
+    {
+      id: 'tracker-1',
+      name: 'Jira Production',
+      tracker_type: 'jira',
+      created: '2024-01-01T00:00:00Z',
+      is_valid: true,
+      url: 'https://jira.example.com',
+    },
+    {
+      id: 'tracker-2',
+      name: 'GitHub Repos',
+      tracker_type: 'github',
+      created: '2024-01-02T00:00:00Z',
+      is_valid: true,
+      url: 'https://github.com/example',
+    },
+  ];
+
+  it('filters by name, kind, and url', () => {
+    expect(filterTrackers(trackers, 'Jira', '').map((t) => t.id)).to.deep.equal(
+      ['tracker-1']
+    );
+    expect(
+      filterTrackers(trackers, 'github', '').map((t) => t.id)
+    ).to.deep.equal(['tracker-2']);
+    expect(
+      filterTrackers(trackers, 'jira.example.com', '').map((t) => t.id)
+    ).to.deep.equal(['tracker-1']);
+  });
+
+  it('filters by tracker kind', () => {
+    expect(
+      filterTrackers(trackers, '', 'github').map((t) => t.id)
+    ).to.deep.equal(['tracker-2']);
+  });
+
+  it('labels known tracker kinds', () => {
+    expect(trackerKindLabel('github')).to.equal('GitHub');
+    expect(trackerKindLabel('gitlab')).to.equal('GitLab');
+    expect(trackerKindLabel('jira')).to.equal('Jira');
+  });
+
+  it('counts included projects from scope rules', () => {
+    expect(
+      trackerProjectsCount({
+        ...trackers[0],
+        scope_rules: [
+          {
+            scope_type: 'PROJECT',
+            rule_type: 'INCLUDE',
+            identifier: 'ONE',
+          },
+          {
+            scope_type: 'PROJECT',
+            rule_type: 'INCLUDE',
+            identifier: 'TWO',
+          },
+        ],
+      })
+    ).to.equal(2);
+    expect(trackerProjectsCount(trackers[0])).to.equal(null);
+  });
+});
 
 describe('TrackerList', () => {
   let fetchStub: sinon.SinonStub;
@@ -73,12 +144,42 @@ describe('TrackerList', () => {
     )) as TrackerList;
 
     await waitUntil(
-      () => el.shadowRoot?.querySelector('.tracker-grid') !== null,
-      'Tracker grid did not render'
+      () => el.shadowRoot?.querySelector('.tracker-row') !== null,
+      'Tracker list did not render'
     );
 
-    const trackerItems = el.shadowRoot?.querySelectorAll('tracker-item');
-    expect(trackerItems).to.have.lengthOf(2);
+    const rows = el.shadowRoot?.querySelectorAll('.tracker-row');
+    expect(rows).to.have.lengthOf(2);
+    expect(el.shadowRoot?.querySelector('list-toolbar')).to.exist;
+  });
+
+  it('switches to the existing cards template', async () => {
+    fetchStub.resolves(
+      new Response(JSON.stringify(mockTrackers), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+
+    const el = (await fixture(
+      html`<tracker-list></tracker-list>`
+    )) as TrackerList;
+
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('.tracker-row') !== null,
+      'Tracker list did not render'
+    );
+
+    const toolbar = el.shadowRoot?.querySelector('list-toolbar');
+    const cards = toolbar?.shadowRoot?.querySelector(
+      'sl-button[data-view="cards"]'
+    ) as HTMLElement;
+    cards.click();
+    await el.updateComplete;
+
+    expect(el.shadowRoot?.querySelector('.tracker-grid')).to.exist;
+    expect(el.shadowRoot?.querySelectorAll('tracker-item')).to.have.lengthOf(2);
+    expect(el.shadowRoot?.querySelector('.tracker-row')).to.equal(null);
   });
 
   it('renders an informative empty state when no trackers', async () => {

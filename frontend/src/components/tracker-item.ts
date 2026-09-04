@@ -14,6 +14,15 @@ export interface Tracker {
   tracker_type: string;
   created: string;
   is_valid: boolean;
+  url?: string | null;
+  is_active?: boolean;
+  last_validation?: string | null;
+  last_updated?: string;
+  scope_rules?: Array<{
+    scope_type: string;
+    rule_type: string;
+    identifier: string;
+  }>;
 }
 
 @customElement('tracker-item')
