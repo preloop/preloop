@@ -76,21 +76,27 @@ async def resume_existing_execution(
             session_reference, agent_executor
         )
         final_status = agent_result.get("status", "FAILED")
+        resume_category = derive_failure_category(
+            status=final_status,
+            error_message=agent_result.get("error_message"),
+            failure_analysis=agent_result.get("failure_analysis"),
+        )
         await orchestrator._update_execution_log(
             status=final_status,
             model_output_summary=agent_result.get("output_summary"),
             error_message=agent_result.get("error_message"),
             # Same reasoning as the initial-run terminal update: the executor's
             # verdict over the full logs beats re-deriving from the summary.
-            failure_category=derive_failure_category(
-                status=final_status,
-                error_message=agent_result.get("error_message"),
-                failure_analysis=agent_result.get("failure_analysis"),
-            ),
+            failure_category=resume_category,
             actions_taken_summary=agent_result.get("actions_taken"),
             mcp_usage_logs=agent_result.get("mcp_usage_logs"),
             result=agent_result.get("result"),
             end_time=datetime.now(timezone.utc),
+        )
+        await orchestrator._notify_terminal(
+            status=final_status,
+            failure_category=resume_category,
+            result=agent_result.get("result"),
         )
         # The worker that finishes a run owns its teardown, even though it did
         # not mint the credential: close the runtime session and revoke every
