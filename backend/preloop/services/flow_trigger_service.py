@@ -23,6 +23,47 @@ logger = logging.getLogger(__name__)
 MATRIX_MAX_ENTRIES = 25
 
 
+def _label_name(item: Any) -> Optional[str]:
+    """Return a label title from a string or GitHub/GitLab label object."""
+    if isinstance(item, str) and item.strip():
+        return item
+    if isinstance(item, dict):
+        name = item.get("name") or item.get("title")
+        if isinstance(name, str) and name.strip():
+            return name
+    return None
+
+
+def _label_names_from_payload(payload: Dict[str, Any]) -> List[str]:
+    """Collect label names from a raw or enriched webhook payload.
+
+    Production events merge ``extract_filter_fields`` (string lists) into the
+    payload. This also unwraps GitHub ``issue.labels[].name`` and GitLab
+    ``labels[].title`` so ``filter_conditions.labels`` matches those shapes
+    even without enrichment.
+    """
+    names: List[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            name = _label_name(item)
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+
+    _add(payload.get("labels"))
+    issue = payload.get("issue")
+    if isinstance(issue, dict):
+        _add(issue.get("labels"))
+    obj_attrs = payload.get("object_attributes")
+    if isinstance(obj_attrs, dict):
+        _add(obj_attrs.get("labels"))
+    _add(payload.get("label"))
+    return names
+
+
 class FlowDispatchError(Exception):
     """A flow execution row was durably committed, but the subsequent
     dispatch (NATS acquisition / worker hand-off) failed.
@@ -710,7 +751,10 @@ class FlowTriggerService:
         )
 
         for key, expected_value in flattened_config.items():
-            actual_value = payload.get(key)
+            if key == "labels":
+                actual_value = _label_names_from_payload(payload) or payload.get(key)
+            else:
+                actual_value = payload.get(key)
 
             # Handle None/missing values
             if actual_value is None:

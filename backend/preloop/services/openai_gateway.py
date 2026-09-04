@@ -7739,6 +7739,7 @@ class OpenAIGatewayService:
                 usage_accounting_requested=usage_accounting_requested,
                 usage_details=usage_details,
                 completion_tokens=int(completion_tokens or 0),
+                ai_model=ai_model,
             ):
                 try:
                     notify_unpriced_model(

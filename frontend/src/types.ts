@@ -1164,9 +1164,20 @@ export interface ImportedUsageSummary {
   usage_by_conversation?: ImportedUsageByConversation[];
 }
 
+// One model's share of the window's unpriced gateway usage. Names the models
+// behind `unpriced_requests`/`unpriced_tokens` so the banner can point at a
+// fix instead of only counting the damage.
+export interface UnpricedModelUsage {
+  model: string;
+  requests: number;
+  tokens: number;
+}
+
 export interface CostAnalyticsSummaryResponse extends AccountGatewayUsageSummaryResponse {
   // Absent (null) when the window contains no imported usage.
   imported_usage?: ImportedUsageSummary | null;
+  // Absent on older servers; the console treats missing as "none named".
+  unpriced_models?: UnpricedModelUsage[];
 }
 
 export interface ProviderBillingConnection {

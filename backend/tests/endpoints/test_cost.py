@@ -260,3 +260,56 @@ def test_cost_summary_requires_authentication(app, db_session):
     with TestClient(app) as anon_client:
         response = anon_client.get(COST_SUMMARY)
     assert response.status_code in (401, 403)
+
+
+def test_cost_summary_names_unpriced_models(client, db_session, test_user):
+    """Unpriced rows must surface their model names next to the counts."""
+    _log_usage(
+        db_session,
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        model_alias="openai-compatible/muse-spark",
+        estimated_cost=None,
+        cost_source="unpriced",
+        total_tokens=5000,
+    )
+    _log_usage(
+        db_session,
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        model_alias="openai-compatible/muse-spark",
+        estimated_cost=None,
+        cost_source="unpriced",
+        total_tokens=1000,
+    )
+    _log_usage(
+        db_session,
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        model_alias="openai/gpt-5",
+        estimated_cost=0.05,
+        cost_source="catalog",
+        total_tokens=7000,
+    )
+    db_session.commit()
+
+    body = client.get(COST_SUMMARY).json()
+
+    assert body["unpriced_requests"] == 2
+    assert body["unpriced_tokens"] == 6000
+    assert body["unpriced_models"] == [
+        {"model": "openai-compatible/muse-spark", "requests": 2, "tokens": 6000}
+    ]
+
+
+def test_cost_summary_unpriced_models_empty_when_all_priced(
+    client, db_session, test_user
+):
+    """A fully priced window reports an empty unpriced model list."""
+    _log_usage(db_session, account_id=test_user.account_id, user_id=test_user.id)
+    db_session.commit()
+
+    body = client.get(COST_SUMMARY).json()
+
+    assert body["unpriced_requests"] == 0
+    assert body["unpriced_models"] == []

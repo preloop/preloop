@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, UTC
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -50,6 +50,60 @@ class ExecutionModelProjection(BaseModel):
     )
 
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
+class ExecutionRunner(BaseModel):
+    """Where an execution ran: a private CLI runner or Preloop hosted.
+
+    Derived at read time from ``FlowExecution.runner_id`` and
+    ``agent_session_reference`` ``runner:...`` forms. Hosted is the default
+    so the console can always name the executor.
+    """
+
+    kind: Literal["private", "hosted"] = Field(
+        ...,
+        description=(
+            "private when the run was leased to a self-hosted CLI runner; "
+            "hosted when it used the built-in Preloop executor"
+        ),
+    )
+    id: Optional[uuid.UUID] = Field(
+        None,
+        description="FlowRunner id when kind is private and a runner was assigned",
+    )
+    name: str = Field(
+        ...,
+        description='Display name. "Preloop hosted" when kind is hosted.',
+    )
+    pool: Optional[str] = Field(
+        None,
+        description="Resolved runner pool string, when known",
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExecutionRunnerSummary(BaseModel):
+    """List-row runner: kind and name only."""
+
+    kind: Literal["private", "hosted"] = Field(
+        ...,
+        description="private for a self-hosted CLI runner; hosted otherwise",
+    )
+    name: str = Field(
+        ...,
+        description='Display name. "Preloop hosted" when kind is hosted.',
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+def _hosted_runner() -> ExecutionRunner:
+    return ExecutionRunner(kind="hosted", name="Preloop hosted")
+
+
+def _hosted_runner_summary() -> ExecutionRunnerSummary:
+    return ExecutionRunnerSummary(kind="hosted", name="Preloop hosted")
 
 
 # Base Pydantic model for FlowExecution attributes
@@ -162,6 +216,13 @@ class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
 
     # Include flow name for display purposes
     flow_name: Optional[str] = None
+    runner: ExecutionRunner = Field(
+        default_factory=_hosted_runner,
+        description=(
+            "Where this execution ran. Hosted when the built-in executor "
+            "ran it; private when a self-hosted CLI runner did."
+        ),
+    )
 
     # Example of how to include related data if needed
     # flow: Optional[FlowResponse] = None # Assuming a FlowResponse Pydantic schema exists
@@ -207,6 +268,13 @@ class FlowExecutionListResponse(ExecutionModelProjection):
             "Link to the resource that triggered this execution (e.g. the "
             "pull request or merge request), when the trigger payload "
             "carries one."
+        ),
+    )
+    runner: ExecutionRunnerSummary = Field(
+        default_factory=_hosted_runner_summary,
+        description=(
+            "Where this execution ran. List rows carry kind and name; "
+            "detail adds id and pool."
         ),
     )
 

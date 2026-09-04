@@ -42,6 +42,7 @@ from preloop.schemas.tool_approval_condition import (
     ConditionTestRequest,
     ConditionTestResponse,
 )
+from preloop.services.policy.loader import _detect_condition_type
 from preloop.services.policy_evaluator import evaluate_cel_expression
 from preloop.services.tool_schema_tokens import estimate_tool_schema_tokens
 from preloop.services.tool_usage_stats import ToolUsageStatsService
@@ -1849,7 +1850,9 @@ async def create_access_rule(
                 "account_id": str(account.id),
                 "action": rule_in.action,
                 "condition_expression": rule_in.condition_expression,
-                "condition_type": rule_in.condition_type,
+                "condition_type": _detect_condition_type(
+                    rule_in.condition_expression or ""
+                ),
                 "priority": rule_in.priority,
                 "description": rule_in.description,
                 "is_enabled": rule_in.is_enabled,
@@ -1929,6 +1932,10 @@ async def update_access_rule(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Action must be 'allow', 'deny', or 'require_approval'",
         )
+
+    if "condition_expression" in update_data or "condition_type" in update_data:
+        expression = update_data.get("condition_expression", rule.condition_expression)
+        update_data["condition_type"] = _detect_condition_type(expression or "")
 
     try:
         old_snapshot = {

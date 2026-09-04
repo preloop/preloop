@@ -1,5 +1,6 @@
 """Endpoints for managing issue comments."""
 
+import asyncio
 import logging
 
 from typing import Optional, List
@@ -27,6 +28,8 @@ from preloop.models.models.issue import Issue
 from preloop.models.models.organization import Organization
 from preloop.models.models.project import Project
 from preloop.models.models.tracker import Tracker
+from preloop.services.aux_model_retry import call_with_aux_retry_async
+from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.utils.permissions import require_permission
 
 logger = logging.getLogger(__name__)
@@ -211,8 +214,27 @@ async def search_comments(
                 )
             model = active_models[0]
             try:
-                query_vector = crud_issue_embedding._generate_embedding_vector(
-                    query, model
+
+                async def _embed_query() -> list:
+                    return await asyncio.to_thread(
+                        crud_issue_embedding._generate_embedding_vector,
+                        query,
+                        model,
+                    )
+
+                query_vector = await call_with_aux_retry_async(
+                    _embed_query,
+                    operation_name="comment_similarity_query_embedding",
+                    provider=getattr(model, "provider", None),
+                )
+            except ModelGatewayAPIError as exc:
+                logger.warning(
+                    "Comment similarity query embedding did not recover: %s", exc
+                )
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail="Embedding provider is rate limited; retry later.",
+                    headers=exc.response_headers(),
                 )
             except Exception as e:
                 logger.error(

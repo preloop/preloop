@@ -12295,6 +12295,10 @@ components:
           title: Trigger Subject Url
           description: Link to the resource that triggered this execution (e.g. the
             pull request or merge request), when the trigger payload carries one.
+        runner:
+          $ref: '#/components/schemas/ExecutionRunnerSummary'
+          description: Where this execution ran. List rows carry kind and name; detail
+            adds id and pool.
         matrix:
           anyOf:
           - additionalProperties: true
@@ -12767,6 +12771,11 @@ components:
           type: integer
           title: Unpriced Tokens
           default: 0
+        unpriced_models:
+          items:
+            $ref: '#/components/schemas/UnpricedModelUsage'
+          type: array
+          title: Unpriced Models
         price_catalog:
           anyOf:
           - $ref: '#/components/schemas/PriceCatalogInfo'
@@ -13044,6 +13053,65 @@ components:
       - model_alias
       title: ExecutionModelUsage
       description: One model alias that served requests during an execution.
+    ExecutionRunner:
+      properties:
+        kind:
+          type: string
+          enum:
+          - private
+          - hosted
+          title: Kind
+          description: private when the run was leased to a self-hosted CLI runner;
+            hosted when it used the built-in Preloop executor
+        id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Id
+          description: FlowRunner id when kind is private and a runner was assigned
+        name:
+          type: string
+          title: Name
+          description: Display name. "Preloop hosted" when kind is hosted.
+        pool:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pool
+          description: Resolved runner pool string, when known
+      type: object
+      required:
+      - kind
+      - name
+      title: ExecutionRunner
+      description: 'Where an execution ran: a private CLI runner or Preloop hosted.
+
+
+        Derived at read time from ``FlowExecution.runner_id`` and
+
+        ``agent_session_reference`` ``runner:...`` forms. Hosted is the default
+
+        so the console can always name the executor.'
+    ExecutionRunnerSummary:
+      properties:
+        kind:
+          type: string
+          enum:
+          - private
+          - hosted
+          title: Kind
+          description: private for a self-hosted CLI runner; hosted otherwise
+        name:
+          type: string
+          title: Name
+          description: Display name. "Preloop hosted" when kind is hosted.
+      type: object
+      required:
+      - kind
+      - name
+      title: ExecutionRunnerSummary
+      description: 'List-row runner: kind and name only.'
     FlowCreate:
       properties:
         name:
@@ -13359,6 +13427,10 @@ components:
           title: Trigger Subject Url
           description: Link to the resource that triggered this execution (e.g. the
             pull request or merge request), when the trigger payload carries one.
+        runner:
+          $ref: '#/components/schemas/ExecutionRunnerSummary'
+          description: Where this execution ran. List rows carry kind and name; detail
+            adds id and pool.
       type: object
       required:
       - id
@@ -13540,6 +13612,10 @@ components:
           - type: string
           - type: 'null'
           title: Flow Name
+        runner:
+          $ref: '#/components/schemas/ExecutionRunner'
+          description: Where this execution ran. Hosted when the built-in executor
+            ran it; private when a self-hosted CLI runner did.
       type: object
       required:
       - flow_id
@@ -20629,6 +20705,31 @@ components:
       type: object
       title: TrackerUpdate
       description: Model for updating an existing tracker.
+    UnpricedModelUsage:
+      properties:
+        model:
+          type: string
+          title: Model
+        requests:
+          type: integer
+          title: Requests
+          default: 0
+        tokens:
+          type: integer
+          title: Tokens
+          default: 0
+      type: object
+      required:
+      - model
+      title: UnpricedModelUsage
+      description: 'One model''s share of the window''s unpriced gateway usage.
+
+
+        Names the models behind ``unpriced_requests``/``unpriced_tokens`` so the
+
+        console can say WHICH models are missing from the price catalog instead
+
+        of only how many requests are affected.'
     UpdateTagRequest:
       properties:
         tag:

@@ -26,6 +26,7 @@ from .base import AgentExecutionResult, AgentExecutor, AgentStatus
 from .errors import AgentStartError
 from .failure_analysis import analyze_agent_failure
 from preloop.services.mcp_config_service import MCPConfigService
+from preloop.services.tracker_git_token import APP_AUTH_TYPES
 from preloop.utils.git_credentials import (
     GitCredential,
     build_credential_env,
@@ -2472,20 +2473,51 @@ class ContainerAgentExecutor(AgentExecutor):
         repo_config: Dict[str, Any],
         execution_context: Dict[str, Any],
     ) -> tuple[Optional[str], Optional[str]]:
-        """Return ``(token, tracker_type)`` for one repository entry."""
+        """Return ``(token, tracker_type)`` for one repository entry.
 
-        tracker_id = repo_config.get("tracker_id")
-        git_credentials_map = execution_context.get("git_credentials_map", {})
+        Sources, in order:
 
-        if tracker_id and tracker_id in git_credentials_map:
-            tracker_creds = git_credentials_map.get(tracker_id, {})
-            return tracker_creds.get("token"), tracker_creds.get("tracker_type")
+        1. the repository's own tracker, as resolved by the orchestrator,
+        2. the triggering project's tracker, also resolved by the orchestrator
+           (the only source that works for a GitHub App tracker, whose token is
+           a short-lived installation token that cannot be read from the
+           database),
+        3. a direct database lookup of the triggering project's stored key.
+
+        An entry with an empty token does not stop the search: the orchestrator
+        records a tracker it could not get a key for, and falling through gives
+        the remaining sources a chance instead of running with no credential.
+        """
+
+        git_credentials_map = execution_context.get("git_credentials_map") or {}
+
+        candidate_ids = [
+            repo_config.get("tracker_id"),
+            execution_context.get("trigger_tracker_id"),
+        ]
+        for tracker_id in candidate_ids:
+            if not tracker_id:
+                continue
+            tracker_creds = git_credentials_map.get(tracker_id) or {}
+            if tracker_creds.get("token"):
+                return tracker_creds.get("token"), tracker_creds.get("tracker_type")
 
         trigger_project_id = execution_context.get("trigger_project_id")
         if trigger_project_id:
-            return self._get_token_from_project(
+            token, tracker_type = self._get_token_from_project(
                 trigger_project_id, execution_context.get("account_id")
             )
+            if token:
+                return token, tracker_type
+
+        # Nothing usable: return the tracker type when known, so the caller can
+        # still log which host kind was expected.
+        for tracker_id in candidate_ids:
+            tracker_creds = (
+                (git_credentials_map.get(tracker_id) or {}) if tracker_id else {}
+            )
+            if tracker_creds.get("tracker_type"):
+                return None, tracker_creds.get("tracker_type")
 
         return None, None
 
@@ -3336,9 +3368,15 @@ MREOF
                     )
                     return None
 
-                # Get token from tracker (we always have tokens for GitHub/GitLab)
-                token = tracker.resolved_api_key
-                if not token:
+                # A tracker with no usable credential cannot clone a private
+                # repository, so refusing here gives a clearer error than a
+                # failed clone. App-authenticated trackers are the exception:
+                # they legitimately store no key, their token is minted by the
+                # orchestrator and delivered through the execution context.
+                if (
+                    not tracker.resolved_api_key
+                    and (tracker.auth_type or "").lower() not in APP_AUTH_TYPES
+                ):
                     self.logger.warning(
                         f"Tracker {tracker.id} has no API key configured"
                     )
@@ -3428,6 +3466,17 @@ MREOF
                 tracker = crud_tracker.get(db, id=organization.tracker_id)
                 resolved_token = tracker.resolved_api_key if tracker else ""
                 if not tracker or not resolved_token:
+                    if tracker and (tracker.auth_type or "").lower() in APP_AUTH_TYPES:
+                        # App trackers store no key: their credential is an
+                        # installation token minted asynchronously by the
+                        # orchestrator and delivered through
+                        # `git_credentials_map` / `trigger_tracker_id`.
+                        self.logger.warning(
+                            "Tracker %s authenticates through an app installation, "
+                            "so no token can be read here; expected the execution "
+                            "context to carry it",
+                            tracker.id,
+                        )
                     return None, None
 
                 return resolved_token, tracker.tracker_type.lower()

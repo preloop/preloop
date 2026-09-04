@@ -81,6 +81,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Native tool approval workflow select reverts on a failed save**: the
+  dropdown no longer keeps an unsaved pick after "Could not save", and the
+  account default workflow is listed once (the empty option).
+- **Automated Issue Implementation prompt uses normalized issue fields**:
+  title, description, and number come from
+  ``trigger_event.payload.object_attributes`` so GitHub ``issue.body`` and
+  GitLab ``description`` both resolve. Label filters match GitHub
+  ``issue.labels[].name`` and GitLab ``labels[].title`` as well as
+  already-enriched string lists.
+- **Similarity search embeddings no longer block the event loop**: comment,
+  issue, and generic search query embeddings run in a worker thread so a
+  slow OpenAI embedding call cannot serialize concurrent requests. Gemini
+  aux 429s (`google.api_core.exceptions.ResourceExhausted`) classify as
+  retryable rate limits, matching the OpenAI SDK path.
+- **Unpriced-model admin mail skips customer-owned endpoints**:
+  ``openai-compatible`` / ``custom`` models on a host we do not catalog
+  (home LiteLLM, OpenCode Zen, a private proxy) stay unpriced on the
+  Attention page, but no longer page an admin to add a global price.
+  OpenRouter- and DashScope-fronted configs still alert.
 - **Spending-limit save no longer posts a null notify user**: `/auth/users/me`
   has no `id`, so the limits editor used to send `notification_user_ids: [null]`
   and the API rejected the create. Recipients now come from the users list
@@ -98,7 +117,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parallel with wave 1, and the page waited for it before drawing. Attention
   now starts after the fold and still uses the shared 30-day window, so
   Overview and ``/console/attention`` stay in agreement. Wave 2's selected
-  range is a separate query for the cards.
+  range is a separate query for the cards; a calendar-month Overview range
+  is not reused as the 30-day attention window. The background refresh
+  also bumps the "Updated … ago" stamp. `relative-time-label` does not
+  start its timer until a timestamp is set.
 - **CLI runner interrupt test no longer races `exec.Cmd`**: GitLab
   `test:unit:cli` (`-race`) failed because the test read `Process` /
   `ProcessState` while the runner called `Start`/`Wait`. It now watches a
@@ -154,7 +176,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upload-read path.
 - **Describe a change no longer opens against a stale policy**: the button
   refetches the current export first and reports an error instead of
-  silently opening an empty dialog when the export fails.
+  silently opening an empty dialog when the export fails. Closing the dialog
+  (including a programmatic hide after Save) resets the prompt and YAML so
+  the next open is a fresh form; nested `sl-details` toggles do not reset it.
+- **Tool-rule CEL detection matches the backend**: the Policies editor and
+  the access-rule create/update endpoints classify `!`, ` in `, ternaries,
+  and CEL functions as `cel`, so a deny rule cannot be stored as `simple`
+  and silently fail closed to an approval prompt.
 - **Add rule dialog no longer closes on every choice**: the dialog listened
   for `sl-hide`, which every inner `sl-select` emits when its dropdown
   closes, so picking a target or action dismissed the form. It now listens
