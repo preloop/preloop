@@ -72,6 +72,9 @@ GITHUB_EVENT_MAP: Dict[str, str] = {
     "push": "push",
     "release": "release",
     "deployment_status": "deployment",
+    "check_run": "check_run",
+    "check_suite": "check_suite",
+    "workflow_run": "workflow_run",
 }
 
 # Mapping of Jira webhook events to normalized event types
@@ -120,6 +123,9 @@ EVENT_TYPE_LABELS: Dict[str, str] = {
     "release": "Release Published",
     "deployment": "Deployment",
     "job": "Job Event",
+    "check_run": "Check Run",
+    "check_suite": "Check Suite",
+    "workflow_run": "Workflow Run",
     "webhook": "Webhook",
 }
 

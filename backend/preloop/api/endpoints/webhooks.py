@@ -33,6 +33,9 @@ DEFAULT_GITHUB_SUBSCRIBED_EVENTS = [
     "pull_request",
     "release",
     "deployment_status",
+    "check_run",
+    "check_suite",
+    "workflow_run",
 ]
 DEFAULT_GITLAB_SUBSCRIBED_EVENTS = [
     "Push Hook",
