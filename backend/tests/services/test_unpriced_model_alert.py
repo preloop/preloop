@@ -394,3 +394,72 @@ def test_endpoint_containing_openrouter_string_is_not_classified_openrouter(
     assert first is True
     assert second is True
     assert mock_notify.call_count == 2
+
+
+def _notify_kwargs(**usage_overrides):
+    """Defaults for should_notify that would page if the endpoint is cataloged."""
+    kwargs = {
+        "usage_accounting_requested": False,
+        "usage_details": {"prompt_tokens": 10, "completion_tokens": 20},
+        "completion_tokens": 20,
+    }
+    kwargs.update(usage_overrides)
+    return kwargs
+
+
+def test_customer_owned_openai_compatible_endpoint_does_not_page():
+    """Home LiteLLM / OpenCode Zen are not a shared-catalog hole."""
+    from preloop.models.models.ai_model import AIModel
+
+    zen = AIModel(
+        provider_name="openai-compatible",
+        model_identifier="muse-spark-1.3-contributor-free",
+        api_endpoint="https://opencode.ai/zen/v1",
+    )
+    home = AIModel(
+        provider_name="openai-compatible",
+        model_identifier="qwen2.5-coder",
+        api_endpoint="https://llm.dynamicdevices.co.uk",
+    )
+    custom = AIModel(
+        provider_name="custom",
+        model_identifier="alien-fast",
+        api_endpoint="https://llm.example.invalid/v1",
+    )
+    assert should_notify_unpriced_model(ai_model=zen, **_notify_kwargs()) is False
+    assert should_notify_unpriced_model(ai_model=home, **_notify_kwargs()) is False
+    assert should_notify_unpriced_model(ai_model=custom, **_notify_kwargs()) is False
+
+
+def test_openai_compatible_openrouter_and_dashscope_still_page():
+    """Marketplace hosts we catalog still notify so a price can be added."""
+    from preloop.models.models.ai_model import AIModel
+
+    via_openrouter = AIModel(
+        provider_name="openai-compatible",
+        model_identifier="openrouter/auto-beta",
+        api_endpoint="https://openrouter.ai/api/v1",
+    )
+    via_dashscope = AIModel(
+        provider_name="openai-compatible",
+        model_identifier="qwen-coder",
+        api_endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+    native = AIModel(
+        provider_name="openrouter",
+        model_identifier="openrouter/auto-beta",
+        api_endpoint="https://openrouter.ai/api/v1",
+    )
+    assert (
+        should_notify_unpriced_model(ai_model=via_openrouter, **_notify_kwargs())
+        is True
+    )
+    assert (
+        should_notify_unpriced_model(ai_model=via_dashscope, **_notify_kwargs()) is True
+    )
+    assert should_notify_unpriced_model(ai_model=native, **_notify_kwargs()) is True
+
+
+def test_missing_ai_model_keeps_previous_page_contract():
+    """Callers that only have the alias still page (dedup is on the alias)."""
+    assert should_notify_unpriced_model(**_notify_kwargs()) is True

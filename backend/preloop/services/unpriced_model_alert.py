@@ -29,11 +29,16 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
+from urllib.parse import urlsplit
+
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_audit_log
 from preloop.models.models.ai_model import AIModel
-from preloop.services.litellm_routing import is_openrouter_endpoint
+from preloop.services.litellm_routing import (
+    OPENAI_COMPATIBLE_PROVIDERS,
+    is_openrouter_endpoint,
+)
 from preloop.services.model_runtime_resolver import gateway_model_alias_candidates
 from preloop.sync.tasks import notify_admins
 
@@ -44,6 +49,17 @@ UNPRICED_ALERT_ACTION = "unpriced_model_alert"
 
 #: Quiet period per (model_alias, provider) after an alert is sent.
 ALERT_COOLDOWN_HOURS = int(os.getenv("UNPRICED_MODEL_ALERT_COOLDOWN_HOURS", "24"))
+
+#: DashScope hosts we catalog. openai-compatible configs pointed here are
+#: still a shared-catalog hole and should page; home LiteLLM / OpenCode Zen
+#: / other customer endpoints should not.
+_DASHSCOPE_HOSTS = frozenset(
+    {
+        "dashscope.aliyuncs.com",
+        "dashscope-intl.aliyuncs.com",
+        "dashscope-us.aliyuncs.com",
+    }
+)
 
 # Fast path only; the audit-log marker remains authoritative across replicas.
 _local_lock = threading.Lock()
@@ -110,11 +126,63 @@ def _dedupe_key(
     return f"{(provider_name or 'unknown').strip().lower()}|{model_alias.strip()}"
 
 
+def _endpoint_host(endpoint: Optional[str]) -> str:
+    """Return the lowercase hostname of an endpoint URL, or "" if unparseable."""
+    if not isinstance(endpoint, str):
+        return ""
+    raw = endpoint.strip()
+    if not raw:
+        return ""
+    if "//" not in raw:
+        raw = f"//{raw}"
+    try:
+        return (urlsplit(raw).hostname or "").lower()
+    except ValueError:  # pragma: no cover - malformed URLs
+        return ""
+
+
+def _is_cataloged_marketplace_endpoint(endpoint: Optional[str]) -> bool:
+    """True when this endpoint is a host whose prices we maintain."""
+    if is_openrouter_endpoint(endpoint):
+        return True
+    host = _endpoint_host(endpoint)
+    if not host:
+        return False
+    return any(
+        host == known or host.endswith(f".{known}") for known in _DASHSCOPE_HOSTS
+    )
+
+
+def should_page_unpriced_model(ai_model: Optional[AIModel]) -> bool:
+    """Return False when paging an admin cannot fix the catalog.
+
+    ``openai-compatible`` / ``custom`` models on a customer-owned endpoint
+    (home LiteLLM, OpenCode Zen, a private proxy) will never appear in the
+    shared price snapshot. The Attention page still lists them as unpriced
+    so the account can set an override. OpenRouter- and DashScope-fronted
+    configs still page, because those hosts are ones we catalog.
+
+    Args:
+        ai_model: The resolved model. ``None`` keeps the previous contract
+            (page), used by callers that only have the alias.
+
+    Returns:
+        True when ``notify_unpriced_model`` should still run.
+    """
+    if ai_model is None:
+        return True
+    provider = (ai_model.provider_name or "").strip().lower()
+    if provider not in OPENAI_COMPATIBLE_PROVIDERS:
+        return True
+    return _is_cataloged_marketplace_endpoint(ai_model.api_endpoint)
+
+
 def should_notify_unpriced_model(
     *,
     usage_accounting_requested: bool,
     usage_details: Optional[Dict[str, Any]],
     completion_tokens: int,
+    ai_model: Optional[AIModel] = None,
 ) -> bool:
     """Return False when an unpriced row should not page admins.
 
@@ -124,15 +192,21 @@ def should_notify_unpriced_model(
     not ask an admin to add catalog pricing. Prompt plus completion
     with no cost and no catalog still alerts.
 
+    Customer-owned OpenAI-compatible endpoints are also skipped: see
+    :func:`should_page_unpriced_model`.
+
     Args:
         usage_accounting_requested: True when this request asked
             OpenRouter for usage accounting.
         usage_details: Raw provider usage dict from the response.
         completion_tokens: Completion tokens on the recorded row.
+        ai_model: The resolved model, when the caller has it.
 
     Returns:
         True when ``notify_unpriced_model`` should still run.
     """
+    if not should_page_unpriced_model(ai_model):
+        return False
     if not usage_accounting_requested:
         return True
     if int(completion_tokens or 0) != 0:
