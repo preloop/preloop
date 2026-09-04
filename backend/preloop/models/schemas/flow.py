@@ -408,8 +408,9 @@ class FlowFailureNotifications(BaseModel):
     attention_item: bool = Field(
         default=False,
         description=(
-            "Raise a console attention item for the failed execution so it "
-            "appears on Overview and /console/attention."
+            "Ignored. Failed executions always appear as console attention "
+            "items of kind ``flow`` on Overview and /console/attention. "
+            "Kept so stored JSON that set this flag still parses."
         ),
     )
 

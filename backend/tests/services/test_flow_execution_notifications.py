@@ -114,6 +114,27 @@ class TestTriggerTarget:
     def test_subject_reference(self) -> None:
         assert extract_trigger_comment_target(_issue_trigger(85)) == "85"
 
+    def test_gitlab_bang_reference(self) -> None:
+        details = {
+            "_subject": {"reference": "!123"},
+            "payload": {},
+        }
+        assert extract_trigger_comment_target(details) == "123"
+
+    def test_branch_reference_is_not_a_comment_target(self) -> None:
+        details = {
+            "_subject": {"reference": "preloop/issue-42"},
+            "payload": {},
+        }
+        assert extract_trigger_comment_target(details) is None
+
+    def test_branch_reference_falls_through_to_payload_issue(self) -> None:
+        details = {
+            "_subject": {"reference": "preloop/issue-42"},
+            "payload": {"issue": {"number": 42}},
+        }
+        assert extract_trigger_comment_target(details) == "42"
+
     def test_payload_issue_number_without_subject(self) -> None:
         details = {
             "payload": {"issue": {"number": 7}, "repository": {"full_name": "a/b"}}
@@ -208,7 +229,7 @@ class TestStatusHelpers:
 
 @pytest.mark.asyncio
 class TestNotifyTerminalExecution:
-    async def test_failure_posts_one_comment_and_raises_attention(self) -> None:
+    async def test_failure_posts_one_comment(self) -> None:
         tracker = StubTracker()
         lines = [f"log {i}" for i in range(5)] + [f"token {GITHUB_PAT}"]
         outcome = await notify_terminal_execution(
@@ -224,7 +245,7 @@ class TestNotifyTerminalExecution:
         )
         assert outcome.failure_comment_posted is True
         assert outcome.success_comment_posted is False
-        assert outcome.attention_item_raised is True
+        assert outcome.attention_item_raised is False
         assert tracker.add_comment.await_count == 1
         issue_id, comment = tracker.calls[0]
         assert issue_id == "42"
@@ -264,7 +285,7 @@ class TestNotifyTerminalExecution:
             tracker_client=tracker,
         )
         assert outcome.failure_comment_posted is False
-        assert outcome.attention_item_raised is True
+        assert outcome.attention_item_raised is False
         tracker.add_comment.assert_not_awaited()
 
     async def test_success_posts_pr_opened_comment(self) -> None:

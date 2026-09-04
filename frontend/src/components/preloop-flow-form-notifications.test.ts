@@ -12,7 +12,7 @@ import type { PreloopFlowForm } from './preloop-flow-form';
 /**
  * Notifications section on the Create/Edit Flow form.
  *
- * Source guards keep the three toggles wired to flow.notifications. The
+ * Source guards keep the two comment toggles wired to flow.notifications. The
  * behaviour block mounts the form and checks the submitted payload.
  */
 
@@ -32,16 +32,14 @@ describe('PreloopFlowForm notifications section', () => {
     expect(source).to.include('name="bell"');
   });
 
-  it('wires the three notification toggles', () => {
+  it('wires the two notification toggles', () => {
     expect(source).to.include('data-notification="on_failure_comment"');
-    expect(source).to.include('data-notification="on_failure_attention"');
     expect(source).to.include('data-notification="on_success_comment"');
+    expect(source).to.not.include('data-notification="on_failure_attention"');
     expect(source).to.include(
       'Comment on the triggering issue when this flow fails'
     );
-    expect(source).to.include(
-      'Create a console attention item when this flow fails'
-    );
+    expect(source).to.include('Failed executions always');
     expect(source).to.include(
       'Comment on the triggering issue when a pull request is opened'
     );
@@ -106,10 +104,9 @@ describe('PreloopFlowForm notifications behaviour', () => {
       `sl-checkbox[data-notification="${name}"]`
     ) as HTMLInputElement & { checked: boolean };
 
-  it('defaults all three toggles off and submits that shape', async () => {
+  it('defaults both toggles off and submits that shape', async () => {
     const element = await mount(sampleFlow());
     expect(checkbox(element, 'on_failure_comment').checked).to.equal(false);
-    expect(checkbox(element, 'on_failure_attention').checked).to.equal(false);
     expect(checkbox(element, 'on_success_comment').checked).to.equal(false);
 
     const payload = await submit(element);
@@ -128,7 +125,7 @@ describe('PreloopFlowForm notifications behaviour', () => {
     const saved = {
       on_failure: {
         comment_on_trigger_issue: true,
-        attention_item: true,
+        attention_item: false,
       },
       on_success: {
         comment_on_trigger_issue: true,
@@ -136,7 +133,6 @@ describe('PreloopFlowForm notifications behaviour', () => {
     };
     const element = await mount(sampleFlow(saved));
     expect(checkbox(element, 'on_failure_comment').checked).to.equal(true);
-    expect(checkbox(element, 'on_failure_attention').checked).to.equal(true);
     expect(checkbox(element, 'on_success_comment').checked).to.equal(true);
 
     const payload = await submit(element);
@@ -145,15 +141,16 @@ describe('PreloopFlowForm notifications behaviour', () => {
 
   it('toggles a checkbox into the submit payload', async () => {
     const element = await mount(sampleFlow());
-    const attention = checkbox(element, 'on_failure_attention');
-    attention.checked = true;
-    attention.dispatchEvent(new CustomEvent('sl-change', { bubbles: true }));
+    const failureComment = checkbox(element, 'on_failure_comment');
+    failureComment.checked = true;
+    failureComment.dispatchEvent(
+      new CustomEvent('sl-change', { bubbles: true })
+    );
     await element.updateComplete;
 
     const payload = await submit(element);
-    expect(payload.notifications.on_failure.attention_item).to.equal(true);
     expect(payload.notifications.on_failure.comment_on_trigger_issue).to.equal(
-      false
+      true
     );
   });
 });

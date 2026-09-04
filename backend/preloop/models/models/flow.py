@@ -128,12 +128,13 @@ class Flow(Base):
     # hours cannot share one ceiling: with a single global value, "stuck" and
     # "genuinely long" produce the same timeout row.
     timeout_seconds = Column(Integer, nullable=True)
-    # Terminal-path notifications. NULL means no comments or attention items.
+    # Terminal-path notifications. NULL means no tracker comments.
+    # Failed executions always surface as console attention items.
     # Shape:
     # {
     #     "on_failure": {
     #         "comment_on_trigger_issue": bool,
-    #         "attention_item": bool,
+    #         "attention_item": bool,  # ignored; kept for stored JSON
     #     },
     #     "on_success": {
     #         "comment_on_trigger_issue": bool,

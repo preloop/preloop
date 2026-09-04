@@ -1,14 +1,15 @@
 """Terminal-path notifications for flow executions.
 
 Comments go through the tracker client (the same service MCP ``add_comment``
-uses), never through the MCP HTTP endpoint. Attention items are the console
-``flow`` kind already derived from failed executions; this module records
-when a flow asked for one so tests and callers can assert the decision.
+uses), never through the MCP HTTP endpoint. Failed executions always
+surface as console attention items of kind ``flow``; there is no
+per-flow gate for that.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -20,6 +21,11 @@ logger = logging.getLogger(__name__)
 FAILURE_STATUSES = frozenset({"FAILED", "TIMEOUT", "TIMED_OUT"})
 SUCCESS_STATUSES = frozenset({"SUCCEEDED", "SUCCESS"})
 LOG_TAIL_LINES = 20
+
+# Issue / PR / MR identifiers the tracker comment APIs accept. Branch
+# names, tags, and SHAs show up on ``_subject.reference`` for some events
+# and must not become comment targets. GitLab MR refs are ``!123``.
+_ISSUE_LIKE_REFERENCE = re.compile(r"^(?:\d+|[A-Za-z][A-Za-z0-9]+-\d+)$")
 
 
 @dataclass(frozen=True)
@@ -132,10 +138,9 @@ def extract_trigger_comment_target(
     if isinstance(subject, dict):
         reference = subject.get("reference")
         if isinstance(reference, str) and reference.strip():
-            ref = reference.strip()
-            if ref.startswith("#"):
-                return ref[1:]
-            return ref
+            canonical = _canonical_issue_reference(reference)
+            if canonical:
+                return canonical
 
     payload = trigger_event_details.get("payload")
     if not isinstance(payload, dict):
@@ -162,6 +167,17 @@ def extract_trigger_comment_target(
         ):
             return str(obj_attrs["iid"] or obj_attrs["id"])
 
+    return None
+
+
+def _canonical_issue_reference(raw: str) -> Optional[str]:
+    """Strip ``#`` / ``!`` and keep the rest only if it looks like an issue."""
+
+    stripped = raw.strip()
+    if stripped[:1] in {"#", "!"}:
+        stripped = stripped[1:].strip()
+    if _ISSUE_LIKE_REFERENCE.fullmatch(stripped):
+        return stripped
     return None
 
 
@@ -260,16 +276,6 @@ async def notify_terminal_execution(
     outcome = NotificationOutcome()
     failed = is_failure_status(status, failure_category)
     succeeded = is_success_status(status)
-
-    if failed and parsed.on_failure_attention:
-        # Failed executions already surface as console attention items of
-        # kind ``flow`` (see frontend/src/utils/attention.ts). Raising the
-        # flag here is the backend half of that contract.
-        outcome.attention_item_raised = True
-        logger.info(
-            "Raised console attention item for failed execution %s",
-            execution_id,
-        )
 
     if failed and parsed.on_failure_comment:
         posted = await _post_trigger_comment(
