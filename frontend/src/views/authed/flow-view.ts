@@ -1257,6 +1257,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
       'ai_model_id',
       'agent_type',
       'git_clone_config',
+      'notifications',
       'custom_commands',
       'max_iterations',
       'max_budget',
