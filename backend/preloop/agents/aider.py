@@ -11,6 +11,7 @@ from preloop.services.mcp_config_service import MCPConfigService
 from preloop.services.model_runtime_resolver import gateway_url_for_api
 
 from .container import ContainerAgentExecutor
+from .images import default_agent_image
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +37,7 @@ class AiderAgent(ContainerAgentExecutor):
                 - edit_format: Edit format (default: whole)
                 - custom settings for Aider
         """
-        # Use Aider CE Docker image (Community Edition with MCP support)
-        image = os.getenv("AIDER_IMAGE", "dustinwashington/aider-ce:v0.88.6")
+        image = default_agent_image("aider") or "dustinwashington/aider-ce:v0.88.6"
 
         super().__init__(
             agent_type="aider",
