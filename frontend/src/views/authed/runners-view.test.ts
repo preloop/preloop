@@ -24,6 +24,15 @@ describe('RunnersView', () => {
         if (url.includes('/api/v1/runners')) {
           return json(runners);
         }
+        if (url.includes('/api/v1/account/details')) {
+          return json({
+            id: 'acct-1',
+            organization_name: 'Example Org',
+            default_runner_pool: null,
+            created_at: '2026-09-04T00:00:00Z',
+            updated_at: '2026-09-04T00:00:00Z',
+          });
+        }
         return json({ detail: `Unhandled: ${url}` });
       });
   }
@@ -77,6 +86,14 @@ describe('RunnersView', () => {
     expect(element.shadowRoot?.textContent).to.contain('office-mac');
     expect(element.shadowRoot?.textContent).to.contain('ops@example.com');
     expect(element.shadowRoot?.textContent).to.contain('local');
+    const select = element.shadowRoot?.querySelector(
+      'sl-select[label="Default runner pool"]'
+    );
+    expect(select).to.exist;
+    expect(element.shadowRoot?.textContent).to.contain(
+      'Any online private runner (default)'
+    );
+    expect(element.shadowRoot?.textContent).to.contain('Preloop hosted');
   });
 
   it('shows empty state when no runners', async () => {
@@ -140,6 +157,51 @@ describe('RunnersView', () => {
         return url.includes('/api/v1/runners');
       })
     ).to.have.lengthOf(1);
+  });
+
+  it('saves the account default runner pool', async () => {
+    fetchStub = createFetchStub([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'office-mac',
+        hostname: 'mac.local',
+        os: 'darwin',
+        arch: 'arm64',
+        labels: ['local'],
+        status: 'online',
+        last_heartbeat: '2026-08-17T10:00:00Z',
+        current_execution_id: null,
+      },
+    ]);
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+
+    const select = element.shadowRoot?.querySelector(
+      'sl-select[label="Default runner pool"]'
+    ) as HTMLSelectElement;
+    select.value = 'server';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some(
+          (call) => String(call.args[1]?.method || '').toUpperCase() === 'PATCH'
+        )
+    );
+    const patch = fetchStub.getCalls().find((call) => {
+      const init = call.args[1] as RequestInit | undefined;
+      return String(init?.method || '').toUpperCase() === 'PATCH';
+    });
+    expect(patch).to.exist;
+    expect(String(patch?.args[0])).to.contain('/api/v1/account/details');
+    expect(
+      JSON.parse(String((patch?.args[1] as RequestInit).body))
+    ).to.deep.equal({ default_runner_pool: 'server' });
   });
 
   it('shows registered-by email for a runner that arrives over websocket', async () => {

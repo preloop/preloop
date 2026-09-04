@@ -6,11 +6,18 @@ import {
   getAllTools,
   getMCPServers,
   getAccountAgents,
+  getAccountOrganization,
+  getRunners,
   listOrganizations,
   listProjects,
   getFlowPresets,
+  type RunnerRecord,
 } from '../api';
 import type { Flow } from '../types';
+import {
+  buildRunnerPoolOptions,
+  describeNextRunnerPool,
+} from '../utils/runner-pool';
 import { getAgentControlState } from '../utils/agent-control';
 import { getTrackerEventOptions } from '../constants/tracker-event-types';
 import consoleStyles from '../styles/console-styles.css?inline';
@@ -83,6 +90,17 @@ export class PreloopFlowForm extends LitElement {
       sl-textarea.prompt {
         max-height: 50rem;
         overflow: auto;
+      }
+
+      .runner-pool-hint {
+        margin: 0 0 var(--sl-spacing-medium);
+        color: var(--sl-color-neutral-600);
+        font-size: 0.85rem;
+        line-height: 1.45;
+      }
+
+      .runner-pool-custom {
+        margin-top: calc(-1 * var(--sl-spacing-small));
       }
 
       .card-header-title {
@@ -187,6 +205,15 @@ export class PreloopFlowForm extends LitElement {
   private filtersExpanded = false;
 
   @state()
+  private runners: RunnerRecord[] = [];
+
+  @state()
+  private accountDefaultRunnerPool: string | null = null;
+
+  @state()
+  private customRunnerPool = '';
+
+  @state()
   private isAddingAIModel = false;
 
   private orgPollingInterval?: number;
@@ -259,15 +286,25 @@ export class PreloopFlowForm extends LitElement {
     }
 
     try {
-      const [trackers, models, tools, servers, agentsRes, presets] =
-        await Promise.all([
-          getTrackers().catch(() => []),
-          getAIModels().catch(() => []),
-          getAllTools().catch(() => []),
-          getMCPServers().catch(() => []),
-          getAccountAgents({ limit: 100 }).catch(() => ({ items: [] })),
-          getFlowPresets().catch(() => []),
-        ]);
+      const [
+        trackers,
+        models,
+        tools,
+        servers,
+        agentsRes,
+        presets,
+        runners,
+        account,
+      ] = await Promise.all([
+        getTrackers().catch(() => []),
+        getAIModels().catch(() => []),
+        getAllTools().catch(() => []),
+        getMCPServers().catch(() => []),
+        getAccountAgents({ limit: 100 }).catch(() => ({ items: [] })),
+        getFlowPresets().catch(() => []),
+        getRunners().catch(() => []),
+        getAccountOrganization().catch(() => null),
+      ]);
 
       this.trackers = trackers;
       this.models = models;
@@ -275,6 +312,8 @@ export class PreloopFlowForm extends LitElement {
       this.mcpServers = servers;
       this.longRunningAgents = agentsRes.items || [];
       this.presets = presets;
+      this.runners = runners;
+      this.accountDefaultRunnerPool = account?.default_runner_pool ?? null;
 
       if (
         restoredFromOAuth &&
@@ -628,6 +667,7 @@ export class PreloopFlowForm extends LitElement {
         max_iterations: this.flow.max_iterations || undefined,
         max_budget: this.flow.max_budget || undefined,
         is_enabled: this.flow.is_enabled ?? true,
+        runner_pool: this.normalizedFlowRunnerPool(),
         // Sent only once filters exist on the form. An explicit null (set by
         // clearEventFilters) is forwarded so the backend clears saved filters.
         ...(this.flow.trigger_config !== undefined
@@ -655,6 +695,77 @@ export class PreloopFlowForm extends LitElement {
     } finally {
       this.isSaving = false;
     }
+  }
+
+  private normalizedFlowRunnerPool(): string | null {
+    const typed = (this.customRunnerPool || '').trim();
+    if (typed) {
+      return typed;
+    }
+    const selected = (this.flow.runner_pool || '').trim();
+    return selected || null;
+  }
+
+  private runnerPoolSelectValue(): string {
+    const current = (this.flow.runner_pool || '').trim();
+    const known = new Set(
+      buildRunnerPoolOptions(this.runners).map((option) => option.value)
+    );
+    if (current && !known.has(current)) {
+      return current;
+    }
+    return current;
+  }
+
+  private handleRunnerPoolSelect(event: Event) {
+    const target = event.target as HTMLSelectElement;
+    const value = (target.value || '').trim();
+    this.flow.runner_pool = value || null;
+    this.customRunnerPool = '';
+    this.requestUpdate();
+  }
+
+  private handleCustomRunnerPool(event: Event) {
+    const target = event.target as HTMLInputElement;
+    const value = target.value;
+    this.customRunnerPool = value;
+    this.flow.runner_pool = value.trim() || null;
+    this.requestUpdate();
+  }
+
+  private renderRunnerPoolField() {
+    const options = buildRunnerPoolOptions(this.runners);
+    const current = (this.flow.runner_pool || '').trim();
+    const known = new Set(options.map((option) => option.value));
+    if (current && !known.has(current)) {
+      options.push({ value: current, label: current });
+    }
+    const hint = describeNextRunnerPool({
+      flowPool: this.normalizedFlowRunnerPool(),
+      accountPool: this.accountDefaultRunnerPool,
+      runners: this.runners,
+    });
+    return html`
+      <sl-select
+        label="Runner pool"
+        help-text="Pin a private runner, a label, or Preloop hosted. Leave the default to follow the account setting."
+        .value=${this.runnerPoolSelectValue()}
+        @sl-change=${this.handleRunnerPoolSelect}
+      >
+        ${options.map(
+          (option) =>
+            html`<sl-option value=${option.value}>${option.label}</sl-option>`
+        )}
+      </sl-select>
+      <sl-input
+        class="runner-pool-custom"
+        label="Or type a runner label"
+        placeholder="gpu"
+        .value=${this.customRunnerPool}
+        @sl-input=${this.handleCustomRunnerPool}
+      ></sl-input>
+      <p class="runner-pool-hint">${hint}</p>
+    `;
   }
 
   private handleCancel() {
@@ -1615,6 +1726,8 @@ export class PreloopFlowForm extends LitElement {
               <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add New AI Model
             </sl-button>
           </div>
+
+          ${this.renderRunnerPoolField()}
 
           <sl-textarea
             class="prompt"
