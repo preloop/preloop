@@ -199,3 +199,59 @@ def test_factory_keeps_hosted_executor_without_pool() -> None:
         execution_context={},
     )
     assert isinstance(executor, CodexAgent)
+
+
+def test_factory_uses_remote_runner_when_online_private_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from preloop.services.runner_service import AUTO_RUNNER_POOL
+
+    flow = SimpleNamespace(
+        runner_pool=None,
+        account_id=uuid4(),
+        account=SimpleNamespace(default_runner_pool=None),
+    )
+    monkeypatch.setattr(
+        "preloop.services.runner_service.crud_flow_runner.find_matching",
+        lambda db, **kwargs: [
+            SimpleNamespace(id=uuid4(), status="online", pending_job=None)
+        ],
+    )
+    executor = create_executor_for_execution(
+        "codex",
+        {"model": "gpt-5.4"},
+        flow=flow,
+        db=MagicMock(),
+        execution_context={},
+    )
+    assert isinstance(executor, RemoteRunnerExecutor)
+    assert executor.pool == AUTO_RUNNER_POOL
+
+
+def test_factory_keeps_hosted_for_server_sentinel() -> None:
+    flow = SimpleNamespace(runner_pool="server", account_id=uuid4())
+    executor = create_executor_for_execution(
+        "codex",
+        {"model": "gpt-5.4"},
+        flow=flow,
+        db=MagicMock(),
+        execution_context={},
+    )
+    assert isinstance(executor, CodexAgent)
+
+
+def test_factory_uses_account_default_pool() -> None:
+    flow = SimpleNamespace(
+        runner_pool=None,
+        account_id=uuid4(),
+        account=SimpleNamespace(default_runner_pool="office-mac"),
+    )
+    executor = create_executor_for_execution(
+        "codex",
+        {"model": "gpt-5.4"},
+        flow=flow,
+        db=MagicMock(),
+        execution_context={},
+    )
+    assert isinstance(executor, RemoteRunnerExecutor)
+    assert executor.pool == "office-mac"

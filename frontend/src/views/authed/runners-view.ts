@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
@@ -6,10 +6,18 @@ import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
+import '@shoelace-style/shoelace/dist/components/select/select.js';
+import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '../../components/view-header.ts';
-import { getRunners, type RunnerRecord } from '../../api';
+import {
+  getAccountOrganization,
+  getRunners,
+  updateAccountOrganization,
+  type RunnerRecord,
+} from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { formatLocalDateTime } from '../../utils/date';
+import { buildRunnerPoolOptions } from '../../utils/runner-pool';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
 @customElement('runners-view')
@@ -22,6 +30,15 @@ export class RunnersView extends LitElement {
 
   @state()
   private error: string | null = null;
+
+  @state()
+  private defaultRunnerPool: string | null = null;
+
+  @state()
+  private savingDefault = false;
+
+  @state()
+  private defaultError: string | null = null;
 
   private unsubscribe?: () => void;
 
@@ -130,6 +147,13 @@ export class RunnersView extends LitElement {
       .empty-docs {
         width: 100%;
       }
+      .default-pool {
+        margin: 0 0 var(--sl-spacing-large);
+        max-width: 420px;
+      }
+      .default-pool sl-select {
+        margin-bottom: var(--sl-spacing-2x-small);
+      }
     `,
   ];
 
@@ -178,13 +202,65 @@ export class RunnersView extends LitElement {
     this.loading = true;
     this.error = null;
     try {
-      this.runners = await getRunners();
+      const [runners, account] = await Promise.all([
+        getRunners(),
+        getAccountOrganization().catch(() => null),
+      ]);
+      this.runners = runners;
+      this.defaultRunnerPool = account?.default_runner_pool ?? null;
     } catch (err) {
       this.error =
         err instanceof Error ? err.message : 'Failed to load runners';
     } finally {
       this.loading = false;
     }
+  }
+
+  private async handleDefaultPoolChange(event: Event) {
+    const target = event.target as HTMLSelectElement;
+    const next = (target.value || '').trim() || null;
+    this.savingDefault = true;
+    this.defaultError = null;
+    try {
+      const updated = await updateAccountOrganization({
+        default_runner_pool: next,
+      });
+      this.defaultRunnerPool = updated.default_runner_pool ?? null;
+    } catch (err) {
+      this.defaultError =
+        err instanceof Error ? err.message : 'Failed to save default runner';
+    } finally {
+      this.savingDefault = false;
+    }
+  }
+
+  private renderDefaultPoolControl() {
+    const options = buildRunnerPoolOptions(this.runners);
+    const current = (this.defaultRunnerPool || '').trim();
+    if (current && !options.some((option) => option.value === current)) {
+      options.push({ value: current, label: current });
+    }
+    return html`
+      <div class="default-pool">
+        <sl-select
+          label="Default runner pool"
+          help-text="Used when a flow does not pin a runner. Private runners are preferred when one is online."
+          .value=${this.defaultRunnerPool || ''}
+          ?disabled=${this.savingDefault}
+          @sl-change=${this.handleDefaultPoolChange}
+        >
+          ${options.map(
+            (option) =>
+              html`<sl-option value=${option.value}>${option.label}</sl-option>`
+          )}
+        </sl-select>
+        ${
+          this.defaultError
+            ? html`<p class="muted">${this.defaultError}</p>`
+            : nothing
+        }
+      </div>
+    `;
   }
 
   private statusVariant(status: string): string {
@@ -204,6 +280,7 @@ export class RunnersView extends LitElement {
         headerText="Runners"
         description="Self-hosted CLI runners for this account. Start one with preloop runner fg."
       ></view-header>
+      ${this.loading ? nothing : this.renderDefaultPoolControl()}
       ${
         this.loading
           ? html`<sl-spinner></sl-spinner>`

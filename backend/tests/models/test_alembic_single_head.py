@@ -96,4 +96,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert failure_category.down_revision == "20260902_attention_dismiss"
     flow_timeout = script.get_revision("20260903_flow_timeout")
     assert flow_timeout.down_revision == "20260903_failure_category"
-    assert script.get_heads() == ["20260903_flow_timeout"]
+    account_runner_pool = script.get_revision("20260904_acct_runner_pool")
+    assert account_runner_pool.down_revision == "20260903_flow_timeout"
+    assert script.get_heads() == ["20260904_acct_runner_pool"]

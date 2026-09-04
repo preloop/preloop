@@ -118,8 +118,9 @@ class Flow(Base):
     tools_customized = Column(Boolean, default=False, nullable=False)
     # Flag indicating if a newer preset version is available (for notifications)
     preset_update_available = Column(Boolean, default=False, nullable=False)
-    # When set, executions are leased to a matching self-hosted runner.
-    # No hosted-compute fallback (data-boundary).
+    # When set, executions lease to a matching self-hosted runner (id, name,
+    # or label). The literal "server" opts into the hosted executor. NULL
+    # inherits account.default_runner_pool, then any online private runner.
     runner_pool = Column(String(200), nullable=True)
     # Wall-clock budget for one execution of this flow, in seconds. NULL means
     # the global default (FLOW_EXECUTION_MAX_WAIT_SECONDS). A review flow that

@@ -76,6 +76,7 @@ export interface Flow {
   max_budget?: number | null;
   is_preset?: boolean;
   is_enabled?: boolean;
+  runner_pool?: string | null;
   execution_stats?: FlowExecutionStats;
   [key: string]: unknown;
 }

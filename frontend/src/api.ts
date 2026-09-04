@@ -4283,6 +4283,7 @@ export async function getFeatures(): Promise<FeaturesResponse> {
 export interface AccountOrganization {
   id: string;
   organization_name: string | null;
+  default_runner_pool?: string | null;
   created_at: string;
   updated_at: string;
 }

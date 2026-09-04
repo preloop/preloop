@@ -67,15 +67,17 @@ cleanly.
 
 ## 4. Route a flow to the runner
 
-Set `runner_pool` on the flow (id, name, or label) in the console or
-API. Every execution of that flow then leases to a matching runner
-instead of hosted compute:
+Private runners are the default. Once this runner is online, a flow with
+no `runner_pool` (and no account default of `server`) leases to any
+online private runner. Pin a pool only when you want a specific machine
+or label, or set `server` to opt into hosted compute:
 
 ```json
 { "runner_pool": "local" }
 ```
 
-Or override per-run from CI / the CLI:
+The account default is on the console Runners page. Override per-run
+from CI / the CLI:
 
 ```sh
 preloop flow trigger <flow-id-or-name> --runner local --wait
@@ -83,8 +85,10 @@ preloop flow trigger <flow-id-or-name> --runner local --wait
 
 When stdin is not a TTY (CI), `flow trigger` waits by default, streams
 execution logs to stdout, and exits non-zero on FAILED / STOPPED /
-TIMEOUT. If no matching runner is online, the job queues for 15 minutes
-and then fails — there is no silent fallback onto hosted compute.
+TIMEOUT. If a chosen private pool has no idle runner, the job queues
+for 15 minutes and then fails. Hosted compute is used only when no
+private runner is online, or when the flow or account default is
+`server`.
 
 ## 5. Install as a service (survives reboots)
 

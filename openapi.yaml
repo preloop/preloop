@@ -10039,6 +10039,14 @@ components:
           - type: string
           - type: 'null'
           title: Organization Name
+        default_runner_pool:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Default Runner Pool
+          description: 'Account default runner pool: a runner id, name, or label;
+            the literal ''server'' for Preloop hosted; null for any online private
+            runner.'
         created_at:
           type: string
           title: Created At
@@ -10059,6 +10067,15 @@ components:
           - type: string
           - type: 'null'
           title: Organization Name
+        default_runner_pool:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Default Runner Pool
+          description: 'Account default runner pool: a runner id, name, or label;
+            the literal ''server'' for Preloop hosted; null for any online private
+            runner.'
       type: object
       title: AccountDetailsUpdate
       description: Account details update request.
@@ -13274,10 +13291,12 @@ components:
           - type: string
           - type: 'null'
           title: Runner Pool
-          description: Self-hosted runner pool (id, name, or label). When set, executions
-            lease to a matching `preloop runner` instead of hosted compute. If no
-            matching runner is online the job queues for 15 minutes then FAILS. A
-            trigger-time `--runner` / `_runner` override takes precedence.
+          description: Runner pool for executions of this flow. Accepts a runner id,
+            name, or label; the literal 'auto' for any online private runner; or the
+            literal 'server' for the hosted executor. When unset, the account default_runner_pool
+            applies, then any online private runner, then the hosted executor. A trigger-time
+            `--runner` / `_runner` override takes precedence. If a chosen private
+            pool has no idle runner the job queues for 15 minutes then FAILS.
         timeout_seconds:
           anyOf:
           - type: integer
@@ -13841,10 +13860,12 @@ components:
           - type: string
           - type: 'null'
           title: Runner Pool
-          description: Self-hosted runner pool (id, name, or label). When set, executions
-            lease to a matching `preloop runner` instead of hosted compute. If no
-            matching runner is online the job queues for 15 minutes then FAILS. A
-            trigger-time `--runner` / `_runner` override takes precedence.
+          description: Runner pool for executions of this flow. Accepts a runner id,
+            name, or label; the literal 'auto' for any online private runner; or the
+            literal 'server' for the hosted executor. When unset, the account default_runner_pool
+            applies, then any online private runner, then the hosted executor. A trigger-time
+            `--runner` / `_runner` override takes precedence. If a chosen private
+            pool has no idle runner the job queues for 15 minutes then FAILS.
         timeout_seconds:
           anyOf:
           - type: integer
@@ -14059,10 +14080,12 @@ components:
           - type: string
           - type: 'null'
           title: Runner Pool
-          description: Self-hosted runner pool (id, name, or label). When set, executions
-            lease to a matching `preloop runner` instead of hosted compute. If no
-            matching runner is online the job queues for 15 minutes then FAILS. A
-            trigger-time `--runner` / `_runner` override takes precedence.
+          description: Runner pool for executions of this flow. Accepts a runner id,
+            name, or label; the literal 'auto' for any online private runner; or the
+            literal 'server' for the hosted executor. When unset, the account default_runner_pool
+            applies, then any online private runner, then the hosted executor. A trigger-time
+            `--runner` / `_runner` override takes precedence. If a chosen private
+            pool has no idle runner the job queues for 15 minutes then FAILS.
         timeout_seconds:
           anyOf:
           - type: integer

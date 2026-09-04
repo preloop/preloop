@@ -57,8 +57,11 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
                 FlowRunner.last_heartbeat >= cutoff,
             )
         rows = query.all()
-        if not pool:
+        pool_l = pool.lower()
+        if not pool or pool_l == "auto":
             return rows
+        if pool_l == "server":
+            return []
         return [row for row in rows if runner_matches_pool(row, pool)]
 
     def get_by_ids(self, db: Session, *, ids: List[UUID]) -> List[FlowRunner]:
@@ -176,8 +179,10 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
 def runner_matches_pool(row: FlowRunner, pool: str) -> bool:
     """True when the runner id, name, or a label equals the pool string."""
     pool_l = (pool or "").strip().lower()
-    if not pool_l:
+    if not pool_l or pool_l == "auto":
         return True
+    if pool_l == "server":
+        return False
     labels = [str(label).lower() for label in (row.labels or [])]
     return (
         str(row.id).lower() == pool_l
