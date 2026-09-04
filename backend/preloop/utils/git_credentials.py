@@ -248,7 +248,7 @@ password={token_ref}
 PRELOOP_GIT_CRED_EOF
     echo "Installed git credential helper from tracker token for push"
 else
-    echo "WARNING: no git credentials available for push"
+    echo "WARNING: no git credentials available for push (no {GIT_CREDENTIALS_ENV_VAR}, no store at {GIT_CREDENTIALS_FILE}, no tracker token in the environment). The tracker for this repository resolved no token when the execution started."
 fi
 """.strip()
 
