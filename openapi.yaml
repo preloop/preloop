@@ -7556,10 +7556,14 @@ paths:
           title: Execution Id
       responses:
         '200':
-          description: Successful Response
+          description: Size-capped tar.gz of /workspace from this execution.
           content:
             application/json:
               schema: {}
+            application/gzip:
+              schema:
+                type: string
+                format: binary
         '422':
           description: Validation Error
           content:

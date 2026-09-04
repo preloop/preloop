@@ -15,7 +15,9 @@ or into the artifact-emission wrapper (Kubernetes):
     Runs ``git_clone_config.setup_commands`` after clone/restore and before
     the agent, with all output captured to ``/workspace/evidence/setup.log``
     and a machine-readable marker on failure so "setup broke" never reads as
-    "the agent failed".
+    "the agent failed". Commands run in a subshell, so ``export`` / ``cd``
+    do not persist into the agent process; write files the agent can read
+    instead.
 
 The size cap is enforced INSIDE the container: the tar stream is piped through
 ``head -c`` so an oversized workspace never writes more than the cap (plus one

@@ -729,7 +729,17 @@ def get_flow_execution_evidence(
     )
 
 
-@router.get("/flows/executions/{execution_id}/workspace")
+@router.get(
+    "/flows/executions/{execution_id}/workspace",
+    responses={
+        200: {
+            "description": "Size-capped tar.gz of /workspace from this execution.",
+            "content": {
+                "application/gzip": {"schema": {"type": "string", "format": "binary"}}
+            },
+        }
+    },
+)
 @require_permission("view_flows")
 def get_flow_execution_workspace(
     *,

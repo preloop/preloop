@@ -47,8 +47,10 @@ git_clone_config:
     - pip install -r requirements/dev.txt
     - docker run -d --name pg -e POSTGRES_PASSWORD=preloop -p 5432:5432 postgres:16
     - until pg_isready -h 127.0.0.1 -U postgres; do sleep 1; done
-    - export DATABASE_URL=postgresql+psycopg://postgres:preloop@127.0.0.1:5432/postgres
+    - echo 'DATABASE_URL=postgresql+psycopg://postgres:preloop@127.0.0.1:5432/postgres' > /workspace/.env
 ```
+
+Setup commands run in a subshell (`set -e; cd <clone path>`), so `export`, `cd`, and other shell state do not reach the agent process. Persist anything the agent needs in a file (as above) rather than relying on the environment.
 
 Services are the caveat. A `docker run` inside a setup command needs a runner that is allowed to touch a Docker socket: on a private runner that means the trust flags the operator opts into explicitly, and on the hosted runners it needs a per-execution service sidecar, which is the next phase of this work (a declarative `services:` block with a Docker network on the Docker runner and pod sidecars on Kubernetes). Until then, keep setup commands to what a plain container can do: install dependencies, build, seed fixtures, start in-process services.
 
