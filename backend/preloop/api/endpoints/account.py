@@ -17,7 +17,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
@@ -1016,6 +1016,14 @@ class AccountDetailsResponse(BaseModel):
 
     id: str
     organization_name: Optional[str] = None
+    default_runner_pool: Optional[str] = Field(
+        default=None,
+        description=(
+            "Account default runner pool: a runner id, name, or label; "
+            "the literal 'server' for Preloop hosted; null for any "
+            "online private runner."
+        ),
+    )
     created_at: str
     updated_at: str
 
@@ -1024,6 +1032,26 @@ class AccountDetailsUpdate(BaseModel):
     """Account details update request."""
 
     organization_name: Optional[str] = None
+    default_runner_pool: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Account default runner pool: a runner id, name, or label; "
+            "the literal 'server' for Preloop hosted; null for any "
+            "online private runner."
+        ),
+    )
+
+    @field_validator("default_runner_pool", mode="before")
+    @classmethod
+    def normalize_default_runner_pool(cls, value: Any) -> Optional[str]:
+        """Strip whitespace and treat an empty string as unset."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        raise TypeError("default_runner_pool must be a string or null")
 
 
 class AccountDeletionRequest(BaseModel):
@@ -1048,6 +1076,7 @@ async def get_account_details(
     return AccountDetailsResponse(
         id=str(account.id),
         organization_name=account.organization_name,
+        default_runner_pool=getattr(account, "default_runner_pool", None),
         created_at=account.created_at.isoformat(),
         updated_at=account.updated_at.isoformat(),
     )
@@ -1078,6 +1107,7 @@ async def update_account_details(
     return AccountDetailsResponse(
         id=str(updated_account.id),
         organization_name=updated_account.organization_name,
+        default_runner_pool=getattr(updated_account, "default_runner_pool", None),
         created_at=updated_account.created_at.isoformat(),
         updated_at=updated_account.updated_at.isoformat(),
     )
