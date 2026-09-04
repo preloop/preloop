@@ -34,6 +34,7 @@ from preloop.schemas.cost_analytics import (
     PriceCatalogInfo,
     RepriceRequest,
     RepriceResponse,
+    UnpricedModelUsage,
 )
 from preloop.services.gateway_accounting_check import run_accounting_checks
 from preloop.services.ledger_backfill import (
@@ -55,6 +56,11 @@ REPRICE_MAX_WINDOW_DAYS = 92
 
 #: Explore exports are one row per (day, model); even a year is tiny.
 MAX_LEDGER_CSV_BYTES = 2 * 1024 * 1024
+
+#: How many unpriced models the summary names for the banner. Capped so a
+#: long tail of one-off aliases cannot bloat every cost-summary response;
+#: the biggest token offenders sort first.
+UNPRICED_MODELS_LIMIT = 10
 
 
 def _price_catalog_info() -> Optional[PriceCatalogInfo]:
@@ -146,6 +152,17 @@ def get_cost_summary(
         estimated_cost=summary.estimated_cost,
         unpriced_requests=summary.unpriced_requests,
         unpriced_tokens=summary.unpriced_tokens,
+        unpriced_models=[
+            UnpricedModelUsage(**row)
+            for row in crud_api_usage.get_unpriced_model_breakdown(
+                db,
+                account_id=str(account.id),
+                start_date=summary.period_start,
+                end_date=summary.period_end,
+                runtime_principal_id=runtime_principal_id,
+                limit=UNPRICED_MODELS_LIMIT,
+            )
+        ],
         price_catalog=_price_catalog_info(),
         budget=summary.budget,
         requests_by_day=summary.requests_by_day,

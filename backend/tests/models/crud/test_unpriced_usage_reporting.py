@@ -12,9 +12,12 @@ These tests pin the reporting contract:
   2. An aggregate mixing priced and unpriced rows reports the priced subtotal
      plus an explicit unpriced qualifier, never one misleadingly-low number.
   3. ``cost_source='subscription'`` remains a legitimate, complete $0.00.
+  4. The account-level breakdown names WHICH models are unpriced, ordered by
+     token volume and capped, so the banner can point at a fix.
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from preloop.models.crud import crud_ai_model, crud_flow, crud_flow_execution
 from preloop.models.crud.api_usage import crud_api_usage
@@ -171,3 +174,144 @@ def test_subscription_zero_is_a_complete_zero(db_session, create_account, create
     assert usage["cost_is_partial"] is False
     assert usage["unpriced_requests"] == 0
     assert usage["unpriced_tokens"] == 0
+
+
+def _window():
+    """A bracketing window around freshly logged rows."""
+    now = datetime.now(UTC)
+    return now - timedelta(days=1), now + timedelta(days=1)
+
+
+def test_unpriced_model_breakdown_names_models_by_token_volume(
+    db_session, create_account, create_user
+):
+    """The breakdown names the unpriced models, biggest token offender first."""
+    account = create_account()
+    user = create_user(account=account)
+    _, flow, execution = _setup_execution(db_session, account)
+
+    _log(
+        db_session,
+        account=account,
+        user=user,
+        flow=flow,
+        execution=execution,
+        model_alias="openai-compatible/muse-spark",
+        estimated_cost=None,
+        cost_source="unpriced",
+        total_tokens=9000,
+    )
+    _log(
+        db_session,
+        account=account,
+        user=user,
+        flow=flow,
+        execution=execution,
+        model_alias="openai-compatible/muse-spark",
+        estimated_cost=None,
+        cost_source="unpriced",
+        total_tokens=1000,
+    )
+    _log(
+        db_session,
+        account=account,
+        user=user,
+        flow=flow,
+        execution=execution,
+        model_alias="openai-compatible/muse-nano",
+        estimated_cost=None,
+        cost_source="unpriced",
+        total_tokens=500,
+    )
+    # Priced rows, even for the same provider, must not appear.
+    _log(
+        db_session,
+        account=account,
+        user=user,
+        flow=flow,
+        execution=execution,
+        model_alias="openai-compatible/priced-model",
+        estimated_cost=0.25,
+        cost_source="catalog",
+        total_tokens=7000,
+    )
+
+    start, end = _window()
+    rows = crud_api_usage.get_unpriced_model_breakdown(
+        db_session,
+        account_id=str(account.id),
+        start_date=start,
+        end_date=end,
+    )
+
+    assert rows == [
+        {"model": "openai-compatible/muse-spark", "requests": 2, "tokens": 10000},
+        {"model": "openai-compatible/muse-nano", "requests": 1, "tokens": 500},
+    ]
+
+
+def test_unpriced_model_breakdown_empty_when_everything_priced(
+    db_session, create_account, create_user
+):
+    """A fully priced window has no unpriced models to name."""
+    account = create_account()
+    user = create_user(account=account)
+    _, flow, execution = _setup_execution(db_session, account)
+
+    _log(
+        db_session,
+        account=account,
+        user=user,
+        flow=flow,
+        execution=execution,
+        estimated_cost=0.25,
+        cost_source="catalog",
+    )
+
+    start, end = _window()
+    rows = crud_api_usage.get_unpriced_model_breakdown(
+        db_session,
+        account_id=str(account.id),
+        start_date=start,
+        end_date=end,
+    )
+
+    assert rows == []
+
+
+def test_unpriced_model_breakdown_respects_limit(
+    db_session, create_account, create_user
+):
+    """The cap keeps a long tail of one-off aliases out of the response."""
+    account = create_account()
+    user = create_user(account=account)
+    _, flow, execution = _setup_execution(db_session, account)
+
+    for index in range(12):
+        _log(
+            db_session,
+            account=account,
+            user=user,
+            flow=flow,
+            execution=execution,
+            model_alias=f"openai-compatible/model-{index:02d}",
+            estimated_cost=None,
+            cost_source="unpriced",
+            total_tokens=100 + index,
+        )
+
+    start, end = _window()
+    rows = crud_api_usage.get_unpriced_model_breakdown(
+        db_session,
+        account_id=str(account.id),
+        start_date=start,
+        end_date=end,
+        limit=10,
+    )
+
+    assert len(rows) == 10
+    # Tokens descending: model-11 (111 tokens) leads, model-02 is cut off.
+    assert rows[0]["model"] == "openai-compatible/model-11"
+    assert {row["model"] for row in rows} == {
+        f"openai-compatible/model-{index:02d}" for index in range(2, 12)
+    }
