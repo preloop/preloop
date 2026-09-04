@@ -1751,6 +1751,7 @@ class TestResumeRebaseShell:
         assert "git rebase origin/main" in shell
         assert "git rebase --abort" in shell
         assert "/workspace/evidence/rebase-conflict.txt" in shell
+        assert "Resolve these paths before continuing:" in shell
         assert "export PRELOOP_RESUME_REBASE_CONFLICT=1" in shell
         assert "export PRELOOP_RESUME_REBASED=1" in shell
 

@@ -53,6 +53,7 @@ from preloop.services.prompt_resolvers import (
     AccountResolver,
     ExecutionResolver,
 )
+from preloop.services.prompt_resolvers.execution import resume_rebase_conflict_hint
 from preloop.services.flow_execution_logger import FlowExecutionLogger
 from preloop.services.flow_runtime_token import (
     create_flow_runtime_token,
@@ -1108,6 +1109,13 @@ class FlowExecutionOrchestrator:
                     logger.warning(
                         f"No resolver found for prefix '{prefix}' and simple resolution failed for {{{{{placeholder}}}}}"
                     )
+
+        # Resume runs always learn to inspect rebase-conflict.txt, because
+        # the rebase happens after this prompt is resolved. Keep this before
+        # the success-confirmation instruction, which must stay last.
+        resolved_prompt = resolved_prompt + resume_rebase_conflict_hint(
+            self.trigger_event_data
+        )
 
         # Append the success-confirmation instruction so the agent can signal
         # completion. MUST stay at the very END of the prompt (recency): after

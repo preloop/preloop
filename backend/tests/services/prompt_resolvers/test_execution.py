@@ -5,7 +5,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from preloop.services.prompt_resolvers.base import ResolverContext
-from preloop.services.prompt_resolvers.execution import ExecutionResolver
+from preloop.services.prompt_resolvers.execution import (
+    ExecutionResolver,
+    RESUME_REBASE_CONFLICT_HINT,
+    resume_rebase_conflict_hint,
+)
 
 
 def _context(**event):
@@ -47,6 +51,13 @@ class TestExecutionResolver:
     async def test_resume_from_absent(self):
         result = await ExecutionResolver().resolve("resume_from", _context())
         assert result is None
+
+    def test_resume_prompt_tells_the_agent_to_inspect_rebase_conflicts(self):
+        hint = resume_rebase_conflict_hint({"_resume": {"execution_id": "prior"}})
+        assert RESUME_REBASE_CONFLICT_HINT in hint
+        assert "/workspace/evidence/rebase-conflict.txt" in hint
+        assert resume_rebase_conflict_hint({}) == ""
+        assert resume_rebase_conflict_hint(None) == ""
 
     @pytest.mark.asyncio
     async def test_rebase_conflict_is_not_a_prompt_placeholder(self, monkeypatch):

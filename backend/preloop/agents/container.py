@@ -2742,12 +2742,12 @@ echo "========================================="
     ) -> str:
         """Fetch the flow base branch and rebase the cloned PR branch onto it.
 
-        On conflict the rebase is aborted (not auto-resolved), conflicting
-        paths are written to ``/workspace/evidence/rebase-conflict.txt``, and
-        ``PRELOOP_RESUME_REBASE_CONFLICT=1`` is exported in the container
-        so the agent can inspect that file. The control-plane prompt
-        resolver never sees the env var. The block always exits 0 so a
-        conflict does not abort init.
+        On conflict the rebase is aborted (not auto-resolved). Conflicting
+        paths are written to ``/workspace/evidence/rebase-conflict.txt``
+        (prefixed with an instruction to resolve them). Resume prompts tell
+        the agent to inspect that file if it exists. ``PRELOOP_RESUME_REBASE_CONFLICT=1``
+        is exported in the container for in-container processes. The block
+        always exits 0 so a conflict does not abort init.
         """
 
         safe_base = _validated_git_ref(base_branch)
@@ -2772,7 +2772,11 @@ if git fetch origin {safe_base}; then
     else
         echo "Resume rebase onto origin/{safe_base} conflicted; leaving rebase aborted"
         mkdir -p {EVIDENCE_DIR_PATH}
-        git diff --name-only --diff-filter=U > {conflict_file} 2>/dev/null || true
+        {{
+            echo "git rebase onto the flow base branch conflicted and was aborted."
+            echo "Resolve these paths before continuing:"
+            git diff --name-only --diff-filter=U 2>/dev/null || true
+        }} > {conflict_file}
         git rebase --abort || true
         export PRELOOP_RESUME_REBASE_CONFLICT=1
         echo "Wrote conflicting files to {conflict_file}"
