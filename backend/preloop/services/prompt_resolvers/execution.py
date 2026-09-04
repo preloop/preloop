@@ -13,6 +13,12 @@ DEFAULT_PRELOOP_URL = "http://localhost:8000"
 
 _PROVIDER_LABELS = {"github": "GitHub", "gitlab": "GitLab"}
 
+RESUME_REBASE_CONFLICT_HINT = (
+    "If /workspace/evidence/rebase-conflict.txt exists, git rebase onto "
+    "the flow base branch conflicted and was aborted. Inspect that file "
+    "and resolve the listed paths before continuing."
+)
+
 
 def _render_ci_failure(failure: Optional[dict]) -> Optional[str]:
     """One human-readable line for the CI run that triggered this resume."""
@@ -28,6 +34,22 @@ def _render_ci_failure(failure: Optional[dict]) -> Optional[str]:
     if url:
         line = f"{line}: {url}"
     return line
+
+
+def resume_rebase_conflict_hint(trigger_event_data: Optional[dict]) -> str:
+    """Instruction appended to resume prompts so the agent inspects conflicts.
+
+    The rebase runs inside the container after this prompt is resolved, so
+    the hint is always present on resume runs and the agent checks the
+    evidence file if it appears.
+    """
+
+    if not isinstance(trigger_event_data, dict):
+        return ""
+    resume = trigger_event_data.get("_resume")
+    if not resume:
+        return ""
+    return "\n\n" + RESUME_REBASE_CONFLICT_HINT
 
 
 def execution_console_url(execution_id: str) -> str:
@@ -46,6 +68,12 @@ class ExecutionResolver(PromptResolver):
       was started from a PR comment on a PR this flow opened
     - ``{{execution.ci_failure}}`` — one line describing the failing CI run
       that started this resume, empty when the run was not started by CI
+
+    Resume rebase conflicts are not a prompt placeholder. Resume runs
+    always get an instruction to inspect
+    ``/workspace/evidence/rebase-conflict.txt`` if that file exists after
+    init. The container also exports ``PRELOOP_RESUME_REBASE_CONFLICT=1``
+    for in-container processes; the control plane never sees that env var.
     """
 
     @property
