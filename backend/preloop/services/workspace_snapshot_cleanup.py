@@ -17,9 +17,9 @@ from typing import Any, Dict, Optional
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from preloop.agents.container import WORKSPACE_VOLUME_PREFIX
 from preloop.config import settings
 from preloop.models.models.flow_execution import FlowExecution
+from preloop.utils.workspace_snapshot import WORKSPACE_VOLUME_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +50,10 @@ def purge_expired_snapshots(db: Session, *, cutoff: datetime) -> int:
         )
         .filter(FlowExecution.start_time < cutoff)
     )
-    purged = 0
-    for execution in query.all():
-        execution.workspace_snapshot = None
-        purged += 1
+    purged = query.update(
+        {FlowExecution.workspace_snapshot: None},
+        synchronize_session=False,
+    )
     if purged:
         db.commit()
         logger.info("Purged %d expired workspace snapshot(s)", purged)

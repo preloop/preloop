@@ -46,6 +46,7 @@ from preloop.utils.workspace_seed import (
 )
 from preloop.utils.workspace_snapshot import (
     WORKSPACE_SNAPSHOT_PATH,
+    WORKSPACE_VOLUME_PREFIX,
     build_setup_commands_shell,
     build_workspace_snapshot_shell,
 )
@@ -111,7 +112,8 @@ K8S_WORKSPACE_STREAM_MAX_BYTES = 2 * 1024 * 1024
 
 # Docker named volume holding /workspace for one execution. Created on start,
 # reaped by the workspace janitor once WORKSPACE_SNAPSHOT_TTL_HOURS has passed.
-WORKSPACE_VOLUME_PREFIX = "agent-workspace-"
+# Prefix lives in preloop.utils.workspace_snapshot so the janitor does not
+# import this module.
 
 
 def workspace_volume_name(execution_id: str) -> str:

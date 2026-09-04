@@ -19,6 +19,11 @@ class _FakeQuery:
     def all(self):
         return self._rows
 
+    def update(self, values, synchronize_session=False):
+        for row in self._rows:
+            row.workspace_snapshot = None
+        return len(self._rows)
+
 
 class _FakeSession:
     def __init__(self, rows):

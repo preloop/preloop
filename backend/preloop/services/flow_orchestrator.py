@@ -2547,7 +2547,15 @@ class FlowExecutionOrchestrator:
                 f"Could not load prior execution {prior_id} for workspace restore: {e}"
             )
             return None
-        snapshot = getattr(prior, "workspace_snapshot", None) if prior else None
+        if prior is None:
+            return None
+        if getattr(prior, "flow_id", None) != getattr(self.flow, "id", None):
+            logger.warning(
+                "Refusing workspace restore from execution %s: flow mismatch",
+                prior_id,
+            )
+            return None
+        snapshot = getattr(prior, "workspace_snapshot", None)
         if not snapshot:
             logger.info(
                 "No workspace snapshot stored for prior execution %s; "

@@ -427,7 +427,7 @@ class Settings(BaseSettings):
             "before pushing can be restored. Workspaces larger than this are "
             "skipped with a logged reason. On Kubernetes the snapshot travels "
             "through the pod log stream and is additionally capped at 2 MiB "
-            "(WORKSPACE_SNAPSHOT_MAX_BYTES)."
+            "(K8S_WORKSPACE_STREAM_MAX_BYTES)."
         ),
     )
     workspace_snapshot_ttl_hours: int = Field(

@@ -56,6 +56,10 @@ WORKSPACE_SNAPSHOT_EXCLUDES: tuple[str, ...] = (
 # retrievable even when the snapshot itself was too large to keep).
 SETUP_LOG_PATH = "/workspace/evidence/setup.log"
 
+# Docker named volume holding /workspace for one execution. Shared with the
+# container runner and the janitor so the prefix cannot drift.
+WORKSPACE_VOLUME_PREFIX = "agent-workspace-"
+
 # Marker line printed when a setup command fails; classified as the
 # ``setup_failed`` failure category.
 SETUP_FAILED_MARKER = "PRELOOP_SETUP_FAILED"
