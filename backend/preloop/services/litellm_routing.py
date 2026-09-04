@@ -218,7 +218,7 @@ def known_litellm_providers() -> frozenset:
         return frozenset()
 
 
-def _endpoint_host(endpoint: Optional[str]) -> str:
+def endpoint_host(endpoint: Optional[str]) -> str:
     """Return the lowercase hostname of an endpoint URL, or "" if unparseable."""
     if not isinstance(endpoint, str):
         return ""
@@ -236,7 +236,7 @@ def _endpoint_host(endpoint: Optional[str]) -> str:
 
 def is_openrouter_endpoint(endpoint: Optional[str]) -> bool:
     """Whether an api_endpoint points at OpenRouter."""
-    host = _endpoint_host(endpoint)
+    host = endpoint_host(endpoint)
     if not host:
         return False
     return any(
