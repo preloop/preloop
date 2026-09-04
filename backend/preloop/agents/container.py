@@ -3277,9 +3277,15 @@ MREOF
                     )
                     return None
 
-                # Get token from tracker (we always have tokens for GitHub/GitLab)
-                token = tracker.resolved_api_key
-                if not token:
+                # A tracker with no usable credential cannot clone a private
+                # repository, so refusing here gives a clearer error than a
+                # failed clone. App-authenticated trackers are the exception:
+                # they legitimately store no key, their token is minted by the
+                # orchestrator and delivered through the execution context.
+                if (
+                    not tracker.resolved_api_key
+                    and (tracker.auth_type or "").lower() not in APP_AUTH_TYPES
+                ):
                     self.logger.warning(
                         f"Tracker {tracker.id} has no API key configured"
                     )

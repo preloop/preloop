@@ -1532,6 +1532,55 @@ class TestPushCredentialsWithoutRepositoryTracker:
         assert env["PRELOOP_GIT_TOKEN_1"] == "github_pat_from_project"
 
 
+class TestProjectRepoUrlForAppTrackers:
+    """An app-installed tracker stores no API key.
+
+    The project lookup used to refuse to build a clone URL in that case, so a
+    flow relying on the trigger project (rather than an explicit
+    repository_url) could not clone at all.
+    """
+
+    def _db(self, tracker):
+        project = MagicMock()
+        project.id = "project-1"
+        project.slug = "preloop/preloop"
+        project.organization = MagicMock(tracker_id="tracker-app")
+        db = MagicMock()
+        return project, tracker, db
+
+    def _lookup(self, container_executor, tracker):
+        project, tracker, db = self._db(tracker)
+        with (
+            patch("preloop.models.db.session.get_db_session", return_value=iter([db])),
+            patch("preloop.models.crud.crud_project.get", return_value=project),
+            patch("preloop.models.crud.crud_tracker.get", return_value=tracker),
+        ):
+            return container_executor._get_repo_url_from_project(
+                "project-1", "account-1"
+            )
+
+    def test_app_tracker_without_a_key_still_yields_a_url(self, container_executor):
+        tracker = MagicMock(
+            id="tracker-app",
+            resolved_api_key="",
+            auth_type="github_app",
+            tracker_type="github",
+        )
+        assert (
+            self._lookup(container_executor, tracker)
+            == "https://github.com/preloop/preloop.git"
+        )
+
+    def test_pat_tracker_without_a_key_is_still_refused(self, container_executor):
+        tracker = MagicMock(
+            id="tracker-pat",
+            resolved_api_key="",
+            auth_type="api_token",
+            tracker_type="github",
+        )
+        assert self._lookup(container_executor, tracker) is None
+
+
 class TestLogScrubbing:
     """Logs are scrubbed on read as well, so a token already present in a
     running container's output never reaches the API or the console (#173).
