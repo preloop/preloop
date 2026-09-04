@@ -7,8 +7,14 @@ import { invalidateApiCaches } from '../../api';
 
 describe('ToolsView (approvals + conditions)', () => {
   let fetchStub: sinon.SinonStub;
+  let overrideAgentIds: string[];
+  let accountAgents: { id: string; display_name: string }[];
 
   beforeEach(() => {
+    overrideAgentIds = ['agent-override-1'];
+    accountAgents = [
+      { id: 'agent-override-1', display_name: 'Claude Code Workspace' },
+    ];
     // fetchWithAuth requires an access token to exist
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -103,7 +109,7 @@ describe('ToolsView (approvals + conditions)', () => {
                 native_tool_approvals: null,
                 approval_workflow_id: null,
               },
-              override_agent_ids: ['agent-override-1'],
+              override_agent_ids: overrideAgentIds,
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           );
@@ -116,15 +122,10 @@ describe('ToolsView (approvals + conditions)', () => {
               agent_kind: null,
               last_seen_after: null,
               status: 'all',
-              total: 1,
+              total: accountAgents.length,
               limit: 100,
               offset: 0,
-              items: [
-                {
-                  id: 'agent-override-1',
-                  display_name: 'Claude Code Workspace',
-                },
-              ],
+              items: accountAgents,
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           );
@@ -250,8 +251,12 @@ describe('ToolsView (approvals + conditions)', () => {
       '#native-approvals-defaults-card'
     );
     expect(card).to.exist;
+    expect(card?.textContent).to.not.include('\u2014');
+    expect(card?.textContent?.replace(/\s+/g, ' ')).to.include(
+      'Ask a human before running'
+    );
 
-    // Default (null) renders as enforce: switch on, no bypass warning.
+    // Default (null) renders as enforce: switch on, no bypass notice.
     const switchEl = element.shadowRoot?.querySelector(
       '#native-approvals-default-switch'
     ) as any;
@@ -263,6 +268,7 @@ describe('ToolsView (approvals + conditions)', () => {
       '#native-approvals-override-list'
     );
     expect(overrides).to.exist;
+    expect(overrides?.textContent).to.include('1 agent uses its own setting');
     const link = overrides?.querySelector('a');
     expect(link?.getAttribute('href')).to.equal(
       '/console/agents/agent-override-1'
@@ -285,6 +291,104 @@ describe('ToolsView (approvals + conditions)', () => {
     expect(
       JSON.parse(String(putCall!.args[1]!.body)).native_tool_approvals
     ).to.equal('off');
+  });
+
+  it('shows the resolved default workflow name in the workflow select', async () => {
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        !(element as any).loading &&
+        (element as any).governanceDefaults !== null,
+      'Tools view did not load governance defaults'
+    );
+    await element.updateComplete;
+
+    const select = element.shadowRoot?.querySelector(
+      '#native-approvals-default-workflow'
+    );
+    expect(select).to.exist;
+    const options = Array.from(select!.querySelectorAll('sl-option'));
+    expect(options.length).to.be.greaterThan(0);
+    expect(options[0]?.textContent).to.include('Default workflow (Default)');
+    for (const option of options) {
+      expect(option.textContent).to.not.include('(account default)');
+    }
+  });
+
+  it('hides the workflow select and shows a notice when approvals are off', async () => {
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        !(element as any).loading &&
+        (element as any).governanceDefaults !== null,
+      'Tools view did not load governance defaults'
+    );
+    await element.updateComplete;
+
+    await (element as any)._saveGovernanceDefaults({
+      native_tool_approvals: 'off',
+    });
+    await element.updateComplete;
+
+    expect(
+      element.shadowRoot?.querySelector('#native-approvals-default-workflow')
+    ).to.be.null;
+    const notice = element.shadowRoot?.querySelector('.governance-notice');
+    expect(notice).to.exist;
+    expect(notice?.textContent).to.include('run without asking');
+
+    await (element as any)._saveGovernanceDefaults({
+      native_tool_approvals: 'enforce',
+    });
+    await element.updateComplete;
+
+    expect(
+      element.shadowRoot?.querySelector('#native-approvals-default-workflow')
+    ).to.exist;
+    expect(element.shadowRoot?.querySelector('.governance-notice')).to.be.null;
+  });
+
+  it('caps the override list at 5 agents and links the remainder', async () => {
+    overrideAgentIds = [
+      'agent-1',
+      'agent-2',
+      'agent-3',
+      'agent-4',
+      'agent-5',
+      'agent-6',
+      'agent-7',
+    ];
+    accountAgents = overrideAgentIds.map((id, index) => ({
+      id,
+      display_name: `Agent ${index + 1}`,
+    }));
+
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        !(element as any).loading &&
+        (element as any).governanceDefaults !== null,
+      'Tools view did not load governance defaults'
+    );
+    await element.updateComplete;
+
+    const overrides = element.shadowRoot?.querySelector(
+      '#native-approvals-override-list'
+    );
+    expect(overrides).to.exist;
+    expect(overrides?.textContent).to.include('7 agents use their own setting');
+
+    const links = Array.from(overrides!.querySelectorAll('a'));
+    expect(links.length).to.equal(6);
+    const agentLinks = links.slice(0, 5);
+    agentLinks.forEach((agentLink, index) => {
+      expect(agentLink.getAttribute('href')).to.equal(
+        `/console/agents/agent-${index + 1}`
+      );
+    });
+    const moreLink = links[5];
+    expect(moreLink.getAttribute('href')).to.equal('/console/agents');
+    expect(moreLink.textContent).to.include('and 2 more');
   });
 
   it('does not create tool configuration twice when adding a rule immediately after toggling enabled', async () => {

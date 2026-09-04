@@ -86,6 +86,8 @@ export class ToolsView extends LitElement {
     setting: string;
   }[] = [];
   @state() private savingGovernanceDefaults = false;
+  @state() private governanceSaveError: string | null = null;
+  @state() private governanceLoadFailed = false;
   @state() private isAddingMCPServer = false;
   @state() private editingMCPServer: MCPServer | null = null;
   @state() private currentUser: { id?: string } | null = null;
@@ -133,6 +135,42 @@ export class ToolsView extends LitElement {
     css`
       mcp-setup-dialog {
         display: contents;
+      }
+
+      /* Native tool approvals account-default card */
+      .governance-card {
+        padding: var(--sl-spacing-medium);
+        border-top: 1px solid var(--sl-color-neutral-200);
+        margin-bottom: var(--sl-spacing-medium);
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-x-small);
+      }
+
+      .governance-card .meta-line {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+      }
+
+      .governance-card .governance-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sl-spacing-medium);
+        flex-wrap: wrap;
+      }
+
+      .governance-card .governance-notice {
+        color: var(--sl-color-warning-700);
+        font-size: var(--sl-font-size-small);
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+
+      .governance-card .governance-error {
+        color: var(--sl-color-danger-600);
+        font-size: var(--sl-font-size-small);
       }
 
       /* Top section: summary + MCP card side by side */
@@ -1691,95 +1729,128 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     }
   }
 
+  private _defaultWorkflowLabel(): string {
+    const name = this.approvalPolicies.find((p) => p.is_default)?.name;
+    return name ? `Default workflow (${name})` : 'Default workflow';
+  }
+
   /**
    * Account-default card for native tool-call approvals (hook-based Bash /
    * Edit / shell approvals), rendered above the MCP tool groups so both
    * policy planes are visible — and distinguishable — on one page.
    */
   private _renderNativeApprovalDefaultsCard() {
+    if (this.governanceLoadFailed) {
+      return html`
+        <div
+          class="stat-card governance-card"
+          id="native-approvals-defaults-card"
+        >
+          <div
+            class="stat-label"
+            style="display: flex; align-items: center; gap: 6px;"
+          >
+            <sl-icon name="shield-lock"></sl-icon>
+            Native tool approvals
+          </div>
+          <div class="meta-line">
+            Shell commands, file edits and other tools inside the agent. MCP
+            tools use the rules below.
+          </div>
+          <div class="governance-error">
+            Could not load this setting.
+            <a
+              href="#"
+              @click=${(e: Event) => {
+                e.preventDefault();
+                void this._loadGovernanceDefaults();
+              }}
+              >Retry</a
+            >
+          </div>
+        </div>
+      `;
+    }
     if (!this.governanceDefaults) {
       return html``;
     }
     const defaults = this.governanceDefaults;
     const enforced = defaults.native_tool_approvals !== 'off';
     const overrides = this.governanceOverrideAgents;
+    const shownOverrides = overrides.slice(0, 5);
+    const hiddenOverrideCount = overrides.length - shownOverrides.length;
     return html`
       <div
-        class="stat-card"
+        class="stat-card governance-card"
         id="native-approvals-defaults-card"
-        style="display: flex; flex-direction: column; gap: var(--sl-spacing-x-small); margin-bottom: var(--sl-spacing-medium);"
       >
         <div
-          style="display: flex; align-items: center; justify-content: space-between; gap: var(--sl-spacing-medium); flex-wrap: wrap;"
+          class="stat-label"
+          style="display: flex; align-items: center; gap: 6px;"
         >
-          <div>
-            <div
-              class="stat-label"
-              style="display: flex; align-items: center; gap: 6px;"
-            >
-              <sl-icon name="shield-lock"></sl-icon>
-              Native tool approvals — account default
-            </div>
-            <div class="meta-line">
-              Native tool calls (shell commands, file edits) from agents
-              onboarded with approval hooks. Agents inherit this unless
-              overridden on their detail page. MCP tools are governed separately
-              by the access rules below.
-            </div>
-          </div>
-          <div
-            style="display: flex; align-items: center; gap: var(--sl-spacing-medium); flex-shrink: 0;"
+          <sl-icon name="shield-lock"></sl-icon>
+          Native tool approvals
+        </div>
+        <div class="meta-line">
+          Shell commands, file edits and other tools inside the agent. MCP tools
+          use the rules below.
+        </div>
+        <div class="governance-row">
+          <sl-switch
+            id="native-approvals-default-switch"
+            size="small"
+            ?checked=${enforced}
+            ?disabled=${this.savingGovernanceDefaults}
+            @sl-change=${(e: Event) =>
+              this._saveGovernanceDefaults({
+                native_tool_approvals: (e.target as HTMLInputElement).checked
+                  ? 'enforce'
+                  : 'off',
+              })}
           >
-            <sl-switch
-              id="native-approvals-default-switch"
-              size="small"
-              ?checked=${enforced}
-              ?disabled=${this.savingGovernanceDefaults}
-              @sl-change=${(e: Event) =>
-                this._saveGovernanceDefaults({
-                  native_tool_approvals: (e.target as HTMLInputElement).checked
-                    ? 'enforce'
-                    : 'off',
-                })}
-            >
-              Require approval
-            </sl-switch>
-            <sl-select
-              id="native-approvals-default-workflow"
-              size="small"
-              hoist
-              style="min-width: 260px;${enforced ? '' : ' opacity: 0.5;'}"
-              ?disabled=${!enforced || this.savingGovernanceDefaults}
-              .value=${defaults.approval_workflow_id ?? ''}
-              @sl-change=${(e: Event) =>
-                this._saveGovernanceDefaults({
-                  approval_workflow_id:
-                    (e.target as HTMLSelectElement).value || null,
-                })}
-            >
-              <sl-option value="">Account default workflow</sl-option>
-              ${this.approvalPolicies.map(
-                (workflow) => html`
-                  <sl-option value=${workflow.id}>
-                    ${workflow.name}${
-                      workflow.is_default ? ' (account default)' : ''
-                    }
-                  </sl-option>
+            Ask a human before
+            running${this.savingGovernanceDefaults ? ' Saving...' : ''}
+          </sl-switch>
+          ${
+            enforced
+              ? html`
+                  <sl-select
+                    id="native-approvals-default-workflow"
+                    size="small"
+                    hoist
+                    label="Send requests to"
+                    style="min-width: 260px;"
+                    ?disabled=${this.savingGovernanceDefaults}
+                    .value=${defaults.approval_workflow_id ?? ''}
+                    @sl-change=${(e: Event) =>
+                      this._saveGovernanceDefaults({
+                        approval_workflow_id:
+                          (e.target as HTMLSelectElement).value || null,
+                      })}
+                  >
+                    <sl-option value=""
+                      >${this._defaultWorkflowLabel()}</sl-option
+                    >
+                    ${this.approvalPolicies.map(
+                      (workflow) => html`
+                        <sl-option value=${workflow.id}>
+                          ${workflow.name}
+                        </sl-option>
+                      `
+                    )}
+                  </sl-select>
                 `
-              )}
-            </sl-select>
-          </div>
+              : ''
+          }
         </div>
         ${
           !enforced
             ? html`
-                <sl-alert variant="warning" open>
-                  <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                  Approvals are bypassed account-wide: Preloop auto-approves
-                  escalated native tool calls without asking anyone (still
-                  recorded and audited). Agents with an explicit per-agent
-                  "enforce" keep asking.
-                </sl-alert>
+                <div class="governance-notice" role="status">
+                  <sl-icon name="exclamation-triangle"></sl-icon>
+                  Native tool calls run without asking. Calls are still
+                  recorded. Agents set to always ask keep asking.
+                </div>
               `
             : ''
         }
@@ -1787,17 +1858,34 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
           overrides.length > 0
             ? html`
                 <div class="meta-line" id="native-approvals-override-list">
-                  ${overrides.length} agent${overrides.length === 1 ? '' : 's'}
-                  override${overrides.length === 1 ? 's' : ''} this default:
-                  ${overrides.map(
+                  ${
+                    overrides.length === 1
+                      ? '1 agent uses its own setting: '
+                      : `${overrides.length} agents use their own setting: `
+                  }
+                  ${shownOverrides.map(
                     (agent, index) =>
                       html`${index > 0 ? ', ' : ''}<a
                           href="/console/agents/${agent.id}"
                           >${agent.name}</a
                         >`
-                  )}
+                  )}${
+                    hiddenOverrideCount > 0
+                      ? html`,
+                          <a href="/console/agents"
+                            >and ${hiddenOverrideCount} more</a
+                          >`
+                      : ''
+                  }
                 </div>
               `
+            : ''
+        }
+        ${
+          this.governanceSaveError
+            ? html`<div class="governance-error">
+                ${this.governanceSaveError}
+              </div>`
             : ''
         }
       </div>
