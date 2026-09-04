@@ -262,6 +262,19 @@ class ImportedUsageSummary(BaseModel):
     )
 
 
+class UnpricedModelUsage(BaseModel):
+    """One model's share of the window's unpriced gateway usage.
+
+    Names the models behind ``unpriced_requests``/``unpriced_tokens`` so the
+    console can say WHICH models are missing from the price catalog instead
+    of only how many requests are affected.
+    """
+
+    model: str
+    requests: int = 0
+    tokens: int = 0
+
+
 class CostAnalyticsSummaryResponse(BaseModel):
     """Open-source cost overview response."""
 
@@ -274,6 +287,7 @@ class CostAnalyticsSummaryResponse(BaseModel):
     estimated_cost: float = 0.0
     unpriced_requests: int = 0
     unpriced_tokens: int = 0
+    unpriced_models: List[UnpricedModelUsage] = Field(default_factory=list)
     price_catalog: Optional[PriceCatalogInfo] = None
     budget: GatewayBudgetSummary
     requests_by_day: List[GatewayUsageByDay] = Field(default_factory=list)

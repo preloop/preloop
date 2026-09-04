@@ -489,6 +489,7 @@ PRESET_COMPLETION_MARKERS = {
     "008-architecture-strategy-review.yaml": '"status": "success" | "error"',
     "009-repo-code-health-review.yaml": '"status": "success" | "error"',
     "010-standards-compliance-walk.yaml": '"status": "success" | "error"',
+    "011-automated-issue-implementation.yaml": '"status": "success" | "failure"',
 }
 
 
