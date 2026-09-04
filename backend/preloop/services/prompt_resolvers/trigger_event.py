@@ -48,8 +48,11 @@ def _lift_gitlab_noteable_ids(payload: Dict[str, Any], attrs: Dict[str, Any]) ->
             attrs["title"] = nested["title"]
         if not attrs.get("description") and nested.get("description"):
             attrs["description"] = nested["description"]
-        if not attrs.get("url") and nested.get("url"):
-            attrs["url"] = nested["url"]
+        # Do not copy nested url. Real GitLab Note hooks already set
+        # object_attributes.url to the note's own anchor, so a missing-url
+        # guard never fires and overwriting would hide the comment that
+        # triggered resume. The issue/MR URL stays on payload.issue.url or
+        # payload.merge_request.url.
         break
 
 

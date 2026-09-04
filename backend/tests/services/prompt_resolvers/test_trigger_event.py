@@ -273,6 +273,7 @@ class TestCrossTrackerObjectAttributes:
                         "id": 9001,
                         "note": "please also add tests",
                         "noteable_type": "Issue",
+                        "url": "https://gitlab.example/group/proj/-/issues/12#note_9001",
                     },
                     "issue": {
                         "iid": 12,
@@ -293,6 +294,54 @@ class TestCrossTrackerObjectAttributes:
         assert (
             await resolver.resolve("payload.object_attributes.title", context)
             == "Add login"
+        )
+        assert (
+            await resolver.resolve("payload.object_attributes.url", context)
+            == "https://gitlab.example/group/proj/-/issues/12#note_9001"
+        )
+
+    @pytest.mark.asyncio
+    async def test_gitlab_note_lifts_merge_request_iid(self):
+        resolver = TriggerEventResolver()
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "source": "gitlab",
+                "payload": {
+                    "object_kind": "note",
+                    "object_attributes": {
+                        "id": 9002,
+                        "note": "please rebase",
+                        "noteable_type": "MergeRequest",
+                        "url": "https://gitlab.example/group/proj/-/merge_requests/8#note_9002",
+                    },
+                    "merge_request": {
+                        "iid": 8,
+                        "title": "Implements: Add login",
+                        "description": "Closes #12",
+                        "url": "https://gitlab.example/group/proj/-/merge_requests/8",
+                    },
+                },
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+
+        assert (
+            await resolver.resolve("payload.object_attributes.number", context) == "8"
+        )
+        assert await resolver.resolve("payload.object_attributes.iid", context) == "8"
+        assert (
+            await resolver.resolve("payload.object_attributes.title", context)
+            == "Implements: Add login"
+        )
+        assert (
+            await resolver.resolve("payload.object_attributes.description", context)
+            == "Closes #12"
+        )
+        assert (
+            await resolver.resolve("payload.object_attributes.url", context)
+            == "https://gitlab.example/group/proj/-/merge_requests/8#note_9002"
         )
 
 
