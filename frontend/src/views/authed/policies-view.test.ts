@@ -767,6 +767,14 @@ describe('PoliciesView', () => {
       return element;
     }
 
+    it('shows Manage workflows when the action is require_approval', async () => {
+      const element = await mountWithDialog();
+      (element as any)._patchModelIOForm({ action: 'require_approval' });
+      await element.updateComplete;
+
+      expect(element.shadowRoot?.textContent).to.contain('Manage workflows');
+    });
+
     it('stays open when an inner select hides', async () => {
       const element = await mountWithDialog();
 
