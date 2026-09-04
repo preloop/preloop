@@ -1541,7 +1541,6 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
 
   private async _handleScanMCPServer(serverId: string) {
     try {
-      this._queueStarterPolicySuggestion(serverId);
       await scanMCPServer(serverId);
       await this.loadData();
     } catch (err: any) {
