@@ -193,11 +193,46 @@ class TestGitCloneConfig:
 
     def test_pr_text_references_the_issue(self, preset):
         config = preset["git_clone_config"]
-        assert "{{trigger_event.payload.issue.title}}" in config["pull_request_title"]
         assert (
-            "Closes #{{trigger_event.payload.issue.number}}"
+            "{{trigger_event.payload.object_attributes.title}}"
+            in config["pull_request_title"]
+        )
+        assert (
+            "Closes #{{trigger_event.payload.object_attributes.number}}"
             in config["pull_request_description"]
         )
+
+
+class TestPromptPlaceholders:
+    def test_github_issue_body_resolves_as_object_attributes_description(self):
+        from preloop.services.prompt_resolvers.trigger_event import (
+            TriggerEventResolver,
+        )
+
+        resolver = TriggerEventResolver()
+        normalized = resolver._normalize_event_data(
+            {
+                "source": "github",
+                "payload": {
+                    "issue": {
+                        "title": "Add login",
+                        "body": "Please implement OAuth",
+                        "number": 12,
+                    }
+                },
+            }
+        )
+        attrs = normalized["payload"]["object_attributes"]
+        assert attrs["description"] == "Please implement OAuth"
+        assert attrs["title"] == "Add login"
+        assert attrs["number"] == 12
+
+    def test_prompt_uses_normalized_object_attributes(self, preset):
+        template = preset["prompt_template"]
+        assert "{{trigger_event.payload.object_attributes.title}}" in template
+        assert "{{trigger_event.payload.object_attributes.description}}" in template
+        assert "{{trigger_event.payload.object_attributes.number}}" in template
+        assert "{{trigger_event.payload.issue.description}}" not in template
 
 
 class TestLoaderIntegration:

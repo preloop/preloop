@@ -21,10 +21,10 @@ prompt_template: |
   You are an expert software engineer implementing a tracker issue.
 
   Trigger type: {{trigger_event.type}}
-  Title: {{trigger_event.payload.issue.title}}
-  Description: {{trigger_event.payload.issue.description}}
+  Title: {{trigger_event.payload.object_attributes.title}}
+  Description: {{trigger_event.payload.object_attributes.description}}
   Repository: {{trigger_event.payload.repository.name}}
-  Issue number: {{trigger_event.payload.issue.number}}
+  Issue number: {{trigger_event.payload.object_attributes.number}}
   Execution: {{execution.url}}
   Resume from: {{execution.resume_from}}
 
@@ -154,11 +154,11 @@ git_clone_config:
   source_branch: null
   target_branch: null
   create_pull_request: true
-  pull_request_title: "Implements: {{trigger_event.payload.issue.title}}"
+  pull_request_title: "Implements: {{trigger_event.payload.object_attributes.title}}"
   pull_request_description: |
-    Automated implementation for #{{trigger_event.payload.issue.number}}
+    Automated implementation for #{{trigger_event.payload.object_attributes.number}}
 
-    Closes #{{trigger_event.payload.issue.number}}
+    Closes #{{trigger_event.payload.object_attributes.number}}
 # Implementation runs are long: reading a repository, writing tests, and
 # running a suite regularly passes the 3600s default.
 timeout_seconds: 5400

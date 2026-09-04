@@ -37,8 +37,11 @@ trigger_config:
     labels: ["agent-ready"]
 ```
 
-Every `issue_labeled` event whose payload labels intersect the list starts a
-run. Without a filter, every labeling event qualifies, which is rarely what
+Every `issue_labeled` event whose labels intersect the list starts a
+run. Matching reads label names from the webhook enrichment
+(`extract_filter_fields`) and also unwraps GitHub `issue.labels[].name`
+and GitLab `labels[].title`, so the example works on raw tracker payloads.
+Without a filter, every labeling event qualifies, which is rarely what
 you want on a busy repository.
 
 ## Resume on pull request comments
