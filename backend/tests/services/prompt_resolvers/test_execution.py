@@ -49,19 +49,8 @@ class TestExecutionResolver:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_rebase_conflict_unset(self):
-        result = await ExecutionResolver().resolve("rebase_conflict", _context())
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_rebase_conflict_set(self, monkeypatch):
+    async def test_rebase_conflict_is_not_a_prompt_placeholder(self, monkeypatch):
         monkeypatch.setenv("PRELOOP_RESUME_REBASE_CONFLICT", "1")
-        result = await ExecutionResolver().resolve("rebase_conflict", _context())
-        assert result == "1"
-
-    @pytest.mark.asyncio
-    async def test_rebase_conflict_empty_env_is_absent(self, monkeypatch):
-        monkeypatch.setenv("PRELOOP_RESUME_REBASE_CONFLICT", "")
         result = await ExecutionResolver().resolve("rebase_conflict", _context())
         assert result is None
 

@@ -2744,8 +2744,10 @@ echo "========================================="
 
         On conflict the rebase is aborted (not auto-resolved), conflicting
         paths are written to ``/workspace/evidence/rebase-conflict.txt``, and
-        ``PRELOOP_RESUME_REBASE_CONFLICT=1`` is exported for the agent prompt.
-        The block always exits 0 so a conflict does not abort init.
+        ``PRELOOP_RESUME_REBASE_CONFLICT=1`` is exported in the container
+        so the agent can inspect that file. The control-plane prompt
+        resolver never sees the env var. The block always exits 0 so a
+        conflict does not abort init.
         """
 
         safe_base = _validated_git_ref(base_branch)
