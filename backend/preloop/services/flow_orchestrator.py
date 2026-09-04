@@ -58,6 +58,7 @@ from preloop.services.flow_runtime_token import (
     create_flow_runtime_token,
     revoke_flow_runtime_tokens,
 )
+from preloop.services.tracker_git_token import resolve_tracker_git_token
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.utils.git_credentials import (
@@ -1714,10 +1715,22 @@ class FlowExecutionOrchestrator:
                 logger.warning(f"Tracker {tracker_id} not found")
                 return None
 
-            # Return credentials (api_key is encrypted in DB, should be decrypted here)
+            # Not `resolved_api_key`: a GitHub App tracker stores no key, its
+            # credential is a short-lived installation token minted here. Using
+            # the raw column left App-installed repositories with no git
+            # credential at all, so the post-execution push failed with
+            # "could not read Username for 'https://github.com'".
+            token = await resolve_tracker_git_token(tracker)
+            if not token:
+                logger.warning(
+                    "Tracker %s has no usable git token (auth_type=%s)",
+                    tracker_id,
+                    tracker.auth_type,
+                )
+
             return {
-                "tracker_id": tracker_id,
-                "token": tracker.resolved_api_key,
+                "tracker_id": str(tracker_id),
+                "token": token or "",
                 "tracker_type": tracker.tracker_type,
             }
 
@@ -1727,6 +1740,65 @@ class FlowExecutionOrchestrator:
                 exc_info=True,
             )
             return None
+
+    def _resolve_project_tracker_id(self, project_id: Optional[str]) -> Optional[str]:
+        """Return the tracker owning ``project_id``, or None."""
+
+        if not project_id:
+            return None
+        try:
+            from preloop.models.crud import crud_project
+
+            project = crud_project.get(self.db, id=str(project_id))
+            organization = project.organization if project else None
+            tracker_id = getattr(organization, "tracker_id", None)
+            return str(tracker_id) if tracker_id else None
+        except Exception as e:
+            logger.warning(
+                "Could not resolve the tracker for project %s: %s", project_id, e
+            )
+            return None
+
+    async def _attach_trigger_tracker_credentials(
+        self, execution_context: Dict[str, Any]
+    ) -> None:
+        """Add the triggering project's tracker credentials to the context.
+
+        The agent container resolves a repository's token from
+        ``git_credentials_map[tracker_id]`` and otherwise falls back to a
+        database lookup that reads the stored key only. That fallback returns
+        nothing for a GitHub App tracker, which has no stored key, so a flow
+        whose repository entry carries no ``tracker_id`` ran with no git
+        credential: the clone of a public repository still worked and the
+        post-execution push then failed to authenticate.
+
+        Minting an App installation token is async and must happen here, in
+        the orchestrator, not in the synchronous container code path.
+        """
+
+        tracker_id = self._resolve_project_tracker_id(
+            execution_context.get("trigger_project_id")
+        ) or self.trigger_event_data.get("tracker_id")
+        if not tracker_id:
+            return
+
+        tracker_id = str(tracker_id)
+        credentials_map = execution_context.get("git_credentials_map") or {}
+        if not (credentials_map.get(tracker_id) or {}).get("token"):
+            creds = await self._get_tracker_credentials_by_id(tracker_id)
+            if not creds or not creds.get("token"):
+                logger.warning(
+                    "No git token available for the triggering tracker %s; "
+                    "the post-execution push will have no credentials",
+                    tracker_id,
+                )
+                return
+            credentials_map[tracker_id] = creds
+
+        execution_context["git_credentials_map"] = credentials_map
+        # Read by container.py when a repository entry declares no tracker.
+        execution_context["trigger_tracker_id"] = tracker_id
+        logger.info("Attached trigger tracker %s git credentials", tracker_id)
 
     def _build_clone_credential(
         self, repo_url: str, credentials: Dict[str, str]
@@ -1935,6 +2007,14 @@ class FlowExecutionOrchestrator:
                     logger.warning(
                         "Git clone enabled but could not get tracker credentials"
                     )
+
+            # Repositories declared without a tracker_id (and the
+            # trigger-project fallback used when none are declared at all)
+            # resolved their token inside the agent container, which reads the
+            # stored key only and therefore finds nothing for a GitHub App
+            # tracker. Resolve it here, where minting an installation token is
+            # possible, and hand it over with the rest of the credentials.
+            await self._attach_trigger_tracker_credentials(execution_context)
 
         # Add AI model details if available
         if self.ai_model:
