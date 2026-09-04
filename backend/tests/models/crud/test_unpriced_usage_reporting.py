@@ -315,3 +315,59 @@ def test_unpriced_model_breakdown_respects_limit(
     assert {row["model"] for row in rows} == {
         f"openai-compatible/model-{index:02d}" for index in range(2, 12)
     }
+
+
+def test_unpriced_model_breakdown_exclude_retries_matches_summary(
+    db_session, create_account, create_user
+):
+    """exclude_retries drops retry rows so the models match the headline."""
+    account = create_account()
+    user = create_user(account=account)
+    _, flow, execution = _setup_execution(db_session, account)
+
+    _log(
+        db_session,
+        account=account,
+        user=user,
+        flow=flow,
+        execution=execution,
+        model_alias="openai-compatible/muse-spark",
+        estimated_cost=None,
+        cost_source="unpriced",
+        total_tokens=1000,
+    )
+    _log(
+        db_session,
+        account=account,
+        user=user,
+        flow=flow,
+        execution=execution,
+        model_alias="openai-compatible/muse-spark",
+        estimated_cost=None,
+        cost_source="unpriced",
+        total_tokens=4000,
+        is_retry=True,
+    )
+
+    start, end = _window()
+    included = crud_api_usage.get_unpriced_model_breakdown(
+        db_session,
+        account_id=str(account.id),
+        start_date=start,
+        end_date=end,
+        exclude_retries=False,
+    )
+    excluded = crud_api_usage.get_unpriced_model_breakdown(
+        db_session,
+        account_id=str(account.id),
+        start_date=start,
+        end_date=end,
+        exclude_retries=True,
+    )
+
+    assert included == [
+        {"model": "openai-compatible/muse-spark", "requests": 2, "tokens": 5000}
+    ]
+    assert excluded == [
+        {"model": "openai-compatible/muse-spark", "requests": 1, "tokens": 1000}
+    ]

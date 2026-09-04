@@ -871,13 +871,12 @@ export class CostView extends AuthedElement {
       if (result.submitted_async) {
         this.repriceNotice =
           'Repricing is running in the background. Checking for results...';
-        const changed = await this.pollRepriceOutcome(previousUnpriced);
+        await this.pollRepriceOutcome(previousUnpriced);
         await this.load();
         const remaining = this.summary?.unpriced_requests ?? 0;
         this.repriceNotice = this.repriceOutcomeNotice(
           previousUnpriced,
-          remaining,
-          changed
+          remaining
         );
       } else {
         this.repriceNotice =
@@ -895,9 +894,9 @@ export class CostView extends AuthedElement {
 
   // The async reprice path (windows over 7 days) acknowledges before anything
   // is scanned, so the response carries no counts. Poll the summary on a
-  // bounded interval until the unpriced count moves or the attempts run out;
-  // the notice must reflect what actually happened, not a bare "scheduled".
-  private async pollRepriceOutcome(previousUnpriced: number): Promise<boolean> {
+  // bounded interval and stop early once the unpriced count moves; the notice
+  // is computed from the reloaded summary afterwards, not from this poll.
+  private async pollRepriceOutcome(previousUnpriced: number): Promise<void> {
     for (
       let attempt = 0;
       attempt < CostView.REPRICE_POLL_MAX_ATTEMPTS;
@@ -909,28 +908,27 @@ export class CostView extends AuthedElement {
       try {
         const summary = await getCostAnalyticsSummary(this.getDateParams());
         if ((summary.unpriced_requests ?? 0) !== previousUnpriced) {
-          return true;
+          return;
         }
       } catch {
         // A failed poll is not a failed reprice; keep watching.
       }
     }
-    return false;
   }
 
+  // In a fixed window the unpriced count can only DECREASE via pricing, so a
+  // lower remaining count is the precise partial-success signal even when
+  // the job finished after the last poll. Live traffic can add unpriced rows
+  // during the poll window, so an equal-or-higher count reads as no change
+  // (a negative "requests priced" would be nonsense).
   private repriceOutcomeNotice(
     previousUnpriced: number,
-    remaining: number,
-    changed: boolean
+    remaining: number
   ): string {
     if (remaining === 0) {
       return 'Reprice finished: every request in this window now has a cost estimate.';
     }
-    // Live traffic can add unpriced rows during the poll window, leaving
-    // `remaining` at or above `previousUnpriced` even when the count moved.
-    // A negative "requests priced" would be nonsense, so only the strictly
-    // decreased case reports a priced count; the rest reads as no change.
-    if (changed && remaining < previousUnpriced) {
+    if (remaining < previousUnpriced) {
       return (
         `Reprice finished: ${this.formatNumber(previousUnpriced - remaining)} ` +
         `requests priced, ${this.formatNumber(remaining)} still unpriced. ` +
@@ -948,10 +946,12 @@ export class CostView extends AuthedElement {
   // Route from the unpriced banner into the existing price-override dialog
   // with the highest-volume unpriced model pre-filled. A $0 override is
   // honored by repricing, which is the supported escape hatch for custom
-  // models that will never appear in a shared price catalog.
+  // models that will never appear in a shared price catalog. The backend
+  // coalesces rows with no model alias to "unknown"; pre-filling that
+  // placeholder would invite a no-op override, so the field stays empty.
   private openPriceOverrideForUnpriced() {
     const top = this.summary?.unpriced_models?.[0];
-    if (top) {
+    if (top && top.model !== 'unknown') {
       this.priceModelAlias = top.model;
     }
     this.priceDialogOpen = true;

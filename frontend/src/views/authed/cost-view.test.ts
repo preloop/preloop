@@ -704,5 +704,78 @@ describe('CostView', () => {
       // The banner reloads to the grown count, still naming the model.
       expect(banner(element)?.textContent).to.contain('5');
     });
+
+    it('async reprice finishing after the last poll still reports the decrease', async () => {
+      const viewClass = CostView as unknown as {
+        REPRICE_POLL_MAX_ATTEMPTS: number;
+      };
+      viewClass.REPRICE_POLL_MAX_ATTEMPTS = 3;
+      repriceResult = {
+        ...repriceResult,
+        submitted_async: true,
+        rows_examined: null,
+        rows_updated: null,
+        rows_skipped: null,
+      };
+      // Every poll sees the stale count, so the poll times out; the worker
+      // finishes before the final reload, which shows one of the two
+      // requests got priced. The notice must come from the reloaded
+      // summary, not from the poll's early-stop signal.
+      let summaryFetches = 0;
+      summaryResponder = () => {
+        summaryFetches += 1;
+        // Initial load, previous-range fetch and 3 polls see the stale
+        // count; the final reload (fetch 6) sees the decrease.
+        return summaryFetches > 5
+          ? { ...summaryPayload, unpriced_requests: 1, unpriced_tokens: 2000 }
+          : summaryPayload;
+      };
+      const element = await loadView();
+
+      const reprice = bannerButton(element, 'Reprice now');
+      expect(reprice).to.exist;
+      (reprice as HTMLElement).click();
+
+      await waitUntil(() => {
+        const state = element as unknown as {
+          repriceNotice: string | null;
+          repricing: boolean;
+        };
+        return (
+          !state.repricing && state.repriceNotice?.includes('Reprice finished')
+        );
+      });
+      await element.updateComplete;
+
+      const state = element as unknown as { repriceNotice: string | null };
+      expect(state.repriceNotice).to.contain('1 requests priced');
+      expect(state.repriceNotice).to.contain('1 still unpriced');
+      // One row remains unpriced, so the banner stays up.
+      expect(banner(element)).to.exist;
+    });
+
+    it('override CTA does not pre-fill the coalesced unknown model', async () => {
+      summaryPayload = {
+        ...summary,
+        unpriced_requests: 3,
+        unpriced_tokens: 4200,
+        unpriced_models: [{ model: 'unknown', requests: 3, tokens: 4200 }],
+      };
+      const element = await loadView();
+
+      const cta = bannerButton(element, 'Set price override');
+      expect(cta, 'override CTA must be present').to.exist;
+      (cta as HTMLElement).click();
+      await element.updateComplete;
+
+      const state = element as unknown as {
+        priceDialogOpen: boolean;
+        priceModelAlias: string;
+      };
+      expect(state.priceDialogOpen).to.equal(true);
+      // "unknown" is the backend placeholder for rows with no model alias;
+      // pre-filling it would create a no-op override, so the field is empty.
+      expect(state.priceModelAlias).to.equal('');
+    });
   });
 });

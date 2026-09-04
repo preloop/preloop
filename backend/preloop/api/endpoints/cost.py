@@ -160,6 +160,7 @@ def get_cost_summary(
                 start_date=summary.period_start,
                 end_date=summary.period_end,
                 runtime_principal_id=runtime_principal_id,
+                exclude_retries=exclude_retries,
                 limit=UNPRICED_MODELS_LIMIT,
             )
         ],

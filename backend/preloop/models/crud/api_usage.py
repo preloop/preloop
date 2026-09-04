@@ -930,6 +930,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         start_date: datetime,
         end_date: datetime,
         runtime_principal_id: Optional[str] = None,
+        exclude_retries: bool = False,
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
         """Group still-unpriced gateway rows by model for the cost banner.
@@ -945,6 +946,11 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             start_date: Inclusive lower bound on usage timestamp.
             end_date: Exclusive upper bound on usage timestamp.
             runtime_principal_id: Restrict to a single runtime principal.
+            exclude_retries: When True, rows marked as retries of an earlier
+                identical request are excluded. Mirrors the predicate in
+                :meth:`get_gateway_usage_summary` exactly, so with
+                ``exclude_retries=True`` the per-model rows cannot sum above
+                the headline counts.
             limit: Maximum number of models returned, ordered by unpriced
                 tokens descending so the biggest offenders name themselves
                 first.
@@ -969,6 +975,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         )
         if runtime_principal_id:
             query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
+        if exclude_retries:
+            query = query.filter(
+                or_(ApiUsage.is_retry.is_(None), ApiUsage.is_retry.is_(False))
+            )
         query = (
             query.group_by(model_label)
             .order_by(func.coalesce(func.sum(ApiUsage.total_tokens), 0).desc())
