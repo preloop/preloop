@@ -146,6 +146,28 @@ async def run_scheduler_async(
             catalog_sync_interval_hours,
         )
 
+    # Hourly workspace retention pass: delete captured workspace snapshots
+    # and Docker agent-workspace-* volumes older than the retention window.
+    async def _publish_workspace_cleanup() -> None:
+        try:
+            await event_bus_service.publish_task("cleanup_flow_workspaces")
+        except Exception:
+            logger.exception("Failed to publish workspace cleanup task")
+
+    scheduler.add_job(
+        _publish_workspace_cleanup,
+        trigger=IntervalTrigger(hours=1),
+        id="workspace_cleanup_job",
+        name="Reap Expired Flow Workspaces",
+        replace_existing=True,
+        misfire_grace_time=600,
+        next_run_time=datetime.now(pytz.utc) + timedelta(minutes=2),
+    )
+    logger.info(
+        "Scheduled hourly workspace retention (ttl=%s hours).",
+        getattr(settings, "workspace_snapshot_ttl_hours", 24),
+    )
+
     # Weekly cost optimization & savings digest. The worker-side task no-ops
     # unless the Enterprise billing plugin is present.
     if getattr(settings, "cost_digest_enabled", True):

@@ -69,6 +69,15 @@ class GitCloneConfig(BaseModel):
         default=None,
         description="Branch to create for commits (auto-generated if empty)",
     )
+    setup_commands: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Shell commands run inside the container after clone/restore and "
+            "before the agent starts (dependency install, service bring-up). "
+            "Output is captured to /workspace/evidence/setup.log; a failure "
+            "fails the execution with failure_category 'setup_failed'."
+        ),
+    )
     create_pull_request: Optional[bool] = Field(
         default=False, description="Whether to create a Pull Request / Merge Request"
     )

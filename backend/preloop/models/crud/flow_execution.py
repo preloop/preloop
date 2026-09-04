@@ -198,6 +198,19 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.flush()
         return db_obj
 
+    def set_workspace_snapshot(
+        self, db: Session, *, db_obj: FlowExecution, archive: Optional[bytes]
+    ) -> FlowExecution:
+        """Persist (or clear) the captured workspace snapshot (tar.gz bytes).
+
+        Separate from ``update`` for the same reason as the evidence pack: the
+        archive is binary and must never travel through the
+        FlowExecutionUpdate schema that is serialized to NATS.
+        """
+        db_obj.workspace_snapshot = archive  # type: ignore[assignment]
+        db.flush()
+        return db_obj
+
     def get_by_flow(
         self,
         db: Session,

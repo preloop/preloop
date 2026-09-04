@@ -431,6 +431,9 @@ class FlowExecutionOrchestrator:
         # before executor cleanup; persisted at finalize time. Kept out of
         # the agent_result dict so it never travels through NATS updates.
         self._evidence_archive: Optional[bytes] = None
+        # tar.gz of /workspace captured before the runtime is torn down, so a
+        # run that failed before pushing can be downloaded or resumed.
+        self._workspace_snapshot: Optional[bytes] = None
 
         # Execution metrics tracked during execution
         self.total_tokens: int = 0
@@ -2004,6 +2007,12 @@ class FlowExecutionOrchestrator:
             "trigger_project_id": self._resolve_trigger_project_id(),
         }
 
+        # Correlated resume: hand the runner the prior execution's workspace
+        # so unpushed commits (and scratch state) survive into this run.
+        restore_archive = self._resolve_workspace_restore_archive()
+        if restore_archive is not None:
+            execution_context["workspace_restore_archive"] = restore_archive
+
         # Prepare git credentials if repositories are configured
         if self.flow.git_clone_config:
             repositories = self.flow.git_clone_config.get("repositories", [])
@@ -2544,6 +2553,50 @@ class FlowExecutionOrchestrator:
                     )
             raise
 
+    def _resolve_workspace_restore_archive(self) -> Optional[bytes]:
+        """Load the workspace snapshot of the execution this run resumes.
+
+        Returns None when this is not a correlated resume, when the prior
+        execution kept no snapshot (too large, or already reaped by the
+        janitor), or when the lookup fails. In every one of those cases the
+        runner falls back to the normal git clone.
+        """
+        resume = (self.trigger_event_data or {}).get("_resume")
+        if not isinstance(resume, dict):
+            return None
+        prior_id = resume.get("execution_id")
+        if not prior_id:
+            return None
+        try:
+            prior = crud_flow_execution.get(db=self.db, id=prior_id)
+        except Exception as e:
+            logger.warning(
+                f"Could not load prior execution {prior_id} for workspace restore: {e}"
+            )
+            return None
+        if prior is None:
+            return None
+        if getattr(prior, "flow_id", None) != getattr(self.flow, "id", None):
+            logger.warning(
+                "Refusing workspace restore from execution %s: flow mismatch",
+                prior_id,
+            )
+            return None
+        snapshot = getattr(prior, "workspace_snapshot", None)
+        if not snapshot:
+            logger.info(
+                "No workspace snapshot stored for prior execution %s; "
+                "resume will re-clone",
+                prior_id,
+            )
+            return None
+        logger.info(
+            "Restoring workspace snapshot from execution %s (%d bytes)",
+            prior_id,
+            len(snapshot),
+        )
+        return bytes(snapshot)
+
     async def _capture_result_artifact(
         self, agent_executor: Any, session_reference: str
     ) -> Optional[Dict[str, Any]]:
@@ -2561,6 +2614,7 @@ class FlowExecutionOrchestrator:
         this method is called on every terminal path.
         """
         await self._capture_evidence_archive(agent_executor, session_reference)
+        await self._capture_workspace_snapshot(agent_executor, session_reference)
         getter = getattr(agent_executor, "get_result_artifact", None)
         if not callable(getter):
             return None
@@ -2604,6 +2658,32 @@ class FlowExecutionOrchestrator:
         self.execution_logger.log_milestone(
             "evidence_archive_captured",
             {"size_bytes": len(self._evidence_archive)},
+        )
+
+    async def _capture_workspace_snapshot(
+        self, agent_executor: Any, session_reference: str
+    ) -> None:
+        """Capture the workspace snapshot, if the executor supports it.
+
+        Same contract as the evidence pack: best effort, at most once per
+        execution, and only readable before the executor is cleaned up.
+        """
+        if self._workspace_snapshot is not None:
+            return
+        getter = getattr(agent_executor, "get_workspace_snapshot", None)
+        if not callable(getter):
+            return
+        try:
+            snapshot = await getter(session_reference)
+        except Exception as e:
+            logger.warning(f"Failed to capture workspace snapshot: {e}")
+            return
+        if not isinstance(snapshot, (bytes, bytearray)) or not snapshot:
+            return
+        self._workspace_snapshot = bytes(snapshot)
+        self.execution_logger.log_milestone(
+            "workspace_snapshot_captured",
+            {"size_bytes": len(self._workspace_snapshot)},
         )
 
     async def _refetch_exited_session_logs(
@@ -4068,16 +4148,28 @@ class FlowExecutionOrchestrator:
 
             # Persist the evidence pack (if one was captured before executor
             # cleanup) in the same transaction as the terminal status update.
-            if self._evidence_archive is not None and self.execution_log is not None:
+            have_binary_artifacts = (
+                self._evidence_archive is not None
+                or self._workspace_snapshot is not None
+            )
+            if have_binary_artifacts and self.execution_log is not None:
                 try:
-                    crud_flow_execution.set_evidence_archive(
-                        self.db,
-                        db_obj=self.execution_log,
-                        archive=self._evidence_archive,
-                    )
+                    if self._evidence_archive is not None:
+                        crud_flow_execution.set_evidence_archive(
+                            self.db,
+                            db_obj=self.execution_log,
+                            archive=self._evidence_archive,
+                        )
+                    if self._workspace_snapshot is not None:
+                        crud_flow_execution.set_workspace_snapshot(
+                            self.db,
+                            db_obj=self.execution_log,
+                            archive=self._workspace_snapshot,
+                        )
                 except Exception as evidence_error:
                     logger.warning(
-                        f"Failed to persist evidence archive: {evidence_error}"
+                        "Failed to persist evidence archive / workspace "
+                        f"snapshot: {evidence_error}"
                     )
                     # A failed flush must not poison the terminal status
                     # update that follows.

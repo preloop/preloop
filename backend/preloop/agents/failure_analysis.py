@@ -28,6 +28,7 @@ from preloop.services.upstream_errors import (
     classify_recorded_error,
 )
 from preloop.utils.secret_scrubbing import scrub_secrets
+from preloop.utils.workspace_snapshot import SETUP_FAILED_MARKER
 
 # Same cap the gateway uses when surfacing upstream text to end users
 # (``model_gateway_errors._MAX_SURFACED_MESSAGE_CHARS``). Agent logs embed
@@ -407,6 +408,35 @@ def _reanalyze_generated_message(text: str) -> Optional[AgentFailureAnalysis]:
     )
 
 
+# The container-side setup block prints this marker before exiting when a
+# ``git_clone_config.setup_commands`` entry fails. Setup runs before the agent
+# ever starts, so "setup broke" must never be reported as an agent failure.
+_SETUP_FAILED_LINE_RE = re.compile(
+    rf"{re.escape(SETUP_FAILED_MARKER)}(?:\s+exit=(\d+))?"
+)
+
+
+def _scan_setup_failure(logs_text: str) -> Optional[AgentFailureAnalysis]:
+    """Return a verdict when the run died in the repository setup step."""
+
+    match = _SETUP_FAILED_LINE_RE.search(logs_text or "")
+    if match is None:
+        return None
+    exit_code = match.group(1)
+    detail = ""
+    for line in reversed(_content_lines(logs_text)):
+        if SETUP_FAILED_MARKER in line or line.startswith("Setup commands failed"):
+            continue
+        detail = line.strip()
+        break
+    message = "Setup commands failed"
+    if exit_code:
+        message += f" (exit {exit_code})"
+    if detail:
+        message += f": {detail}"
+    return AgentFailureAnalysis(message=_finalize(message), transient=False)
+
+
 def analyze_agent_failure(logs_text: str) -> AgentFailureAnalysis:
     """Explain why an agent container failed, from its logs.
 
@@ -420,6 +450,10 @@ def analyze_agent_failure(logs_text: str) -> AgentFailureAnalysis:
     lines = _content_lines(logs_text)
     if not lines:
         return AgentFailureAnalysis(message="")
+
+    setup_failure = _scan_setup_failure(logs_text)
+    if setup_failure is not None:
+        return setup_failure
 
     already_analyzed = _reanalyze_generated_message(logs_text)
     if already_analyzed is not None:
