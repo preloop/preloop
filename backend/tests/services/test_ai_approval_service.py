@@ -4,7 +4,7 @@ All LLM/provider calls are mocked so the tests are hermetic.
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -350,3 +350,76 @@ class TestOpenaiSdkRetry:
                 )
 
         assert caught.value.status_code == 429
+
+
+class TestGoogleSdkRetry:
+    """Gemini approval path must share the same bounded 429 retry (#269)."""
+
+    @staticmethod
+    def _rate_limit_error() -> Exception:
+        return TestOpenaiSdkRetry._rate_limit_error()
+
+    @pytest.mark.asyncio
+    async def test_transient_429_is_retried(self, service: AIApprovalService) -> None:
+        error = self._rate_limit_error()
+        calls = {"n": 0}
+
+        def generate_content(*args: object, **kwargs: object) -> SimpleNamespace:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise error
+            return SimpleNamespace(text="ok")
+
+        mock_google = MagicMock()
+        mock_genai = MagicMock()
+        mock_genai.GenerativeModel.return_value.generate_content = generate_content
+        mock_google.generativeai = mock_genai
+
+        with (
+            patch.dict(
+                "sys.modules",
+                {"google": mock_google, "google.generativeai": mock_genai},
+                clear=False,
+            ),
+            patch(
+                "preloop.services.aux_model_retry.asyncio.sleep",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await service._call_google(
+                "prompt", "gemini-1.5-pro", api_key="test-key"
+            )
+
+        assert result == "ok"
+        assert calls["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_exhausted_429_surfaces_classified_gateway_error(
+        self, service: AIApprovalService
+    ) -> None:
+        error = self._rate_limit_error()
+        mock_google = MagicMock()
+        mock_genai = MagicMock()
+        mock_genai.GenerativeModel.return_value.generate_content = MagicMock(
+            side_effect=error
+        )
+        mock_google.generativeai = mock_genai
+
+        with (
+            patch.dict(
+                "sys.modules",
+                {"google": mock_google, "google.generativeai": mock_genai},
+                clear=False,
+            ),
+            patch(
+                "preloop.services.aux_model_retry.asyncio.sleep",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            with pytest.raises(ModelGatewayAPIError) as caught:
+                await service._call_google(
+                    "prompt", "gemini-1.5-pro", api_key="test-key"
+                )
+
+        assert caught.value.status_code == 429
+        assert caught.value.provider == "gemini"

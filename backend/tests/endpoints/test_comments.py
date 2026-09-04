@@ -581,7 +581,8 @@ async def test_search_comments_similarity_embedding_429_is_retried(
                     return_value=[],
                 ):
                     with patch(
-                        "preloop.services.aux_model_retry.time.sleep", lambda _: None
+                        "preloop.services.aux_model_retry.asyncio.sleep",
+                        new=AsyncMock(return_value=None),
                     ):
                         result = await comments.search_comments(
                             db=db_session,
@@ -618,7 +619,8 @@ async def test_search_comments_similarity_embedding_429_surfaces_retry_after(
                 side_effect=_openai_rate_limit_error(retry_after="3"),
             ) as mock_vector:
                 with patch(
-                    "preloop.services.aux_model_retry.time.sleep", lambda _: None
+                    "preloop.services.aux_model_retry.asyncio.sleep",
+                    new=AsyncMock(return_value=None),
                 ):
                     with pytest.raises(HTTPException) as exc_info:
                         await comments.search_comments(
@@ -700,7 +702,8 @@ async def test_search_comments_similarity_gateway_rate_limit_surfaces_429(
                 side_effect=gateway_error,
             ):
                 with patch(
-                    "preloop.services.aux_model_retry.time.sleep", lambda _: None
+                    "preloop.services.aux_model_retry.asyncio.sleep",
+                    new=AsyncMock(return_value=None),
                 ):
                     with pytest.raises(HTTPException) as exc_info:
                         await comments.search_comments(

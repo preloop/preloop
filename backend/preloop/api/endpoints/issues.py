@@ -35,7 +35,7 @@ from preloop.models.models.organization import Organization
 from preloop.models.models.project import Project
 from preloop.models.models.tracker import Tracker
 from preloop.api.auth import get_current_active_user
-from preloop.services.aux_model_retry import call_with_aux_retry
+from preloop.services.aux_model_retry import call_with_aux_retry_async
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.utils.permissions import require_permission
 from preloop.config import settings
@@ -344,11 +344,12 @@ async def search_issues(
                     )
                 model = active_models[0]
                 model_id = model.id
-                # Generate query vector
-                query_vector = call_with_aux_retry(
-                    lambda: crud_issue_embedding._generate_embedding_vector(
-                        query, model
-                    ),
+
+                async def _embed_query() -> list:
+                    return crud_issue_embedding._generate_embedding_vector(query, model)
+
+                query_vector = await call_with_aux_retry_async(
+                    _embed_query,
                     operation_name="issue_similarity_query_embedding",
                     provider=getattr(model, "provider", None),
                 )

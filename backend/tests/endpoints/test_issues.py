@@ -802,7 +802,10 @@ class TestSearchIssuesRateLimit:
                 "preloop.api.endpoints.issues.crud_issue_embedding.similarity_search",
                 return_value=[],
             ),
-            patch("preloop.services.aux_model_retry.time.sleep", lambda _: None),
+            patch(
+                "preloop.services.aux_model_retry.asyncio.sleep",
+                new=AsyncMock(return_value=None),
+            ),
         )
 
     @staticmethod

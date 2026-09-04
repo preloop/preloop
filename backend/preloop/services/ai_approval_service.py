@@ -462,13 +462,22 @@ class AIApprovalService:
             system_instruction="You are an AI approval system. Respond only with valid JSON.",
         )
 
-        response = await asyncio.to_thread(
-            gemini_model.generate_content,
-            prompt,
-            generation_config=genai.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=500,
-            ),
+        generation_config = genai.GenerationConfig(
+            temperature=0.1,
+            max_output_tokens=500,
+        )
+
+        async def _generate() -> Any:
+            return await asyncio.to_thread(
+                gemini_model.generate_content,
+                prompt,
+                generation_config=generation_config,
+            )
+
+        response = await call_with_aux_retry_async(
+            _generate,
+            operation_name="ai_approval_evaluation",
+            provider="gemini",
         )
 
         return response.text if response.text else ""
