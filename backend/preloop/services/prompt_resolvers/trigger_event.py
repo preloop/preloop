@@ -8,6 +8,51 @@ from .base import PromptResolver, ResolverContext
 logger = logging.getLogger(__name__)
 
 
+def _alias_object_attribute_ids(attrs: Dict[str, Any]) -> None:
+    """Expose both GitHub ``number`` and GitLab ``iid`` on object_attributes.
+
+    Presets (including Automated Issue Implementation) use
+    ``object_attributes.number`` so ``Closes #N`` resolves. GitHub issue and
+    pull-request payloads already set both keys when mapped into
+    object_attributes. GitLab native object_attributes only have ``iid``.
+    """
+    if not isinstance(attrs, dict):
+        return
+    number = attrs.get("number")
+    iid = attrs.get("iid")
+    if number is None and iid is not None:
+        attrs["number"] = iid
+    if iid is None and number is not None:
+        attrs["iid"] = number
+
+
+def _lift_gitlab_noteable_ids(payload: Dict[str, Any], attrs: Dict[str, Any]) -> None:
+    """Copy the issue/MR iid off a GitLab Note hook onto object_attributes.
+
+    Note hooks put the note in ``object_attributes`` (no iid) and the
+    issue or merge request beside it. Without this, resume prompts leave
+    ``{{trigger_event.payload.object_attributes.number}}`` unresolved.
+    """
+    if attrs.get("number") is not None or attrs.get("iid") is not None:
+        return
+    for key in ("issue", "merge_request"):
+        nested = payload.get(key)
+        if not isinstance(nested, dict):
+            continue
+        iid = nested.get("iid")
+        if iid is None:
+            continue
+        attrs["number"] = iid
+        attrs["iid"] = iid
+        if not attrs.get("title") and nested.get("title"):
+            attrs["title"] = nested["title"]
+        if not attrs.get("description") and nested.get("description"):
+            attrs["description"] = nested["description"]
+        if not attrs.get("url") and nested.get("url"):
+            attrs["url"] = nested["url"]
+        break
+
+
 class TriggerEventResolver(PromptResolver):
     """
     Resolver for trigger event data.
@@ -41,8 +86,14 @@ class TriggerEventResolver(PromptResolver):
         payload = normalized.get("payload", {})
         source = normalized.get("source", "").lower()
 
-        # If object_attributes already exists (GitLab), keep it
+        # GitLab (and other trackers that already ship object_attributes):
+        # keep the native object but alias number/iid and lift Note-hook
+        # issue/MR identifiers so the same placeholders resolve everywhere.
         if "object_attributes" in payload:
+            attrs = payload.get("object_attributes")
+            if isinstance(attrs, dict):
+                _lift_gitlab_noteable_ids(payload, attrs)
+                _alias_object_attribute_ids(attrs)
             return normalized
 
         # For GitHub, create object_attributes from pull_request or issue
