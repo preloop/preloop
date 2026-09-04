@@ -1345,6 +1345,9 @@ class GitHubTracker(BaseTracker):
             "project",
             "repository",
             "push",
+            "check_run",
+            "check_suite",
+            "workflow_run",
         ]
         payload = {
             "name": "web",

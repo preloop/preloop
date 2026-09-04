@@ -11,6 +11,7 @@ Flow `prompt_template` strings are resolved before the agent starts. Besides `{{
 *   `{{execution.id}}` — this run's id.
 *   `{{execution.url}}` — console URL `{PRELOOP_URL}/console/flows/executions/{id}`.
 *   `{{execution.resume_from}}` — prior execution id when this run was started from a human comment on a PR this flow opened. Empty otherwise.
+*   `{{execution.ci_failure}}` — when this run was started because GitHub CI failed on a PR this flow opened: provider, job name, and check URL. Empty otherwise.
 
 ## PR-comment resume
 
@@ -23,6 +24,10 @@ Flow `prompt_template` strings are resolved before the agent starts. Besides `{{
 *   **Self-loop:** a comment whose marker flow id names the receiving flow (its UUID or its name slug) never resumes it, so a flow cannot restart itself on its own output.
 *   **Cap:** `max_resumes_per_pr` (flow-level, `agent_config.max_resumes_per_pr`, default 5) limits how many resumes one PR can start. The running count lives on the opening execution's result (`resume_count`) and each resume carries its `resume_index`; comments past the cap are logged and skipped.
 *   **Queue one:** a correlated comment that arrives while a run for the same PR is still going does not start a competing execution. It sets `pending_followup` (with `pending_followup_comment_url`) on that running execution; further comments during the same run are coalesced onto the same flag. When the run reaches a terminal status (succeeded or failed), the orchestrator clears the flag and starts exactly one follow-up resume for the PR.
+
+## CI-failure resume
+
+Failing GitHub `check_run`, `check_suite`, and `workflow_run` events on a PR this flow opened resume the same way as a review comment, with `{{execution.ci_failure}}` filled in. The skip/resume filter is GitHub-only: existing GitLab `pipeline` / `job` flows keep firing on every event. GitLab payload extractors stay in `flow_ci_feedback` so an opt-in can reuse them later.
 
 ## Matrix / Batch Fan-Out
 

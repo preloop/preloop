@@ -20,6 +20,9 @@ export const GITHUB_TRACKER_EVENTS: TrackerEventOption[] = [
   { name: 'Push to Repository', value: 'push' },
   { name: 'Release Published', value: 'release' },
   { name: 'Deployment', value: 'deployment' },
+  { name: 'Check Run', value: 'check_run' },
+  { name: 'Check Suite', value: 'check_suite' },
+  { name: 'Workflow Run', value: 'workflow_run' },
 ];
 
 export const GITLAB_TRACKER_EVENTS: TrackerEventOption[] = [

@@ -641,6 +641,89 @@ class TestProcessEvent:
 
         mock_create_task.assert_not_called()
 
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    @patch("preloop.services.flow_trigger_service.bind_ci_failure_resume_or_skip")
+    @patch.object(FlowTriggerService, "_find_running_execution_for_commit")
+    async def test_failed_check_run_on_bound_pr_resumes(
+        self,
+        mock_running,
+        mock_bind,
+        mock_crud,
+        mock_nats,
+        mock_create_task,
+        flow_trigger_service,
+        sample_flow,
+    ):
+        sample_flow.trigger_event_types = ["issue_labeled", "check_run"]
+        mock_running.return_value = None
+        mock_bind.return_value = {
+            "execution_id": "prior",
+            "pr_url": "https://github.com/preloop/preloop/pull/353",
+            "source_branch": "feat/x",
+        }
+        mock_nats.return_value = AsyncMock()
+        mock_crud.get_by_trigger.return_value = [sample_flow]
+        event = {
+            "source": "github",
+            "type": "check_run",
+            "account_id": str(uuid.uuid4()),
+            "payload": {
+                "action": "completed",
+                "check_run": {
+                    "name": "backend-tests",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "head_sha": "abc123def456",
+                    "html_url": "https://github.com/preloop/preloop/runs/9",
+                    "check_suite": {"head_branch": "feat/x"},
+                },
+            },
+        }
+
+        await flow_trigger_service.process_event(event)
+
+        mock_bind.assert_called_once()
+        mock_create_task.assert_called_once()
+
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    @patch.object(FlowTriggerService, "_find_running_execution_for_commit")
+    async def test_failed_pipeline_on_issue_flow_starts_a_normal_run(
+        self,
+        mock_running,
+        mock_crud,
+        mock_nats,
+        mock_create_task,
+        flow_trigger_service,
+        sample_flow,
+    ):
+        sample_flow.trigger_event_types = ["issue_labeled", "pipeline"]
+        mock_running.return_value = None
+        mock_nats.return_value = AsyncMock()
+        mock_crud.get_by_trigger.return_value = [sample_flow]
+        event = {
+            "source": "gitlab",
+            "type": "pipeline",
+            "account_id": str(uuid.uuid4()),
+            "payload": {
+                "object_kind": "pipeline",
+                "project": {"web_url": "https://gitlab.com/acme/backend"},
+                "object_attributes": {
+                    "id": 4242,
+                    "status": "failed",
+                    "ref": "preloop/issue-42",
+                    "sha": "abc123def456",
+                },
+            },
+        }
+
+        await flow_trigger_service.process_event(event)
+
+        mock_create_task.assert_called_once()
+
 
 class TestProcessEventReleaseDedupe:
     """process_event must coalesce duplicate release events (issue #241).

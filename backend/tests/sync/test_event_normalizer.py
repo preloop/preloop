@@ -211,6 +211,13 @@ class TestEventNormalization:
     def test_github_deployment_status(self):
         assert normalize_event_type("github", "deployment_status", {}) == "deployment"
 
+    def test_github_ci_events(self):
+        """CI events keep their own normalized types so flows can subscribe."""
+        payload = {"action": "completed"}
+        assert normalize_event_type("github", "check_run", payload) == "check_run"
+        assert normalize_event_type("github", "check_suite", payload) == "check_suite"
+        assert normalize_event_type("github", "workflow_run", payload) == "workflow_run"
+
 
 class TestFilterFieldExtraction:
     """Test extraction of filter fields from webhook payloads."""
@@ -555,6 +562,8 @@ class TestHumanizeEventType:
         assert humanize_event_type("job") == "Job Event"
         assert humanize_event_type("deployment") == "Deployment"
         assert humanize_event_type("pull_request_merged") == "Pull Request Merged"
+        assert humanize_event_type("check_run") == "Check Run"
+        assert humanize_event_type("workflow_run") == "Workflow Run"
 
     def test_unknown_event_type_falls_back_to_title_case(self):
         """Unknown/future event types still render readably, not as slugs."""
