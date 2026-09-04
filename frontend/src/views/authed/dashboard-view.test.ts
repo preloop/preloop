@@ -1571,6 +1571,44 @@ describe('DashboardView', () => {
       expect(usage.updating).to.be.false;
     });
 
+    it('reloads what the range changes and nothing else', async () => {
+      const element = await mountDashboard();
+      await waitUntil(
+        () => element['attentionInputs'] != null,
+        'first pass did not finish'
+      );
+
+      fetchStub.resetHistory();
+      const usage = element.shadowRoot?.querySelector('usage-card') as any;
+      usage.dispatchEvent(
+        new CustomEvent('range-change', {
+          detail: { value: 'year' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await waitUntil(
+        () => !element['updatingUsage'] && !element['fetchingUsageBreakdown'],
+        'the range change never settled'
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const urls = fetchStub.getCalls().map((call) => String(call.args[0]));
+      // The flows, the people and the tool catalogue read the same at any
+      // range, so a range change does not ask for them again.
+      expect(urls.some((url) => url === '/api/v1/flows')).to.be.false;
+      expect(urls.some((url) => url === '/api/v1/tools')).to.be.false;
+      expect(urls.some((url) => url.startsWith('/api/v1/users'))).to.be.false;
+      // The gateway call log is scoped to the range, so it does.
+      expect(
+        urls.some((url) =>
+          url.startsWith('/api/v1/account/gateway-usage/search')
+        )
+      ).to.be.true;
+      expect(urls.some((url) => url.includes('include_breakdown=true'))).to.be
+        .true;
+    });
+
     it('keeps the Models tab on a skeleton until the second pass lands', async () => {
       // The models arrive in the slow secondary pass, after `loading` has
       // cleared. Hold that pass open and the card must still be waiting, not

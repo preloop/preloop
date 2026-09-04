@@ -1968,7 +1968,7 @@ export class DashboardView extends AuthedElement {
 
       this.budgetPolicies = Array.isArray(policies) ? policies : [];
       this.budgetAgents = budgetAgents.items || [];
-      this.saveDashboardCache();
+      this.scheduleCacheWrite();
     } finally {
       this.fetchingBudget = false;
     }
@@ -2120,7 +2120,11 @@ export class DashboardView extends AuthedElement {
       });
       this.scheduleCacheWrite();
 
-      void this.fetchDeferredData(startDateStr);
+      void this.fetchDeferredData(startDateStr, {
+        // A range change reloads what the range changes; the flows, the
+        // people and the tool catalogue are the same at any range.
+        rangeChangeOnly: options.preserveLoadingState === true,
+      });
     } catch (error) {
       console.error(
         'Failed to complete background loading of overview dashboard',
@@ -2150,7 +2154,19 @@ export class DashboardView extends AuthedElement {
    * this pass already fetched, instead of fetching its own copies of all
    * four.
    */
-  private async fetchDeferredData(startDateStr: string): Promise<void> {
+  private async fetchDeferredData(
+    startDateStr: string,
+    options: { rangeChangeOnly?: boolean } = {}
+  ): Promise<void> {
+    if (options.rangeChangeOnly) {
+      await Promise.all([
+        this.refreshGatewayInteractions(startDateStr),
+        this.refreshUsageBreakdown(startDateStr),
+      ]);
+      this.scheduleCacheWrite();
+      markOverviewTiming('overview-deferred-ready');
+      return;
+    }
     const inventoryPromise = this.fetchInventoryData(startDateStr);
     const breakdownPromise = this.refreshUsageBreakdown(startDateStr);
     const secondaryPromise = this.fetchSecondaryDashboardData();
@@ -2175,43 +2191,47 @@ export class DashboardView extends AuthedElement {
     markOverviewTiming('overview-deferred-ready');
   }
 
+  /**
+   * The page of gateway calls behind the failures card. Its rows are the ones
+   * that happened inside the range on screen, so a range change reloads it.
+   */
+  private async refreshGatewayInteractions(
+    startDateStr: string
+  ): Promise<void> {
+    const interactions = await this.catchWith403Handling(
+      getAccountGatewayUsageSearch({ limit: 100, startDate: startDateStr }),
+      { items: [] } as Awaited<ReturnType<typeof getAccountGatewayUsageSearch>>
+    );
+    this.gatewayInteractions = interactions.items || [];
+  }
+
   /** Flows, their runs, resolved approvals and the gateway call log. */
   private async fetchInventoryData(startDateStr: string): Promise<void> {
     this.fetchingInventory = true;
     this.fetchingRecentExecutions = true;
     try {
-      const [flows, flowExecutions, allApprovalRequests, gatewayInteractions] =
-        await Promise.all([
-          this.catchWith403Handling(getFlows(), [] as any[]),
-          // The Inventory Flows tab needs a last run, a run count and a
-          // failure count for every flow in the account, so this reads the
-          // server's maximum page rather than the five rows the old card
-          // showed.
-          this.catchWith403Handling(
-            getFlowExecutions({ limit: FLOW_EXECUTIONS_PAGE_SIZE }),
-            [] as FlowExecution[]
-          ),
-          this.catchWith403Handling(
-            this.fetchApprovalRequests(undefined, 100),
-            [] as ApprovalRequest[]
-          ),
-          // The failures card shows a handful, and it should be the handful
-          // that happened in the range the page is showing.
-          this.catchWith403Handling(
-            getAccountGatewayUsageSearch({
-              limit: 100,
-              startDate: startDateStr,
-            }),
-            {
-              items: [],
-            } as Awaited<ReturnType<typeof getAccountGatewayUsageSearch>>
-          ),
-        ]);
+      const [flows, flowExecutions, allApprovalRequests] = await Promise.all([
+        this.catchWith403Handling(getFlows(), [] as any[]),
+        // The Inventory Flows tab needs a last run, a run count and a
+        // failure count for every flow in the account, so this reads the
+        // server's maximum page rather than the five rows the old card
+        // showed.
+        this.catchWith403Handling(
+          getFlowExecutions({ limit: FLOW_EXECUTIONS_PAGE_SIZE }),
+          [] as FlowExecution[]
+        ),
+        this.catchWith403Handling(
+          this.fetchApprovalRequests(undefined, 100),
+          [] as ApprovalRequest[]
+        ),
+        // The failures card shows a handful, and it should be the handful
+        // that happened in the range the page is showing.
+        this.refreshGatewayInteractions(startDateStr),
+      ]);
 
       this.applyFlows(flows);
       this.applyFlowExecutions(flowExecutions);
       this.calculateApprovalStats(allApprovalRequests);
-      this.gatewayInteractions = gatewayInteractions.items || [];
     } catch (error) {
       console.error('Failed to load the Inventory data', error);
     } finally {
