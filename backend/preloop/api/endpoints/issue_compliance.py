@@ -12,10 +12,12 @@ from sqlalchemy.orm import Session
 from preloop.api.auth import get_current_active_user
 from preloop.config import get_settings, Settings
 from preloop.schemas.issue import IssueResponse, IssueUpdate
+from preloop.services.aux_model_retry import call_with_aux_retry
 from preloop.services.model_credentials import (
     get_aux_openai_sdk_extra_kwargs,
     resolve_model_call_credentials,
 )
+from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.schemas.issue_compliance import (
     ComplianceSuggestionResponse,
     CompliancePromptMetadata,
@@ -144,11 +146,15 @@ def _calculate_issue_compliance(
             },
         )
 
-        response = client.chat.completions.create(
-            model=default_model.model_identifier,
-            messages=messages,
-            response_format={"type": "json_object"},
-            **aux_extras,
+        response = call_with_aux_retry(
+            lambda: client.chat.completions.create(
+                model=default_model.model_identifier,
+                messages=messages,
+                response_format={"type": "json_object"},
+                **aux_extras,
+            ),
+            operation_name="issue_compliance_check",
+            provider=getattr(default_model, "provider_name", None),
         )
         llm_response_text = response.choices[0].message.content.strip()
 
@@ -161,6 +167,13 @@ def _calculate_issue_compliance(
 
     except openai.APIError as e:
         raise HTTPException(status_code=500, detail=f"AI model API error: {e}")
+    except ModelGatewayAPIError as exc:
+        logger.warning("AI compliance check did not recover: %s", exc)
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail="AI model is rate limited; retry later.",
+            headers=exc.response_headers(),
+        )
     except (ValueError, IndexError) as e:
         raise HTTPException(
             status_code=500, detail=f"Error parsing AI model response: {e}"
@@ -303,11 +316,15 @@ def get_compliance_improvement_suggestion(
         },
     )
     try:
-        llm_response = client.chat.completions.create(
-            model=default_model.model_identifier,
-            messages=compliance_messages,
-            response_format={"type": "json_object"},
-            **aux_extras,
+        llm_response = call_with_aux_retry(
+            lambda: client.chat.completions.create(
+                model=default_model.model_identifier,
+                messages=compliance_messages,
+                response_format={"type": "json_object"},
+                **aux_extras,
+            ),
+            operation_name="issue_compliance_suggestion",
+            provider=getattr(default_model, "provider_name", None),
         )
         suggestion_data = json.loads(llm_response.choices[0].message.content)
         return ComplianceSuggestionResponse(**suggestion_data)
@@ -316,6 +333,13 @@ def get_compliance_improvement_suggestion(
         logger.error(f"OpenAI API call failed: {e}")
         raise HTTPException(
             status_code=500, detail="Failed to get compliance suggestion from AI model."
+        )
+    except ModelGatewayAPIError as exc:
+        logger.warning("AI compliance suggestion did not recover: %s", exc)
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail="AI model is rate limited; retry later.",
+            headers=exc.response_headers(),
         )
 
 

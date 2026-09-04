@@ -1,12 +1,26 @@
 import uuid
 from datetime import datetime, UTC
 
+import httpx
+import openai
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi import HTTPException
 
 from preloop.api.endpoints import comments
 from preloop.schemas.comment import CommentCreate
+from preloop.services.model_gateway_errors import ModelGatewayAPIError
+from preloop.services.upstream_errors import ERROR_CLASS_UPSTREAM_RATE_LIMITED
+
+
+def _openai_rate_limit_error(retry_after: str = "3") -> openai.RateLimitError:
+    request = httpx.Request("POST", "https://example.com/v1/embeddings")
+    response = httpx.Response(
+        429, headers={"retry-after": retry_after}, request=request
+    )
+    return openai.RateLimitError(
+        "Error code: 429 - Too Many Requests", response=response, body=None
+    )
 
 
 @pytest.fixture
@@ -534,3 +548,171 @@ async def test_search_comments_fulltext_with_results(
 
             assert result.total == 1
             assert len(result.items) == 1
+
+
+# --- Transient 429 handling on the similarity-search query embedding (#269) --
+
+
+@pytest.mark.asyncio
+async def test_search_comments_similarity_embedding_429_is_retried(
+    mock_user: MagicMock,
+    mock_tracker: MagicMock,
+) -> None:
+    """One provider 429 during query embedding must not fail the search."""
+    db_session = MagicMock()
+    mock_model = MagicMock()
+    mock_model.id = str(uuid.uuid4())
+    mock_model.provider = "openai"
+
+    with patch(
+        "preloop.api.endpoints.comments.crud_tracker.get_for_account",
+        return_value=[mock_tracker],
+    ):
+        with patch(
+            "preloop.api.endpoints.comments.crud_embedding_model.get_active",
+            return_value=[mock_model],
+        ):
+            with patch(
+                "preloop.api.endpoints.comments.crud_issue_embedding._generate_embedding_vector",
+                side_effect=[_openai_rate_limit_error(), [0.1] * 1536],
+            ) as mock_vector:
+                with patch(
+                    "preloop.api.endpoints.comments.crud_issue_embedding.similarity_search",
+                    return_value=[],
+                ):
+                    with patch(
+                        "preloop.services.aux_model_retry.asyncio.sleep",
+                        new=AsyncMock(return_value=None),
+                    ):
+                        result = await comments.search_comments(
+                            db=db_session,
+                            current_user=mock_user,
+                            query="test query",
+                            search_type="similarity",
+                        )
+
+    assert result.total == 0
+    assert mock_vector.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_search_comments_similarity_embedding_429_surfaces_retry_after(
+    mock_user: MagicMock,
+    mock_tracker: MagicMock,
+) -> None:
+    """An exhausted transient 429 surfaces as 429 with a Retry-After header."""
+    db_session = MagicMock()
+    mock_model = MagicMock()
+    mock_model.id = str(uuid.uuid4())
+    mock_model.provider = "openai"
+
+    with patch(
+        "preloop.api.endpoints.comments.crud_tracker.get_for_account",
+        return_value=[mock_tracker],
+    ):
+        with patch(
+            "preloop.api.endpoints.comments.crud_embedding_model.get_active",
+            return_value=[mock_model],
+        ):
+            with patch(
+                "preloop.api.endpoints.comments.crud_issue_embedding._generate_embedding_vector",
+                side_effect=_openai_rate_limit_error(retry_after="3"),
+            ) as mock_vector:
+                with patch(
+                    "preloop.services.aux_model_retry.asyncio.sleep",
+                    new=AsyncMock(return_value=None),
+                ):
+                    with pytest.raises(HTTPException) as exc_info:
+                        await comments.search_comments(
+                            db=db_session,
+                            current_user=mock_user,
+                            query="test query",
+                            search_type="similarity",
+                        )
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.headers is not None
+    assert exc_info.value.headers.get("Retry-After") == "3"
+    assert mock_vector.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_search_comments_similarity_embedding_non_retryable_fails_fast(
+    mock_user: MagicMock,
+    mock_tracker: MagicMock,
+) -> None:
+    """A non-transient embedding failure is not retried and stays a 500."""
+    db_session = MagicMock()
+    mock_model = MagicMock()
+    mock_model.id = str(uuid.uuid4())
+    mock_model.provider = "openai"
+
+    with patch(
+        "preloop.api.endpoints.comments.crud_tracker.get_for_account",
+        return_value=[mock_tracker],
+    ):
+        with patch(
+            "preloop.api.endpoints.comments.crud_embedding_model.get_active",
+            return_value=[mock_model],
+        ):
+            with patch(
+                "preloop.api.endpoints.comments.crud_issue_embedding._generate_embedding_vector",
+                side_effect=ValueError("Unsupported provider: fake"),
+            ) as mock_vector:
+                with pytest.raises(HTTPException) as exc_info:
+                    await comments.search_comments(
+                        db=db_session,
+                        current_user=mock_user,
+                        query="test query",
+                        search_type="similarity",
+                    )
+
+    assert exc_info.value.status_code == 500
+    assert mock_vector.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_search_comments_similarity_gateway_rate_limit_surfaces_429(
+    mock_user: MagicMock,
+    mock_tracker: MagicMock,
+) -> None:
+    """A classified ModelGatewayAPIError maps to its own status + headers."""
+    db_session = MagicMock()
+    mock_model = MagicMock()
+    mock_model.id = str(uuid.uuid4())
+    mock_model.provider = "openai"
+    gateway_error = ModelGatewayAPIError(
+        provider="openai",
+        status_code=429,
+        message="rate limited",
+        error_class=ERROR_CLASS_UPSTREAM_RATE_LIMITED,
+        retry_after_seconds=2,
+    )
+
+    with patch(
+        "preloop.api.endpoints.comments.crud_tracker.get_for_account",
+        return_value=[mock_tracker],
+    ):
+        with patch(
+            "preloop.api.endpoints.comments.crud_embedding_model.get_active",
+            return_value=[mock_model],
+        ):
+            with patch(
+                "preloop.api.endpoints.comments.crud_issue_embedding._generate_embedding_vector",
+                side_effect=gateway_error,
+            ):
+                with patch(
+                    "preloop.services.aux_model_retry.asyncio.sleep",
+                    new=AsyncMock(return_value=None),
+                ):
+                    with pytest.raises(HTTPException) as exc_info:
+                        await comments.search_comments(
+                            db=db_session,
+                            current_user=mock_user,
+                            query="test query",
+                            search_type="similarity",
+                        )
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.headers is not None
+    assert exc_info.value.headers.get("Retry-After") == "2"

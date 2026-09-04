@@ -8,10 +8,12 @@ import os
 import json
 from datetime import datetime, UTC
 
+from preloop.services.aux_model_retry import call_with_aux_retry
 from preloop.services.model_credentials import (
     get_aux_openai_sdk_extra_kwargs,
     resolve_model_call_credentials,
 )
+from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.schemas.issue_duplicate import (
     IssueDuplicate as IssueDuplicateSchema,
     IssueDuplicateSuggestionRequest,
@@ -190,11 +192,15 @@ def check_or_create_issue_duplicate(
             },
         )
 
-        response = client.chat.completions.create(
-            model=default_model.model_identifier,
-            messages=messages,
-            response_format={"type": "json_object"},
-            **aux_extras,
+        response = call_with_aux_retry(
+            lambda: client.chat.completions.create(
+                model=default_model.model_identifier,
+                messages=messages,
+                response_format={"type": "json_object"},
+                **aux_extras,
+            ),
+            operation_name="issue_duplicate_check",
+            provider=getattr(default_model, "provider_name", None),
         )
         llm_response_text = response.choices[0].message.content.strip()
         logger.info(
@@ -243,6 +249,15 @@ def check_or_create_issue_duplicate(
             f"OpenAI API call for model '{default_model.model_identifier}' failed: {e}"
         )
         raise HTTPException(status_code=500, detail="AI model API error")
+    except ModelGatewayAPIError as exc:
+        logger.warning(
+            "AI model call for issue duplicate check did not recover: %s", exc
+        )
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail="AI model is rate limited; retry later.",
+            headers=exc.response_headers(),
+        )
     except Exception as e:
         logger.exception(
             f"An unexpected error occurred during AI model invocation for model '{default_model.model_identifier}': {e}"
@@ -933,11 +948,15 @@ def get_resolution_suggestion(
     )
 
     try:
-        llm_response = client.chat.completions.create(
-            model=default_model.model_identifier,
-            messages=dup_messages,
-            response_format={"type": "json_object"},
-            **aux_extras,
+        llm_response = call_with_aux_retry(
+            lambda: client.chat.completions.create(
+                model=default_model.model_identifier,
+                messages=dup_messages,
+                response_format={"type": "json_object"},
+                **aux_extras,
+            ),
+            operation_name="issue_duplicate_resolution_suggestion",
+            provider=getattr(default_model, "provider_name", None),
         )
         suggestion_data = json.loads(llm_response.choices[0].message.content)
 
@@ -953,4 +972,11 @@ def get_resolution_suggestion(
         logger.error(f"OpenAI API call failed: {e}")
         raise HTTPException(
             status_code=500, detail="Failed to get suggestion from AI model."
+        )
+    except ModelGatewayAPIError as exc:
+        logger.warning("AI suggestion call did not recover: %s", exc)
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail="AI model is rate limited; retry later.",
+            headers=exc.response_headers(),
         )
