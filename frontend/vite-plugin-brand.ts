@@ -876,6 +876,9 @@ export function brandPlugin(
             ? get_regulation_nav_links(loadRegulationSlugs())
             : [],
         static_markdown_pages: loadStaticMarkdownPages(),
+        legal_disclaimer:
+          (brandConfig.landing as { legal_disclaimer?: string })
+            .legal_disclaimer || '',
       };
 
       const brandScript = `

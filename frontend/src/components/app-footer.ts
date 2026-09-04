@@ -1,13 +1,15 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, state } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 import { router } from '../router';
-import { getBrandConfig, isSaaS } from '../brand-config';
+import { getBrandConfig, hasBrandConfig, isSaaS } from '../brand-config';
 import { getFeatures } from '../api';
 import './logo-component';
 
 @customElement('app-footer')
 export class AppFooter extends LitElement {
   @state() private _registrationEnabled = true;
+  /** Same `legal_disclaimer` knob as landing content. Empty falls back to brand config. */
+  @property({ type: String }) legalDisclaimer = '';
 
   async connectedCallback() {
     super.connectedCallback();
@@ -94,6 +96,18 @@ export class AppFooter extends LitElement {
         font-size: 0.85rem;
       }
 
+      .legal-disclaimer {
+        margin: 0 0 16px;
+        font-size: 13px;
+        line-height: 1.5;
+        color: rgb(161, 161, 170);
+        text-align: left;
+      }
+
+      .legal-disclaimer + .footer-bottom {
+        margin-top: 16px;
+      }
+
       .copyright-text a {
         color: inherit;
         text-decoration: none;
@@ -115,6 +129,17 @@ export class AppFooter extends LitElement {
       }
     `,
   ];
+
+  private _disclaimerText(): string {
+    const fromProp = (this.legalDisclaimer || '').trim();
+    if (fromProp) {
+      return fromProp;
+    }
+    if (!hasBrandConfig()) {
+      return '';
+    }
+    return (getBrandConfig().legal_disclaimer || '').trim();
+  }
 
   handleLinkClick(event: MouseEvent) {
     event.preventDefault();
@@ -193,6 +218,11 @@ export class AppFooter extends LitElement {
           </nav>
         </div>
         <div class="divider"></div>
+        ${
+          this._disclaimerText()
+            ? html`<p class="legal-disclaimer">${this._disclaimerText()}</p>`
+            : ''
+        }
         <div class="footer-bottom">
           ${
             hasCompanyInfo
