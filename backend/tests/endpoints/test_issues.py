@@ -1,10 +1,12 @@
 """Unit tests for issues API endpoints."""
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -757,3 +759,105 @@ class TestGetIssueCount:
         assert response.status_code == 200
         data = response.json()
         assert data["total_issues"] == 0
+
+
+class TestSearchIssuesRateLimit:
+    """Transient 429 handling for the similarity-search query embedding (#269)."""
+
+    @staticmethod
+    def _openai_rate_limit_error(retry_after: str = "3") -> Exception:
+        import httpx
+        import openai
+
+        request = httpx.Request("POST", "https://example.com/v1/embeddings")
+        response = httpx.Response(
+            429, headers={"retry-after": retry_after}, request=request
+        )
+        return openai.RateLimitError(
+            "Error code: 429 - Too Many Requests", response=response, body=None
+        )
+
+    @staticmethod
+    def _similarity_patches(
+        vector_side_effect: object,
+    ) -> tuple[Any, ...]:
+        return (
+            patch(
+                "preloop.api.endpoints.issues.crud_tracker.get_for_account",
+                return_value=[MagicMock()],
+            ),
+            patch(
+                "preloop.api.endpoints.issues.crud_issue.get_for_trackers",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "preloop.api.endpoints.issues.crud_embedding_model.get_active",
+                return_value=[MagicMock(id="model-1", provider="openai")],
+            ),
+            patch(
+                "preloop.api.endpoints.issues.crud_issue_embedding._generate_embedding_vector",
+                side_effect=vector_side_effect,
+            ),
+            patch(
+                "preloop.api.endpoints.issues.crud_issue_embedding.similarity_search",
+                return_value=[],
+            ),
+            patch("preloop.services.aux_model_retry.time.sleep", lambda _: None),
+        )
+
+    @staticmethod
+    async def _search_similarity() -> Any:
+        from preloop.api.endpoints import issues as issues_endpoint
+
+        return await issues_endpoint.search_issues(
+            db=MagicMock(),
+            current_user=MagicMock(),
+            organization_id=None,
+            organization=None,
+            project_id=None,
+            project=None,
+            query="test query",
+            limit=10,
+            search_type="similarity",
+            status=None,
+            labels=None,
+            assignee=None,
+            priority=None,
+            last_updated_before=None,
+            last_updated_after=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_search_issues_similarity_embedding_429_is_retried(self) -> None:
+        """One provider 429 during query embedding must not fail the search."""
+        patches = self._similarity_patches(
+            [self._openai_rate_limit_error(), [0.1] * 1536]
+        )
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3] as mock_vector,
+            patches[4],
+            patches[5],
+        ):
+            result = await self._search_similarity()
+
+        assert result == []
+        assert mock_vector.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_search_issues_similarity_embedding_429_surfaces_retry_after(
+        self,
+    ) -> None:
+        """An exhausted transient 429 surfaces as 429 with a Retry-After header."""
+        patches = self._similarity_patches(
+            self._openai_rate_limit_error(retry_after="3")
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            with pytest.raises(HTTPException) as exc_info:
+                await self._search_similarity()
+
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.headers is not None
+        assert exc_info.value.headers.get("Retry-After") == "3"

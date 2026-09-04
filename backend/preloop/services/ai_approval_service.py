@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Optional, TYPE_CHECKING
 
+from preloop.services.aux_model_retry import call_with_aux_retry_async
+
 if TYPE_CHECKING:
     from preloop.models.models import ApprovalWorkflow
 
@@ -375,17 +377,21 @@ class AIApprovalService:
 
         client = AsyncOpenAI(**client_kwargs)
 
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are an AI approval system. Respond only with valid JSON.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,  # Low temperature for consistent output
-            max_tokens=500,  # Limit response length
+        response = await call_with_aux_retry_async(
+            lambda: client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an AI approval system. Respond only with valid JSON.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,  # Low temperature for consistent output
+                max_tokens=500,  # Limit response length
+            ),
+            operation_name="ai_approval_evaluation",
+            provider=provider,
         )
 
         return response.choices[0].message.content or ""
@@ -414,11 +420,15 @@ class AIApprovalService:
 
         client = AsyncAnthropic(**client_kwargs)
 
-        response = await client.messages.create(
-            model=model,
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt}],
-            system="You are an AI approval system. Respond only with valid JSON.",
+        response = await call_with_aux_retry_async(
+            lambda: client.messages.create(
+                model=model,
+                max_tokens=500,
+                messages=[{"role": "user", "content": prompt}],
+                system="You are an AI approval system. Respond only with valid JSON.",
+            ),
+            operation_name="ai_approval_evaluation",
+            provider="anthropic",
         )
 
         # Extract text from response

@@ -15,6 +15,7 @@ from preloop.services.ai_approval_service import (
     DEFAULT_MODEL,
     get_ai_approval_service,
 )
+from preloop.services.model_gateway_errors import ModelGatewayAPIError
 
 
 def make_workflow(**overrides):
@@ -275,3 +276,77 @@ class TestSingletonAndTemplate:
             model_used="m",
         )
         assert r.raw_response is None
+
+
+class TestOpenaiSdkRetry:
+    """Direct-SDK aux calls must survive a transient provider 429 (#269)."""
+
+    @staticmethod
+    def _rate_limit_error() -> Exception:
+        import httpx
+        import openai
+
+        request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+        response = httpx.Response(429, headers={}, request=request)
+        return openai.RateLimitError(
+            "Error code: 429 - Too Many Requests", response=response, body=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_transient_429_is_retried(self, service: AIApprovalService) -> None:
+        error = self._rate_limit_error()
+        ok = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+        calls = {"n": 0}
+
+        class _FakeCompletions:
+            async def create(self, **kwargs: object) -> SimpleNamespace:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise error
+                return ok
+
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=_FakeCompletions())
+        )
+        with (
+            patch("openai.AsyncOpenAI", return_value=fake_client),
+            patch(
+                "preloop.services.aux_model_retry.asyncio.sleep",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await service._call_openai(
+                "prompt", "gpt-5.4-mini", api_key="sk-test", provider="openai"
+            )
+
+        assert result == "ok"
+        assert calls["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_exhausted_429_surfaces_classified_gateway_error(
+        self, service: AIApprovalService
+    ) -> None:
+        error = self._rate_limit_error()
+
+        class _AlwaysThrottled:
+            async def create(self, **kwargs: object) -> SimpleNamespace:
+                raise error
+
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=_AlwaysThrottled())
+        )
+        with (
+            patch("openai.AsyncOpenAI", return_value=fake_client),
+            patch(
+                "preloop.services.aux_model_retry.asyncio.sleep",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            with pytest.raises(ModelGatewayAPIError) as caught:
+                await service._call_openai(
+                    "prompt", "gpt-5.4-mini", api_key="sk-test", provider="openai"
+                )
+
+        assert caught.value.status_code == 429
