@@ -12767,6 +12767,11 @@ components:
           type: integer
           title: Unpriced Tokens
           default: 0
+        unpriced_models:
+          items:
+            $ref: '#/components/schemas/UnpricedModelUsage'
+          type: array
+          title: Unpriced Models
         price_catalog:
           anyOf:
           - $ref: '#/components/schemas/PriceCatalogInfo'
@@ -20629,6 +20634,31 @@ components:
       type: object
       title: TrackerUpdate
       description: Model for updating an existing tracker.
+    UnpricedModelUsage:
+      properties:
+        model:
+          type: string
+          title: Model
+        requests:
+          type: integer
+          title: Requests
+          default: 0
+        tokens:
+          type: integer
+          title: Tokens
+          default: 0
+      type: object
+      required:
+      - model
+      title: UnpricedModelUsage
+      description: 'One model''s share of the window''s unpriced gateway usage.
+
+
+        Names the models behind ``unpriced_requests``/``unpriced_tokens`` so the
+
+        console can say WHICH models are missing from the price catalog instead
+
+        of only how many requests are affected.'
     UpdateTagRequest:
       properties:
         tag:
