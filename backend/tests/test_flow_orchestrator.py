@@ -294,6 +294,33 @@ class TestFlowExecutionOrchestrator:
         assert '"pass"' in resolved_prompt
         assert '"fail"' in resolved_prompt
 
+    @pytest.mark.asyncio
+    async def test_resume_prompt_includes_rebase_conflict_hint_before_success(self):
+        """Resume prompts tell the agent to inspect rebase-conflict.txt.
+
+        The rebase runs in the container after this prompt is resolved, so
+        the hint is always present and the success instruction stays last.
+        """
+        from preloop.services.prompt_resolvers.execution import (
+            RESUME_REBASE_CONFLICT_HINT,
+        )
+
+        orchestrator = FlowExecutionOrchestrator(
+            db=MagicMock(spec=Session),
+            flow_id=uuid4(),
+            trigger_event_data={"_resume": {"execution_id": "prior"}},
+            nats_client=MagicMock(),
+        )
+        orchestrator.flow = MagicMock(prompt_template="Continue the implementation.")
+
+        resolved_prompt = await orchestrator._resolve_prompt()
+
+        assert RESUME_REBASE_CONFLICT_HINT in resolved_prompt
+        hint_at = resolved_prompt.index(RESUME_REBASE_CONFLICT_HINT)
+        success_at = resolved_prompt.index(FLOW_SUCCESS_INSTRUCTION)
+        assert hint_at < success_at
+        assert resolved_prompt.endswith(FLOW_SUCCESS_INSTRUCTION)
+
     @pytest.mark.parametrize(
         "eval_contract",
         [
