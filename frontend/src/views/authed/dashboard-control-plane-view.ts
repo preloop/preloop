@@ -14,6 +14,7 @@ import '../../components/activity-feed.ts';
 import '../../components/inventory-card.ts';
 import '../../components/usage-card.ts';
 import '../../components/view-header.ts';
+import '../../components/relative-time-label.ts';
 import {
   AuthedElement,
   fetchWithAuth,
@@ -50,10 +51,14 @@ import {
   attentionItemAnchor,
   ATTENTION_KIND_META,
   deriveAttentionItems,
+  type AttentionApproval,
   type AttentionInputs,
   type AttentionItem,
 } from '../../utils/attention';
-import { loadAttentionInputs } from '../../utils/attention-data';
+import {
+  loadAttentionInputs,
+  type PrefetchedAttentionInputs,
+} from '../../utils/attention-data';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import type {
   AccountGatewayUsageSummaryResponse,
@@ -67,6 +72,7 @@ import type {
   AIModel,
 } from '../../types';
 import { parseUTCDate } from '../../utils/date';
+import { formatRelativeTime } from '../../components/relative-time-label';
 import { executionSubjectCss } from '../../utils/execution-subject';
 import {
   hasUsageBreakdown,
@@ -144,6 +150,51 @@ interface MCPServer {
  * a capped number as if it were the range.
  */
 const FLOW_EXECUTIONS_PAGE_SIZE = 100;
+
+/**
+ * Sessions above the fold answer one question - has anything ever run here -
+ * so the first wave asks for a short page and the attention loader asks for
+ * the window it needs later.
+ */
+const FOLD_SESSIONS_LIMIT = 20;
+
+/** The page of gateway calls the failures card reads on a live refresh. */
+const GATEWAY_FAILURES_REFRESH_LIMIT = 25;
+
+/** How long a burst of events on one topic is collected before it is served. */
+const REALTIME_DEBOUNCE_MS = 250;
+
+/**
+ * The floor between two refreshes of the same topic. `gateway_activity` is
+ * published once per model call, so without a floor a single busy agent is a
+ * refresh loop.
+ */
+const REALTIME_TOPIC_INTERVAL_MS = 10000;
+
+/** How often the expensive background reads run while the tab is visible. */
+const BACKGROUND_REFRESH_MS = 60000;
+
+/**
+ * How much of each long list the sessionStorage cache keeps. The cards read
+ * the first rows only; keeping every row is what pushed the cache over the
+ * per origin quota on busy accounts.
+ */
+const CACHED_SESSIONS = 20;
+const CACHED_INTERACTIONS = 25;
+const CACHED_FLOW_EXECUTIONS = 25;
+
+/**
+ * Timestamps for the Overview load, read by the performance spec. Free when
+ * nothing is measuring, and never a reason for a failure here.
+ */
+export function markOverviewTiming(name: string): void {
+  try {
+    performance.mark(name);
+  } catch {
+    // performance.mark is unavailable or the buffer is full; timings are
+    // diagnostics only.
+  }
+}
 
 interface FlowExecution {
   id: string;
@@ -224,7 +275,6 @@ interface DashboardMetric {
 
 @customElement('dashboard-view')
 export class DashboardView extends AuthedElement {
-  private initialLoadTime = Date.now();
   @state() private loading = true;
   @state() private fetchingGatewaySummary = true;
   /**
@@ -234,6 +284,13 @@ export class DashboardView extends AuthedElement {
    */
   @state() private updatingUsage = false;
   @state() private fetchingRecentExecutions = true;
+  /**
+   * Flows, their runs, the resolved approvals and the gateway call log: the
+   * cards below the fold. They are fetched after the first paint, so the
+   * Inventory tabs that read them say "still coming" while the tabs that are
+   * already filled show their rows.
+   */
+  @state() private fetchingInventory = true;
   @state() private fetchingApprovals = true;
   @state() private fetchingAudit = true;
   @state() private fetchingMCPAndTools = true;
@@ -344,18 +401,25 @@ export class DashboardView extends AuthedElement {
   };
 
   private unsubscribeRealtime?: () => void;
-  private refreshTimer: number | null = null;
   private refreshInFlight = false;
-  /**
-   * Makes "Updated just now" age.
-   *
-   * The label is a relative time, and a relative time that only recomputes
-   * when its data changes is a lie by the second minute: a page left open
-   * over lunch claimed the numbers under it were a minute old. Bumping this
-   * every 30s re-renders the header and nothing else.
-   */
-  @state() private updatedTick = 0;
-  private updatedTimer: number | null = null;
+  /** When the last full load started, which is what the event gate reads. */
+  private lastFetchStartedAt = 0;
+  /** One pending timer per topic key, so topics never queue behind each other. */
+  private refreshTimers: Record<string, number> = {};
+  /** When each topic key last ran, for its 10s floor. */
+  private lastTopicRefresh: Record<string, number> = {};
+  private backgroundTimer: number | null = null;
+  /** The budget fetch, for the parts of the page that do need to wait on it. */
+  private budgetReady: Promise<void> = Promise.resolve();
+  /** Set while a coalesced sessionStorage write is pending. */
+  private cacheWriteScheduled = false;
+  /** So a full cache is reported once per session, not once per write. */
+  private cacheQuotaWarned = false;
+  /** Memoised attention derivation; see `attentionItems`. */
+  private attentionMemo: {
+    inputs: AttentionInputs | null;
+    items: AttentionItem[];
+  } | null = null;
 
   private formatDate(dateStr: string | null | undefined): string {
     if (!dateStr) return '';
@@ -1269,14 +1333,10 @@ export class DashboardView extends AuthedElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this.initialLoadTime = Date.now(); // Reset load time on DOM connection to gate initial WebSocket reloads
     this.loadDismissedState();
     this.loadCachedDashboardData();
     void this.fetchDashboardData();
     this.connectRealtime();
-    this.updatedTimer = window.setInterval(() => {
-      if (this.lastUpdatedAt) this.updatedTick += 1;
-    }, 30000);
   }
 
   private async fetchAdminStatus() {
@@ -1309,6 +1369,18 @@ export class DashboardView extends AuthedElement {
     );
   }
 
+  /**
+   * Whether this page will ask for the people list itself. The activity feed
+   * asks for the same list to put names on rows, so when the answer is yes it
+   * waits for this one instead of making a second identical request.
+   */
+  private get fetchesUsers(): boolean {
+    return (
+      hasPermission(this.permissions, 'view_users') &&
+      (isSaaS() || this.userManagementEnabled)
+    );
+  }
+
   private async fetchFeatures() {
     try {
       const res = await getFeatures();
@@ -1329,13 +1401,13 @@ export class DashboardView extends AuthedElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     this.unsubscribeRealtime?.();
-    if (this.refreshTimer !== null) {
-      window.clearTimeout(this.refreshTimer);
-      this.refreshTimer = null;
+    for (const key of Object.keys(this.refreshTimers)) {
+      window.clearTimeout(this.refreshTimers[key]);
+      delete this.refreshTimers[key];
     }
-    if (this.updatedTimer !== null) {
-      window.clearInterval(this.updatedTimer);
-      this.updatedTimer = null;
+    if (this.backgroundTimer !== null) {
+      window.clearInterval(this.backgroundTimer);
+      this.backgroundTimer = null;
     }
   }
 
@@ -1411,6 +1483,33 @@ export class DashboardView extends AuthedElement {
     }
   }
 
+  /**
+   * The cache write is a full JSON.stringify of every list on the page, and
+   * the load used to call it once per finished pass. Coalesce them into one
+   * write when the browser is next idle so no fetch handler pays for it.
+   */
+  private scheduleCacheWrite(): void {
+    if (this.cacheWriteScheduled) return;
+    this.cacheWriteScheduled = true;
+    const write = () => {
+      this.cacheWriteScheduled = false;
+      this.saveDashboardCache();
+    };
+    const idle = (
+      window as Window & {
+        requestIdleCallback?: (
+          cb: () => void,
+          opts?: { timeout: number }
+        ) => number;
+      }
+    ).requestIdleCallback;
+    if (typeof idle === 'function') {
+      idle(write, { timeout: 2000 });
+    } else {
+      window.setTimeout(write, 0);
+    }
+  }
+
   private saveDashboardCache(): void {
     try {
       const sub = this.getUsernameFromToken();
@@ -1418,9 +1517,15 @@ export class DashboardView extends AuthedElement {
       const key = `preloop:dashboard:${sub}`;
       const cacheObj = {
         gatewaySummary: this.gatewaySummary,
-        runtimeSessions: this.runtimeSessions,
+        // Only what the cards actually show is worth keeping: the full lists
+        // pushed this object past the sessionStorage quota on busy accounts,
+        // and a quota failure threw away the whole cache.
+        runtimeSessions: this.runtimeSessions.slice(0, CACHED_SESSIONS),
         managedAgents: this.managedAgents,
-        gatewayInteractions: this.gatewayInteractions,
+        gatewayInteractions: this.gatewayInteractions.slice(
+          0,
+          CACHED_INTERACTIONS
+        ),
         auditGroups: this.auditGroups,
         trackers: this.trackers,
         totalIssues: this.totalIssues,
@@ -1428,7 +1533,7 @@ export class DashboardView extends AuthedElement {
         tools: this.tools,
         aiModels: this.aiModels,
         aiModelOverview: this.aiModelOverview,
-        flowExecutions: this.flowExecutions,
+        flowExecutions: this.flowExecutions.slice(0, CACHED_FLOW_EXECUTIONS),
         flows: this.flows,
         flowExecutionsCount: this.flowExecutionsCount,
         failedExecutionsCount: this.failedExecutionsCount,
@@ -1445,14 +1550,51 @@ export class DashboardView extends AuthedElement {
         hasAIModels: this.hasAIModels,
         lastUpdatedAt: this.lastUpdatedAt,
         approvalStats: this.approvalStats,
-        attentionInputs: this.attentionInputs,
+        attentionInputs: this.trimAttentionInputsForCache(),
         budgetPolicies: this.budgetPolicies,
         budgetAgents: this.budgetAgents,
       };
       sessionStorage.setItem(key, JSON.stringify(cacheObj));
     } catch (e) {
+      if (e instanceof DOMException && e.name === 'QuotaExceededError') {
+        // A half written cache is worse than none: drop it and carry on with
+        // network data only for this session.
+        try {
+          const sub = this.getUsernameFromToken();
+          sessionStorage.removeItem(`preloop:dashboard:${sub}`);
+        } catch {
+          // sessionStorage is unavailable; nothing left to clean up.
+        }
+        if (!this.cacheQuotaWarned) {
+          this.cacheQuotaWarned = true;
+          console.warn(
+            'Dashboard cache disabled for this session: storage full'
+          );
+        }
+        return;
+      }
       console.warn('Failed to save dashboard cache to sessionStorage', e);
     }
+  }
+
+  /**
+   * The usage summary inside the attention inputs carries per interaction
+   * detail that the rules never read back; keep only the per model rollup.
+   */
+  private trimAttentionInputsForCache(): AttentionInputs | null {
+    if (!this.attentionInputs) return null;
+    const usage = this.attentionInputs.usageSummary;
+    if (!usage) return this.attentionInputs;
+    return {
+      ...this.attentionInputs,
+      usageSummary: {
+        ...usage,
+        requests_by_day: [],
+        usage_by_flow: [],
+        usage_by_session: [],
+        usage_by_tool: [],
+      },
+    };
   }
 
   private loadDismissedState(): void {
@@ -1513,61 +1655,216 @@ export class DashboardView extends AuthedElement {
     }
   }
 
+  /**
+   * One subscription per topic, each mapped to the smallest refresh that can
+   * answer it.
+   *
+   * Every topic used to run the whole page again: 24 requests, and
+   * `gateway_activity` is published once per model call, so one agent working
+   * turned an open Overview into a refresh loop against the API. A topic now
+   * costs at most the handful of requests that topic can change, at most once
+   * every REALTIME_TOPIC_INTERVAL_MS. The attention inputs and the usage
+   * breakdown are not on this path at all; they are on the visible-tab timer
+   * below.
+   */
   private connectRealtime(): void {
-    const scheduleRefresh = () => this.scheduleRefresh();
-    const unsubscribers = [
-      unifiedWebSocketManager.subscribe('runtime_sessions', scheduleRefresh),
-      unifiedWebSocketManager.subscribe('managed_agents', scheduleRefresh),
-      unifiedWebSocketManager.subscribe('gateway_activity', scheduleRefresh),
-      unifiedWebSocketManager.subscribe('budget_health', scheduleRefresh),
-      unifiedWebSocketManager.subscribe('audit', scheduleRefresh),
-      unifiedWebSocketManager.subscribe('approvals', scheduleRefresh),
-      unifiedWebSocketManager.subscribe('flow_executions', scheduleRefresh),
-      unifiedWebSocketManager.subscribe(
-        'system',
-        scheduleRefresh,
-        (message) => message?.type === 'authenticated'
-      ),
+    const routes: Array<{
+      topic: string;
+      /** Topics that change the same data share a key and a floor. */
+      key: string;
+      run: () => Promise<void>;
+    }> = [
+      {
+        topic: 'gateway_activity',
+        key: 'gateway',
+        run: () => this.refreshGatewayFold(),
+      },
+      {
+        topic: 'runtime_sessions',
+        key: 'fleet',
+        run: () => this.refreshFleet(),
+      },
+      { topic: 'managed_agents', key: 'fleet', run: () => this.refreshFleet() },
+      {
+        topic: 'approvals',
+        key: 'approvals',
+        run: () => this.refreshPendingApprovals(),
+      },
+      {
+        topic: 'flow_executions',
+        key: 'flows',
+        run: () => this.refreshFlowRuns(),
+      },
+      {
+        topic: 'budget_health',
+        key: 'budget',
+        run: () => this.fetchBudgetSummary(),
+      },
     ];
+    // Not subscribed: `audit` (the feed ingests the event itself and the
+    // exceptions card is on the background timer) and `system:authenticated`
+    // (the initial fetch has already run by the time it arrives).
+    const unsubscribers = routes.map((route) =>
+      unifiedWebSocketManager.subscribe(route.topic, () =>
+        this.scheduleTopicRefresh(route.key, route.run)
+      )
+    );
     this.unsubscribeRealtime = () => {
       for (const unsubscribe of unsubscribers) {
         unsubscribe();
       }
     };
     void unifiedWebSocketManager.connect();
+
+    // The two expensive reads (attention inputs, usage breakdown) are worth
+    // a minute of staleness and nothing more; a hidden tab is worth nothing.
+    this.backgroundTimer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void this.refreshBackgroundInputs();
+    }, BACKGROUND_REFRESH_MS);
   }
 
-  private scheduleRefresh(): void {
-    const timeSinceLoad = Date.now() - this.initialLoadTime;
-    if (timeSinceLoad < 5000) {
-      // Skip redundant WebSocket auth/event reloads on initial page load
+  /**
+   * Run one topic's refresher, coalesced and rate limited.
+   *
+   * Events arriving while a run is scheduled are the same news, so they are
+   * dropped rather than queued; a topic that has just run waits out the rest
+   * of its floor instead of running again.
+   */
+  private scheduleTopicRefresh(key: string, run: () => Promise<void>): void {
+    if (Date.now() - this.lastFetchStartedAt < 5000) {
+      // The initial load is still landing; its data is newer than this event.
       return;
     }
-    if (this.lastUpdatedAt) {
-      const elapsed = Date.now() - new Date(this.lastUpdatedAt).getTime();
-      if (elapsed < 5000) {
-        // Skip redundant WebSocket auth reload on initial page load
-        return;
-      }
+    if (this.refreshTimers[key] !== undefined) {
+      return;
     }
-    if (this.refreshTimer !== null) {
-      window.clearTimeout(this.refreshTimer);
-    }
-    this.refreshTimer = window.setTimeout(() => {
-      this.refreshTimer = null;
-      if (this.refreshInFlight) {
-        // A fetch is already running and will return data from before this
-        // event; dropping the event here is what left "Updated 4m ago" on
-        // a page that had just been told something changed. Wait for the
-        // one in flight to land, then take our turn.
-        this.refreshTimer = window.setTimeout(() => {
-          this.refreshTimer = null;
-          void this.fetchDashboardData({ preserveLoadingState: true });
-        }, 1000);
-        return;
-      }
-      void this.fetchDashboardData({ preserveLoadingState: true });
-    }, 250);
+    const sinceLast = Date.now() - (this.lastTopicRefresh[key] || 0);
+    const delay = Math.max(
+      REALTIME_DEBOUNCE_MS,
+      REALTIME_TOPIC_INTERVAL_MS - sinceLast
+    );
+    this.refreshTimers[key] = window.setTimeout(() => {
+      delete this.refreshTimers[key];
+      this.lastTopicRefresh[key] = Date.now();
+      void run()
+        .then(() => {
+          this.lastUpdatedAt = new Date().toISOString();
+          this.scheduleCacheWrite();
+        })
+        .catch((error) => {
+          console.error(
+            `Failed to refresh ${key} from a realtime event`,
+            error
+          );
+        });
+    }, delay);
+  }
+
+  /** What a gateway call can change: the totals, the deltas, the failures. */
+  private async refreshGatewayFold(): Promise<void> {
+    const startDateStr = this.getGatewayStartDate();
+    const priorWindow = this.getPriorGatewayWindow(startDateStr);
+    const [summary, priorSummary, rateLimitReport, interactions] =
+      await Promise.all([
+        this.catchWith403Handling(
+          getAccountGatewayUsageSummary({
+            startDate: startDateStr,
+            includeBreakdown: false,
+          }),
+          null
+        ),
+        this.catchWith403Handling(
+          getAccountGatewayUsageSummary({
+            startDate: priorWindow.startDate,
+            endDate: priorWindow.endDate,
+            includeBreakdown: false,
+          }),
+          null
+        ),
+        this.catchWith403Handling(
+          getAccountRateLimitReport({ startDate: startDateStr }),
+          null
+        ),
+        this.catchWith403Handling(
+          getAccountGatewayUsageSearch({
+            limit: GATEWAY_FAILURES_REFRESH_LIMIT,
+            startDate: startDateStr,
+          }),
+          { items: [] } as Awaited<
+            ReturnType<typeof getAccountGatewayUsageSearch>
+          >
+        ),
+      ]);
+    // Merge, never replace: the breakdown on screen came from a heavier
+    // request that this one does not make.
+    this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
+      this.gatewaySummary,
+      summary
+    );
+    this.priorGatewaySummary = priorSummary;
+    this.rateLimitReport = rateLimitReport;
+    this.gatewayInteractions = interactions.items || [];
+  }
+
+  /** What a session or agent event can change. */
+  private async refreshFleet(): Promise<void> {
+    const [runtimeSessions, managedAgents] = await Promise.all([
+      this.catchWith403Handling(
+        getAccountRuntimeSessions({
+          status: 'all',
+          limit: FOLD_SESSIONS_LIMIT,
+          startDate: this.getGatewayStartDate(),
+        }),
+        { items: [] } as Awaited<ReturnType<typeof getAccountRuntimeSessions>>
+      ),
+      this.catchWith403Handling(
+        getAccountAgents({ status: 'all', limit: 100 }),
+        { items: [], total: 0 } as Awaited<ReturnType<typeof getAccountAgents>>
+      ),
+    ]);
+    this.runtimeSessions = runtimeSessions.items || [];
+    this.totalRuntimeSessionsCount =
+      runtimeSessions.total ?? this.runtimeSessions.length;
+    this.applyAgentsList(managedAgents);
+  }
+
+  /** What an approval event can change. */
+  private async refreshPendingApprovals(): Promise<void> {
+    const pending = await this.catchWith403Handling(
+      this.fetchApprovalRequests('pending', 100),
+      [] as ApprovalRequest[]
+    );
+    this.pendingApprovals = pending.filter((approval) =>
+      this.isUnexpiredPendingApproval(approval)
+    );
+  }
+
+  /** What a flow execution event can change. */
+  private async refreshFlowRuns(): Promise<void> {
+    const [flows, flowExecutions] = await Promise.all([
+      this.catchWith403Handling(getFlows(), [] as any[]),
+      this.catchWith403Handling(
+        getFlowExecutions({ limit: FLOW_EXECUTIONS_PAGE_SIZE }),
+        [] as FlowExecution[]
+      ),
+    ]);
+    this.applyFlows(flows);
+    this.applyFlowExecutions(flowExecutions);
+  }
+
+  /**
+   * The reads that are too expensive for an event: the 30-day attention
+   * breakdown and the selected range's breakdown. Once a minute, and only
+   * while somebody is looking.
+   */
+  private async refreshBackgroundInputs(): Promise<void> {
+    const startDateStr = this.getGatewayStartDate();
+    await this.refreshUsageBreakdown(startDateStr);
+    await this.refreshAttentionInputs();
+    await this.refreshAuditExceptions();
+    this.lastUpdatedAt = new Date().toISOString();
+    this.scheduleCacheWrite();
   }
 
   private getGatewayStartDate(): string {
@@ -1669,7 +1966,7 @@ export class DashboardView extends AuthedElement {
 
       this.budgetPolicies = Array.isArray(policies) ? policies : [];
       this.budgetAgents = budgetAgents.items || [];
-      this.saveDashboardCache();
+      this.scheduleCacheWrite();
     } finally {
       this.fetchingBudget = false;
     }
@@ -1691,6 +1988,16 @@ export class DashboardView extends AuthedElement {
     }
   }
 
+  /**
+   * The first wave: what the top of the page needs and nothing else.
+   *
+   * Eight small requests in parallel, then `loading` is off. Everything
+   * heavier - the flows and their runs, the gateway call log, the tools, the
+   * usage breakdown, the attention inputs - runs after the first paint in
+   * {@link fetchDeferredData}. Nothing here is awaited twice: budget policies
+   * used to sit between the wave and `loading = false`, so the whole page
+   * waited on a request only the Usage card and the checklist read.
+   */
   private async fetchDashboardData(
     options: { preserveLoadingState?: boolean } = {}
   ) {
@@ -1698,10 +2005,13 @@ export class DashboardView extends AuthedElement {
       return;
     }
     this.refreshInFlight = true;
+    this.lastFetchStartedAt = Date.now();
+    markOverviewTiming('overview-fetch-start');
 
     if (!options.preserveLoadingState) {
       this.fetchingGatewaySummary = true;
       this.fetchingRecentExecutions = true;
+      this.fetchingInventory = true;
       this.fetchingApprovals = true;
       this.fetchingAgents = true;
       this.fetchingBudget = true;
@@ -1712,138 +2022,82 @@ export class DashboardView extends AuthedElement {
     this.error = null;
 
     const startDateStr = this.getGatewayStartDate();
+    const priorWindow = this.getPriorGatewayWindow(startDateStr);
 
     try {
-      // Wave 1 (above-the-fold): gateway metrics, budget, recent executions,
-      // active agents, approvals, features/admin — each unique resource once.
-      const agentsPromise = this.catchWith403Handling(
-        getAccountAgents({ status: 'all', limit: 100 }),
-        {
-          items: [],
-          total: 0,
-        } as Awaited<ReturnType<typeof getAccountAgents>>
-      );
-      const gatewaySummaryPromise = this.catchWith403Handling(
-        getAccountGatewayUsageSummary({
-          startDate: startDateStr,
-          includeBreakdown: false,
-        }),
-        null
-      );
-      const priorWindow = this.getPriorGatewayWindow(startDateStr);
-      const priorSummaryPromise = this.catchWith403Handling(
-        getAccountGatewayUsageSummary({
-          startDate: priorWindow.startDate,
-          endDate: priorWindow.endDate,
-          includeBreakdown: false,
-        }),
-        null
-      );
-      // One call, same window as the summary: without it the model row cannot
-      // say how many requests a provider throttled.
-      const rateLimitPromise = this.catchWith403Handling(
-        getAccountRateLimitReport({ startDate: startDateStr }),
-        null
-      );
-      const featuresPromise = this.fetchFeatures();
       const adminPromise = this.fetchAdminStatus();
-
       const [
         gatewaySummary,
-        gatewayInteractions,
-        flows,
-        flowExecutions,
+        priorGatewaySummary,
+        rateLimitReport,
         pendingApprovals,
-        allApprovalRequests,
         runtimeSessions,
         managedAgents,
         featuresRes,
-        priorGatewaySummary,
-        rateLimitReport,
       ] = await Promise.all([
-        gatewaySummaryPromise,
-        // The failures card shows a handful, and it should be the handful
-        // that happened in the range the page is showing: a full page of
-        // in-range calls is far likelier to contain the current failures
-        // than the last twelve calls of any age were.
         this.catchWith403Handling(
-          getAccountGatewayUsageSearch({
-            limit: 100,
+          getAccountGatewayUsageSummary({
             startDate: startDateStr,
+            includeBreakdown: false,
           }),
-          {
-            items: [],
-          } as Awaited<ReturnType<typeof getAccountGatewayUsageSearch>>
+          null
         ),
-        this.catchWith403Handling(getFlows(), [] as any[]),
-        // The Inventory Flows tab needs a last run, a run count and a failure
-        // count for every flow in the account, so this reads the server's
-        // maximum page rather than the five rows the old card showed.
         this.catchWith403Handling(
-          getFlowExecutions({ limit: FLOW_EXECUTIONS_PAGE_SIZE }),
-          [] as FlowExecution[]
+          getAccountGatewayUsageSummary({
+            startDate: priorWindow.startDate,
+            endDate: priorWindow.endDate,
+            includeBreakdown: false,
+          }),
+          null
+        ),
+        // One call, same window as the summary: without it the model row
+        // cannot say how many requests a provider throttled.
+        this.catchWith403Handling(
+          getAccountRateLimitReport({ startDate: startDateStr }),
+          null
         ),
         this.catchWith403Handling(
           this.fetchApprovalRequests('pending', 100),
-          []
+          [] as ApprovalRequest[]
         ),
-        this.catchWith403Handling(
-          this.fetchApprovalRequests(undefined, 100),
-          []
-        ),
+        // Above the fold a session answers one question - has anything ever
+        // run on this account - so a short page is enough. The attention
+        // loader asks for the window and the depth its rules need.
         this.catchWith403Handling(
           getAccountRuntimeSessions({
             status: 'all',
-            limit: 100,
+            limit: FOLD_SESSIONS_LIMIT,
             startDate: startDateStr,
           }),
           {
             items: [],
           } as Awaited<ReturnType<typeof getAccountRuntimeSessions>>
         ),
-        agentsPromise,
-        featuresPromise,
-        priorSummaryPromise,
-        rateLimitPromise,
+        this.catchWith403Handling(
+          getAccountAgents({ status: 'all', limit: 100 }),
+          {
+            items: [],
+            total: 0,
+          } as Awaited<ReturnType<typeof getAccountAgents>>
+        ),
+        this.fetchFeatures(),
       ]);
       await adminPromise;
-      this.rateLimitReport = rateLimitReport;
 
+      // One batch of assignments with no await between them, so Lit renders
+      // the finished fold once instead of eight times.
+      this.rateLimitReport = rateLimitReport;
       this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
         this.gatewaySummary,
         gatewaySummary
       );
       this.priorGatewaySummary = priorGatewaySummary;
-      this.gatewayInteractions = gatewayInteractions.items || [];
       this.fetchingGatewaySummary = false;
       this.updatingUsage = false;
-
-      this.hasFlows = (flows || []).length > 0;
-      this.totalFlowsCount = (flows || []).length;
-      this.flows = (flows || []).map((flow: { id: string; name?: string }) => ({
-        id: flow.id,
-        name: flow.name || 'Untitled flow',
-      }));
-      const sortedFlowExecutions = [...(flowExecutions || [])].sort(
-        (left, right) =>
-          new Date(right.start_time).getTime() -
-          new Date(left.start_time).getTime()
-      );
-      this.flowExecutionsCount = sortedFlowExecutions.length;
-      this.failedExecutionsCount = sortedFlowExecutions.filter(
-        (execution) => execution.status === 'FAILED'
-      ).length;
-      this.succeededFlowExecutionsCount = sortedFlowExecutions.filter(
-        (execution) =>
-          execution.status === 'SUCCEEDED' || execution.status === 'COMPLETED'
-      ).length;
-      this.flowExecutions = sortedFlowExecutions;
-      this.fetchingRecentExecutions = false;
 
       this.pendingApprovals = pendingApprovals.filter((approval) =>
         this.isUnexpiredPendingApproval(approval)
       );
-      this.calculateApprovalStats(allApprovalRequests);
       this.fetchingApprovals = false;
 
       this.runtimeSessions = runtimeSessions.items || [];
@@ -1852,31 +2106,23 @@ export class DashboardView extends AuthedElement {
       this.applyAgentsList(managedAgents);
       this.fetchingAgents = false;
 
-      await this.fetchBudgetSummary({
+      this.lastUpdatedAt = new Date().toISOString();
+      this.loading = false;
+      markOverviewTiming('overview-fold-ready');
+
+      // Not awaited: the Usage card and the checklist wait on
+      // `fetchingBudget` themselves, and nothing above the fold does.
+      this.budgetReady = this.fetchBudgetSummary({
         sharedAgents: managedAgents,
         features: featuresRes,
       });
+      this.scheduleCacheWrite();
 
-      this.lastUpdatedAt = new Date().toISOString();
-      this.loading = false;
-      this.saveDashboardCache();
-
-      // After the fold, not during wave 1: attention used to fetch its own
-      // usage breakdown in parallel and first paint waited for it. The
-      // loader still uses a fixed 30-day window so the strip matches
-      // /console/attention; wave 2's selected range is a different query.
-      void this.refreshAttentionInputs();
-
-      // Wave 2 is slow (full session breakdown + audit/tools). On a live
-      // websocket refresh only upgrade the top-models breakdown so the card
-      // does not flash empty while the rest of the dashboard stays put.
-      if (options.preserveLoadingState) {
-        void this.refreshUsageBreakdown(startDateStr).then(() =>
-          this.saveDashboardCache()
-        );
-      } else {
-        void this.fetchSecondaryDashboardData(startDateStr);
-      }
+      void this.fetchDeferredData(startDateStr, {
+        // A range change reloads what the range changes; the flows, the
+        // people and the tool catalogue are the same at any range.
+        rangeChangeOnly: options.preserveLoadingState === true,
+      });
     } catch (error) {
       console.error(
         'Failed to complete background loading of overview dashboard',
@@ -1886,6 +2132,7 @@ export class DashboardView extends AuthedElement {
       this.fetchingGatewaySummary = false;
       this.updatingUsage = false;
       this.fetchingRecentExecutions = false;
+      this.fetchingInventory = false;
       this.fetchingApprovals = false;
       this.fetchingAgents = false;
       this.fetchingBudget = false;
@@ -1897,7 +2144,126 @@ export class DashboardView extends AuthedElement {
     }
   }
 
-  private async fetchSecondaryDashboardData(gatewayStartDate: string) {
+  /**
+   * Everything below the fold, after the first paint.
+   *
+   * The three groups run in parallel; the attention loader runs last because
+   * it is handed the approvals, agents, and budget policies this pass already
+   * fetched. The usage breakdown is not shared: attention always loads its
+   * own rolling 30-day window, which is not the Overview calendar-month range.
+   */
+  private async fetchDeferredData(
+    startDateStr: string,
+    options: { rangeChangeOnly?: boolean } = {}
+  ): Promise<void> {
+    if (options.rangeChangeOnly) {
+      await Promise.all([
+        this.refreshGatewayInteractions(startDateStr),
+        this.refreshUsageBreakdown(startDateStr),
+      ]);
+      this.scheduleCacheWrite();
+      markOverviewTiming('overview-deferred-ready');
+      return;
+    }
+    const inventoryPromise = this.fetchInventoryData(startDateStr);
+    const breakdownPromise = this.refreshUsageBreakdown(startDateStr);
+    const secondaryPromise = this.fetchSecondaryDashboardData();
+
+    await Promise.all([inventoryPromise, breakdownPromise]);
+    markOverviewTiming('overview-inventory-ready');
+    // The policies are one of the attention inputs, so this is the one place
+    // that does wait for them.
+    await this.budgetReady.catch(() => undefined);
+    // Attention always uses its own rolling 30-day window. The Overview
+    // "month" range is a calendar month, which is not the same 30 days.
+    await this.refreshAttentionInputs();
+    await secondaryPromise;
+    this.scheduleCacheWrite();
+    markOverviewTiming('overview-deferred-ready');
+  }
+
+  /**
+   * The page of gateway calls behind the failures card. Its rows are the ones
+   * that happened inside the range on screen, so a range change reloads it.
+   */
+  private async refreshGatewayInteractions(
+    startDateStr: string
+  ): Promise<void> {
+    const interactions = await this.catchWith403Handling(
+      getAccountGatewayUsageSearch({ limit: 100, startDate: startDateStr }),
+      { items: [] } as Awaited<ReturnType<typeof getAccountGatewayUsageSearch>>
+    );
+    this.gatewayInteractions = interactions.items || [];
+  }
+
+  /** Flows, their runs, resolved approvals and the gateway call log. */
+  private async fetchInventoryData(startDateStr: string): Promise<void> {
+    this.fetchingInventory = true;
+    this.fetchingRecentExecutions = true;
+    try {
+      const [flows, flowExecutions, allApprovalRequests] = await Promise.all([
+        this.catchWith403Handling(getFlows(), [] as any[]),
+        // The Inventory Flows tab needs a last run, a run count and a
+        // failure count for every flow in the account, so this reads the
+        // server's maximum page rather than the five rows the old card
+        // showed.
+        this.catchWith403Handling(
+          getFlowExecutions({ limit: FLOW_EXECUTIONS_PAGE_SIZE }),
+          [] as FlowExecution[]
+        ),
+        this.catchWith403Handling(
+          this.fetchApprovalRequests(undefined, 100),
+          [] as ApprovalRequest[]
+        ),
+        // The failures card shows a handful, and it should be the handful
+        // that happened in the range the page is showing.
+        this.refreshGatewayInteractions(startDateStr),
+      ]);
+
+      this.applyFlows(flows);
+      this.applyFlowExecutions(flowExecutions);
+      this.calculateApprovalStats(allApprovalRequests);
+    } catch (error) {
+      console.error('Failed to load the Inventory data', error);
+    } finally {
+      this.fetchingInventory = false;
+      this.fetchingRecentExecutions = false;
+    }
+  }
+
+  private applyFlows(flows: Array<{ id: string; name?: string }>): void {
+    const list = flows || [];
+    this.hasFlows = list.length > 0;
+    this.totalFlowsCount = list.length;
+    this.flows = list.map((flow) => ({
+      id: flow.id,
+      name: flow.name || 'Untitled flow',
+    }));
+  }
+
+  private applyFlowExecutions(flowExecutions: FlowExecution[]): void {
+    const sorted = [...(flowExecutions || [])].sort(
+      (left, right) =>
+        new Date(right.start_time).getTime() -
+        new Date(left.start_time).getTime()
+    );
+    this.flowExecutionsCount = sorted.length;
+    this.failedExecutionsCount = sorted.filter(
+      (execution) => execution.status === 'FAILED'
+    ).length;
+    this.succeededFlowExecutionsCount = sorted.filter(
+      (execution) =>
+        execution.status === 'SUCCEEDED' || execution.status === 'COMPLETED'
+    ).length;
+    this.flowExecutions = sorted;
+  }
+
+  /**
+   * Audit exceptions, teammates, the tool catalogue and the model list. The
+   * usage breakdown used to be awaited here too; it is now started beside
+   * this pass so the attention loader can reuse it.
+   */
+  private async fetchSecondaryDashboardData() {
     this.fetchingAudit = true;
     this.fetchingMCPAndTools = true;
 
@@ -1953,8 +2319,7 @@ export class DashboardView extends AuthedElement {
           // view_users. Both the flags and the profile have answered by
           // the time this secondary fetch runs, so a reader without the
           // permission does not spend a request on a certain 403.
-          hasPermission(this.permissions, 'view_users') &&
-            (isSaaS() || this.userManagementEnabled)
+          this.fetchesUsers
             ? getUsers()
             : Promise.resolve({
                 users: [],
@@ -2028,16 +2393,18 @@ export class DashboardView extends AuthedElement {
       }
     })();
 
-    await Promise.all([
-      pAudit,
-      pTools,
-      pUsers,
-      this.refreshUsageBreakdown(gatewayStartDate),
-    ]);
-    this.saveDashboardCache();
+    await Promise.all([pAudit, pTools, pUsers]);
+    this.scheduleCacheWrite();
   }
 
-  private async refreshUsageBreakdown(gatewayStartDate: string) {
+  /**
+   * The breakdown behind the top-models card and the usage columns, plus the
+   * per-model overview. Returns the breakdown so the attention loader can be
+   * handed it instead of asking for a second one.
+   */
+  private async refreshUsageBreakdown(
+    gatewayStartDate: string
+  ): Promise<AccountGatewayUsageSummaryResponse | null> {
     this.fetchingUsageBreakdown = true;
     try {
       // Both in the deferred pass, so the fold is unaffected: the breakdown
@@ -2060,11 +2427,13 @@ export class DashboardView extends AuthedElement {
         this.aiModelOverview = overview.models;
       }
       if (!detailed) {
-        return;
+        return null;
       }
       this.gatewaySummary = detailed;
+      return detailed;
     } catch (error) {
       console.error('Failed to load gateway breakdown for top models', error);
+      return null;
     } finally {
       // Off whatever happened: a 403 on this endpoint means the columns will
       // never fill, and a skeleton that never resolves is worse than a zero.
@@ -2223,28 +2592,22 @@ export class DashboardView extends AuthedElement {
   }
 
   private formatRelativeTime(value: string | null | undefined): string {
-    if (!value) {
-      return 'Never';
-    }
-    const timestamp = parseUTCDate(value).getTime();
-    const deltaMinutes = Math.round((Date.now() - timestamp) / 60000);
-    if (deltaMinutes < 1) {
-      return 'just now';
-    }
-    if (deltaMinutes < 60) {
-      return `${deltaMinutes}m ago`;
-    }
-    const deltaHours = Math.round(deltaMinutes / 60);
-    if (deltaHours < 24) {
-      return `${deltaHours}h ago`;
-    }
-    return `${Math.round(deltaHours / 24)}d ago`;
+    return formatRelativeTime(value);
   }
 
-  private formatLastUpdatedLabel(): string {
-    if (this.lastUpdatedAt) {
-      return this.formatRelativeTime(this.lastUpdatedAt);
-    }
+  /**
+   * The freshness stamp beside the title. The element owns its own thirty
+   * second timer, so ageing the label no longer re-renders this page.
+   */
+  private renderLastUpdated() {
+    return html`<relative-time-label
+      .timestamp=${this.lastUpdatedAt}
+      .fallback=${this.lastUpdatedFallback}
+    ></relative-time-label>`;
+  }
+
+  /** What the header shows when there is no timestamp to age yet. */
+  private get lastUpdatedFallback(): string {
     if (
       this.loading ||
       this.fetchingGatewaySummary ||
@@ -2287,21 +2650,49 @@ export class DashboardView extends AuthedElement {
     if (!this.attentionInputs) {
       return [];
     }
-    return deriveAttentionItems(this.attentionInputs).items;
+    // Memoised on the inputs object: the derivation is a thousand-line rules
+    // module and this getter is read from the template, so it used to run on
+    // every render, including the forty a load causes.
+    if (this.attentionMemo?.inputs === this.attentionInputs) {
+      return this.attentionMemo.items;
+    }
+    const items = deriveAttentionItems(this.attentionInputs).items;
+    this.attentionMemo = { inputs: this.attentionInputs, items };
+    return items;
   }
 
   /**
-   * Same loader, same parameters as the Attention page, including the
-   * fixed 30-day usage breakdown. Starts after the first paint so a slow
-   * attention input never holds up the cards above the fold.
+   * Same loader, same rules as the Attention page. Approvals, agents and
+   * budget policies come from the fold; the usage breakdown is never reused
+   * from the Overview range (a calendar month is not a rolling 30 days).
+   * Starts after the first paint so a slow attention input never holds up
+   * the cards above the fold.
    */
-  private async refreshAttentionInputs(): Promise<void> {
+  private async refreshAttentionInputs(
+    shared: PrefetchedAttentionInputs = {}
+  ): Promise<void> {
     try {
-      this.attentionInputs = await loadAttentionInputs();
-      this.saveDashboardCache();
+      this.attentionInputs = await loadAttentionInputs({
+        prefetched: {
+          approvals: this.pendingApprovals as AttentionApproval[],
+          agents: this.managedAgents,
+          budgetPolicies: this.budgetPolicies,
+          ...shared,
+        },
+      });
+      this.scheduleCacheWrite();
     } catch (error) {
       console.error('Failed to load attention inputs', error);
     }
+  }
+
+  /** The exceptions card on its own, for the background timer. */
+  private async refreshAuditExceptions(): Promise<void> {
+    const audit = await this.catchWith403Handling(this.fetchAuditExceptions(), {
+      groups: [],
+      total: 0,
+    });
+    this.auditGroups = audit.groups || [];
   }
 
   private get gatewayRangeLabel(): string {
@@ -3279,6 +3670,11 @@ export class DashboardView extends AuthedElement {
         .rangeLabel=${this.gatewayRangeLabel}
         .flowRunsCapped=${this.flowRunsCapped}
         ?loading=${this.loading || this.fetchingMCPAndTools}
+        .loadingAgents=${this.loading}
+        .loadingFlows=${this.loading || this.fetchingInventory}
+        .loadingModels=${this.loading || this.fetchingMCPAndTools}
+        .loadingTools=${this.loading || this.fetchingMCPAndTools}
+        .loadingUsers=${this.loading || this.fetchingUsers}
         ?usageLoading=${this.usageColumnsPending}
       ></inventory-card>
     `;
@@ -3292,6 +3688,8 @@ export class DashboardView extends AuthedElement {
         .agents=${this.managedAgents}
         .executions=${this.flowExecutions}
         .budgetPolicies=${this.budgetPolicies}
+        .users=${this.accountUsers}
+        ?usersFromHost=${this.fetchesUsers}
         @open-budget-limits=${() => (this.showBudgetDialog = true)}
       ></activity-feed>
     `;
@@ -3325,7 +3723,7 @@ export class DashboardView extends AuthedElement {
               ? parseUTCDate(this.lastUpdatedAt).toLocaleString()
               : 'Not loaded yet'
           }
-          >Updated ${this.formatLastUpdatedLabel()}</span
+          >Updated ${this.renderLastUpdated()}</span
         >
       </view-header>
       <div class="extra-wide" style="margin-bottom: var(--sl-spacing-large);">
