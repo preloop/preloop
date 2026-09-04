@@ -343,6 +343,12 @@ class ToolSource(str, Enum):
     BUILTIN = "builtin"
     MCP = "mcp"
     HTTP = "http"
+    AGENT = "agent"
+
+
+def is_known_tool_source(source: str) -> bool:
+    """Return True if source is a ToolSource value (case-insensitive)."""
+    return source.lower() in {item.value for item in ToolSource}
 
 
 class ToolDefinition(BaseModel):
@@ -361,7 +367,10 @@ class ToolDefinition(BaseModel):
     name: str = Field(..., description="Tool name")
     source: str = Field(
         "builtin",
-        description="Source: 'builtin', 'mcp', 'http', or MCP server name",
+        description=(
+            "Source: a ToolSource value ('builtin', 'mcp', 'http', 'agent') "
+            "or an MCP server name"
+        ),
     )
     enabled: bool = Field(True, description="Whether the tool is enabled")
     approval_workflow: Optional[str] = Field(
@@ -623,9 +632,9 @@ class PolicyDocument(BaseModel):
                         f"'{tool.approval_workflow}'. Available policies: {policy_names}"
                     )
 
-                # Check MCP server references (if source is not builtin/http)
+                # Native sources (builtin, mcp, http, agent) are not server names.
                 source_lower = tool.source.lower()
-                if source_lower not in ["builtin", "mcp", "http"]:
+                if not is_known_tool_source(source_lower):
                     # It's a custom MCP server name reference
                     if source_lower not in {s.lower() for s in mcp_server_names}:
                         raise ValueError(

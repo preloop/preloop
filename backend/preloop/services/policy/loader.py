@@ -35,6 +35,7 @@ from preloop.services.policy.schema import (
     PolicyVersion,
     ToolCondition,
     ToolDefinition,
+    is_known_tool_source,
 )
 
 # CEL functions that indicate a complex expression requiring CEL evaluator
@@ -848,7 +849,7 @@ class PolicyApplier:
             for tool in policy.tools:
                 # Check MCP server references
                 source_lower = tool.source.lower()
-                if source_lower not in ["builtin", "mcp", "http"]:
+                if not is_known_tool_source(source_lower):
                     # It's a custom MCP server name reference
                     if source_lower not in all_available_servers:
                         suggestion = self._get_server_suggestion(
@@ -1211,7 +1212,7 @@ class PolicyApplier:
                 continue
             # Determine tool source and MCP server ID
             source_lower = tool_def.source.lower()
-            if source_lower in ["builtin", "http"]:
+            if is_known_tool_source(source_lower) and source_lower != "mcp":
                 tool_source = source_lower
                 mcp_server_id = None
             elif source_lower == "mcp":

@@ -35,7 +35,11 @@ from preloop.services.model_credentials import (
     resolve_model_call_credentials,
 )
 from preloop.services.policy import export_current_policy
-from preloop.services.policy.schema import PolicyDocument
+from preloop.services.policy.schema import (
+    PolicyDocument,
+    ToolDefinition,
+    is_known_tool_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +87,7 @@ class PolicyGenerationService:
 
         context_block = ""
         if include_current_config:
-            context_block = self._build_context_block()
+            context_block = self._build_context_block(prompt)
 
         system_prompt = self._build_system_prompt(schema_json, context_block)
 
@@ -178,6 +182,61 @@ class PolicyGenerationService:
         return sorted(all_models, key=lambda m: m.created_at, reverse=True)[0]
 
     _REMOVAL_RE = re.compile(r"\b(remove|delete|drop|without)\b", re.IGNORECASE)
+    _STARTER_POLICY_SERVER_RE = re.compile(
+        r'starter policy(?: update)? for the MCP server ["\']([^"\']+)["\']',
+        re.IGNORECASE,
+    )
+
+    def _starter_policy_server_name(self, prompt: str) -> Optional[str]:
+        """Return the MCP server a starter-policy prompt targets, if any."""
+        if not prompt:
+            return None
+        match = self._STARTER_POLICY_SERVER_RE.search(prompt)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _source_belongs_to_mcp_server(source: str, server_name: str) -> bool:
+        """True when a tool source is the named MCP server, not a native type."""
+        source_lower = (source or "").lower()
+        if is_known_tool_source(source_lower):
+            return False
+        return source_lower == server_name.lower()
+
+    @classmethod
+    def _raw_tool_belongs_to_mcp_server(
+        cls, tool: Dict[str, Any], server_name: str
+    ) -> bool:
+        """True when a raw YAML tool mapping belongs to the named MCP server."""
+        return cls._source_belongs_to_mcp_server(
+            str(tool.get("source") or ""), server_name
+        )
+
+    @classmethod
+    def _tool_belongs_to_mcp_server(
+        cls, tool: ToolDefinition, server_name: str
+    ) -> bool:
+        """True when a policy tool is scoped to the named MCP server.
+
+        Exported MCP tools use the server name as ``source``. Known ToolSource
+        values (builtin, mcp, http, agent) are never a specific server.
+        """
+        return cls._source_belongs_to_mcp_server(tool.source or "", server_name)
+
+    def _scope_tools_to_starter_server(
+        self,
+        tools: Optional[Sequence[ToolDefinition]],
+        prompt: str,
+    ) -> Optional[List[ToolDefinition]]:
+        """Keep only the target MCP server's tools for a starter-policy prompt."""
+        server_name = self._starter_policy_server_name(prompt)
+        if not server_name:
+            return list(tools) if tools else None
+        scoped = [
+            tool
+            for tool in (tools or [])
+            if self._tool_belongs_to_mcp_server(tool, server_name)
+        ]
+        return scoped or None
 
     def _prompt_asks_to_drop(self, prompt: str, name: str) -> bool:
         """True when the prompt names this item and asks to remove it."""
@@ -199,8 +258,24 @@ class PolicyGenerationService:
             generated_data = yaml.safe_load(generated_yaml)
             if not isinstance(generated_data, dict):
                 return generated_yaml
+        except yaml.YAMLError:
+            return generated_yaml
+
+        starter_server = self._starter_policy_server_name(prompt)
+        scoped_generated_yaml = False
+        if starter_server and isinstance(generated_data.get("tools"), list):
+            original_tools = generated_data["tools"]
+            generated_data["tools"] = [
+                tool
+                for tool in original_tools
+                if isinstance(tool, dict)
+                and self._raw_tool_belongs_to_mcp_server(tool, starter_server)
+            ] or None
+            scoped_generated_yaml = generated_data["tools"] != original_tools
+
+        try:
             generated = PolicyDocument(**generated_data)
-        except (yaml.YAMLError, Exception):
+        except Exception:
             return generated_yaml
 
         try:
@@ -211,7 +286,16 @@ class PolicyGenerationService:
             )
         except Exception as exc:
             logger.warning("Could not export current policy for merge: %s", exc)
-            return generated_yaml
+            if not self._starter_policy_server_name(prompt):
+                return generated_yaml
+            generated.tools = self._scope_tools_to_starter_server(
+                generated.tools, prompt
+            )
+            return yaml.dump(
+                generated.model_dump(mode="json", exclude_none=True),
+                default_flow_style=False,
+                sort_keys=False,
+            )
 
         restored = False
 
@@ -250,14 +334,30 @@ class PolicyGenerationService:
             )
             or None
         )
-        generated.tools = (
-            _restore(
-                current.tools,
-                generated.tools,
-                lambda item: (item.source, item.name),
+        starter_server = self._starter_policy_server_name(prompt)
+        if starter_server:
+            filtered_generated = self._scope_tools_to_starter_server(
+                generated.tools, prompt
             )
-            or None
-        )
+            if len(filtered_generated or []) != len(generated.tools or []):
+                restored = True
+            generated.tools = (
+                _restore(
+                    self._scope_tools_to_starter_server(current.tools, prompt),
+                    filtered_generated,
+                    lambda item: (item.source, item.name),
+                )
+                or None
+            )
+        else:
+            generated.tools = (
+                _restore(
+                    current.tools,
+                    generated.tools,
+                    lambda item: (item.source, item.name),
+                )
+                or None
+            )
         generated.model_io = (
             _restore(
                 current.model_io,
@@ -267,7 +367,7 @@ class PolicyGenerationService:
             or None
         )
 
-        if not restored:
+        if not restored and not scoped_generated_yaml:
             return generated_yaml
 
         return yaml.dump(
@@ -276,12 +376,16 @@ class PolicyGenerationService:
             sort_keys=False,
         )
 
-    def _build_context_block(self) -> str:
+    def _build_context_block(self, prompt: str = "") -> str:
         """Export the account's current policy config as YAML context.
 
         The output is structured so the LLM knows it should preserve
         existing items (MCP servers, approval workflows, tools with rules)
         and only add or modify what the user's prompt requests.
+
+        A starter-policy prompt for one MCP server only includes that
+        server's tools so native (agent) tools and other servers are not
+        copied into the suggestion.
         """
         try:
             current = export_current_policy(
@@ -289,6 +393,10 @@ class PolicyGenerationService:
                 account_id=self.account_id,
                 policy_name="(current configuration)",
             )
+            if self._starter_policy_server_name(prompt):
+                current.tools = self._scope_tools_to_starter_server(
+                    current.tools, prompt
+                )
             current_yaml = yaml.dump(
                 current.model_dump(mode="json", exclude_none=True),
                 default_flow_style=False,
