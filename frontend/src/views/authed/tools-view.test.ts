@@ -9,12 +9,16 @@ describe('ToolsView (approvals + conditions)', () => {
   let fetchStub: sinon.SinonStub;
   let overrideAgentIds: string[];
   let accountAgents: { id: string; display_name: string }[];
+  let failGovernanceGet: boolean;
+  let failGovernancePut: boolean;
 
   beforeEach(() => {
     overrideAgentIds = ['agent-override-1'];
     accountAgents = [
       { id: 'agent-override-1', display_name: 'Claude Code Workspace' },
     ];
+    failGovernanceGet = false;
+    failGovernancePut = false;
     // fetchWithAuth requires an access token to exist
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -95,12 +99,26 @@ describe('ToolsView (approvals + conditions)', () => {
         // Native tool approvals account-defaults card
         if (url.endsWith('/api/v1/account/governance-defaults')) {
           if (method === 'PUT') {
+            if (failGovernancePut) {
+              failGovernancePut = false;
+              return new Response(
+                JSON.stringify({ detail: 'Simulated PUT failure' }),
+                { status: 500, headers: { 'Content-Type': 'application/json' } }
+              );
+            }
             return new Response(
               JSON.stringify({
                 defaults: JSON.parse(String(init?.body)),
                 override_agent_ids: [],
               }),
               { status: 200, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          if (failGovernanceGet) {
+            failGovernanceGet = false;
+            return new Response(
+              JSON.stringify({ detail: 'Simulated GET failure' }),
+              { status: 500, headers: { 'Content-Type': 'application/json' } }
             );
           }
           return new Response(
@@ -389,6 +407,86 @@ describe('ToolsView (approvals + conditions)', () => {
     const moreLink = links[5];
     expect(moreLink.getAttribute('href')).to.equal('/console/agents');
     expect(moreLink.textContent).to.include('and 2 more');
+  });
+
+  it('shows an inline error and reverts the switch when saving fails', async () => {
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        !(element as any).loading &&
+        (element as any).governanceDefaults !== null,
+      'Tools view did not load governance defaults'
+    );
+    await element.updateComplete;
+
+    failGovernancePut = true;
+
+    const switchEl = element.shadowRoot?.querySelector(
+      '#native-approvals-default-switch'
+    ) as any;
+    expect(switchEl).to.exist;
+    expect(switchEl.checked).to.be.true;
+
+    switchEl.checked = false;
+    switchEl.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(
+      () => !(element as any).savingGovernanceDefaults,
+      'Save did not finish'
+    );
+    await element.updateComplete;
+
+    const saveError = element.shadowRoot?.querySelector('.governance-error');
+    expect(saveError).to.exist;
+    expect(saveError?.textContent).to.include('Could not save');
+    expect(switchEl.checked).to.be.true;
+    expect((element as any).error).to.equal(null);
+  });
+
+  it('renders a retry fallback when governance defaults fail to load', async () => {
+    failGovernanceGet = true;
+
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () => !(element as any).loading && (element as any).governanceLoadFailed,
+      'Governance load failure was not recorded'
+    );
+    await element.updateComplete;
+
+    const card = element.shadowRoot?.querySelector(
+      '#native-approvals-defaults-card'
+    );
+    expect(card).to.exist;
+    expect(card?.textContent).to.include('Could not load this setting');
+
+    const governanceGetCalls = () =>
+      fetchStub
+        .getCalls()
+        .filter(
+          (call) =>
+            String(call.args[0]).endsWith(
+              '/api/v1/account/governance-defaults'
+            ) &&
+            String(
+              (call.args[1] as RequestInit | undefined)?.method || 'GET'
+            ).toUpperCase() === 'GET'
+        );
+    expect(governanceGetCalls().length).to.equal(1);
+
+    const retry = card?.querySelector('a') as HTMLElement;
+    expect(retry).to.exist;
+    expect(retry.textContent).to.include('Retry');
+    retry.click();
+
+    await waitUntil(
+      () => (element as any).governanceDefaults !== null,
+      'Retry did not reload governance defaults'
+    );
+    await element.updateComplete;
+
+    expect(governanceGetCalls().length).to.equal(2);
+    expect(
+      element.shadowRoot?.querySelector('#native-approvals-default-switch')
+    ).to.exist;
   });
 
   it('does not create tool configuration twice when adding a rule immediately after toggling enabled', async () => {

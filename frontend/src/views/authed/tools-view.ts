@@ -83,7 +83,6 @@ export class ToolsView extends LitElement {
   @state() private governanceOverrideAgents: {
     id: string;
     name: string;
-    setting: string;
   }[] = [];
   @state() private savingGovernanceDefaults = false;
   @state() private governanceSaveError: string | null = null;
@@ -1681,10 +1680,11 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     try {
       const response = await getAccountGovernanceDefaults();
       this.governanceDefaults = response.defaults;
+      this.governanceLoadFailed = false;
       if (response.override_agent_ids.length > 0) {
-        // Resolve override agent names for the "N agents override" line.
-        // One list call covers typical fleets; unknown ids degrade to
-        // showing the id so the link still works.
+        // Resolve override agent names for the override line. One list call
+        // covers typical fleets; unknown ids degrade to showing the id so
+        // the link still works.
         try {
           const agents = await getAccountAgents({ limit: 100 });
           const byId = new Map(
@@ -1694,12 +1694,11 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
             (id) => ({
               id,
               name: byId.get(id)?.display_name || id,
-              setting: '',
             })
           );
         } catch {
           this.governanceOverrideAgents = response.override_agent_ids.map(
-            (id) => ({ id, name: id, setting: '' })
+            (id) => ({ id, name: id })
           );
         }
       } else {
@@ -1708,12 +1707,13 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     } catch {
       // Card is additive; a load failure must not degrade the Tools page.
       this.governanceDefaults = null;
+      this.governanceLoadFailed = true;
     }
   }
 
   private async _saveGovernanceDefaults(
     patch: Partial<AccountGovernanceDefaults>
-  ) {
+  ): Promise<boolean> {
     const next: AccountGovernanceDefaults = {
       ...(this.governanceDefaults || {}),
       ...patch,
@@ -1722,8 +1722,11 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     try {
       const response = await updateAccountGovernanceDefaults(next);
       this.governanceDefaults = response.defaults;
+      this.governanceSaveError = null;
+      return true;
     } catch {
-      this.error = 'Failed to save native tool approval defaults';
+      this.governanceSaveError = 'Could not save. Try again.';
+      return false;
     } finally {
       this.savingGovernanceDefaults = false;
     }
@@ -1801,12 +1804,16 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
             size="small"
             ?checked=${enforced}
             ?disabled=${this.savingGovernanceDefaults}
-            @sl-change=${(e: Event) =>
-              this._saveGovernanceDefaults({
-                native_tool_approvals: (e.target as HTMLInputElement).checked
-                  ? 'enforce'
-                  : 'off',
-              })}
+            @sl-change=${async (e: Event) => {
+              const target = e.target as HTMLInputElement;
+              const saved = await this._saveGovernanceDefaults({
+                native_tool_approvals: target.checked ? 'enforce' : 'off',
+              });
+              if (!saved) {
+                // The server kept the old value; flip the switch back.
+                target.checked = enforced;
+              }
+            }}
           >
             Ask a human before
             running${this.savingGovernanceDefaults ? ' Saving...' : ''}
