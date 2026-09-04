@@ -11,6 +11,7 @@ from preloop.models.crud import (
     crud_account,
     crud_ai_model,
     crud_api_usage,
+    crud_flow_runner,
     crud_runtime_session_activity,
 )
 from preloop.models.crud.flow import CRUDFlow
@@ -25,7 +26,6 @@ from preloop.utils.hashing import compute_content_hash
 from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
 from preloop.models.crud.flow_execution_log import crud_flow_execution_log
-from preloop.models.models.flow_runner import FlowRunner
 from preloop.services.runner_service import (
     derive_execution_runner,
     pool_from_session_reference,
@@ -485,10 +485,9 @@ def _project_execution_runners(
             )
         if runner_id is not None:
             runner_ids.append(runner_id)
-    runners_by_id: Dict[uuid.UUID, FlowRunner] = {}
-    if runner_ids:
-        rows = db.query(FlowRunner).filter(FlowRunner.id.in_(set(runner_ids))).all()
-        runners_by_id = {row.id: row for row in rows}
+    runners_by_id = {
+        row.id: row for row in crud_flow_runner.get_by_ids(db, ids=runner_ids)
+    }
     for execution in executions:
         ref = getattr(execution, "agent_session_reference", None)
         runner_id = _as_runner_uuid(getattr(execution, "runner_id", None))
