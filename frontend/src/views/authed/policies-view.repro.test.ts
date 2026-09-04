@@ -70,6 +70,12 @@ function stubFetch(opts: StubOpts) {
       if (url.includes('/access-rules') && method === 'POST') {
         return json({ id: 'rule-new', ...body }, 201);
       }
+      if (url.includes('/api/v1/access-rules/') && method === 'PUT') {
+        return json({ id: url.split('/').pop(), ...body });
+      }
+      if (url.includes('/api/v1/access-rules/') && method === 'DELETE') {
+        return new Response(null, { status: 204 });
+      }
       if (url.includes('/api/v1/policies/export')) {
         return new Response('version: "1.0"\n', { status: 200 });
       }
@@ -230,7 +236,7 @@ describe('Policies page repro', () => {
     expect(form.id).to.equal('flag-injection');
   });
 
-  it('R5 a saved tool access rule is shown as allow / true', async () => {
+  it('R5 a saved tool access rule is shown as deny with its condition', async () => {
     const m = await mount({ tools: [toolWithDenyRule] });
     stub = m.stub;
     const card = m.element.shadowRoot!.querySelector(
@@ -238,12 +244,13 @@ describe('Policies page repro', () => {
     ) as HTMLElement;
     expect(card).to.exist;
     const badge = card.querySelector('sl-badge') as HTMLElement;
-    expect(badge.textContent?.trim()).to.equal('allow');
-    expect(card.querySelector('code')?.textContent).to.equal('true');
-    expect(card.textContent).to.not.contain('contains("rm")');
+    expect(badge.textContent?.trim()).to.equal('deny');
+    expect(card.querySelector('code')?.textContent).to.contain(
+      'contains("rm")'
+    );
   });
 
-  it('R6 clicking a tool rule opens a blank model rule form', async () => {
+  it('R6 clicking a tool rule opens it for edit with card actions', async () => {
     const m = await mount({ tools: [toolWithDenyRule] });
     stub = m.stub;
     const card = m.element.shadowRoot!.querySelector(
@@ -252,16 +259,15 @@ describe('Policies page repro', () => {
     card.click();
     await m.element.updateComplete;
     expect(ruleDialog(m.element).open).to.be.true;
-    expect(ruleDialog(m.element).getAttribute('label')).to.equal('Add rule');
+    expect(ruleDialog(m.element).getAttribute('label')).to.equal('Edit rule');
     const form = (m.element as any)._modelIOForm;
-    expect(form.ruleType).to.equal('model');
-    expect(form.toolName).to.equal('');
-    expect((m.element as any)._editingModelIOId).to.be.null;
-    // No edit, disable, or delete control exists for a tool rule.
+    expect(form.ruleType).to.equal('tool');
+    expect(form.toolName).to.equal('shell');
+    expect((m.element as any)._editingAccessRuleId).to.equal('ar-1');
     const cardEl = m.element.shadowRoot!.querySelector(
       '[data-rule-id="shell"]'
     ) as HTMLElement;
-    expect(cardEl.querySelectorAll('sl-button')).to.have.length(0);
+    expect(cardEl.querySelectorAll('sl-button')).to.have.length(2);
   });
 
   it('R7 tool rule Save posts condition_type simple with a CEL expression', async () => {

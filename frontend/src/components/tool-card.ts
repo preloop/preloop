@@ -8,6 +8,7 @@ import {
   getToolApprovalCondition,
   fetchWithAuth,
 } from '../api';
+import type { AccessRule } from '../api';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -49,6 +50,7 @@ export interface Tool {
   approval_workflow_id: string | null;
   has_approval_condition: boolean;
   config_id: string | null;
+  access_rules?: AccessRule[];
   justification_mode?: string | null;
   /** Estimated tokens for this tool's schema as served (incl. justification). */
   schema_tokens_estimate?: number;

@@ -15,8 +15,10 @@ import {
   patchModelIORule,
   deleteModelIORule,
   createAccessRule,
+  updateAccessRule,
+  deleteAccessRule,
 } from '../../api';
-import type { ModelIORule } from '../../api';
+import type { AccessRule, ModelIORule } from '../../api';
 import type { Tool, ApprovalWorkflow } from '../../components/tool-card';
 import '../../components/policy-generate-dialog';
 import '../../components/view-header';
@@ -58,6 +60,8 @@ interface ToolAccessRule {
   condition: string | null;
   isEnabled: boolean;
   configId: string | null;
+  accessRuleId: string | null;
+  accessRule: AccessRule | null;
 }
 
 // Types for policy file history
@@ -217,6 +221,7 @@ export class PoliciesView extends LitElement {
   @state() private _modelIORules: ModelIORule[] = [];
   @state() private _showModelIODialog = false;
   @state() private _editingModelIOId: string | null = null;
+  @state() private _editingAccessRuleId: string | null = null;
   @state() private _savingModelIO = false;
   @state() private _ruleDialogError = '';
   @state() private _modelIOForm = {
@@ -942,22 +947,48 @@ export class PoliciesView extends LitElement {
       this._modelIORules = modelIORules;
       await this._refreshCurrentExport();
 
-      // Build tool access rules from tools
-      this._toolAccessRules = this._tools.map((tool) => ({
-        toolName: tool.name,
-        source: tool.source,
-        sourceId: tool.source_id,
-        sourceName: tool.source_name,
-        action: tool.approval_workflow_id
-          ? 'require_approval'
-          : tool.is_enabled
-            ? 'allow'
-            : 'deny',
-        workflowId: tool.approval_workflow_id,
-        condition: tool.has_approval_condition ? '(condition set)' : null,
-        isEnabled: tool.is_enabled,
-        configId: tool.config_id,
-      }));
+      // One row per access rule. Tools with a config but no rules keep a
+      // derived row so a disabled tool or a workflow-only config still shows.
+      this._toolAccessRules = this._tools.flatMap((tool) => {
+        const accessRules = tool.access_rules ?? [];
+        if (accessRules.length > 0) {
+          return accessRules.map((rule) => ({
+            toolName: tool.name,
+            source: tool.source,
+            sourceId: tool.source_id,
+            sourceName: tool.source_name,
+            action: rule.action,
+            workflowId: rule.approval_workflow_id,
+            condition: rule.condition_expression,
+            isEnabled: rule.is_enabled,
+            configId: tool.config_id,
+            accessRuleId: rule.id,
+            accessRule: rule,
+          }));
+        }
+        if (!tool.config_id) {
+          return [];
+        }
+        return [
+          {
+            toolName: tool.name,
+            source: tool.source,
+            sourceId: tool.source_id,
+            sourceName: tool.source_name,
+            action: tool.approval_workflow_id
+              ? 'require_approval'
+              : tool.is_enabled
+                ? 'allow'
+                : 'deny',
+            workflowId: tool.approval_workflow_id,
+            condition: tool.has_approval_condition ? '(condition set)' : null,
+            isEnabled: tool.is_enabled,
+            configId: tool.config_id,
+            accessRuleId: null,
+            accessRule: null,
+          },
+        ];
+      });
     } catch (err: any) {
       this._error = err.message || 'Failed to load data';
       console.error('Error loading policies data:', err);
@@ -1120,9 +1151,35 @@ export class PoliciesView extends LitElement {
     };
   }
 
-  private openModelIODialog(rule: ModelIORule | null = null) {
+  private openModelIODialog(
+    rule: ModelIORule | { toolRule: ToolAccessRule } | null = null
+  ) {
     this._ruleDialogError = '';
-    if (rule) {
+    this._editingAccessRuleId = null;
+    if (rule && 'toolRule' in rule) {
+      const toolRule = rule.toolRule;
+      this._editingModelIOId = null;
+      this._editingAccessRuleId = toolRule.accessRuleId;
+      const workflowName =
+        this._approvalPolicies.find(
+          (policy) => policy.id === toolRule.workflowId
+        )?.name || '';
+      this._modelIOForm = {
+        ...this._emptyModelIOForm(),
+        ruleType: 'tool',
+        toolName: toolRule.toolName,
+        action: toolRule.action,
+        expression:
+          toolRule.condition && toolRule.condition !== '(condition set)'
+            ? toolRule.condition
+            : '',
+        enabled: toolRule.isEnabled,
+        approvalWorkflow: workflowName,
+        conditionMode: 'custom',
+        presetId: '',
+        idTouched: true,
+      };
+    } else if (rule) {
       const condition = rule.conditions?.[0];
       const action = (condition?.action || 'deny') as
         'allow' | 'deny' | 'require_approval';
@@ -1155,6 +1212,7 @@ export class PoliciesView extends LitElement {
   private closeModelIODialog() {
     this._showModelIODialog = false;
     this._editingModelIOId = null;
+    this._editingAccessRuleId = null;
     this._ruleDialogError = '';
   }
 
@@ -1337,10 +1395,10 @@ export class PoliciesView extends LitElement {
         });
         configId = created.id;
       }
-      await createAccessRule(configId, {
+      const payload = {
         action: form.action,
         condition_expression: form.expression.trim() || null,
-        condition_type: 'simple',
+        condition_type: 'simple' as const,
         is_enabled: form.enabled,
         approval_workflow_id:
           form.action === 'require_approval'
@@ -1348,7 +1406,12 @@ export class PoliciesView extends LitElement {
                 (p) => p.name === form.approvalWorkflow
               )?.id || null
             : null,
-      });
+      };
+      if (this._editingAccessRuleId) {
+        await updateAccessRule(this._editingAccessRuleId, payload);
+      } else {
+        await createAccessRule(configId, payload);
+      }
       this.closeModelIODialog();
       await this.loadData();
     } catch (err: any) {
@@ -1389,6 +1452,39 @@ export class PoliciesView extends LitElement {
       await this.loadData();
     } catch (err: any) {
       this._error = err.message || 'Failed to delete model I/O rule';
+    }
+  }
+
+  private async toggleToolAccessRule(rule: ToolAccessRule) {
+    if (!rule.accessRuleId) {
+      return;
+    }
+    try {
+      await updateAccessRule(rule.accessRuleId, {
+        is_enabled: !rule.isEnabled,
+      });
+      await this.loadData();
+    } catch (err: any) {
+      this._error = err.message || 'Failed to update tool rule';
+    }
+  }
+
+  private async removeToolAccessRule(rule: ToolAccessRule) {
+    if (!rule.accessRuleId) {
+      return;
+    }
+    if (
+      !confirm(
+        `Delete tool rule for "${rule.toolName}"? This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteAccessRule(rule.accessRuleId);
+      await this.loadData();
+    } catch (err: any) {
+      this._error = err.message || 'Failed to delete tool rule';
     }
   }
 
@@ -1906,7 +2002,7 @@ export class PoliciesView extends LitElement {
           Boolean(rule.condition)
       )
       .map((rule) => ({
-        key: `tool:${rule.toolName}`,
+        key: `tool:${rule.toolName}:${rule.accessRuleId || 'config'}`,
         kind: 'tools' as const,
         target: `tool:${rule.toolName}`,
         id: rule.toolName,
@@ -1997,7 +2093,11 @@ export class PoliciesView extends LitElement {
                       @click=${() =>
                         rule.modelRule
                           ? this.openModelIODialog(rule.modelRule)
-                          : this.openModelIODialog()}
+                          : rule.toolRule
+                            ? this.openModelIODialog({
+                                toolRule: rule.toolRule,
+                              })
+                            : this.openModelIODialog()}
                     >
                       <div class="access-rule-header">
                         <div class="access-rule-info">
@@ -2058,7 +2158,34 @@ export class PoliciesView extends LitElement {
                                     Delete
                                   </sl-button>
                                 `
-                              : ''
+                              : rule.toolRule?.accessRuleId
+                                ? html`
+                                    <sl-button
+                                      size="small"
+                                      @click=${(e: Event) => {
+                                        e.stopPropagation();
+                                        this.toggleToolAccessRule(
+                                          rule.toolRule!
+                                        );
+                                      }}
+                                    >
+                                      ${rule.enabled ? 'Disable' : 'Enable'}
+                                    </sl-button>
+                                    <sl-button
+                                      size="small"
+                                      variant="danger"
+                                      outline
+                                      @click=${(e: Event) => {
+                                        e.stopPropagation();
+                                        this.removeToolAccessRule(
+                                          rule.toolRule!
+                                        );
+                                      }}
+                                    >
+                                      Delete
+                                    </sl-button>
+                                  `
+                                : ''
                           }
                         </div>
                       </div>
@@ -2188,7 +2315,11 @@ export class PoliciesView extends LitElement {
     return html`
       <sl-dialog
         class="rule-dialog"
-        label=${this._editingModelIOId ? 'Edit rule' : 'Add rule'}
+        label=${
+          this._editingModelIOId || this._editingAccessRuleId
+            ? 'Edit rule'
+            : 'Add rule'
+        }
         data-testid="rule-dialog"
         ?open=${this._showModelIODialog}
         @sl-request-close=${this._handleModelIORequestClose}
