@@ -16,9 +16,11 @@ from preloop.services.runner_service import (
     DEFAULT_QUEUE_TIMEOUT,
     lease_job,
     mark_queued_or_fail,
+    persistable_job_payload,
 )
 
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
+from .images import agent_config_has_image, default_agent_image
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +221,20 @@ class RemoteRunnerExecutor(AgentExecutor):
             and isinstance(agent_config["agent_config"], dict)
         ):
             agent_config = agent_config["agent_config"]
+        if isinstance(agent_config, dict):
+            agent_config = dict(agent_config)
+        else:
+            agent_config = {}
+
+        agent_type = (
+            context.get("agent_type")
+            or self.agent_type
+            or (getattr(flow, "agent_type", None) if flow is not None else None)
+        )
+        if not agent_config_has_image(agent_config):
+            image = default_agent_image(str(agent_type or ""))
+            if image:
+                agent_config["image"] = image
 
         def context_or_flow(key: str, default: Any = None) -> Any:
             value = context.get(key)
@@ -226,12 +242,10 @@ class RemoteRunnerExecutor(AgentExecutor):
                 return value
             return getattr(flow, key, default) if flow is not None else default
 
-        return {
+        payload: Dict[str, Any] = {
             "execution_id": str(execution_id),
             "flow_id": str(flow_id),
-            "agent_type": context.get("agent_type")
-            or self.agent_type
-            or context_or_flow("agent_type"),
+            "agent_type": agent_type,
             "agent_config": agent_config,
             "prompt": prompt,
             "model_identifier": context.get("model_identifier")
@@ -246,6 +260,10 @@ class RemoteRunnerExecutor(AgentExecutor):
             "git_clone_config": context_or_flow("git_clone_config"),
             "custom_commands": context_or_flow("custom_commands"),
         }
+        resume_from = _resume_from_execution_id(context, self.execution)
+        if resume_from:
+            payload["resume_from"] = resume_from
+        return payload
 
     def _flow_for_execution(self, execution: Any) -> Any:
         """Resolve the flow without depending on a loaded ORM relationship."""
@@ -286,6 +304,41 @@ async def _push_job(runner_id: UUID, payload: Dict[str, Any]) -> None:
         await push_job_to_runner(runner_id, payload)
     except Exception as exc:
         logger.debug("live job push skipped: %s", exc)
+
+
+def _resume_from_execution_id(
+    context: Dict[str, Any], execution: Any = None
+) -> Optional[str]:
+    """Prior execution id when this run resumes a PR-comment follow-up.
+
+    Args:
+        context: Execution context or empty dict.
+        execution: Optional flow execution with trigger_event_details.
+
+    Returns:
+        Prior execution id string, or None when this is not a resume.
+    """
+    direct = context.get("resume_from")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    trigger = context.get("trigger_event_data")
+    if not isinstance(trigger, dict) and execution is not None:
+        trigger = getattr(execution, "trigger_event_details", None)
+    if not isinstance(trigger, dict):
+        return None
+    resume = trigger.get("_resume") or {}
+    if isinstance(resume, str) and resume.strip():
+        return resume.strip()
+    if isinstance(resume, dict):
+        prior = resume.get("execution_id")
+        if prior:
+            return str(prior)
+    return None
+
+
+def payload_for_log(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a lease payload safe to write to logs (no live token)."""
+    return persistable_job_payload(payload)
 
 
 def _execution_id_from_ref(session_reference: str) -> Optional[UUID]:

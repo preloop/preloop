@@ -18,6 +18,7 @@ from .completion_nudge import (
     completion_nudge_timeout_seconds,
 )
 from .container import ContainerAgentExecutor
+from .images import default_agent_image
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,7 @@ class CodexAgent(ContainerAgentExecutor):
                 - model: OpenAI model to use (default: gpt-5.4)
                 - custom settings for Codex CLI
         """
-        # Use official Codex Universal image
-        image = os.getenv("CODEX_IMAGE", "ghcr.io/openai/codex-universal:latest")
+        image = default_agent_image("codex") or "ghcr.io/openai/codex-universal:latest"
 
         # Auto-detect Kubernetes environment or use explicit env var
         use_k8s = self._detect_kubernetes_environment()

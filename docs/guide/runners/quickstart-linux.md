@@ -126,12 +126,52 @@ window. `AGENT_CONFIG` is the flow's agent settings (image, type); the
 runner strips credential-shaped keys before injecting it. Model and MCP
 credentials stay on the control plane and are used through that token.
 
+When the flow omits `image` / `docker_image`, the control plane injects
+the same per-agent-type default the hosted executors use
+(`OPENCODE_IMAGE`, `CODEX_IMAGE`, `AIDER_IMAGE`, `GEMINI_IMAGE`).
+
+## Trusted runner options
+
+Private runners are machines you operate. Hosted executors ignore the
+`agent_config.runner` block; only `preloop runner` honors it. Every flag
+defaults off.
+
+```yaml
+agent_config:
+  runner:
+    mount_docker_socket: true
+    persist_workspace: true
+    extra_mounts:
+      - /var/cache/builds:/cache:ro
+    network: preloop-trusted
+```
+
+- `mount_docker_socket`: bind `/var/run/docker.sock` into the agent so
+  it can start sibling containers (for example `docker compose up`).
+- `persist_workspace`: keep `/workspace` on the host at
+  `~/.preloop/workspaces/<execution_id>` (mode 0700). A later job whose
+  payload includes `resume_from` reuses that directory. Directories
+  older than 24 hours that are not the current job are deleted on each
+  lease; override the window with `PRELOOP_RUNNER_WORKSPACE_TTL_HOURS`.
+- `extra_mounts`: `host:container[:ro]` bind mounts. Host paths must be
+  absolute.
+- `network`: Docker network to join (`--network`). Created if missing.
+
+Every job also sets `COMPOSE_PROJECT_NAME=preloop-<short execution id>`
+so `docker compose up` gets isolated containers, networks, and volumes
+per execution. When more than one runner can run at the same time,
+compose files should avoid fixed host ports and reach services by
+container-network name instead.
+
+Enable these options only on machines you own. Mounting the Docker
+socket gives the agent the same privileges as the runner user.
+
 ## Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
 | `docker is not available` in execution log | `docker info` must work as the runner user (add to `docker` group, or fix LXC nesting). |
-| `no agent image in payload` | The flow's agent config has no `image`/`docker_image`; check the flow's agent settings. |
+| `no agent image in payload` | The flow's agent type has no default image and no `image`/`docker_image` was set. |
 | Execution FAILED after ~15 min queued | No runner matching `runner_pool` was online; check `preloop runner status` and labels. |
 | Service dies after SSH logout | `sudo loginctl enable-linger $USER`. |
 | Runner shows offline after IP change | Restart: `preloop runner restart` — registration resumes from `~/.preloop/runner.json`. |
