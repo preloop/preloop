@@ -707,14 +707,7 @@ export class PreloopFlowForm extends LitElement {
   }
 
   private runnerPoolSelectValue(): string {
-    const current = (this.flow.runner_pool || '').trim();
-    const known = new Set(
-      buildRunnerPoolOptions(this.runners).map((option) => option.value)
-    );
-    if (current && !known.has(current)) {
-      return current;
-    }
-    return current;
+    return (this.flow.runner_pool || '').trim();
   }
 
   private handleRunnerPoolSelect(event: Event) {

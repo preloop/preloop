@@ -81,6 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Unpinned flows fall back to hosted compute when every private runner is
+  busy**: a busy runner cannot be leased, so it no longer counts as online
+  capacity for the account default pool. The Runners page still shows a
+  saved default that is currently offline.
 - **Spending-limit save no longer posts a null notify user**: `/auth/users/me`
   has no `id`, so the limits editor used to send `notification_user_ids: [null]`
   and the API rejected the create. Recipients now come from the users list

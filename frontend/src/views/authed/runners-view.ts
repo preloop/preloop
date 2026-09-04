@@ -236,6 +236,10 @@ export class RunnersView extends LitElement {
 
   private renderDefaultPoolControl() {
     const options = buildRunnerPoolOptions(this.runners);
+    const current = (this.defaultRunnerPool || '').trim();
+    if (current && !options.some((option) => option.value === current)) {
+      options.push({ value: current, label: current });
+    }
     return html`
       <div class="default-pool">
         <sl-select

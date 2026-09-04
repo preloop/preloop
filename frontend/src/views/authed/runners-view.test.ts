@@ -11,7 +11,10 @@ describe('RunnersView', () => {
   let fetchStub: sinon.SinonStub;
   let onRunnerMessage: ((message: unknown) => void) | undefined;
 
-  function createFetchStub(runners: unknown[] = []) {
+  function createFetchStub(
+    runners: unknown[] = [],
+    account: { default_runner_pool?: string | null } = {}
+  ) {
     return sinon
       .stub(window, 'fetch')
       .callsFake(async (input: RequestInfo | URL) => {
@@ -28,7 +31,7 @@ describe('RunnersView', () => {
           return json({
             id: 'acct-1',
             organization_name: 'Example Org',
-            default_runner_pool: null,
+            default_runner_pool: account.default_runner_pool ?? null,
             created_at: '2026-09-04T00:00:00Z',
             updated_at: '2026-09-04T00:00:00Z',
           });
@@ -202,6 +205,26 @@ describe('RunnersView', () => {
     expect(
       JSON.parse(String((patch?.args[1] as RequestInit).body))
     ).to.deep.equal({ default_runner_pool: 'server' });
+  });
+
+  it('keeps an offline saved default visible in the select', async () => {
+    fetchStub = createFetchStub([], { default_runner_pool: 'office-mac' });
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+
+    const select = element.shadowRoot?.querySelector(
+      'sl-select[label="Default runner pool"]'
+    ) as HTMLSelectElement;
+    const values = Array.from(select.querySelectorAll('sl-option')).map(
+      (option) => option.getAttribute('value')
+    );
+    expect(values).to.include('office-mac');
+    expect(select.value).to.equal('office-mac');
   });
 
   it('shows registered-by email for a runner that arrives over websocket', async () => {

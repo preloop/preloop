@@ -73,7 +73,14 @@ def _account_default_runner_pool(flow: Flow, db: Optional[Session]) -> Optional[
 
 
 def _has_online_private_runner(db: Session, account_id: Any) -> bool:
-    """True when the account has at least one online private runner."""
+    """True when the account has at least one idle private runner.
+
+    ``find_matching(..., online_only=True)`` includes busy runners. Lease
+    only claims idle ones (``status == "online"`` and no ``pending_job``),
+    so a busy-only fleet must not count as available capacity: otherwise a
+    new unpinned flow queues for 15 minutes and fails instead of using
+    hosted compute.
+    """
     if account_id is None:
         return False
     try:
@@ -84,7 +91,11 @@ def _has_online_private_runner(db: Session, account_id: Any) -> bool:
     matches = crud_flow_runner.find_matching(
         db, account_id=account_id, pool=AUTO_RUNNER_POOL, online_only=True
     )
-    return isinstance(matches, (list, tuple)) and len(matches) > 0
+    return any(
+        getattr(row, "status", None) == "online"
+        and not getattr(row, "pending_job", None)
+        for row in (matches or [])
+    )
 
 
 def resolve_runner_pool(

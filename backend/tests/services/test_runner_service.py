@@ -95,9 +95,30 @@ def test_resolve_runner_pool_auto_when_online_private_runner(
     monkeypatch.setattr(
         crud_flow_runner,
         "find_matching",
-        lambda db, **kwargs: [SimpleNamespace(id=uuid4())],
+        lambda db, **kwargs: [
+            SimpleNamespace(id=uuid4(), status="online", pending_job=None)
+        ],
     )
     assert resolve_runner_pool(flow, {}, db=MagicMock()) == AUTO_RUNNER_POOL
+
+
+def test_resolve_runner_pool_hosted_when_only_private_runner_is_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_id = uuid4()
+    flow = SimpleNamespace(
+        runner_pool=None,
+        account_id=account_id,
+        account=SimpleNamespace(default_runner_pool=None),
+    )
+    monkeypatch.setattr(
+        crud_flow_runner,
+        "find_matching",
+        lambda db, **kwargs: [
+            SimpleNamespace(id=uuid4(), status="busy", pending_job={"id": "job"})
+        ],
+    )
+    assert resolve_runner_pool(flow, {}, db=MagicMock()) is None
 
 
 def test_resolve_runner_pool_hosted_when_no_online_private_runner(
