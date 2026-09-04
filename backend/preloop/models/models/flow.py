@@ -8,7 +8,7 @@ from sqlalchemy import (  # Added JSON
     JSON,
 )
 
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from .base import Base
@@ -128,6 +128,18 @@ class Flow(Base):
     # hours cannot share one ceiling: with a single global value, "stuck" and
     # "genuinely long" produce the same timeout row.
     timeout_seconds = Column(Integer, nullable=True)
+    # Terminal-path notifications. NULL means no comments or attention items.
+    # Shape:
+    # {
+    #     "on_failure": {
+    #         "comment_on_trigger_issue": bool,
+    #         "attention_item": bool,
+    #     },
+    #     "on_success": {
+    #         "comment_on_trigger_issue": bool,
+    #     },
+    # }
+    notifications = Column(JSONB, nullable=True, default=None)
 
     ai_model = relationship("AIModel", back_populates="flows")
     account = relationship("Account", back_populates="flows", foreign_keys=[account_id])

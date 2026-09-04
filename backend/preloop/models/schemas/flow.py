@@ -395,6 +395,50 @@ class SchedulePreviewResponse(BaseModel):
     )
 
 
+class FlowFailureNotifications(BaseModel):
+    """What to do when an execution ends FAILED or TIMEOUT."""
+
+    comment_on_trigger_issue: bool = Field(
+        default=False,
+        description=(
+            "Post one comment on the triggering issue with status, "
+            "execution link, failure category, and the last 20 log lines."
+        ),
+    )
+    attention_item: bool = Field(
+        default=False,
+        description=(
+            "Raise a console attention item for the failed execution so it "
+            "appears on Overview and /console/attention."
+        ),
+    )
+
+
+class FlowSuccessNotifications(BaseModel):
+    """What to do when an execution succeeds."""
+
+    comment_on_trigger_issue: bool = Field(
+        default=False,
+        description=(
+            "Post a short 'PR opened: <url>' comment on the triggering issue "
+            "when the run recorded a pull request URL."
+        ),
+    )
+
+
+class FlowNotifications(BaseModel):
+    """Per-flow terminal notifications. NULL on the row means none."""
+
+    on_failure: FlowFailureNotifications = Field(
+        default_factory=FlowFailureNotifications,
+        description="Actions to take when the execution fails or times out.",
+    )
+    on_success: FlowSuccessNotifications = Field(
+        default_factory=FlowSuccessNotifications,
+        description="Actions to take when the execution succeeds.",
+    )
+
+
 class WebhookConfig(BaseModel):
     """Configuration for webhook triggers."""
 
@@ -464,6 +508,14 @@ class FlowBase(BaseModel):
             "Leave unset to use the deployment default (3600). A run that "
             "exceeds the budget is stopped and fails with the timeout "
             "category, and the failure message names the budget that expired."
+        ),
+    )
+    notifications: Optional[FlowNotifications] = Field(
+        default=None,
+        description=(
+            "When to comment on the triggering issue and raise a console "
+            "attention item after a terminal execution. Leave unset for no "
+            "notifications."
         ),
     )
 

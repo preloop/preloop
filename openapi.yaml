@@ -13308,6 +13308,12 @@ components:
             Leave unset to use the deployment default (3600). A run that exceeds the
             budget is stopped and fails with the timeout category, and the failure
             message names the budget that expired.
+        notifications:
+          anyOf:
+          - $ref: '#/components/schemas/FlowNotifications'
+          - type: 'null'
+          description: When to comment on the triggering issue and raise a console
+            attention item after a terminal execution. Leave unset for no notifications.
       type: object
       required:
       - name
@@ -13642,6 +13648,23 @@ components:
       - created_at
       - updated_at
       title: FlowExecutionResponse
+    FlowFailureNotifications:
+      properties:
+        comment_on_trigger_issue:
+          type: boolean
+          title: Comment On Trigger Issue
+          description: Post one comment on the triggering issue with status, execution
+            link, failure category, and the last 20 log lines.
+          default: false
+        attention_item:
+          type: boolean
+          title: Attention Item
+          description: Raise a console attention item for the failed execution so
+            it appears on Overview and /console/attention.
+          default: false
+      type: object
+      title: FlowFailureNotifications
+      description: What to do when an execution ends FAILED or TIMEOUT.
     FlowGatewayUsageSummaryResponse:
       properties:
         flow_id:
@@ -13699,6 +13722,17 @@ components:
       - budget
       title: FlowGatewayUsageSummaryResponse
       description: Flow-scoped gateway usage summary.
+    FlowNotifications:
+      properties:
+        on_failure:
+          $ref: '#/components/schemas/FlowFailureNotifications'
+          description: Actions to take when the execution fails or times out.
+        on_success:
+          $ref: '#/components/schemas/FlowSuccessNotifications'
+          description: Actions to take when the execution succeeds.
+      type: object
+      title: FlowNotifications
+      description: Per-flow terminal notifications. NULL on the row means none.
     FlowResponse:
       properties:
         name:
@@ -13877,6 +13911,12 @@ components:
             Leave unset to use the deployment default (3600). A run that exceeds the
             budget is stopped and fails with the timeout category, and the failure
             message names the budget that expired.
+        notifications:
+          anyOf:
+          - $ref: '#/components/schemas/FlowNotifications'
+          - type: 'null'
+          description: When to comment on the triggering issue and raise a console
+            attention item after a terminal execution. Leave unset for no notifications.
         id:
           anyOf:
           - type: string
@@ -13908,6 +13948,17 @@ components:
       - created_at
       - updated_at
       title: FlowResponse
+    FlowSuccessNotifications:
+      properties:
+        comment_on_trigger_issue:
+          type: boolean
+          title: Comment On Trigger Issue
+          description: 'Post a short ''PR opened: <url>'' comment on the triggering
+            issue when the run recorded a pull request URL.'
+          default: false
+      type: object
+      title: FlowSuccessNotifications
+      description: What to do when an execution succeeds.
     FlowUpdate:
       properties:
         name:
@@ -14097,6 +14148,12 @@ components:
             Leave unset to use the deployment default (3600). A run that exceeds the
             budget is stopped and fails with the timeout category, and the failure
             message names the budget that expired.
+        notifications:
+          anyOf:
+          - $ref: '#/components/schemas/FlowNotifications'
+          - type: 'null'
+          description: When to comment on the triggering issue and raise a console
+            attention item after a terminal execution. Leave unset for no notifications.
       type: object
       title: FlowUpdate
     GatewayBudgetSummary:

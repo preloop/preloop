@@ -113,6 +113,9 @@ def sync_global_presets(db: Session, dry_run: bool = False) -> int:
             if existing_flow.git_clone_config != preset_def.get("git_clone_config"):
                 needs_update = True
                 update_fields.append("git_clone_config")
+            if existing_flow.notifications != preset_def.get("notifications"):
+                needs_update = True
+                update_fields.append("notifications")
 
             # Check if preset incorrectly has an account_id (should be None)
             if existing_flow.account_id is not None:
@@ -140,6 +143,7 @@ def sync_global_presets(db: Session, dry_run: bool = False) -> int:
                         ),
                         "allowed_mcp_tools": preset_def.get("allowed_mcp_tools", []),
                         "git_clone_config": preset_def.get("git_clone_config"),
+                        "notifications": preset_def.get("notifications"),
                         "trigger_event_source": preset_def.get("trigger_event_source"),
                         "trigger_event_type": preset_def.get("trigger_event_type"),
                         "trigger_config": preset_def.get("trigger_config"),
