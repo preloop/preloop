@@ -1218,26 +1218,6 @@ export class LandingView extends LitElement {
                             : ''
                         }
                       </div>
-                      ${
-                        this._ctaSecondary
-                          ? html`<div class="hero-secondary-cta">
-                              <span class="hero-secondary-text"
-                                >Want a guided tour first?</span
-                              >
-                              <sl-button
-                                variant="default"
-                                size="large"
-                                href=${this._ctaSecondaryUrl}
-                                target=${
-                                  this._ctaSecondaryUrl.startsWith('http')
-                                    ? '_blank'
-                                    : '_self'
-                                }
-                                >${this._ctaSecondary}</sl-button
-                              >
-                            </div>`
-                          : ''
-                      }
                     `
                   : ''
               }
@@ -1313,6 +1293,28 @@ export class LandingView extends LitElement {
                   : ''
             }
           </div>
+          ${
+            this._heroInstall && this._ctaSecondary
+              ? html`<div class="hero-secondary-cta">
+                  <span class="hero-secondary-text"
+                    >Want a guided tour first?</span
+                  >
+                  <sl-button
+                    variant="default"
+                    size="large"
+                    href=${this._ctaSecondaryUrl}
+                    target=${
+                      this._ctaSecondaryUrl.startsWith('http')
+                        ? '_blank'
+                        : '_self'
+                    }
+                    @click=${this._handleSecondaryCta}
+                    data-track="cta_demo_hero"
+                    >${this._ctaSecondary}</sl-button
+                  >
+                </div>`
+              : ''
+          }
         </section>
 
         <section
