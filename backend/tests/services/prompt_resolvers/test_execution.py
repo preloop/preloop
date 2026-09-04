@@ -49,6 +49,45 @@ class TestExecutionResolver:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_ci_failure_renders_provider_name_and_url(self):
+        result = await ExecutionResolver().resolve(
+            "ci_failure",
+            _context(
+                _ci_failure={
+                    "provider": "github",
+                    "name": "backend-tests",
+                    "url": "https://github.com/preloop/preloop/runs/9",
+                    "conclusion": "failure",
+                    "head_sha": "abc123",
+                    "pr_url": "https://github.com/preloop/preloop/pull/353",
+                }
+            ),
+        )
+        assert result == (
+            "GitHub backend-tests failure: https://github.com/preloop/preloop/runs/9"
+        )
+
+    @pytest.mark.asyncio
+    async def test_ci_failure_gitlab_without_url(self):
+        result = await ExecutionResolver().resolve(
+            "ci_failure",
+            _context(
+                _ci_failure={
+                    "provider": "gitlab",
+                    "name": "rspec",
+                    "url": None,
+                    "conclusion": "failed",
+                }
+            ),
+        )
+        assert result == "GitLab rspec failed"
+
+    @pytest.mark.asyncio
+    async def test_ci_failure_absent(self):
+        result = await ExecutionResolver().resolve("ci_failure", _context())
+        assert result is None
+
+    @pytest.mark.asyncio
     async def test_unknown_field(self):
         result = await ExecutionResolver().resolve("nope", _context())
         assert result is None
