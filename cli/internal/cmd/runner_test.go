@@ -1050,6 +1050,18 @@ func TestValidateExtraMountRequiresAbsoluteHost(t *testing.T) {
 	}
 }
 
+func TestValidateWorkspaceIDRejectsTraversal(t *testing.T) {
+	if _, err := validateWorkspaceID("../../.."); err == nil {
+		t.Fatal("parent traversal must be rejected")
+	}
+	if _, err := validateWorkspaceID("exec-prior"); err == nil {
+		t.Fatal("non-UUID workspace id must be rejected")
+	}
+	if _, err := validateWorkspaceID("11111111-1111-4111-8111-111111111111"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunnerDockerOptsFromJobDefaultsOff(t *testing.T) {
 	opts, err := runnerDockerOptsFromJob(map[string]any{
 		"execution_id": "11111111-1111-4111-8111-111111111111",
@@ -1061,15 +1073,15 @@ func TestRunnerDockerOptsFromJobDefaultsOff(t *testing.T) {
 	if opts.MountDockerSocket || opts.PersistWorkspace || opts.Network != "" || len(opts.ExtraMounts) != 0 {
 		t.Fatalf("opts = %#v", opts)
 	}
-	if opts.ComposeProject != "preloop-11111111" {
+	if opts.ComposeProject != "preloop-11111111111141118111111111111111" {
 		t.Fatalf("compose project = %q", opts.ComposeProject)
 	}
 }
 
 func TestPreparePersistWorkspaceReusesResumeFrom(t *testing.T) {
 	testenv.SetTempHome(t)
-	prior := "exec-prior"
-	current := "exec-next"
+	prior := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	current := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	src, err := runnerWorkspaceDir(prior)
 	if err != nil {
 		t.Fatal(err)
@@ -1099,7 +1111,7 @@ func TestPreparePersistWorkspaceReusesResumeFrom(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o700 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
 		t.Fatalf("workspace mode = %o", info.Mode().Perm())
 	}
 }

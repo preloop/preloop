@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +23,10 @@ const (
 	composeProjectPrefix     = "preloop-"
 	dockerSocketMount        = dockerSocketPath + ":" + dockerSocketPath
 )
+
+// Canonical UUID form. Workspace dirs and resume_from join this into a host
+// path, so anything else (path separators, "..") is rejected.
+var workspaceIDRe = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // runnerDockerOpts is the private-runner-only docker run surface. Hosted
 // executors ignore agent_config.runner; only this CLI honors these flags.
@@ -125,14 +130,11 @@ func validateExtraMount(spec string) (string, error) {
 	}
 	host := parts[0]
 	container := parts[1]
-	if !filepath.IsAbs(host) {
+	if !isDockerAbsPath(host) {
 		return "", fmt.Errorf("extra_mount host path must be absolute: %q", spec)
 	}
-	if !filepath.IsAbs(container) {
+	if !isDockerAbsPath(container) {
 		return "", fmt.Errorf("extra_mount container path must be absolute: %q", spec)
-	}
-	if strings.Contains(filepath.Clean(host), "..") {
-		return "", fmt.Errorf("extra_mount host path must not contain ..: %q", spec)
 	}
 	if len(parts) == 3 {
 		mode := strings.ToLower(parts[2])
@@ -175,19 +177,37 @@ func stringList(value any) ([]string, error) {
 	}
 }
 
+func isDockerAbsPath(p string) bool {
+	if filepath.IsAbs(p) {
+		return true
+	}
+	// Linux bind specs and container paths are Unix-absolute. filepath.IsAbs
+	// rejects them on Windows, where this CLI still has to parse the same
+	// job payload a Linux runner would.
+	return strings.HasPrefix(p, "/")
+}
+
 func composeProjectName(executionID string) string {
 	return composeProjectPrefix + shortExecutionID(executionID)
 }
 
 func shortExecutionID(executionID string) string {
-	compact := strings.ReplaceAll(strings.TrimSpace(executionID), "-", "")
+	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(executionID), "-", ""))
 	if compact == "" {
 		return "unknown"
 	}
-	if len(compact) > 8 {
-		return compact[:8]
-	}
 	return compact
+}
+
+func validateWorkspaceID(id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", fmt.Errorf("execution_id is required for a persisted workspace")
+	}
+	if !workspaceIDRe.MatchString(id) {
+		return "", fmt.Errorf("workspace id must be a UUID: %q", id)
+	}
+	return id, nil
 }
 
 func jobResumeFrom(job map[string]any) string {
@@ -206,14 +226,15 @@ func runnerWorkspacesRoot() (string, error) {
 }
 
 func runnerWorkspaceDir(executionID string) (string, error) {
-	if strings.TrimSpace(executionID) == "" {
-		return "", fmt.Errorf("execution_id is required for a persisted workspace")
+	id, err := validateWorkspaceID(executionID)
+	if err != nil {
+		return "", err
 	}
 	root, err := runnerWorkspacesRoot()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, executionID), nil
+	return filepath.Join(root, id), nil
 }
 
 func preparePersistWorkspace(executionID, resumeFrom string) (string, error) {
@@ -262,7 +283,7 @@ func copyDir(src, dst string) error {
 	})
 }
 
-func copyFile(src, dst string) error {
+func copyFile(src, dst string) (err error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
@@ -275,7 +296,11 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close() //nolint:errcheck
+	defer func() {
+		if cerr := out.Close(); err == nil {
+			err = cerr
+		}
+	}()
 	_, err = io.Copy(out, in)
 	return err
 }

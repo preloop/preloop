@@ -69,10 +69,11 @@ class RemoteRunnerExecutor(AgentExecutor):
                 self.db.add(execution)
                 self.db.commit()
             logger.info(
-                "Leased execution %s to runner %s (pool %s)",
+                "Leased execution %s to runner %s (pool %s) payload=%s",
                 execution_id,
                 runner.id,
                 self.pool,
+                payload_for_log(payload),
             )
             await _push_job(runner.id, payload)
             return f"runner:{runner.id}:{execution_id}"
