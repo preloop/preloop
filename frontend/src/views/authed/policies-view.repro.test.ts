@@ -270,7 +270,7 @@ describe('Policies page repro', () => {
     expect(cardEl.querySelectorAll('sl-button')).to.have.length(2);
   });
 
-  it('R7 tool rule Save posts condition_type simple with a CEL expression', async () => {
+  it('R7 tool rule Save posts condition_type cel for a CEL expression', async () => {
     const m = await mount({
       tools: [{ ...toolWithDenyRule, config_id: null, access_rules: [] }],
     });
@@ -293,7 +293,7 @@ describe('Policies page repro', () => {
     expect(post.url).to.contain(
       '/api/v1/tool-configurations/cfg-new/access-rules'
     );
-    expect(post.body.condition_type).to.equal('simple');
+    expect(post.body.condition_type).to.equal('cel');
     expect(post.body.condition_expression).to.contain('contains(');
   });
 

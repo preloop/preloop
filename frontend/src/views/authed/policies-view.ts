@@ -177,6 +177,11 @@ export const MODEL_IO_PRESETS = [
   },
 ];
 
+/** CEL when the expression uses grouping or boolean operators. */
+export function conditionTypeFor(expr: string): 'cel' | 'simple' {
+  return /[()&|]/.test(expr) ? 'cel' : 'simple';
+}
+
 /** What each detector adds to the attributes a condition can read. */
 const DETECTOR_FACTS: Array<{
   key: 'pii' | 'injection' | 'moderation';
@@ -1398,7 +1403,7 @@ export class PoliciesView extends LitElement {
       const payload = {
         action: form.action,
         condition_expression: form.expression.trim() || null,
-        condition_type: 'simple' as const,
+        condition_type: conditionTypeFor(form.expression),
         is_enabled: form.enabled,
         approval_workflow_id:
           form.action === 'require_approval'
@@ -2509,10 +2514,10 @@ export class PoliciesView extends LitElement {
             this._patchModelIOForm({ expression: e.target.value })}
         ></sl-textarea>
         <p class="model-io-hint">
-          Reads the call itself, for example
-          <code>args.command.contains("rm")</code> or
-          <code>session.id != ''</code>. An empty condition applies to every
-          call to this tool.
+          Simple matches a field, for example
+          <code>session.id != ''</code>. CEL can call methods and combine
+          checks, for example <code>args.command.contains("rm")</code>. An empty
+          condition applies to every call to this tool.
         </p>
       </div>
     `;
