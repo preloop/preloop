@@ -25,6 +25,13 @@ from preloop.utils.hashing import compute_content_hash
 from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
 from preloop.models.crud.flow_execution_log import crud_flow_execution_log
+from preloop.models.models.flow_runner import FlowRunner
+from preloop.services.runner_service import (
+    derive_execution_runner,
+    pool_from_session_reference,
+    resolve_runner_pool,
+    runner_id_from_session_reference,
+)
 
 
 router = APIRouter()
@@ -438,8 +445,68 @@ def read_flow_executions(
         execution.flow_name = execution.flow.name if execution.flow else None
 
     _project_models_used(db, executions)
+    _project_execution_runners(db, executions)
 
     return executions
+
+
+def _as_runner_uuid(value: Any) -> Optional[uuid.UUID]:
+    """Accept a UUID (or UUID string); ignore mocks and other junk."""
+    if isinstance(value, uuid.UUID):
+        return value
+    if isinstance(value, str):
+        try:
+            return uuid.UUID(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _project_execution_runners(
+    db: Session,
+    executions: List[Any],
+    *,
+    resolve_pool_from_flow: bool = False,
+) -> None:
+    """Attach the derived runner read model to each execution row.
+
+    Private runs are identified by ``runner_id`` or a ``runner:...`` session
+    reference. Names come from one batched FlowRunner lookup. Pool is the
+    queued-ref pool, or (on detail) the resolved flow/trigger pool.
+    """
+    if not executions:
+        return
+    runner_ids: List[uuid.UUID] = []
+    for execution in executions:
+        runner_id = _as_runner_uuid(getattr(execution, "runner_id", None))
+        if runner_id is None:
+            runner_id = runner_id_from_session_reference(
+                getattr(execution, "agent_session_reference", None)
+            )
+        if runner_id is not None:
+            runner_ids.append(runner_id)
+    runners_by_id: Dict[uuid.UUID, FlowRunner] = {}
+    if runner_ids:
+        rows = db.query(FlowRunner).filter(FlowRunner.id.in_(set(runner_ids))).all()
+        runners_by_id = {row.id: row for row in rows}
+    for execution in executions:
+        ref = getattr(execution, "agent_session_reference", None)
+        runner_id = _as_runner_uuid(getattr(execution, "runner_id", None))
+        if runner_id is None:
+            runner_id = runner_id_from_session_reference(ref)
+        runner = runners_by_id.get(runner_id) if runner_id else None
+        pool = pool_from_session_reference(ref)
+        if pool is None and resolve_pool_from_flow:
+            flow = getattr(execution, "flow", None)
+            details = getattr(execution, "trigger_event_details", None) or {}
+            if flow is not None:
+                pool = resolve_runner_pool(flow, {"trigger_event_data": details})
+        execution.runner = derive_execution_runner(
+            runner_id=runner_id,
+            agent_session_reference=ref if isinstance(ref, str) else None,
+            runner_name=getattr(runner, "name", None) if runner else None,
+            pool=pool,
+        )
 
 
 def _project_models_used(db: Session, executions: List[Any]) -> None:
@@ -501,6 +568,7 @@ def read_batch_executions(
     # Projected before validation below, so each cell of a model matrix says
     # which model actually served it.
     _project_models_used(db, executions)
+    _project_execution_runners(db, executions, resolve_pool_from_flow=True)
 
     by_status: Dict[str, int] = {}
     total_tokens = 0
@@ -591,6 +659,7 @@ def read_flow_execution(
     # The model that ran this execution, from the same gateway usage the list
     # projects, so the detail page and the table never disagree.
     _project_models_used(db, [execution])
+    _project_execution_runners(db, [execution], resolve_pool_from_flow=True)
 
     return execution
 
