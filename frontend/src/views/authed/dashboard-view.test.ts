@@ -542,7 +542,8 @@ describe('DashboardView', () => {
       () =>
         !element['loading'] &&
         !element['fetchingAudit'] &&
-        !element['fetchingMCPAndTools'],
+        !element['fetchingMCPAndTools'] &&
+        element['attentionInputs'] != null,
       'dashboard did not finish loading'
     );
     await element.updateComplete;
@@ -571,8 +572,9 @@ describe('DashboardView', () => {
     );
 
     expect(connectStub).to.have.been.calledOnce;
-    // Eight for the page's own refresh, seven for the Activity feed's topics.
-    expect(subscribeStub.callCount).to.equal(15);
+    // Six for the page's own topic refreshers (audit and the authenticated
+    // signal no longer cost a request), seven for the Activity feed's topics.
+    expect(subscribeStub.callCount).to.equal(13);
 
     const urls = fetchStub.getCalls().map((call) => String(call.args[0]));
     expect(
@@ -580,21 +582,24 @@ describe('DashboardView', () => {
         url.startsWith('/api/v1/account/gateway-usage/summary')
       )
     ).to.be.true;
-    // Two for the cards (summary + breakdown upgrade), one for the prior
-    // window behind the Usage delta, and one 30-day breakdown for attention.
+    // Two for the cards (summary + breakdown upgrade) and one for the prior
+    // window behind the Usage delta. The attention rules read the same
+    // breakdown rather than asking for a second one.
     expect(
       urls.filter((url) =>
         url.startsWith('/api/v1/account/gateway-usage/summary')
       ).length
-    ).to.equal(4);
+    ).to.equal(3);
     expect(urls.some((url) => url.includes('include_breakdown=false'))).to.be
       .true;
     expect(
       urls.filter((url) => url.includes('include_breakdown=true')).length
-    ).to.equal(2);
+    ).to.equal(1);
+    // One list of agents for the whole load: the attention rules are handed
+    // the list the fold already fetched.
     expect(
       urls.filter((url) => url.startsWith('/api/v1/agents')).length
-    ).to.equal(2);
+    ).to.equal(1);
     expect(urls.some((url) => url === '/api/v1/auth/api-usage')).to.be.false;
     expect(urls.some((url) => url.startsWith('/api/v1/audit-logs/grouped'))).to
       .be.true;
@@ -1690,13 +1695,17 @@ describe('DashboardView', () => {
         (
           element.shadowRoot?.querySelector('view-header .updated-at')
             ?.textContent || ''
-        ).trim();
+        )
+          .replace(/\s+/g, ' ')
+          .trim();
       expect(label()).to.equal('Updated just now');
 
       // The page has been open for four minutes and nothing has changed.
       element['lastUpdatedAt'] = new Date(Date.now() - 4 * 60000).toISOString();
-      element['updatedTick'] += 1;
       await element.updateComplete;
+      const stamp = element.shadowRoot?.querySelector('relative-time-label');
+      await (stamp as unknown as { updateComplete: Promise<unknown> })
+        .updateComplete;
       expect(label()).to.equal('Updated 4m ago');
       expect(
         element.shadowRoot
@@ -1709,15 +1718,107 @@ describe('DashboardView', () => {
       const element = await mountLoaded();
       // A socket event arriving mid-refresh used to be dropped, leaving the
       // header claiming numbers older than the event that announced them.
-      element['refreshInFlight'] = true;
-      element['initialLoadTime'] = Date.now() - 60000;
+      element['lastFetchStartedAt'] = Date.now() - 60000;
       element['lastUpdatedAt'] = new Date(Date.now() - 60000).toISOString();
-      element['scheduleRefresh']();
+      let ran = 0;
+      element['scheduleTopicRefresh']('gateway', async () => {
+        ran += 1;
+      });
+      expect(element['refreshTimers']['gateway']).to.not.equal(undefined);
+      await waitUntil(() => ran === 1, 'queued refresh never ran');
+    });
+
+    it('loads the fold without asking for the same thing twice', async () => {
+      // Hold the deferred pass so what is counted is exactly what the reader
+      // waits for before the page is usable.
+      const proto = customElements.get('dashboard-view')!
+        .prototype as unknown as Record<string, unknown>;
+      const deferred = sinon.stub(proto, 'fetchDeferredData').resolves();
+      let element: DashboardView;
+      try {
+        element = await mountDashboard();
+        await waitUntil(() => !element['loading'], 'fold never finished');
+        await waitUntil(() => deferred.called, 'deferred pass never started');
+      } finally {
+        deferred.restore();
+      }
+
+      const foldUrls = fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        // The feed and the dialogs in the template are separate elements that
+        // fetch their own reference data on connect; this counts the page.
+        .filter(
+          (url) =>
+            !url.startsWith('/api/v1/audit-logs') &&
+            !url.startsWith('/api/v1/teams') &&
+            !url.startsWith('/api/v1/roles') &&
+            !url.startsWith('/api/v1/ai-models')
+        );
+      const duplicates = foldUrls.filter(
+        (url, index) => foldUrls.indexOf(url) !== index
+      );
+      expect(duplicates, 'a URL was fetched twice before the fold').to.eql([]);
+      // Eight above the fold plus the two assignment reads behind the
+      // approvals card. The wave before this one took twenty three.
+      expect(foldUrls.length, foldUrls.join('\n')).to.be.at.most(12);
+    });
+
+    it('answers a gateway event with four requests, not the page', async () => {
+      const element = await mountLoaded();
+      await waitUntil(
+        () => element['attentionInputs'] != null,
+        'deferred pass never finished'
+      );
+      const handler = subscribeStub
+        .getCalls()
+        .find(
+          (call) =>
+            call.args[0] === 'gateway_activity' &&
+            call.thisValue === unifiedWebSocketManager
+        )?.args[1] as (message: unknown) => void;
+      expect(handler, 'nothing listens to gateway_activity').to.be.a(
+        'function'
+      );
+
+      // The load's own five second grace period is what the gate reads.
+      element['lastFetchStartedAt'] = Date.now() - 30000;
+      fetchStub.resetHistory();
+      handler({ type: 'gateway_activity' });
+      // A busy agent publishes one of these per model call.
+      handler({ type: 'gateway_activity' });
+      handler({ type: 'gateway_activity' });
+      await waitUntil(
+        () => fetchStub.callCount > 0,
+        'the event was never served'
+      );
       await new Promise((resolve) => setTimeout(resolve, 300));
-      expect(element['refreshTimer']).to.not.equal(null);
-      element['refreshInFlight'] = false;
-      window.clearTimeout(element['refreshTimer'] as number);
-      element['refreshTimer'] = null;
+
+      const urls = fetchStub.getCalls().map((call) => String(call.args[0]));
+      expect(urls.length, urls.join('\n')).to.be.at.most(4);
+      expect(urls.some((url) => url.startsWith('/api/v1/flows'))).to.be.false;
+      expect(urls.some((url) => url.includes('include_breakdown=true'))).to.be
+        .false;
+    });
+
+    it('derives the attention list once per set of inputs', async () => {
+      const element = await mountLoaded();
+      await waitUntil(
+        () => element['attentionInputs'] != null,
+        'deferred pass never finished'
+      );
+
+      const first = element['attentionItems'];
+      // Something unrelated changes and the page renders again.
+      element['showBudgetDialog'] = true;
+      await element.updateComplete;
+      expect(element['attentionItems']).to.equal(first);
+
+      element['attentionInputs'] = {
+        ...element['attentionInputs']!,
+      };
+      await element.updateComplete;
+      expect(element['attentionItems']).to.not.equal(first);
     });
 
     it('opens the budget dialog when the feed asks for it', async () => {
