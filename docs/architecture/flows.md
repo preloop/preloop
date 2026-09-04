@@ -11,10 +11,15 @@ Flow `prompt_template` strings are resolved before the agent starts. Besides `{{
 *   `{{execution.id}}` — this run's id.
 *   `{{execution.url}}` — console URL `{PRELOOP_URL}/console/flows/executions/{id}`.
 *   `{{execution.resume_from}}` — prior execution id when this run was started from a human comment on a PR this flow opened. Empty otherwise.
+*   `{{execution.ci_failure}}` — when this run was started because GitHub CI failed on a PR this flow opened: provider, job name, and check URL. Empty otherwise.
 
 ## PR-comment resume
 
 `create_pull_request` (and GitLab merge-request creation) records the opened HTML URL and source branch on `flow_execution.result` (`flow_pr_binding`). When a flow listens to both issue events (`issue_labeled` or `issue_opened`) and `comment_created`, a later human comment on that PR starts a new execution of the same flow with `_resume` in the trigger payload. The container clones and pushes the existing PR branch. Unmatched comments do not start a run. Native CLI `--resume` is a separate follow-up.
+
+## CI-failure resume
+
+Failing GitHub `check_run`, `check_suite`, and `workflow_run` events on a PR this flow opened resume the same way as a review comment, with `{{execution.ci_failure}}` filled in. The skip/resume filter is GitHub-only: existing GitLab `pipeline` / `job` flows keep firing on every event. GitLab payload extractors stay in `flow_ci_feedback` so an opt-in can reuse them later.
 
 ## Matrix / Batch Fan-Out
 

@@ -691,7 +691,7 @@ class TestProcessEvent:
     @patch("preloop.services.flow_trigger_service.get_nats_client")
     @patch("preloop.services.flow_trigger_service.crud_flow")
     @patch.object(FlowTriggerService, "_find_running_execution_for_commit")
-    async def test_failed_pipeline_on_unbound_pr_does_not_start_run(
+    async def test_failed_pipeline_on_issue_flow_starts_a_normal_run(
         self,
         mock_running,
         mock_crud,
@@ -704,8 +704,6 @@ class TestProcessEvent:
         mock_running.return_value = None
         mock_nats.return_value = AsyncMock()
         mock_crud.get_by_trigger.return_value = [sample_flow]
-        flow_trigger_service.db.query.return_value.filter.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
-        flow_trigger_service.db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
         event = {
             "source": "gitlab",
             "type": "pipeline",
@@ -724,7 +722,7 @@ class TestProcessEvent:
 
         await flow_trigger_service.process_event(event)
 
-        mock_create_task.assert_not_called()
+        mock_create_task.assert_called_once()
 
 
 class TestProcessEventReleaseDedupe:

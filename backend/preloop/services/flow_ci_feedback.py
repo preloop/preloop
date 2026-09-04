@@ -1,15 +1,15 @@
-"""Retrigger an implementation flow when CI fails on the PR it opened.
+"""Retrigger an implementation flow when GitHub CI fails on the PR it opened.
 
 Issue-implementation flows record the PR they opened on
 ``FlowExecution.result`` (see :mod:`preloop.services.flow_pr_binding`). A
-failing GitHub check run / check suite / workflow run, or a failing GitLab
-pipeline / job, on that PR head is the same kind of feedback as a review
-comment: it should resume the agent that wrote the branch instead of
-starting a cold run.
+failing GitHub check run / check suite / workflow run on that PR head is
+the same kind of feedback as a review comment: it should resume the agent
+that wrote the branch instead of starting a cold run.
 
-This module is deliberately separate from ``flow_pr_binding`` so the comment
-correlation path and the CI path can evolve (and merge) independently. It
-reuses ``flow_pr_binding`` helpers for URL normalization and lookup.
+The trigger service applies this skip/resume filter only to those GitHub
+event types so existing GitLab ``pipeline`` / ``job`` flows keep firing on
+every event. ``extract_ci_failure`` still understands GitLab payloads so
+``bind_ci_failure_resume_or_skip`` can be reused when an opt-in lands.
 """
 
 from __future__ import annotations
