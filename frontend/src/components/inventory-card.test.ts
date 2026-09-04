@@ -464,6 +464,38 @@ describe('inventory-card', () => {
     expect(el.shadowRoot?.querySelector('.empty')).to.not.exist;
   });
 
+  it('lets one tab wait while another already has its rows', async () => {
+    // Agents arrive with the first wave, flows a moment later. One flag for
+    // the whole card kept the rows it already had behind a skeleton.
+    const el = await fixture<InventoryCard>(html`
+      <inventory-card
+        .agentRows=${[agentRow()]}
+        .flowRows=${[]}
+        .modelRows=${[]}
+        .toolRows=${[]}
+        .agentsTotal=${10}
+        .flowsTotal=${30}
+        .modelsTotal=${16}
+        .toolsTotal=${16}
+        .loadingAgents=${false}
+        .loadingFlows=${true}
+        rangeLabel="30d"
+      ></inventory-card>
+    `);
+    await el.updateComplete;
+
+    expect(el.shadowRoot?.querySelectorAll('tbody tr').length).to.equal(1);
+    expect(el.shadowRoot?.querySelector('sl-skeleton')).to.not.exist;
+
+    await showTab(el, 'flows');
+    expect(
+      el.shadowRoot?.querySelectorAll('sl-skeleton').length,
+      'flows still waiting'
+    ).to.be.greaterThan(0);
+    expect(el.shadowRoot?.querySelector('.empty'), 'no premature empty state')
+      .to.not.exist;
+  });
+
   it('caps the table and points at the full list', async () => {
     const rows = Array.from({ length: 12 }, (_, index) =>
       agentRow({ id: `agent-${index}`, name: `Agent ${index}` })

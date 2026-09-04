@@ -6,11 +6,14 @@ from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
+import httpx
+import openai
 import pytest
 
 from preloop.services.aux_model_retry import (
     AUX_RETRY_AFTER_CAP_SECONDS,
     call_with_aux_retry,
+    call_with_aux_retry_async,
 )
 from preloop.services.model_credentials import (
     _fallback_counters,
@@ -352,3 +355,136 @@ async def test_extract_agent_name_retries_transient_429():
 
     assert result.name == "Loopbot"
     assert completion.call_count == 2
+
+
+class _AsyncSleeper:
+    """Collects requested delays instead of sleeping."""
+
+    def __init__(self) -> None:
+        self.calls: list[float] = []
+
+    async def __call__(self, delay: float) -> None:
+        self.calls.append(delay)
+
+
+def _openai_rate_limit_error(
+    retry_after: Optional[str] = None,
+) -> openai.RateLimitError:
+    """A real OpenAI SDK RateLimitError, the shape aux SDK call sites raise."""
+    request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+    headers = {"retry-after": retry_after} if retry_after is not None else {}
+    response = httpx.Response(429, headers=headers, request=request)
+    return openai.RateLimitError(
+        "Error code: 429 - Too Many Requests", response=response, body=None
+    )
+
+
+# --- async twin (direct SDK call sites) -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_transient_429_is_retried_once_then_succeeds() -> None:
+    calls = {"n": 0}
+
+    async def fn() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _RateLimitError("Error code: 429 - Too Many Requests")
+        return "ok"
+
+    sleeper = _AsyncSleeper()
+    assert await call_with_aux_retry_async(fn, sleep=sleeper) == "ok"
+    assert calls["n"] == 2
+    assert sleeper.calls == [0.5]
+
+
+@pytest.mark.asyncio
+async def test_async_retry_after_is_honored_and_capped() -> None:
+    async def always_rate_limited() -> None:
+        raise _RateLimitError("Error code: 429 - Too Many Requests", retry_after=30)
+
+    sleeper = _AsyncSleeper()
+    with pytest.raises(ModelGatewayAPIError):
+        await call_with_aux_retry_async(always_rate_limited, sleep=sleeper)
+    assert sleeper.calls == [AUX_RETRY_AFTER_CAP_SECONDS]
+
+
+@pytest.mark.asyncio
+async def test_async_terminal_quota_fails_fast() -> None:
+    calls = {"n": 0}
+
+    async def fn() -> None:
+        calls["n"] += 1
+        raise _RateLimitError(
+            "Error code: 429 - you exceeded your current quota", retry_after=600
+        )
+
+    sleeper = _AsyncSleeper()
+    with pytest.raises(_RateLimitError):
+        await call_with_aux_retry_async(fn, sleep=sleeper)
+    assert calls["n"] == 1
+    assert sleeper.calls == []
+
+
+@pytest.mark.asyncio
+async def test_async_auth_error_is_not_retried() -> None:
+    calls = {"n": 0}
+
+    async def fn() -> None:
+        calls["n"] += 1
+        raise _AuthError("Error code: 401 - invalid api key")
+
+    sleeper = _AsyncSleeper()
+    with pytest.raises(_AuthError):
+        await call_with_aux_retry_async(fn, sleep=sleeper)
+    assert calls["n"] == 1
+    assert sleeper.calls == []
+
+
+@pytest.mark.asyncio
+async def test_async_exhausted_transient_surfaces_classified_gateway_error() -> None:
+    exc = _RateLimitError("Error code: 429 - Too Many Requests", retry_after=2)
+
+    async def fn() -> None:
+        raise exc
+
+    with pytest.raises(ModelGatewayAPIError) as caught:
+        await call_with_aux_retry_async(fn, sleep=_AsyncSleeper(), provider="anthropic")
+    err = caught.value
+    assert err.error_class == ERROR_CLASS_UPSTREAM_RATE_LIMITED
+    assert err.provider == "anthropic"
+    assert err.__cause__ is exc
+    assert err.response_headers()["Retry-After"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_async_openai_sdk_rate_limit_error_is_retried_with_retry_after() -> None:
+    """The real OpenAI SDK 429 shape (status_code + httpx response) classifies."""
+    calls = {"n": 0}
+
+    async def fn() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _openai_rate_limit_error(retry_after="2")
+        return "ok"
+
+    sleeper = _AsyncSleeper()
+    assert await call_with_aux_retry_async(fn, sleep=sleeper) == "ok"
+    assert calls["n"] == 2
+    assert sleeper.calls == [2.0]
+
+
+@pytest.mark.asyncio
+async def test_async_exhausted_openai_429_carries_retry_after_header() -> None:
+    async def fn() -> None:
+        raise _openai_rate_limit_error(retry_after="3")
+
+    with pytest.raises(ModelGatewayAPIError) as caught:
+        await call_with_aux_retry_async(fn, sleep=_AsyncSleeper())
+    err = caught.value
+    assert err.status_code == 429
+    assert err.retry_after_seconds == 3
+    assert err.response_headers()["Retry-After"] == "3"
+    assert err.response_headers()["X-Preloop-Error-Class"] == (
+        ERROR_CLASS_UPSTREAM_RATE_LIMITED
+    )

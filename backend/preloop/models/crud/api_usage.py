@@ -922,6 +922,77 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             "unpriced_tokens": int(row.unpriced_tokens or 0),
         }
 
+    def get_unpriced_model_breakdown(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        runtime_principal_id: Optional[str] = None,
+        exclude_retries: bool = False,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Group still-unpriced gateway rows by model for the cost banner.
+
+        Uses the exact ``unpriced`` predicate of
+        :meth:`get_gateway_usage_summary` (``estimated_cost IS NULL AND
+        total_tokens > 0``) so the per-model rows explain the aggregate
+        ``unpriced_requests``/``unpriced_tokens`` counts shown next to them.
+
+        Args:
+            db: Database session.
+            account_id: Account whose gateway usage is aggregated.
+            start_date: Inclusive lower bound on usage timestamp.
+            end_date: Exclusive upper bound on usage timestamp.
+            runtime_principal_id: Restrict to a single runtime principal.
+            exclude_retries: When True, rows marked as retries of an earlier
+                identical request are excluded. Mirrors the predicate in
+                :meth:`get_gateway_usage_summary` exactly, so with
+                ``exclude_retries=True`` the per-model rows cannot sum above
+                the headline counts.
+            limit: Maximum number of models returned, ordered by unpriced
+                tokens descending so the biggest offenders name themselves
+                first.
+
+        Returns:
+            One dict per model with ``model``, ``requests`` and ``tokens``,
+            ordered by tokens descending.
+        """
+        model_label = func.coalesce(ApiUsage.model_alias, "unknown")
+        query = db.query(
+            model_label.label("model"),
+            func.count(ApiUsage.id).label("requests"),
+            func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("tokens"),
+        ).filter(
+            ApiUsage.action_type == "model_gateway",
+            ApiUsage.account_id == account_id,
+            exclude_replay_usage_condition(),
+            ApiUsage.timestamp >= start_date,
+            ApiUsage.timestamp < end_date,
+            ApiUsage.estimated_cost.is_(None),
+            ApiUsage.total_tokens > 0,
+        )
+        if runtime_principal_id:
+            query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
+        if exclude_retries:
+            query = query.filter(
+                or_(ApiUsage.is_retry.is_(None), ApiUsage.is_retry.is_(False))
+            )
+        query = (
+            query.group_by(model_label)
+            .order_by(func.coalesce(func.sum(ApiUsage.total_tokens), 0).desc())
+            .limit(limit)
+        )
+        return [
+            {
+                "model": str(row.model),
+                "requests": int(row.requests or 0),
+                "tokens": int(row.tokens or 0),
+            }
+            for row in query.all()
+        ]
+
     def get_rate_limit_summary(
         self,
         db: Session,

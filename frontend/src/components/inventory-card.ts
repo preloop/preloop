@@ -261,6 +261,21 @@ export class InventoryCard extends LitElement {
 
   @property({ type: Boolean }) loading = false;
   /**
+   * Per-tab overrides for {@link loading}.
+   *
+   * The tabs are filled by different requests that land at different times:
+   * agents arrive with the first wave, flows and their runs a moment later,
+   * models and tools last. One flag for all five meant the whole card stayed
+   * a skeleton until the slowest of them answered, hiding rows it already
+   * had. `null` means "no answer yet, use the card-wide flag", so a host that
+   * sets nothing behaves exactly as before.
+   */
+  @property({ type: Boolean }) loadingAgents: boolean | null = null;
+  @property({ type: Boolean }) loadingFlows: boolean | null = null;
+  @property({ type: Boolean }) loadingModels: boolean | null = null;
+  @property({ type: Boolean }) loadingTools: boolean | null = null;
+  @property({ type: Boolean }) loadingUsers: boolean | null = null;
+  /**
    * The usage breakdown is a second, slower request than the lists it fills.
    * While it is in flight the identity of a row (who, which role, when they
    * were last here, how many agents they own) is already known and is shown;
@@ -659,6 +674,21 @@ export class InventoryCard extends LitElement {
     return this.visibleTabs.includes(this.tab) ? this.tab : 'agents';
   }
 
+  /** Whether the rows of one tab are still on their way. */
+  private isTabLoading(tab: InventoryTab): boolean {
+    const perTab =
+      tab === 'agents'
+        ? this.loadingAgents
+        : tab === 'flows'
+          ? this.loadingFlows
+          : tab === 'models'
+            ? this.loadingModels
+            : tab === 'users'
+              ? this.loadingUsers
+              : this.loadingTools;
+    return perTab === null || perTab === undefined ? this.loading : perTab;
+  }
+
   private countFor(tab: InventoryTab): number {
     if (tab === 'agents') return this.agentsTotal;
     if (tab === 'flows') return this.flowsTotal;
@@ -929,7 +959,7 @@ export class InventoryCard extends LitElement {
           </tr>
         </thead>
         ${
-          this.loading && rows.length === 0
+          this.isTabLoading('agents') && rows.length === 0
             ? this.renderSkeleton(6)
             : html`
                 <tbody>
@@ -1043,7 +1073,7 @@ export class InventoryCard extends LitElement {
           </tr>
         </thead>
         ${
-          this.loading && rows.length === 0
+          this.isTabLoading('flows') && rows.length === 0
             ? this.renderSkeleton(5)
             : html`
                 <tbody>
@@ -1116,7 +1146,7 @@ export class InventoryCard extends LitElement {
           </tr>
         </thead>
         ${
-          this.loading && rows.length === 0
+          this.isTabLoading('models') && rows.length === 0
             ? this.renderSkeleton(5)
             : html`
                 <tbody>
@@ -1196,7 +1226,7 @@ export class InventoryCard extends LitElement {
           </tr>
         </thead>
         ${
-          this.loading && rows.length === 0
+          this.isTabLoading('users') && rows.length === 0
             ? this.renderSkeleton(6)
             : html`
                 <tbody>
@@ -1265,7 +1295,7 @@ export class InventoryCard extends LitElement {
           </tr>
         </thead>
         ${
-          this.loading && rows.length === 0
+          this.isTabLoading('tools') && rows.length === 0
             ? this.renderSkeleton(4)
             : html`
                 <tbody>
@@ -1313,7 +1343,7 @@ export class InventoryCard extends LitElement {
   }
 
   private renderBody() {
-    if (!this.loading && this.currentRowCount() === 0) {
+    if (!this.isTabLoading(this.activeTab) && this.currentRowCount() === 0) {
       return this.renderEmpty();
     }
     if (this.activeTab === 'agents') return this.renderAgents();

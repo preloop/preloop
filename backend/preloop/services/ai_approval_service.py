@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Optional, TYPE_CHECKING
 
+from preloop.services.aux_model_retry import call_with_aux_retry_async
+
 if TYPE_CHECKING:
     from preloop.models.models import ApprovalWorkflow
 
@@ -375,17 +377,21 @@ class AIApprovalService:
 
         client = AsyncOpenAI(**client_kwargs)
 
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are an AI approval system. Respond only with valid JSON.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,  # Low temperature for consistent output
-            max_tokens=500,  # Limit response length
+        response = await call_with_aux_retry_async(
+            lambda: client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an AI approval system. Respond only with valid JSON.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,  # Low temperature for consistent output
+                max_tokens=500,  # Limit response length
+            ),
+            operation_name="ai_approval_evaluation",
+            provider=provider,
         )
 
         return response.choices[0].message.content or ""
@@ -414,11 +420,15 @@ class AIApprovalService:
 
         client = AsyncAnthropic(**client_kwargs)
 
-        response = await client.messages.create(
-            model=model,
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt}],
-            system="You are an AI approval system. Respond only with valid JSON.",
+        response = await call_with_aux_retry_async(
+            lambda: client.messages.create(
+                model=model,
+                max_tokens=500,
+                messages=[{"role": "user", "content": prompt}],
+                system="You are an AI approval system. Respond only with valid JSON.",
+            ),
+            operation_name="ai_approval_evaluation",
+            provider="anthropic",
         )
 
         # Extract text from response
@@ -452,13 +462,22 @@ class AIApprovalService:
             system_instruction="You are an AI approval system. Respond only with valid JSON.",
         )
 
-        response = await asyncio.to_thread(
-            gemini_model.generate_content,
-            prompt,
-            generation_config=genai.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=500,
-            ),
+        generation_config = genai.GenerationConfig(
+            temperature=0.1,
+            max_output_tokens=500,
+        )
+
+        async def _generate() -> Any:
+            return await asyncio.to_thread(
+                gemini_model.generate_content,
+                prompt,
+                generation_config=generation_config,
+            )
+
+        response = await call_with_aux_retry_async(
+            _generate,
+            operation_name="ai_approval_evaluation",
+            provider="gemini",
         )
 
         return response.text if response.text else ""

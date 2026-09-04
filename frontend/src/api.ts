@@ -62,7 +62,6 @@ import type {
   AIModelRuntimeSessionListResponse,
   AIModelGatewayUsageSearchResponse,
   AIModel,
-  DashboardTelemetryResponse,
   CostAnalyticsSummaryResponse,
   CostReconciliationResponse,
   ProviderBillingConnection,
@@ -284,7 +283,48 @@ async function refreshToken(): Promise<RefreshResult> {
   return refreshPromise;
 }
 
+/**
+ * GETs that are in the air right now, keyed by URL.
+ *
+ * Two components asking the same endpoint for the same thing in the same
+ * moment (the Overview and the activity feed both wanting `/api/v1/users`,
+ * a card and the attention loader both wanting the budget policies) is one
+ * question, not two. The second caller joins the first request and gets a
+ * clone of its response; nothing is remembered once it settles, so this is a
+ * coalescer, not a cache, and no caller can ever read a stale body.
+ */
+const inFlightGets = new Map<string, Promise<Response>>();
+
 export async function fetchWithAuth(
+  url: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  const method = (options.method || 'GET').toUpperCase();
+  // Only plain reads: a body, a signal or a custom header makes the call the
+  // caller's own, and anything that is not a GET may change something.
+  const coalescable =
+    method === 'GET' &&
+    !options.body &&
+    !options.signal &&
+    !options.headers &&
+    options.cache !== 'reload' &&
+    options.cache !== 'no-store';
+  if (coalescable) {
+    const pending = inFlightGets.get(url);
+    if (pending) {
+      return (await pending).clone();
+    }
+    const request = performFetchWithAuth(url, options).finally(() => {
+      inFlightGets.delete(url);
+    });
+    inFlightGets.set(url, request);
+    // The first caller gets a clone too, so every caller reads its own body.
+    return (await request).clone();
+  }
+  return performFetchWithAuth(url, options);
+}
+
+async function performFetchWithAuth(
   url: string,
   options: RequestInit = {}
 ): Promise<Response> {
@@ -1061,14 +1101,6 @@ export async function refreshToolCostFlags(): Promise<ToolCostFlag[]> {
     return data.flags as ToolCostFlag[];
   }
   return Array.isArray(data) ? (data as ToolCostFlag[]) : [];
-}
-
-export async function getDashboardTelemetry(): Promise<DashboardTelemetryResponse> {
-  const response = await fetchWithAuth('/api/v1/account/telemetry/dashboard');
-  if (!response.ok) {
-    throw new Error('Failed to fetch dashboard telemetry');
-  }
-  return response.json();
 }
 
 export async function getFlowGatewayUsageSummary(
