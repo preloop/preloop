@@ -93,6 +93,15 @@ class Account(Base):
     stripe_customer_id: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, unique=True
     )
+    default_runner_pool: Mapped[Optional[str]] = mapped_column(
+        String(200),
+        nullable=True,
+        comment=(
+            "Account default runner pool: a runner id, name, or label; "
+            "the literal 'server' for Preloop hosted; NULL means any "
+            "online private runner."
+        ),
+    )
 
     # Relationships
     # Multi-user relationships

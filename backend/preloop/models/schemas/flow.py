@@ -445,11 +445,14 @@ class FlowBase(BaseModel):
     runner_pool: Optional[str] = Field(
         default=None,
         description=(
-            "Self-hosted runner pool (id, name, or label). When set, executions "
-            "lease to a matching `preloop runner` instead of hosted compute. "
-            "If no matching runner is online the job queues for 15 minutes then "
-            "FAILS. A trigger-time `--runner` / `_runner` override takes "
-            "precedence."
+            "Runner pool for executions of this flow. Accepts a runner id, "
+            "name, or label; the literal 'auto' for any online private "
+            "runner; or the literal 'server' for the hosted executor. "
+            "When unset, the account default_runner_pool applies, then any "
+            "online private runner, then the hosted executor. A trigger-time "
+            "`--runner` / `_runner` override takes precedence. If a chosen "
+            "private pool has no idle runner the job queues for 15 minutes "
+            "then FAILS."
         ),
     )
     timeout_seconds: Optional[int] = Field(

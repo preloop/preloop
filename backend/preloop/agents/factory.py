@@ -35,13 +35,13 @@ def create_executor_for_execution(
     db: Any = None,
     execution_context: Dict[str, Any] | None = None,
 ) -> AgentExecutor:
-    """Return a remote runner executor when the flow is pinned to a pool."""
+    """Return a remote runner executor when a private pool is resolved."""
     from preloop.agents.remote_runner import RemoteRunnerExecutor
     from preloop.services.runner_service import resolve_runner_pool
 
     pool = None
     if flow is not None:
-        pool = resolve_runner_pool(flow, execution_context)
+        pool = resolve_runner_pool(flow, execution_context, db=db)
     ref = getattr(execution, "agent_session_reference", None) if execution else None
     if not pool and isinstance(ref, str) and ref.startswith("runner:"):
         parts = ref.split(":")
