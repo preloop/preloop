@@ -2327,6 +2327,11 @@ class ContainerAgentExecutor(AgentExecutor):
             # the existing review, not a new branch off main.
             source_branch = resume_branch
             target_branch = resume_branch
+            if not execution_context.get("resume_from"):
+                prior = resume.get("execution_id") if isinstance(resume, dict) else None
+                execution_context["resume_from"] = (
+                    str(prior) if prior else resume_branch
+                )
             self.logger.info(
                 "Resume clone: using existing PR branch %s as source and target",
                 resume_branch,
@@ -2350,6 +2355,39 @@ class ContainerAgentExecutor(AgentExecutor):
             )
 
         return source_branch, target_branch, commit_sha, git_user_name, git_user_email
+
+    def _is_resume_execution(self, execution_context: Dict[str, Any]) -> bool:
+        """True when this run continues a prior PR-comment execution."""
+
+        if execution_context.get("resume_from"):
+            return True
+        trigger_data = execution_context.get("trigger_event_data")
+        if not isinstance(trigger_data, dict):
+            return False
+        resume = trigger_data.get("_resume")
+        return isinstance(resume, dict) and bool(
+            resume.get("execution_id") or resume.get("source_branch")
+        )
+
+    def _resolve_resume_base_branch(
+        self,
+        git_config: Dict[str, Any],
+        repo_config: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Return the flow base branch a resume rebase should land on.
+
+        Prefers ``repositories[].branch``, then top-level ``git_clone_config.branch``,
+        then ``source_branch``, then ``main``.
+        """
+
+        if repo_config:
+            repo_branch = repo_config.get("branch")
+            if repo_branch:
+                return str(repo_branch)
+        configured = git_config.get("branch") or git_config.get("source_branch")
+        if configured:
+            return str(configured)
+        return "main"
 
     def _build_git_global_setup_commands(
         self, git_user_name: str, git_user_email: str
@@ -2699,6 +2737,66 @@ echo "  Branch: {q_target} (from {q_source})"{sha_display}
 echo "========================================="
 """.strip()
 
+    def _build_git_resume_rebase_shell(
+        self, *, full_path: str, base_branch: str
+    ) -> str:
+        """Fetch the flow base branch and rebase the cloned PR branch onto it.
+
+        On conflict the rebase is aborted (not auto-resolved), conflicting
+        paths are written to ``/workspace/evidence/rebase-conflict.txt``, and
+        ``PRELOOP_RESUME_REBASE_CONFLICT=1`` is exported for the agent prompt.
+        The block always exits 0 so a conflict does not abort init.
+        """
+
+        safe_base = _validated_git_ref(base_branch)
+        if not safe_base:
+            self.logger.warning(
+                "Skipping resume rebase: unsafe base branch %r", base_branch
+            )
+            return ""
+
+        q_path = shlex.quote(full_path)
+        conflict_file = f"{EVIDENCE_DIR_PATH}/rebase-conflict.txt"
+        rebased_marker = f"{EVIDENCE_DIR_PATH}/resume-rebased"
+        return f"""
+cd {q_path}
+echo "Resume rebase: fetching origin/{safe_base} and rebasing the PR branch onto it"
+if git fetch origin {safe_base}; then
+    if git rebase origin/{safe_base}; then
+        echo "Resume rebase onto origin/{safe_base} succeeded"
+        mkdir -p {EVIDENCE_DIR_PATH}
+        touch {rebased_marker}
+        export PRELOOP_RESUME_REBASED=1
+    else
+        echo "Resume rebase onto origin/{safe_base} conflicted; leaving rebase aborted"
+        mkdir -p {EVIDENCE_DIR_PATH}
+        git diff --name-only --diff-filter=U > {conflict_file} 2>/dev/null || true
+        git rebase --abort || true
+        export PRELOOP_RESUME_REBASE_CONFLICT=1
+        echo "Wrote conflicting files to {conflict_file}"
+    fi
+else
+    echo "Resume rebase: could not fetch origin/{safe_base}; skipping rebase"
+fi
+cd /workspace
+true
+""".strip()
+
+    def _build_git_push_shell(self, safe_target: str, *, resume_rebase: bool) -> str:
+        """Build the post-exec push. Force-with-lease only after a resume rebase."""
+
+        if not resume_rebase:
+            return f"  git push origin {safe_target}"
+        rebased_marker = f"{EVIDENCE_DIR_PATH}/resume-rebased"
+        return (
+            f"  if [ -f {rebased_marker} ] || "
+            f'[ "${{PRELOOP_RESUME_REBASED:-}}" = "1" ]; then\n'
+            f"    git push --force-with-lease origin {safe_target}\n"
+            f"  else\n"
+            f"    git push origin {safe_target}\n"
+            f"  fi"
+        )
+
     def _build_repository_clone_command_block(
         self,
         *,
@@ -2747,7 +2845,7 @@ echo "========================================="
             trigger_data=trigger_data,
         )
 
-        return [
+        commands = [
             self._build_git_pre_clone_shell(full_path),
             self._build_git_clone_shell(repo_url, full_path, clone_branch),
             self._build_git_branch_setup_shell(
@@ -2764,6 +2862,19 @@ echo "========================================="
                 commit_sha=commit_sha,
             ),
         ]
+        if self._is_resume_execution(execution_context):
+            git_config = execution_context.get("git_clone_config") or {}
+            if not isinstance(git_config, dict):
+                git_config = {}
+            base_branch = self._resolve_resume_base_branch(git_config, repo_config)
+            rebase_shell = self._build_git_resume_rebase_shell(
+                full_path=full_path, base_branch=base_branch
+            )
+            if rebase_shell:
+                commands.append(rebase_shell)
+                execution_context["_git_resume_rebase"] = True
+                execution_context["_git_base_branch"] = base_branch
+        return commands
 
     def _prepare_git_clone_command(self, execution_context: Dict[str, Any]) -> str:
         """
@@ -2973,7 +3084,13 @@ echo "========================================="
                     ),
                     f'  echo "Wrote git recovery artifacts under {EVIDENCE_DIR_PATH}"',
                     push_auth,
-                    f"  git push origin {safe_target}",
+                    self._build_git_push_shell(
+                        safe_target,
+                        resume_rebase=bool(
+                            execution_context.get("_git_resume_rebase")
+                            or self._is_resume_execution(execution_context)
+                        ),
+                    ),
                 ]
 
                 # Add PR/MR creation if enabled
