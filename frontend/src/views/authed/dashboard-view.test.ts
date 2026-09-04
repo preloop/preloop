@@ -582,19 +582,19 @@ describe('DashboardView', () => {
         url.startsWith('/api/v1/account/gateway-usage/summary')
       )
     ).to.be.true;
-    // Two for the cards (summary + breakdown upgrade) and one for the prior
-    // window behind the Usage delta. The attention rules read the same
-    // breakdown rather than asking for a second one.
+    // Two for the cards (summary + breakdown upgrade), one for the prior
+    // window behind the Usage delta, and one rolling 30-day breakdown for
+    // attention (a calendar month is not those 30 days).
     expect(
       urls.filter((url) =>
         url.startsWith('/api/v1/account/gateway-usage/summary')
       ).length
-    ).to.equal(3);
+    ).to.equal(4);
     expect(urls.some((url) => url.includes('include_breakdown=false'))).to.be
       .true;
     expect(
       urls.filter((url) => url.includes('include_breakdown=true')).length
-    ).to.equal(1);
+    ).to.equal(2);
     // One list of agents for the whole load: the attention rules are handed
     // the list the fold already fetched.
     expect(
