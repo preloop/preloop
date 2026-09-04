@@ -172,7 +172,6 @@ export class PolicyGenerateDialog extends LitElement {
         label="Describe a change"
         ?open=${this.open}
         @sl-request-close=${this._handleClose}
-        @sl-after-hide=${this._handleClose}
       >
         <p class="description">
           Describe the policy you want, or the edits to the current policy. The

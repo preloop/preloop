@@ -406,6 +406,8 @@ describe('PoliciesView', () => {
     const current = 'version: "1.0"\nmetadata:\n  name: current';
     const generated = 'version: "1.0"\nmetadata:\n  name: edited';
     let uploaded = false;
+    let previewed = false;
+    let uploadBeforeDiff = false;
     fetchStub = sinon
       .stub(window, 'fetch')
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -433,9 +435,17 @@ describe('PoliciesView', () => {
           return json({ yaml: generated, warnings: [] });
         }
         if (url.endsWith('/api/v1/policies/diff') && method === 'POST') {
-          return json({ summary: '1 modified', has_changes: true });
+          previewed = true;
+          return json({
+            summary: '1 modified',
+            has_changes: true,
+            changes: { added: [], removed: [], modified: [] },
+          });
         }
         if (url.endsWith('/api/v1/policies/upload') && method === 'POST') {
+          if (!previewed) {
+            uploadBeforeDiff = true;
+          }
           uploaded = true;
           return json({ success: true, policy_name: 'edited' });
         }
@@ -471,8 +481,19 @@ describe('PoliciesView', () => {
     await dialog._generate();
     await dialog.updateComplete;
     dialog._applyPolicy();
-    await waitUntil(() => uploaded, 'Save did not apply');
+    await waitUntil(
+      () => (element as any)._showDiffDialog === true,
+      'Save did not open the diff dialog'
+    );
+    expect(previewed).to.be.true;
+    expect(uploaded).to.be.false;
+    expect((element as any)._showGenerateDialog).to.be.true;
+
+    await (element as any).applyPolicyFile();
+    await waitUntil(() => uploaded, 'Confirm did not apply');
     expect(uploaded).to.be.true;
+    expect(uploadBeforeDiff).to.be.false;
+    expect((element as any)._showGenerateDialog).to.be.false;
   });
 
   describe('YAML tab', () => {

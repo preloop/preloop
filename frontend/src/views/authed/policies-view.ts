@@ -1363,13 +1363,10 @@ export class PoliciesView extends LitElement {
     if (!yaml) {
       return;
     }
-    this._pendingFile = new File([yaml], 'generated.yaml', {
+    const file = new File([yaml], 'generated.yaml', {
       type: 'application/x-yaml',
     });
-    // The generated policy becomes the new truth, so the editor resyncs.
-    this._yamlDirty = false;
-    await this.applyPolicyFile();
-    this._showGenerateDialog = false;
+    await this.previewPolicyFile(file);
   }
 
   private async toggleModelIOEnabled(rule: ModelIORule) {
@@ -1491,13 +1488,17 @@ export class PoliciesView extends LitElement {
       }
 
       const fromYamlEditor = this._pendingYamlSave;
+      const fromGenerate = this._showGenerateDialog;
       this._pendingYamlSave = false;
       this._showDiffDialog = false;
       this._pendingFile = null;
       this._diffResult = null;
-      if (fromYamlEditor) {
+      if (fromYamlEditor || fromGenerate) {
         // Resync the editor from the applied export after loadData.
         this._yamlDirty = false;
+      }
+      if (fromGenerate) {
+        this._showGenerateDialog = false;
       }
 
       await this.loadData();

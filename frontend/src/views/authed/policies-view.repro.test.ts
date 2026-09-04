@@ -329,7 +329,7 @@ describe('Policies page repro', () => {
     expect(gen.open).to.be.true;
   });
 
-  it('R10 collapsing Full generated YAML closes the generate dialog and wipes the result', async () => {
+  it('R10 collapsing Full generated YAML keeps the generate dialog and yaml', async () => {
     const calls: StubOpts['calls'] = [];
     stub = stubFetch({ calls });
     const gen = (await fixture(
@@ -353,7 +353,7 @@ describe('Policies page repro', () => {
     await details.hide();
     await gen.updateComplete;
 
-    expect(gen.open, 'dialog closed by inner sl-details').to.be.false;
-    expect((gen as any)._generatedYaml).to.equal('');
+    expect(gen.open, 'inner sl-details must not close the dialog').to.be.true;
+    expect((gen as any)._generatedYaml).to.contain('version:');
   });
 });
