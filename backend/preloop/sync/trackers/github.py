@@ -48,6 +48,16 @@ from preloop.models.models.project import Project
 from preloop.models.crud import crud_organization, crud_project, crud_webhook
 
 
+def _github_link_has_next(link_header: Optional[str]) -> bool:
+    """Return True when a GitHub Link header includes rel=next."""
+    if not link_header:
+        return False
+    for part in link_header.split(","):
+        if 'rel="next"' in part or "rel=next" in part or "rel='next'" in part:
+            return True
+    return False
+
+
 class GitHubTracker(BaseTracker):
     """GitHub tracker implementation.
 
@@ -252,6 +262,39 @@ class GitHubTracker(BaseTracker):
                     )
 
                 return response.json()
+            except httpx.RequestError as e:
+                raise TrackerConnectionError(f"GitHub connection error: {str(e)}")
+
+    async def _request_with_headers(
+        self,
+        method: str,
+        endpoint: str,
+        data: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Any, Dict[str, str]]:
+        """GET/POST helper that also returns response headers (for Link pagination)."""
+        url = (
+            f"{self.API_BASE_URL}{endpoint}"
+            if endpoint.startswith("/")
+            else f"{self.API_BASE_URL}/{endpoint}"
+        )
+        headers = await self._get_auth_headers()
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.request(
+                    method,
+                    url,
+                    headers=headers,
+                    json=data,
+                    params=params,
+                )
+                if response.status_code == HTTP_STATUS_UNAUTHORIZED:
+                    raise TrackerAuthenticationError("GitHub authentication failed")
+                elif response.status_code >= 400:
+                    raise TrackerResponseError(
+                        f"GitHub API error: {response.status_code} - {response.text}"
+                    )
+                return response.json(), dict(response.headers)
             except httpx.RequestError as e:
                 raise TrackerConnectionError(f"GitHub connection error: {str(e)}")
 
@@ -2014,6 +2057,70 @@ class GitHubTracker(BaseTracker):
         except Exception as e:
             logger.error(f"Error getting pull request {pr_number}: {e}")
             raise TrackerResponseError(f"Failed to get pull request: {e}")
+
+    async def list_pull_requests(
+        self,
+        state: str = "open",
+        limit: int = 20,
+        page: int = 1,
+    ) -> Dict[str, Any]:
+        """List pull requests for the connected repository.
+
+        Args:
+            state: GitHub PR state (open, closed, all).
+            limit: Page size (per_page).
+            page: 1-based page number.
+
+        Returns:
+            Dict with normalized ``items`` and ``has_more`` from the Link header.
+        """
+        owner = self.connection_details.get("owner")
+        repo = self.connection_details.get("repo")
+        if not owner or not repo:
+            raise TrackerResponseError("Owner/repo not found in connection details")
+
+        path = f"/repos/{owner}/{repo}/pulls"
+        params = {
+            "state": state,
+            "per_page": limit,
+            "page": page,
+            "sort": "updated",
+            "direction": "desc",
+        }
+        raw, headers = await self._request_with_headers("GET", path, params=params)
+        if not isinstance(raw, list):
+            raise TrackerResponseError("GitHub pull request list was not an array")
+        items = [self._normalize_listed_pull_request(pr) for pr in raw]
+        return {
+            "items": items,
+            "has_more": _github_link_has_next(
+                headers.get("Link") or headers.get("link")
+            ),
+        }
+
+    def _normalize_listed_pull_request(self, pr_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Map a GitHub pulls-list item to the shared PR list shape."""
+        user = pr_data.get("user") if isinstance(pr_data.get("user"), dict) else {}
+        head = pr_data.get("head") if isinstance(pr_data.get("head"), dict) else {}
+        base = pr_data.get("base") if isinstance(pr_data.get("base"), dict) else {}
+        number = int(pr_data.get("number") or 0)
+        state = str(pr_data.get("state") or "open")
+        if state == "opened":
+            state = "open"
+        return {
+            "number": number,
+            "iid": number,
+            "title": pr_data.get("title") or "",
+            "description": pr_data.get("body") or "",
+            "url": pr_data.get("html_url") or "",
+            "author": user.get("login") or "",
+            "source_branch": head.get("ref") or "",
+            "target_branch": base.get("ref") or "",
+            "state": state,
+            "draft": bool(pr_data.get("draft", False)),
+            "created_at": pr_data.get("created_at"),
+            "updated_at": pr_data.get("updated_at"),
+        }
 
     async def update_pull_request(
         self,
