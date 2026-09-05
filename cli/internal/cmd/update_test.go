@@ -231,3 +231,29 @@ func TestUpdateCheckNewerThanLatest(t *testing.T) {
 		t.Fatalf("expected newer-than-latest line, got %q", out)
 	}
 }
+
+func TestUpdateCheckDevBuildIsNewerThanLatestRelease(t *testing.T) {
+	// A `make build` binary reports the git-describe form; `preloop update
+	// --check` must say it is newer than the release, not offer a downgrade.
+	resetUpdateFlags(t)
+	oldVersion := version.Version
+	version.Version = "v0.15.0-678-g5c9e8bc3"
+	t.Cleanup(func() { version.Version = oldVersion })
+	withVersionCheckServer(t, "0.15.0")
+	if err := updateCmd.Flags().Set("check", "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := captureUpdateStdout(t, func() error {
+		return runUpdate(updateCmd, nil)
+	})
+	if err != nil {
+		t.Fatalf("runUpdate --check: %v", err)
+	}
+	if strings.Contains(out, "update available") {
+		t.Fatalf("dev build must not offer a downgrade to the release, got %q", out)
+	}
+	if !strings.Contains(out, "newer than latest release") {
+		t.Fatalf("expected newer-than-latest line, got %q", out)
+	}
+}
