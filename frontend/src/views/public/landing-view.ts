@@ -1286,7 +1286,7 @@ export class LandingView extends LitElement {
           </div>
           ${
             this._heroInstall && this._ctaSecondary
-              ? html`<div class="hero-secondary-cta">
+              ? html`<div class="section-container hero-secondary-cta">
                   <span class="hero-secondary-text"
                     >Want a guided tour first?</span
                   >

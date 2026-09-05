@@ -105,7 +105,6 @@ p.lead {
    Start-align so the visual is not vertically centered against a taller
    copy column. The visual then gets a cap-line offset (see below). */
 .hero-inner.has-visual {
-  align-items: start;
   gap: 3rem;
 }
 
@@ -124,6 +123,10 @@ p.lead {
    so the copy column top is the H1 box top and the 0.12em visual offset
    hits the cap line. Stacked hero keeps its own h1 margins (D18). */
 @media (min-width: 1151px) {
+  .hero-inner.has-visual {
+    align-items: start;
+  }
+
   .hero-inner.has-visual .hero-content h1 {
     margin-top: 0;
   }
@@ -335,10 +338,6 @@ p.lead {
   flex-wrap: wrap;
   gap: 0.75rem 1.25rem;
   margin: 2.5rem auto 0;
-  padding: 0 1rem;
-  max-width: 1200px;
-  width: 100%;
-  box-sizing: border-box;
 }
 
 .hero-secondary-text {
@@ -1134,6 +1133,7 @@ summary.faq-question:hover sl-icon {
   .hero-inner {
     display: flex;
     flex-direction: column;
+    align-items: stretch;
     text-align: center;
     gap: 1rem;
   }

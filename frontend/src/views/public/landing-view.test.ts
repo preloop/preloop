@@ -384,6 +384,10 @@ describe('LandingView hero CTA row and footer disclaimer', () => {
     const inner = hero?.querySelector('.hero-inner');
     const cta = hero?.querySelector('.hero-secondary-cta');
     expect(cta, 'secondary CTA container exists').to.exist;
+    expect(
+      cta?.classList.contains('section-container'),
+      'CTA row reuses the shared section width'
+    ).to.be.true;
     expect(hero?.contains(cta as Node)).to.be.true;
     expect(
       inner?.contains(cta as Node),
