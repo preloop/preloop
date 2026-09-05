@@ -127,6 +127,9 @@ func formatDeferredLiveValidationRoundTrip(result deferredLiveValidationResult) 
 		seconds,
 		detail,
 	)
+	if hint := allowedModelsLiveCheckHint(result.Agent, result.Outcome, result.Err); hint != "" {
+		line += "  " + strings.TrimSpace(hint) + "\n"
+	}
 	return formatCLIError(line)
 }
 

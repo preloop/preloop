@@ -19,6 +19,14 @@ Use the Lit.dev framework for frontend code. If you create new web components en
 - **PostgreSQL access**: `docker compose exec postgres psql -U postgres -d preloop`
 - **Database migrations**: `alembic upgrade head` (from backend/preloop/models)
 
+## CLI dev builds
+
+- The only sanctioned way to update a local dev CLI is `cd cli && make install-local` (builds, then `install -m 755 build/preloop ~/.local/bin/preloop`; `PREFIX`, `BINDIR`, `INSTALL_MODE` override the defaults).
+- Never `cp` a build onto `~/.local/bin/preloop`. `cp` writes into the existing inode, which invalidates the macOS code-signature cache; the next exec dies with `SIGKILL (Code Signature Invalid)`. `install(1)` unlinks and recreates the file, which is what keeps that cache valid.
+- Never `go build -o ~/.local/bin/preloop` either: it skips the version ldflags (the binary reports the compiled-in fallback version and looks like a release to the update check) and it replaces the file even when the target is read-only, so the guard below does not catch it.
+- On macOS dev machines keep the binary guarded with `chmod a-w ~/.local/bin/preloop` (or install with `INSTALL_MODE=555`; the default 755 install drops the guard, so re-apply it). `make install-local` still works on a read-only target, a stray `cp` is refused, and `preloop update` honours the guard instead of replacing a dev build with the release.
+- A dev build reports the `git describe` version (`v0.15.0-678-g5c9e8bc3`), which the CLI treats as newer than the `0.15.0` release; `preloop update --check` prints `newer than latest release` for it.
+
 ## Git Workflow
 
 - **NEVER use git push in any form unless explicitly requested by the user**

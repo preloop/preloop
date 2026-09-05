@@ -1029,6 +1029,28 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		validationResult["live_validation_status"] = "pending"
 	}
 
+	// The agent's governance may restrict allowed models. Surface a mismatch
+	// with the alias we are about to route (and offer to fix it) before the
+	// live check turns it into an opaque 403. Dry runs returned right after
+	// printing the plan, so only the confirmation flags decide interactivity.
+	if supportsManagedGateway(agent) && strings.TrimSpace(plan.ManagedModelAlias) != "" {
+		interactiveAllowlist := !opts.AutoApprove &&
+			!opts.SkipConfirmation &&
+			!nonInteractiveAutoConfirm() &&
+			stdinIsTerminal()
+		if err := ensureSelectedModelAllowed(
+			client,
+			managedAgent.ID,
+			plan.ManagedModelAlias,
+			gatewayHints.SelectedAIModel,
+			input,
+			output,
+			interactiveAllowlist,
+		); err != nil {
+			return err
+		}
+	}
+
 	var liveValidationErr error
 	liveValidationGatewayVerified := false
 	liveValidationKeepsGatewayConfig := false
@@ -1055,6 +1077,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			modelAlias,
 			liveValidationDuration,
 		)
+		if hint := allowedModelsLiveCheckHint(agent, liveOutcome, err); hint != "" {
+			fmt.Fprintln(output, formatCLIError(hint)) //nolint:errcheck
+		}
 		if liveOutcome != nil && liveOutcome.Attempted {
 			// A probe the upstream provider refused (rate limit, billing) is
 			// inconclusive, not a failure: the static config checks passed and
@@ -5663,6 +5688,75 @@ func syncOpenClawAIModels(
 	return bindings, notes, nil
 }
 
+// findManagedClaudeCodeOAuthSibling returns an existing managed Claude Code
+// AI model that already holds a live same-type OAuth SecretReference. Used
+// so a newly pinned family (e.g. a first-seen fable row) attaches that
+// secret instead of minting a second single-use refresh-token lineage.
+func findManagedClaudeCodeOAuthSibling(
+	existing []aiModelResponse,
+	agent AgentConfig,
+	managedAgent *managedAgentSummary,
+	credentialType string,
+	excludeID string,
+) *aiModelResponse {
+	if !isClaudeCodeAgent(agent) || !isOAuthCredentialType(credentialType) {
+		return nil
+	}
+	wantType := strings.TrimSpace(credentialType)
+	if wantType == "" {
+		return nil
+	}
+	var agentID string
+	if managedAgent != nil {
+		agentID = strings.TrimSpace(managedAgent.ID)
+	}
+	var fallback *aiModelResponse
+	for i := range existing {
+		model := &existing[i]
+		if excludeID != "" && strings.TrimSpace(model.ID) == strings.TrimSpace(excludeID) {
+			continue
+		}
+		if strings.TrimSpace(model.CredentialType) != wantType {
+			continue
+		}
+		if strings.TrimSpace(model.CredentialsSecretID) == "" {
+			continue
+		}
+		modelAgentID := ""
+		if model.MetaData != nil {
+			modelAgentID, _ = model.MetaData["managed_agent_id"].(string)
+			modelAgentID = strings.TrimSpace(modelAgentID)
+		}
+		if agentID != "" && modelAgentID == agentID {
+			return model
+		}
+		// A row tagged with a different managed agent belongs to another
+		// machine's login; never attach to (or overwrite) that lineage.
+		// This also holds when the caller has no managed agent yet: only
+		// untagged rows are eligible then.
+		if modelAgentID != "" {
+			continue
+		}
+		if fallback == nil {
+			fallback = model
+		}
+	}
+	return fallback
+}
+
+func applySharedClaudeCodeOAuthSecret(sibling *aiModelResponse) string {
+	if sibling == nil {
+		return ""
+	}
+	// Attach the sibling's live lineage. Never overwrite it from the local
+	// bundle: an access token can still be inside its window after the
+	// gateway has already consumed the single-use refresh token. Putting
+	// that cached bundle back onto the shared secret bricks every sibling
+	// (invalid_grant). Recovery of a dead lineage goes through the
+	// target-already-has-a-credential re-seed path, not this attach path.
+	return strings.TrimSpace(sibling.CredentialsSecretID)
+}
+
 func syncManagedGatewayAIModel(
 	client *api.Client,
 	managedAgent *managedAgentSummary,
@@ -5719,7 +5813,11 @@ func syncManagedGatewayAIModel(
 		if !equalJSONMap(target.MetaData, metaData) {
 			update["meta_data"] = metaData
 		}
-		if upstream.APIKey != "" && !target.HasAPIKey {
+		// An OAuth upstream is seeded via credential_type/credential_payload
+		// or a shared credentials_secret_id below; sending api_key alongside
+		// either would be rejected by the backend validator.
+		if upstream.APIKey != "" && !target.HasAPIKey &&
+			!isOAuthCredentialType(upstream.CredentialType) {
 			update["api_key"] = upstream.APIKey
 		}
 		// Re-seed the stored credential on re-onboard when the upstream
@@ -5741,7 +5839,23 @@ func syncManagedGatewayAIModel(
 		// downgrades every later onboarding to MCP-only. When the local
 		// bundle is expired and the account already holds a same-type OAuth
 		// credential, keep the account copy — the gateway can refresh it.
-		if len(upstream.CredentialPayload) > 0 &&
+		//
+		// A second exception: when this target has no credential yet but a
+		// sibling Claude Code row already holds the same-type OAuth secret,
+		// attach that secret instead of minting a second lineage.
+		sharedSibling := findManagedClaudeCodeOAuthSibling(
+			existing,
+			agent,
+			managedAgent,
+			upstream.CredentialType,
+			target.ID,
+		)
+		if !target.HasAPIKey && sharedSibling != nil {
+			sharedSecret := applySharedClaudeCodeOAuthSecret(sharedSibling)
+			if sharedSecret != "" {
+				update["credentials_secret_id"] = sharedSecret
+			}
+		} else if len(upstream.CredentialPayload) > 0 &&
 			(!target.HasAPIKey ||
 				strings.TrimSpace(target.CredentialType) != strings.TrimSpace(upstream.CredentialType) ||
 				(isOAuthCredentialType(upstream.CredentialType) &&
@@ -5812,6 +5926,21 @@ func syncManagedGatewayAIModel(
 		CredentialType:  upstream.CredentialType,
 		CredentialsJSON: upstream.CredentialPayload,
 		MetaData:        metaData,
+	}
+	if sharedSibling := findManagedClaudeCodeOAuthSibling(
+		existing,
+		agent,
+		managedAgent,
+		upstream.CredentialType,
+		"",
+	); sharedSibling != nil {
+		sharedSecret := applySharedClaudeCodeOAuthSecret(sharedSibling)
+		if sharedSecret != "" {
+			create.CredentialsSecretID = sharedSecret
+			create.APIKey = ""
+			create.CredentialType = ""
+			create.CredentialsJSON = nil
+		}
 	}
 
 	var created aiModelResponse

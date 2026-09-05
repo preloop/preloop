@@ -1089,3 +1089,221 @@ def test_sanitize_header_value_strips_crlf_and_caps_length():
 
     # Non-latin-1 characters become ASCII replacements, never raise.
     assert _sanitize_header_value("模型🚀") == "???"
+
+
+def _allowlist_denial_detail() -> str:
+    return (
+        "Model 'vendor/alpha-chat' is not in this agent's allowed models "
+        "(Beta Flash, Alpha Chat). Edit the agent's governance in the Preloop "
+        "console or pick an allowed model."
+    )
+
+
+def test_budget_denial_detail_names_model_and_allowlist():
+    """The gateway renderer must not fall through to the bare budget message."""
+    from preloop.services.model_gateway_budget import BudgetCheckResult
+    from preloop.services.openai_gateway import OpenAIGatewayService
+
+    def _result(reason, **extra):
+        return BudgetCheckResult(
+            account_limit_usd=None,
+            account_soft_limit_usd=None,
+            account_current_spend_usd=0.0,
+            account_estimated_total_usd=None,
+            flow_limit_usd=None,
+            flow_soft_limit_usd=None,
+            flow_current_spend_usd=0.0,
+            flow_estimated_total_usd=None,
+            estimated_request_cost_usd=None,
+            trial_hosted_model_limit_usd=None,
+            trial_hosted_model_current_spend_usd=None,
+            trial_hosted_model_estimated_total_usd=None,
+            hard_limit_exceeded=True,
+            soft_limit_exceeded=False,
+            enforcement_reason=reason,
+            pricing_available=True,
+            **extra,
+        )
+
+    denied = _result(
+        "subject_model_not_allowed",
+        requested_model="vendor/alpha-chat",
+        allowed_models=["Beta Flash", "Alpha Chat"],
+    )
+    assert OpenAIGatewayService._budget_denial_detail(denied) == (
+        _allowlist_denial_detail()
+    )
+    assert OpenAIGatewayService._budget_denial_code(denied) == "model_not_allowed"
+
+    free_tier = _result("free_hosted_model_budget_exceeded")
+    assert OpenAIGatewayService._budget_denial_detail(free_tier) == (
+        "Model gateway budget exceeded: free-tier hosted model limit reached. "
+        "Configure your own OpenAI/Anthropic API key or upgrade your plan."
+    )
+    assert OpenAIGatewayService._budget_denial_code(free_tier) is None
+
+    unknown = _result("something_new")
+    assert (
+        OpenAIGatewayService._budget_denial_detail(unknown)
+        == "Model gateway budget exceeded"
+    )
+
+
+def test_audit_helpers_classify_allowlist_denial():
+    """Audit keeps budget_denied (the only denial outcome the UI renders) with a policy error type."""
+    from preloop.services.openai_gateway import OpenAIGatewayService
+
+    detail = _allowlist_denial_detail()
+    assert OpenAIGatewayService._audit_outcome(403, detail) == "budget_denied"
+    assert OpenAIGatewayService._audit_error_type(403, detail) == "model_not_allowed"
+    assert (
+        OpenAIGatewayService._audit_error_type(
+            403, "Model gateway budget exceeded: account monthly limit reached"
+        )
+        == "budget_limit_exceeded"
+    )
+    assert OpenAIGatewayService._audit_outcome(403, "nope") == "failed"
+
+
+def test_chat_completions_endpoint_returns_model_not_allowed_for_allowlist_denial(
+    app, client, db_session, test_user
+):
+    """A display-name allowlist that omits the requested row yields an explicit 403."""
+    from preloop.services.subject_governance import (
+        SUBJECT_TYPE_API_KEYS,
+        set_subject_governance,
+    )
+
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Imported alpha-chat",
+            "provider_name": "vendor",
+            "model_identifier": "alpha-chat",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "vendor/alpha-chat",
+                    "provider_adapter": "preloop",
+                    "responses_api": "transcode",
+                },
+                "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
+            },
+        },
+        account_id=test_user.account_id,
+    )
+    api_key, presented_token = crud_api_key.create_runtime_key(
+        db_session,
+        name="Governed Runtime Token",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={},
+    )
+    account = crud_account.get(db_session, id=test_user.account_id)
+    crud_account.update(
+        db_session,
+        db_obj=account,
+        obj_in={
+            "meta_data": set_subject_governance(
+                account.meta_data or {},
+                subject_type=SUBJECT_TYPE_API_KEYS,
+                subject_id=str(api_key.id),
+                config={"allowed_models": ["Beta Flash", "Alpha Chat"]},
+            )
+        },
+    )
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token=presented_token, user=test_user, api_key=api_key)
+    )
+
+    with patch("preloop.services.openai_gateway.litellm.completion") as mock_completion:
+        response = client.post(
+            "/openai/v1/chat/completions",
+            headers={"Authorization": "Bearer ignored"},
+            json={
+                "model": "vendor/alpha-chat",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+
+    assert response.status_code == 403
+    body = response.json()
+    assert body["error"]["message"] == _allowlist_denial_detail()
+    assert body["error"]["type"] == "permission_error"
+    assert body["error"]["code"] == "model_not_allowed"
+    mock_completion.assert_not_called()
+
+
+def test_chat_completions_endpoint_allows_display_name_allowlist_match(
+    app, client, db_session, test_user
+):
+    """The same display-name allowlist admits the row it actually names."""
+    from preloop.services.subject_governance import (
+        SUBJECT_TYPE_API_KEYS,
+        set_subject_governance,
+    )
+
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Alpha Chat",
+            "provider_name": "acme",
+            "model_identifier": "alpha-chat",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "acme/alpha-chat",
+                    "provider_adapter": "preloop",
+                    "responses_api": "transcode",
+                },
+                "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
+            },
+        },
+        account_id=test_user.account_id,
+    )
+    api_key, presented_token = crud_api_key.create_runtime_key(
+        db_session,
+        name="Governed Runtime Token",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={},
+    )
+    account = crud_account.get(db_session, id=test_user.account_id)
+    crud_account.update(
+        db_session,
+        db_obj=account,
+        obj_in={
+            "meta_data": set_subject_governance(
+                account.meta_data or {},
+                subject_type=SUBJECT_TYPE_API_KEYS,
+                subject_id=str(api_key.id),
+                config={"allowed_models": ["Beta Flash", "Alpha Chat"]},
+            )
+        },
+    )
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token=presented_token, user=test_user, api_key=api_key)
+    )
+
+    with patch("preloop.services.openai_gateway.litellm.completion") as mock_completion:
+        mock_response = MagicMock()
+        mock_response.model_dump.return_value = {
+            "id": "mock_id",
+            "choices": [{"message": {"content": "Hello", "role": "assistant"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+            "model": "alpha-chat",
+        }
+        mock_completion.return_value = mock_response
+        response = client.post(
+            "/openai/v1/chat/completions",
+            headers={"Authorization": "Bearer ignored"},
+            json={
+                "model": "acme/alpha-chat",
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    mock_completion.assert_called_once()

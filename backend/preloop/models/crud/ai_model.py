@@ -635,6 +635,17 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 if self._model_kind(existing_model) == target_model_kind:
                     existing_model.is_default = False
 
+        # An explicit ``credentials_secret_id: null`` survives ``exclude_unset``
+        # and would otherwise NULL the column and garbage-collect the secret
+        # it pointed at. Detaching a credential is not an update operation;
+        # treat null as "unchanged" so a stray PUT cannot destroy a live
+        # OAuth lineage shared by sibling rows.
+        if "credentials_secret_id" in obj_data and (
+            obj_data["credentials_secret_id"] is None
+        ):
+            obj_data.pop("credentials_secret_id")
+
+        previous_secret_id = db_obj.credentials_secret_id
         self._apply_secret_reference_fields(
             db,
             obj_data=obj_data,
@@ -643,7 +654,59 @@ class CRUDAIModel(CRUDBase[AIModel]):
             existing_secret_id=db_obj.credentials_secret_id,
         )
 
-        return super().update(db, db_obj=db_obj, obj_in=obj_data)
+        updated = super().update(db, db_obj=db_obj, obj_in=obj_data)
+        if previous_secret_id is not None and str(updated.credentials_secret_id) != str(
+            previous_secret_id
+        ):
+            self._delete_unreferenced_credential_secret(db, previous_secret_id)
+            db.commit()
+        return updated
+
+    def _delete_unreferenced_credential_secret(
+        self, db: Session, secret_id: uuid.UUID
+    ) -> None:
+        """Delete a SecretReference when nothing still points at it.
+
+        ``secret_reference`` is also FK'd from Tracker (API key and webhook)
+        and ProviderBillingConnection. Those use different ``secret_kind``
+        values, so sharing is not expected; still check them so a missed
+        reference cannot CASCADE-delete a billing connection or NULL a
+        tracker secret.
+        """
+        from preloop.models.models.provider_billing import (
+            ProviderBillingConnection,
+        )
+        from preloop.models.models.tracker import Tracker
+
+        remaining_reference = (
+            db.query(self.model.id)
+            .filter(self.model.credentials_secret_id == secret_id)
+            .first()
+        )
+        if remaining_reference is not None:
+            return
+        tracker_reference = (
+            db.query(Tracker.id)
+            .filter(
+                or_(
+                    Tracker.credentials_secret_id == secret_id,
+                    Tracker.webhook_secret_id == secret_id,
+                )
+            )
+            .first()
+        )
+        if tracker_reference is not None:
+            return
+        billing_reference = (
+            db.query(ProviderBillingConnection.id)
+            .filter(ProviderBillingConnection.secret_reference_id == secret_id)
+            .first()
+        )
+        if billing_reference is not None:
+            return
+        secret_ref = crud_secret_reference.get(db, id=secret_id)
+        if secret_ref is not None:
+            db.delete(secret_ref)
 
     def remove(self, db: Session, *, id: uuid.UUID) -> Optional[AIModel]:
         """Delete an AIModel and any unreferenced credential secret."""
@@ -656,15 +719,7 @@ class CRUDAIModel(CRUDBase[AIModel]):
         db.flush()
 
         if secret_id is not None:
-            remaining_reference = (
-                db.query(self.model.id)
-                .filter(self.model.credentials_secret_id == secret_id)
-                .first()
-            )
-            if remaining_reference is None:
-                secret_ref = crud_secret_reference.get(db, id=secret_id)
-                if secret_ref is not None:
-                    db.delete(secret_ref)
+            self._delete_unreferenced_credential_secret(db, secret_id)
 
         db.commit()
         return obj

@@ -80,6 +80,15 @@ interface GovernanceToolDefinition {
   schema?: Record<string, unknown>;
 }
 
+/** The subset of an account AI model the allowlist editor keys on. */
+type AllowedModelCandidate = {
+  id: string;
+  name: string;
+  provider_name?: string;
+  model_identifier?: string;
+  meta_data?: Record<string, unknown> | null;
+};
+
 @customElement('agent-detail-view')
 export class AgentDetailView extends LitElement {
   @property({ type: String })
@@ -673,7 +682,9 @@ export class AgentDetailView extends LitElement {
       );
       this.toolEnabledOverrides =
         governance.config.tool_enabled_overrides || {};
-      this.allowedModelsText = governance.config.allowed_models.join(', ');
+      this.allowedModelsText = this.formatAllowedModelsText(
+        governance.config.allowed_models
+      );
       this.modelBudgetsText = JSON.stringify(
         governance.config.model_budgets || {},
         null,
@@ -887,7 +898,7 @@ export class AgentDetailView extends LitElement {
       if (binding.gateway_alias) models.add(binding.gateway_alias);
     }
 
-    for (const model of this.governance?.allowed_models || []) {
+    for (const model of this.getAllowedModelAliases()) {
       if (model) models.add(model);
     }
 
@@ -1287,7 +1298,9 @@ export class AgentDetailView extends LitElement {
         response.config.tool_rules
       );
       this.toolEnabledOverrides = response.config.tool_enabled_overrides || {};
-      this.allowedModelsText = response.config.allowed_models.join(', ');
+      this.allowedModelsText = this.formatAllowedModelsText(
+        response.config.allowed_models
+      );
       this.modelBudgetsText = JSON.stringify(
         response.config.model_budgets || {},
         null,
@@ -1316,7 +1329,7 @@ export class AgentDetailView extends LitElement {
       return;
     }
     this.governance = { ...this.governance, allowed_models: [...models] };
-    this.allowedModelsText = models.join(', ');
+    this.allowedModelsText = this.formatAllowedModelsText(models);
     this.actionLoading = true;
     const task = this.modelSaveChain.then(() => this.persistAllowedModels());
     this.modelSaveChain = task.then(
@@ -1344,7 +1357,9 @@ export class AgentDetailView extends LitElement {
         response.config.tool_rules
       );
       this.toolEnabledOverrides = response.config.tool_enabled_overrides || {};
-      this.allowedModelsText = response.config.allowed_models.join(', ');
+      this.allowedModelsText = this.formatAllowedModelsText(
+        response.config.allowed_models
+      );
       this.error = null;
     } catch (error) {
       console.error('Failed to update agent models:', error);
@@ -1354,38 +1369,137 @@ export class AgentDetailView extends LitElement {
       // not keep showing a selection that was never persisted.
       if (this.confirmedGovernance) {
         this.governance = { ...this.confirmedGovernance };
-        this.allowedModelsText =
-          this.confirmedGovernance.allowed_models.join(', ');
+        this.allowedModelsText = this.formatAllowedModelsText(
+          this.confirmedGovernance.allowed_models
+        );
       }
     }
   }
 
-  private handleAllowedModelToggle(modelName: string, checked: boolean): void {
+  private handleAllowedModelToggle(modelAlias: string, checked: boolean): void {
     // While unrestricted (empty allowlist) every checkbox renders unchecked,
     // so checking a model switches the agent into restricted mode with just
-    // that model. Unchecking simply removes it from the restriction.
-    const current = [...(this.governance.allowed_models || [])];
+    // that model. Unchecking simply removes it from the restriction. The
+    // list is normalised to gateway aliases on the way out, so a legacy
+    // allowlist of display names or ids is rewritten to aliases the first
+    // time it is edited.
+    const current = this.getAllowedModelAliases();
     let next: string[];
     if (checked) {
-      if (current.includes(modelName)) {
+      if (current.includes(modelAlias)) {
         return;
       }
-      next = [...current, modelName].sort();
+      next = [...current, modelAlias].sort();
     } else {
-      if (!current.includes(modelName)) {
+      if (!current.includes(modelAlias)) {
         return;
       }
-      next = current.filter((m) => m !== modelName);
+      next = current.filter((m) => m !== modelAlias);
     }
     void this.saveAllowedModels(next);
   }
 
   private handleAllowedModelsTextChange(value: string): void {
-    const models = value
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const models = Array.from(
+      new Set(
+        value
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map((entry) => this.resolveAllowedModelEntry(entry))
+      )
+    );
     void this.saveAllowedModels(models);
+  }
+
+  /**
+   * The gateway alias an account model answers to: the explicit
+   * ``meta_data.gateway.model_alias`` when set, else ``provider/identifier``.
+   * This is the key the governance allowlist is written with, because the
+   * gateway preflight keys on it and it reads as a policy.
+   */
+  private gatewayAliasForModel(model: AllowedModelCandidate): string {
+    const meta = (model.meta_data || {}) as Record<string, unknown>;
+    const gateway = (meta.gateway as Record<string, unknown> | undefined) || {};
+    const explicit = gateway.model_alias;
+    if (typeof explicit === 'string' && explicit.trim()) {
+      return explicit.trim();
+    }
+    const provider = (model.provider_name || 'openai').trim().toLowerCase();
+    const identifier = (model.model_identifier || '').trim();
+    return identifier ? `${provider}/${identifier}` : provider;
+  }
+
+  /**
+   * Find the account model one stored allowlist entry refers to.
+   * Matching contract: backend/preloop/services/model_allowlist.py
+   * Entries may be a gateway alias (or its bare tail), an AI model id, or a
+   * display name (case-insensitive).
+   */
+  private findModelForAllowedEntry(
+    entry: string
+  ): AllowedModelCandidate | null {
+    const needle = entry.trim();
+    if (!needle) return null;
+    const folded = needle.toLowerCase();
+    const models = this.availableModels as AllowedModelCandidate[];
+    for (const model of models) {
+      if (this.gatewayAliasForModel(model) === needle) return model;
+    }
+    for (const model of models) {
+      if (String(model.id).toLowerCase() === folded) return model;
+    }
+    for (const model of models) {
+      if ((model.name || '').trim().toLowerCase() === folded) return model;
+    }
+    // A bare tail may be shared by two imports of the same upstream model
+    // (acme/alpha-chat and vendor/alpha-chat). The backend honours the
+    // entry for both rows, so rewriting it to one alias would silently
+    // narrow the policy: only resolve when exactly one row matches.
+    let tailMatch: AllowedModelCandidate | null = null;
+    let tailMatches = 0;
+    for (const model of models) {
+      const alias = this.gatewayAliasForModel(model);
+      const tail = alias.includes('/')
+        ? alias.split('/').slice(1).join('/')
+        : '';
+      if (tail && tail === needle) {
+        tailMatch = model;
+        tailMatches += 1;
+      }
+    }
+    return tailMatches === 1 ? tailMatch : null;
+  }
+
+  /** Persisted key for an allowlist entry: its model's alias, else as typed. */
+  private resolveAllowedModelEntry(entry: string): string {
+    const model = this.findModelForAllowedEntry(entry);
+    return model ? this.gatewayAliasForModel(model) : entry.trim();
+  }
+
+  /**
+   * Collect stored allowlist entries as gateway aliases, order preserved.
+   * Matching contract: backend/preloop/services/model_allowlist.py
+   * Non-string values are dropped, not stringified.
+   */
+  private collectAllowedModelAliases(entries: unknown[] | undefined): string[] {
+    const aliases: string[] = [];
+    for (const entry of entries || []) {
+      if (typeof entry !== 'string') continue;
+      const alias = this.resolveAllowedModelEntry(entry);
+      if (alias && !aliases.includes(alias)) aliases.push(alias);
+    }
+    return aliases;
+  }
+
+  /** The current allowlist expressed as gateway aliases, order preserved. */
+  private getAllowedModelAliases(): string[] {
+    return this.collectAllowedModelAliases(this.governance?.allowed_models);
+  }
+
+  /** Comma-separated alias list shown in the manual override input. */
+  private formatAllowedModelsText(entries: unknown[] | undefined): string {
+    return this.collectAllowedModelAliases(entries).join(', ');
   }
 
   private saveApprovalWorkflowSelection(workflowId: string | null): void {
@@ -2600,6 +2714,8 @@ export class AgentDetailView extends LitElement {
     }
 
     const aggregate = this.aggregate;
+    // Resolved once per render instead of once per model row.
+    const allowedModelAliases = this.getAllowedModelAliases();
 
     return html`
       <view-header headerText=${this.agent.display_name}>
@@ -3207,24 +3323,33 @@ export class AgentDetailView extends LitElement {
                             style="display: flex; flex-direction: column; gap: var(--sl-spacing-x-small); max-height: 260px; overflow-y: auto;"
                           >
                             ${this.availableModels.map((model: any) => {
-                              const allowed =
-                                this.governance.allowed_models || [];
+                              const alias = this.gatewayAliasForModel(model);
                               // While unrestricted (empty list) every box
                               // renders unchecked; checking one switches to
                               // restricted mode instead of faking "checked
                               // because everything is allowed".
-                              const isChecked = allowed.includes(model.name);
+                              const isChecked =
+                                allowedModelAliases.includes(alias);
                               return html`
                                 <sl-checkbox
-                                  data-model-allow-toggle=${model.name}
+                                  data-model-allow-toggle=${alias}
                                   ?checked=${isChecked}
                                   @sl-change=${(e: Event) =>
                                     this.handleAllowedModelToggle(
-                                      model.name,
+                                      alias,
                                       (e.target as HTMLInputElement).checked
                                     )}
                                 >
                                   ${model.name}
+                                  ${
+                                    alias !== model.name
+                                      ? html`<span
+                                          class="meta-line"
+                                          style="margin: 0 0 0 var(--sl-spacing-x-small); display: inline;"
+                                          >${alias}</span
+                                        >`
+                                      : nothing
+                                  }
                                 </sl-checkbox>
                               `;
                             })}
@@ -3253,9 +3378,11 @@ export class AgentDetailView extends LitElement {
                           <div
                             style="font-size: 0.8rem; color: var(--console-meta-color);"
                           >
-                            The authoritative comma separated list behind the
-                            checkboxes above, including aliases not offered as
-                            checkboxes. Leave empty to allow all models.
+                            The authoritative comma separated list of gateway
+                            aliases behind the checkboxes above, including
+                            aliases not offered as checkboxes. Model names and
+                            ids typed here are converted to aliases on save.
+                            Leave empty to allow all models.
                           </div>
                         </div>
                       </div>
