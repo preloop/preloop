@@ -495,7 +495,8 @@ export class AccountView extends LitElement {
     const hostedSummary = this._billingSummary?.hosted_models;
     const trialSummary = this._billingSummary?.trial;
     // A renewal date in the past is not a renewal. Say what happened on that
-    // date instead of promising a renewal that never came.
+    // date instead of promising a renewal that never came. A trial does not
+    // renew either, so it never says "Renews on" in any direction.
     const periodEnded = this._isPast(this.subscription?.current_period_end);
     const isTrialing =
       this.subscription?.status === 'trialing' ||
@@ -508,7 +509,9 @@ export class AccountView extends LitElement {
           : 'Ended'
       : this.subscription?.status === 'pending_cancellation'
         ? 'Cancels on'
-        : 'Renews on';
+        : isTrialing
+          ? 'Trial ends on'
+          : 'Renews on';
     // The plans grid drops the plan the account is already on, which can leave
     // nothing to show: a Monthly / Yearly toggle over an empty grid is a
     // control with no subject.

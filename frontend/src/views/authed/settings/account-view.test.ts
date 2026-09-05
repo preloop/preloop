@@ -241,6 +241,28 @@ describe('AccountView', () => {
     expect(element.shadowRoot?.textContent).to.contain('Renews on');
   });
 
+  it('says a trial ends, never renews, for a future period end (D13)', async () => {
+    fetchStub = createFetchStub({
+      billing: true,
+      trial: {
+        is_trialing: true,
+        days: 14,
+        requires_payment_method: false,
+        hosted_model_hard_cap_usd: null,
+      },
+    });
+    const element = (await fixture(
+      html`<account-view></account-view>`
+    )) as AccountView;
+
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+
+    const text = element.shadowRoot?.textContent ?? '';
+    expect(text).to.contain('Trial ends on');
+    expect(text).to.not.contain('Renews on');
+  });
+
   it('hides the interval toggle and grid when no plans render (D13)', async () => {
     fetchStub = createFetchStub({ billing: true, plans: [] });
     const element = (await fixture(
