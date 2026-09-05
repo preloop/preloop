@@ -1947,7 +1947,7 @@ export class CostView extends AuthedElement {
                 </div>
               `
             : html`<div class="empty">
-                No provider billing data in this window yet — run "Sync now" or
+                No provider billing data in this window yet. Run "Sync now" or
                 wait for the daily ingestion.
               </div>`
         }
@@ -2292,7 +2292,7 @@ export class CostView extends AuthedElement {
                 role="status"
               >
                 <sl-icon slot="icon" name="info-circle"></sl-icon>
-                Owner attribution unavailable — sessions are grouped as
+                Owner attribution unavailable: sessions are grouped as
                 Unattributed.
               </sl-alert>`
             : nothing
@@ -2398,7 +2398,7 @@ export class CostView extends AuthedElement {
     return html`
       <sl-alert variant="neutral" open class="tools-notice" role="status">
         <sl-icon slot="icon" name="info-circle"></sl-icon>
-        No expensive tool definitions flagged — your agents' tool schemas look
+        No expensive tool definitions flagged: your agents' tool schemas look
         efficient. Sort by total cost or schema tokens to spot the priciest
         tools.
       </sl-alert>
