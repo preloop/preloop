@@ -117,8 +117,11 @@ FAILURE_CATEGORY_MAX_LENGTH = 32
 # Statuses that get a category. Deliberately a positive list: a status this
 # module does not recognise (a new in-flight stage, a future terminal state)
 # yields no category rather than a fabricated one. An empty status is allowed
-# so callers holding only an exception can still classify it.
-_FAILURE_STATUSES = frozenset({"FAILED", "ERROR", "TIMEOUT", "TIMED_OUT"})
+# so callers holding only an exception can still classify it. The flows-list
+# window ``failed`` count uses the same set so a TIMEOUT is not a silent
+# success next to a FAILED.
+FAILURE_STATUSES = frozenset({"FAILED", "ERROR", "TIMEOUT", "TIMED_OUT"})
+_FAILURE_STATUSES = FAILURE_STATUSES
 _CANCELLED_STATUSES = frozenset({"STOPPED", "CANCELLED", "CANCELED"})
 
 # Upstream taxonomy -> category. Keeps the gateway's vocabulary and the

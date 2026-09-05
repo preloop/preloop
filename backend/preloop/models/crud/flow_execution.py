@@ -439,6 +439,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         from sqlalchemy import func, case
         from preloop.models.crud.api_usage import exclude_replay_usage_condition
         from preloop.models.models.api_usage import ApiUsage
+        from preloop.services.flow_failure_category import FAILURE_STATUSES
 
         # Fetch execution stats
         exec_stats = (
@@ -492,9 +493,12 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 db.query(
                     self.model.flow_id,
                     func.count(self.model.id).label("runs"),
-                    func.sum(case((self.model.status == "FAILED", 1), else_=0)).label(
-                        "failed"
-                    ),
+                    func.sum(
+                        case(
+                            (self.model.status.in_(FAILURE_STATUSES), 1),
+                            else_=0,
+                        )
+                    ).label("failed"),
                     func.max(self.model.start_time).label("last_run_at"),
                 )
                 .filter(
@@ -504,20 +508,25 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 .group_by(self.model.flow_id)
                 .all()
             )
+            # Spend belongs to the run, so the window is the run's
+            # start_time, not the usage row's timestamp. A long run, a
+            # delayed gateway write, or a backdated start_time would
+            # otherwise print cost for a period the runs count does not.
             window_cost = (
                 db.query(
-                    ApiUsage.flow_id,
+                    self.model.flow_id,
                     func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
                         "estimated_cost"
                     ),
                 )
+                .join(self.model, ApiUsage.flow_execution_id == self.model.id)
                 .filter(
-                    ApiUsage.flow_id.in_(flow_ids),
+                    self.model.flow_id.in_(flow_ids),
+                    self.model.start_time >= start_date,
                     ApiUsage.action_type == "model_gateway",
-                    ApiUsage.timestamp >= start_date,
                     exclude_replay_usage_condition(),
                 )
-                .group_by(ApiUsage.flow_id)
+                .group_by(self.model.flow_id)
                 .all()
             )
             window_cost_map = {

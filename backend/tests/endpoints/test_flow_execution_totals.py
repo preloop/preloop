@@ -241,6 +241,78 @@ async def test_flow_stats_window_answers_runs_failed_and_cost(db_session, test_u
 
 
 @pytest.mark.asyncio
+async def test_flow_stats_window_failed_counts_terminal_failures(db_session, test_user):
+    """TIMEOUT/ERROR/TIMED_OUT are failures, the same as FAILED.
+
+    The classifier that stamps ``failure_category`` already treats those
+    four statuses as the failure set. Counting only ``FAILED`` would let a
+    wall-clock timeout read as a quiet success in the flows-list window.
+    """
+    flow = _create_flow(db_session, test_user, name="Terminal Failures Flow")
+    for status in ("FAILED", "ERROR", "TIMEOUT", "TIMED_OUT", "STOPPED", "SUCCEEDED"):
+        crud_flow_execution.create(
+            db_session, FlowExecutionCreate(flow_id=flow.id, status=status)
+        )
+
+    since = datetime.now(UTC) - timedelta(days=30)
+    result = await maybe_await(
+        flows.read_flows(db=db_session, stats_since=since, current_user=test_user)
+    )
+    stats = {
+        str(item.id): item.execution_stats
+        for item in result
+        if str(item.id) == str(flow.id)
+    }[str(flow.id)]
+
+    assert stats["runs"] == 6
+    assert stats["failed"] == 4
+
+
+@pytest.mark.asyncio
+async def test_flow_stats_window_cost_follows_execution_start_time(
+    db_session, test_user
+):
+    """Window spend uses the run's start_time, not the usage timestamp.
+
+    If this filtered ``ApiUsage.timestamp`` again, the old run's fresh
+    usage row would inflate the 30d spend and the in-window run's
+    backdated usage would vanish — two numbers for one period.
+    """
+    flow = _create_flow(db_session, test_user, name="Aligned Window Flow")
+    now = datetime.now(UTC)
+
+    recent = crud_flow_execution.create(
+        db_session, FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED")
+    )
+    old = crud_flow_execution.create(
+        db_session, FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED")
+    )
+    old.start_time = (now - timedelta(days=60)).replace(tzinfo=None)
+    db_session.flush()
+
+    in_window_usage = _gateway_row(
+        db_session, test_user, recent.id, 0.25, flow_id=flow.id
+    )
+    in_window_usage.timestamp = (now - timedelta(days=40)).replace(tzinfo=None)
+    _gateway_row(db_session, test_user, old.id, 1.00, flow_id=flow.id)
+    db_session.flush()
+
+    since = now - timedelta(days=30)
+    result = await maybe_await(
+        flows.read_flows(db=db_session, stats_since=since, current_user=test_user)
+    )
+    stats = {
+        str(item.id): item.execution_stats
+        for item in result
+        if str(item.id) == str(flow.id)
+    }[str(flow.id)]
+
+    assert stats["runs"] == 1
+    assert stats["cost"] == pytest.approx(0.25)
+    assert stats["estimated_cost"] == pytest.approx(1.25)
+
+
+@pytest.mark.asyncio
 async def test_flow_stats_without_a_window_are_unchanged(db_session, test_user):
     """No stats_since, no window keys: the agents view still sees lifetime."""
     flow = _create_flow(db_session, test_user, name="Lifetime Flow")
