@@ -706,3 +706,36 @@ async def test_summarize_interaction_falls_back_on_model_error(service):
     # Falls back to the local summary but records the model name.
     assert result.generated_by == "local"
     assert result.model_name == "GPT-5"
+
+
+def test_default_activity_title_for_transcript_messages() -> None:
+    """Ingested transcript messages are titled by role in the timeline."""
+    from types import SimpleNamespace
+
+    from preloop.services.runtime_session_explorer import _default_activity_title
+
+    def activity(activity_type, role=None):
+        return SimpleNamespace(
+            activity_type=activity_type,
+            metadata_={"role": role} if role else None,
+        )
+
+    assert (
+        _default_activity_title(activity("transcript_message", "user"))
+        == "User message"
+    )
+    assert (
+        _default_activity_title(activity("transcript_message", "assistant"))
+        == "Assistant message"
+    )
+    assert (
+        _default_activity_title(activity("transcript_message", "tool_use"))
+        == "Tool call"
+    )
+    assert (
+        _default_activity_title(activity("transcript_message")) == "Transcript message"
+    )
+    assert (
+        _default_activity_title(activity("agent_control_message")) == "Operator message"
+    )
+    assert _default_activity_title(activity("tool_call")) == "Tool call"

@@ -90,6 +90,11 @@ type cursorHookInput struct {
 	Model          string `json:"model"`
 	TranscriptPath string `json:"transcript_path"`
 
+	// beforeSubmitPrompt. Read for one purpose only: the first line of the
+	// first prompt becomes the runtime session title. The prompt itself is
+	// never shipped.
+	Prompt string `json:"prompt"`
+
 	// subagentStop: the subagent's own transcript, separate from the
 	// parent conversation's.
 	AgentTranscriptPath string `json:"agent_transcript_path"`
@@ -172,6 +177,7 @@ func init() {
 	usageHookCmd.Flags().String("parent-conversation-id", "", "conversation this chat was spawned from, when the payload reports none (also PRELOOP_PARENT_CONVERSATION_ID)")
 	usageHookCmd.Flags().String("from", "auto", "payload format: auto, cursor, generic, or codex")
 	usageHookCmd.Flags().String("file", "", "read events from a file instead of stdin (generic NDJSON or a Codex rollout JSONL)")
+	usageHookCmd.Flags().Bool("store-transcript", false, "Cursor only: also ship the transcript text since the last event as runtime session activities (default: counts, title and a short summary only; a store_transcript key in the Cursor hook credential file has the same effect)")
 }
 
 func runUsageHook(cmd *cobra.Command, _ []string) error {
@@ -180,6 +186,7 @@ func runUsageHook(cmd *cobra.Command, _ []string) error {
 	parentFlag, _ := cmd.Flags().GetString("parent-conversation-id")
 	fromRaw, _ := cmd.Flags().GetString("from")
 	filePath, _ := cmd.Flags().GetString("file")
+	storeTranscriptFlag, _ := cmd.Flags().GetBool("store-transcript")
 	sourceChanged := cmd.Flags().Changed("source")
 
 	if agentID != "" && !uuidRe.MatchString(agentID) {
@@ -223,7 +230,10 @@ func runUsageHook(cmd *cobra.Command, _ []string) error {
 	var records []map[string]interface{}
 	switch detected {
 	case usageHookFormatCursor:
-		records, err = recordsFromCursorHook(raws[0], parentFlag, now, func(warnErr error) {
+		options := cursorHookOptions{
+			StoreTranscript: storeTranscriptFlag || cursorStoreTranscriptFromCredential(),
+		}
+		records, err = recordsFromCursorHook(raws[0], parentFlag, now, options, func(warnErr error) {
 			fmt.Fprintf(cmd.ErrOrStderr(), "preloop usage hook: %v\n", warnErr)
 		})
 	case usageHookFormatGeneric:
@@ -354,12 +364,51 @@ func resolveUsageHookSource(format usageHookFormat, flagValue string, flagChange
 	}
 }
 
+// cursorHookOptions carries operator choices for Cursor hook handling.
+type cursorHookOptions struct {
+	// StoreTranscript ships the transcript delta's text as session
+	// activities. Off by default: only counts, the title and a short
+	// summary leave the machine.
+	StoreTranscript bool
+}
+
+// cursorStoreTranscriptFromCredential reports whether the newest Cursor
+// hook credential file (~/.preloop/agents/*/permission_hook.json with
+// source cursor) opted into transcript storage.
+func cursorStoreTranscriptFromCredential() bool {
+	creds, err := loadPermissionHookCredentials(permissionSourceCursor)
+	if err != nil || len(creds) == 0 {
+		return false
+	}
+	return creds[0].StoreTranscript != nil && *creds[0].StoreTranscript
+}
+
 func recordsFromCursorHook(
-	payload json.RawMessage, parentFlag string, now time.Time, warn func(error),
+	payload json.RawMessage,
+	parentFlag string,
+	now time.Time,
+	options cursorHookOptions,
+	warn func(error),
 ) ([]map[string]interface{}, error) {
 	var input cursorHookInput
 	if err := json.Unmarshal(payload, &input); err != nil {
 		return nil, fmt.Errorf("parse hook payload: %w", err)
+	}
+
+	if input.HookEventName == "beforeSubmitPrompt" {
+		// Title capture only: nothing is posted for this event, and the
+		// prompt text is reduced to its first line before it is stored
+		// locally for the next stop record.
+		conversationID := input.ConversationID
+		if conversationID == "" {
+			conversationID = input.SessionID
+		}
+		if conversationID != "" {
+			if err := rememberCursorTitleFromPrompt(conversationID, input.Prompt); err != nil {
+				warn(fmt.Errorf("session title not remembered: %w", err))
+			}
+		}
+		return nil, nil
 	}
 
 	eventType, shipped := cursorHookEventMap[input.HookEventName]
@@ -371,7 +420,7 @@ func recordsFromCursorHook(
 	if err != nil {
 		return nil, err
 	}
-	enrichCursorRecordFromTranscript(input, record, now, warn)
+	enrichCursorRecordFromTranscript(input, record, now, options, warn)
 	return []map[string]interface{}{record}, nil
 }
 
@@ -383,23 +432,30 @@ func enrichCursorRecordFromTranscript(
 	input cursorHookInput,
 	record map[string]interface{},
 	now time.Time,
+	options cursorHookOptions,
 	warn func(error),
 ) {
 	conversationID, _ := record["conversation_id"].(string)
 	switch input.HookEventName {
 	case "sessionStart":
 		pruneCursorTranscriptState(now)
+		setCursorRecordMetadata(record, "session_title_default", cursorDefaultSessionTitle(conversationID))
 		return
 	case "stop", "sessionEnd":
+		state, stateErr := loadCursorTranscriptState(conversationID)
+		if stateErr == nil && state.Title != "" {
+			setCursorRecordMetadata(record, "session_title", state.Title)
+		}
 		path := resolveCursorTranscriptPath(input.TranscriptPath)
 		if path == "" {
 			return
 		}
-		estimate, _, err := estimateCursorGeneration(conversationID, path, input.GenerationID, false)
+		estimate, _, err := estimateCursorGeneration(conversationID, path, input.GenerationID, options.StoreTranscript)
 		if err != nil {
 			warn(fmt.Errorf("transcript estimate skipped: %w", err))
 		}
 		attachCursorTokenEstimate(record, estimate)
+		attachCursorSessionText(record, estimate, options)
 	case "subagentStop":
 		path := strings.TrimSpace(input.AgentTranscriptPath)
 		if path == "" {

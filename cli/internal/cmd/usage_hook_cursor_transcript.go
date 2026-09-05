@@ -565,3 +565,139 @@ func cursorSubagentStateKey(input cursorHookInput, transcriptPath string) string
 	sum := sha256.Sum256([]byte(transcriptPath))
 	return "subagent-" + hex.EncodeToString(sum[:8])
 }
+
+// Session presentation limits. The summary cap matches what the console
+// shows in the runtime sessions list; the title cap keeps the first prompt
+// line readable as a list row.
+const (
+	cursorSessionSummaryMaxChars = 280
+	cursorSessionTitleMaxChars   = 120
+	cursorSessionShortIDLen      = 8
+
+	// cursorTranscriptShipMaxMessages and cursorTranscriptShipMaxChars
+	// mirror MAX_INGEST_TRANSCRIPT_MESSAGES / MAX_INGEST_TRANSCRIPT_TEXT_CHARS
+	// / MAX_INGEST_TRANSCRIPT_TOTAL_CHARS in backend/preloop/schemas/
+	// usage_import.py.
+	cursorTranscriptShipMaxMessages   = 50
+	cursorTranscriptShipMaxChars      = 4000
+	cursorTranscriptShipMaxTotalChars = 64 * 1024
+)
+
+var cursorWhitespaceRun = regexp.MustCompile(`\s+`)
+
+func setCursorRecordMetadata(record map[string]interface{}, key string, value interface{}) {
+	metadata, _ := record["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+		record["metadata"] = metadata
+	}
+	metadata[key] = value
+}
+
+// cursorDefaultSessionTitle is the placeholder used until the first prompt
+// line is known: "Cursor conversation <short id>".
+func cursorDefaultSessionTitle(conversationID string) string {
+	short := strings.TrimSpace(conversationID)
+	if len(short) > cursorSessionShortIDLen {
+		short = short[:cursorSessionShortIDLen]
+	}
+	return "Cursor conversation " + short
+}
+
+// truncateCursorText cuts text to max runes, marking the cut with an
+// ellipsis so a truncated summary is never mistaken for a complete one.
+func truncateCursorText(text string, max int) string {
+	if utf8.RuneCountInString(text) <= max {
+		return text
+	}
+	runes := []rune(text)
+	if max <= 3 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-3]) + "..."
+}
+
+// cursorTitleFromPrompt reduces a prompt to its first non-empty line.
+func cursorTitleFromPrompt(prompt string) string {
+	for _, line := range strings.Split(prompt, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		line = cursorWhitespaceRun.ReplaceAllString(line, " ")
+		return truncateCursorText(line, cursorSessionTitleMaxChars)
+	}
+	return ""
+}
+
+// rememberCursorTitleFromPrompt stores the first prompt line as the
+// conversation title, once. Later prompts never overwrite it: the first
+// question is what the session was about.
+func rememberCursorTitleFromPrompt(conversationID, prompt string) error {
+	title := cursorTitleFromPrompt(prompt)
+	if title == "" {
+		return nil
+	}
+	state, err := loadCursorTranscriptState(conversationID)
+	if err != nil {
+		return err
+	}
+	if state.Title != "" {
+		return nil
+	}
+	state.Title = title
+	return saveCursorTranscriptState(conversationID, state)
+}
+
+// cursorSummaryFromAssistantText is the last paragraph of the assistant's
+// latest text, whitespace-collapsed and truncated to the summary cap.
+func cursorSummaryFromAssistantText(text string) string {
+	paragraphs := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n\n")
+	for i := len(paragraphs) - 1; i >= 0; i-- {
+		paragraph := strings.TrimSpace(paragraphs[i])
+		if paragraph == "" {
+			continue
+		}
+		paragraph = cursorWhitespaceRun.ReplaceAllString(paragraph, " ")
+		return truncateCursorText(paragraph, cursorSessionSummaryMaxChars)
+	}
+	return ""
+}
+
+// attachCursorSessionText adds the session summary and, when opted in, the
+// transcript delta to a stop/sessionEnd record.
+func attachCursorSessionText(record map[string]interface{}, estimate *cursorTokenEstimate, options cursorHookOptions) {
+	if estimate == nil {
+		return
+	}
+	if summary := cursorSummaryFromAssistantText(estimate.Delta.LastAssistantText); summary != "" {
+		setCursorRecordMetadata(record, "session_summary", summary)
+	}
+	if !options.StoreTranscript || len(estimate.Delta.Messages) == 0 {
+		return
+	}
+	transcript := make([]map[string]interface{}, 0, len(estimate.Delta.Messages))
+	total := 0
+	for _, message := range estimate.Delta.Messages {
+		if len(transcript) >= cursorTranscriptShipMaxMessages {
+			break
+		}
+		text := strings.TrimSpace(message.Text)
+		if text == "" {
+			continue
+		}
+		text = truncateCursorText(text, cursorTranscriptShipMaxChars)
+		length := utf8.RuneCountInString(text)
+		if total+length > cursorTranscriptShipMaxTotalChars {
+			break
+		}
+		total += length
+		transcript = append(transcript, map[string]interface{}{
+			"role": message.Role,
+			"text": text,
+		})
+	}
+	if len(transcript) > 0 {
+		record["transcript"] = transcript
+	}
+}

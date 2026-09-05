@@ -2596,6 +2596,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         runtime_principal_type: Optional[str] = None,
         runtime_principal_id: Optional[str] = None,
         runtime_principal_name: Optional[str] = None,
+        runtime_session_id: Optional[Any] = None,
         import_fingerprint: Optional[str] = None,
         meta_data: Optional[Dict[str, Any]] = None,
         endpoint: Optional[str] = None,
@@ -2638,6 +2639,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             runtime_principal_type: Managed-agent principal type attribution.
             runtime_principal_id: Managed-agent principal id attribution.
             runtime_principal_name: Managed-agent display name attribution.
+            runtime_session_id: Runtime session the record's conversation
+                was registered as, so the row shows up in that session's
+                usage like gateway rows do.
             import_fingerprint: Stable dedupe key; when a row with the same
                 fingerprint already exists for the account, the event is
                 skipped and ``None`` is returned (re-importing the same CSV
@@ -2702,6 +2706,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             runtime_principal_type=runtime_principal_type,
             runtime_principal_id=runtime_principal_id,
             runtime_principal_name=runtime_principal_name,
+            runtime_session_id=runtime_session_id,
             meta_data=merged_meta,
             timestamp=timestamp,
         )

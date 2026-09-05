@@ -13,6 +13,7 @@ from sqlalchemy import Integer, distinct, func
 
 from preloop.models.crud import crud_managed_agent
 from preloop.models.models.api_usage import ApiUsage
+from preloop.models.models.runtime_session import RuntimeSession
 
 INGEST_URL = "/api/v1/usage/ingest"
 COST_SUMMARY_URL = "/api/v1/cost/summary"
@@ -717,3 +718,243 @@ class TestEstimatedPricing:
 
         assert row.estimated_cost is None
         assert row.cost_source is None
+
+
+class TestRuntimeSessions:
+    """Pushed records register the conversation as a runtime session."""
+
+    @staticmethod
+    def _session(db_session, account_id, conversation_id, source="cursor"):
+        return (
+            db_session.query(RuntimeSession)
+            .filter(
+                RuntimeSession.account_id == account_id,
+                RuntimeSession.session_source_type == source,
+                RuntimeSession.session_source_id == conversation_id,
+            )
+            .one_or_none()
+        )
+
+    @staticmethod
+    def _lifecycle(event_type, conversation_id, external_id, minutes_ago, **extra):
+        record = {
+            "external_id": external_id,
+            "conversation_id": conversation_id,
+            "timestamp": (
+                datetime.now(UTC) - timedelta(minutes=minutes_ago)
+            ).isoformat(),
+            "event_type": event_type,
+            "model": "claude-4.5-sonnet",
+            "cost_basis": "estimated",
+        }
+        record.update(extra)
+        return record
+
+    def test_session_start_registers_session_with_principal_and_default_title(
+        self, client, db_session, test_user
+    ):
+        agent = _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        started = self._lifecycle(
+            "session_start",
+            "conv-ses",
+            "sessionStart:conv-ses",
+            10,
+            metadata={
+                "hook_event_name": "sessionStart",
+                "session_title_default": "Cursor conversation conv-ses",
+            },
+        )
+        response = client.post(INGEST_URL, json=_payload([started]))
+        assert response.status_code == 200, response.text
+
+        session = self._session(db_session, test_user.account_id, "conv-ses")
+        assert session is not None
+        assert session.runtime_principal_type == agent.session_source_type
+        assert session.runtime_principal_id == agent.session_source_id
+        assert session.runtime_principal_name == "Cursor"
+        assert session.title == "Cursor conversation conv-ses"
+        assert session.summary is None
+        assert session.ended_at is None
+        assert session.started_at == session.last_activity_at
+        assert session.activities == []
+
+        row = (
+            db_session.query(ApiUsage)
+            .filter(ApiUsage.action_type == "imported_usage")
+            .one()
+        )
+        assert row.runtime_session_id == session.id
+
+    def test_stop_touches_activity_and_sets_title_and_summary(
+        self, client, db_session, test_user
+    ):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        started = self._lifecycle(
+            "session_start",
+            "conv-live",
+            "sessionStart:conv-live",
+            10,
+            metadata={"session_title_default": "Cursor conversation conv-liv"},
+        )
+        stop = self._lifecycle(
+            "response",
+            "conv-live",
+            "stop:gen-1:0",
+            5,
+            input_tokens=28,
+            output_tokens=36,
+            metadata={
+                "hook_event_name": "stop",
+                "session_title": "Count the Go files in cli",
+                "session_summary": "That is the whole count; nothing else changed.",
+            },
+        )
+        assert (
+            client.post(INGEST_URL, json=_payload([started, stop])).json()["accepted"]
+            == 2
+        )
+
+        session = self._session(db_session, test_user.account_id, "conv-live")
+        assert session.title == "Count the Go files in cli"
+        assert session.summary == "That is the whole count; nothing else changed."
+        assert session.summary_updated_at is not None
+        assert session.last_activity_at > session.started_at
+        assert session.ended_at is None
+        # Summaries only: no transcript text was stored.
+        assert session.activities == []
+
+        # A later default title never overrides a real one.
+        later = self._lifecycle(
+            "response",
+            "conv-live",
+            "stop:gen-2:0",
+            4,
+            metadata={"session_title_default": "Cursor conversation conv-liv"},
+        )
+        client.post(INGEST_URL, json=_payload([later]))
+        db_session.refresh(session)
+        assert session.title == "Count the Go files in cli"
+
+    def test_session_end_closes_and_session_start_reopens(
+        self, client, db_session, test_user
+    ):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        started = self._lifecycle(
+            "session_start", "conv-end", "sessionStart:conv-end", 10
+        )
+        ended = self._lifecycle("session_end", "conv-end", "sessionEnd:conv-end", 2)
+        client.post(INGEST_URL, json=_payload([started, ended]))
+
+        session = self._session(db_session, test_user.account_id, "conv-end")
+        assert session.ended_at is not None
+        assert session.last_activity_at == session.ended_at
+
+        # Out-of-order replays never move activity backwards.
+        older = self._lifecycle("response", "conv-end", "stop:old:0", 30)
+        client.post(INGEST_URL, json=_payload([older]))
+        db_session.refresh(session)
+        assert session.last_activity_at == session.ended_at
+
+        resumed = self._lifecycle(
+            "session_start", "conv-end", "sessionStart:conv-end:2", 1
+        )
+        client.post(INGEST_URL, json=_payload([resumed]))
+        db_session.refresh(session)
+        assert session.ended_at is None
+
+    def test_opt_in_transcript_becomes_activities_once(
+        self, client, db_session, test_user
+    ):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        stop = self._lifecycle(
+            "response",
+            "conv-text",
+            "stop:gen-1:0",
+            5,
+            input_tokens=28,
+            output_tokens=36,
+            transcript=[
+                {"role": "user", "text": "List the Go files in cli and count them."},
+                {"role": "assistant", "text": "I will list the files first."},
+                {"role": "tool_use", "text": "Shell"},
+                {"role": "assistant", "text": "There are 12 Go files in cli."},
+            ],
+        )
+        assert client.post(INGEST_URL, json=_payload([stop])).json()["accepted"] == 1
+
+        session = self._session(db_session, test_user.account_id, "conv-text")
+        activities = sorted(session.activities, key=lambda item: item.summary)
+        assert [item.activity_type for item in activities] == ["transcript_message"] * 4
+        assert {item.status for item in activities} == {"user", "assistant", "tool_use"}
+        by_text = {item.summary: item for item in activities}
+        user = by_text["List the Go files in cli and count them."]
+        assert user.metadata_["role"] == "user"
+        assert user.metadata_["source"] == "usage_ingest:cursor"
+        assert user.metadata_["external_id"] == "stop:gen-1:0"
+
+        # Replaying the same record is deduplicated and stores nothing twice.
+        replay = client.post(INGEST_URL, json=_payload([stop])).json()
+        assert replay["deduplicated"] == 1
+        db_session.refresh(session)
+        assert len(session.activities) == 4
+
+    def test_transcript_over_cap_is_rejected(self, client, db_session, test_user):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        stop = self._lifecycle(
+            "response",
+            "conv-big",
+            "stop:gen-1:0",
+            5,
+            transcript=[{"role": "assistant", "text": "x" * 4000} for _ in range(17)],
+        )
+        response = client.post(INGEST_URL, json=_payload([stop]))
+        assert response.status_code == 422
+        assert "transcript exceeds" in response.text
+
+    def test_record_without_conversation_registers_no_session(
+        self, client, db_session, test_user
+    ):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        response = client.post(
+            INGEST_URL, json=_payload([_record(external_id="turn-solo")])
+        )
+        assert response.status_code == 200
+        assert (
+            db_session.query(RuntimeSession)
+            .filter(RuntimeSession.account_id == test_user.account_id)
+            .count()
+            == 0
+        )
+        row = (
+            db_session.query(ApiUsage)
+            .filter(ApiUsage.action_type == "imported_usage")
+            .one()
+        )
+        assert row.runtime_session_id is None
+
+    def test_sessions_are_listed_in_the_runtime_sessions_explorer(
+        self, client, db_session, test_user
+    ):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        started = self._lifecycle(
+            "session_start",
+            "conv-list",
+            "sessionStart:conv-list",
+            10,
+            metadata={"session_title_default": "Cursor conversation conv-lis"},
+        )
+        client.post(INGEST_URL, json=_payload([started]))
+
+        response = client.get("/api/v1/runtime-sessions?session_source_type=cursor")
+        assert response.status_code == 200, response.text
+        sessions = response.json()["items"]
+        assert [item["session_source_id"] for item in sessions] == ["conv-list"]
+        assert sessions[0]["title"] == "Cursor conversation conv-lis"
+        assert sessions[0]["runtime_principal_name"] == "Cursor"

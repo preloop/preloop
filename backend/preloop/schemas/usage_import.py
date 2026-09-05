@@ -143,6 +143,25 @@ class UsageImportResponse(BaseModel):
     source: str = "cursor"
 
 
+#: Cap on transcript messages one pushed record may carry, and on their
+#: combined text. Transcript shipping is opt-in on the shipper side
+#: (`preloop usage hook --store-transcript`); these bounds keep one hook
+#: delivery small even when a generation produced a lot of text.
+MAX_INGEST_TRANSCRIPT_MESSAGES = 50
+MAX_INGEST_TRANSCRIPT_TEXT_CHARS = 4000
+MAX_INGEST_TRANSCRIPT_TOTAL_CHARS = 64 * 1024
+
+IngestTranscriptRole = Literal["user", "assistant", "tool", "tool_use"]
+
+
+class UsageIngestTranscriptMessage(BaseModel):
+    """One role-tagged text chunk of a conversation transcript."""
+
+    role: IngestTranscriptRole
+    text: str = Field(..., min_length=1, max_length=MAX_INGEST_TRANSCRIPT_TEXT_CHARS)
+    timestamp: Optional[datetime] = None
+
+
 class UsageIngestRecord(BaseModel):
     """One usage record pushed continuously by an external harness.
 
@@ -221,7 +240,41 @@ class UsageIngestRecord(BaseModel):
         ge=0,
         description="Tool calls in the conversation so far (growth tripwire).",
     )
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Small JSON object. Recognized session keys: `session_title` "
+            "(sets the runtime session title), `session_title_default` "
+            "(fills the title only while it is empty) and `session_summary` "
+            "(replaces the runtime session summary)."
+        ),
+    )
+    transcript: Optional[List[UsageIngestTranscriptMessage]] = Field(
+        default=None,
+        max_length=MAX_INGEST_TRANSCRIPT_MESSAGES,
+        description=(
+            "Opt-in transcript text for this record's conversation, stored "
+            "as runtime session activities. Shippers send it only when the "
+            "operator enabled transcript storage; by default only counts, "
+            "titles and short summaries leave the machine."
+        ),
+    )
+
+    @field_validator("transcript")
+    @classmethod
+    def cap_transcript_size(
+        cls, value: Optional[List[UsageIngestTranscriptMessage]]
+    ) -> Optional[List[UsageIngestTranscriptMessage]]:
+        """Reject transcript payloads whose combined text exceeds the cap."""
+        if not value:
+            return value
+        total = sum(len(message.text) for message in value)
+        if total > MAX_INGEST_TRANSCRIPT_TOTAL_CHARS:
+            raise ValueError(
+                f"transcript exceeds {MAX_INGEST_TRANSCRIPT_TOTAL_CHARS} "
+                f"characters ({total} characters)"
+            )
+        return value
 
     @field_validator("external_id")
     @classmethod

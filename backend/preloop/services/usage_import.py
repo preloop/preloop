@@ -28,10 +28,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from preloop.models.crud import crud_api_usage, crud_managed_agent
+from preloop.models.crud import (
+    crud_api_usage,
+    crud_managed_agent,
+    crud_runtime_session,
+)
 from preloop.models.models.managed_agent import ManagedAgent
+from preloop.models.models.runtime_session import RuntimeSession
+from preloop.models.models.runtime_session_activity import RuntimeSessionActivity
 from preloop.schemas.usage_import import (
     UsageImportEvent,
     UsageIngestRecord,
@@ -270,6 +277,148 @@ def price_estimated_record(record: UsageIngestRecord) -> Optional[CostEstimate]:
     return estimate
 
 
+#: Column limits on runtime_session.title / summary text taken from record
+#: metadata (see UsageIngestRecord.metadata).
+MAX_SESSION_TITLE_CHARS = 255
+MAX_SESSION_SUMMARY_CHARS = 2000
+#: Same cap as agent-control messages (MAX_AGENT_CONTROL_MESSAGE_SUMMARY_LEN).
+MAX_TRANSCRIPT_ACTIVITY_SUMMARY_CHARS = 2000
+
+TRANSCRIPT_ACTIVITY_TYPE = "transcript_message"
+
+
+def _metadata_text(
+    metadata: Optional[Dict[str, Any]], key: str, limit: int
+) -> Optional[str]:
+    value = (metadata or {}).get(key)
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    return value[:limit]
+
+
+def _as_naive_utc(value: datetime) -> datetime:
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def sync_runtime_session_for_record(
+    db: Session,
+    *,
+    account_id: str,
+    agent: ManagedAgent,
+    source: str,
+    record: UsageIngestRecord,
+    timestamp: datetime,
+) -> Optional[RuntimeSession]:
+    """Register, touch or close the runtime session a pushed record belongs to.
+
+    Every pushed record with a ``conversation_id`` maps onto one runtime
+    session keyed ``(source, conversation_id)``, so hook-observed
+    conversations (Cursor, Codex, generic harnesses) appear in the runtime
+    sessions explorer next to gateway-metered ones. The session's principal
+    is the managed agent the batch was attributed to. ``session_start``
+    records (re)open the session, ``session_end`` records close it, and any
+    record advances ``last_activity_at`` (never backwards).
+
+    Title and summary come from record metadata: ``session_title`` always
+    wins, ``session_title_default`` only fills an empty title, and
+    ``session_summary`` replaces the summary. When the record carries an
+    opt-in ``transcript``, each message is stored as a
+    ``transcript_message`` activity on the session.
+
+    Args:
+        db: Database session (flushed, not committed).
+        account_id: Owning account id.
+        agent: Managed agent the batch was attributed to.
+        source: Ingest source label; becomes ``session_source_type``.
+        record: The pushed record.
+        timestamp: The record's timestamp as naive UTC.
+
+    Returns:
+        The runtime session, or ``None`` when the record has no
+        conversation id.
+    """
+    conversation_id = record.conversation_id
+    if not conversation_id:
+        return None
+    observed_at = _as_naive_utc(timestamp)
+    ended_at = observed_at if record.event_type == "session_end" else None
+
+    session = crud_runtime_session.get_by_source(
+        db,
+        account_id=account_id,
+        session_source_type=source,
+        session_source_id=conversation_id,
+    )
+    if session is None:
+        session = crud_runtime_session.upsert_by_source(
+            db,
+            account_id=account_id,
+            session_source_type=source,
+            session_source_id=conversation_id,
+            runtime_principal_type=agent.session_source_type,
+            runtime_principal_id=agent.session_source_id,
+            runtime_principal_name=agent.display_name,
+            started_at=observed_at,
+            last_activity_at=observed_at,
+            ended_at=ended_at,
+        )
+    else:
+        last_activity_at = session.last_activity_at
+        if last_activity_at is None or observed_at > _as_naive_utc(last_activity_at):
+            session.last_activity_at = observed_at
+        if ended_at is not None:
+            session.ended_at = ended_at
+        elif record.event_type == "session_start" and session.ended_at is not None:
+            # The same conversation was resumed after it ended.
+            session.ended_at = None
+        if not session.runtime_principal_id:
+            session.runtime_principal_type = agent.session_source_type
+            session.runtime_principal_id = agent.session_source_id
+            session.runtime_principal_name = agent.display_name
+
+    title = _metadata_text(record.metadata, "session_title", MAX_SESSION_TITLE_CHARS)
+    default_title = _metadata_text(
+        record.metadata, "session_title_default", MAX_SESSION_TITLE_CHARS
+    )
+    if title:
+        session.title = title
+    elif default_title and not session.title:
+        session.title = default_title
+    summary = _metadata_text(
+        record.metadata, "session_summary", MAX_SESSION_SUMMARY_CHARS
+    )
+    if summary:
+        session.summary = summary
+        session.summary_updated_at = datetime.now(timezone.utc)
+
+    for message in record.transcript or []:
+        db.add(
+            RuntimeSessionActivity(
+                account_id=account_id,
+                runtime_session_id=session.id,
+                activity_type=TRANSCRIPT_ACTIVITY_TYPE,
+                status=message.role,
+                summary=message.text[:MAX_TRANSCRIPT_ACTIVITY_SUMMARY_CHARS],
+                metadata_={
+                    "role": message.role,
+                    "source": f"usage_ingest:{source}",
+                    "external_id": record.external_id,
+                    "conversation_id": conversation_id,
+                },
+                timestamp=message.timestamp or timestamp,
+            )
+        )
+
+    db.add(session)
+    db.flush()
+    return session
+
+
 def push_record_fingerprint(*, source: str, external_id: str) -> str:
     """Compute the dedupe fingerprint for one pushed usage record.
 
@@ -315,7 +464,10 @@ def ingest_push_records(
     stay in their own column — never summed into totals or charged spend.
     Conversation ids, message/tool counts, and cost_basis land in their
     first-class columns; lifecycle events (``event_type != 'usage'``) land
-    as zero-cost rows unless explicitly priced.
+    as zero-cost rows unless explicitly priced. Each record's conversation
+    is also registered as a runtime session keyed ``(source,
+    conversation_id)`` (see :func:`sync_runtime_session_for_record`) and
+    the row is linked to it.
 
     Args:
         db: Database session.
@@ -356,6 +508,27 @@ def ingest_push_records(
             if record.metadata:
                 for key, value in record.metadata.items():
                     meta.setdefault(key, value)
+            runtime_session_id = None
+            try:
+                with db.begin_nested():
+                    session = sync_runtime_session_for_record(
+                        db,
+                        account_id=account_id,
+                        agent=agent,
+                        source=source,
+                        record=record,
+                        timestamp=timestamp,
+                    )
+                runtime_session_id = session.id if session is not None else None
+            except SQLAlchemyError:
+                # The cost ledger row is the record of truth; a session
+                # bookkeeping failure must not lose it.
+                logger.warning(
+                    "Runtime session sync failed for ingest record %s (source=%s)",
+                    record.external_id,
+                    source,
+                    exc_info=True,
+                )
             # estimated_cost is a Float column; Decimal is request-only.
             cost_usd = (
                 float(record.charged_cost) if record.charged_cost is not None else None
@@ -389,6 +562,7 @@ def ingest_push_records(
                 runtime_principal_type=agent.session_source_type,
                 runtime_principal_id=agent.session_source_id,
                 runtime_principal_name=agent.display_name,
+                runtime_session_id=runtime_session_id,
                 import_fingerprint=fingerprint,
                 meta_data=meta,
                 endpoint=ingest_endpoint,

@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/preloop/preloop/cli/internal/testenv"
 )
@@ -445,5 +447,170 @@ func TestUsageHookCursorStopAfterPreCompactUsesContextTokens(t *testing.T) {
 	record = decodeSingleIngestRecord(t, body)
 	if tokenEstimateMeta(t, record)["input_source"] != "transcript_chars" {
 		t.Errorf("third generation should use chars again: %#v", record)
+	}
+}
+
+// runCursorHookCounting is runCursorHook that also reports how many POSTs
+// reached the server, for events that must not post at all.
+func runCursorHookCounting(t *testing.T, stdin string, args ...string) (map[string]interface{}, int, string) {
+	t.Helper()
+	var gotBody map[string]interface{}
+	posts := 0
+	withUsageHookServer(t, func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		usageHookOKHandler(t, &gotBody)(w, r)
+	})
+	cmd, _, stderr := newUsageHookTestCmd(stdin)
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("hook must exit 0, got %v", err)
+	}
+	return gotBody, posts, stderr.String()
+}
+
+func TestCursorTitleFromPrompt(t *testing.T) {
+	cases := map[string]string{
+		"":                                 "",
+		"\n\n  Fix the   flaky test\nmore": "Fix the flaky test",
+		strings.Repeat("x", 130):           strings.Repeat("x", 117) + "...",
+		"<user_query>\nRename foo\n</user_query>": "<user_query>",
+	}
+	for prompt, want := range cases {
+		if got := cursorTitleFromPrompt(prompt); got != want {
+			t.Errorf("prompt %q: got %q, want %q", prompt, got, want)
+		}
+	}
+}
+
+func TestCursorSummaryFromAssistantText(t *testing.T) {
+	text := "There are 12 Go files in cli.\n\nThat is the whole count; nothing else changed.\n\n"
+	if got := cursorSummaryFromAssistantText(text); got != "That is the whole count; nothing else changed." {
+		t.Errorf("summary=%q", got)
+	}
+	long := strings.Repeat("word ", 100)
+	got := cursorSummaryFromAssistantText(long)
+	if utf8.RuneCountInString(got) != 280 || !strings.HasSuffix(got, "...") {
+		t.Errorf("summary not truncated to 280 with ellipsis: len=%d", utf8.RuneCountInString(got))
+	}
+	if cursorSummaryFromAssistantText("  \n\n ") != "" {
+		t.Error("blank text must give no summary")
+	}
+}
+
+func TestUsageHookCursorSessionStartShipsDefaultTitle(t *testing.T) {
+	testenv.SetHome(t, t.TempDir())
+	payload := `{"conversation_id":"0f3c9a1e-1111-2222-3333-444444444444","hook_event_name":"sessionStart","model":"claude-4.5-sonnet"}`
+	body, posts, _ := runCursorHookCounting(t, payload)
+	if posts != 1 {
+		t.Fatalf("expected one POST, got %d", posts)
+	}
+	record := decodeSingleIngestRecord(t, body)
+	metadata := record["metadata"].(map[string]interface{})
+	if metadata["session_title_default"] != "Cursor conversation 0f3c9a1e" {
+		t.Errorf("default title=%v", metadata["session_title_default"])
+	}
+	if _, ok := metadata["session_title"]; ok {
+		t.Errorf("sessionStart has no real title yet: %#v", metadata)
+	}
+}
+
+func TestUsageHookCursorBeforeSubmitPromptCapturesTitleWithoutPosting(t *testing.T) {
+	home := testenv.SetHome(t, t.TempDir())
+	first := `{"conversation_id":"conv-t","generation_id":"g1","hook_event_name":"beforeSubmitPrompt","prompt":"Count the Go files in cli\nand report back"}`
+	_, posts, stderr := runCursorHookCounting(t, first)
+	if posts != 0 {
+		t.Fatalf("beforeSubmitPrompt must not POST, got %d", posts)
+	}
+	if stderr != "" {
+		t.Errorf("unexpected stderr: %s", stderr)
+	}
+	if state := readCursorState(t, home, "conv-t"); state.Title != "Count the Go files in cli" {
+		t.Errorf("title=%q", state.Title)
+	}
+
+	second := `{"conversation_id":"conv-t","generation_id":"g2","hook_event_name":"beforeSubmitPrompt","prompt":"Now delete one"}`
+	runCursorHookCounting(t, second)
+	if state := readCursorState(t, home, "conv-t"); state.Title != "Count the Go files in cli" {
+		t.Errorf("first prompt line must stay the title, got %q", state.Title)
+	}
+
+	transcript := copyCursorFixture(t, "conversation.jsonl")
+	body, _, _ := runCursorHookCounting(t, cursorStopPayload("conv-t", "g1", transcript))
+	record := decodeSingleIngestRecord(t, body)
+	metadata := record["metadata"].(map[string]interface{})
+	if metadata["session_title"] != "Count the Go files in cli" {
+		t.Errorf("stop must carry the captured title: %#v", metadata)
+	}
+	if metadata["session_summary"] != "That is the whole count; nothing else changed." {
+		t.Errorf("stop must carry the last assistant paragraph: %#v", metadata)
+	}
+	if _, ok := record["transcript"]; ok {
+		t.Errorf("transcript text must not ship by default: %#v", record)
+	}
+	raw, _ := json.Marshal(body)
+	if strings.Contains(string(raw), "List the Go files in cli and count them") {
+		t.Errorf("prompt text leaked: %s", raw)
+	}
+}
+
+func TestUsageHookCursorStoreTranscriptFlagShipsDeltaText(t *testing.T) {
+	testenv.SetHome(t, t.TempDir())
+	transcript := copyCursorFixture(t, "conversation.jsonl")
+	body, _, _ := runCursorHookCounting(t, cursorStopPayload("conv-s", "g1", transcript), "--store-transcript")
+	record := decodeSingleIngestRecord(t, body)
+	messages, ok := record["transcript"].([]interface{})
+	if !ok || len(messages) != 4 {
+		t.Fatalf("expected 4 transcript messages, got %#v", record["transcript"])
+	}
+	roles := make([]string, 0, len(messages))
+	for _, raw := range messages {
+		message := raw.(map[string]interface{})
+		roles = append(roles, message["role"].(string))
+	}
+	if strings.Join(roles, ",") != "user,assistant,tool_use,assistant" {
+		t.Errorf("roles=%v", roles)
+	}
+	last := messages[3].(map[string]interface{})
+	if !strings.HasPrefix(last["text"].(string), "There are 12 Go files") {
+		t.Errorf("last message=%v", last)
+	}
+	if messages[2].(map[string]interface{})["text"] != "Shell" {
+		t.Errorf("tool_use ships the tool name only: %v", messages[2])
+	}
+	// Token estimate is unaffected by the opt-in.
+	if record["input_tokens"] != float64(28) || record["output_tokens"] != float64(36) {
+		t.Errorf("tokens changed with opt-in: %#v", record)
+	}
+}
+
+func TestUsageHookCursorStoreTranscriptFromCredentialFile(t *testing.T) {
+	home := testenv.SetHome(t, t.TempDir())
+	optIn := true
+	writeTestPermissionCredential(t, home, "cursor-abc123", permissionHookCredential{
+		BaseURL:         "https://preloop.example",
+		Token:           "agt_test",
+		Source:          permissionSourceCursor,
+		StoreTranscript: &optIn,
+	})
+	transcript := copyCursorFixture(t, "conversation.jsonl")
+	body, _, _ := runCursorHookCounting(t, cursorStopPayload("conv-c", "g1", transcript))
+	record := decodeSingleIngestRecord(t, body)
+	if _, ok := record["transcript"]; !ok {
+		t.Errorf("credential store_transcript=true must ship transcript: %#v", record)
+	}
+}
+
+func TestUsageHookCursorCredentialWithoutOptInShipsNoText(t *testing.T) {
+	home := testenv.SetHome(t, t.TempDir())
+	writeTestPermissionCredential(t, home, "cursor-abc123", permissionHookCredential{
+		BaseURL: "https://preloop.example",
+		Token:   "agt_test",
+		Source:  permissionSourceCursor,
+	})
+	transcript := copyCursorFixture(t, "conversation.jsonl")
+	body, _, _ := runCursorHookCounting(t, cursorStopPayload("conv-d", "g1", transcript))
+	record := decodeSingleIngestRecord(t, body)
+	if _, ok := record["transcript"]; ok {
+		t.Errorf("no opt-in must mean no transcript: %#v", record)
 	}
 }

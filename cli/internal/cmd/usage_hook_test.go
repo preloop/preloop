@@ -21,6 +21,7 @@ func newUsageHookTestCmd(stdin string) (*cobra.Command, *bytes.Buffer, *bytes.Bu
 	cmd.Flags().String("parent-conversation-id", "", "")
 	cmd.Flags().String("from", "auto", "")
 	cmd.Flags().String("file", "", "")
+	cmd.Flags().Bool("store-transcript", false, "")
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
