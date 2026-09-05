@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Literal, Optional, Dict
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, field_serializer
 
@@ -127,3 +127,21 @@ class IssueDuplicateAiStatus(BaseModel):
 
     configured: bool
     model_name: Optional[str] = None
+
+
+class IssueDuplicateAiErrorDetail(BaseModel):
+    """Machine-readable 422 body for issue-duplicates AI endpoints.
+
+    ``detail`` on ``POST /issue-duplicates/check`` and ``POST /ai-suggestion``
+    is this object (not a string) when the account has no default model
+    (``no_default_ai_model``) or the model call failed (``ai_model_error``).
+    """
+
+    code: Literal["no_default_ai_model", "ai_model_error"]
+    message: str
+
+
+class IssueDuplicateAiError(BaseModel):
+    """HTTP 422 envelope: FastAPI wraps the detail object."""
+
+    detail: IssueDuplicateAiErrorDetail

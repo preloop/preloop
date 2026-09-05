@@ -56,9 +56,13 @@ function stubFetch(opts: StubOpts = {}) {
         return json([projectA, projectB]);
       }
       if (url.includes('/api/v1/issues?')) {
+        const parsed = new URL(url, 'http://localhost');
+        const q = parsed.searchParams.get('q') || '';
+        const items = q ? [] : issues;
+        const listed = q ? 0 : total;
         return json({
-          items: issues,
-          total,
+          items,
+          total: listed,
           skip: 0,
           limit: 20,
         });
@@ -197,13 +201,93 @@ describe('TrackerDetailView', () => {
     )._onIssueSearch({
       target: { value: 'zzzz-no-match' },
     } as unknown as Event);
+    await tick(300);
     await el.updateComplete;
+    const searchCall = fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .find((url) => url.includes('q=zzzz-no-match'));
+    expect(searchCall).to.exist;
     expect(el.shadowRoot?.textContent).to.contain(
       "No issues match 'zzzz-no-match'."
     );
     expect(el.shadowRoot?.textContent).to.not.contain(
       'Switch the status filter to see closed issues.'
     );
+  });
+
+  it('drops a slower issues response after a newer project switch', async () => {
+    fetchStub = stubFetch({ issues: [] });
+    const el = await mountView();
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let issueCalls = 0;
+    fetchStub.restore();
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
+      const url = String(input);
+      const json = (data: unknown) =>
+        new Response(JSON.stringify(data), { status: 200 });
+      if (!url.includes('/api/v1/issues?')) {
+        return json({});
+      }
+      issueCalls += 1;
+      const parsed = new URL(url, 'http://localhost');
+      const project = parsed.searchParams.get('project_id');
+      if (issueCalls === 1) {
+        await firstGate;
+        return json({
+          items: [
+            {
+              id: 'stale',
+              key: 'OLD-1',
+              title: 'Stale row',
+              status: 'open',
+              updated_at: '2026-01-03T00:00:00Z',
+              project: 'Alpha',
+              project_id: projectA.id,
+              url: 'https://example.com/old',
+            },
+          ],
+          total: 1,
+          skip: 0,
+          limit: 20,
+        });
+      }
+      return json({
+        items: [
+          {
+            id: 'fresh',
+            key: 'NEW-1',
+            title: 'Fresh row',
+            status: 'open',
+            updated_at: '2026-01-04T00:00:00Z',
+            project: 'Beta',
+            project_id: project,
+            url: 'https://example.com/new',
+          },
+        ],
+        total: 1,
+        skip: 0,
+        limit: 20,
+      });
+    });
+    const firstLoad = (
+      el as unknown as { _loadIssues: (reset: boolean) => Promise<void> }
+    )._loadIssues(true);
+    (
+      el as unknown as { _onProjectFilter: (event: Event) => void }
+    )._onProjectFilter({
+      target: { value: projectB.id },
+    } as unknown as Event);
+    await tick(20);
+    releaseFirst?.();
+    await firstLoad;
+    await tick(50);
+    await el.updateComplete;
+    expect(el.shadowRoot?.textContent).to.contain('NEW-1');
+    expect(el.shadowRoot?.textContent).to.not.contain('OLD-1');
   });
 
   it('Load more is a button with a loading state', async () => {

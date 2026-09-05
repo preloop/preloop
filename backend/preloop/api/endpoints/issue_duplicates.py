@@ -17,6 +17,7 @@ from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.schemas.issue_duplicate import (
     IssueDuplicate as IssueDuplicateSchema,
     IssueDuplicateAiStatus,
+    IssueDuplicateAiError,
     IssueDuplicateSuggestionRequest,
     IssueDuplicateSuggestionResponse,
     IssueDuplicateResolutionRequest,
@@ -113,6 +114,16 @@ def get_issue_duplicate_ai_status(
     "/issue-duplicates/check",
     response_model=IssueDuplicateSchema,
     tags=["Issue Duplicates"],
+    responses={
+        422: {
+            "model": IssueDuplicateAiError,
+            "description": (
+                "AI verdict cannot run. `detail.code` is `no_default_ai_model` "
+                "when no default model is configured, or `ai_model_error` when "
+                "the model call failed. `detail` is this object, not a string."
+            ),
+        }
+    },
 )
 def check_or_create_issue_duplicate(
     *,
@@ -891,7 +902,20 @@ def get_projects_duplicate_stats(
     return IssueDuplicateStats(projects=stats)
 
 
-@router.post("/ai-suggestion", response_model=IssueDuplicateSuggestionResponse)
+@router.post(
+    "/ai-suggestion",
+    response_model=IssueDuplicateSuggestionResponse,
+    responses={
+        422: {
+            "model": IssueDuplicateAiError,
+            "description": (
+                "AI suggestion cannot run. `detail.code` is `no_default_ai_model` "
+                "when no default model is configured, or `ai_model_error` when "
+                "the model call failed. `detail` is this object, not a string."
+            ),
+        }
+    },
+)
 def get_resolution_suggestion(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),

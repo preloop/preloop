@@ -112,6 +112,8 @@ export class TrackerDetailView extends LitElement {
 
   private _trackerId = '';
   private readonly _issuesPageSize = 20;
+  private _issuesRequestId = 0;
+  private _issueSearchTimer: number | null = null;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -335,6 +337,14 @@ export class TrackerDetailView extends LitElement {
     this._loadData();
   }
 
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this._issueSearchTimer !== null) {
+      window.clearTimeout(this._issueSearchTimer);
+      this._issueSearchTimer = null;
+    }
+  }
+
   private async _loadProjectsForTracker() {
     const [organizations, allProjects] = await Promise.all([
       listOrganizations().catch(() => []),
@@ -409,39 +419,44 @@ export class TrackerDetailView extends LitElement {
       this._issuesTotal = 0;
       return;
     }
+    const requestId = ++this._issuesRequestId;
     if (reset) {
       this._issuesSkip = 0;
       this._issues = [];
     }
     this._issuesLoading = true;
     this._issuesError = null;
+    const q = this._issueSearch.trim();
     try {
       const data = await listIssues({
         project_id: this._selectedProjectId,
         status: this._issueStatus,
+        q: q || undefined,
         skip: this._issuesSkip,
         limit: this._issuesPageSize,
         sort: 'updated_desc',
       });
+      if (requestId !== this._issuesRequestId) {
+        return;
+      }
       this._issues = reset ? data.items : [...this._issues, ...data.items];
       this._issuesTotal = data.total;
       this._issuesSkip = data.skip;
     } catch (error) {
+      if (requestId !== this._issuesRequestId) {
+        return;
+      }
       this._issuesError =
         error instanceof Error ? error.message : 'Could not load issues.';
     } finally {
-      this._issuesLoading = false;
+      if (requestId === this._issuesRequestId) {
+        this._issuesLoading = false;
+      }
     }
   }
 
   private _visibleIssues(): IssueListItem[] {
-    const q = this._issueSearch.trim().toLowerCase();
-    if (!q) return this._issues;
-    return this._issues.filter((issue) => {
-      const key = (issue.key || '').toLowerCase();
-      const title = (issue.title || '').toLowerCase();
-      return key.includes(q) || title.includes(q);
-    });
+    return this._issues;
   }
 
   private _showTab(name: 'projects' | 'issues') {
@@ -488,6 +503,13 @@ export class TrackerDetailView extends LitElement {
 
   private _onIssueSearch(event: Event) {
     this._issueSearch = (event.target as HTMLInputElement).value;
+    if (this._issueSearchTimer !== null) {
+      window.clearTimeout(this._issueSearchTimer);
+    }
+    this._issueSearchTimer = window.setTimeout(() => {
+      this._issueSearchTimer = null;
+      void this._loadIssues(true);
+    }, 250);
   }
 
   private _loadMoreIssues() {
@@ -700,11 +722,11 @@ export class TrackerDetailView extends LitElement {
               : visible.length === 0
                 ? html`<div class="issues-empty">
                     ${
-                      this._issues.length === 0
-                        ? this._issueStatus === 'open'
+                      this._issueSearch.trim()
+                        ? `No issues match '${this._issueSearch.trim()}'.`
+                        : this._issueStatus === 'open'
                           ? `No open issues in ${project?.name || 'this project'}. Switch the status filter to see closed issues.`
                           : `No issues in ${project?.name || 'this project'}.`
-                        : `No issues match '${this._issueSearch.trim()}'.`
                     }
                   </div>`
                 : html`
