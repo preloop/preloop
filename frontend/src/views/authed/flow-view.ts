@@ -16,8 +16,15 @@ import {
   previewFlowSchedule,
 } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
-import { parseUTCDate, formatLocalDateTime } from '../../utils/date';
+import {
+  parseUTCDate,
+  formatLocalDateTime,
+  formatRelativeTime,
+} from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
+import { executionStatusLabel } from '../../utils/execution-presentation';
+import { flowTriggerSummary } from '../../utils/flow-trigger';
+import { getAgentKindPresentation } from '../../utils/agent-kinds';
 import {
   executionSubjectCss,
   renderExecutionSubject,
@@ -44,6 +51,32 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 import { getTrackerEventOptions } from '../../constants/tracker-event-types';
 import type { Flow } from '../../types';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+
+/**
+ * Runtime ids as the product spells them.
+ *
+ * The flow form offers "Codex CLI", "Gemini CLI" and "OpenCode"; the detail
+ * page printed the stored id ("opencode"), so the page that creates a flow
+ * and the page that shows it named the same runtime differently. Unknown ids
+ * fall back to the shared agent-kind table, then to the id itself, which is
+ * still more use than an empty chip.
+ */
+const FLOW_RUNTIME_LABELS: Record<string, string> = {
+  codex: 'Codex CLI',
+  gemini: 'Gemini CLI',
+  opencode: 'OpenCode',
+};
+
+/** The label for a flow's `agent_type`. */
+export function flowRuntimeLabel(agentType: string | null | undefined): string {
+  const raw = (agentType || '').trim();
+  if (!raw) return 'Unknown';
+  return (
+    FLOW_RUNTIME_LABELS[raw.toLowerCase()] ||
+    getAgentKindPresentation(raw)?.label ||
+    raw
+  );
+}
 
 @customElement('flow-view')
 export class FlowView extends LitElement {
@@ -92,6 +125,46 @@ export class FlowView extends LitElement {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+      /* The details grid: label column in the meta register (no colons, no
+         bold), value column carrying the facts. This was the only place in
+         the console that wrote "Name:" in bold. */
+      .detail-grid {
+        display: grid;
+        grid-template-columns: 150px 1fr;
+        gap: var(--sl-spacing-medium);
+        align-items: baseline;
+      }
+      .detail-label {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+      }
+      .execution-row {
+        cursor: pointer;
+      }
+      .row-link {
+        color: var(--console-link-color);
+        text-decoration: none;
+      }
+      .row-link:hover,
+      .row-link:focus-visible {
+        text-decoration: underline;
+      }
+      /* The way out of the ten rows, on its own hairline. */
+      .all-executions {
+        border-top: 1px solid var(--console-hairline);
+        display: block;
+        margin-top: var(--sl-spacing-small);
+        padding-top: var(--sl-spacing-small);
+      }
+      .all-executions a {
+        color: var(--console-link-color);
+        font-size: var(--console-text-meta);
+        text-decoration: none;
+      }
+      .all-executions a:hover,
+      .all-executions a:focus-visible {
+        text-decoration: underline;
       }
       /* Flow-specific styles */
       .form-grid {
@@ -444,24 +517,32 @@ export class FlowView extends LitElement {
     });
   }
 
+  /**
+   * The three commands, named as the list's kebab names them.
+   *
+   * The header used to say "Edit Flow / Disable / Test Run" for what the list
+   * calls "Edit / Pause / Run now". "Test Run" was the worst of the three: it
+   * suggests a rehearsal, and it starts a real execution that spends real
+   * money, from the same dialog the list's Run now opens.
+   */
   private getFlowActions(): ResourceAction[] {
     const actions: ResourceAction[] = [
       {
         id: 'edit-flow',
-        label: 'Edit Flow',
+        label: 'Edit',
         icon: 'pencil',
         href: `/console/flows/${this.flowId}?edit=true`,
       },
       {
         id: 'toggle-enabled',
-        label: this.flow.is_enabled ? 'Disable' : 'Enable',
+        label: this.flow.is_enabled ? 'Pause' : 'Resume',
         variant: this.flow.is_enabled ? 'default' : 'success',
         icon: this.flow.is_enabled ? 'pause-circle' : 'play-circle',
         onClick: () => this.toggleFlowEnabled(),
       },
       {
         id: 'test-run',
-        label: 'Test Run',
+        label: 'Run now',
         variant: 'primary',
         icon: 'play-circle',
         disabled: !this.flow.is_enabled,
@@ -512,15 +593,17 @@ export class FlowView extends LitElement {
 
   renderFlowDetails() {
     return html`
-      <!-- Test Run Modal for Trigger Event Placeholders -->
+      <!-- The dialog behind Run now: the prompt needs trigger values before
+           anything can start. It used to be labelled a test, which it never
+           was: the run it starts is a real one. -->
       <sl-dialog
-        label="Provide Test Values for Trigger Event"
+        label="Values for the trigger event"
         .open=${this.showTestRunModal}
         @sl-request-close=${this.cancelTestRun}
       >
         <p style="margin-bottom: 1rem; color: var(--sl-color-neutral-600);">
-          Your flow prompt includes template variables that reference trigger
-          event data. Please provide test values for these placeholders:
+          This flow's prompt references trigger event data. Provide the values
+          to run it with. The run is a real one and spends like any other.
         </p>
 
         ${Object.keys(this.testRunPlaceholders).map(
@@ -541,7 +624,7 @@ export class FlowView extends LitElement {
             Cancel
           </sl-button>
           <sl-button variant="primary" @click=${this.submitTestRun}>
-            Run Test
+            Run now
           </sl-button>
         </div>
       </sl-dialog>
@@ -572,42 +655,46 @@ export class FlowView extends LitElement {
           <sl-card>
             <div slot="header">
               <sl-icon name="info-circle"></sl-icon>
-              Flow Details
+              Flow details
             </div>
-            <div
-              style="display: grid; grid-template-columns: 150px 1fr; gap: var(--sl-spacing-medium);"
-            >
-              <strong>Name:</strong>
+            <div class="detail-grid">
+              <span class="detail-label">Name</span>
               <span>${this.flow.name}</span>
 
               ${
                 this.flow.description
                   ? html`
-                      <strong>Description:</strong>
+                      <span class="detail-label">Description</span>
                       <span>${this.flow.description}</span>
                     `
                   : ''
               }
 
-              <strong>Agent Type:</strong>
-              <sl-badge>${this.flow.agent_type}</sl-badge>
+              <span class="detail-label">Agent type</span>
+              <span
+                ><sl-badge class="chip" pill variant="neutral"
+                  >${flowRuntimeLabel(this.flow.agent_type)}</sl-badge
+                ></span
+              >
 
               ${
                 this.flow.ai_model_id
                   ? html`
-                      <strong>AI Model:</strong>
+                      <span class="detail-label">AI model</span>
                       <span>${this.getModelName(this.flow.ai_model_id)}</span>
                     `
                   : ''
               }
 
-              <strong>Trigger:</strong>
-              <span>${this.getTriggerSummary()}</span>
+              <span class="detail-label">Trigger</span>
+              <span title=${this.getTriggerSummary().title}
+                >${this.getTriggerSummary().label}</span
+              >
 
               ${
                 this.flow.trigger_organization_id
                   ? html`
-                      <strong>Organization:</strong>
+                      <span class="detail-label">Organization</span>
                       <span
                         >${this.getOrganizationName(
                           this.flow.trigger_organization_id
@@ -619,7 +706,7 @@ export class FlowView extends LitElement {
               ${
                 this.flow.trigger_project_ids?.length
                   ? html`
-                      <strong>Projects:</strong>
+                      <span class="detail-label">Projects</span>
                       <span
                         >${this.flow.trigger_project_ids
                           .map((id) => this.getProjectName(id))
@@ -629,26 +716,33 @@ export class FlowView extends LitElement {
                   : ''
               }
 
-              <strong>Status:</strong>
-              <sl-badge
-                variant="${this.flow.is_enabled ? 'success' : 'neutral'}"
+              <span class="detail-label">Status</span>
+              <span
+                ><sl-badge
+                  class="chip"
+                  pill
+                  variant=${this.flow.is_enabled ? 'success' : 'neutral'}
+                  >${this.flow.is_enabled ? 'Enabled' : 'Paused'}</sl-badge
+                ></span
               >
-                ${this.flow.is_enabled ? 'Enabled' : 'Disabled'}
-              </sl-badge>
 
               ${
                 this.flow.git_clone_config?.enabled
                   ? html`
-                      <strong>Git Clone:</strong>
-                      <sl-badge variant="primary">Enabled</sl-badge>
+                      <span class="detail-label">Git clone</span>
+                      <span>Enabled</span>
                     `
                   : ''
               }
               ${
                 this.flow.custom_commands?.enabled && this.isAdmin
                   ? html`
-                      <strong>Custom Commands:</strong>
-                      <sl-badge variant="warning">Enabled</sl-badge>
+                      <span class="detail-label">Custom commands</span>
+                      <span
+                        ><sl-badge class="chip" pill variant="warning"
+                          >Enabled</sl-badge
+                        ></span
+                      >
                     `
                   : ''
               }
@@ -822,15 +916,15 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
               : ''
           }
 
-          <!-- Recent Executions -->
+          <!-- Recent executions -->
           <sl-card>
             <div slot="header">
               <sl-icon name="clock-history"></sl-icon>
-              Recent Executions
+              Recent executions
             </div>
             ${
               this.recentExecutions.length === 0
-                ? html`<p>No executions yet. Click "Test Run" to start one.</p>`
+                ? html`<p>No executions yet. Run now starts one.</p>`
                 : html`
                     <table class="styled-table executions-table">
                       <thead>
@@ -839,16 +933,23 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
                           <th>Status</th>
                           <th>Started</th>
                           <th>Duration</th>
-                          <th>Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         ${this.recentExecutions.map(
                           (exec) => html`
-                            <tr>
+                            <!-- The row opens the run, as it does on the
+                                 executions list, so the View column that
+                                 repeated that route is gone. -->
+                            <tr
+                              class="execution-row"
+                              @click=${(event: MouseEvent) =>
+                                this.openExecution(event, exec.id)}
+                            >
                               <!-- Every row on this page is the same flow, so
                                    the subject is the only column that says
-                                   which run is which. -->
+                                   which run is which; it keeps its link to
+                                   the pull request or issue it came from. -->
                               <td class="subject-cell">
                                 ${renderExecutionSubject(exec)}
                               </td>
@@ -858,25 +959,21 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
                                   pill
                                   variant=${this.getStatusVariant(exec.status)}
                                 >
-                                  ${exec.status}
+                                  ${executionStatusLabel(exec.status)}
                                 </sl-badge>
                               </td>
-                              <td>${formatLocalDateTime(exec.start_time)}</td>
-                              <td>${executionDurationText(exec) || 'n/a'}</td>
-                              <td>
-                                <sl-button
-                                  size="small"
-                                  href="/console/flows/executions/${exec.id}"
-                                >
-                                  <sl-icon name="eye"></sl-icon>
-                                  View
-                                </sl-button>
+                              <!-- Relative, absolute in the title, as every
+                                   other list in the console states a time. -->
+                              <td title=${formatLocalDateTime(exec.start_time)}>
+                                ${formatRelativeTime(exec.start_time)}
                               </td>
+                              <td>${executionDurationText(exec) || 'n/a'}</td>
                             </tr>
                           `
                         )}
                       </tbody>
                     </table>
+                    ${this.renderAllExecutionsLink()}
                   `
             }
           </sl-card>
@@ -885,17 +982,73 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     `;
   }
 
-  /** One-line trigger summary for the flow details grid. */
-  getTriggerSummary(): string {
-    if (this.flow.trigger_event_source === 'webhook') {
-      return 'Webhook';
+  /**
+   * A row opens its run, the way the executions list does.
+   *
+   * Modified clicks and clicks that landed on something with its own
+   * destination (the subject's link to the pull request) are left alone.
+   */
+  private openExecution(event: MouseEvent, executionId: string): void {
+    if (event.defaultPrevented) return;
+    if (
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.button !== 0
+    ) {
+      return;
     }
-    if (this.flow.trigger_event_source === 'schedule') {
-      return this.flow.schedule_state?.description || 'Schedule';
+    for (const node of event.composedPath()) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (node.tagName === 'TR') break;
+      const tag = node.tagName.toLowerCase();
+      if (tag === 'a' || tag === 'sl-button' || tag === 'sl-icon-button') {
+        return;
+      }
     }
-    return `${this.getTrackerName(this.flow.trigger_event_source)} - ${
-      this.flow.trigger_event_types?.join(', ') || 'No events'
-    }`;
+    Router.go(`/console/flows/executions/${executionId}`);
+  }
+
+  /**
+   * The way out of the ten most recent runs.
+   *
+   * The card shows ten and used to stop there, with no hint that the flow has
+   * 95 executions behind it and no route to them but the sidebar. The count
+   * comes from the flow's own stats, so the link only claims a number the
+   * server stated; without it the link still exists, unnumbered. The query
+   * key is `flow_id`, which is what the executions view parses and what the
+   * Flows list already links with.
+   */
+  private renderAllExecutionsLink() {
+    const total = Number(this.flow?.execution_stats?.total_execs || 0);
+    if (total > 0 && total <= this.recentExecutions.length) return '';
+    const label =
+      total > 0 ? `View all ${total} executions` : 'View all executions';
+    return html`
+      <div class="all-executions">
+        <a
+          href=${`/console/flows/executions?flow_id=${encodeURIComponent(
+            this.flowId || ''
+          )}`}
+          >${label}</a
+        >
+      </div>
+    `;
+  }
+
+  /**
+   * One-line trigger summary, the same reading the Flows list prints.
+   *
+   * This used to print the raw event ids ("pull_request_opened,
+   * pull_request_updated") where the list said "Pull request opened, Pull
+   * request updated" for the same flow.
+   */
+  getTriggerSummary(): { label: string; title: string } {
+    const trackerNames: Record<string, string> = {};
+    for (const tracker of this.trackers || []) {
+      if (tracker?.id) trackerNames[tracker.id] = tracker.name || tracker.id;
+    }
+    return flowTriggerSummary(this.flow as Flow, trackerNames);
   }
 
   /** Fetch the next few run times for a schedule-triggered flow. */

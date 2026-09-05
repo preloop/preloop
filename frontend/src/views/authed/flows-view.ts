@@ -32,6 +32,9 @@ import {
   parseUTCDate,
 } from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
+// Re-exported below: the list and the flow detail page state the trigger the
+// same way, so the reading lives in one module.
+import { flowTriggerSummary } from '../../utils/flow-trigger';
 import {
   executionSubjectCss,
   renderExecutionSubject,
@@ -48,6 +51,8 @@ import {
   type ListViewMode,
   type NarrowViewportSubscription,
 } from '../../utils/view-mode';
+
+export { flowTriggerSummary };
 
 /** A flow row from the list endpoints, where id and name are always present. */
 type FlowListItem = Flow & { id: string; name: string };
@@ -160,59 +165,6 @@ export function flowStatusOf(flow: Flow): FlowStatus {
   const hasRun = Number(flow.execution_stats?.total_execs || 0) > 0;
   if (!flow.trigger_event_source && !hasRun) return 'draft';
   return 'enabled';
-}
-
-/** "pull_request_updated" reads as "Pull request updated" in a column. */
-function humaniseToken(token: string): string {
-  const spaced = token.replace(/[_-]+/g, ' ').trim();
-  if (!spaced) return '';
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-}
-
-/**
- * The trigger, on one line: where events come from and which ones.
- *
- * `trigger_event_source` is 'webhook', 'schedule' or a tracker id, so the
- * tracker names are passed in; when they are not available (the request
- * failed, or has not landed yet) the event types alone still say more than
- * a UUID would.
- */
-export function flowTriggerSummary(
-  flow: Flow,
-  trackerNames: Record<string, string> = {}
-): { label: string; title: string } {
-  const source = flow.trigger_event_source;
-  if (source === 'schedule') {
-    const schedule = flow.schedule_state;
-    const label = schedule?.description || 'Schedule';
-    const next = schedule?.next_run_at
-      ? `Next run ${formatLocalDateTime(schedule.next_run_at)}`
-      : schedule && !schedule.active
-        ? 'Schedule paused'
-        : 'No upcoming runs';
-    return { label, title: `${label} · ${next}` };
-  }
-  const types = (flow.trigger_event_types || [])
-    .map((type) => String(type))
-    // A webhook flow whose only event type is "webhook" would read
-    // "Webhook - Webhook"; say a thing once.
-    .filter((type) => type.toLowerCase() !== String(source).toLowerCase())
-    .map((type) => humaniseToken(type))
-    .filter(Boolean);
-  if (source === 'webhook') {
-    const label = types.length ? `Webhook · ${types.join(', ')}` : 'Webhook';
-    return { label, title: label };
-  }
-  if (!source) {
-    return {
-      label: 'Manual',
-      title: 'No trigger configured. This flow runs when someone starts it.',
-    };
-  }
-  const name = trackerNames[source];
-  const parts = [name, types.join(', ')].filter(Boolean);
-  const label = parts.length ? parts.join(' · ') : 'Tracker';
-  return { label, title: label };
 }
 
 /**
