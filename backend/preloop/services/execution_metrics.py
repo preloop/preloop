@@ -2,9 +2,10 @@
 
 import logging
 import re
+import uuid
 from typing import Any, Dict, List, Sequence
 
-from sqlalchemy import String, case, cast, func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -111,11 +112,28 @@ def get_execution_totals(
     from preloop.models.models.flow_execution_log import FlowExecutionLog
     from preloop.models.models.runtime_session_activity import RuntimeSessionActivity
 
-    ids = list(
-        dict.fromkeys(
-            str(execution_id) for execution_id in execution_ids if execution_id
-        )
-    )
+    # Every column filtered below is a native UUID with an index on it (the
+    # primary key, or the foreign key to it). Casting the column to text would
+    # defeat those indexes and turn a page load into four sequential scans, so
+    # the ids are parsed here instead and the columns are compared as they are
+    # stored. An id that is not a UUID cannot match any row, so it is dropped.
+    ids: List[uuid.UUID] = []
+    seen: set = set()
+    for execution_id in execution_ids:
+        if not execution_id:
+            continue
+        try:
+            parsed = (
+                execution_id
+                if isinstance(execution_id, uuid.UUID)
+                else uuid.UUID(str(execution_id))
+            )
+        except (ValueError, AttributeError, TypeError):
+            continue
+        if parsed in seen:
+            continue
+        seen.add(parsed)
+        ids.append(parsed)
     if not ids:
         return {}
 
@@ -129,23 +147,23 @@ def get_execution_totals(
         else_=0,
     )
     stored_rows = db.query(
-        cast(FlowExecution.id, String).label("execution_id"),
+        FlowExecution.id.label("execution_id"),
         mcp_calls.label("mcp_calls"),
         FlowExecution.tool_calls_count.label("stored_tool_calls"),
         FlowExecution.estimated_cost.label("stored_cost"),
-    ).filter(cast(FlowExecution.id, String).in_(ids))
+    ).filter(FlowExecution.id.in_(ids))
 
     # Tool calls normalized out of the JSONB blob into their own table.
     entry_rows = (
         db.query(
-            cast(FlowExecutionLog.execution_id, String).label("execution_id"),
+            FlowExecutionLog.execution_id.label("execution_id"),
             func.count(FlowExecutionLog.id).label("tool_calls"),
         )
         .filter(
-            cast(FlowExecutionLog.execution_id, String).in_(ids),
+            FlowExecutionLog.execution_id.in_(ids),
             FlowExecutionLog.log_type.in_(TOOL_CALL_LOG_TYPES),
         )
-        .group_by(cast(FlowExecutionLog.execution_id, String))
+        .group_by(FlowExecutionLog.execution_id)
     )
 
     # Tool calls the MCP server recorded against the run. The execution page
@@ -153,43 +171,45 @@ def get_execution_totals(
     # them too (this is the "0 tool calls in the list" case).
     activity_rows = (
         db.query(
-            cast(RuntimeSessionActivity.flow_execution_id, String).label(
-                "execution_id"
-            ),
+            RuntimeSessionActivity.flow_execution_id.label("execution_id"),
             func.count(RuntimeSessionActivity.id).label("tool_calls"),
         )
         .filter(
-            cast(RuntimeSessionActivity.flow_execution_id, String).in_(ids),
+            RuntimeSessionActivity.flow_execution_id.in_(ids),
             RuntimeSessionActivity.activity_type == "tool_call",
         )
-        .group_by(cast(RuntimeSessionActivity.flow_execution_id, String))
+        .group_by(RuntimeSessionActivity.flow_execution_id)
     )
 
     # Cost, with the attribution and the NULL semantics of
     # ``crud_api_usage.get_gateway_usage_for_execution``.
     cost_rows = (
         db.query(
-            cast(ApiUsage.flow_execution_id, String).label("execution_id"),
+            ApiUsage.flow_execution_id.label("execution_id"),
             func.sum(ApiUsage.estimated_cost).label("estimated_cost"),
             func.count(ApiUsage.id).label("requests"),
         )
         .filter(
             ApiUsage.action_type == "model_gateway",
-            cast(ApiUsage.flow_execution_id, String).in_(ids),
+            ApiUsage.flow_execution_id.in_(ids),
             exclude_replay_usage_condition(),
         )
-        .group_by(cast(ApiUsage.flow_execution_id, String))
+        .group_by(ApiUsage.flow_execution_id)
     )
 
-    entry_calls = {row.execution_id: int(row.tool_calls or 0) for row in entry_rows}
-    activity_calls = {
-        row.execution_id: int(row.tool_calls or 0) for row in activity_rows
+    # The maps are keyed by the string form because that is what the callers
+    # (and the response schemas) hold.
+    entry_calls = {
+        str(row.execution_id): int(row.tool_calls or 0) for row in entry_rows
     }
-    costs = {row.execution_id: row for row in cost_rows}
+    activity_calls = {
+        str(row.execution_id): int(row.tool_calls or 0) for row in activity_rows
+    }
+    costs = {str(row.execution_id): row for row in cost_rows}
 
     totals: Dict[str, Dict[str, Any]] = {}
     for row in stored_rows:
-        execution_id = row.execution_id
+        execution_id = str(row.execution_id)
         # Same shape as ``_count_tool_calls``: the MCP log plus the normalized
         # entries, floored by the rollup the orchestrator wrote and by what
         # the MCP server recorded, because the execution page shows the
