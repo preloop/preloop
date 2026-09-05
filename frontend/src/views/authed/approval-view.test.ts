@@ -1,7 +1,8 @@
-import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import { aTimeout, html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import './approval-view';
+import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import type { ApprovalView } from './approval-view';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 
@@ -28,9 +29,11 @@ describe('ApprovalView', () => {
       tool_args: { command: 'ls -la' },
       agent_reasoning: 'Listing files to inspect the repo',
       status: 'pending',
-      requested_at: '2026-06-01T10:00:00Z',
+      // Relative to now: a pending request whose expiry has passed reads as
+      // timed out, so a fixed past date would test the wrong branch.
+      requested_at: new Date(Date.now() - 60_000).toISOString(),
       resolved_at: null,
-      expires_at: '2026-06-01T11:00:00Z',
+      expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
       approver_comment: null,
       webhook_posted_at: null,
       webhook_error: null,
@@ -76,6 +79,19 @@ describe('ApprovalView', () => {
           return json(opts.request ?? pendingRequest());
         }
 
+        if (
+          /\/api\/v1\/approval-requests\?status=pending/.test(url) &&
+          method === 'GET'
+        ) {
+          return json([
+            pendingRequest(),
+            pendingRequest({
+              id: 'req-2',
+              expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+            }),
+          ]);
+        }
+
         if (url.includes('/approve') && method === 'POST') {
           return json(
             pendingRequest({
@@ -113,7 +129,161 @@ describe('ApprovalView', () => {
     fetchStub?.restore();
     wsSubscribeStub.restore();
     wsStateStub.restore();
+    resetConfirmDialogForTests();
+    document.querySelectorAll('sl-alert[open]').forEach((a) => a.remove());
     localStorage.clear();
+  });
+
+  async function renderRequest(request: Record<string, unknown>) {
+    fetchStub = createFetchStub({ request });
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await element.updateComplete;
+    return element;
+  }
+
+  function decisionCall(action: 'approve' | 'decline') {
+    return fetchStub
+      .getCalls()
+      .find(
+        (c) =>
+          String(c.args[0]).includes(`/${action}`) &&
+          String((c.args[1] as RequestInit)?.method || '').toUpperCase() ===
+            'POST'
+      );
+  }
+
+  describe('an expired pending request', () => {
+    it('renders as timed out with no decision bar', async () => {
+      const element = await renderRequest(
+        pendingRequest({
+          requested_at: '2026-07-13T14:59:10Z',
+          expires_at: '2026-07-13T15:04:10Z',
+        })
+      );
+
+      expect(element.shadowRoot?.textContent).to.contain('Timed out');
+      expect(element.shadowRoot?.textContent).to.not.contain('Pending');
+      expect(element.shadowRoot?.querySelector('.decision-bar')).to.not.exist;
+    });
+
+    it('ignores the decision keys', async () => {
+      await renderRequest(
+        pendingRequest({
+          requested_at: '2026-07-13T14:59:10Z',
+          expires_at: '2026-07-13T15:04:10Z',
+        })
+      );
+
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+      await aTimeout(0);
+      expect(decisionCall('approve'), 'a key decided an expired request').to.be
+        .undefined;
+    });
+  });
+
+  describe('the decision bar', () => {
+    it('states what is paused and counts down to the expiry', async () => {
+      const element = await renderRequest(pendingRequest());
+
+      const bar = element.shadowRoot?.querySelector('.decision-bar');
+      expect(bar, 'expected a sticky decision bar').to.exist;
+      expect(bar?.textContent).to.contain('is paused until you decide');
+      expect(bar?.textContent).to.contain('expires in');
+      expect(bar?.querySelector('.row-approve, .approve')).to.exist;
+      const deny = bar?.querySelector('.deny') as HTMLElement;
+      expect(deny.getAttribute('variant')).to.equal('danger');
+      expect(deny.hasAttribute('outline'), 'Deny must be outline').to.be.true;
+    });
+
+    it('approves on the A key', async () => {
+      const element = await renderRequest(pendingRequest());
+
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+      await waitUntil(() => !!decisionCall('approve'), 'no approve call');
+      await waitUntil(
+        () => (element as any).approvalRequest?.status === 'approved',
+        'the request was not approved'
+      );
+    });
+
+    it('opens the confirm on the D key and only then denies', async () => {
+      const element = await renderRequest(pendingRequest());
+
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'd' }));
+      await waitUntil(
+        () => !!document.querySelector('confirm-dialog'),
+        'no confirm dialog'
+      );
+      const dialog = document.querySelector('confirm-dialog') as HTMLElement;
+      expect(decisionCall('decline'), 'denied without confirming').to.be
+        .undefined;
+
+      const confirm = dialog.shadowRoot?.querySelector(
+        '[data-testid="confirm-dialog-confirm"]'
+      ) as HTMLElement;
+      confirm.click();
+      await waitUntil(() => !!decisionCall('decline'), 'no decline call');
+      await waitUntil(
+        () => (element as any).approvalRequest?.status === 'declined',
+        'the request was not denied'
+      );
+    });
+
+    it('leaves the keys alone while a comment is being typed', async () => {
+      const element = await renderRequest(pendingRequest());
+
+      const comment = element.shadowRoot?.querySelector(
+        '.decision-comment'
+      ) as HTMLElement;
+      comment.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'a',
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await aTimeout(0);
+
+      expect(decisionCall('approve'), 'a typed "a" approved the request').to.be
+        .undefined;
+    });
+
+    it('points at the next waiting request once a decision is taken', async () => {
+      const element = await renderRequest(pendingRequest());
+
+      await (element as any).handleApprove();
+      await element.updateComplete;
+
+      const line = element.shadowRoot?.querySelector('.post-decision');
+      expect(line, 'expected the post-decision line').to.exist;
+      expect(line?.textContent).to.contain('Back to approvals');
+      expect(line?.textContent).to.contain('Next waiting (1)');
+      const next = line?.querySelector('a[href*="/console/approval/"]');
+      expect(next?.getAttribute('href')).to.equal('/console/approval/req-2');
+    });
+  });
+
+  it('keeps the status badge inside a phone viewport', async () => {
+    fetchStub = createFetchStub({ request: pendingRequest() });
+    const holder = (await fixture(
+      html`<div style="width: 375px;">
+        <approval-view .requestId=${'req-1'}></approval-view>
+      </div>`
+    )) as HTMLElement;
+    const element = holder.querySelector('approval-view') as ApprovalView;
+
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await element.updateComplete;
+
+    const badge = element.shadowRoot?.querySelector(
+      '.status-badge'
+    ) as HTMLElement;
+    const badgeRight = badge.getBoundingClientRect().right;
+    const hostRight = element.getBoundingClientRect().right;
+    expect(badgeRight).to.be.at.most(hostRight + 1);
   });
 
   it('renders a pending approval request', async () => {
@@ -126,8 +296,10 @@ describe('ApprovalView', () => {
     await element.updateComplete;
 
     expect(element.shadowRoot?.textContent).to.contain('shell_command');
-    expect(element.shadowRoot?.textContent).to.contain('PENDING');
-    const buttons = element.shadowRoot?.querySelectorAll('.actions sl-button');
+    expect(element.shadowRoot?.textContent).to.contain('Pending');
+    const buttons = element.shadowRoot?.querySelectorAll(
+      '.decision-bar sl-button'
+    );
     expect(buttons?.length).to.equal(2);
   });
 
@@ -146,11 +318,11 @@ describe('ApprovalView', () => {
     await waitUntil(() => !(element as any).loading, 'still loading');
     await element.updateComplete;
 
-    expect(element.shadowRoot?.textContent).to.contain('APPROVED');
+    expect(element.shadowRoot?.textContent).to.contain('Approved');
     expect(element.shadowRoot?.querySelector('.resolved-info')).to.exist;
     expect(element.shadowRoot?.textContent).to.contain('Looks safe');
-    // No decision buttons once resolved.
-    expect(element.shadowRoot?.querySelector('.actions')).to.not.exist;
+    // No decision bar once resolved.
+    expect(element.shadowRoot?.querySelector('.decision-bar')).to.not.exist;
   });
 
   it('shows a not-found warning when the request is missing', async () => {
@@ -193,7 +365,7 @@ describe('ApprovalView', () => {
     await element.updateComplete;
 
     expect((element as any).approvalRequest?.status).to.equal('approved');
-    expect((element as any).actionResult?.type).to.equal('success');
+    expect((element as any).decisionTaken).to.be.true;
     const approveCall = fetchStub
       .getCalls()
       .find((c) => String(c.args[0]).includes('/approve'));
@@ -225,7 +397,7 @@ describe('ApprovalView', () => {
     it('renders option buttons and the answer field for a question', async () => {
       const { element, panel } = await renderQuestion();
 
-      expect(element.shadowRoot?.textContent).to.contain('Agent Question');
+      expect(element.shadowRoot?.textContent).to.contain('Agent question');
       expect(panel.shadowRoot.textContent).to.contain('Which colour?');
 
       const options = panel.shadowRoot.querySelectorAll('.question-option');
@@ -234,10 +406,8 @@ describe('ApprovalView', () => {
       expect(options[1].textContent.trim()).to.equal('green');
       expect(panel.shadowRoot.querySelector('.answer-input')).to.exist;
 
-      // The plain approve/decline + comment UI is hidden for questions.
-      expect(element.shadowRoot?.querySelector('.actions')).to.not.exist;
-      expect(element.shadowRoot?.querySelector('.comment-section')).to.not
-        .exist;
+      // The decision bar is hidden for questions: the panel carries them.
+      expect(element.shadowRoot?.querySelector('.decision-bar')).to.not.exist;
     });
 
     it('submits selected_option when an option is clicked', async () => {
@@ -344,9 +514,9 @@ describe('ApprovalView', () => {
 
       expect(element.shadowRoot?.querySelector('question-answer-panel')).to.not
         .exist;
-      expect(element.shadowRoot?.querySelector('.comment-section')).to.exist;
+      expect(element.shadowRoot?.querySelector('.decision-comment')).to.exist;
       expect(
-        element.shadowRoot?.querySelectorAll('.actions sl-button').length
+        element.shadowRoot?.querySelectorAll('.decision-bar sl-button').length
       ).to.equal(2);
     });
   });

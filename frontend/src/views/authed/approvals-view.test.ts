@@ -3,6 +3,7 @@ import sinon from 'sinon';
 
 import '../../components/view-header.ts';
 import './approvals-view';
+import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import type { ApprovalsView } from './approvals-view';
 
 describe('ApprovalsView', () => {
@@ -100,7 +101,120 @@ describe('ApprovalsView', () => {
 
   afterEach(() => {
     fetchStub?.restore();
+    resetConfirmDialogForTests();
+    document.querySelectorAll('sl-alert[open]').forEach((a) => a.remove());
     localStorage.clear();
+  });
+
+  function decisionCall(action: 'approve' | 'decline') {
+    return fetchStub
+      .getCalls()
+      .find(
+        (c) =>
+          String(c.args[0]).includes(`/${action}`) &&
+          String((c.args[1] as RequestInit)?.method || '').toUpperCase() ===
+            'POST'
+      );
+  }
+
+  function inMinutes(minutes: number) {
+    return new Date(Date.now() + minutes * 60_000).toISOString();
+  }
+
+  describe('waiting for you', () => {
+    it('puts the waiting group before history and sorts it by expiry', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'later', expires_at: inMinutes(40) }),
+        baseRequest({
+          id: 'done',
+          status: 'approved',
+          resolved_at: new Date().toISOString(),
+        }),
+        baseRequest({ id: 'soonest', expires_at: inMinutes(3) }),
+      ]);
+
+      const headings = Array.from(
+        element.shadowRoot?.querySelectorAll('.group-header h2') ?? []
+      ).map((h) => h.textContent?.trim());
+      expect(headings).to.deep.equal(['Waiting for you', 'History']);
+
+      expect(
+        (element as any).waitingRequests.map((r: any) => r.id)
+      ).to.deep.equal(['soonest', 'later']);
+      expect(
+        (element as any).historyRequests.map((r: any) => r.id)
+      ).to.deep.equal(['done']);
+    });
+
+    it('approves from the row without leaving the list', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      const approve = element.shadowRoot?.querySelector(
+        '.row-approve'
+      ) as HTMLElement;
+      expect(approve, 'expected a row-level Approve').to.exist;
+      approve.click();
+
+      await waitUntil(() => !!decisionCall('approve'), 'no approve call');
+      const body = JSON.parse(
+        String((decisionCall('approve')!.args[1] as RequestInit).body)
+      );
+      expect(body.approved).to.be.true;
+      await waitUntil(
+        () => (element as any).approvalRequests[0].status === 'approved',
+        'row was not marked approved'
+      );
+    });
+
+    it('confirms before it denies from the row', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      const deny = element.shadowRoot?.querySelector(
+        '.row-deny'
+      ) as HTMLElement;
+      expect(deny, 'expected a row-level Deny').to.exist;
+      expect(deny.getAttribute('variant')).to.equal('danger');
+      expect(deny.hasAttribute('outline'), 'Deny must be outline').to.be.true;
+      deny.click();
+
+      await waitUntil(
+        () => !!document.querySelector('confirm-dialog'),
+        'no confirm dialog'
+      );
+      expect(decisionCall('decline'), 'denied without confirming').to.be
+        .undefined;
+
+      const dialog = document.querySelector('confirm-dialog') as HTMLElement;
+      (
+        dialog.shadowRoot?.querySelector(
+          '[data-testid="confirm-dialog-confirm"]'
+        ) as HTMLElement
+      ).click();
+
+      await waitUntil(() => !!decisionCall('decline'), 'no decline call');
+      await waitUntil(
+        () => (element as any).approvalRequests[0].status === 'declined',
+        'row was not marked denied'
+      );
+    });
+
+    it('keeps an expired pending request in history with no decision', async () => {
+      const element = await renderList([
+        baseRequest({
+          id: 'stale',
+          requested_at: '2026-07-13T14:59:10Z',
+          expires_at: '2026-07-13T15:04:10Z',
+        }),
+      ]);
+
+      expect((element as any).waitingRequests.length).to.equal(0);
+      expect(element.shadowRoot?.querySelector('.row-approve')).to.not.exist;
+      expect(element.shadowRoot?.textContent).to.contain('Timed out');
+    });
   });
 
   it('renders the approval list view', async () => {
@@ -117,7 +231,7 @@ describe('ApprovalsView', () => {
 
     const header = element.shadowRoot?.querySelector('view-header');
     expect(header).to.exist;
-    expect(header?.getAttribute('headerText')).to.equal('Approval Requests');
+    expect(header?.getAttribute('headerText')).to.equal('Approval requests');
   });
 
   it('shows empty state when no approval requests', async () => {
@@ -301,7 +415,7 @@ describe('ApprovalsView', () => {
       expect(element.shadowRoot?.querySelector('question-answer-panel')).to.not
         .exist;
       expect(element.shadowRoot?.querySelector('.approval-item')).to.exist;
-      expect(element.shadowRoot?.textContent).to.contain('Review');
+      expect(element.shadowRoot?.textContent).to.contain('Details');
     });
   });
 });
