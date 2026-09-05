@@ -1421,8 +1421,7 @@ describe('ToolsView – tabs and toolbar', () => {
     expect(bashItem).to.exist;
 
     const blockedSwitch = bashItem.shadowRoot?.querySelector('sl-switch') as
-      | (HTMLElement & { checked: boolean })
-      | null;
+      (HTMLElement & { checked: boolean }) | null;
     expect(blockedSwitch).to.exist;
     blockedSwitch!.checked = true;
     blockedSwitch!.dispatchEvent(
