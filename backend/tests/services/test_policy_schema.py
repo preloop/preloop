@@ -102,6 +102,15 @@ class TestPolicyDocumentValid:
         doc = PolicyDocument(**data)
         assert doc.tools[0].source == "agent"
 
+    def test_policy_document_accepts_agent_source_without_mcp_server(self):
+        """A native tool with source agent is not an MCP server name."""
+        data = _minimal_doc(
+            tools=[_tool("Bash", source="agent")],
+        )
+        doc = PolicyDocument(**data)
+        assert doc.tools[0].source == "agent"
+        assert doc.mcp_servers is None
+
     def test_tool_with_conditions(self):
         data = _minimal_doc(
             approval_workflows=[_approval_workflow("pol")],

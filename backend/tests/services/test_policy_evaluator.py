@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 from preloop.services.policy_evaluator import (
+    _evaluate_simple_condition_on_bindings,
     evaluate_policy,
     evaluate_policy_async,
     evaluate_simple_expression,
@@ -539,6 +540,65 @@ class TestEvaluateSimpleExpression:
         """Unsupported expression format raises ValueError."""
         with pytest.raises(ValueError, match="Unsupported"):
             evaluate_simple_expression("invalid syntax", {})
+
+    def test_simple_matches_regex_on_string(self):
+        """args.field.matches('regex') uses re.search on the string value."""
+        assert evaluate_simple_expression(
+            'args.command.matches("rm -rf|git push --force")',
+            {"command": "git push --force origin main"},
+        )
+        assert not evaluate_simple_expression(
+            'args.command.matches("rm -rf|git push --force")',
+            {"command": "git push origin main"},
+        )
+        assert evaluate_simple_expression(
+            'args.file_path.matches("(^|/)\\\\.github/")',
+            {"file_path": ".github/workflows/ci.yml"},
+        )
+        assert not evaluate_simple_expression(
+            'args.file_path.matches("(^|/)\\\\.github/")',
+            {"file_path": "\\xgithub/workflows/ci.yml"},
+        )
+        assert evaluate_simple_expression(
+            'args.file_path.matches("a\\"b")',
+            {"file_path": 'a"b'},
+        )
+
+    def test_simple_matches_missing_field_is_false(self):
+        """A matches() rule does not fire when the field is absent."""
+        assert not evaluate_simple_expression(
+            'args.command.matches("rm -rf")',
+            {},
+        )
+        assert not evaluate_simple_expression(
+            'args.command.matches("rm -rf")',
+            {"command": None},
+        )
+
+    def test_simple_matches_rejects_oversized_pattern(self):
+        """Patterns longer than 512 characters are rejected before compile."""
+        oversized = "a" * 513
+        with pytest.raises(ValueError, match="512"):
+            evaluate_simple_expression(
+                f'args.command.matches("{oversized}")',
+                {"command": "a"},
+            )
+
+    def test_simple_matches_on_bindings_decodes_founder_path_escape(self):
+        """The bindings evaluator decodes the same stored .github/ text."""
+        assert _evaluate_simple_condition_on_bindings(
+            'file_path.matches("(^|/)\\\\.github/")',
+            {"file_path": ".github/workflows/ci.yml"},
+        )
+
+    def test_simple_matches_parser_is_linear_on_backslash_runs(self):
+        """Unclosed matches() with many \\\\a sequences must fail fast."""
+        payload = "\\\\a" * 80
+        with pytest.raises(ValueError, match="Unsupported"):
+            evaluate_simple_expression(
+                f'args.command.matches("{payload}',
+                {"command": "x"},
+            )
 
 
 class TestEvaluateCelExpression:

@@ -15,7 +15,8 @@ class ToolConfigurationBase(BaseModel):
 
     tool_name: Optional[str] = Field(None, description="Name of the tool")
     tool_source: Optional[str] = Field(
-        "builtin", description="Source type: 'builtin', 'mcp', 'http'"
+        "builtin",
+        description="Source type: 'builtin', 'mcp', 'http', 'agent'",
     )
     mcp_server_id: Optional[str] = Field(
         None, description="Reference to MCP server (if tool_source='mcp')"

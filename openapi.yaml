@@ -3261,10 +3261,11 @@ paths:
       summary: List All Tools
       description: "List all available tools (builtin + external) with their configuration\
         \ status.\n\nReturns a comprehensive list of:\n- All builtin tools\n- All\
-        \ tools from active MCP servers\n- Configuration status for each tool (enabled/disabled,\
-        \ preloop)\n\nArgs:\n    account: Current user's account (from dependency)\n\
-        \    db: Database session\n\nReturns:\n    List of tool dictionaries with\
-        \ metadata and configuration"
+        \ tools from active MCP servers\n- Native agent tools from the catalogue,\
+        \ plus any seen agent-source\n  configurations that are not in the catalogue\n\
+        - Configuration status for each tool (enabled/disabled, preloop)\n\nArgs:\n\
+        \    account: Current user's account (from dependency)\n    db: Database session\n\
+        \nReturns:\n    List of tool dictionaries with metadata and configuration"
       operationId: list_all_tools_api_v1_tools_get
       responses:
         '200':
@@ -20445,7 +20446,7 @@ components:
           - type: string
           - type: 'null'
           title: Tool Source
-          description: 'Source type: ''builtin'', ''mcp'', ''http'''
+          description: 'Source type: ''builtin'', ''mcp'', ''http'', ''agent'''
           default: builtin
         mcp_server_id:
           anyOf:

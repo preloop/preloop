@@ -218,6 +218,10 @@ class TestEvaluatePermissionPrompt:
                 "preloop.services.permission_prompt.resolve_tool_config",
                 new=AsyncMock(return_value=config),
             ),
+            patch(
+                "preloop.services.permission_prompt.apply_native_access_rules",
+                new=AsyncMock(return_value=None),
+            ),
             patch("preloop.services.approval_service.ApprovalService") as service_cls,
             patch(
                 "preloop.models.crud.approval_request.get_approval_request_async",
@@ -261,6 +265,10 @@ class TestEvaluatePermissionPrompt:
             patch(
                 "preloop.services.permission_prompt.resolve_tool_config",
                 new=AsyncMock(return_value=config),
+            ),
+            patch(
+                "preloop.services.permission_prompt.apply_native_access_rules",
+                new=AsyncMock(return_value=None),
             ),
             patch("preloop.services.approval_service.ApprovalService") as service_cls,
         ):
@@ -311,6 +319,10 @@ class TestEvaluatePermissionPrompt:
                 "preloop.services.permission_prompt.resolve_tool_config",
                 new=AsyncMock(return_value=config),
             ),
+            patch(
+                "preloop.services.permission_prompt.apply_native_access_rules",
+                new=AsyncMock(return_value=None),
+            ),
             patch("preloop.services.approval_service.ApprovalService") as service_cls,
         ):
             service = AsyncMock()
@@ -348,6 +360,10 @@ class TestEvaluatePermissionPrompt:
                 "preloop.services.permission_prompt.resolve_tool_config",
                 new=AsyncMock(return_value=config),
             ),
+            patch(
+                "preloop.services.permission_prompt.apply_native_access_rules",
+                new=AsyncMock(return_value=None),
+            ),
             patch("preloop.services.approval_service.ApprovalService") as service_cls,
         ):
             service = AsyncMock()
@@ -362,6 +378,53 @@ class TestEvaluatePermissionPrompt:
             kwargs["standing_bypass_reason"]
             == models.AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF
         )
+
+    async def test_deny_rule_returns_behavior_deny_without_creating_request(self):
+        """A matching deny rule maps to behavior=deny and skips create_and_notify."""
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_scalars_result([]))
+
+        workflow = MagicMock()
+        workflow.id = uuid.uuid4()
+        config = MagicMock()
+        config.id = uuid.uuid4()
+        config.is_enabled = True
+
+        with (
+            patch(
+                "preloop.services.permission_prompt.native_tool_approvals_disabled",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "preloop.services.permission_prompt.resolve_workflow",
+                new=AsyncMock(return_value=workflow),
+            ),
+            patch(
+                "preloop.services.permission_prompt.resolve_tool_config",
+                new=AsyncMock(return_value=config),
+            ),
+            patch(
+                "preloop.services.permission_prompt.apply_native_access_rules",
+                new=AsyncMock(
+                    return_value=(
+                        "deny",
+                        "Block force-push",
+                        None,
+                        {"source": "tool_access_rule"},
+                    )
+                ),
+            ),
+            patch("preloop.services.approval_service.ApprovalService") as service_cls,
+        ):
+            behavior = await self._run(
+                db, tool_input={"command": "git push --force origin main"}
+            )
+
+        assert behavior == {
+            "behavior": "deny",
+            "message": "Block force-push",
+        }
+        service_cls.assert_not_called()
 
 
 def test_dedupe_stmt_executes_on_real_database(db_session, test_user):

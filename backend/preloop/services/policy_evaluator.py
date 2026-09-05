@@ -5,6 +5,7 @@ is executed, based on tool access rules. It supports allow/deny/require_approval
 actions with priority-based rule evaluation.
 """
 
+import functools
 import logging
 import re
 import uuid
@@ -41,6 +42,84 @@ from preloop.services.subject_governance import (
 
 logger = logging.getLogger(__name__)
 
+# Cap on ``.matches()`` patterns in the simple evaluator. Python ``re`` has
+# no timeout; this bound and the compiled-pattern LRU cache are the ReDoS
+# mitigation (they limit compile cost and reuse compiled objects, they do
+# not bound match time on a hostile pattern that still fits the cap).
+SIMPLE_MATCHES_PATTERN_MAX_LEN = 512
+
+
+def _parse_simple_matches_call(expression: str) -> Optional[tuple[str, str]]:
+    """Parse ``field.matches("pattern")`` without nested backtracking.
+
+    Two linear alternatives (double-quoted, then single-quoted) replace a
+    backreference-plus-negative-lookahead matcher. A long run of ``\\\\a``
+    must stay O(n), not exponential.
+    """
+    for quote in ('"', "'"):
+        pattern = (
+            rf"^(\w+(?:\.\w+)*)\.matches\s*\(\s*{quote}"
+            rf"((?:[^{quote}\\]|\\.)*){quote}\s*\)$"
+        )
+        match = re.match(pattern, expression)
+        if match:
+            return match.group(1), match.group(2)
+    return None
+
+
+@functools.lru_cache(maxsize=128)
+def _compile_simple_matches_pattern(pattern: str) -> re.Pattern[str]:
+    """Compile a simple-evaluator ``matches()`` pattern (LRU-cached)."""
+    return re.compile(pattern)
+
+
+_SIMPLE_MATCHES_ESCAPES = frozenset({"\\", '"', "'"})
+
+
+def _decode_simple_matches_literal(text: str) -> str:
+    """Decode ``\\\\``, ``\\\"``, and ``\\\\'`` in a ``matches()`` literal.
+
+    CEL decodes those sequences in a quoted argument. The stored text must
+    mean the same in simple mode, so ``\\\\.github`` becomes ``\\.github``.
+    Other CEL escapes (``\\uXXXX``, ``\\xHH``, octal) are left unchanged
+    here; author those patterns in CEL mode if they need that decoding.
+    """
+    decoded: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if (
+            char == "\\"
+            and index + 1 < length
+            and text[index + 1] in _SIMPLE_MATCHES_ESCAPES
+        ):
+            decoded.append(text[index + 1])
+            index += 2
+            continue
+        decoded.append(char)
+        index += 1
+    return "".join(decoded)
+
+
+def _simple_matches(value: Any, pattern: str) -> bool:
+    """Return whether ``pattern`` occurs in ``value`` via ``re.search``.
+
+    Missing or non-string fields are a non-match. Patterns longer than
+    :data:`SIMPLE_MATCHES_PATTERN_MAX_LEN` raise ValueError.
+    """
+    if not isinstance(value, str):
+        return False
+    if len(pattern) > SIMPLE_MATCHES_PATTERN_MAX_LEN:
+        raise ValueError(
+            f"matches() pattern exceeds {SIMPLE_MATCHES_PATTERN_MAX_LEN} characters"
+        )
+    try:
+        compiled = _compile_simple_matches_pattern(pattern)
+    except re.error as exc:
+        raise ValueError(f"Invalid matches() pattern: {exc}") from exc
+    return compiled.search(value) is not None
+
 
 class PolicyDecision(tuple):
     """A policy outcome that is still the historical 3-tuple.
@@ -60,6 +139,12 @@ class PolicyDecision(tuple):
         rule_context: JSON-serialisable snapshot of the rule that produced a
             ``require_approval`` decision, or None when nothing gated the call
             (allow/deny) or no rule identity exists.
+        source: Why this decision was produced (``tool_access_rule``,
+            ``subject_scoped_rule``, ``rule_evaluation_error``, ...). Set
+            whenever a rule wins, including allow and deny, so callers do
+            not have to read ``rule_context``.
+        stored_source: For a scoped rule, the rule dict's own ``source``
+            field (``agent``, ``mcp``, ...), or None when absent.
     """
 
     # No __slots__: CPython rejects a nonempty __slots__ on a tuple subclass,
@@ -71,12 +156,20 @@ class PolicyDecision(tuple):
         approval_workflow_id: Optional[Any],
         rule_description: Optional[str],
         rule_context: Optional[Dict[str, Any]] = None,
+        *,
+        source: Optional[str] = None,
+        stored_source: Optional[str] = None,
     ) -> "PolicyDecision":
         """Build the 3-tuple and attach the rule context."""
         decision = super().__new__(
             cls, (action, approval_workflow_id, rule_description)
         )
         decision.rule_context = rule_context
+        if source is None and isinstance(rule_context, dict):
+            raw_source = rule_context.get("source")
+            source = raw_source if isinstance(raw_source, str) else None
+        decision.source = source
+        decision.stored_source = stored_source
         return decision
 
     @property
@@ -340,7 +433,19 @@ def _evaluate_rule_candidates(
                         else getattr(rule, "priority", None)
                     ),
                 )
-            return PolicyDecision(action, approval_workflow_id, rule_desc, rule_context)
+            stored_source = None
+            if isinstance(rule, dict):
+                raw_source = rule.get("source")
+                if isinstance(raw_source, str) and raw_source:
+                    stored_source = raw_source
+            return PolicyDecision(
+                action,
+                approval_workflow_id,
+                rule_desc,
+                rule_context,
+                source=SOURCE_SUBJECT_SCOPED_RULE,
+                stored_source=stored_source,
+            )
         except Exception as e:
             error_desc = f"Rule evaluation error: {e} (failing closed)"
             _log_policy_decision_async(
@@ -502,6 +607,7 @@ def _evaluate_loaded_access_rules(
                     approval_workflow_id,
                     rule_desc,
                     rule_context,
+                    source=SOURCE_TOOL_ACCESS_RULE,
                 )
 
         except Exception as e:
@@ -744,6 +850,14 @@ def _evaluate_simple_condition(expression: str, tool_args: Dict[str, Any]) -> bo
         - args.field >= number
         - args.field <= number
         - args.field.contains('substring')
+        - args.field.matches('regex')
+
+    ``.matches()`` uses Python ``re.search``. Python's ``re`` has no
+    timeout. The 512-character pattern cap and the compiled-pattern LRU
+    cache are the ReDoS mitigation: they bound compile cost and reuse
+    compiled objects. They do not bound match time on a hostile pattern
+    that still fits the cap. Oversized patterns raise ValueError rather
+    than evaluating.
 
     Args:
         expression: Simple condition expression.
@@ -786,6 +900,15 @@ def _evaluate_simple_condition(expression: str, tool_args: Dict[str, Any]) -> bo
         elif isinstance(value, list):
             return substring in value
         return False
+
+    matches_parsed = _parse_simple_matches_call(
+        expression[5:] if expression.startswith("args.") else expression
+    )
+    if matches_parsed:
+        field_path, raw_pattern = matches_parsed
+        pattern = _decode_simple_matches_literal(raw_pattern)
+        value = _get_nested_value(tool_args, field_path)
+        return _simple_matches(value, pattern)
 
     # Handle comparison operators
     # Order matters: >= and <= must be checked before > and <
@@ -996,6 +1119,13 @@ def _evaluate_simple_condition_on_bindings(
         if isinstance(value, list):
             return substring in value
         return False
+
+    matches_parsed = _parse_simple_matches_call(expression)
+    if matches_parsed:
+        field_path, raw_pattern = matches_parsed
+        pattern = _decode_simple_matches_literal(raw_pattern)
+        value = _get_nested_value(bindings, field_path)
+        return _simple_matches(value, pattern)
 
     comparison_pattern = r"^(\w+(?:\.\w+)*)\s*(==|!=|>=|<=|>|<)\s*(.+)$"
     comparison_match = re.match(comparison_pattern, expression)
