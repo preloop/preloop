@@ -27,6 +27,7 @@ import '../views/authed/oauth-consent-view';
 import '../views/authed/dashboard-control-plane-view';
 import '../views/authed/trackers-view';
 import '../views/authed/tracker-detail-view';
+import '../views/authed/tracker-issue-view';
 import '../views/authed/tools-view';
 import '../views/authed/issues-view';
 import '../views/authed/issues-compliance-view';
@@ -349,6 +350,10 @@ export class LitApp extends LitElement {
             path: 'trackers',
             children: [
               { path: '', component: 'trackers-view' },
+              {
+                path: ':trackerId/issues/:issueId',
+                component: 'tracker-issue-view',
+              },
               { path: ':trackerId', component: 'tracker-detail-view' },
             ],
           },

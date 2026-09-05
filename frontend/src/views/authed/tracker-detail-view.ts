@@ -8,22 +8,31 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
+import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
+import '@shoelace-style/shoelace/dist/components/tab/tab.js';
+import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
+import '@shoelace-style/shoelace/dist/components/select/select.js';
+import '@shoelace-style/shoelace/dist/components/option/option.js';
+import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
 import {
   fetchWithAuth,
   getFeatures,
   deleteTracker,
+  listIssues,
   listOrganizations,
   listProjects,
   syncTracker,
   type FeaturesResponse,
 } from '../../api';
-import type { Organization, Project } from '../../types';
+import type { IssueListItem, Organization, Project } from '../../types';
 import {
   describeTrackerScope,
   groupProjectsByOrganization,
 } from '../../utils/tracker-scope';
+import { formatRelativeTime } from '../../utils/date';
+import { getStatusVariant } from '../../utils/verdict';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
 interface TrackerDetail {
@@ -74,7 +83,35 @@ export class TrackerDetailView extends LitElement {
   @state()
   private _syncMessage: string | null = null;
 
+  @state()
+  private _activeTab: 'projects' | 'issues' = 'projects';
+
+  @state()
+  private _selectedProjectId = '';
+
+  @state()
+  private _issueStatus: 'open' | 'closed' | 'all' = 'open';
+
+  @state()
+  private _issueSearch = '';
+
+  @state()
+  private _issues: IssueListItem[] = [];
+
+  @state()
+  private _issuesTotal = 0;
+
+  @state()
+  private _issuesSkip = 0;
+
+  @state()
+  private _issuesLoading = false;
+
+  @state()
+  private _issuesError: string | null = null;
+
   private _trackerId = '';
+  private readonly _issuesPageSize = 20;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -205,10 +242,46 @@ export class TrackerDetailView extends LitElement {
         align-items: center;
         justify-content: space-between;
         gap: var(--sl-spacing-medium);
-        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
-        background: var(--sl-color-neutral-50);
-        border-radius: var(--sl-border-radius-medium);
-        font-size: var(--sl-font-size-small);
+        padding: var(--sl-spacing-small) 0;
+        border-bottom: 1px solid var(--console-hairline);
+        font-size: var(--console-text-body);
+      }
+
+      .project-row:last-child {
+        border-bottom: none;
+      }
+
+      sl-tab-group::part(tabs) {
+        border-bottom: 1px solid var(--console-hairline);
+      }
+
+      sl-tab::part(base) {
+        font-size: var(--console-text-body);
+      }
+
+      .issues-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small);
+        align-items: end;
+      }
+
+      .issues-controls sl-select,
+      .issues-controls sl-input {
+        min-width: 160px;
+      }
+
+      .issues-empty,
+      .issues-error {
+        padding: var(--sl-spacing-medium) 0;
+        color: var(--console-meta-color);
+        font-size: var(--console-text-body);
+      }
+
+      .load-more {
+        display: block;
+        margin-top: var(--sl-spacing-small);
+        font-size: var(--console-text-meta);
       }
 
       .project-info {
@@ -247,12 +320,9 @@ export class TrackerDetailView extends LitElement {
 
       .no-analytics,
       .no-projects {
-        padding: var(--sl-spacing-large);
-        text-align: center;
-        color: var(--sl-color-neutral-500);
-        background: var(--sl-color-neutral-50);
-        border-radius: var(--sl-border-radius-medium);
-        font-size: var(--sl-font-size-small);
+        padding: var(--sl-spacing-medium) 0;
+        color: var(--console-meta-color);
+        font-size: var(--console-text-body);
         line-height: 1.5;
       }
     `,
@@ -261,6 +331,7 @@ export class TrackerDetailView extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this._trackerId = (this as any).location?.params?.trackerId || '';
+    this._readUrl();
     this._loadData();
   }
 
@@ -276,6 +347,156 @@ export class TrackerDetailView extends LitElement {
     this._projects = allProjects.filter((project) =>
       orgIds.has(project.organization_id)
     );
+    this._ensureSelectedProject();
+    if (this._activeTab === 'issues') {
+      await this._loadIssues(true);
+    }
+  }
+
+  private _readUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get('tab');
+    this._activeTab = tab === 'issues' ? 'issues' : 'projects';
+    const status = params.get('status');
+    if (status === 'open' || status === 'closed' || status === 'all') {
+      this._issueStatus = status;
+    }
+    this._selectedProjectId = params.get('project') || '';
+  }
+
+  private _updateUrl() {
+    if (!window.location.pathname.includes('/console/trackers/')) {
+      return;
+    }
+    const params = new URLSearchParams();
+    if (this._activeTab === 'issues') {
+      params.set('tab', 'issues');
+      if (this._selectedProjectId) {
+        params.set('project', this._selectedProjectId);
+      }
+      if (this._issueStatus !== 'open') {
+        params.set('status', this._issueStatus);
+      } else {
+        params.set('status', 'open');
+      }
+    }
+    const query = params.toString();
+    const next = query
+      ? `${window.location.pathname}?${query}`
+      : window.location.pathname;
+    window.history.replaceState({}, '', next);
+  }
+
+  private _ensureSelectedProject() {
+    if (this._projects.length === 0) {
+      this._selectedProjectId = '';
+      return;
+    }
+    const requested = this._selectedProjectId;
+    const match = this._projects.find(
+      (project) =>
+        project.id === requested ||
+        this._shortProjectId(project.id) === requested
+    );
+    this._selectedProjectId = match ? match.id : this._projects[0].id;
+  }
+
+  private _selectedProject(): Project | undefined {
+    return this._projects.find(
+      (project) => project.id === this._selectedProjectId
+    );
+  }
+
+  private async _loadIssues(reset = true) {
+    if (!this._selectedProjectId) {
+      this._issues = [];
+      this._issuesTotal = 0;
+      return;
+    }
+    if (reset) {
+      this._issuesSkip = 0;
+      this._issues = [];
+    }
+    this._issuesLoading = true;
+    this._issuesError = null;
+    try {
+      const data = await listIssues({
+        project_id: this._selectedProjectId,
+        status: this._issueStatus,
+        skip: this._issuesSkip,
+        limit: this._issuesPageSize,
+        sort: 'updated_desc',
+      });
+      this._issues = reset ? data.items : [...this._issues, ...data.items];
+      this._issuesTotal = data.total;
+      this._issuesSkip = data.skip;
+    } catch (error) {
+      this._issuesError =
+        error instanceof Error ? error.message : 'Could not load issues.';
+    } finally {
+      this._issuesLoading = false;
+    }
+  }
+
+  private _visibleIssues(): IssueListItem[] {
+    const q = this._issueSearch.trim().toLowerCase();
+    if (!q) return this._issues;
+    return this._issues.filter((issue) => {
+      const key = (issue.key || '').toLowerCase();
+      const title = (issue.title || '').toLowerCase();
+      return key.includes(q) || title.includes(q);
+    });
+  }
+
+  private _showTab(name: 'projects' | 'issues') {
+    this._activeTab = name;
+    const group = this.renderRoot.querySelector('sl-tab-group') as {
+      show?: (panel: string) => void;
+    } | null;
+    group?.show?.(name);
+  }
+
+  private _onTabShow(event: CustomEvent<{ name: string }>) {
+    const name = event.detail.name;
+    if (name !== 'projects' && name !== 'issues') return;
+    if (this._activeTab === name) return;
+    this._activeTab = name;
+    this._updateUrl();
+    if (name === 'issues') {
+      void this._loadIssues(true);
+    }
+  }
+
+  private _showIssuesForProject(projectId: string) {
+    this._selectedProjectId = projectId;
+    this._showTab('issues');
+    this._updateUrl();
+    void this._loadIssues(true);
+  }
+
+  private _onProjectFilter(event: Event) {
+    const value = (event.target as HTMLSelectElement).value;
+    if (!value || value === this._selectedProjectId) return;
+    this._selectedProjectId = value;
+    this._updateUrl();
+    void this._loadIssues(true);
+  }
+
+  private _onStatusFilter(event: Event) {
+    const value = (event.target as HTMLSelectElement).value as
+      'open' | 'closed' | 'all';
+    this._issueStatus = value;
+    this._updateUrl();
+    void this._loadIssues(true);
+  }
+
+  private _onIssueSearch(event: Event) {
+    this._issueSearch = (event.target as HTMLInputElement).value;
+  }
+
+  private _loadMoreIssues() {
+    this._issuesSkip = this._issues.length;
+    void this._loadIssues(false);
   }
 
   private async _loadData() {
@@ -296,6 +517,9 @@ export class TrackerDetailView extends LitElement {
       this._features = featuresRes.features;
       this._featuresLoaded = true;
       await this._loadProjectsForTracker();
+      if (this._activeTab === 'issues') {
+        this._showTab('issues');
+      }
     } catch (error) {
       this._error =
         error instanceof Error ? error.message : 'Failed to load tracker';
@@ -406,6 +630,143 @@ export class TrackerDetailView extends LitElement {
     this._editingTracker = null;
   }
 
+  private _renderIssuesTab() {
+    if (this._projects.length === 0) {
+      return html`<div class="no-projects">
+        No projects synced yet. Run <strong>Sync Now</strong> or edit the
+        tracker to choose groups and projects, then sync again.
+      </div>`;
+    }
+
+    const project = this._selectedProject();
+    const visible = this._visibleIssues();
+    const canLoadMore = this._issues.length < this._issuesTotal;
+
+    return html`
+      <sl-card>
+        <div slot="header" class="section-header">
+          <h2 class="section-title">
+            Issues
+            ${
+              this._issuesTotal
+                ? html`<sl-badge variant="neutral" pill class="solid"
+                    >${this._issuesTotal}</sl-badge
+                  >`
+                : ''
+            }
+          </h2>
+          <div class="issues-controls">
+            <sl-select
+              size="small"
+              label="Project"
+              value=${this._selectedProjectId}
+              @sl-change=${this._onProjectFilter}
+            >
+              ${this._projects.map(
+                (item) =>
+                  html`<sl-option value=${item.id}>${item.name}</sl-option>`
+              )}
+            </sl-select>
+            <sl-select
+              size="small"
+              label="Status"
+              value=${this._issueStatus}
+              @sl-change=${this._onStatusFilter}
+            >
+              <sl-option value="open">Open</sl-option>
+              <sl-option value="closed">Closed</sl-option>
+              <sl-option value="all">All</sl-option>
+            </sl-select>
+            <sl-input
+              size="small"
+              label="Search"
+              placeholder="Key or title"
+              value=${this._issueSearch}
+              @sl-input=${this._onIssueSearch}
+            ></sl-input>
+          </div>
+        </div>
+        ${
+          this._issuesError
+            ? html`<div class="issues-error">
+                Could not load issues.
+                <sl-button
+                  size="small"
+                  variant="text"
+                  @click=${() => this._loadIssues(true)}
+                  >Retry</sl-button
+                >
+              </div>`
+            : this._issuesLoading && this._issues.length === 0
+              ? html`<div class="spinner-container">
+                  <sl-spinner></sl-spinner>
+                </div>`
+              : visible.length === 0
+                ? html`<div class="issues-empty">
+                    ${
+                      this._issueStatus === 'open'
+                        ? `No open issues in ${project?.name || 'this project'}. Switch the status filter to see closed issues.`
+                        : `No issues in ${project?.name || 'this project'}.`
+                    }
+                  </div>`
+                : html`
+                    <table class="styled-table">
+                      <thead>
+                        <tr>
+                          <th>Key</th>
+                          <th>Title</th>
+                          <th>Status</th>
+                          <th>Updated</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${visible.map(
+                          (issue) => html`
+                            <tr>
+                              <td>
+                                <a
+                                  href="/console/trackers/${this._trackerId}/issues/${issue.id}"
+                                >
+                                  ${issue.key}
+                                </a>
+                              </td>
+                              <td>${issue.title}</td>
+                              <td>
+                                <sl-badge
+                                  pill
+                                  variant=${getStatusVariant(
+                                    issue.status || ''
+                                  )}
+                                  >${issue.status}</sl-badge
+                                >
+                              </td>
+                              <td title=${issue.updated_at}>
+                                ${formatRelativeTime(issue.updated_at)}
+                              </td>
+                            </tr>
+                          `
+                        )}
+                      </tbody>
+                    </table>
+                    ${
+                      canLoadMore
+                        ? html`<a
+                            class="load-more"
+                            href="#"
+                            @click=${(e: Event) => {
+                              e.preventDefault();
+                              this._loadMoreIssues();
+                            }}
+                            >Load more</a
+                          >`
+                        : ''
+                    }
+                  `
+        }
+      </sl-card>
+    `;
+  }
+
   private _renderProjectGroups() {
     const groups = this._projectsByOrganization();
     if (groups.length === 0) {
@@ -448,11 +809,10 @@ export class TrackerDetailView extends LitElement {
                     </div>
                     <sl-button
                       size="small"
-                      variant="default"
-                      href=${this._buildIssuesUrl('', [project.id])}
+                      variant="text"
+                      @click=${() => this._showIssuesForProject(project.id)}
                     >
-                      View issues
-                      <sl-icon slot="suffix" name="arrow-right"></sl-icon>
+                      Issues
                     </sl-button>
                   </div>
                 `
@@ -625,36 +985,55 @@ export class TrackerDetailView extends LitElement {
               : ''
           }
 
+          <sl-tab-group @sl-tab-show=${this._onTabShow}>
+            <sl-tab
+              slot="nav"
+              panel="projects"
+              ?active=${this._activeTab === 'projects'}
+              >Projects</sl-tab
+            >
+            <sl-tab
+              slot="nav"
+              panel="issues"
+              ?active=${this._activeTab === 'issues'}
+              >Issues</sl-tab
+            >
+            <sl-tab-panel name="projects">
+              <div class="section-header">
+                <h2 class="section-title">
+                  Synced projects
+                  ${
+                    hasProjects
+                      ? html`<sl-badge variant="neutral" pill
+                          >${this._projects.length}</sl-badge
+                        >`
+                      : ''
+                  }
+                </h2>
+              </div>
+              ${this._renderProjectGroups()}
+            </sl-tab-panel>
+            <sl-tab-panel name="issues">
+              ${this._renderIssuesTab()}
+            </sl-tab-panel>
+          </sl-tab-group>
+
+          <sl-divider></sl-divider>
+
           <div class="section-header">
-            <h2 class="section-title">
-              Synced projects
-              ${
-                hasProjects
-                  ? html`<sl-badge variant="neutral" pill
-                      >${this._projects.length}</sl-badge
-                    >`
-                  : ''
-              }
-            </h2>
+            <h2 class="section-title">Issue analytics</h2>
             ${
               hasProjects
                 ? html`<sl-button
-                    variant="primary"
+                    variant="text"
                     size="small"
                     href=${this._buildIssuesUrl('')}
                   >
-                    View all issues
-                    <sl-icon slot="suffix" name="arrow-right"></sl-icon>
+                    Similar issues
                   </sl-button>`
                 : ''
             }
           </div>
-
-          ${this._renderProjectGroups()}
-
-          <sl-divider></sl-divider>
-
-          <h2 class="section-title">Issue analytics</h2>
 
           ${
             hasAnalytics && hasProjects
