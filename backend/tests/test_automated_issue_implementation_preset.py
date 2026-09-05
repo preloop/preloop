@@ -231,7 +231,10 @@ class TestPromptPlaceholders:
         template = preset["prompt_template"]
         assert "{{trigger_event.payload.object_attributes.title}}" in template
         assert "{{trigger_event.payload.object_attributes.description}}" in template
+        # GitHub-native field. TriggerEventResolver aliases GitLab iid onto
+        # number so this same placeholder resolves on both trackers.
         assert "{{trigger_event.payload.object_attributes.number}}" in template
+        assert "{{trigger_event.payload.object_attributes.iid}}" not in template
         assert "{{trigger_event.payload.issue.description}}" not in template
 
 
