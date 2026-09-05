@@ -177,10 +177,15 @@ _MODEL_AUTH_RE = re.compile(
 # 'AI_APICallError: Insufficient Balance' (deepseek, HTTP 402). A refusal on
 # money is not a hiccup: it identifies the failing layer whatever else the
 # logs say, so it is matched structurally, before the executor's verdict.
+# The status code is only read when it is written as a status: a bare 402 is
+# just as likely to be a pod name, a line number or an issue number, and this
+# rule runs before the runner and setup rules.
 _PROVIDER_BILLING_RE = re.compile(
     r"insufficient_quota|exceeded your current quota|credit balance"
     r"|quota exhausted|out of credits|insufficient balance"
-    r"|payment required|\b402\b",
+    r"|payment required"
+    r"|\bhttp[ /]?402\b|\b402 payment required\b"
+    r"|status(?:_code)?[ =:]+402\b",
     re.IGNORECASE,
 )
 # "zai does not support parameters: ['parallel_tool_calls']",

@@ -58,6 +58,15 @@ STAGING_MESSAGES = [
         "Upstream model provider refused the call (HTTP 402 Payment Required).",
         "provider_billing",
     ),
+    ("exceeded retry limit, last status: 402", "provider_billing"),
+    # 402 only means "pay first" when it is written as a status. A pod name,
+    # a line number or an issue number that happens to contain 402 belongs to
+    # the layer that failed, not to the billing bucket.
+    (
+        "Failed to start agent pod preloop-run-402: evicted by the node",
+        "runner_error",
+    ),
+    ("Execution timed out after 402 seconds", "timeout"),
     ("zai does not support parameters: ['parallel_tool_calls']", "model_config"),
     (
         "Agent exited with code 0 but did not confirm success on either "
@@ -216,6 +225,26 @@ class TestPrecedence:
                 },
             )
             == "provider_billing"
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Runner pod preloop-run-402 was evicted by the node",
+            "Agent exited with code 1 at line 402 of run.py: connection reset by peer",
+            "Tool call failed for issue #402: not found",
+        ],
+    )
+    def test_a_bare_402_in_the_text_is_not_a_billing_refusal(self, message):
+        """Only a 402 written as a status is the provider asking for money.
+
+        The billing rule runs before the runner and setup rules, so a digit
+        match here would mislabel a pod eviction and tell the operator to top
+        up an account that is fine.
+        """
+        assert (
+            derive_failure_category(status="FAILED", error_message=message)
+            != "provider_billing"
         )
 
     def test_analysis_status_maps_auth_before_transient(self):
