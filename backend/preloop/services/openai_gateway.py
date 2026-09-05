@@ -2853,23 +2853,26 @@ class OpenAIGatewayService:
             # verbatim on the Anthropic OAuth passthrough, so the user's 1M
             # selection keeps working while authorization and pricing key on
             # the base model.
+            # Codex ChatGPT-OAuth rows are stored as ``openai/<id>`` (onboarding
+            # already collapses ``openai-codex`` to ``openai``). The client may
+            # send the bare id, ``openai/<id>``, or ``openai-codex/<id>``; all
+            # three must address the same row so a second request does not mint
+            # a duplicate.
             # On a tie (two bindings answering to the same spelling — e.g. a
             # user-created model and an agent-onboarding import that silently
             # took the same alias) the explicitly user-created binding wins:
             # it encodes routing intent, while imports are bookkeeping. Ties
             # within the same class fall back to the stable inventory order,
             # and every tie is logged + surfaced as a client warning.
-            normalized_requested = self._strip_claude_variant_marker(
+            spellings, suffix_tail = self._gateway_request_spellings(
                 str(requested_model)
             )
             exact_matches: List[AIModel] = []
             suffix_matches: List[AIModel] = []
             for ai_model, alias in gateway_enabled_models:
-                if alias == requested_model or alias == normalized_requested:
+                if alias in spellings:
                     exact_matches.append(ai_model)
-                elif alias.endswith(f"/{requested_model}") or alias.endswith(
-                    f"/{normalized_requested}"
-                ):
+                elif suffix_tail and alias.endswith(f"/{suffix_tail}"):
                     suffix_matches.append(ai_model)
             for candidates in (exact_matches, suffix_matches):
                 if not candidates:
@@ -2903,7 +2906,9 @@ class OpenAIGatewayService:
                 )
                 return chosen
             for _, alias in unauthorized_gateway_models:
-                if alias == requested_model or alias.endswith(f"/{requested_model}"):
+                if alias in spellings or (
+                    suffix_tail and alias.endswith(f"/{suffix_tail}")
+                ):
                     available = (
                         ", ".join(
                             authorized_alias
@@ -3077,6 +3082,24 @@ class OpenAIGatewayService:
             return trimmed
         return None
 
+    def _gateway_request_spellings(self, requested_model: str) -> tuple[set[str], str]:
+        """Equivalent alias spellings and suffix tail for one client model string.
+
+        Returns:
+            A set of strings an existing gateway alias may equal (exact match),
+            and the bare identifier used for ``alias.endswith("/"+tail)``.
+        """
+        normalized = self._strip_claude_variant_marker(requested_model)
+        spellings = {requested_model, normalized}
+        suffix_tail = normalized.rpartition("/")[2].strip() or normalized
+        codex_id = self._codex_autoregister_identifier(normalized)
+        if codex_id:
+            spellings.update(
+                {codex_id, f"openai/{codex_id}", f"openai-codex/{codex_id}"}
+            )
+            suffix_tail = codex_id
+        return spellings, suffix_tail
+
     def _maybe_autoregister_codex_family_model(
         self,
         requested_model: Optional[str],
@@ -3178,6 +3201,45 @@ class OpenAIGatewayService:
             return None
 
         account_id = self.auth_context.user.account_id
+        for model in crud_ai_model.get_by_account(self.db, account_id=account_id):
+            if (
+                (model.model_identifier or "").strip() == identifier
+                and model.credentials_secret_id == template.credentials_secret_id
+            ):
+                # Sequential retry / alternate spelling: the row already
+                # exists. A unique index on the *effective* alias is
+                # intentionally absent (see
+                # ``CRUDAIModel._enforce_unique_gateway_alias``); this
+                # lookup is the sequential idempotency so we do not
+                # auto-suffix a duplicate sibling. Still bind this agent:
+                # principal-bound OAuth is authorized per binding, and
+                # another agent on the same secret must not 400.
+                try:
+                    with self.db.begin_nested():
+                        now = datetime.now(timezone.utc)
+                        crud_managed_agent_ai_model_binding.create(
+                            self.db,
+                            obj_in={
+                                "account_id": account_id,
+                                "managed_agent_id": managed_agent_id,
+                                "ai_model_id": model.id,
+                                "binding_type": "configured",
+                                "config_key": f"gateway.autoregister.{identifier}",
+                                "gateway_alias": alias,
+                                "is_primary": False,
+                                "status": "gateway_ready",
+                                "first_seen_at": now,
+                                "last_seen_at": now,
+                            },
+                            commit=False,
+                        )
+                    self.db.commit()
+                except (SQLAlchemyError, ValueError):
+                    # Binding slot already occupied for this agent.
+                    pass
+                self._authorized_model_ids_cache = None
+                return model
+
         template_meta = (
             template.meta_data if isinstance(template.meta_data, dict) else {}
         )

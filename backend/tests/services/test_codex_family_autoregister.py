@@ -179,6 +179,57 @@ def test_openai_codex_prefix_autoregisters(db_session, test_user):
     assert resolved.model_identifier == "gpt-6-astra-pro"
 
 
+def test_openai_codex_prefix_resolves_again_without_new_rows(db_session, test_user):
+    """openai-codex/<id> round-trips onto the openai/<id> sibling, not a duplicate.
+
+    The stored alias is always ``openai/<id>`` (onboarding already collapses
+    openai-codex to openai). A second ``openai-codex/<id>`` request must hit
+    that row instead of minting another AIModel.
+    """
+    _agent, _pinned, service = _enrolled_service(db_session, test_user)
+
+    first = service._resolve_requested_model(
+        "openai-codex/gpt-6-astra-pro", provider="openai"
+    )
+    fresh_service = OpenAIGatewayService(db_session, service.auth_context)
+    _restrict_to_account(fresh_service, test_user.account_id)
+    second = fresh_service._resolve_requested_model(
+        "openai-codex/gpt-6-astra-pro", provider="openai"
+    )
+
+    assert first.id == second.id
+    count = sum(
+        1
+        for model in crud_ai_model.get_by_account(
+            db_session, account_id=test_user.account_id
+        )
+        if model.model_identifier == "gpt-6-astra-pro"
+    )
+    assert count == 1
+
+
+def test_mixed_openai_spellings_share_one_row(db_session, test_user):
+    """openai/<id> then openai-codex/<id> address the same sibling."""
+    _agent, _pinned, service = _enrolled_service(db_session, test_user)
+
+    first = service._resolve_requested_model("openai/gpt-6-astra", provider="openai")
+    fresh_service = OpenAIGatewayService(db_session, service.auth_context)
+    _restrict_to_account(fresh_service, test_user.account_id)
+    second = fresh_service._resolve_requested_model(
+        "openai-codex/gpt-6-astra", provider="openai"
+    )
+
+    assert first.id == second.id
+    count = sum(
+        1
+        for model in crud_ai_model.get_by_account(
+            db_session, account_id=test_user.account_id
+        )
+        if model.model_identifier == "gpt-6-astra"
+    )
+    assert count == 1
+
+
 def test_autoregistered_model_resolves_again_without_new_rows(db_session, test_user):
     """Second request finds the registered row; no duplicate is created."""
     _agent, _pinned, service = _enrolled_service(db_session, test_user)
