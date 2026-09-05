@@ -891,9 +891,16 @@ export class ConsoleShell extends LitElement {
               (this._fullBleed = !!e.detail)}
           >
             ${(() => {
-              const denied = this._permissionsLoaded
-                ? this._deniedPermissionForPath(this._currentPath)
-                : null;
+              // The outlet renders only once the answer is known and it is
+              // "yes". Rendering the slot while features and permissions are
+              // still in flight let a routed view paint (and keep painting,
+              // behind permission-denied) on a page the shell then refused.
+              // A routed view is a light-DOM child, so dropping the slot only
+              // hides it: views that carry data also check before fetching.
+              if (!this._featuresLoaded || !this._permissionsLoaded) {
+                return nothing;
+              }
+              const denied = this._deniedPermissionForPath(this._currentPath);
               return denied
                 ? html`<permission-denied
                     required-permission=${denied}

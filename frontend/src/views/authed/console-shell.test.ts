@@ -505,6 +505,55 @@ describe('ConsoleShell', () => {
       window.history.replaceState({}, '', originalPath);
     });
 
+    it('never assigns the routed child on a denied path', async () => {
+      // B-P1: the shell used to keep the outlet slot while it renders
+      // permission-denied, so the routed view painted behind the refusal.
+      const originalPath = window.location.pathname;
+      window.history.replaceState({}, '', '/console/policies');
+      stubShell();
+
+      const el = (await fixture(
+        html`<console-shell><div id="routed-view">rules</div></console-shell>`
+      )) as ConsoleShell;
+      await waitUntil(
+        () =>
+          (el as unknown as { _featuresLoaded: boolean })._featuresLoaded &&
+          (el as unknown as { _permissionsLoaded: boolean })._permissionsLoaded,
+        'Features and permissions did not load'
+      );
+      await el.updateComplete;
+
+      const child = el.querySelector('#routed-view') as HTMLElement;
+      expect(child).to.exist;
+      expect(child.assignedSlot).to.equal(null);
+      expect(child.getClientRects().length).to.equal(0);
+      expect(el.shadowRoot?.querySelector('permission-denied')).to.exist;
+
+      window.history.replaceState({}, '', originalPath);
+    });
+
+    it('holds the outlet back until permissions have loaded', async () => {
+      // Permissions in flight is not "allowed": the slot must not render
+      // before the shell knows, or a gated view mounts and fetches first.
+      const originalPath = window.location.pathname;
+      window.history.replaceState({}, '', '/console/policies');
+      stubShell();
+
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      (el as unknown as { _featuresLoaded: boolean })._featuresLoaded = false;
+      (el as unknown as { _permissionsLoaded: boolean })._permissionsLoaded =
+        false;
+      el.requestUpdate();
+      await el.updateComplete;
+
+      expect(el.shadowRoot?.querySelector('.main-content slot')).to.not.exist;
+      expect(el.shadowRoot?.querySelector('permission-denied')).to.not.exist;
+
+      window.history.replaceState({}, '', originalPath);
+    });
+
     it('renders the page on a direct URL when the flag is on', async () => {
       const originalPath = window.location.pathname;
       window.history.replaceState({}, '', '/console/policies');

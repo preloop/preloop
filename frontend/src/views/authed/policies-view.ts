@@ -15,11 +15,14 @@ import {
   createAccessRule,
   updateAccessRule,
   deleteAccessRule,
+  getUserProfile,
 } from '../../api';
 import type { AccessRule, ModelIORule } from '../../api';
+import { hasPermission } from '../../permissions';
 import type { Tool, ApprovalWorkflow } from '../../components/tool-card';
 import '../../components/policy-generate-dialog';
 import '../../components/view-header';
+import '../../components/permission-denied';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -223,6 +226,7 @@ export class PoliciesView extends LitElement {
   @state() private _approvalPolicies: ApprovalWorkflow[] = [];
   @state() private _loading = false;
   @state() private _error: string | null = null;
+  @state() private _permissionDenied = false;
   @state() private _features: { [key: string]: boolean | string[] } = {};
 
   // Access policies state
@@ -806,7 +810,30 @@ export class PoliciesView extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this.loadData();
+    void this._loadIfPermitted();
+  }
+
+  /**
+   * A gated route must not fetch. The shell hides the outlet, but a routed
+   * view is a light-DOM child and stays connected, so the view checks the
+   * viewer's permissions itself before asking for tools, workflows or rules.
+   * An unreadable profile is not a denial: the API gates every call anyway.
+   */
+  private async _loadIfPermitted() {
+    // Set before the first await so the view reads as loading from its first
+    // render, as it did when connectedCallback fetched straight away.
+    this._loading = true;
+    try {
+      const profile = await getUserProfile();
+      if (!hasPermission(profile?.permissions, 'view_policies')) {
+        this._permissionDenied = true;
+        this._loading = false;
+        return;
+      }
+    } catch {
+      // Profile unavailable: fall through and let the API answer.
+    }
+    await this.loadData();
   }
 
   private async loadData() {
@@ -3187,6 +3214,11 @@ defaults:
   };
 
   render() {
+    if (this._permissionDenied) {
+      return html`<permission-denied
+        required-permission="view_policies"
+      ></permission-denied>`;
+    }
     return html`
       <view-header
         headerText="Policies"
