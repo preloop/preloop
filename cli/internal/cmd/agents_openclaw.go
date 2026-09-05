@@ -920,13 +920,23 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		if err := installApprovalHooks(agent, baseURL, credentialResp.Token, output); err != nil {
 			return err
 		}
-		if permissionSourceForAgent(agent) == permissionSourceClaudeCode {
+		switch permissionSourceForAgent(agent) {
+		case permissionSourceClaudeCode:
 			// Headless (claude -p) governance: enable the default-disabled
 			// permission_prompt builtin for exactly this agent so the rest
 			// of the account's MCP clients keep paying zero context for it.
 			if err := enablePermissionPromptBuiltin(client, managedAgent.ID, output); err != nil {
 				// Non-fatal: hook-based approvals above already applied.
 				fmt.Fprintf(output, "  Warning: %v\n", err) //nolint:errcheck
+			}
+		case permissionSourceOpenCode:
+			// Same agent-scoped builtin so the backend treats this agent as
+			// approvals-governed; the claude -p hint does not apply, so the
+			// call stays quiet and prints its own line.
+			if err := enablePermissionPromptBuiltin(client, managedAgent.ID, nil); err != nil {
+				fmt.Fprintf(output, "  Warning: %v\n", err) //nolint:errcheck
+			} else {
+				fmt.Fprintln(output, "  Approvals governance: enabled the permission_prompt builtin (scoped to this agent only)") //nolint:errcheck
 			}
 		}
 	}
@@ -3949,7 +3959,7 @@ func buildOpenClawManagedMCPEnrollmentPlan(
 
 func supportsAgentControlChannel(agent AgentConfig) bool {
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
-	case "openclaw", hermesSourceType, "claude code":
+	case "openclaw", hermesSourceType, "claude code", "opencode":
 		return true
 	default:
 		return false
@@ -4055,6 +4065,19 @@ func applyManagedAgentControlConfig(
 			"Claude Code Agent Control config written to ~/.claude/preloop-control.json. Run `preloop claude` instead of `claude` for remote steer.",
 		)
 	}
+	if isOpenCodeAgent(plan.Agent) {
+		// The plugin reads preloop.control from OpenCode's user config
+		// (opencode.json), not from the legacy config.json that carries the
+		// MCP entry, so the block goes there.
+		if err := writeOpenCodePreloopControl(control); err != nil {
+			return plan, err
+		}
+		plan.Notes = append(
+			plan.Notes,
+			"OpenCode Agent Control config written to ~/.config/opencode/opencode.json (the MCP entry stays in config.json). "+
+				"Run `preloop agents onboard OpenCode --approvals` or `preloop agents install-plugin OpenCode` to register the plugin, then restart OpenCode.",
+		)
+	}
 	plan.ManagedControlWSURL = lookupString(control, "control_ws_url")
 	plan.Notes = append(
 		plan.Notes,
@@ -4085,6 +4108,12 @@ func applyAgentControlConfigToDocument(
 	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
 		// Claude Code settings.json is reserved for Claude's own schema.
 		// Control lives in ~/.claude/preloop-control.json (written separately).
+		return
+	}
+	if isOpenCodeAgent(agent) {
+		// The managed document is the legacy config.json (MCP entry). The
+		// plugin reads ~/.config/opencode/opencode.json (written separately),
+		// so the token is never duplicated into config.json.
 		return
 	}
 	preloop := ensureObjectPath(doc, "preloop")
@@ -4290,6 +4319,9 @@ func agentControlConfigFromDocument(
 	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
 		return readClaudePreloopControlFile()
 	}
+	if isOpenCodeAgent(agent) {
+		return readOpenCodePreloopControl()
+	}
 	preloop, ok := asObjectMap(doc["preloop"])
 	if !ok {
 		return nil, false
@@ -4306,6 +4338,8 @@ func agentControlPluginPackageName(agent AgentConfig) string {
 		return "@preloop-ai/openclaw-plugin"
 	case "claude_code":
 		return "@preloop-ai/claude-plugin"
+	case "opencode":
+		return openCodePluginPackageName
 	default:
 		return ""
 	}
@@ -4320,6 +4354,8 @@ func agentControlPluginVerifyCommand(agent AgentConfig) string {
 		return "preloop-openclaw-plugin"
 	case "claude_code":
 		return "preloop-claude-plugin"
+	case "opencode":
+		return openCodePluginVerifyCommand
 	default:
 		return ""
 	}
@@ -4396,6 +4432,8 @@ func agentControlPluginSourceDirName(agent AgentConfig) string {
 		return "openclaw-preloop"
 	case "claude_code":
 		return "claude-preloop"
+	case "opencode":
+		return "opencode-preloop"
 	default:
 		return ""
 	}
@@ -4759,12 +4797,20 @@ func verifyAgentControlRuntimePlugin(agent AgentConfig) map[string]interface{} {
 				return mergeStringMaps(result, entryPoint)
 			}
 		}
+		if isOpenCodeAgent(agent) {
+			// OpenCode installs the npm plugin itself on startup and exposes
+			// no bin; the `plugin` registration is the local signal.
+			return mergeStringMaps(result, openCodePluginRegistrationVerification())
+		}
 		return mergeStringMaps(result, managedAgentControlSidecarVerification(agent))
 	}
 	result["control_plugin_installed"] = true
 	configPath := agent.ConfigPath
 	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
 		configPath = claudeControlConfigPath()
+	}
+	if isOpenCodeAgent(agent) {
+		configPath = openCodeUserConfigPath()
 	}
 	if strings.TrimSpace(configPath) == "" {
 		result["control_plugin_verification"] = "installed_config_path_missing"

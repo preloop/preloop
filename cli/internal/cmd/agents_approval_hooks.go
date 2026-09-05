@@ -35,6 +35,8 @@ func permissionSourceForAgent(agent AgentConfig) string {
 		return permissionSourceCodexCLI
 	case strings.EqualFold(strings.TrimSpace(agent.Name), "Cursor"):
 		return permissionSourceCursor
+	case isOpenCodeAgent(agent):
+		return permissionSourceOpenCode
 	default:
 		return ""
 	}
@@ -95,6 +97,10 @@ func approvalHookConfigPath(source string) (string, error) {
 		return filepath.Join(home, ".codex", "hooks.json"), nil
 	case permissionSourceCursor:
 		return filepath.Join(home, ".cursor", "hooks.json"), nil
+	case permissionSourceOpenCode:
+		// No command hook: the plugin registration and its preloop.control
+		// block live in OpenCode's user config.
+		return filepath.Join(home, ".config", "opencode", openCodeUserConfigFileName), nil
 	default:
 		return "", fmt.Errorf("unsupported approval hook source %q", source)
 	}
@@ -205,6 +211,12 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 	}
 	if strings.TrimSpace(token) == "" {
 		return fmt.Errorf("cannot install approval hook without a durable credential token")
+	}
+	if source == permissionSourceOpenCode {
+		// OpenCode has no hook command to install: the runtime plugin gates
+		// tool calls from inside OpenCode, so onboarding registers the plugin
+		// and writes its preloop.control settings instead.
+		return installOpenCodeApprovalPlugin(agent, baseURL, token, out)
 	}
 
 	timeoutSeconds := resolveApprovalHookTimeoutSeconds()
@@ -344,6 +356,9 @@ func removeApprovalHooks(agent AgentConfig, out io.Writer) error {
 	source := permissionSourceForAgent(agent)
 	if source == "" {
 		return nil
+	}
+	if source == permissionSourceOpenCode {
+		return removeOpenCodeApprovalPlugin(agent, out)
 	}
 
 	configPath, err := approvalHookConfigPath(source)
