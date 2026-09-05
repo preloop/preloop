@@ -1103,7 +1103,7 @@ export class ToolRuleEditor extends LitElement {
                       ${
                         aiWorkflows.length === 0
                           ? html`<sl-option disabled value=""
-                              >No AI workflows — create one below</sl-option
+                              >No AI workflows - create one below</sl-option
                             >`
                           : aiWorkflows.map(
                               (p) =>
@@ -1117,7 +1117,7 @@ export class ToolRuleEditor extends LitElement {
                       ${
                         humanWorkflows.length === 0
                           ? html`<sl-option disabled value=""
-                              >No workflows — create one below</sl-option
+                              >No workflows - create one below</sl-option
                             >`
                           : humanWorkflows.map(
                               (p) =>
@@ -1196,7 +1196,7 @@ export class ToolRuleEditor extends LitElement {
     return html`
       <sl-dialog
         label="${this._isEditing ? 'Edit' : 'Add'} Access Rule${
-          this.toolName ? ` — ${this.toolName}` : ''
+          this.toolName ? ` - ${this.toolName}` : ''
         }"
         ?open=${this.open}
         @sl-request-close=${this._handleClose}
