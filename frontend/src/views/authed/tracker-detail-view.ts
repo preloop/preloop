@@ -1042,7 +1042,9 @@ export class TrackerDetailView extends LitElement {
                           <th>Author</th>
                           <th>Branches</th>
                           <th>Updated</th>
-                          <th></th>
+                          <th>
+                            <span class="visually-hidden">Actions</span>
+                          </th>
                         </tr>
                       </thead>
                       <tbody>

@@ -397,6 +397,8 @@ describe('TrackerDetailView', () => {
     expect(text).to.contain('Live from GitLab, refreshed every minute.');
     expect(text).to.contain('Fix login');
     expect(text).to.contain('#7');
+    const actionsHeader = el.shadowRoot?.querySelector('th .visually-hidden');
+    expect(actionsHeader?.textContent?.trim()).to.equal('Actions');
   });
 
   it('hides tab for jira', async () => {
