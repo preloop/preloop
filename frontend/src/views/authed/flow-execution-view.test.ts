@@ -5,6 +5,11 @@ import './flow-execution-view';
 import type { FlowExecutionView } from './flow-execution-view';
 import { liftLogfmtErrorField } from './flow-execution-view';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import {
+  FINISHED_EXECUTION,
+  FINISHED_EXECUTION_COST,
+  FINISHED_EXECUTION_TOOL_CALLS,
+} from './test-finished-execution';
 
 describe('FlowExecutionView', () => {
   let fetchStub: sinon.SinonStub;
@@ -324,6 +329,20 @@ describe('FlowExecutionView', () => {
           );
         }
 
+        // The row as the list serves it: the aggregation the page shows,
+        // already on the execution record. Nothing else answers for this id,
+        // so the strip has only the row to go on, which is the moment the two
+        // views used to disagree.
+        if (
+          url.endsWith(`/api/v1/flows/executions/${FINISHED_EXECUTION.id}`) &&
+          method === 'GET'
+        ) {
+          return new Response(JSON.stringify(FINISHED_EXECUTION), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
         if (url.endsWith('/api/v1/flows/flow-1') && method === 'GET') {
           return new Response(
             JSON.stringify({
@@ -562,6 +581,23 @@ describe('FlowExecutionView', () => {
     expect(content).to.contain('search_issues');
     expect(content).to.contain('get_issue');
     expect(stripValue(element, 'strip-tools')).to.equal('3');
+  });
+
+  it('states the tool calls and cost the executions list prints', async () => {
+    // The other half of this pair lives in flow-executions-view.test.ts, over
+    // the same fixture: one run, one pair of numbers. The row now carries the
+    // aggregation the page shows, so the strip lands on exactly what the
+    // table printed even before /metrics answers (here it never does).
+    const element = await load(FINISHED_EXECUTION.id);
+
+    expect((element as any).toolCalls).to.equal(FINISHED_EXECUTION_TOOL_CALLS);
+    expect((element as any).budgetUsed).to.equal(FINISHED_EXECUTION_COST);
+    expect(stripValue(element, 'strip-tools')).to.contain(
+      String(FINISHED_EXECUTION_TOOL_CALLS)
+    );
+    expect(stripValue(element, 'strip-cost')).to.contain(
+      `$${FINISHED_EXECUTION_COST.toFixed(2)}`
+    );
   });
 
   it('does not claim pricing when a stored cost is a placeholder zero', async () => {
