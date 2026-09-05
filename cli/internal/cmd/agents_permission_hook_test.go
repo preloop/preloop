@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1258,8 +1259,10 @@ func TestInstallRemoveApprovalHooksOpenCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode != 0600 {
-		t.Errorf("opencode.json carries the runtime token and must be 0600, got %o", mode)
+	if runtime.GOOS != "windows" {
+		if mode := info.Mode().Perm(); mode != 0600 {
+			t.Errorf("opencode.json carries the runtime token and must be 0600, got %o", mode)
+		}
 	}
 	// No hook credential file: the plugin authenticates from opencode.json.
 	if entries, err := os.ReadDir(filepath.Join(home, ".preloop", "agents")); err == nil && len(entries) > 0 {

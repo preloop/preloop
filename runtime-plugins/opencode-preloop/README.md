@@ -42,8 +42,11 @@ used to authenticate the control WebSocket with an `Authorization` header.
    - The one local shortcut is `safe_read_auto_allow` (default `true`): a
      `bash` command that consists solely of read-only commands (`ls`, `cat`,
      `git status`, `git log`, `rg`, ... and plain `|` pipelines of them) is
-     allowed without a round trip. This mirrors the Preloop CLI hook's Cursor
-     default; set it to `false` to route those too.
+     allowed without a round trip, **including secret files** (`.env`,
+     `~/.ssh/id_rsa`, `~/.aws/credentials`, and any other path `cat`/`head`/
+     `tail` can read). The equivalent OpenCode `read` tool is still gated by
+     Preloop. This mirrors the Preloop CLI hook's Cursor default; set
+     `safe_read_auto_allow` to `false` to route those too.
    - Tools served by the Preloop MCP server (`preloop_*`) are skipped because
      Preloop already governs them server-side.
 4. For users who keep OpenCode's `"ask"` permissions, the plugin also receives
@@ -160,7 +163,10 @@ disables it (the `permission.asked` bridge keeps working); unset or any other
 value enables it. `preloop agents onboard OpenCode --approvals` writes `"on"`
 and `preloop agents offboard OpenCode` removes the block and the `plugin`
 entry. `safe_read_auto_allow` (default `true`) lets read-only shell commands
-run without a round trip.
+run without a round trip, including `cat`/`head`/`tail` of secret files
+(`.env`, SSH keys, cloud credentials). Set it to `false` to send those
+through Preloop too. The OpenCode `read` tool is not covered by this
+shortcut and still goes to the backend.
 
 `permission_check_url` is optional: when unset, the plugin derives
 `<origin>/api/v1/agents/permission-check` from `control_ws_url`. Set it when a

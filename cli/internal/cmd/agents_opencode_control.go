@@ -252,11 +252,11 @@ func installOpenCodeApprovalPlugin(agent AgentConfig, baseURL, token string, out
 
 	if out != nil {
 		configPath := openCodeUserConfigPath()
-		fmt.Fprintf(out, "  Mobile approvals: registered %s in %s\n", openCodePluginPackageName, configPath)                                   //nolint:errcheck
-		fmt.Fprintf(out, "  Approval wait timeout: %ds (re-run onboard --approvals after changing the workflow timeout)\n", timeoutSeconds)    //nolint:errcheck
-		fmt.Fprintln(out, "  Mobile approvals: every OpenCode native tool call (bash, edit, write, read, webfetch, ...) is routed to Preloop") //nolint:errcheck
-		fmt.Fprintln(out, "    regardless of OpenCode's own permission config; account tool rules decide, unmatched calls ask a human.")       //nolint:errcheck
-		fmt.Fprintln(out, "    Read-only shell commands (ls, cat, git status, ...) run without approval (safe_read_auto_allow).")              //nolint:errcheck
+		fmt.Fprintf(out, "  Mobile approvals: registered %s in %s\n", openCodePluginPackageName, configPath)                                                                                                  //nolint:errcheck
+		fmt.Fprintf(out, "  Approval wait timeout: %ds (re-run onboard --approvals after changing the workflow timeout)\n", timeoutSeconds)                                                                   //nolint:errcheck
+		fmt.Fprintln(out, "  Mobile approvals: every OpenCode native tool call (bash, edit, write, read, webfetch, ...) is routed to Preloop")                                                                //nolint:errcheck
+		fmt.Fprintln(out, "    regardless of OpenCode's own permission config; account tool rules decide, unmatched calls ask a human.")                                                                      //nolint:errcheck
+		fmt.Fprintln(out, "    Read-only shell commands (ls, cat, git status, ...) run without approval (safe_read_auto_allow), including cat/head/tail of secret files; set it to false to gate those too.") //nolint:errcheck
 		if existed {
 			fmt.Fprintf(out, "  Note: %s now carries the Preloop runtime token, so its permissions were tightened to 0600.\n", configPath) //nolint:errcheck
 		}
