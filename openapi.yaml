@@ -7427,6 +7427,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/run-preset:
+    post:
+      tags:
+      - Flows
+      summary: Run Preset
+      description: 'Run a catalog preset on an issue, creating the account flow on
+        first use.
+
+
+        ``confirm_create=false`` resolves only: 409 ``flow_missing`` when the
+
+        account has no clone, or 200 with flow metadata and no execution when
+
+        one exists. ``confirm_create=true`` creates if needed (requires
+
+        ``create_flows``) and starts the run.'
+      operationId: run_preset_api_v1_flows_run_preset_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunPresetRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunPresetResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/flows/executions:
     get:
       tags:
@@ -18331,6 +18369,81 @@ components:
       - EXCLUDE
       title: RuleType
       description: Enum for rule types.
+    RunPresetRequest:
+      properties:
+        preset_slug:
+          type: string
+          title: Preset Slug
+        target:
+          $ref: '#/components/schemas/RunPresetTarget'
+        confirm_create:
+          type: boolean
+          title: Confirm Create
+          default: false
+      type: object
+      required:
+      - preset_slug
+      - target
+      title: RunPresetRequest
+      description: Body for POST /flows/run-preset.
+    RunPresetResponse:
+      properties:
+        execution_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Execution Id
+        flow_id:
+          type: string
+          title: Flow Id
+        flow_name:
+          type: string
+          title: Flow Name
+        flow_created:
+          type: boolean
+          title: Flow Created
+        execution_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Execution Url
+      type: object
+      required:
+      - flow_id
+      - flow_name
+      - flow_created
+      title: RunPresetResponse
+      description: Result of resolving (and optionally starting) a preset run.
+    RunPresetTarget:
+      properties:
+        kind:
+          type: string
+          enum:
+          - issue
+          - pull_request
+          title: Kind
+        issue_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Issue Id
+        project_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Project Id
+        number:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Number
+      type: object
+      required:
+      - kind
+      title: RunPresetTarget
+      description: Issue or pull-request target for an ad hoc preset run.
     RunnerFleetSummary:
       properties:
         runner_count:

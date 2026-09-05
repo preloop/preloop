@@ -4,6 +4,10 @@ This chapter covers the Flow subsystem: the Trigger Service, Flow Orchestrator, 
 
 Private runners are the default. `resolve_runner_pool` picks a pool in this order: trigger `_runner` override, `flow.runner_pool`, `account.default_runner_pool`, any online private runner (`auto`), then the hosted executor. The literal `server` at any explicit level opts into hosted compute. A resolved private pool uses `RemoteRunnerExecutor` to lease work to a matching self-hosted runner; if that pool has no idle runner the job queues for 15 minutes (`DEFAULT_QUEUE_TIMEOUT`) and then fails. Runners maintain an outbound WebSocket control plane for leases, heartbeats, status, logs, completion, and halt requests; durable lease metadata stays in PostgreSQL so temporary disconnects can recover without persisting short-lived API tokens. The CLI (`preloop runner fg`) redials that socket on unexpected close and keeps an in-flight Docker job, sending `complete`/`logs` after reconnect. Register/connect/disconnect also publish `runner_updated` on `account-updates.{account_id}` so the console Runners page updates without a refresh.
 
+## Ad-hoc preset runs
+
+`POST /api/v1/flows/run-preset` runs a catalog preset on a GitHub or GitLab issue without waiting for a tracker webhook. `confirm_create=false` only resolves the account flow (409 `flow_missing` when none exists). `confirm_create=true` clones the preset on first use, then triggers it. The auto-created flow has empty `trigger_event_types` and no `trigger_event_source`, so tracker events do not start extra runs until the operator edits the flow. Other tracker types (for example Jira) return 400.
+
 ## Prompt placeholders
 
 Flow `prompt_template` strings are resolved before the agent starts. Besides `{{project.*}}`, `{{account.*}}`, and `{{trigger_event.*}}`, an execution resolver provides:

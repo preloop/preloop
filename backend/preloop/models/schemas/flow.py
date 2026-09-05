@@ -608,3 +608,49 @@ class FlowResponse(FlowBase):
     def serialize_uuid_list(self, value: Optional[List[UUID]]) -> Optional[List[str]]:
         """Serialize UUID list fields to string list."""
         return [str(v) for v in value] if value is not None else None
+
+
+class RunPresetTarget(BaseModel):
+    """Issue or pull-request target for an ad hoc preset run."""
+
+    kind: Literal["issue", "pull_request"]
+    issue_id: Optional[UUID] = None
+    project_id: Optional[UUID] = None
+    number: Optional[int] = None
+
+    @model_validator(mode="after")
+    def validate_kind_fields(self) -> "RunPresetTarget":
+        """Require the identifiers that belong to each target kind."""
+        if self.kind == "issue" and self.issue_id is None:
+            raise ValueError("target.issue_id is required when kind is issue")
+        if self.kind == "pull_request" and (
+            self.project_id is None or self.number is None
+        ):
+            raise ValueError(
+                "target.project_id and target.number are required when "
+                "kind is pull_request"
+            )
+        return self
+
+    @field_serializer("issue_id", "project_id")
+    def serialize_target_uuids(self, value: Optional[UUID]) -> Optional[str]:
+        """Serialize UUID fields to strings."""
+        return str(value) if value is not None else None
+
+
+class RunPresetRequest(BaseModel):
+    """Body for POST /flows/run-preset."""
+
+    preset_slug: str
+    target: RunPresetTarget
+    confirm_create: bool = False
+
+
+class RunPresetResponse(BaseModel):
+    """Result of resolving (and optionally starting) a preset run."""
+
+    execution_id: Optional[str] = None
+    flow_id: str
+    flow_name: str
+    flow_created: bool
+    execution_url: Optional[str] = None

@@ -12,7 +12,7 @@ Template Sync System:
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -23,6 +23,24 @@ from preloop.models.db.session import get_session_factory
 from preloop.models.models.flow import Flow
 from preloop.flow_presets import FLOW_PRESETS
 from preloop.utils.hashing import compute_content_hash
+
+_CLONE_EXCLUDE = {
+    "_sa_instance_state",
+    "id",
+    "created_at",
+    "updated_at",
+    "name",
+    "is_preset",
+    "is_enabled",
+    "account_id",
+    "ai_model_id",
+    "source_preset_id",
+    "source_prompt_hash",
+    "source_tools_hash",
+    "prompt_customized",
+    "tools_customized",
+    "preset_update_available",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +149,86 @@ def get_preset_by_name(name: str) -> Optional[dict]:
         if preset["name"] == name:
             return preset.copy()
     return None
+
+
+def clone_preset_for_account(
+    db: Session,
+    preset: Any,
+    account_id: UUID,
+    name: Optional[str] = None,
+    *,
+    bound_ai_model_id: Optional[UUID] = None,
+    flow_crud: Any = None,
+    clear_event_triggers: bool = False,
+) -> Any:
+    """Clone a global preset into an account-owned enabled flow.
+
+    Args:
+        db: Database session.
+        preset: Source preset row.
+        account_id: Account that will own the clone.
+        name: Requested flow name. When unset or already taken, uses the
+            ``Copy of {preset}`` suffix loop that the clone endpoint uses.
+        bound_ai_model_id: Model chosen by the caller. When omitted, resolved
+            with ``_resolve_clone_model_binding`` (422 if the account has no
+            usable model).
+        flow_crud: CRUD object. Defaults to the module ``crud_flow``. The
+            clone endpoint passes its own instance so existing tests keep
+            patching ``preloop.api.endpoints.flows.crud_flow``.
+        clear_event_triggers: When True, the clone has no tracker event
+            trigger (empty types, no source). Used by ad-hoc run-preset so
+            the first run does not also subscribe to ``issue_labeled``.
+
+    Returns:
+        The created flow row.
+
+    Raises:
+        HTTPException: 422 when no usable AI model can be bound.
+    """
+    crud = flow_crud if flow_crud is not None else crud_flow
+    if bound_ai_model_id is None:
+        from preloop.api.endpoints.flows import _resolve_clone_model_binding
+
+        bound_ai_model_id = _resolve_clone_model_binding(db, preset, account_id)
+
+    preset_dict = {
+        key: value
+        for key, value in preset.__dict__.items()
+        if key not in _CLONE_EXCLUDE
+    }
+    if clear_event_triggers:
+        preset_dict["trigger_event_types"] = []
+        preset_dict["trigger_event_source"] = None
+        preset_dict["trigger_project_ids"] = None
+
+    if name and not crud.get_by_name_and_account(db, name=name, account_id=account_id):
+        final_name = name
+    else:
+        base_name = f"Copy of {preset.name}"
+        final_name = base_name
+        suffix = 1
+        while crud.get_by_name_and_account(db, name=final_name, account_id=account_id):
+            suffix += 1
+            final_name = f"{base_name} ({suffix})"
+
+    source_prompt_hash = compute_content_hash(preset.prompt_template)
+    source_tools_hash = compute_content_hash(preset.allowed_mcp_tools or [])
+
+    cloned_flow_in = schemas.FlowCreate(
+        **preset_dict,
+        name=final_name,
+        is_preset=False,
+        is_enabled=True,
+        account_id=str(account_id),
+        ai_model_id=bound_ai_model_id,
+        source_preset_id=str(preset.id),
+        source_prompt_hash=source_prompt_hash,
+        source_tools_hash=source_tools_hash,
+        prompt_customized=False,
+        tools_customized=False,
+        preset_update_available=False,
+    )
+    return crud.create(db=db, flow_in=cloned_flow_in, account_id=account_id)
 
 
 def ensure_global_presets_exist_background() -> None:

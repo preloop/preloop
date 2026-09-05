@@ -128,6 +128,8 @@ describe('TrackerDetailView', () => {
     await el.updateComplete;
     expect(el.shadowRoot?.textContent).to.contain('ALP-1');
     expect(el.shadowRoot?.textContent).to.contain('Fix login');
+    const actionsHeader = el.shadowRoot?.querySelector('th .visually-hidden');
+    expect(actionsHeader?.textContent?.trim()).to.equal('Actions');
     const issueCalls = fetchStub
       .getCalls()
       .filter((call) => String(call.args[0]).includes('/api/v1/issues?'));

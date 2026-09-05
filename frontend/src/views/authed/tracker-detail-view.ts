@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Router } from '@vaadin/router';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
@@ -26,6 +26,7 @@ import {
   syncTracker,
   type FeaturesResponse,
 } from '../../api';
+import { openRunPresetDialog } from '../../components/run-preset-dialog';
 import type { IssueListItem, Organization, Project } from '../../types';
 import {
   describeTrackerScope,
@@ -286,6 +287,15 @@ export class TrackerDetailView extends LitElement {
         font-size: var(--console-text-meta);
       }
 
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+
       .project-info {
         display: flex;
         align-items: flex-start;
@@ -517,6 +527,20 @@ export class TrackerDetailView extends LitElement {
     void this._loadIssues(false);
   }
 
+  private _isGitTracker(): boolean {
+    const type = this._tracker?.tracker_type?.toLowerCase() || '';
+    return type.includes('github') || type.includes('gitlab');
+  }
+
+  private _runImplementer(issue: IssueListItem) {
+    void openRunPresetDialog({
+      presetSlug: 'automated-issue-implementation',
+      target: { kind: 'issue', issue_id: issue.id },
+      issueKey: issue.key,
+      role: 'implementer',
+    });
+  }
+
   private async _loadData() {
     this._loading = true;
     this._error = null;
@@ -737,6 +761,9 @@ export class TrackerDetailView extends LitElement {
                           <th>Title</th>
                           <th>Status</th>
                           <th>Updated</th>
+                          <th>
+                            <span class="visually-hidden">Actions</span>
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
@@ -762,6 +789,20 @@ export class TrackerDetailView extends LitElement {
                               </td>
                               <td title=${issue.updated_at}>
                                 ${formatRelativeTime(issue.updated_at)}
+                              </td>
+                              <td>
+                                ${
+                                  this._isGitTracker()
+                                    ? html`
+                                        <sl-button
+                                          size="small"
+                                          @click=${() =>
+                                            this._runImplementer(issue)}
+                                          >Run implementer</sl-button
+                                        >
+                                      `
+                                    : nothing
+                                }
                               </td>
                             </tr>
                           `
