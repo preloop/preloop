@@ -171,7 +171,10 @@ function collectLabelRows(runners: RunnerPoolSource[]): RunnerPoolOption[] {
     }));
 }
 
-function collectRunnerRows(runners: RunnerPoolSource[]): RunnerPoolOption[] {
+function collectRunnerRows(
+  runners: RunnerPoolSource[],
+  current?: string
+): RunnerPoolOption[] {
   const seen = new Set<string>();
   const rows: { runner: RunnerPoolSource; name: string }[] = [];
   for (const runner of runners) {
@@ -194,10 +197,16 @@ function collectRunnerRows(runners: RunnerPoolSource[]): RunnerPoolOption[] {
     }
     return left.name.localeCompare(right.name);
   });
-  return rows.map(({ runner, name }) => ({
-    value: name,
-    label: `${name} (${isOnlineRunner(runner) ? 'online' : 'offline'})`,
-  }));
+  const currentKey = (current || '').trim().toLowerCase();
+  return rows.map(({ runner, name }) => {
+    const id = (runner.id || '').trim();
+    const value =
+      currentKey && id && id.toLowerCase() === currentKey ? id : name;
+    return {
+      value,
+      label: `${name} (${isOnlineRunner(runner) ? 'online' : 'offline'})`,
+    };
+  });
 }
 
 function optionValues(groups: RunnerPoolGroup[]): Set<string> {
@@ -255,16 +264,17 @@ export function buildRunnerPoolGroups(
     groups.push({ label: 'Runners by label', options: labelRows });
   }
 
-  const runnerRows = collectRunnerRows(runners);
+  const current = normalizedPool(args.current);
+  const runnerRows = collectRunnerRows(runners, current);
   if (runnerRows.length > 0) {
     groups.push({ label: 'Specific runner', options: runnerRows });
   }
 
-  const current = normalizedPool(args.current);
   if (
     current &&
     isSelectableToken(current) &&
-    !isKnownCurrent(current, optionValues(groups))
+    !isKnownCurrent(current, optionValues(groups)) &&
+    !findRunnerByToken(current, runners)
   ) {
     groups.push({
       options: [{ value: current, label: `${current} (not registered)` }],
@@ -312,11 +322,11 @@ function withHostedMinutes(
   if (!hostedCapable || typeof hostedMinutesLeft !== 'number') {
     return text;
   }
-  if (
-    hostedMinutesLeft === 0 &&
-    text.includes('No hosted minutes left, so the run queues if none is free.')
-  ) {
-    return text;
+  if (hostedMinutesLeft === 0) {
+    const already =
+      text.toLowerCase().includes('no hosted minutes') ||
+      text.toLowerCase().includes('hosted minutes are left');
+    return already ? text : `${text} No hosted minutes left.`;
   }
   return `${text} Hosted minutes left: ${hostedMinutesLeft}.`;
 }
@@ -342,11 +352,17 @@ export function describeNextRunnerPool(args: {
 
   let text = '';
   if (kind === 'server') {
-    text = 'Next run: Preloop hosted.';
+    text =
+      args.hostedMinutesLeft === 0
+        ? 'Next run: Preloop hosted, but no hosted minutes are left.'
+        : 'Next run: Preloop hosted.';
   } else if (kind === 'auto') {
     const names = onlinePrivateNames(runners);
     if (names.length > 0) {
       text = `Next run: a private runner (${names.join(', ')} online). ${exhaustedAuto}`;
+    } else if (args.hostedMinutesLeft === 0) {
+      text =
+        'Next run: Preloop hosted, but no hosted minutes are left. No private runner is online.';
     } else {
       text = 'Next run: Preloop hosted. No private runner is online.';
     }

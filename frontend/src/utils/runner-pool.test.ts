@@ -145,6 +145,25 @@ describe('runner-pool options', () => {
     ]);
   });
 
+  it('treats a stored runner id as registered and selects that runner', () => {
+    const groups = buildRunnerPoolGroups({
+      runners: [{ ...OFFICE, id: 'runner-office-1' }],
+      context: 'flow',
+      current: 'runner-office-1',
+    });
+    expect(flattenValues(groups)).to.include('runner-office-1');
+    expect(
+      flattenLabels(groups).some((label) => label.includes('(not registered)'))
+    ).to.equal(false);
+    const runnerGroup = groups.find(
+      (group) => group.label === 'Specific runner'
+    );
+    expect(runnerGroup?.options[0]).to.deep.equal({
+      value: 'runner-office-1',
+      label: 'office-mac (online)',
+    });
+  });
+
   it('appends the current unknown value as not registered', () => {
     const groups = buildRunnerPoolGroups({
       runners: [OFFICE],
@@ -300,6 +319,27 @@ describe('runner-pool next-run hint', () => {
       })
     ).to.equal(
       'Next run: a private runner (lab-1, office-mac online). No hosted minutes left, so the run queues if none is free.'
+    );
+  });
+
+  it('does not claim the next run is hosted when hosted minutes are exhausted', () => {
+    expect(
+      describeNextRunnerPool({
+        flowPool: 'server',
+        accountPool: null,
+        runners: [OFFICE],
+        hostedMinutesLeft: 0,
+      })
+    ).to.equal('Next run: Preloop hosted, but no hosted minutes are left.');
+    expect(
+      describeNextRunnerPool({
+        flowPool: 'auto',
+        accountPool: null,
+        runners: [OFFLINE],
+        hostedMinutesLeft: 0,
+      })
+    ).to.equal(
+      'Next run: Preloop hosted, but no hosted minutes are left. No private runner is online.'
     );
   });
 });
