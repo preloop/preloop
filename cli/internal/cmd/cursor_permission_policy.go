@@ -270,7 +270,9 @@ func matchCursorMCPAllowlist(allowlist []string, event map[string]interface{}, t
 }
 
 func cursorMCPServerName(event map[string]interface{}) string {
-	if name := firstStringField(event, "server_name", "server", "mcp_server"); name != "" {
+	// mcp_server_name is the key Cursor documents for beforeMCPExecution; the
+	// rest are aliases seen in older payloads.
+	if name := firstStringField(event, "mcp_server_name", "server_name", "server", "mcp_server"); name != "" {
 		return name
 	}
 	if command := firstStringField(event, "command"); command != "" {

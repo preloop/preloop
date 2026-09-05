@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1117,5 +1118,203 @@ func TestEnablePermissionPromptBuiltinPropagatesServerErrors(t *testing.T) {
 	client := api.NewClientWithToken(server.URL, "test-token")
 	if err := enablePermissionPromptBuiltin(client, "agent-123", nil); err == nil {
 		t.Fatal("expected server error to propagate")
+	}
+}
+
+// Cursor's preToolUse fires for every tool, including Shell and MCP tools
+// that beforeShellExecution / beforeMCPExecution already gate. The duplicate
+// preToolUse event must be answered locally, without a permission-check POST,
+// so one command raises exactly one approval request. Native file tools keep
+// their preToolUse gating: an out-of-workspace Write still posts, and an
+// in-workspace Write is auto-allowed locally by isLocalWorkspaceEdit.
+func TestResolvePermissionDecisionCursorPreToolUseDedupe(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+
+	var mu sync.Mutex
+	var posted []permissionCheckRequest
+	var postsAllowed bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body permissionCheckRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		posted = append(posted, body)
+		allowed := postsAllowed
+		mu.Unlock()
+		if !allowed {
+			t.Errorf("permission-check must not be called for this event, got POST for tool %q", body.ToolName)
+		}
+		_ = json.NewEncoder(w).Encode(permissionCheckResponse{
+			Decision: "allow",
+			Reason:   "approved on watch",
+		})
+	}))
+	defer server.Close()
+
+	writeTestPermissionCredential(t, home, "cursor-agent", permissionHookCredential{
+		BaseURL:       server.URL,
+		Token:         "agt_test",
+		Source:        permissionSourceCursor,
+		WorkspaceRoot: "/repo",
+	})
+
+	cases := []struct {
+		name         string
+		raw          string
+		wantBehavior string
+		wantReason   string
+		wantPosts    int
+		wantToolName string
+	}{
+		{
+			name:         "beforeShellExecution posts once",
+			raw:          `{"hook_event_name":"beforeShellExecution","command":"rm -rf build","cwd":"/repo","sandbox":false}`,
+			wantBehavior: "allow",
+			wantReason:   "approved on watch",
+			wantPosts:    1,
+			wantToolName: "Shell",
+		},
+		{
+			name:         "preToolUse Shell is answered locally",
+			raw:          `{"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"rm -rf build","working_directory":"/repo"},"cwd":"/repo"}`,
+			wantBehavior: "allow",
+			wantReason:   cursorPreToolUseDuplicateReason,
+			wantPosts:    0,
+		},
+		{
+			name:         "beforeMCPExecution posts once",
+			raw:          `{"hook_event_name":"beforeMCPExecution","tool_name":"create_issue","tool_input":"{\"title\":\"x\"}","mcp_server_name":"linear","url":"https://mcp.linear.app/sse","cwd":"/repo"}`,
+			wantBehavior: "allow",
+			wantReason:   "approved on watch",
+			wantPosts:    1,
+			wantToolName: "create_issue",
+		},
+		{
+			name:         "preToolUse MCP tool with mcp_server_name is answered locally",
+			raw:          `{"hook_event_name":"preToolUse","tool_name":"create_issue","tool_input":{"title":"x"},"mcp_server_name":"linear","cwd":"/repo"}`,
+			wantBehavior: "allow",
+			wantReason:   cursorPreToolUseDuplicateReason,
+			wantPosts:    0,
+		},
+		{
+			name:         "preToolUse MCP matcher form is answered locally",
+			raw:          `{"hook_event_name":"preToolUse","tool_name":"MCP:create_issue","tool_input":{"title":"x"},"cwd":"/repo"}`,
+			wantBehavior: "allow",
+			wantReason:   cursorPreToolUseDuplicateReason,
+			wantPosts:    0,
+		},
+		{
+			name:         "preToolUse Preloop MCP tool is answered locally",
+			raw:          `{"hook_event_name":"preToolUse","tool_name":"preloop_create_issue","tool_input":{"title":"x"},"cwd":"/repo"}`,
+			wantBehavior: "allow",
+			wantReason:   cursorPreToolUseDuplicateReason,
+			wantPosts:    0,
+		},
+		{
+			name:         "preToolUse Write outside workspace still posts",
+			raw:          `{"hook_event_name":"preToolUse","tool_name":"Write","tool_input":{"file_path":"/etc/motd"},"cwd":"/repo","workspace_roots":["/repo"]}`,
+			wantBehavior: "allow",
+			wantReason:   "approved on watch",
+			wantPosts:    1,
+			wantToolName: "Write",
+		},
+		{
+			name:         "preToolUse Write inside workspace is auto-allowed locally",
+			raw:          `{"hook_event_name":"preToolUse","tool_name":"Write","tool_input":{"file_path":"/repo/src/a.ts"},"cwd":"/repo","workspace_roots":["/repo"]}`,
+			wantBehavior: "allow",
+			wantReason:   "Allowed by the agent's own configuration.",
+			wantPosts:    0,
+		},
+		{
+			name:         "preToolUse Delete outside workspace still posts",
+			raw:          `{"hook_event_name":"preToolUse","tool_name":"Delete","tool_input":{"path":"/etc/motd"},"cwd":"/repo","workspace_roots":["/repo"]}`,
+			wantBehavior: "allow",
+			wantReason:   "approved on watch",
+			wantPosts:    1,
+			wantToolName: "Delete",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			posted = nil
+			postsAllowed = tc.wantPosts > 0
+			mu.Unlock()
+
+			decision := resolvePermissionDecision(permissionSourceCursor, []byte(tc.raw), false)
+			if decision.Behavior != tc.wantBehavior {
+				t.Fatalf("behavior = %q (%s), want %q", decision.Behavior, decision.Reason, tc.wantBehavior)
+			}
+			if decision.Reason != tc.wantReason {
+				t.Errorf("reason = %q, want %q", decision.Reason, tc.wantReason)
+			}
+
+			mu.Lock()
+			got := append([]permissionCheckRequest(nil), posted...)
+			mu.Unlock()
+			if len(got) != tc.wantPosts {
+				t.Fatalf("permission-check POSTs = %d, want %d (%+v)", len(got), tc.wantPosts, got)
+			}
+			if tc.wantPosts > 0 && got[0].ToolName != tc.wantToolName {
+				t.Errorf("posted tool_name = %q, want %q", got[0].ToolName, tc.wantToolName)
+			}
+		})
+	}
+}
+
+// cursorPreToolUseDuplicateDecision must only short-circuit preToolUse events
+// for tools that have a dedicated before* hook; every other event falls
+// through to the normal evaluation path.
+func TestCursorPreToolUseDuplicateDecision(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "preToolUse Shell", raw: `{"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"ls"}}`, want: true},
+		{name: "preToolUse shell lower-case", raw: `{"hook_event_name":"preToolUse","tool_name":"shell","tool_input":{"command":"ls"}}`, want: true},
+		{name: "preToolUse MCP server name", raw: `{"hook_event_name":"preToolUse","tool_name":"search","mcp_server_name":"linear"}`, want: true},
+		{name: "preToolUse MCP server url", raw: `{"hook_event_name":"preToolUse","tool_name":"search","mcp_server_url":"https://mcp.example.com/sse"}`, want: true},
+		{name: "preToolUse MCP matcher prefix", raw: `{"hook_event_name":"preToolUse","tool_name":"MCP:search"}`, want: true},
+		{name: "preToolUse Preloop MCP by tool name", raw: `{"hook_event_name":"preToolUse","tool_name":"preloop_list_issues"}`, want: true},
+		{name: "preToolUse Preloop MCP by url", raw: `{"hook_event_name":"preToolUse","tool_name":"list_issues","url":"https://api.preloop.ai/mcp"}`, want: true},
+		{name: "preToolUse Write", raw: `{"hook_event_name":"preToolUse","tool_name":"Write","tool_input":{"file_path":"a.ts"}}`, want: false},
+		{name: "preToolUse StrReplace", raw: `{"hook_event_name":"preToolUse","tool_name":"StrReplace","tool_input":{"path":"a.ts"}}`, want: false},
+		{name: "preToolUse Delete", raw: `{"hook_event_name":"preToolUse","tool_name":"Delete","tool_input":{"path":"a.ts"}}`, want: false},
+		{name: "preToolUse Read", raw: `{"hook_event_name":"preToolUse","tool_name":"Read","tool_input":{"path":"a.ts"}}`, want: false},
+		{name: "preToolUse Task", raw: `{"hook_event_name":"preToolUse","tool_name":"Task"}`, want: false},
+		{name: "preToolUse without tool_name", raw: `{"hook_event_name":"preToolUse"}`, want: false},
+		{name: "beforeShellExecution", raw: `{"hook_event_name":"beforeShellExecution","command":"ls"}`, want: false},
+		{name: "beforeMCPExecution", raw: `{"hook_event_name":"beforeMCPExecution","tool_name":"search","mcp_server_name":"linear"}`, want: false},
+		{name: "missing hook_event_name", raw: `{"tool_name":"Shell","tool_input":{"command":"ls"}}`, want: false},
+		{name: "empty payload", raw: ``, want: false},
+		{name: "invalid json", raw: `{`, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			decision, got := cursorPreToolUseDuplicateDecision([]byte(tc.raw))
+			if got != tc.want {
+				t.Fatalf("duplicate = %v, want %v", got, tc.want)
+			}
+			if got && (decision.Behavior != "allow" || decision.Reason != cursorPreToolUseDuplicateReason) {
+				t.Errorf("unexpected decision %+v", decision)
+			}
+		})
+	}
+}
+
+// Cursor documents mcp_server_name as the server key on MCP hook events; it
+// must feed both the mcpAllowlist matcher and Preloop MCP detection.
+func TestCursorMCPServerNameHonorsDocumentedKey(t *testing.T) {
+	event := map[string]interface{}{"mcp_server_name": "linear", "url": "https://mcp.linear.app/sse"}
+	if got := cursorMCPServerName(event); got != "linear" {
+		t.Fatalf("cursorMCPServerName = %q, want %q", got, "linear")
+	}
+	if !matchCursorMCPAllowlist([]string{"linear:create_*"}, event, "create_issue") {
+		t.Error("mcpAllowlist should match on documented mcp_server_name")
+	}
+	preloop := map[string]interface{}{"mcp_server_name": "preloop", "command": "npx preloop-mcp"}
+	if !isPreloopMCPTool(preloop, "list_issues", "") {
+		t.Error("isPreloopMCPTool should detect Preloop via mcp_server_name")
 	}
 }

@@ -234,6 +234,15 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 		}
 	}
 
+	// Cursor's preToolUse fires for every tool, including Shell and MCP tools
+	// that beforeShellExecution / beforeMCPExecution already gate. Answer the
+	// duplicate locally so one command raises exactly one approval request.
+	if source == permissionSourceCursor {
+		if decision, ok := cursorPreToolUseDuplicateDecision(raw); ok {
+			return decision
+		}
+	}
+
 	req, err := buildPermissionRequest(source, raw, permissionHookCredential{})
 	if err != nil {
 		return failureDecision(source, failOpen, err.Error())
@@ -309,6 +318,55 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 		}
 	}
 	return hookDecision{Behavior: behavior, Reason: reason}
+}
+
+// cursorPreToolUseDuplicateReason is the allow reason for a Cursor preToolUse
+// event whose tool a dedicated before* hook already gates.
+const cursorPreToolUseDuplicateReason = "Handled by beforeShellExecution/beforeMCPExecution"
+
+// cursorPreToolUseDuplicateDecision returns an immediate local allow when a
+// Cursor preToolUse event targets a tool that beforeShellExecution or
+// beforeMCPExecution already gates (Shell, or any MCP tool). The onboarding
+// installs the same hook command for all three events and preToolUse fires
+// for every tool, so without this guard each shell command and MCP call would
+// reach Preloop twice and create two approval rows (or prompt the operator
+// twice under enforce). preToolUse keeps gating native file tools (Write,
+// StrReplace, Delete, Read, ...), which is the reason it is installed at all.
+// The second return value is false when the event is not such a duplicate.
+func cursorPreToolUseDuplicateDecision(raw []byte) (hookDecision, bool) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return hookDecision{}, false
+	}
+	var event map[string]interface{}
+	if err := json.Unmarshal(raw, &event); err != nil {
+		return hookDecision{}, false
+	}
+	if !strings.EqualFold(firstStringField(event, "hook_event_name"), "preToolUse") {
+		return hookDecision{}, false
+	}
+	if !cursorToolHasDedicatedBeforeHook(event, firstStringField(event, "tool_name")) {
+		return hookDecision{}, false
+	}
+	return hookDecision{Behavior: "allow", Reason: cursorPreToolUseDuplicateReason}, true
+}
+
+// cursorToolHasDedicatedBeforeHook reports whether Cursor fires a dedicated
+// before* hook for this tool: beforeShellExecution for Shell, and
+// beforeMCPExecution for MCP tools. An MCP tool is recognized when the event
+// names an MCP server (mcp_server_name and its aliases), when the tool uses
+// Cursor's MCP:<tool_name> matcher form, or when it targets the Preloop MCP.
+func cursorToolHasDedicatedBeforeHook(event map[string]interface{}, toolName string) bool {
+	trimmed := strings.TrimSpace(toolName)
+	if strings.EqualFold(trimmed, "Shell") {
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(trimmed), "mcp:") {
+		return true
+	}
+	if firstStringField(event, "mcp_server_name", "server_name", "mcp_server", "mcp_server_url") != "" {
+		return true
+	}
+	return isPreloopMCPTool(event, trimmed, "")
 }
 
 // permissionCheckTimeoutFor returns the HTTP client timeout for a blocking
