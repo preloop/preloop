@@ -120,3 +120,10 @@ class IssueDuplicateProjectStats(BaseModel):
 
 class IssueDuplicateStats(BaseModel):
     projects: Dict[str, IssueDuplicateProjectStats]
+
+
+class IssueDuplicateAiStatus(BaseModel):
+    """Whether the account has a default AI model for duplicate verdicts."""
+
+    configured: bool
+    model_name: Optional[str] = None

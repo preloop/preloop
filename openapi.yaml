@@ -5131,12 +5131,14 @@ paths:
 
         - Slug (organization/project)'
       operationId: create_issue_api_v1_issues_post
+      security:
+      - bearerAuth: []
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/IssueCreate'
-        required: true
       responses:
         '201':
           description: Successful Response
@@ -5150,8 +5152,104 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Issues
+      summary: List Issues
+      description: List issues for a visible project (or tracker) newest updated first.
+      operationId: list_issues_api_v1_issues_get
       security:
       - bearerAuth: []
+      parameters:
+      - name: project_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Project ID (UUID). Required in v1 unless tracker_id is set.
+          title: Project Id
+        description: Project ID (UUID). Required in v1 unless tracker_id is set.
+      - name: tracker_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Optional tracker ID alternative to project_id.
+          title: Tracker Id
+        description: Optional tracker ID alternative to project_id.
+      - name: status
+        in: query
+        required: false
+        schema:
+          enum:
+          - open
+          - closed
+          - all
+          type: string
+          description: Filter by issue status
+          default: open
+          title: Status
+        description: Filter by issue status
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Optional ILIKE filter on key or title
+          title: Q
+        description: Optional ILIKE filter on key or title
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Number of issues to skip
+          default: 0
+          title: Skip
+        description: Number of issues to skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          description: Page size
+          default: 20
+          title: Limit
+        description: Page size
+      - name: sort
+        in: query
+        required: false
+        schema:
+          const: updated_desc
+          type: string
+          description: Sort order (updated_desc only)
+          default: updated_desc
+          title: Sort
+        description: Sort order (updated_desc only)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/issues/{issue_id}:
     get:
       tags:
@@ -15248,6 +15346,34 @@ components:
       - title
       title: IssueCreate
       description: Model for creating a new issue.
+    IssueListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/IssueResponse'
+          type: array
+          title: Items
+          description: Issue list items
+        total:
+          type: integer
+          title: Total
+          description: Total number of matching issues
+        skip:
+          type: integer
+          title: Skip
+          description: Number of issues skipped
+        limit:
+          type: integer
+          title: Limit
+          description: Page size
+      type: object
+      required:
+      - items
+      - total
+      - skip
+      - limit
+      title: IssueListResponse
+      description: Paginated list of issues for a project or tracker.
     IssueResponse:
       properties:
         title:

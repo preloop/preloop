@@ -16,6 +16,7 @@ from preloop.services.model_credentials import (
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.schemas.issue_duplicate import (
     IssueDuplicate as IssueDuplicateSchema,
+    IssueDuplicateAiStatus,
     IssueDuplicateSuggestionRequest,
     IssueDuplicateSuggestionResponse,
     IssueDuplicateResolutionRequest,
@@ -88,6 +89,27 @@ def get_duplicate_issues(
 
 
 @router.get(
+    "/issue-duplicates/ai-status",
+    response_model=IssueDuplicateAiStatus,
+    tags=["Issue Duplicates"],
+)
+def get_issue_duplicate_ai_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> IssueDuplicateAiStatus:
+    """Report whether a default AI model is configured for verdicts."""
+    default_model = crud_ai_model.get_default_active_model(
+        db, account_id=current_user.account_id
+    )
+    if not default_model:
+        return IssueDuplicateAiStatus(configured=False, model_name=None)
+    return IssueDuplicateAiStatus(
+        configured=True,
+        model_name=default_model.name or default_model.model_identifier,
+    )
+
+
+@router.get(
     "/issue-duplicates/check",
     response_model=IssueDuplicateSchema,
     tags=["Issue Duplicates"],
@@ -135,7 +157,11 @@ def check_or_create_issue_duplicate(
     if not default_model:
         logger.error("No default active AI model configured.")
         raise HTTPException(
-            status_code=500, detail="No default active AI model configured."
+            status_code=422,
+            detail={
+                "code": "no_default_ai_model",
+                "message": "No default AI model configured. Set one under Models.",
+            },
         )
 
     logger.info(f"Using AI model '{default_model.model_identifier}'.")
@@ -182,7 +208,7 @@ def check_or_create_issue_duplicate(
                 status_code=500, detail="OpenAI API key not configured."
             )
 
-        client = openai.OpenAI(api_key=api_key)
+        client = openai.OpenAI(api_key=api_key, timeout=30.0, max_retries=0)
         aux_extras = get_aux_openai_sdk_extra_kwargs(
             default_model,
             call_site_kwargs={
@@ -248,7 +274,10 @@ def check_or_create_issue_duplicate(
         logger.exception(
             f"OpenAI API call for model '{default_model.model_identifier}' failed: {e}"
         )
-        raise HTTPException(status_code=500, detail="AI model API error")
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "ai_model_error", "message": "AI model API error"},
+        )
     except ModelGatewayAPIError as exc:
         logger.warning(
             "AI model call for issue duplicate check did not recover: %s", exc
@@ -263,7 +292,11 @@ def check_or_create_issue_duplicate(
             f"An unexpected error occurred during AI model invocation for model '{default_model.model_identifier}': {e}"
         )
         raise HTTPException(
-            status_code=500, detail=f"AI model processing error: {str(e)}"
+            status_code=500,
+            detail={
+                "code": "ai_model_error",
+                "message": f"AI model processing error: {str(e)}",
+            },
         )
 
 
@@ -888,7 +921,11 @@ def get_resolution_suggestion(
     )
     if not default_model:
         raise HTTPException(
-            status_code=500, detail="No default active AI model configured."
+            status_code=422,
+            detail={
+                "code": "no_default_ai_model",
+                "message": "No default AI model configured. Set one under Models.",
+            },
         )
 
     logger.info(f"Using AI model '{default_model.model_identifier}'.")
@@ -933,7 +970,12 @@ def get_resolution_suggestion(
         )
         raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
 
-    client = openai.OpenAI(api_key=api_key, base_url=creds_kwargs.get("api_base"))
+    client = openai.OpenAI(
+        api_key=api_key,
+        base_url=creds_kwargs.get("api_base"),
+        timeout=30.0,
+        max_retries=0,
+    )
     dup_messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt_text},
@@ -971,7 +1013,11 @@ def get_resolution_suggestion(
     except openai.APIError as e:
         logger.error(f"OpenAI API call failed: {e}")
         raise HTTPException(
-            status_code=500, detail="Failed to get suggestion from AI model."
+            status_code=500,
+            detail={
+                "code": "ai_model_error",
+                "message": "Failed to get suggestion from AI model.",
+            },
         )
     except ModelGatewayAPIError as exc:
         logger.warning("AI suggestion call did not recover: %s", exc)
