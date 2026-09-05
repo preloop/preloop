@@ -398,14 +398,6 @@ async def search_issues(
                             organization_name = issue_org.name
                     metadata_dict = dict(issue.meta_data) if issue.meta_data else {}
                     external_url = metadata_dict.get("url") or issue.external_url
-                    # Determine response ID based on project slug
-                    response_id = issue.external_id or str(
-                        issue.id
-                    )  # Fallback to internal ID string
-                    if issue_project and issue_project.slug and issue.external_id:
-                        response_id = f"{issue_project.slug}#{issue.external_id}"
-                    elif issue.external_id:
-                        response_id = issue.external_id
 
                     # Ensure required fields are present (as per task constraints, assume they are)
                     if not issue.external_id:
@@ -545,14 +537,6 @@ async def search_issues(
                             organization_name = issue_org.name
                     metadata_dict = dict(issue.meta_data) if issue.meta_data else {}
                     external_url = metadata_dict.get("url") or issue.external_url
-                    # Determine response ID based on project slug
-                    response_id = issue.external_id or str(
-                        issue.id
-                    )  # Fallback to internal ID string
-                    if issue_project and issue_project.slug and issue.external_id:
-                        response_id = f"{issue_project.slug}#{issue.external_id}"
-                    elif issue.external_id:
-                        response_id = issue.external_id
 
                     # Ensure required fields are present (as per task constraints, assume they are)
                     if not issue.external_id:
