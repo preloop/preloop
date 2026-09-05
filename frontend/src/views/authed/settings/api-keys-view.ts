@@ -597,7 +597,7 @@ export class ApiKeysView extends LitElement {
                 e.preventDefault();
                 this.isCreateModalOpen = true;
               }}
-              >Add an API Key</a
+              >Add an API key</a
             >
           </sl-alert>
         `;
@@ -758,7 +758,7 @@ export class ApiKeysView extends LitElement {
 
     return html`
       <view-header
-        headerText="API Keys"
+        headerText="API keys"
         description='Credentials for the gateway and MCP endpoints. Keys labeled "Managed Agent" were minted automatically when an agent was onboarded, and "Flow Execution" keys are minted for a single flow run and revoked when it ends.'
         width="narrow"
       >
@@ -768,7 +768,7 @@ export class ApiKeysView extends LitElement {
             @click=${() => {
               this.isCreateModalOpen = true;
             }}
-            >Create New API Key</sl-button
+            >Create API key</sl-button
           >
         </div>
       </view-header>
@@ -777,7 +777,7 @@ export class ApiKeysView extends LitElement {
         <div class="side-column"></div>
       </div>
 
-      <sl-dialog label="Create API Key" .open=${this.isCreateModalOpen}>
+      <sl-dialog label="Create API key" .open=${this.isCreateModalOpen}>
         ${
           this.createError
             ? html`<sl-alert variant="danger" open style="margin-bottom: 1rem;">
@@ -789,7 +789,7 @@ export class ApiKeysView extends LitElement {
         <sl-input
           autofocus
           style="margin-bottom: 1rem;"
-          label="Key Name"
+          label="Key name"
           placeholder="Enter a name for your key"
           .value=${this.newKeyName}
           @sl-input=${(e: Event) =>
@@ -828,7 +828,7 @@ export class ApiKeysView extends LitElement {
       </sl-dialog>
 
       <sl-dialog
-        label="API Key Created"
+        label="API key created"
         .open=${this.isShowKeyModalOpen && this.newlyCreatedKey}
         @sl-hide=${() => (this.isShowKeyModalOpen = false)}
       >
