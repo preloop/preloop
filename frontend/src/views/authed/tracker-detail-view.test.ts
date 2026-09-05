@@ -1,6 +1,7 @@
 import { html, fixture, expect } from '@open-wc/testing';
 import sinon from 'sinon';
 import '../../components/view-header.ts';
+import { resetRunPresetDialogForTests } from '../../components/run-preset-dialog';
 import './tracker-detail-view';
 import type { TrackerDetailView } from './tracker-detail-view';
 
@@ -21,13 +22,24 @@ const projectB = {
 interface StubOpts {
   issues?: unknown[];
   total?: number;
+  trackerType?: string;
+  pullRequests?: unknown[];
+  prHasMore?: boolean;
+  prSupported?: boolean;
 }
 
 function stubFetch(opts: StubOpts = {}) {
-  const { issues = [], total = issues.length } = opts;
+  const {
+    issues = [],
+    total = issues.length,
+    trackerType = 'github',
+    pullRequests = [],
+    prHasMore = false,
+    prSupported = true,
+  } = opts;
   return sinon
     .stub(window, 'fetch')
-    .callsFake(async (input: RequestInfo | URL) => {
+    .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const json = (data: unknown, status = 200) =>
         new Response(JSON.stringify(data), { status });
@@ -38,7 +50,7 @@ function stubFetch(opts: StubOpts = {}) {
         return json({
           id: trackerId,
           name: 'Example tracker',
-          tracker_type: 'github',
+          tracker_type: trackerType,
           created: '2026-01-01T00:00:00Z',
           last_updated: '2026-01-02T00:00:00Z',
           is_valid: true,
@@ -50,6 +62,16 @@ function stubFetch(opts: StubOpts = {}) {
       if (url.includes('/api/v1/organizations')) {
         return json({
           items: [{ id: 'org-1', name: 'Org', tracker_id: trackerId }],
+        });
+      }
+      if (url.includes('/pull-requests')) {
+        return json({
+          items: pullRequests,
+          page: 1,
+          limit: 20,
+          has_more: prHasMore,
+          supported: prSupported,
+          fetched_at: '2026-01-03T00:00:00Z',
         });
       }
       if (url.includes('/api/v1/projects')) {
@@ -65,6 +87,27 @@ function stubFetch(opts: StubOpts = {}) {
           total: listed,
           skip: 0,
           limit: 20,
+        });
+      }
+      if (url.includes('/api/v1/flows/run-preset')) {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        if (!body.confirm_create) {
+          return json(
+            {
+              detail: {
+                code: 'flow_missing',
+                flow_name: 'Pull Request Reviewer',
+              },
+            },
+            409
+          );
+        }
+        return json({
+          execution_id: 'exec-1',
+          flow_id: 'flow-1',
+          flow_name: 'Pull Request Reviewer',
+          flow_created: true,
+          execution_url: '/console/flows/executions/exec-1',
         });
       }
       return json({});
@@ -101,6 +144,7 @@ describe('TrackerDetailView', () => {
 
   afterEach(() => {
     fetchStub?.restore();
+    resetRunPresetDialogForTests();
     localStorage.clear();
     window.history.replaceState({}, '', '/');
   });
@@ -317,5 +361,107 @@ describe('TrackerDetailView', () => {
     expect(loadMore).to.exist;
     expect(loadMore?.textContent).to.contain('Load more');
     expect(el.shadowRoot?.querySelector('a.load-more')).to.not.exist;
+  });
+
+  it('renders MR label for gitlab trackers', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=pull-requests&project=${projectA.id}`
+    );
+    fetchStub = stubFetch({
+      trackerType: 'gitlab',
+      pullRequests: [
+        {
+          number: 7,
+          iid: 7,
+          title: 'Fix login',
+          url: 'https://gitlab.example.com/group/project/-/merge_requests/7',
+          author: 'janedoe',
+          source_branch: 'feature',
+          target_branch: 'main',
+          state: 'open',
+          draft: false,
+          updated_at: '2026-01-03T00:00:00Z',
+        },
+      ],
+    });
+    const el = await mountView();
+    await (
+      el as unknown as { _loadPullRequests: (reset: boolean) => Promise<void> }
+    )._loadPullRequests(true);
+    await el.updateComplete;
+    const text = el.shadowRoot?.textContent || '';
+    expect(text).to.contain('Merge requests');
+    expect(text).to.contain('Open merge requests');
+    expect(text).to.contain('Live from GitLab, refreshed every minute.');
+    expect(text).to.contain('Fix login');
+    expect(text).to.contain('#7');
+  });
+
+  it('hides tab for jira', async () => {
+    window.history.replaceState({}, '', `/console/trackers/${trackerId}`);
+    fetchStub = stubFetch({ trackerType: 'jira' });
+    const el = await mountView();
+    await el.updateComplete;
+    const tabs = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-tab') || []
+    ).map((tab) => tab.textContent?.trim());
+    expect(tabs).to.include('Projects');
+    expect(tabs).to.include('Issues');
+    expect(tabs).to.not.include('Pull requests');
+    expect(tabs).to.not.include('Merge requests');
+    expect(el.shadowRoot?.textContent).to.not.contain('Run reviewer');
+  });
+
+  it('Run reviewer sends pull_request target', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=pull-requests&project=${projectA.id}`
+    );
+    fetchStub = stubFetch({
+      pullRequests: [
+        {
+          number: 12,
+          iid: 12,
+          title: 'Add login',
+          url: 'https://github.com/acme/widgets/pull/12',
+          author: 'janedoe',
+          source_branch: 'feature',
+          target_branch: 'main',
+          state: 'open',
+          draft: false,
+          updated_at: '2026-01-03T00:00:00Z',
+        },
+      ],
+    });
+    const el = await mountView();
+    (el as unknown as { _selectedProjectId: string })._selectedProjectId =
+      projectA.id;
+    await (
+      el as unknown as { _loadPullRequests: (reset: boolean) => Promise<void> }
+    )._loadPullRequests(true);
+    await el.updateComplete;
+    (
+      el as unknown as {
+        _runReviewer: (pr: { number: number }) => void;
+      }
+    )._runReviewer({ number: 12 });
+    await tick(50);
+    const runCalls = fetchStub
+      .getCalls()
+      .filter((call) =>
+        String(call.args[0]).includes('/api/v1/flows/run-preset')
+      );
+    expect(runCalls.length).to.be.greaterThan(0);
+    const init = runCalls[0].args[1] as RequestInit;
+    const body = JSON.parse(String(init.body));
+    expect(body.preset_slug).to.equal('pull-request-reviewer');
+    expect(body.target).to.deep.equal({
+      kind: 'pull_request',
+      project_id: projectA.id,
+      number: 12,
+    });
   });
 });

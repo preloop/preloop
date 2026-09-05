@@ -22,12 +22,18 @@ import {
   deleteTracker,
   listIssues,
   listOrganizations,
+  listProjectPullRequests,
   listProjects,
   syncTracker,
   type FeaturesResponse,
 } from '../../api';
 import { openRunPresetDialog } from '../../components/run-preset-dialog';
-import type { IssueListItem, Organization, Project } from '../../types';
+import type {
+  IssueListItem,
+  Organization,
+  Project,
+  PullRequestListItem,
+} from '../../types';
 import {
   describeTrackerScope,
   groupProjectsByOrganization,
@@ -85,7 +91,7 @@ export class TrackerDetailView extends LitElement {
   private _syncMessage: string | null = null;
 
   @state()
-  private _activeTab: 'projects' | 'issues' = 'projects';
+  private _activeTab: 'projects' | 'issues' | 'pull-requests' = 'projects';
 
   @state()
   private _selectedProjectId = '';
@@ -111,10 +117,26 @@ export class TrackerDetailView extends LitElement {
   @state()
   private _issuesError: string | null = null;
 
+  @state()
+  private _pullRequests: PullRequestListItem[] = [];
+
+  @state()
+  private _prsPage = 1;
+
+  @state()
+  private _prsHasMore = false;
+
+  @state()
+  private _prsLoading = false;
+
+  @state()
+  private _prsError: string | null = null;
+
   private _trackerId = '';
   private readonly _issuesPageSize = 20;
   private _issuesRequestId = 0;
   private _issueSearchTimer: number | null = null;
+  private readonly _prsPageSize = 20;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -250,6 +272,13 @@ export class TrackerDetailView extends LitElement {
         font-size: var(--console-text-body);
       }
 
+      .project-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-x-small);
+        flex-shrink: 0;
+      }
+
       .project-row:last-child {
         border-bottom: none;
       }
@@ -275,10 +304,22 @@ export class TrackerDetailView extends LitElement {
       }
 
       .issues-empty,
-      .issues-error {
+      .issues-error,
+      .prs-empty,
+      .prs-error {
         padding: var(--sl-spacing-medium) 0;
         color: var(--console-meta-color);
         font-size: var(--console-text-body);
+      }
+
+      .live-note,
+      .pr-branches {
+        font-size: 13px;
+        color: var(--console-meta-color);
+      }
+
+      .live-note {
+        margin: 0 0 var(--sl-spacing-small) 0;
       }
 
       .load-more {
@@ -370,13 +411,21 @@ export class TrackerDetailView extends LitElement {
     this._ensureSelectedProject();
     if (this._activeTab === 'issues') {
       await this._loadIssues(true);
+    } else if (this._activeTab === 'pull-requests') {
+      await this._loadPullRequests(true);
     }
   }
 
   private _readUrl() {
     const params = new URLSearchParams(window.location.search);
     const tab = params.get('tab');
-    this._activeTab = tab === 'issues' ? 'issues' : 'projects';
+    if (tab === 'issues') {
+      this._activeTab = 'issues';
+    } else if (tab === 'pull-requests') {
+      this._activeTab = 'pull-requests';
+    } else {
+      this._activeTab = 'projects';
+    }
     const status = params.get('status');
     if (status === 'open' || status === 'closed' || status === 'all') {
       this._issueStatus = status;
@@ -395,6 +444,11 @@ export class TrackerDetailView extends LitElement {
         params.set('project', this._selectedProjectId);
       }
       params.set('status', this._issueStatus);
+    } else if (this._activeTab === 'pull-requests') {
+      params.set('tab', 'pull-requests');
+      if (this._selectedProjectId) {
+        params.set('project', this._selectedProjectId);
+      }
     }
     const query = params.toString();
     const next = query
@@ -469,7 +523,7 @@ export class TrackerDetailView extends LitElement {
     return this._issues;
   }
 
-  private _showTab(name: 'projects' | 'issues') {
+  private _showTab(name: 'projects' | 'issues' | 'pull-requests') {
     this._activeTab = name;
     const group = this.renderRoot.querySelector('sl-tab-group') as {
       show?: (panel: string) => void;
@@ -479,12 +533,16 @@ export class TrackerDetailView extends LitElement {
 
   private _onTabShow(event: CustomEvent<{ name: string }>) {
     const name = event.detail.name;
-    if (name !== 'projects' && name !== 'issues') return;
+    if (name !== 'projects' && name !== 'issues' && name !== 'pull-requests') {
+      return;
+    }
     if (this._activeTab === name) return;
     this._activeTab = name;
     this._updateUrl();
     if (name === 'issues') {
       void this._loadIssues(true);
+    } else if (name === 'pull-requests') {
+      void this._loadPullRequests(true);
     }
   }
 
@@ -495,12 +553,23 @@ export class TrackerDetailView extends LitElement {
     void this._loadIssues(true);
   }
 
+  private _showPullRequestsForProject(projectId: string) {
+    this._selectedProjectId = projectId;
+    this._showTab('pull-requests');
+    this._updateUrl();
+    void this._loadPullRequests(true);
+  }
+
   private _onProjectFilter(event: Event) {
     const value = (event.target as HTMLSelectElement).value;
     if (!value || value === this._selectedProjectId) return;
     this._selectedProjectId = value;
     this._updateUrl();
-    void this._loadIssues(true);
+    if (this._activeTab === 'pull-requests') {
+      void this._loadPullRequests(true);
+    } else {
+      void this._loadIssues(true);
+    }
   }
 
   private _onStatusFilter(event: Event) {
@@ -541,6 +610,83 @@ export class TrackerDetailView extends LitElement {
     });
   }
 
+  private _isGitlab(): boolean {
+    return (this._tracker?.tracker_type || '').toLowerCase().includes('gitlab');
+  }
+
+  private _isJira(): boolean {
+    return (this._tracker?.tracker_type || '').toLowerCase().includes('jira');
+  }
+
+  private _supportsPullRequests(): boolean {
+    return !this._isJira();
+  }
+
+  private _prNoun(): string {
+    return this._isGitlab() ? 'merge requests' : 'pull requests';
+  }
+
+  private _prTabLabel(): string {
+    return this._isGitlab() ? 'Merge requests' : 'Pull requests';
+  }
+
+  private _prHost(): string {
+    return this._isGitlab() ? 'GitLab' : 'GitHub';
+  }
+
+  private async _loadPullRequests(reset = true) {
+    if (!this._selectedProjectId) {
+      this._pullRequests = [];
+      this._prsHasMore = false;
+      return;
+    }
+    if (reset) {
+      this._prsPage = 1;
+      this._pullRequests = [];
+    }
+    this._prsLoading = true;
+    this._prsError = null;
+    try {
+      const data = await listProjectPullRequests(this._selectedProjectId, {
+        state: 'open',
+        page: this._prsPage,
+        limit: this._prsPageSize,
+      });
+      if (!data.supported) {
+        this._pullRequests = [];
+        this._prsHasMore = false;
+        return;
+      }
+      this._pullRequests = reset
+        ? data.items
+        : [...this._pullRequests, ...data.items];
+      this._prsHasMore = data.has_more;
+    } catch (error) {
+      this._prsError =
+        error instanceof Error ? error.message : 'Could not reach tracker.';
+    } finally {
+      this._prsLoading = false;
+    }
+  }
+
+  private _loadMorePullRequests() {
+    this._prsPage += 1;
+    void this._loadPullRequests(false);
+  }
+
+  private _runReviewer(pr: PullRequestListItem) {
+    void openRunPresetDialog({
+      presetSlug: 'pull-request-reviewer',
+      target: {
+        kind: 'pull_request',
+        project_id: this._selectedProjectId,
+        number: pr.number,
+      },
+      issueKey: `#${pr.number}`,
+      role: 'reviewer',
+    });
+  }
+
   private async _loadData() {
     this._loading = true;
     this._error = null;
@@ -559,8 +705,17 @@ export class TrackerDetailView extends LitElement {
       this._features = featuresRes.features;
       this._featuresLoaded = true;
       await this._loadProjectsForTracker();
+      if (
+        this._activeTab === 'pull-requests' &&
+        !this._supportsPullRequests()
+      ) {
+        this._activeTab = 'projects';
+        this._updateUrl();
+      }
       if (this._activeTab === 'issues') {
         this._showTab('issues');
+      } else if (this._activeTab === 'pull-requests') {
+        this._showTab('pull-requests');
       }
     } catch (error) {
       this._error =
@@ -827,6 +982,124 @@ export class TrackerDetailView extends LitElement {
     `;
   }
 
+  private _renderPullRequestsTab() {
+    if (this._projects.length === 0) {
+      return html`<div class="no-projects">
+        No projects synced yet. Run <strong>Sync Now</strong> or edit the
+        tracker to choose groups and projects, then sync again.
+      </div>`;
+    }
+
+    const project = this._selectedProject();
+    const heading = this._isGitlab()
+      ? 'Open merge requests'
+      : 'Open pull requests';
+    const empty = `No open ${this._prNoun()} in ${project?.name || 'this project'}.`;
+    const errorHost = this._prHost();
+
+    return html`
+      <sl-card>
+        <div slot="header" class="section-header">
+          <h2 class="section-title">${heading}</h2>
+          <div class="issues-controls">
+            <sl-select
+              size="small"
+              label="Project"
+              value=${this._selectedProjectId}
+              @sl-change=${this._onProjectFilter}
+            >
+              ${this._projects.map(
+                (item) =>
+                  html`<sl-option value=${item.id}>${item.name}</sl-option>`
+              )}
+            </sl-select>
+          </div>
+        </div>
+        <p class="live-note">Live from ${errorHost}, refreshed every minute.</p>
+        ${
+          this._prsError
+            ? html`<div class="prs-error">
+                Could not reach ${errorHost}.
+                <sl-button
+                  size="small"
+                  variant="text"
+                  @click=${() => this._loadPullRequests(true)}
+                  >Retry</sl-button
+                >
+              </div>`
+            : this._prsLoading && this._pullRequests.length === 0
+              ? html`<div class="spinner-container">
+                  <sl-spinner></sl-spinner>
+                </div>`
+              : this._pullRequests.length === 0
+                ? html`<div class="prs-empty">${empty}</div>`
+                : html`
+                    <table class="styled-table">
+                      <thead>
+                        <tr>
+                          <th>Number</th>
+                          <th>Title</th>
+                          <th>Author</th>
+                          <th>Branches</th>
+                          <th>Updated</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${this._pullRequests.map(
+                          (pr) => html`
+                            <tr>
+                              <td>
+                                <a
+                                  href=${pr.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  >#${pr.number}</a
+                                >
+                              </td>
+                              <td>${pr.title}</td>
+                              <td>${pr.author || ''}</td>
+                              <td class="pr-branches">
+                                ${pr.source_branch || '?'} ->
+                                ${pr.target_branch || '?'}
+                              </td>
+                              <td title=${pr.updated_at || ''}>
+                                ${
+                                  pr.updated_at
+                                    ? formatRelativeTime(pr.updated_at)
+                                    : ''
+                                }
+                              </td>
+                              <td>
+                                <sl-button
+                                  size="small"
+                                  @click=${() => this._runReviewer(pr)}
+                                  >Run reviewer</sl-button
+                                >
+                              </td>
+                            </tr>
+                          `
+                        )}
+                      </tbody>
+                    </table>
+                    ${
+                      this._prsHasMore
+                        ? html`<sl-button
+                            class="load-more"
+                            size="small"
+                            variant="text"
+                            ?loading=${this._prsLoading}
+                            @click=${() => this._loadMorePullRequests()}
+                            >Load more</sl-button
+                          >`
+                        : ''
+                    }
+                  `
+        }
+      </sl-card>
+    `;
+  }
+
   private _renderProjectGroups() {
     const groups = this._projectsByOrganization();
     if (groups.length === 0) {
@@ -867,13 +1140,27 @@ export class TrackerDetailView extends LitElement {
                         }
                       </div>
                     </div>
-                    <sl-button
-                      size="small"
-                      variant="text"
-                      @click=${() => this._showIssuesForProject(project.id)}
-                    >
-                      Issues
-                    </sl-button>
+                    <div class="project-actions">
+                      <sl-button
+                        size="small"
+                        variant="text"
+                        @click=${() => this._showIssuesForProject(project.id)}
+                      >
+                        Issues
+                      </sl-button>
+                      ${
+                        this._supportsPullRequests()
+                          ? html`<sl-button
+                              size="small"
+                              variant="text"
+                              @click=${() =>
+                                this._showPullRequestsForProject(project.id)}
+                            >
+                              ${this._prTabLabel()}
+                            </sl-button>`
+                          : ''
+                      }
+                    </div>
                   </div>
                 `
               )}
@@ -1058,6 +1345,16 @@ export class TrackerDetailView extends LitElement {
               ?active=${this._activeTab === 'issues'}
               >Issues</sl-tab
             >
+            ${
+              this._supportsPullRequests()
+                ? html`<sl-tab
+                    slot="nav"
+                    panel="pull-requests"
+                    ?active=${this._activeTab === 'pull-requests'}
+                    >${this._prTabLabel()}</sl-tab
+                  >`
+                : ''
+            }
             <sl-tab-panel name="projects">
               <div class="section-header">
                 <h2 class="section-title">
@@ -1076,6 +1373,13 @@ export class TrackerDetailView extends LitElement {
             <sl-tab-panel name="issues">
               ${this._renderIssuesTab()}
             </sl-tab-panel>
+            ${
+              this._supportsPullRequests()
+                ? html`<sl-tab-panel name="pull-requests">
+                    ${this._renderPullRequestsTab()}
+                  </sl-tab-panel>`
+                : ''
+            }
           </sl-tab-group>
 
           <sl-divider></sl-divider>
