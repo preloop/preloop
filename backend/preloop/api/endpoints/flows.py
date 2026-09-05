@@ -769,9 +769,13 @@ async def get_flow_execution_logs(
     skip: int = 0,
     limit: int | None = None,
 ) -> Dict[str, Any]:
-    """Get execution logs from the container (if running) or database (if finished).
+    """Get execution logs from the live container or from persisted database rows.
 
-    For running executions, fetches logs directly from the Docker/Kubernetes container.
+    For running container-backed executions, fetches logs directly from the
+    Docker/Kubernetes container. Runner-backed executions (lease references
+    such as ``runner:{runner_id}:{execution_id}``) always return persisted
+    database logs, even while they are still running, because their output
+    arrives over the runner WebSocket rather than a container log stream.
     For finished executions, returns persisted logs from the database.
 
     Args:
