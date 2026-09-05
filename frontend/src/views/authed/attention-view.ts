@@ -41,6 +41,7 @@ import {
   ATTENTION_KIND_ORDER,
   attentionKindChipLabel,
   deriveAttentionItems,
+  errorHeadline,
   groupAttentionItems,
   type AttentionApproval,
   type AttentionFlowExecution,
@@ -395,6 +396,81 @@ export class AttentionView extends AuthedElement {
         }
         .runs-table.has-category .category-cell {
           width: 34%;
+        }
+      }
+
+      /* At 390px even those three columns collide: the category chip is wider
+         than 34% of the table and overprints "Open run". Started goes (the
+         subject link keeps the exact time in its title), the chip takes the
+         width it needs, and Open keeps a column of its own. */
+      @media (max-width: 480px) {
+        .runs-table.has-category .started-cell {
+          display: none;
+        }
+        .runs-table.has-category .subject-cell {
+          width: 38%;
+        }
+        .runs-table.has-category .category-cell {
+          width: 42%;
+        }
+        .runs-table.has-category .open-cell {
+          width: 20%;
+        }
+        .runs-table.has-category .category-cell sl-badge.chip::part(base) {
+          font-size: 11px;
+          padding: 1px 6px;
+        }
+      }
+
+      /* Pricing evidence: the same widths the columns carried inline, now in
+         the stylesheet so the phone layout below can change them. */
+      .pricing-table .provider-cell {
+        width: 18%;
+      }
+      .pricing-table .requests-cell,
+      .pricing-table .tokens-cell {
+        width: 12%;
+      }
+      .pricing-table .last-request-cell {
+        width: 16%;
+      }
+      .pricing-table .price-cell {
+        width: 80px;
+      }
+      .pricing-table .stacked-provider {
+        display: none;
+      }
+
+      /* On a phone six columns cannot hold six headers, and a fixed table
+         lets them overprint each other ("Model" over "Provider"). Tokens and
+         the last request go (both are on the model page), the provider moves
+         under the alias, and every header clips to its own column. */
+      @media (max-width: 700px) {
+        .pricing-table .tokens-cell,
+        .pricing-table .last-request-cell,
+        .pricing-table .provider-cell {
+          display: none;
+        }
+        .pricing-table .model-cell {
+          width: 52%;
+        }
+        .pricing-table .requests-cell {
+          width: 22%;
+        }
+        .pricing-table .price-cell {
+          width: 26%;
+        }
+        .pricing-table .stacked-provider {
+          color: var(--console-meta-color);
+          display: block;
+          font-family: var(--sl-font-sans);
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .evidence-table th {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
       }
 
@@ -914,7 +990,10 @@ export class AttentionView extends AuthedElement {
                   class="mono error-cell"
                   title=${run.errorMessage || nothing}
                 >
-                  ${run.errorMessage || 'No error message recorded'}
+                  ${
+                    errorHeadline(run.errorMessage) ||
+                    'No error message recorded'
+                  }
                 </td>
                 <td class="open-cell">
                   <a href="/console/flows/executions/${run.id}">Open run</a>
@@ -1078,37 +1157,44 @@ export class AttentionView extends AuthedElement {
       ${
         models.length > 0
           ? html`
-              <table class="evidence-table">
+              <table class="evidence-table pricing-table">
                 <thead>
                   <tr>
-                    <th>Model</th>
-                    <th style="width: 18%">Provider</th>
-                    <th style="width: 12%" class="numeric">Requests</th>
-                    <th style="width: 12%" class="numeric">Tokens</th>
+                    <th class="model-cell">Model</th>
+                    <th class="provider-cell">Provider</th>
+                    <th class="requests-cell numeric">Requests</th>
+                    <th class="tokens-cell numeric">Tokens</th>
                     ${
                       anyLastRequest
-                        ? html`<th style="width: 16%">Last request</th>`
+                        ? html`<th class="last-request-cell">Last request</th>`
                         : nothing
                     }
-                    <th style="width: 80px"></th>
+                    <th class="price-cell"></th>
                   </tr>
                 </thead>
                 <tbody>
                   ${models.map(
                     (model) => html`
                       <tr>
-                        <td class="mono" title=${model.alias}>
+                        <td class="mono model-cell" title=${model.alias}>
                           ${model.alias}
+                          <!-- The provider column is dropped on a phone, so
+                               the provider rides under the alias there. -->
+                          <span class="stacked-provider"
+                            >${model.provider || 'n/a'}</span
+                          >
                         </td>
-                        <td>${model.provider || 'n/a'}</td>
+                        <td class="provider-cell">
+                          ${model.provider || 'n/a'}
+                        </td>
                         <td
-                          class="numeric"
+                          class="numeric requests-cell"
                           title=${model.requests.toLocaleString()}
                         >
                           ${this.formatCount(model.requests)}
                         </td>
                         <td
-                          class="numeric"
+                          class="numeric tokens-cell"
                           title=${model.tokens.toLocaleString()}
                         >
                           ${this.formatCount(model.tokens)}
@@ -1116,6 +1202,7 @@ export class AttentionView extends AuthedElement {
                         ${
                           anyLastRequest
                             ? html`<td
+                                class="last-request-cell"
                                 title=${
                                   model.lastRequestAt
                                     ? formatLocalDateTime(model.lastRequestAt)
@@ -1130,7 +1217,7 @@ export class AttentionView extends AuthedElement {
                               </td>`
                             : nothing
                         }
-                        <td>
+                        <td class="price-cell">
                           <a
                             href=${
                               model.aiModelId
