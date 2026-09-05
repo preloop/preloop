@@ -1,4 +1,5 @@
 import { html, fixture, expect } from '@open-wc/testing';
+import { setViewport } from '@web/test-runner-commands';
 import sinon from 'sinon';
 
 import './tool-list-item';
@@ -213,6 +214,97 @@ describe('ToolListItem – justification settings', () => {
     await (el as any)._saveJustificationMode();
 
     expect((el as any)._showJustificationDialog).to.be.false;
+  });
+
+  // ---------------------------------------------------------------------------
+  // B-T1 / B-T4: a native row states the effective policy, and keeps its name
+  // at phone width.
+  // ---------------------------------------------------------------------------
+
+  async function createNativeItem(
+    toolOverrides: Partial<typeof baseTool> = {},
+    accountAsksByDefault = false
+  ) {
+    const tool = {
+      ...baseTool,
+      name: 'Bash',
+      source: 'agent',
+      source_name: 'Claude Code',
+      adapters: ['Claude Code', 'OpenCode'],
+      ...toolOverrides,
+    };
+    const el = (await fixture(
+      html`<tool-list-item
+        .tool=${tool}
+        .accessRules=${[]}
+        .policies=${[]}
+        .features=${{}}
+        .accountAsksByDefault=${accountAsksByDefault}
+      ></tool-list-item>`
+    )) as ToolListItem;
+    await el.updateComplete;
+    return el;
+  }
+
+  function ruleSummaryText(el: ToolListItem) {
+    return el.shadowRoot
+      ?.querySelector('.no-rules')
+      ?.textContent?.replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  it('says a ruleless native tool asks a human when the account default is on', async () => {
+    stubApi();
+    const el = await createNativeItem({ is_enabled: true }, true);
+
+    expect(ruleSummaryText(el)).to.equal(
+      'No rules · asks a human (account default)'
+    );
+    expect((el as any)._emptyRulesMessage()).to.contain(
+      'ask a human first, from the account default'
+    );
+  });
+
+  it('says a ruleless native tool is allowed when the account default is off', async () => {
+    stubApi();
+    const el = await createNativeItem({ is_enabled: true }, false);
+
+    expect(ruleSummaryText(el)).to.equal('No rules · allowed');
+  });
+
+  it('says a ruleless native tool is blocked when the switch is on', async () => {
+    stubApi();
+    const el = await createNativeItem({ is_enabled: false }, true);
+
+    expect(ruleSummaryText(el)).to.equal('No rules · blocked');
+  });
+
+  it('labels the native switch with the verb Block', async () => {
+    stubApi();
+    const el = await createNativeItem();
+
+    const label = el.shadowRoot
+      ?.querySelector('.tool-toggle sl-switch')
+      ?.textContent?.trim();
+    expect(label).to.equal('Block');
+  });
+
+  it('keeps the tool name in the row header at 390px', async () => {
+    stubApi();
+    await setViewport({ width: 390, height: 844 });
+    const el = await createNativeItem({ is_enabled: true }, true);
+    await el.updateComplete;
+
+    const name = el.shadowRoot?.querySelector('.tool-name') as HTMLElement;
+    const badges = el.shadowRoot?.querySelector('.tool-badges') as HTMLElement;
+    expect(name.textContent?.trim()).to.equal('Bash');
+    expect(name.getBoundingClientRect().width).to.be.greaterThan(20);
+    // Tags sit on their own line beneath the name, not beside it.
+    expect(badges.getBoundingClientRect().top).to.be.greaterThan(
+      name.getBoundingClientRect().top
+    );
+
+    await setViewport({ width: 1280, height: 800 });
   });
 
   it('shows per-tool schema token estimate', async () => {

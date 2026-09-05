@@ -659,6 +659,7 @@ describe('ToolsView – tabs and toolbar', () => {
   let fetchStub: sinon.SinonStub;
   let tools: Record<string, unknown>[];
   let workflows: Record<string, unknown>[];
+  let governanceDefaults: Record<string, unknown>;
 
   function makeTool(
     overrides: Record<string, unknown> = {}
@@ -725,10 +726,7 @@ describe('ToolsView – tabs and toolbar', () => {
         if (url.endsWith('/api/v1/account/governance-defaults')) {
           return new Response(
             JSON.stringify({
-              defaults: {
-                native_tool_approvals: null,
-                approval_workflow_id: null,
-              },
+              defaults: governanceDefaults,
               override_agent_ids: [],
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -769,6 +767,10 @@ describe('ToolsView – tabs and toolbar', () => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
     tools = [makeTool()];
+    governanceDefaults = {
+      native_tool_approvals: null,
+      approval_workflow_id: null,
+    };
     workflows = [
       {
         id: 'policy-1',
@@ -1249,6 +1251,71 @@ describe('ToolsView – tabs and toolbar', () => {
     expect(options).to.deep.equal(['command', 'description', 'timeout']);
   });
 
+  it('native tab summary strip states the counts and the account default', async () => {
+    // B-T2: the Native tab ran a different toolbar pattern from MCP and never
+    // stated the default that governs a ruleless row.
+    tools = [
+      makeNativeTool(),
+      makeNativeTool({ name: 'Edit' }),
+      makeNativeTool({ name: 'Write', is_enabled: false }),
+    ];
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => !(el as any).loading && (el as any).governanceDefaults !== null,
+      'Governance defaults did not load'
+    );
+    await el.updateComplete;
+
+    const strip = el.shadowRoot?.querySelector('.native-summary-strip');
+    expect(strip?.textContent?.replace(/\s+/g, ' ').trim()).to.equal(
+      '3 tools · 2 allowed · 1 blocked · 0 with rules · asks a human by default'
+    );
+
+    // The counts filter the list, as they do on the MCP strip.
+    const blocked = [...(strip?.querySelectorAll('.strip-count') || [])].find(
+      (button) => /^\s*1\s+blocked\s*$/.test(button.textContent || '')
+    ) as HTMLButtonElement | undefined;
+    expect(blocked).to.exist;
+    blocked!.click();
+    await el.updateComplete;
+    expect((el as any).nativeFilters.rules).to.deep.equal(['blocked']);
+  });
+
+  it('native summary strip says so when the account default is off', async () => {
+    tools = [makeNativeTool()];
+    governanceDefaults = {
+      native_tool_approvals: 'off',
+      approval_workflow_id: null,
+    };
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => !(el as any).loading && (el as any).governanceDefaults !== null,
+      'Governance defaults did not load'
+    );
+    await el.updateComplete;
+
+    expect(
+      el.shadowRoot
+        ?.querySelector('.native-summary-strip')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).to.equal(
+      '1 tools · 1 allowed · 0 blocked · 0 with rules · runs without asking by default'
+    );
+  });
+
   it('saving a native rule creates an agent-source configuration without a server id', async () => {
     tools = [makeTool(), makeNativeTool()];
     window.history.replaceState(
@@ -1357,7 +1424,9 @@ describe('ToolsView – tabs and toolbar', () => {
     const blockedSwitch = bashItem.shadowRoot?.querySelector('sl-switch') as
       (HTMLElement & { checked: boolean }) | null;
     expect(blockedSwitch).to.exist;
-    expect(blockedSwitch!.textContent).to.contain('Blocked');
+    // B-T1: the switch is labelled with the verb, not with a state that read
+    // as "this tool is blocked" beside an off switch.
+    expect(blockedSwitch!.textContent?.trim()).to.equal('Block');
     expect(blockedSwitch!.checked).to.equal(false);
 
     blockedSwitch!.checked = true;

@@ -30,6 +30,12 @@ export class ToolListItem extends LitElement {
   @property({ type: String }) mode: 'global' | 'scoped' = 'global';
   @property({ type: Boolean }) rulesInherited = false;
   @property({ type: Object }) usageStat: GatewayUsageByTool | null = null;
+  /**
+   * Account default for native tool calls ("Ask a human before running").
+   * A native row with no rules of its own is governed by this, so the row
+   * has to say so instead of claiming every call is allowed.
+   */
+  @property({ type: Boolean }) accountAsksByDefault = false;
 
   @state() private _showJustificationDialog = false;
   @state() private _justificationMode: string = 'disabled';
@@ -179,6 +185,43 @@ export class ToolListItem extends LitElement {
         font-size: var(--sl-font-size-x-small);
         font-style: italic;
       }
+
+      /* Phone: the row header is one non-wrapping flex line, so the agent
+         tags squeezed the tool name out of a 390px row (B-T4). The name
+         keeps its content width and everything else wraps beneath it. */
+      @media (max-width: 480px) {
+        .tool-header {
+          flex-wrap: wrap;
+          row-gap: var(--sl-spacing-2x-small);
+        }
+        .expand-icon {
+          order: 0;
+        }
+        .tool-name {
+          order: 1;
+          flex: 0 0 auto;
+          max-width: calc(100% - 120px);
+        }
+        .tool-toggle {
+          order: 2;
+          margin-left: auto;
+        }
+        .tool-badges {
+          order: 3;
+          flex-basis: 100%;
+          flex-wrap: wrap;
+        }
+        .tool-description {
+          order: 4;
+          flex-basis: 100%;
+          white-space: normal;
+        }
+        .rule-summary {
+          order: 5;
+          flex-basis: 100%;
+          flex-wrap: wrap;
+        }
+      }
     `,
   ];
 
@@ -280,10 +323,30 @@ export class ToolListItem extends LitElement {
     );
   }
 
+  /**
+   * What happens to a call when the tool carries no rule of its own. Native
+   * tools fall through to the account default, so "No rules" alone (or
+   * "allow all") states the wrong policy whenever that default is on.
+   */
+  private _noRulesEffect(): string {
+    if (!this.tool.is_enabled) {
+      return 'blocked';
+    }
+    if (this._isNativeTool() && this.accountAsksByDefault) {
+      return 'asks a human (account default)';
+    }
+    return 'allowed';
+  }
+
   private _renderRuleSummaryBadges() {
     const summary = this._getRuleSummary();
 
     if (summary.total === 0) {
+      if (this._isNativeTool()) {
+        return html`<span class="no-rules"
+          >No rules · ${this._noRulesEffect()}</span
+        >`;
+      }
       if (this.tool.is_enabled) {
         return html`<span class="no-rules">No rules (allow all)</span>`;
       }
@@ -364,6 +427,16 @@ export class ToolListItem extends LitElement {
     }
   }
 
+  private _emptyRulesMessage(): string {
+    if (!this.tool.is_enabled) {
+      return 'No access rules configured. All calls to this tool are blocked (tool disabled).';
+    }
+    if (this._isNativeTool() && this.accountAsksByDefault) {
+      return 'No access rules configured. Calls to this tool ask a human first, from the account default.';
+    }
+    return 'No access rules configured. All calls to this tool are allowed.';
+  }
+
   private _renderExpandedContent() {
     return html`
       <div class="tool-content">
@@ -416,9 +489,7 @@ export class ToolListItem extends LitElement {
           .rules=${this.accessRules}
           .workflows=${this.policies}
           .features=${this.features}
-          .emptyMessage=${`No access rules configured. All calls to this tool are ${
-            this.tool.is_enabled ? 'allowed' : 'blocked (tool disabled)'
-          }.`}
+          .emptyMessage=${this._emptyRulesMessage()}
           @save-rule=${this._handleSaveRule}
           @delete-rule=${(event: CustomEvent) =>
             this._handleDeleteRule(event.detail.rule)}
@@ -533,7 +604,7 @@ export class ToolListItem extends LitElement {
               }
               ?disabled=${isUnsupported}
               @sl-change=${this._handleToggleEnabled}
-              >${this._isNativeTool() ? 'Blocked' : ''}</sl-switch
+              >${this._isNativeTool() ? 'Block' : ''}</sl-switch
             >
           </div>
 
