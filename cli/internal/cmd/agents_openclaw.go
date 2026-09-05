@@ -5647,6 +5647,106 @@ func syncOpenClawAIModels(
 	return bindings, notes, nil
 }
 
+// findManagedClaudeCodeOAuthSibling returns an existing managed Claude Code
+// AI model that already holds a live same-type OAuth SecretReference. Used
+// so a newly pinned family (e.g. a first-seen fable row) attaches that
+// secret instead of minting a second single-use refresh-token lineage.
+func findManagedClaudeCodeOAuthSibling(
+	existing []aiModelResponse,
+	agent AgentConfig,
+	managedAgent *managedAgentSummary,
+	credentialType string,
+	excludeID string,
+) *aiModelResponse {
+	if !isClaudeCodeAgent(agent) || !isOAuthCredentialType(credentialType) {
+		return nil
+	}
+	wantType := strings.TrimSpace(credentialType)
+	if wantType == "" {
+		return nil
+	}
+	var agentID string
+	if managedAgent != nil {
+		agentID = strings.TrimSpace(managedAgent.ID)
+	}
+	var fallback *aiModelResponse
+	for i := range existing {
+		model := &existing[i]
+		if excludeID != "" && strings.TrimSpace(model.ID) == strings.TrimSpace(excludeID) {
+			continue
+		}
+		if strings.TrimSpace(model.CredentialType) != wantType {
+			continue
+		}
+		if strings.TrimSpace(model.CredentialsSecretID) == "" {
+			continue
+		}
+		if agentID != "" {
+			modelAgentID := ""
+			if model.MetaData != nil {
+				modelAgentID, _ = model.MetaData["managed_agent_id"].(string)
+				modelAgentID = strings.TrimSpace(modelAgentID)
+			}
+			if modelAgentID == agentID {
+				return model
+			}
+			if modelAgentID != "" {
+				continue
+			}
+			if fallback == nil {
+				fallback = model
+			}
+			continue
+		}
+		return model
+	}
+	return fallback
+}
+
+func overwriteManagedClaudeCodeOAuthSecret(
+	client *api.Client,
+	sibling *aiModelResponse,
+	upstream *managedGatewayUpstream,
+) error {
+	if client == nil || sibling == nil || upstream == nil {
+		return nil
+	}
+	update := map[string]interface{}{
+		"credential_type":    upstream.CredentialType,
+		"credential_payload": upstream.CredentialPayload,
+	}
+	var updated aiModelResponse
+	if err := client.Put("/api/v1/ai-models/"+sibling.ID, update, &updated); err != nil {
+		return fmt.Errorf(
+			"failed to refresh shared Claude Code credential on %q: %w",
+			sibling.Name,
+			err,
+		)
+	}
+	return nil
+}
+
+func applySharedClaudeCodeOAuthSecret(
+	client *api.Client,
+	sibling *aiModelResponse,
+	upstream *managedGatewayUpstream,
+) (string, error) {
+	if sibling == nil {
+		return "", nil
+	}
+	secretID := strings.TrimSpace(sibling.CredentialsSecretID)
+	if secretID == "" {
+		return "", nil
+	}
+	if len(upstream.CredentialPayload) > 0 &&
+		!oauthCredentialPayloadExpired(upstream.CredentialPayload) {
+		if err := overwriteManagedClaudeCodeOAuthSecret(client, sibling, upstream); err != nil {
+			return "", err
+		}
+	}
+	return secretID, nil
+}
+
 func syncManagedGatewayAIModel(
 	client *api.Client,
 	managedAgent *managedAgentSummary,
@@ -5725,7 +5825,30 @@ func syncManagedGatewayAIModel(
 		// downgrades every later onboarding to MCP-only. When the local
 		// bundle is expired and the account already holds a same-type OAuth
 		// credential, keep the account copy — the gateway can refresh it.
-		if len(upstream.CredentialPayload) > 0 &&
+		//
+		// A second exception: when this target has no credential yet but a
+		// sibling Claude Code row already holds the same-type OAuth secret,
+		// attach that secret instead of minting a second lineage.
+		sharedSibling := findManagedClaudeCodeOAuthSibling(
+			existing,
+			agent,
+			managedAgent,
+			upstream.CredentialType,
+			target.ID,
+		)
+		if !target.HasAPIKey && sharedSibling != nil {
+			sharedSecret, shareErr := applySharedClaudeCodeOAuthSecret(
+				client,
+				sharedSibling,
+				upstream,
+			)
+			if shareErr != nil {
+				return nil, nil, shareErr
+			}
+			if sharedSecret != "" {
+				update["credentials_secret_id"] = sharedSecret
+			}
+		} else if len(upstream.CredentialPayload) > 0 &&
 			(!target.HasAPIKey ||
 				strings.TrimSpace(target.CredentialType) != strings.TrimSpace(upstream.CredentialType) ||
 				(isOAuthCredentialType(upstream.CredentialType) &&
@@ -5796,6 +5919,28 @@ func syncManagedGatewayAIModel(
 		CredentialType:  upstream.CredentialType,
 		CredentialsJSON: upstream.CredentialPayload,
 		MetaData:        metaData,
+	}
+	if sharedSibling := findManagedClaudeCodeOAuthSibling(
+		existing,
+		agent,
+		managedAgent,
+		upstream.CredentialType,
+		"",
+	); sharedSibling != nil {
+		sharedSecret, shareErr := applySharedClaudeCodeOAuthSecret(
+			client,
+			sharedSibling,
+			upstream,
+		)
+		if shareErr != nil {
+			return nil, nil, shareErr
+		}
+		if sharedSecret != "" {
+			create.CredentialsSecretID = sharedSecret
+			create.APIKey = ""
+			create.CredentialType = ""
+			create.CredentialsJSON = nil
+		}
 	}
 
 	var created aiModelResponse

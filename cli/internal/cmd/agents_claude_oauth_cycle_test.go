@@ -276,6 +276,351 @@ func TestSyncManagedGatewayAIModelServerReuseScopedToClaudeCode(t *testing.T) {
 	}
 }
 
+type recordedAIModelWrite struct {
+	Method string
+	Path   string
+	Body   map[string]interface{}
+}
+
+func claudeManagedOAuthSiblingForTest(id, identifier, alias, secretID string) aiModelResponse {
+	return aiModelResponse{
+		ID:                  id,
+		Name:                "Claude Code " + alias,
+		ProviderName:        "anthropic",
+		ModelIdentifier:     identifier,
+		CredentialType:      "oauth_anthropic_claude_code",
+		CredentialsSecretID: secretID,
+		HasAPIKey:           secretID != "",
+		MetaData: map[string]interface{}{
+			"source_agent":     "claude_code",
+			"managed_by":       "preloop agents onboard",
+			"managed_agent_id": "agent-1",
+			"gateway": map[string]interface{}{
+				"enabled":     true,
+				"model_alias": alias,
+			},
+		},
+	}
+}
+
+func claudeFableUpstreamForTest(payload map[string]interface{}) *managedGatewayUpstream {
+	upstream := &managedGatewayUpstream{
+		SourceAgent:       "claude_code",
+		SourceProviderID:  "anthropic",
+		ProviderName:      "anthropic",
+		ModelIdentifier:   "claude-fable-5-1",
+		ManagedModelAlias: "anthropic/claude-fable-5-1",
+	}
+	if payload != nil {
+		upstream.CredentialType = "oauth_anthropic_claude_code"
+		upstream.CredentialPayload = payload
+	}
+	return upstream
+}
+
+func newClaudeFamilyLineageServer(
+	t *testing.T,
+	models []aiModelResponse,
+	writes *[]recordedAIModelWrite,
+) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/ai-models":
+			_ = json.NewEncoder(w).Encode(models)
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/ai-models/"):
+			body := map[string]interface{}{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("failed to decode ai-model update: %v", err)
+			}
+			*writes = append(*writes, recordedAIModelWrite{
+				Method: http.MethodPut,
+				Path:   r.URL.Path,
+				Body:   body,
+			})
+			updated := models[0]
+			if strings.HasSuffix(r.URL.Path, "/"+models[0].ID) {
+				updated = models[0]
+			} else if len(models) > 1 && strings.HasSuffix(r.URL.Path, "/"+models[1].ID) {
+				updated = models[1]
+			}
+			if secretID, ok := body["credentials_secret_id"].(string); ok {
+				updated.CredentialsSecretID = secretID
+				updated.HasAPIKey = true
+			}
+			_ = json.NewEncoder(w).Encode(updated)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/ai-models":
+			body := map[string]interface{}{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("failed to decode ai-model create: %v", err)
+			}
+			*writes = append(*writes, recordedAIModelWrite{
+				Method: http.MethodPost,
+				Path:   r.URL.Path,
+				Body:   body,
+			})
+			created := claudeManagedOAuthSiblingForTest(
+				"created-fable",
+				"claude-fable-5-1",
+				"anthropic/claude-fable-5-1",
+				"",
+			)
+			if secretID, ok := body["credentials_secret_id"].(string); ok {
+				created.CredentialsSecretID = secretID
+				created.HasAPIKey = true
+			}
+			_ = json.NewEncoder(w).Encode(created)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestSyncManagedGatewayAIModelCreateReusesClaudeSiblingSecretWhenLocalExpired(t *testing.T) {
+	sibling := claudeManagedOAuthSiblingForTest(
+		"sibling-sonnet",
+		"claude-sonnet-4-5",
+		"anthropic/claude-sonnet-4-5",
+		"secret-live",
+	)
+	writes := []recordedAIModelWrite{}
+	server := newClaudeFamilyLineageServer(t, []aiModelResponse{sibling}, &writes)
+	defer server.Close()
+
+	staleExpiry := time.Now().UTC().Add(-24 * time.Hour).UnixMilli()
+	upstream := claudeFableUpstreamForTest(map[string]interface{}{
+		"access":  "sk-ant-oat01-stale",
+		"refresh": "sk-ant-ort01-stale",
+		"expires": staleExpiry,
+	})
+
+	model, _, err := syncManagedGatewayAIModel(
+		api.NewClientWithToken(server.URL, "tok"),
+		&managedAgentSummary{ID: "agent-1"},
+		AgentConfig{Name: "Claude Code"},
+		upstream,
+		server.URL+"/openai/v1",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if model == nil {
+		t.Fatalf("expected created fable row, got nil")
+	}
+	var createBody map[string]interface{}
+	for _, write := range writes {
+		if write.Method == http.MethodPut {
+			t.Fatalf("expired local bundle must not overwrite the sibling secret; got %#v", write)
+		}
+		if write.Method == http.MethodPost {
+			createBody = write.Body
+		}
+	}
+	if createBody == nil {
+		t.Fatalf("expected a create for the new fable row; writes: %#v", writes)
+	}
+	if createBody["credentials_secret_id"] != "secret-live" {
+		t.Fatalf("expected create to reuse sibling secret, got %#v", createBody)
+	}
+	if _, ok := createBody["credential_payload"]; ok {
+		t.Fatalf("create must not mint a second OAuth secret; got %#v", createBody)
+	}
+	if _, ok := createBody["credential_type"]; ok {
+		t.Fatalf("create must not send credential_type with a reused secret; got %#v", createBody)
+	}
+}
+
+func TestSyncManagedGatewayAIModelCreateReseedsClaudeSiblingThenSharesSecret(t *testing.T) {
+	sibling := claudeManagedOAuthSiblingForTest(
+		"sibling-sonnet",
+		"claude-sonnet-4-5",
+		"anthropic/claude-sonnet-4-5",
+		"secret-live",
+	)
+	writes := []recordedAIModelWrite{}
+	server := newClaudeFamilyLineageServer(t, []aiModelResponse{sibling}, &writes)
+	defer server.Close()
+
+	freshExpiry := time.Now().UTC().Add(4 * time.Hour).UnixMilli()
+	upstream := claudeFableUpstreamForTest(map[string]interface{}{
+		"access":  "sk-ant-oat01-fresh",
+		"refresh": "sk-ant-ort01-fresh",
+		"expires": freshExpiry,
+	})
+
+	model, _, err := syncManagedGatewayAIModel(
+		api.NewClientWithToken(server.URL, "tok"),
+		&managedAgentSummary{ID: "agent-1"},
+		AgentConfig{Name: "Claude Code"},
+		upstream,
+		server.URL+"/openai/v1",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if model == nil {
+		t.Fatalf("expected created fable row, got nil")
+	}
+	reseededSibling := false
+	var createBody map[string]interface{}
+	for _, write := range writes {
+		if write.Method == http.MethodPut && strings.HasSuffix(write.Path, "/sibling-sonnet") {
+			payload, _ := write.Body["credential_payload"].(map[string]interface{})
+			if payload["access"] != "sk-ant-oat01-fresh" {
+				t.Fatalf("expected fresh payload on sibling, got %#v", write.Body)
+			}
+			reseededSibling = true
+		}
+		if write.Method == http.MethodPost {
+			createBody = write.Body
+		}
+	}
+	if !reseededSibling {
+		t.Fatalf("expected a PUT of the fresh bundle onto the sibling; writes: %#v", writes)
+	}
+	if createBody == nil {
+		t.Fatalf("expected a create for the new fable row; writes: %#v", writes)
+	}
+	if createBody["credentials_secret_id"] != "secret-live" {
+		t.Fatalf("expected create to reuse sibling secret, got %#v", createBody)
+	}
+	if _, ok := createBody["credential_payload"]; ok {
+		t.Fatalf("create must not mint a second OAuth secret; got %#v", createBody)
+	}
+}
+
+func TestSyncManagedGatewayAIModelUpdateAttachesClaudeSiblingSecretWhenTargetHasNone(t *testing.T) {
+	fable := claudeManagedOAuthSiblingForTest(
+		"target-fable",
+		"claude-fable-5-1",
+		"anthropic/claude-fable-5-1",
+		"",
+	)
+	fable.HasAPIKey = false
+	fable.CredentialType = ""
+	sibling := claudeManagedOAuthSiblingForTest(
+		"sibling-sonnet",
+		"claude-sonnet-4-5",
+		"anthropic/claude-sonnet-4-5",
+		"secret-live",
+	)
+	writes := []recordedAIModelWrite{}
+	server := newClaudeFamilyLineageServer(t, []aiModelResponse{fable, sibling}, &writes)
+	defer server.Close()
+
+	staleExpiry := time.Now().UTC().Add(-24 * time.Hour).UnixMilli()
+	upstream := claudeFableUpstreamForTest(map[string]interface{}{
+		"access":  "sk-ant-oat01-stale",
+		"refresh": "sk-ant-ort01-stale",
+		"expires": staleExpiry,
+	})
+
+	model, _, err := syncManagedGatewayAIModel(
+		api.NewClientWithToken(server.URL, "tok"),
+		&managedAgentSummary{ID: "agent-1"},
+		AgentConfig{Name: "Claude Code"},
+		upstream,
+		server.URL+"/openai/v1",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if model == nil || model.ID != "target-fable" {
+		t.Fatalf("expected updated fable row, got %#v", model)
+	}
+	attached := false
+	for _, write := range writes {
+		if write.Method != http.MethodPut {
+			t.Fatalf("expired local bundle must not create a new secret; got %#v", write)
+		}
+		if strings.HasSuffix(write.Path, "/sibling-sonnet") {
+			if _, ok := write.Body["credential_payload"]; ok {
+				t.Fatalf("expired local bundle must not overwrite the sibling secret; got %#v", write)
+			}
+		}
+		if strings.HasSuffix(write.Path, "/target-fable") {
+			if write.Body["credentials_secret_id"] != "secret-live" {
+				t.Fatalf("expected target to attach sibling secret, got %#v", write.Body)
+			}
+			if _, ok := write.Body["credential_payload"]; ok {
+				t.Fatalf("target must not mint a second OAuth secret; got %#v", write.Body)
+			}
+			attached = true
+		}
+	}
+	if !attached {
+		t.Fatalf("expected a PUT attaching the sibling secret to the fable row; writes: %#v", writes)
+	}
+}
+
+func TestSyncManagedGatewayAIModelUpdateReseedsClaudeSiblingWhenTargetHasNoCredential(t *testing.T) {
+	fable := claudeManagedOAuthSiblingForTest(
+		"target-fable",
+		"claude-fable-5-1",
+		"anthropic/claude-fable-5-1",
+		"",
+	)
+	fable.HasAPIKey = false
+	fable.CredentialType = ""
+	sibling := claudeManagedOAuthSiblingForTest(
+		"sibling-sonnet",
+		"claude-sonnet-4-5",
+		"anthropic/claude-sonnet-4-5",
+		"secret-live",
+	)
+	writes := []recordedAIModelWrite{}
+	server := newClaudeFamilyLineageServer(t, []aiModelResponse{fable, sibling}, &writes)
+	defer server.Close()
+
+	freshExpiry := time.Now().UTC().Add(4 * time.Hour).UnixMilli()
+	upstream := claudeFableUpstreamForTest(map[string]interface{}{
+		"access":  "sk-ant-oat01-fresh",
+		"refresh": "sk-ant-ort01-fresh",
+		"expires": freshExpiry,
+	})
+
+	model, _, err := syncManagedGatewayAIModel(
+		api.NewClientWithToken(server.URL, "tok"),
+		&managedAgentSummary{ID: "agent-1"},
+		AgentConfig{Name: "Claude Code"},
+		upstream,
+		server.URL+"/openai/v1",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if model == nil {
+		t.Fatalf("expected updated fable row, got nil")
+	}
+	reseededSibling := false
+	attached := false
+	for _, write := range writes {
+		if write.Method != http.MethodPut {
+			t.Fatalf("must not create a second secret when a sibling lineage exists; got %#v", write)
+		}
+		if strings.HasSuffix(write.Path, "/sibling-sonnet") {
+			payload, _ := write.Body["credential_payload"].(map[string]interface{})
+			if payload["access"] != "sk-ant-oat01-fresh" {
+				t.Fatalf("expected fresh payload on sibling, got %#v", write.Body)
+			}
+			reseededSibling = true
+		}
+		if strings.HasSuffix(write.Path, "/target-fable") {
+			if write.Body["credentials_secret_id"] != "secret-live" {
+				t.Fatalf("expected target to attach sibling secret, got %#v", write.Body)
+			}
+			if _, ok := write.Body["credential_payload"]; ok {
+				t.Fatalf("target must not mint a second OAuth secret; got %#v", write.Body)
+			}
+			attached = true
+		}
+	}
+	if !reseededSibling || !attached {
+		t.Fatalf("expected sibling re-seed then target attach; writes: %#v", writes)
+	}
+}
+
 func TestOauthCredentialPayloadExpired(t *testing.T) {
 	now := time.Now().UTC().UnixMilli()
 	if oauthCredentialPayloadExpired(map[string]interface{}{"expires": now + 60_000}) {
