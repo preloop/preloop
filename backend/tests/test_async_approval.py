@@ -288,6 +288,7 @@ class TestPolicyGenerationRequestValidation:
         req = GeneratePolicyRequest(prompt="require approval for bash")
         assert req.prompt == "require approval for bash"
         assert req.include_current_config is True  # default
+        assert req.scope_mcp_server_name is None
 
     def test_generate_policy_request_no_context(self):
         from preloop.api.endpoints.policies import GeneratePolicyRequest

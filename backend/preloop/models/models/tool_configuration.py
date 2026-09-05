@@ -31,7 +31,7 @@ class ToolConfiguration(Base):
         id: Unique identifier for the configuration.
         account_id: The account this configuration belongs to.
         tool_name: Name of the tool.
-        tool_source: Source type ('builtin', 'mcp', 'http').
+        tool_source: Source type ('builtin', 'mcp', 'http', 'agent').
         mcp_server_id: Reference to MCP server (if tool_source='mcp').
         managed_agent_id: Optional agent scope. Null means the row applies
             account-wide (the historical behavior). When set, the row applies

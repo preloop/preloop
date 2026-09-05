@@ -4416,6 +4416,7 @@ export async function completeGitHubInstallation(
 export async function generatePolicy(options: {
   prompt: string;
   includeCurrentConfig?: boolean;
+  scopeMcpServerName?: string;
 }): Promise<{ yaml: string; warnings: string[] }> {
   const response = await fetchWithAuth('/api/v1/policies/generate', {
     method: 'POST',
@@ -4423,6 +4424,9 @@ export async function generatePolicy(options: {
     body: JSON.stringify({
       prompt: options.prompt,
       include_current_config: options.includeCurrentConfig ?? true,
+      ...(options.scopeMcpServerName
+        ? { scope_mcp_server_name: options.scopeMcpServerName }
+        : {}),
     }),
   });
   if (!response.ok) {

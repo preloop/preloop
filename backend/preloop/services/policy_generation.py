@@ -35,7 +35,11 @@ from preloop.services.model_credentials import (
     resolve_model_call_credentials,
 )
 from preloop.services.policy import export_current_policy
-from preloop.services.policy.schema import PolicyDocument
+from preloop.services.policy.schema import (
+    PolicyDocument,
+    ToolDefinition,
+    is_known_tool_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,7 @@ class PolicyGenerationService:
         prompt: str,
         *,
         include_current_config: bool = True,
+        scope_mcp_server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a policy YAML from a natural-language description.
 
@@ -70,6 +75,8 @@ class PolicyGenerationService:
             prompt: User's description of the desired policy.
             include_current_config: If True, include the account's current
                 MCP servers and tools as context for the LLM.
+            scope_mcp_server_name: When set, starter-policy generation
+                scopes LLM context and raw output to this MCP server.
 
         Returns:
             ``{"yaml": "<valid policy YAML>", "warnings": [...]}``
@@ -83,13 +90,19 @@ class PolicyGenerationService:
 
         context_block = ""
         if include_current_config:
-            context_block = self._build_context_block()
+            context_block = self._build_context_block(
+                prompt, scope_mcp_server_name=scope_mcp_server_name
+            )
 
         system_prompt = self._build_system_prompt(schema_json, context_block)
 
         yaml_output = self._call_llm(model, system_prompt, prompt)
         if include_current_config:
-            yaml_output = self._merge_preserving_unrelated(yaml_output, prompt)
+            yaml_output = self._merge_preserving_unrelated(
+                yaml_output,
+                prompt,
+                scope_mcp_server_name=scope_mcp_server_name,
+            )
         warnings = self._validate_output(yaml_output)
 
         return {"yaml": yaml_output, "warnings": warnings}
@@ -178,6 +191,72 @@ class PolicyGenerationService:
         return sorted(all_models, key=lambda m: m.created_at, reverse=True)[0]
 
     _REMOVAL_RE = re.compile(r"\b(remove|delete|drop|without)\b", re.IGNORECASE)
+    _STARTER_POLICY_SERVER_RE = re.compile(
+        r'starter policy(?: update)? for the MCP server ["\']([^"\']+)["\']',
+        re.IGNORECASE,
+    )
+
+    def _starter_policy_server_name(
+        self,
+        prompt: str,
+        scope_mcp_server_name: Optional[str] = None,
+    ) -> Optional[str]:
+        """Return the MCP server a starter-policy request targets, if any.
+
+        Prefers an explicit ``scope_mcp_server_name`` from the API. Falls
+        back to sniffing the prompt text so older clients still work.
+        """
+        if scope_mcp_server_name and scope_mcp_server_name.strip():
+            return scope_mcp_server_name.strip()
+        if not prompt:
+            return None
+        match = self._STARTER_POLICY_SERVER_RE.search(prompt)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _source_belongs_to_mcp_server(source: str, server_name: str) -> bool:
+        """True when a tool source is the named MCP server, not a native type."""
+        source_lower = (source or "").lower()
+        if is_known_tool_source(source_lower):
+            return False
+        return source_lower == server_name.lower()
+
+    @classmethod
+    def _raw_tool_belongs_to_mcp_server(
+        cls, tool: Dict[str, Any], server_name: str
+    ) -> bool:
+        """True when a raw YAML tool mapping belongs to the named MCP server."""
+        return cls._source_belongs_to_mcp_server(
+            str(tool.get("source") or ""), server_name
+        )
+
+    @classmethod
+    def _tool_belongs_to_mcp_server(
+        cls, tool: ToolDefinition, server_name: str
+    ) -> bool:
+        """True when a policy tool is scoped to the named MCP server.
+
+        Exported MCP tools use the server name as ``source``. Known ToolSource
+        values (builtin, mcp, http, agent) are never a specific server.
+        """
+        return cls._source_belongs_to_mcp_server(tool.source or "", server_name)
+
+    def _scope_tools_to_starter_server(
+        self,
+        tools: Optional[Sequence[ToolDefinition]],
+        prompt: str,
+        scope_mcp_server_name: Optional[str] = None,
+    ) -> Optional[List[ToolDefinition]]:
+        """Keep only the target MCP server's tools for a starter-policy prompt."""
+        server_name = self._starter_policy_server_name(prompt, scope_mcp_server_name)
+        if not server_name:
+            return list(tools) if tools else None
+        scoped = [
+            tool
+            for tool in (tools or [])
+            if self._tool_belongs_to_mcp_server(tool, server_name)
+        ]
+        return scoped or None
 
     def _prompt_asks_to_drop(self, prompt: str, name: str) -> bool:
         """True when the prompt names this item and asks to remove it."""
@@ -188,19 +267,45 @@ class PolicyGenerationService:
             return False
         return bool(self._REMOVAL_RE.search(lowered))
 
-    def _merge_preserving_unrelated(self, generated_yaml: str, prompt: str) -> str:
+    def _merge_preserving_unrelated(
+        self,
+        generated_yaml: str,
+        prompt: str,
+        scope_mcp_server_name: Optional[str] = None,
+    ) -> str:
         """Restore current items the model omitted unless the prompt drops them.
 
         The LLM is asked to emit a complete document. When it drops unrelated
         tools, workflows, MCP servers, or model_io rules, put them back so an
         edit cannot silently wipe the rest of the policy.
+
+        Starter-policy generation still filters the raw LLM tools list to the
+        target MCP server so ``source: agent`` rows never land in the parsed
+        document. The merge then restores *all* current tools so
+        ``/policies/diff`` only reports the target server's changes.
         """
         try:
             generated_data = yaml.safe_load(generated_yaml)
             if not isinstance(generated_data, dict):
                 return generated_yaml
+        except yaml.YAMLError:
+            return generated_yaml
+
+        starter_server = self._starter_policy_server_name(prompt, scope_mcp_server_name)
+        scoped_generated_yaml = False
+        if starter_server and isinstance(generated_data.get("tools"), list):
+            original_tools = generated_data["tools"]
+            generated_data["tools"] = [
+                tool
+                for tool in original_tools
+                if isinstance(tool, dict)
+                and self._raw_tool_belongs_to_mcp_server(tool, starter_server)
+            ] or None
+            scoped_generated_yaml = generated_data["tools"] != original_tools
+
+        try:
             generated = PolicyDocument(**generated_data)
-        except (yaml.YAMLError, Exception):
+        except Exception:
             return generated_yaml
 
         try:
@@ -211,7 +316,16 @@ class PolicyGenerationService:
             )
         except Exception as exc:
             logger.warning("Could not export current policy for merge: %s", exc)
-            return generated_yaml
+            if not starter_server:
+                return generated_yaml
+            generated.tools = self._scope_tools_to_starter_server(
+                generated.tools, prompt, scope_mcp_server_name
+            )
+            return yaml.dump(
+                generated.model_dump(mode="json", exclude_none=True),
+                default_flow_style=False,
+                sort_keys=False,
+            )
 
         restored = False
 
@@ -250,14 +364,27 @@ class PolicyGenerationService:
             )
             or None
         )
-        generated.tools = (
-            _restore(
-                current.tools,
-                generated.tools,
-                lambda item: (item.source, item.name),
+        if starter_server:
+            filtered_generated = self._scope_tools_to_starter_server(
+                generated.tools, prompt, scope_mcp_server_name
             )
-            or None
-        )
+            generated.tools = (
+                _restore(
+                    current.tools,
+                    filtered_generated,
+                    lambda item: (item.source, item.name),
+                )
+                or None
+            )
+        else:
+            generated.tools = (
+                _restore(
+                    current.tools,
+                    generated.tools,
+                    lambda item: (item.source, item.name),
+                )
+                or None
+            )
         generated.model_io = (
             _restore(
                 current.model_io,
@@ -267,7 +394,7 @@ class PolicyGenerationService:
             or None
         )
 
-        if not restored:
+        if not restored and not scoped_generated_yaml:
             return generated_yaml
 
         return yaml.dump(
@@ -276,12 +403,20 @@ class PolicyGenerationService:
             sort_keys=False,
         )
 
-    def _build_context_block(self) -> str:
+    def _build_context_block(
+        self,
+        prompt: str = "",
+        scope_mcp_server_name: Optional[str] = None,
+    ) -> str:
         """Export the account's current policy config as YAML context.
 
         The output is structured so the LLM knows it should preserve
         existing items (MCP servers, approval workflows, tools with rules)
         and only add or modify what the user's prompt requests.
+
+        A starter-policy prompt for one MCP server only includes that
+        server's tools so native (agent) tools and other servers are not
+        copied into the suggestion.
         """
         try:
             current = export_current_policy(
@@ -289,6 +424,10 @@ class PolicyGenerationService:
                 account_id=self.account_id,
                 policy_name="(current configuration)",
             )
+            if self._starter_policy_server_name(prompt, scope_mcp_server_name):
+                current.tools = self._scope_tools_to_starter_server(
+                    current.tools, prompt, scope_mcp_server_name
+                )
             current_yaml = yaml.dump(
                 current.model_dump(mode="json", exclude_none=True),
                 default_flow_style=False,

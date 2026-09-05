@@ -42,6 +42,7 @@ from preloop.services.policy import (
     export_current_policy,
     export_policy_to_json,
     export_policy_to_yaml,
+    is_known_tool_source,
     load_policy_from_string,
 )
 from preloop.services.model_content_policy import (
@@ -244,7 +245,7 @@ async def validate_policy(
             for idx, tool in enumerate(policy.tools):
                 # Check MCP server references
                 source_lower = tool.source.lower()
-                if source_lower not in ["builtin", "mcp", "http"]:
+                if not is_known_tool_source(source_lower):
                     if source_lower not in all_available_servers:
                         available_list = ", ".join(sorted(all_available_servers))
                         result.errors.append(
@@ -336,7 +337,7 @@ async def upload_policy(
     5. Applies default behavior settings
 
     When `mcp_servers` is omitted from the policy file, tools that reference
-    server names (sources that aren't 'builtin', 'mcp', or 'http') will be
+    server names (sources that are not a known ToolSource value) will be
     validated against servers already configured in your account. If a
     referenced server doesn't exist:
     - With `skip_missing_servers=false` (default): Returns an error
@@ -1154,6 +1155,16 @@ class GeneratePolicyRequest(BaseModel):
             "for the LLM (recommended for more accurate generation)"
         ),
     )
+    scope_mcp_server_name: Optional[str] = Field(
+        None,
+        description=(
+            "When set, starter-policy generation scopes LLM context and "
+            "raw model output to this MCP server. The merge still restores "
+            "all current tools so the diff preview only shows this "
+            "server's changes. Older clients that omit the field fall "
+            "back to matching the prompt text."
+        ),
+    )
 
 
 class GeneratePolicyFromAuditRequest(BaseModel):
@@ -1231,7 +1242,12 @@ async def generate_policy(
         # are not thread-safe and must not be shared across threads.
         model = service._resolve_model()
         context_block = (
-            service._build_context_block() if request.include_current_config else ""
+            service._build_context_block(
+                request.prompt,
+                scope_mcp_server_name=request.scope_mcp_server_name,
+            )
+            if request.include_current_config
+            else ""
         )
 
         # Only the LLM call (network I/O, CPU-bound tokenization)
@@ -1247,7 +1263,9 @@ async def generate_policy(
         )
         if request.include_current_config:
             yaml_output = service._merge_preserving_unrelated(
-                yaml_output, request.prompt
+                yaml_output,
+                request.prompt,
+                scope_mcp_server_name=request.scope_mcp_server_name,
             )
         warnings = service._validate_output(yaml_output)
         result = {"yaml": yaml_output, "warnings": warnings}

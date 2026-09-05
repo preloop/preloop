@@ -827,6 +827,16 @@ describe('ToolsView – starter policy suggestions', () => {
             headers: { 'Content-Type': 'application/json' },
           });
         }
+        if (
+          url.includes('/api/v1/mcp-servers/') &&
+          url.endsWith('/scan') &&
+          method === 'POST'
+        ) {
+          return new Response(JSON.stringify({ scanned: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
 
         return new Response(
           JSON.stringify({ detail: `Unhandled request: ${method} ${url}` }),
@@ -913,6 +923,7 @@ describe('ToolsView – starter policy suggestions', () => {
       (generateCall!.args[1] as RequestInit).body as string
     );
     expect(body.include_current_config).to.equal(true);
+    expect(body.scope_mcp_server_name).to.equal('GitHub MCP');
     expect(body.prompt).to.include('GitHub MCP');
     expect(body.prompt).to.include('github_search_issues');
     expect((el as any).starterPolicyDiff).to.deep.equal(generatedDiff);
@@ -1042,5 +1053,52 @@ describe('ToolsView – starter policy suggestions', () => {
 
     expect((el as any).starterPolicyServer.id).to.equal('srv-newer');
     expect((el as any).oauthAlert).to.equal('success');
+  });
+
+  it('refresh scans the server and does not open the starter policy dialog', async () => {
+    servers = [makeServer('srv-1', '2026-02-01T00:00:00Z')];
+    tools = [makeTool('srv-1')];
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(() => !(el as any).loading, 'Initial load did not finish');
+    await el.updateComplete;
+
+    const editor = el.shadowRoot?.querySelector(
+      'tools-editor-component'
+    ) as HTMLElement;
+    const refresh = editor.shadowRoot?.querySelector(
+      'sl-icon-button[name="arrow-clockwise"]'
+    ) as HTMLElement | null;
+    expect(refresh).to.exist;
+    refresh!.click();
+
+    await waitUntil(
+      () =>
+        fetchStub
+          .getCalls()
+          .some(
+            (call) =>
+              String(call.args[0]).includes('/api/v1/mcp-servers/srv-1/scan') &&
+              String(
+                (call.args[1] as RequestInit | undefined)?.method || 'GET'
+              ).toUpperCase() === 'POST'
+          ),
+      'Scan request was not made'
+    );
+    await waitUntil(
+      () => !(el as any).loading,
+      'Reload after scan did not finish'
+    );
+    await el.updateComplete;
+
+    expect((el as any).showStarterPolicyDialog).to.equal(false);
+    expect((el as any)._pendingStarterPolicyServerId).to.equal(null);
+    expect((el as any)._pendingStarterPolicyFallbackToLatest).to.equal(false);
+    const generateCall = fetchStub
+      .getCalls()
+      .find((call) =>
+        String(call.args[0]).endsWith('/api/v1/policies/generate')
+      );
+    expect(generateCall).to.equal(undefined);
   });
 });

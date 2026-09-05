@@ -30,6 +30,7 @@ from preloop.services.policy.schema import (
     ToolDefinition,
     ToolSource,
     UnknownToolsPolicy,
+    is_known_tool_source,
 )
 from preloop.services.policy.loader import (
     PolicyApplier,
@@ -57,6 +58,7 @@ __all__ = [
     # Tools
     "ToolDefinition",
     "ToolSource",
+    "is_known_tool_source",
     "ToolCondition",
     "ConditionAction",
     # Model I/O
