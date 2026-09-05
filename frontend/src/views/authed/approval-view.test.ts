@@ -1,5 +1,6 @@
 import { aTimeout, html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { setViewport } from '@web/test-runner-commands';
 
 import './approval-view';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
@@ -357,24 +358,46 @@ describe('ApprovalView', () => {
     });
   });
 
-  it('keeps the status badge inside a phone viewport', async () => {
-    fetchStub = createFetchStub({ request: pendingRequest() });
-    const holder = (await fixture(
-      html`<div style="width: 375px;">
-        <approval-view .requestId=${'req-1'}></approval-view>
-      </div>`
-    )) as HTMLElement;
-    const element = holder.querySelector('approval-view') as ApprovalView;
+  describe('on a phone viewport', () => {
+    // The viewport is per browser page, so hand it back to the other tests.
+    afterEach(async () => {
+      await setViewport({ width: 1280, height: 800 });
+    });
 
-    await waitUntil(() => !(element as any).loading, 'still loading');
-    await element.updateComplete;
+    it('keeps the header and the decision buttons inside the page', async () => {
+      // A narrow wrapper div would not do: media queries read the window, so the
+      // 640px rules (host padding, the bar's margins, the stacked full-width
+      // buttons) only run when the viewport itself is a phone.
+      await setViewport({ width: 375, height: 800 });
+      fetchStub = createFetchStub({ request: pendingRequest() });
+      const element = (await fixture(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      )) as ApprovalView;
 
-    const badge = element.shadowRoot?.querySelector(
-      '.status-badge'
-    ) as HTMLElement;
-    const badgeRight = badge.getBoundingClientRect().right;
-    const hostRight = element.getBoundingClientRect().right;
-    expect(badgeRight).to.be.at.most(hostRight + 1);
+      await waitUntil(() => !(element as any).loading, 'still loading');
+      await element.updateComplete;
+
+      const hostRight = element.getBoundingClientRect().right;
+      const badge = element.shadowRoot?.querySelector(
+        '.status-badge'
+      ) as HTMLElement;
+      expect(
+        badge.getBoundingClientRect().right,
+        'the status chip overflows the page'
+      ).to.be.at.most(hostRight + 1);
+
+      const buttons = element.shadowRoot?.querySelector(
+        '.decision-buttons'
+      ) as HTMLElement;
+      expect(
+        buttons.getBoundingClientRect().right,
+        'the decision buttons overflow the page'
+      ).to.be.at.most(hostRight + 1);
+      expect(
+        buttons.getBoundingClientRect().width,
+        'the buttons should take the full row on a phone'
+      ).to.be.greaterThan(200);
+    });
   });
 
   it('renders a pending approval request', async () => {
