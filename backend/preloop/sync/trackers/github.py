@@ -223,47 +223,11 @@ class GitHubTracker(BaseTracker):
         data: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Make a request to the GitHub API.
-
-        Args:
-            method: HTTP method (GET, POST, PATCH, PUT, DELETE)
-            endpoint: API endpoint path
-            data: Request body data
-            params: Query parameters
-
-        Returns:
-            Response data
-        """
-        url = (
-            f"{self.API_BASE_URL}{endpoint}"
-            if endpoint.startswith("/")
-            else f"{self.API_BASE_URL}/{endpoint}"
+        """Make a request to the GitHub API and return the JSON body."""
+        body, _headers = await self._request_with_headers(
+            method, endpoint, data, params
         )
-
-        # Get auth headers (may refresh installation token for github_app auth)
-        headers = await self._get_auth_headers()
-
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.request(
-                    method,
-                    url,
-                    headers=headers,
-                    json=data,
-                    params=params,
-                )
-
-                if response.status_code == HTTP_STATUS_UNAUTHORIZED:
-                    raise TrackerAuthenticationError("GitHub authentication failed")
-                elif response.status_code >= 400:
-                    raise TrackerResponseError(
-                        f"GitHub API error: {response.status_code} - {response.text}"
-                    )
-
-                return response.json()
-            except httpx.RequestError as e:
-                raise TrackerConnectionError(f"GitHub connection error: {str(e)}")
+        return body
 
     async def _request_with_headers(
         self,

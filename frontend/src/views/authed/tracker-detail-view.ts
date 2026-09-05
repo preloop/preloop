@@ -674,6 +674,36 @@ export class TrackerDetailView extends LitElement {
     void this._loadPullRequests(false);
   }
 
+  private _retryPullRequests() {
+    void this._loadPullRequests(this._pullRequests.length === 0);
+  }
+
+  private _renderPrsError() {
+    return html`<div class="prs-error">
+      Could not reach ${this._prHost()}.
+      <sl-button
+        size="small"
+        variant="text"
+        @click=${() => this._retryPullRequests()}
+        >Retry</sl-button
+      >
+    </div>`;
+  }
+
+  private _renderPrBranches(pr: PullRequestListItem) {
+    const source = pr.source_branch || '';
+    const target = pr.target_branch || '';
+    if (!source || !target) {
+      return html`<td class="pr-branches"></td>`;
+    }
+    return html`<td class="pr-branches" aria-label="${source} to ${target}">
+      ${source}
+      <span aria-hidden="true"> -> </span>
+      <span class="visually-hidden">to</span>
+      ${target}
+    </td>`;
+  }
+
   private _runReviewer(pr: PullRequestListItem) {
     void openRunPresetDialog({
       presetSlug: 'pull-request-reviewer',
@@ -1017,86 +1047,76 @@ export class TrackerDetailView extends LitElement {
         </div>
         <p class="live-note">Live from ${errorHost}, refreshed every minute.</p>
         ${
-          this._prsError
-            ? html`<div class="prs-error">
-                Could not reach ${errorHost}.
-                <sl-button
-                  size="small"
-                  variant="text"
-                  @click=${() => this._loadPullRequests(true)}
-                  >Retry</sl-button
-                >
+          this._prsLoading && this._pullRequests.length === 0
+            ? html`<div class="spinner-container">
+                <sl-spinner></sl-spinner>
               </div>`
-            : this._prsLoading && this._pullRequests.length === 0
-              ? html`<div class="spinner-container">
-                  <sl-spinner></sl-spinner>
-                </div>`
-              : this._pullRequests.length === 0
-                ? html`<div class="prs-empty">${empty}</div>`
-                : html`
-                    <table class="styled-table">
-                      <thead>
-                        <tr>
-                          <th>Number</th>
-                          <th>Title</th>
-                          <th>Author</th>
-                          <th>Branches</th>
-                          <th>Updated</th>
-                          <th>
-                            <span class="visually-hidden">Actions</span>
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${this._pullRequests.map(
-                          (pr) => html`
-                            <tr>
-                              <td>
-                                <a
-                                  href=${pr.url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  >#${pr.number}</a
-                                >
-                              </td>
-                              <td>${pr.title}</td>
-                              <td>${pr.author || ''}</td>
-                              <td class="pr-branches">
-                                ${pr.source_branch || '?'} ->
-                                ${pr.target_branch || '?'}
-                              </td>
-                              <td title=${pr.updated_at || ''}>
-                                ${
-                                  pr.updated_at
-                                    ? formatRelativeTime(pr.updated_at)
-                                    : ''
-                                }
-                              </td>
-                              <td>
-                                <sl-button
-                                  size="small"
-                                  @click=${() => this._runReviewer(pr)}
-                                  >Run reviewer</sl-button
-                                >
-                              </td>
-                            </tr>
-                          `
-                        )}
-                      </tbody>
-                    </table>
-                    ${
-                      this._prsHasMore
-                        ? html`<sl-button
-                            class="load-more"
-                            size="small"
-                            variant="text"
-                            ?loading=${this._prsLoading}
-                            @click=${() => this._loadMorePullRequests()}
-                            >Load more</sl-button
-                          >`
-                        : ''
-                    }
-                  `
+            : this._pullRequests.length === 0
+              ? this._prsError
+                ? this._renderPrsError()
+                : html`<div class="prs-empty">${empty}</div>`
+              : html`
+                  <table class="styled-table">
+                    <thead>
+                      <tr>
+                        <th>Number</th>
+                        <th>Title</th>
+                        <th>Author</th>
+                        <th>Branches</th>
+                        <th>Updated</th>
+                        <th>
+                          <span class="visually-hidden">Actions</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${this._pullRequests.map(
+                        (pr) => html`
+                          <tr>
+                            <td>
+                              <a
+                                href=${pr.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                >#${pr.number}</a
+                              >
+                            </td>
+                            <td>${pr.title}</td>
+                            <td>${pr.author || ''}</td>
+                            ${this._renderPrBranches(pr)}
+                            <td title=${pr.updated_at || ''}>
+                              ${
+                                pr.updated_at
+                                  ? formatRelativeTime(pr.updated_at)
+                                  : ''
+                              }
+                            </td>
+                            <td>
+                              <sl-button
+                                size="small"
+                                @click=${() => this._runReviewer(pr)}
+                                >Run reviewer</sl-button
+                              >
+                            </td>
+                          </tr>
+                        `
+                      )}
+                    </tbody>
+                  </table>
+                  ${
+                    this._prsHasMore
+                      ? html`<sl-button
+                          class="load-more"
+                          size="small"
+                          variant="text"
+                          ?loading=${this._prsLoading}
+                          @click=${() => this._loadMorePullRequests()}
+                          >Load more</sl-button
+                        >`
+                      : ''
+                  }
+                  ${this._prsError ? this._renderPrsError() : ''}
+                `
         }
       </sl-card>
     `;

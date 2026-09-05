@@ -26,6 +26,7 @@ interface StubOpts {
   pullRequests?: unknown[];
   prHasMore?: boolean;
   prSupported?: boolean;
+  pullRequestHandler?: (url: string) => Response | null;
 }
 
 function stubFetch(opts: StubOpts = {}) {
@@ -36,6 +37,7 @@ function stubFetch(opts: StubOpts = {}) {
     pullRequests = [],
     prHasMore = false,
     prSupported = true,
+    pullRequestHandler,
   } = opts;
   return sinon
     .stub(window, 'fetch')
@@ -65,6 +67,8 @@ function stubFetch(opts: StubOpts = {}) {
         });
       }
       if (url.includes('/pull-requests')) {
+        const override = pullRequestHandler?.(url);
+        if (override) return override;
         return json({
           items: pullRequests,
           page: 1,
@@ -399,6 +403,93 @@ describe('TrackerDetailView', () => {
     expect(text).to.contain('#7');
     const actionsHeader = el.shadowRoot?.querySelector('th .visually-hidden');
     expect(actionsHeader?.textContent?.trim()).to.equal('Actions');
+    const branches = el.shadowRoot?.querySelector('.pr-branches');
+    expect(branches?.getAttribute('aria-label')).to.equal('feature to main');
+    expect(
+      branches?.querySelector('[aria-hidden="true"]')?.textContent
+    ).to.contain('->');
+    expect(
+      branches?.querySelector('.visually-hidden')?.textContent?.trim()
+    ).to.equal('to');
+  });
+
+  it('leaves the Branches cell empty when a branch is missing', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=pull-requests&project=${projectA.id}`
+    );
+    fetchStub = stubFetch({
+      pullRequests: [
+        {
+          number: 12,
+          iid: 12,
+          title: 'Add login',
+          url: 'https://github.com/acme/widgets/pull/12',
+          author: 'janedoe',
+          source_branch: '',
+          target_branch: 'main',
+          state: 'open',
+          draft: false,
+          updated_at: '2026-01-03T00:00:00Z',
+        },
+      ],
+    });
+    const el = await mountView();
+    await (
+      el as unknown as { _loadPullRequests: (reset: boolean) => Promise<void> }
+    )._loadPullRequests(true);
+    await el.updateComplete;
+    const branches = el.shadowRoot?.querySelector('.pr-branches');
+    expect(branches?.textContent?.trim()).to.equal('');
+    expect(el.shadowRoot?.textContent).to.not.contain('? ->');
+  });
+
+  it('keeps rows when Load more fails', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=pull-requests&project=${projectA.id}`
+    );
+    fetchStub = stubFetch({
+      pullRequests: [
+        {
+          number: 12,
+          iid: 12,
+          title: 'Add login',
+          url: 'https://github.com/acme/widgets/pull/12',
+          author: 'janedoe',
+          source_branch: 'feature',
+          target_branch: 'main',
+          state: 'open',
+          draft: false,
+          updated_at: '2026-01-03T00:00:00Z',
+        },
+      ],
+      prHasMore: true,
+      pullRequestHandler: (url) => {
+        if (url.includes('page=2')) {
+          return new Response(JSON.stringify({ detail: 'fail' }), {
+            status: 502,
+          });
+        }
+        return null;
+      },
+    });
+    const el = await mountView();
+    await (
+      el as unknown as { _loadPullRequests: (reset: boolean) => Promise<void> }
+    )._loadPullRequests(true);
+    await el.updateComplete;
+    expect(el.shadowRoot?.textContent).to.contain('Add login');
+    (
+      el as unknown as { _loadMorePullRequests: () => void }
+    )._loadMorePullRequests();
+    await tick(50);
+    await el.updateComplete;
+    expect(el.shadowRoot?.textContent).to.contain('Add login');
+    expect(el.shadowRoot?.textContent).to.contain('Could not reach GitHub.');
+    expect(el.shadowRoot?.querySelector('table.styled-table')).to.exist;
   });
 
   it('hides tab for jira', async () => {

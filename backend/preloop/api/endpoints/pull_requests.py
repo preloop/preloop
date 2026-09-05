@@ -8,15 +8,17 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Literal, Optional, Tuple
 from uuid import UUID
 
+import gitlab.exceptions
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
 from preloop.api.common import get_tracker_client
-from preloop.models.crud import crud_organization, crud_project, crud_tracker
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.user import User
 from preloop.schemas.pull_request import PullRequestListResponse
+from preloop.services.preset_runner import PresetRunnerError, _load_visible_project
 from preloop.sync.exceptions import TrackerError
 from preloop.utils.permissions import require_permission
 
@@ -50,7 +52,15 @@ def _cache_get(key: Tuple[str, str, str, int, int]) -> Optional[dict]:
 
 
 def _cache_set(key: Tuple[str, str, str, int, int], payload: dict) -> None:
-    _PR_LIST_CACHE[key] = (time.monotonic() + _PR_LIST_TTL_SECONDS, payload)
+    now = time.monotonic()
+    expired = [
+        cached
+        for cached, (expires_at, _) in _PR_LIST_CACHE.items()
+        if expires_at <= now
+    ]
+    for cached in expired:
+        _PR_LIST_CACHE.pop(cached, None)
+    _PR_LIST_CACHE[key] = (now + _PR_LIST_TTL_SECONDS, payload)
 
 
 def _unsupported_response(page: int, limit: int) -> PullRequestListResponse:
@@ -75,35 +85,6 @@ def _tracker_kind(tracker_type: str) -> str:
     return "other"
 
 
-def _load_visible_project_and_tracker(
-    db: Session, project_id: UUID, account_id: UUID
-) -> Tuple[Any, Any, Any]:
-    """Return ``(project, organization, tracker)`` if the project is visible."""
-    project = crud_project.get(db, id=str(project_id), account_id=str(account_id))
-    if project is None:
-        project = crud_project.get(db, id=str(project_id))
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    user_trackers = crud_tracker.get_for_account(db, account_id=account_id)
-    tracker_ids = {str(item.id) for item in user_trackers}
-    organization = crud_organization.get(db, id=project.organization_id)
-    if not organization or str(organization.tracker_id) not in tracker_ids:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    tracker = next(
-        (
-            item
-            for item in user_trackers
-            if str(item.id) == str(organization.tracker_id)
-        ),
-        None,
-    )
-    if tracker is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project, organization, tracker
-
-
 @router.get(
     "/projects/{project_id}/pull-requests",
     response_model=PullRequestListResponse,
@@ -119,9 +100,12 @@ async def list_project_pull_requests(
     current_user: User = Depends(get_current_active_user),
 ) -> PullRequestListResponse:
     """List open pull requests (GitHub) or merge requests (GitLab) for a project."""
-    project, organization, tracker = _load_visible_project_and_tracker(
-        db, project_id, current_user.account_id
-    )
+    try:
+        project, tracker, organization = _load_visible_project(
+            db, project_id=project_id, account_id=current_user.account_id
+        )
+    except PresetRunnerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     kind = _tracker_kind(tracker.tracker_type)
     if kind not in ("github", "gitlab"):
         return _unsupported_response(page, limit)
@@ -147,7 +131,7 @@ async def list_project_pull_requests(
     except TrackerError as exc:
         logger.warning("Tracker request failed listing pull requests: %s", exc)
         raise HTTPException(status_code=502, detail="Tracker request failed") from exc
-    except Exception as exc:
+    except (httpx.HTTPError, gitlab.exceptions.GitlabError) as exc:
         logger.exception("Unexpected tracker error listing pull requests")
         raise HTTPException(status_code=502, detail="Tracker request failed") from exc
 
