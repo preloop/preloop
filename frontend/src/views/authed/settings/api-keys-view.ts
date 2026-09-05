@@ -621,7 +621,7 @@ export class ApiKeysView extends LitElement {
                 <th>Last activity</th>
                 <th>Recent usage</th>
                 <th>Expires</th>
-                <th>Actions</th>
+                <th class="actions-cell">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -916,6 +916,11 @@ export class ApiKeysView extends LitElement {
         text-align: right;
         width: 1%;
         white-space: nowrap;
+      }
+      /* The Actions header sits over a right-aligned column, so it is
+         right-aligned too. */
+      th.actions-cell {
+        text-align: right;
       }
       .empty-row {
         color: var(--console-meta-color, var(--sl-color-neutral-600));
