@@ -1509,6 +1509,22 @@ def read_flow(
     flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
+    # The same lifetime counts the list carries. The detail page shows ten
+    # recent runs and has to be able to say how many there are in total; a
+    # link that reads "View all executions" over 95 of them tells the operator
+    # nothing about whether it is worth the click.
+    stats = crud_flow_execution.get_execution_stats_for_flows(db, [flow.id])
+    stat = stats[0] if stats else None
+    flow.execution_stats = {
+        "total_execs": int(getattr(stat, "total_execs", 0) or 0),
+        "running_execs": int(getattr(stat, "running_execs", 0) or 0),
+        "last_seen_at": (
+            stat.last_seen_at.isoformat()
+            if stat and getattr(stat, "last_seen_at", None)
+            else None
+        ),
+        "estimated_cost": float(getattr(stat, "estimated_cost", 0.0) or 0.0),
+    }
     return flow
 
 

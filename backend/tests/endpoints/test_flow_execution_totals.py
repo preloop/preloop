@@ -241,3 +241,20 @@ async def test_flow_stats_without_a_window_are_unchanged(db_session, test_user):
 
     assert stats["total_execs"] == 1
     assert "runs" not in stats
+
+
+@pytest.mark.asyncio
+async def test_flow_detail_carries_the_execution_count(db_session, test_user):
+    """The detail page needs the total to offer "View all N executions"."""
+    flow = _create_flow(db_session, test_user, name="Detail Stats Flow")
+    for _ in range(3):
+        crud_flow_execution.create(
+            db_session, FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED")
+        )
+
+    detail = await maybe_await(
+        flows.read_flow(db=db_session, flow_id=flow.id, current_user=test_user)
+    )
+
+    assert detail.execution_stats["total_execs"] == 3
+    assert detail.execution_stats["running_execs"] == 0
