@@ -56,10 +56,35 @@ func NormalizeVersion(v string) string {
 	return strings.TrimPrefix(strings.TrimSpace(v), "v")
 }
 
-// parsedVersion is a numeric X.Y.Z with an optional prerelease suffix.
+// parsedVersion is a numeric X.Y.Z with either an optional semver
+// prerelease suffix (beta.1, rc1) or a git-describe distance: the "N" in
+// X.Y.Z-N-g<hex>, meaning N commits after the X.Y.Z tag. The two are
+// mutually exclusive; a describe build has pre == "" and commits >= 0.
 type parsedVersion struct {
-	parts []int
-	pre   string
+	parts   []int
+	pre     string
+	commits int
+}
+
+// parseGitDescribeDistance recognises the "N-g<hex>" tail that
+// `git describe --tags` appends to the nearest tag (for example
+// "678-g5c9e8bc3") and returns N. Any other suffix is a real prerelease.
+func parseGitDescribeDistance(pre string) (int, bool) {
+	count, hash, ok := strings.Cut(pre, "-")
+	if !ok || count == "" || len(hash) < 2 || hash[0] != 'g' {
+		return 0, false
+	}
+	n, err := strconv.Atoi(count)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	for _, r := range hash[1:] {
+		isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+		if !isHex {
+			return 0, false
+		}
+	}
+	return n, true
 }
 
 func parseSemver(v string) (parsedVersion, bool) {
@@ -69,6 +94,9 @@ func parseSemver(v string) (parsedVersion, bool) {
 	if s == "" || s == "dev" {
 		return parsedVersion{}, false
 	}
+	// `git describe --dirty` appends "-dirty" to either form. Uncommitted
+	// changes do not move the build relative to the tag, so drop the marker.
+	s = strings.TrimSuffix(s, "-dirty")
 	core, pre, _ := strings.Cut(s, "-")
 	core, _, _ = strings.Cut(core, "+")
 	pre, _, _ = strings.Cut(pre, "+")
@@ -84,7 +112,12 @@ func parseSemver(v string) (parsedVersion, bool) {
 		}
 		parts[i] = n
 	}
-	return parsedVersion{parts: parts, pre: pre}, true
+	parsed := parsedVersion{parts: parts, pre: pre}
+	if commits, ok := parseGitDescribeDistance(pre); ok {
+		parsed.pre = ""
+		parsed.commits = commits
+	}
+	return parsed, true
 }
 
 func compareParsed(a, b parsedVersion) int {
@@ -114,10 +147,20 @@ func compareParsed(a, b parsedVersion) int {
 	if !aPre && bPre {
 		return 1
 	}
-	if !aPre && !bPre {
+	if aPre && bPre {
+		return comparePrerelease(a.pre, b.pre)
+	}
+	// Neither side is a prerelease. A git-describe build N commits past
+	// the tag is newer than the tag itself, and further past is newer
+	// still; two plain releases (commits == 0) compare equal.
+	switch {
+	case a.commits < b.commits:
+		return -1
+	case a.commits > b.commits:
+		return 1
+	default:
 		return 0
 	}
-	return comparePrerelease(a.pre, b.pre)
 }
 
 func comparePrerelease(a, b string) int {
@@ -175,9 +218,12 @@ func parsePrereleaseInt(s string) (int, bool) {
 	return n, true
 }
 
-// CompareVersions compares [v]X.Y.Z strings (optional prerelease after '-').
-// Returns -1 if a < b, 0 if a == b, 1 if a > b. ok is false when either
-// side is not a parseable version (for example "dev").
+// CompareVersions compares [v]X.Y.Z strings. A '-' suffix is either a
+// semver prerelease (X.Y.Z-beta.1, lower than X.Y.Z) or the git-describe
+// form X.Y.Z-N-g<hex>[-dirty] produced by `make build` on a checkout N
+// commits past the tag (higher than X.Y.Z). Returns -1 if a < b, 0 if
+// a == b, 1 if a > b. ok is false when either side is not a parseable
+// version (for example "dev" or a bare commit hash).
 func CompareVersions(a, b string) (cmp int, ok bool) {
 	pa, oka := parseSemver(a)
 	pb, okb := parseSemver(b)

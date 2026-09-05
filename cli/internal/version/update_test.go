@@ -474,3 +474,61 @@ func TestForceCheckStillUsedByUpdateLookup(t *testing.T) {
 		t.Fatalf("latest = %q", info.LatestVersion)
 	}
 }
+
+func TestUpdateAvailableGitDescribeBuilds(t *testing.T) {
+	// `make build` stamps Version from `git describe --tags --always --dirty`,
+	// so a dev build N commits past the last tag reads X.Y.Z-N-g<hex>. That
+	// is newer than the X.Y.Z release, not a prerelease of it; otherwise every
+	// dev build nags "update available" daily and would downgrade itself.
+	cases := []struct {
+		name    string
+		current string
+		latest  string
+		want    bool
+	}{
+		{"describe build vs its tag", "0.15.0-678-g5c9e8bc3", "0.15.0", false},
+		{"v-prefixed describe build vs its tag", "v0.15.0-678-g5c9e8bc3", "0.15.0", false},
+		{"describe build vs next patch", "0.15.0-678-g5c9e8bc3", "0.15.1", true},
+		{"describe build vs next minor", "0.15.0-678-g5c9e8bc3", "0.16.0", true},
+		{"dirty describe build vs its tag", "0.15.0-678-g5c9e8bc3-dirty", "0.15.0", false},
+		{"dirty exact tag vs its tag", "0.15.0-dirty", "0.15.0", false},
+		{"beta prerelease vs release", "0.15.0-beta.1", "0.15.0", true},
+		{"rc prerelease vs release", "0.15.0-rc1", "0.15.0", true},
+		{"rc prerelease vs older release", "0.15.0-rc1", "0.14.9", false},
+		{"bare hash (no tags) vs release", "5c9e8bc3", "0.15.0", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := UpdateAvailable(tc.current, tc.latest); got != tc.want {
+				t.Fatalf("UpdateAvailable(%q, %q) = %v, want %v", tc.current, tc.latest, got, tc.want)
+			}
+		})
+	}
+
+	cmp := func(a, b string) int {
+		t.Helper()
+		got, ok := CompareVersions(a, b)
+		if !ok {
+			t.Fatalf("CompareVersions(%q, %q) unparseable", a, b)
+		}
+		return got
+	}
+	if got := cmp("0.15.0-678-g5c9e8bc3", "0.15.0"); got != 1 {
+		t.Errorf("describe build > release = %d", got)
+	}
+	if got := cmp("0.15.0-679-gabcdef01", "0.15.0-678-g5c9e8bc3"); got != 1 {
+		t.Errorf("more commits past tag > fewer = %d", got)
+	}
+	if got := cmp("0.15.0-0-g5c9e8bc3", "0.15.0"); got != 0 {
+		t.Errorf("describe --long on the exact tag == release = %d", got)
+	}
+	if got := cmp("0.15.0-678-g5c9e8bc3", "0.15.0-beta.1"); got != 1 {
+		t.Errorf("describe build > prerelease of same tag = %d", got)
+	}
+	if got := cmp("0.15.0-beta.1", "0.15.0"); got != -1 {
+		t.Errorf("prerelease < release = %d", got)
+	}
+	if got := cmp("0.15.0-678-g5c9e8bc3-dirty", "0.15.0-678-g5c9e8bc3"); got != 0 {
+		t.Errorf("dirty marker must not change ordering = %d", got)
+	}
+}

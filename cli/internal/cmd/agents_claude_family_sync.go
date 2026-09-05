@@ -178,7 +178,7 @@ func syncClaudeSiblingFamilyAIModels(
 
 // ensureClaudeFamilyAIModel finds or creates the account AI model for one
 // sibling family, reusing the primary model's credential secret on create and
-// refreshing gateway metadata on reuse.
+// on reuse (subscription OAuth must stay one live lineage, never a copy).
 func ensureClaudeFamilyAIModel(
 	client *api.Client,
 	existing []aiModelResponse,
@@ -210,10 +210,16 @@ func ensureClaudeFamilyAIModel(
 		)
 		metaData["managed_by"] = "preloop agents onboard"
 		metaData["source_agent"] = siblingUpstream.SourceAgent
-		if equalJSONMap(target.MetaData, metaData) && target.HasAPIKey {
+		primarySecret := strings.TrimSpace(primaryModel.CredentialsSecretID)
+		sameSecret := primarySecret != "" &&
+			strings.TrimSpace(target.CredentialsSecretID) == primarySecret
+		if equalJSONMap(target.MetaData, metaData) && target.HasAPIKey && sameSecret {
 			return target, nil
 		}
 		update := map[string]interface{}{"meta_data": metaData}
+		if primarySecret != "" && !sameSecret {
+			update["credentials_secret_id"] = primarySecret
+		}
 		var updated aiModelResponse
 		if err := client.Put("/api/v1/ai-models/"+target.ID, update, &updated); err != nil {
 			return nil, fmt.Errorf(
