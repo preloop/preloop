@@ -1572,13 +1572,14 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   }
 
   /**
-   * True when the account default asks a human before a native tool call.
-   * `null` means "not set", which the backend treats as enforced. With the
-   * defaults unread we claim nothing, and the strip states no default.
+   * Account default for a native tool with no rule of its own.
+   * `true` asks a human, `false` runs without asking, `null` is unread or
+   * failed to load — the backend treats an unset default as enforce, so we
+   * must not claim "allowed" until this value is known.
    */
-  private _nativeAsksByDefault(): boolean {
+  private _nativeAsksByDefault(): boolean | null {
     if (!this.governanceDefaults) {
-      return false;
+      return null;
     }
     return this.governanceDefaults.native_tool_approvals !== 'off';
   }
@@ -2036,7 +2037,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
             ? html`<span class="strip-sep" aria-hidden="true">·</span>
                 <span class="strip-note"
                   >${
-                    this._nativeAsksByDefault()
+                    this._nativeAsksByDefault() === true
                       ? 'asks a human by default'
                       : 'runs without asking by default'
                   }</span

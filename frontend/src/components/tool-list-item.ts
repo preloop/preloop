@@ -32,10 +32,11 @@ export class ToolListItem extends LitElement {
   @property({ type: Object }) usageStat: GatewayUsageByTool | null = null;
   /**
    * Account default for native tool calls ("Ask a human before running").
-   * A native row with no rules of its own is governed by this, so the row
-   * has to say so instead of claiming every call is allowed.
+   * `true` / `false` once the defaults have loaded; `null` while unread or
+   * after a load failure. A native row with no rules of its own is governed
+   * by this, so it must not claim "allowed" until the value is known.
    */
-  @property({ type: Boolean }) accountAsksByDefault = false;
+  @property({ attribute: false }) accountAsksByDefault: boolean | null = null;
 
   @state() private _showJustificationDialog = false;
   @state() private _justificationMode: string = 'disabled';
@@ -332,13 +333,19 @@ export class ToolListItem extends LitElement {
    * What happens to a call when the tool carries no rule of its own. Native
    * tools fall through to the account default, so "No rules" alone (or
    * "allow all") states the wrong policy whenever that default is on.
+   * Returns null when the default is unread so the row claims nothing.
    */
-  private _noRulesEffect(): string {
+  private _noRulesEffect(): string | null {
     if (!this.tool.is_enabled) {
       return 'blocked';
     }
-    if (this._isNativeTool() && this.accountAsksByDefault) {
-      return 'asks a human (account default)';
+    if (this._isNativeTool()) {
+      if (this.accountAsksByDefault === null) {
+        return null;
+      }
+      if (this.accountAsksByDefault) {
+        return 'asks a human (account default)';
+      }
     }
     return 'allowed';
   }
@@ -348,8 +355,9 @@ export class ToolListItem extends LitElement {
 
     if (summary.total === 0) {
       if (this._isNativeTool()) {
+        const effect = this._noRulesEffect();
         return html`<span class="no-rules"
-          >No rules · ${this._noRulesEffect()}</span
+          >${effect ? `No rules · ${effect}` : 'No rules'}</span
         >`;
       }
       if (this.tool.is_enabled) {
@@ -435,6 +443,9 @@ export class ToolListItem extends LitElement {
   private _emptyRulesMessage(): string {
     if (!this.tool.is_enabled) {
       return 'No access rules configured. All calls to this tool are blocked (tool disabled).';
+    }
+    if (this._isNativeTool() && this.accountAsksByDefault === null) {
+      return 'No access rules configured.';
     }
     if (this._isNativeTool() && this.accountAsksByDefault) {
       return 'No access rules configured. Calls to this tool ask a human first, from the account default.';

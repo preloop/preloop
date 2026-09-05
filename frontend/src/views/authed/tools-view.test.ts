@@ -660,6 +660,9 @@ describe('ToolsView – tabs and toolbar', () => {
   let tools: Record<string, unknown>[];
   let workflows: Record<string, unknown>[];
   let governanceDefaults: Record<string, unknown>;
+  let failGovernanceGet: boolean;
+  let holdGovernanceGet: Promise<Response> | null;
+  let releaseHeldGovernance: ((response: Response) => void) | null;
 
   function makeTool(
     overrides: Record<string, unknown> = {}
@@ -724,6 +727,15 @@ describe('ToolsView – tabs and toolbar', () => {
           });
         }
         if (url.endsWith('/api/v1/account/governance-defaults')) {
+          if (holdGovernanceGet) {
+            return holdGovernanceGet;
+          }
+          if (failGovernanceGet) {
+            return new Response(
+              JSON.stringify({ detail: 'Simulated GET failure' }),
+              { status: 500, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
           return new Response(
             JSON.stringify({
               defaults: governanceDefaults,
@@ -767,6 +779,9 @@ describe('ToolsView – tabs and toolbar', () => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
     tools = [makeTool()];
+    failGovernanceGet = false;
+    holdGovernanceGet = null;
+    releaseHeldGovernance = null;
     governanceDefaults = {
       native_tool_approvals: null,
       approval_workflow_id: null,
@@ -792,6 +807,16 @@ describe('ToolsView – tabs and toolbar', () => {
   });
 
   afterEach(() => {
+    if (releaseHeldGovernance) {
+      releaseHeldGovernance(
+        new Response(JSON.stringify({ detail: 'teardown' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+      releaseHeldGovernance = null;
+    }
+    holdGovernanceGet = null;
     fetchStub.restore();
     localStorage.removeItem('preloop.tools.view_mode');
     localStorage.clear();
@@ -1112,6 +1137,27 @@ describe('ToolsView – tabs and toolbar', () => {
     };
   }
 
+  async function nativeNoRulesText(el: ToolsView): Promise<string | undefined> {
+    await waitUntil(() => {
+      const nativeEditor = el.shadowRoot?.querySelector(
+        'sl-tab-panel[name="native"] tools-editor-component'
+      ) as LitElement | null;
+      return Boolean(nativeEditor?.shadowRoot?.querySelector('tool-list-item'));
+    }, 'Native tool row did not render');
+    const nativeEditor = el.shadowRoot?.querySelector(
+      'sl-tab-panel[name="native"] tools-editor-component'
+    ) as LitElement;
+    await nativeEditor.updateComplete;
+    const item = nativeEditor.shadowRoot?.querySelector(
+      'tool-list-item'
+    ) as LitElement;
+    await item.updateComplete;
+    return item.shadowRoot
+      ?.querySelector('.no-rules')
+      ?.textContent?.replace(/\s+/g, ' ')
+      .trim();
+  }
+
   it('native tab lists agent-source tools from the API and opens the rule editor with the tool parameters', async () => {
     tools = [
       makeTool(),
@@ -1315,6 +1361,77 @@ describe('ToolsView – tabs and toolbar', () => {
     ).to.equal(
       '1 tool · 1 allowed · 0 blocked · 0 with rules · runs without asking by default'
     );
+  });
+
+  it('ruleless native rows claim no effect while governance defaults are unread', async () => {
+    holdGovernanceGet = new Promise((resolve) => {
+      releaseHeldGovernance = resolve;
+    });
+    tools = [makeNativeTool()];
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => !(el as any).loading && (el as any).tools?.length === 1,
+      'Tools did not load'
+    );
+    await el.updateComplete;
+
+    expect((el as any).governanceDefaults).to.equal(null);
+    expect((el as any)._nativeAsksByDefault()).to.equal(null);
+    expect(await nativeNoRulesText(el)).to.equal('No rules');
+    expect(await nativeNoRulesText(el)).to.not.include('allowed');
+    expect(await nativeNoRulesText(el)).to.not.include('asks a human');
+
+    releaseHeldGovernance!(
+      new Response(
+        JSON.stringify({
+          defaults: governanceDefaults,
+          override_agent_ids: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+    releaseHeldGovernance = null;
+    holdGovernanceGet = null;
+    await waitUntil(
+      () => (el as any).governanceDefaults !== null,
+      'Governance defaults did not load after release'
+    );
+    await el.updateComplete;
+    expect(await nativeNoRulesText(el)).to.equal(
+      'No rules · asks a human (account default)'
+    );
+  });
+
+  it('ruleless native rows do not claim allowed when governance defaults fail to load', async () => {
+    failGovernanceGet = true;
+    tools = [makeNativeTool()];
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => !(el as any).loading && (el as any).governanceLoadFailed,
+      'Governance load failure was not recorded'
+    );
+    await el.updateComplete;
+
+    expect((el as any)._nativeAsksByDefault()).to.equal(null);
+    expect(
+      el.shadowRoot?.querySelector('#native-approvals-defaults-card')
+        ?.textContent
+    ).to.include('Could not load this setting');
+    expect(await nativeNoRulesText(el)).to.equal('No rules');
+    expect(await nativeNoRulesText(el)).to.not.include('allowed');
+    expect(await nativeNoRulesText(el)).to.not.include('asks a human');
   });
 
   it('saving a native rule creates an agent-source configuration without a server id', async () => {

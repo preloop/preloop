@@ -223,7 +223,7 @@ describe('ToolListItem – justification settings', () => {
 
   async function createNativeItem(
     toolOverrides: Partial<typeof baseTool> = {},
-    accountAsksByDefault = false
+    accountAsksByDefault: boolean | null = false
   ) {
     const tool = {
       ...baseTool,
@@ -270,6 +270,23 @@ describe('ToolListItem – justification settings', () => {
     const el = await createNativeItem({ is_enabled: true }, false);
 
     expect(ruleSummaryText(el)).to.equal('No rules · allowed');
+    expect((el as any)._emptyRulesMessage()).to.contain(
+      'All calls to this tool are allowed'
+    );
+  });
+
+  it('says only No rules when the account default is unread', async () => {
+    stubApi();
+    const el = await createNativeItem({ is_enabled: true }, null);
+
+    expect(ruleSummaryText(el)).to.equal('No rules');
+    expect(ruleSummaryText(el)).to.not.include('allowed');
+    expect(ruleSummaryText(el)).to.not.include('asks a human');
+    expect((el as any)._emptyRulesMessage()).to.equal(
+      'No access rules configured.'
+    );
+    expect((el as any)._emptyRulesMessage()).to.not.include('allowed');
+    expect((el as any)._emptyRulesMessage()).to.not.include('ask a human');
   });
 
   it('says a ruleless native tool is blocked when the switch is on', async () => {
