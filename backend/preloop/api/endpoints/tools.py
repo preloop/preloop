@@ -55,6 +55,7 @@ from preloop.tools.builtin_defs import (
     PERMISSION_PROMPT_TOOL,
     RESOLVE_SBOM_UPSTREAMS_TOOL,
 )
+from preloop.tools.native_defs import NATIVE_TOOL_NAMES, NATIVE_TOOLS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -502,6 +503,56 @@ def get_tool_usage_stats(
     )
 
 
+def _native_tool_row(
+    *,
+    name: str,
+    description: str,
+    adapters: List[str],
+    parameters: Dict[str, Any],
+    config: Any,
+    rules_by_config: Dict[str, list],
+    condition_map: Dict[str, bool],
+    agent_scoped_enables: Dict[tuple, list],
+) -> Dict[str, Any]:
+    """Build a list-endpoint row for a native (agent-source) tool."""
+    config_id = str(config.id) if config else None
+    justification_mode = config.justification_mode if config else None
+    if justification_mode is not None and not isinstance(justification_mode, str):
+        justification_mode = None
+    schema = {"type": "object", "properties": parameters}
+    has_condition = bool(config_id and condition_map.get(config_id, False))
+    return {
+        "name": name,
+        "description": description,
+        "source": "agent",
+        "source_id": None,
+        "source_name": "Agent",
+        "adapters": list(adapters),
+        "parameters": parameters,
+        "schema": schema,
+        "is_enabled": config.is_enabled if config else True,
+        "requires_tracker": False,
+        "required_tracker_types": [],
+        "is_supported": True,
+        "unsupported_reason": None,
+        "approval_workflow_id": str(config.approval_workflow_id)
+        if config and config.approval_workflow_id
+        else None,
+        "config_id": config_id,
+        "has_condition": has_condition,
+        "has_approval_condition": has_condition,
+        "access_rules": rules_by_config.get(config_id, []) if config_id else [],
+        "justification_mode": justification_mode,
+        "enabled_for_agents": agent_scoped_enables.get((name, "agent", None), []),
+        "schema_tokens_estimate": estimate_tool_schema_tokens(
+            name=name,
+            description=description,
+            schema=schema,
+            justification_mode=justification_mode,
+        ),
+    }
+
+
 @router.get("/tools", response_model=List[Dict])
 @require_permission("view_tools")
 def list_all_tools(
@@ -514,6 +565,8 @@ def list_all_tools(
     Returns a comprehensive list of:
     - All builtin tools
     - All tools from active MCP servers
+    - Native agent tools from the catalogue, plus any seen agent-source
+      configurations that are not in the catalogue
     - Configuration status for each tool (enabled/disabled, preloop)
 
     Args:
@@ -696,9 +749,53 @@ def list_all_tools(
                 }
             )
 
+    builtin_and_mcp_count = len(tools)
+
+    for native_tool in NATIVE_TOOLS:
+        native_key = (native_tool["name"], "agent", None)
+        config = config_map.get(native_key)
+        tools.append(
+            _native_tool_row(
+                name=native_tool["name"],
+                description=native_tool["description"],
+                adapters=native_tool["adapters"],
+                parameters=native_tool["parameters"],
+                config=config,
+                rules_by_config=rules_by_config,
+                condition_map=condition_map,
+                agent_scoped_enables=agent_scoped_enables,
+            )
+        )
+
+    for (tool_name, tool_source, mcp_server_id), config in config_map.items():
+        if tool_source != "agent" or mcp_server_id is not None:
+            continue
+        if tool_name in NATIVE_TOOL_NAMES:
+            continue
+        seen_parameters: Dict[str, Any] = {}
+        if isinstance(getattr(config, "tool_schema", None), dict):
+            properties = config.tool_schema.get("properties")
+            if isinstance(properties, dict):
+                seen_parameters = properties
+        tools.append(
+            _native_tool_row(
+                name=tool_name,
+                description=config.tool_description or "",
+                adapters=[],
+                parameters=seen_parameters,
+                config=config,
+                rules_by_config=rules_by_config,
+                condition_map=condition_map,
+                agent_scoped_enables=agent_scoped_enables,
+            )
+        )
+
+    native_count = len(tools) - builtin_and_mcp_count
     logger.info(
         f"Returning {len(tools)} tools for account {account.id} "
-        f"({len(BUILTIN_TOOLS)} builtin, {len(tools) - len(BUILTIN_TOOLS)} external)"
+        f"({len(BUILTIN_TOOLS)} builtin, "
+        f"{builtin_and_mcp_count - len(BUILTIN_TOOLS)} external, "
+        f"{native_count} native)"
     )
 
     return tools
