@@ -244,15 +244,8 @@ interface TopModelSubjectGroup {
 export const NEXT_STEPS_DISMISSED_KEY = 'dashboard_next_steps_dismissed';
 
 /**
- * What the last completed load concluded about the checklist. The card is
- * derived from four separate fetches; before they land, every step looks
- * undone, which is how a finished account saw "Next steps" flash back on
- * every refresh. Remembering the answer means the page can stay quiet until
- * it knows better.
+ * The wire formats the model gateway speaks, as URL prefixes.
  */
-export const NEXT_STEPS_DONE_KEY = 'dashboard_next_steps_all_done';
-
-/** The wire formats the model gateway speaks, as URL prefixes. */
 type GatewayFormat = '/openai/v1' | '/anthropic/v1' | '/google/v1';
 
 interface NextStep {
@@ -284,16 +277,22 @@ export class DashboardView extends AuthedElement {
    */
   @state() private updatingUsage = false;
   @state() private fetchingRecentExecutions = true;
-  /**
-   * Flows, their runs, the resolved approvals and the gateway call log: the
-   * cards below the fold. They are fetched after the first paint, so the
-   * Inventory tabs that read them say "still coming" while the tabs that are
-   * already filled show their rows.
-   */
-  @state() private fetchingInventory = true;
   @state() private fetchingApprovals = true;
   @state() private fetchingAudit = true;
   @state() private fetchingMCPAndTools = true;
+  /**
+   * Cheap identity lists for the Inventory tabs. Each one is its own
+   * request and paints the moment it lands (D32), so a slow models call
+   * cannot hide a flows list the page already has. Usage columns have
+   * their own flags below.
+   */
+  @state() private fetchingFlows = true;
+  @state() private fetchingModels = true;
+  @state() private fetchingTools = true;
+  /** Flow executions that fill last-run / runs / failed. */
+  @state() private fetchingFlowUsage = true;
+  /** `GET /ai-models/overview`, the Models tab's usage. */
+  @state() private fetchingModelUsage = true;
   /**
    * The users list is its own request now: it used to wait behind MCP
    * servers, tools, models and API keys in one `Promise.all`, so the Users
@@ -352,7 +351,13 @@ export class DashboardView extends AuthedElement {
   @state() private gatewayTimeRange: 'day' | 'week' | 'month' | 'year' =
     'month';
   @state() private fetchingBudget = false;
-  @state() private fetchingAgents = false;
+  /**
+   * Starts true so Next steps and the welcome wizard stay hidden before the
+   * first fold. `!this.loading` used to be the checklist gate; the lists
+   * now run next to wave 1, so this flag is what keeps an empty agents
+   * array from reading as "the account has nothing".
+   */
+  @state() private fetchingAgents = true;
   @state() private showSetupDialog = false;
   @state() private showBudgetDialog = false;
   @state() private welcomeCardDismissed = false;
@@ -1605,35 +1610,32 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
-   * True once agents, budget policies, tools and the feature flags have all
-   * answered. Until then the checklist has nothing to read.
+   * Welcome chrome can paint before the fold; the deploy wizard must not.
+   * Empty agents on first paint are not "not onboarded", and mounting
+   * the wizard then fired a second `GET /ai-models` next to
+   * {@link fetchModelsList}.
+   */
+  private get showWelcomeCard(): boolean {
+    return !this.welcomeCardDismissed && !this.isOnboarded;
+  }
+
+  private get mountDeployWizard(): boolean {
+    return this.showWelcomeCard && !this.fetchingAgents;
+  }
+
+  /**
+   * True once the cheap lists the checklist reads (agents, tools) plus
+   * budget policies and the feature flags have all answered. Usage columns
+   * are not an input: an account with agents is finished with "Onboard an
+   * agent" whether or not this month's spend has arrived yet.
    */
   private get nextStepsInputsResolved(): boolean {
     return (
-      !this.loading &&
       !this.fetchingAgents &&
       !this.fetchingBudget &&
-      !this.fetchingMCPAndTools &&
+      !this.fetchingTools &&
       this.featuresResolved
     );
-  }
-
-  /** `null` when no load has ever finished on this browser. */
-  private readCoreStepsDone(): boolean | null {
-    try {
-      const stored = localStorage.getItem(NEXT_STEPS_DONE_KEY);
-      return stored === null ? null : stored === 'true';
-    } catch {
-      return null;
-    }
-  }
-
-  private rememberCoreStepsDone(done: boolean): void {
-    try {
-      localStorage.setItem(NEXT_STEPS_DONE_KEY, done ? 'true' : 'false');
-    } catch {
-      // Private mode: the card behaves as it did before, one refresh late.
-    }
   }
 
   private dismissNextSteps(): void {
@@ -2011,18 +2013,28 @@ export class DashboardView extends AuthedElement {
     if (!options.preserveLoadingState) {
       this.fetchingGatewaySummary = true;
       this.fetchingRecentExecutions = true;
-      this.fetchingInventory = true;
       this.fetchingApprovals = true;
       this.fetchingAgents = true;
       this.fetchingBudget = true;
       this.fetchingAudit = true;
       this.fetchingMCPAndTools = true;
+      this.fetchingFlows = true;
+      this.fetchingModels = true;
+      this.fetchingTools = true;
+      this.fetchingFlowUsage = true;
+      this.fetchingModelUsage = true;
       this.loading = true;
     }
     this.error = null;
 
     const startDateStr = this.getGatewayStartDate();
     const priorWindow = this.getPriorGatewayWindow(startDateStr);
+
+    // Identity lists start with the fold, not after it. They do not block
+    // `loading = false`, and each tab paints the moment its list lands.
+    if (!options.preserveLoadingState) {
+      this.startInventoryListFetches();
+    }
 
     try {
       const adminPromise = this.fetchAdminStatus();
@@ -2132,7 +2144,6 @@ export class DashboardView extends AuthedElement {
       this.fetchingGatewaySummary = false;
       this.updatingUsage = false;
       this.fetchingRecentExecutions = false;
-      this.fetchingInventory = false;
       this.fetchingApprovals = false;
       this.fetchingAgents = false;
       this.fetchingBudget = false;
@@ -2196,21 +2207,92 @@ export class DashboardView extends AuthedElement {
     this.gatewayInteractions = interactions.items || [];
   }
 
-  /** Flows, their runs, resolved approvals and the gateway call log. */
-  private async fetchInventoryData(startDateStr: string): Promise<void> {
-    this.fetchingInventory = true;
-    this.fetchingRecentExecutions = true;
+  /**
+   * Cheap Inventory identity. Three independent requests, each applied the
+   * moment it lands, so the Flows tab does not wait for Models and neither
+   * waits for the fold (D32).
+   */
+  private startInventoryListFetches(): void {
+    void this.fetchFlowsList();
+    void this.fetchModelsList();
+    void this.fetchToolsList();
+  }
+
+  private async fetchFlowsList(): Promise<void> {
+    this.fetchingFlows = true;
     try {
-      const [flows, flowExecutions, allApprovalRequests] = await Promise.all([
-        this.catchWith403Handling(getFlows(), [] as any[]),
-        // The Inventory Flows tab needs a last run, a run count and a
-        // failure count for every flow in the account, so this reads the
-        // server's maximum page rather than the five rows the old card
-        // showed.
-        this.catchWith403Handling(
+      const flows = await this.catchWith403Handling(getFlows(), [] as any[]);
+      this.applyFlows(flows);
+    } catch (error) {
+      console.error('Failed to load the flows list', error);
+    } finally {
+      this.fetchingFlows = false;
+    }
+  }
+
+  private async fetchModelsList(): Promise<void> {
+    this.fetchingModels = true;
+    try {
+      const aiModels = await this.catchWith403Handling(getAIModels(), []);
+      this.applyModelsList(aiModels);
+    } catch (error) {
+      console.error('Failed to load the models list', error);
+    } finally {
+      this.fetchingModels = false;
+    }
+  }
+
+  private async fetchToolsList(): Promise<void> {
+    this.fetchingTools = true;
+    try {
+      const tools = await this.catchWith403Handling(getTools(), [] as Tool[]);
+      this.applyToolsList(tools);
+    } catch (error) {
+      console.error('Failed to load the tools list', error);
+    } finally {
+      this.fetchingTools = false;
+    }
+  }
+
+  private applyModelsList(aiModels: AIModel[]): void {
+    this.aiModels = aiModels || [];
+    // Exclude speech models, then never auto-select a principal-bound
+    // OAuth model: it cannot serve server-side generation.
+    const filtered = selectableModels(
+      this.aiModels.filter(
+        (m) => m.model_kind !== 'stt' && m.model_kind !== 'tts'
+      )
+    );
+    if (
+      filtered.length > 0 &&
+      !filtered.some((m) => m.id === this.deployModel)
+    ) {
+      this.deployModel = pickDefaultModel(filtered)?.id || '';
+    }
+    this.hasAIModels = this.aiModels.length > 0;
+    this.aiModelsCount = this.aiModels.length;
+  }
+
+  private applyToolsList(tools: Tool[]): void {
+    this.tools = tools || [];
+  }
+
+  /** Flow runs, resolved approvals and the gateway call log. */
+  private async fetchInventoryData(startDateStr: string): Promise<void> {
+    this.fetchingRecentExecutions = true;
+    this.fetchingFlowUsage = true;
+    try {
+      // Executions are the Flows tab's usage. Apply them on arrival so a
+      // slow approvals or search call cannot hold the run counts at zero.
+      const executionsPromise = (async () => {
+        const flowExecutions = await this.catchWith403Handling(
           getFlowExecutions({ limit: FLOW_EXECUTIONS_PAGE_SIZE }),
           [] as FlowExecution[]
-        ),
+        );
+        this.applyFlowExecutions(flowExecutions);
+        this.fetchingFlowUsage = false;
+      })();
+      const [allApprovalRequests] = await Promise.all([
         this.catchWith403Handling(
           this.fetchApprovalRequests(undefined, 100),
           [] as ApprovalRequest[]
@@ -2218,16 +2300,15 @@ export class DashboardView extends AuthedElement {
         // The failures card shows a handful, and it should be the handful
         // that happened in the range the page is showing.
         this.refreshGatewayInteractions(startDateStr),
+        executionsPromise,
       ]);
 
-      this.applyFlows(flows);
-      this.applyFlowExecutions(flowExecutions);
       this.calculateApprovalStats(allApprovalRequests);
     } catch (error) {
       console.error('Failed to load the Inventory data', error);
     } finally {
-      this.fetchingInventory = false;
       this.fetchingRecentExecutions = false;
+      this.fetchingFlowUsage = false;
     }
   }
 
@@ -2352,10 +2433,10 @@ export class DashboardView extends AuthedElement {
 
     const pTools = (async () => {
       try {
-        const [mcpServers, tools, aiModels, apiKeys] = await Promise.all([
+        // Tools and models are fetched as Inventory identity above. This
+        // pass is only the companions the Gateway card reads.
+        const [mcpServers, apiKeys] = await Promise.all([
           this.catchWith403Handling(getMCPServers(), [] as MCPServer[]),
-          this.catchWith403Handling(getTools(), [] as Tool[]),
-          this.catchWith403Handling(getAIModels(), []),
           // Already the api-keys page's endpoint; here it is only a count.
           this.catchWith403Handling(getApiKeys(), null),
         ]);
@@ -2369,23 +2450,6 @@ export class DashboardView extends AuthedElement {
             ).length
           : null;
         this.mcpServers = mcpServers;
-        this.tools = tools;
-        this.aiModels = aiModels || [];
-        // Exclude speech models, then never auto-select a principal-bound
-        // OAuth model — it cannot serve server-side generation.
-        const filtered = selectableModels(
-          this.aiModels.filter(
-            (m) => m.model_kind !== 'stt' && m.model_kind !== 'tts'
-          )
-        );
-        if (
-          filtered.length > 0 &&
-          !filtered.some((m) => m.id === this.deployModel)
-        ) {
-          this.deployModel = pickDefaultModel(filtered)?.id || '';
-        }
-        this.hasAIModels = (aiModels || []).length > 0;
-        this.aiModelsCount = Array.isArray(aiModels) ? aiModels.length : 0;
       } catch (error) {
         console.error('Failed to load MCP and tools data', error);
       } finally {
@@ -2405,27 +2469,28 @@ export class DashboardView extends AuthedElement {
   private async refreshUsageBreakdown(
     gatewayStartDate: string
   ): Promise<AccountGatewayUsageSummaryResponse | null> {
+    // Two requests, two flags: Models usage can land from the overview
+    // without waiting for the heavier account breakdown, and the other way
+    // around (D32).
+    const [detailed] = await Promise.all([
+      this.fetchGatewayBreakdown(gatewayStartDate),
+      this.fetchModelUsage(gatewayStartDate),
+    ]);
+    return detailed;
+  }
+
+  private async fetchGatewayBreakdown(
+    gatewayStartDate: string
+  ): Promise<AccountGatewayUsageSummaryResponse | null> {
     this.fetchingUsageBreakdown = true;
     try {
-      // Both in the deferred pass, so the fold is unaffected: the breakdown
-      // feeds the top-models card, the overview feeds the Inventory Models
-      // tab in one request rather than one per model.
-      const [detailed, overview] = await Promise.all([
-        this.catchWith403Handling(
-          getAccountGatewayUsageSummary({
-            startDate: gatewayStartDate,
-            includeBreakdown: true,
-          }),
-          null
-        ),
-        this.catchWith403Handling(
-          getAIModelsOverview({ startDate: gatewayStartDate }),
-          null
-        ),
-      ]);
-      if (overview?.models) {
-        this.aiModelOverview = overview.models;
-      }
+      const detailed = await this.catchWith403Handling(
+        getAccountGatewayUsageSummary({
+          startDate: gatewayStartDate,
+          includeBreakdown: true,
+        }),
+        null
+      );
       if (!detailed) {
         return null;
       }
@@ -2438,6 +2503,23 @@ export class DashboardView extends AuthedElement {
       // Off whatever happened: a 403 on this endpoint means the columns will
       // never fill, and a skeleton that never resolves is worse than a zero.
       this.fetchingUsageBreakdown = false;
+    }
+  }
+
+  private async fetchModelUsage(gatewayStartDate: string): Promise<void> {
+    this.fetchingModelUsage = true;
+    try {
+      const overview = await this.catchWith403Handling(
+        getAIModelsOverview({ startDate: gatewayStartDate }),
+        null
+      );
+      if (overview?.models) {
+        this.aiModelOverview = overview.models;
+      }
+    } catch (error) {
+      console.error('Failed to load model usage for the Inventory', error);
+    } finally {
+      this.fetchingModelUsage = false;
     }
   }
 
@@ -2830,7 +2912,7 @@ export class DashboardView extends AuthedElement {
   }
 
   private renderWelcomeCard() {
-    if (this.welcomeCardDismissed) {
+    if (!this.showWelcomeCard) {
       return nothing;
     }
 
@@ -2864,16 +2946,21 @@ export class DashboardView extends AuthedElement {
           class="welcome-content"
           style="width: 100%; display: flex; flex-direction: column; align-items: center;"
         >
-          <preloop-deploy-wizard
-            .aiModels=${this.aiModels}
-            .computeFeatureEnabled=${this.computeFeatureEnabled}
-            .isEnterprise=${this.isEnterprise}
-            .isAdmin=${this.isAdmin}
-            hide-cancel
-            @deploy-agent-success=${this.handleDeployAgentSuccess}
-            @deploy-flow-success=${this.handleDeployFlowSuccess}
-            @deploy-wizard-done=${this.handleDeployWizardDone}
-          ></preloop-deploy-wizard>
+          ${
+            this.mountDeployWizard
+              ? html`<preloop-deploy-wizard
+                  .aiModels=${this.aiModels}
+                  .modelsFromHost=${true}
+                  .computeFeatureEnabled=${this.computeFeatureEnabled}
+                  .isEnterprise=${this.isEnterprise}
+                  .isAdmin=${this.isAdmin}
+                  hide-cancel
+                  @deploy-agent-success=${this.handleDeployAgentSuccess}
+                  @deploy-flow-success=${this.handleDeployFlowSuccess}
+                  @deploy-wizard-done=${this.handleDeployWizardDone}
+                ></preloop-deploy-wizard>`
+              : nothing
+          }
         </div>
       </div>
     `;
@@ -2888,18 +2975,15 @@ export class DashboardView extends AuthedElement {
     if (this.nextStepsDismissed) {
       return nothing;
     }
-    const remembered = this.readCoreStepsDone();
-    if (!this.nextStepsInputsResolved && remembered !== false) {
-      // Either this browser has never seen a finished load, or the last one
-      // said the checklist was done. Both cases stay quiet until the four
-      // fetches land, instead of drawing an empty checklist for a second.
+    // Empty arrays before the lists answer are not "the account has
+    // nothing". Hide until agents, tools, budget and the flags resolve, then
+    // decide. A finished account stays finished because allDone hides the
+    // card after that resolve, without a localStorage flash guard (D31).
+    if (!this.nextStepsInputsResolved) {
       return nothing;
     }
     const steps = this.nextSteps;
     const allDone = steps.every((step) => step.done || step.optional);
-    if (this.nextStepsInputsResolved) {
-      this.rememberCoreStepsDone(allDone);
-    }
     if (allDone) {
       return nothing;
     }
@@ -3383,12 +3467,14 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
-   * The Inventory tabs read the page's existing fetches; none of them adds a
-   * request. Agents come from the agents list, their numbers from the gateway
-   * summary's per-session breakdown (the agents list totals are lifetime, the
-   * Inventory shows the page range). Flows come from the flows list joined to
-   * the executions the page already fetches. Models come from the AI models
-   * list joined to `usage_by_model`. Tools come from the tool catalogue joined
+   * The Inventory tabs read two phases: a cheap list (agents, flows, models,
+   * tools) that paints the row, then a usage request that fills the number
+   * cells. None of them adds a request the page did not already make. Agents
+   * come from the agents list, their numbers from the gateway summary's
+   * per-session breakdown (the agents list totals are lifetime, the Inventory
+   * shows the page range). Flows come from the flows list joined to the
+   * executions the page already fetches. Models come from the AI models list
+   * joined to `ai-models/overview`. Tools come from the tool catalogue joined
    * to `usage_by_tool`.
    */
   private get inventoryAgentRows(): InventoryAgentRow[] {
@@ -3650,6 +3736,18 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
+   * Flows run/fail cells wait on executions. The $ cell waits on the
+   * breakdown, which is a slower sibling, so the two flags stay separate.
+   */
+  private get flowUsagePending(): boolean {
+    return this.fetchingFlowUsage && this.flowExecutions.length === 0;
+  }
+
+  private get modelUsagePending(): boolean {
+    return this.fetchingModelUsage && this.aiModelOverview.length === 0;
+  }
+
+  /**
    * One box for what the account has: the counts that used to sit in the
    * stat strip now label its tabs, and the page range drives every column.
    */
@@ -3669,13 +3767,17 @@ export class DashboardView extends AuthedElement {
         ?showUsers=${this.canViewUsers}
         .rangeLabel=${this.gatewayRangeLabel}
         .flowRunsCapped=${this.flowRunsCapped}
-        ?loading=${this.loading || this.fetchingMCPAndTools}
-        .loadingAgents=${this.loading}
-        .loadingFlows=${this.loading || this.fetchingInventory}
-        .loadingModels=${this.loading || this.fetchingMCPAndTools}
-        .loadingTools=${this.loading || this.fetchingMCPAndTools}
-        .loadingUsers=${this.loading || this.fetchingUsers}
+        ?loading=${this.loading}
+        .loadingAgents=${this.fetchingAgents}
+        .loadingFlows=${this.fetchingFlows}
+        .loadingModels=${this.fetchingModels}
+        .loadingTools=${this.fetchingTools}
+        .loadingUsers=${this.fetchingUsers}
         ?usageLoading=${this.usageColumnsPending}
+        .usageLoadingFlows=${this.flowUsagePending}
+        .usageLoadingFlowCost=${this.usageColumnsPending}
+        .usageLoadingModels=${this.modelUsagePending}
+        .usageLoadingTools=${this.usageColumnsPending}
       ></inventory-card>
     `;
   }
@@ -3696,7 +3798,7 @@ export class DashboardView extends AuthedElement {
   }
 
   render() {
-    if (!this.isOnboarded && !this.welcomeCardDismissed) {
+    if (this.showWelcomeCard) {
       return html`
         <div
           class="extra-wide"

@@ -267,6 +267,13 @@ export class PreloopDeployWizard extends LitElement {
   @property({ type: Array })
   aiModels: AIModel[] = [];
 
+  /**
+   * When the host already fetches `GET /ai-models` (Overview), skip the
+   * connect-time lookup so the page does not pay for the list twice.
+   */
+  @property({ type: Boolean })
+  modelsFromHost = false;
+
   @property({ type: Boolean })
   computeFeatureEnabled = false;
 
@@ -381,7 +388,15 @@ export class PreloopDeployWizard extends LitElement {
     if (this.initialPath === 'custom') {
       this.resetCustomState();
     }
-    if (this.aiModels.length === 0) {
+  }
+
+  protected async firstUpdated(
+    changedProperties: Map<string, unknown>
+  ): Promise<void> {
+    super.firstUpdated(changedProperties);
+    // Host properties are assigned before firstUpdated. Overview passes
+    // modelsFromHost so this page does not fetch GET /ai-models twice.
+    if (this.aiModels.length === 0 && !this.modelsFromHost) {
       this.aiModels = await getAIModels().catch(() => []);
     }
   }

@@ -90,6 +90,10 @@ async function card(
     showUsers: boolean;
     loading: boolean;
     usageLoading: boolean;
+    usageLoadingFlows: boolean;
+    usageLoadingFlowCost: boolean;
+    usageLoadingModels: boolean;
+    usageLoadingTools: boolean;
     flowRunsCapped: boolean;
   }> = {}
 ): Promise<InventoryCard> {
@@ -109,6 +113,10 @@ async function card(
       .toolsTotal=${16}
       .loading=${props.loading ?? false}
       .usageLoading=${props.usageLoading ?? false}
+      .usageLoadingFlows=${props.usageLoadingFlows ?? null}
+      .usageLoadingFlowCost=${props.usageLoadingFlowCost ?? null}
+      .usageLoadingModels=${props.usageLoadingModels ?? null}
+      .usageLoadingTools=${props.usageLoadingTools ?? null}
       rangeLabel="30d"
     ></inventory-card>
   `);
@@ -308,6 +316,84 @@ describe('inventory-card', () => {
     expect(
       el.shadowRoot!.querySelectorAll('tbody tr')[0].textContent
     ).to.contain('Quiet Agent');
+    expect(el.shadowRoot!.querySelector('sl-skeleton')).to.not.exist;
+  });
+
+  it('names a flow before its runs land, without turning the row into a skeleton', async () => {
+    const el = await card({
+      usageLoadingFlows: true,
+      flowRows: [flowRow({ runs: 0, failed: 0, cost: 0, lastRun: null })],
+    });
+    await showTab(el, 'flows');
+
+    const row = el.shadowRoot!.querySelector('tbody tr')!;
+    expect(row.textContent).to.contain('Pull Request Reviewer');
+    expect(row.querySelectorAll('sl-skeleton').length).to.be.greaterThan(0);
+    const runsCell = row.querySelector('td[data-label="Runs"]')!;
+    expect(runsCell.querySelector('sl-skeleton'), 'runs still pending').to
+      .exist;
+    expect(
+      runsCell.querySelector('a'),
+      'pending runs cell is not a nameless link'
+    ).to.not.exist;
+    expect(el.shadowRoot?.textContent).to.not.contain('No run in range');
+    expect(el.shadowRoot?.querySelectorAll('.skeleton-row').length).to.equal(0);
+
+    const sort = el.shadowRoot!.querySelector('sl-select.sort-select')!;
+    expect(sort.hasAttribute('disabled'), 'sort held until usage').to.be.true;
+    expect(sort.getAttribute('title')).to.equal(
+      'Sort is held until usage arrives'
+    );
+
+    (el as any).usageLoadingFlows = false;
+    (el as any).flowRows = [flowRow()];
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('tbody tr')!.textContent).to.contain(
+      'Pull Request Reviewer'
+    );
+    expect(el.shadowRoot!.querySelector('sl-skeleton')).to.not.exist;
+    expect(el.shadowRoot?.textContent).to.contain('12');
+    expect(
+      el
+        .shadowRoot!.querySelector('td[data-label="Runs"] a')
+        ?.getAttribute('href')
+    ).to.equal('/console/flows/executions?flow_id=flow-1');
+    expect(sort.hasAttribute('disabled')).to.be.false;
+  });
+
+  it('fills Runs when executions land while $ still waits on the breakdown', async () => {
+    const el = await card({
+      usageLoadingFlows: false,
+      usageLoadingFlowCost: true,
+      flowRows: [flowRow({ runs: 12, failed: 1, cost: 0 })],
+    });
+    await showTab(el, 'flows');
+    const row = el.shadowRoot!.querySelector('tbody tr')!;
+    const runsCell = row.querySelector('td[data-label="Runs"]')!;
+    expect(runsCell.querySelector('a')).to.exist;
+    expect(runsCell.querySelector('sl-skeleton')).to.not.exist;
+    expect(row.querySelector('sl-skeleton'), 'cost still pending').to.exist;
+  });
+
+  it('names a model and a tool before their usage lands', async () => {
+    const el = await card({
+      usageLoadingModels: true,
+      usageLoadingTools: true,
+    });
+    await showTab(el, 'models');
+    const modelRowEl = el.shadowRoot!.querySelector('tbody tr')!;
+    expect(modelRowEl.textContent).to.contain('claude-sonnet-4');
+    expect(modelRowEl.querySelectorAll('sl-skeleton').length).to.equal(3);
+    expect(el.shadowRoot?.querySelectorAll('.skeleton-row').length).to.equal(0);
+
+    await showTab(el, 'tools');
+    const toolRowEl = el.shadowRoot!.querySelector('tbody tr')!;
+    expect(toolRowEl.textContent).to.contain('Bash');
+    expect(toolRowEl.querySelectorAll('sl-skeleton').length).to.equal(2);
+
+    (el as any).usageLoadingModels = false;
+    (el as any).usageLoadingTools = false;
+    await el.updateComplete;
     expect(el.shadowRoot!.querySelector('sl-skeleton')).to.not.exist;
   });
 
