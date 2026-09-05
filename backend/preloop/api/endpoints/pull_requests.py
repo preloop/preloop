@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Literal, Optional, Tuple
@@ -27,12 +28,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _PR_LIST_CACHE: Dict[Tuple[str, str, str, int, int], Tuple[float, dict]] = {}
+_PR_LIST_CACHE_LOCK = threading.Lock()
 _PR_LIST_TTL_SECONDS = 60.0
 
 
 def clear_pull_request_list_cache() -> None:
     """Drop the in-process PR list cache (tests)."""
-    _PR_LIST_CACHE.clear()
+    with _PR_LIST_CACHE_LOCK:
+        _PR_LIST_CACHE.clear()
 
 
 def _cache_key(
@@ -42,26 +45,28 @@ def _cache_key(
 
 
 def _cache_get(key: Tuple[str, str, str, int, int]) -> Optional[dict]:
-    entry = _PR_LIST_CACHE.get(key)
-    if entry is None:
-        return None
-    expires_at, payload = entry
-    if time.monotonic() >= expires_at:
-        _PR_LIST_CACHE.pop(key, None)
-        return None
-    return payload
+    with _PR_LIST_CACHE_LOCK:
+        entry = _PR_LIST_CACHE.get(key)
+        if entry is None:
+            return None
+        expires_at, payload = entry
+        if time.monotonic() >= expires_at:
+            _PR_LIST_CACHE.pop(key, None)
+            return None
+        return payload
 
 
 def _cache_set(key: Tuple[str, str, str, int, int], payload: dict) -> None:
-    now = time.monotonic()
-    expired = [
-        cached
-        for cached, (expires_at, _) in _PR_LIST_CACHE.items()
-        if expires_at <= now
-    ]
-    for cached in expired:
-        _PR_LIST_CACHE.pop(cached, None)
-    _PR_LIST_CACHE[key] = (now + _PR_LIST_TTL_SECONDS, payload)
+    with _PR_LIST_CACHE_LOCK:
+        now = time.monotonic()
+        expired = [
+            cached
+            for cached, (expires_at, _) in list(_PR_LIST_CACHE.items())
+            if expires_at <= now
+        ]
+        for cached in expired:
+            _PR_LIST_CACHE.pop(cached, None)
+        _PR_LIST_CACHE[key] = (now + _PR_LIST_TTL_SECONDS, payload)
 
 
 def _unsupported_response(page: int, limit: int) -> PullRequestListResponse:
@@ -118,13 +123,9 @@ def list_project_pull_requests(
             return PullRequestListResponse.model_validate(cached)
 
     async def _fetch() -> dict:
-        client = await get_tracker_client(
-            organization.id, project.id, db, current_user
-        )
+        client = await get_tracker_client(organization.id, project.id, db, current_user)
         if kind == "gitlab":
-            return await client.list_merge_requests(
-                state=state, limit=limit, page=page
-            )
+            return await client.list_merge_requests(state=state, limit=limit, page=page)
         return await client.list_pull_requests(state=state, limit=limit, page=page)
 
     try:

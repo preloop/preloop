@@ -699,7 +699,10 @@ async def _run_preset_on_pull_request(
         trigger_event_data=trigger_event_data,
         triggered_by=triggered_by,
     )
-    execution_id = str(result.get("id") or result.get("execution_id"))
+    raw_execution_id = result.get("id") or result.get("execution_id")
+    if raw_execution_id is None:
+        raise _http(500, "Flow trigger did not return an execution id")
+    execution_id = str(raw_execution_id)
     return {
         "execution_id": execution_id,
         "flow_id": str(flow.id),

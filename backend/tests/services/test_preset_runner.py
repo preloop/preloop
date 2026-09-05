@@ -682,3 +682,63 @@ async def test_run_preset_on_pull_request_502_when_tracker_fails() -> None:
     assert exc.value.status_code == 502
     assert exc.value.detail == "Tracker request failed"
     trigger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_preset_on_pull_request_500_when_trigger_omits_execution_id() -> None:
+    account_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+    flow = _account_flow(name="Pull Request Reviewer")
+    project, tracker = _github_project_tracker()
+    organization = MagicMock()
+    organization.id = uuid.uuid4()
+    user = _user(account_id)
+    target = _Simple(kind="pull_request", project_id=project_id, number=12)
+    tracker_client = MagicMock()
+    tracker_client.get_pull_request = AsyncMock(
+        return_value={
+            "id": "2451234567",
+            "number": 12,
+            "title": "Add login",
+            "description": "Please review",
+            "url": "https://github.com/example/repo/pull/12",
+            "author": {"login": "janedoe"},
+            "source_branch": "feature",
+            "target_branch": "main",
+            "state": "open",
+            "is_draft": False,
+        }
+    )
+    trigger = AsyncMock(return_value={})
+
+    with (
+        patch(
+            "preloop.services.preset_runner._load_visible_project",
+            return_value=(project, tracker, organization),
+        ),
+        patch(
+            "preloop.services.preset_runner.resolve_or_create_flow",
+            return_value=(flow, False),
+        ),
+        patch(
+            "preloop.api.common.get_tracker_client",
+            new_callable=AsyncMock,
+            return_value=tracker_client,
+        ),
+        patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService.trigger_flow",
+            trigger,
+        ),
+    ):
+        with pytest.raises(PresetRunnerError) as exc:
+            await run_preset_on_target(
+                MagicMock(),
+                current_user=user,
+                preset_slug=REVIEWER_SLUG,
+                target=target,
+                confirm_create=True,
+                triggered_by="Jane Doe",
+            )
+
+    assert exc.value.status_code == 500
+    assert "execution id" in str(exc.value.detail)

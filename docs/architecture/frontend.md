@@ -57,6 +57,8 @@ The Tracker Detail page is the entry point for issue analytics. Clicking a track
 *   **Tracker metadata:** Name, type, connection status, creation/update dates, URL, and scope rules.
 *   **Issue Analytics cards:** Conditional links to Similarity, Compliance, and Dependencies views, gated by feature flags (`issue_duplicates`, `issue_compliance`, `issue_dependencies`). Each link pre-filters to projects belonging to that tracker via `?projects=` query parameters.
 *   **Projects list:** All projects synced under this tracker.
+*   **Issues tab:** Open issues for a selected project, with search and Run implementer on GitHub and GitLab.
+*   **Pull requests tab:** Open pull requests (GitHub) or merge requests (GitLab), hidden for Jira. The list is live from the tracker (about a one-minute cache) with Run reviewer, using the same create-from-preset path as the issue implementer.
 
 Issue analytics features are no longer accessible from the main sidebar — they are scoped to individual trackers via this detail page.
 
