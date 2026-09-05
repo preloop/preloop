@@ -1108,6 +1108,80 @@ class TestPostWebhookNotification:
             assert "webhook_error" in update.model_dump(exclude_unset=True)
 
     @patch("preloop.services.approval_service.httpx.AsyncClient")
+    async def test_post_webhook_chat_message_offers_one_review_link(
+        self,
+        mock_client_class,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+    ):
+        """The chat message must not label a plain review link "Approve".
+
+        All three links used to point at the same tokenized approval page, so
+        "Approve" opened a page instead of approving. One honest link now.
+        """
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        with patch.object(approval_service, "update_approval_request"):
+            result = await approval_service.post_webhook_notification(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        assert result is True
+        message = mock_client.post.call_args[1]["json"]
+        review_url = (
+            f"https://app.test.com/approval/{sample_approval_request.id}"
+            f"?token={sample_approval_request.approval_token}"
+        )
+
+        text = message["text"]
+        assert f"[Review this request]({review_url})" in text
+        assert "Approve](" not in text
+        assert "Decline](" not in text
+        assert text.count(review_url) == 1
+
+        actions = message["attachments"][0]["actions"]
+        assert [action["text"] for action in actions] == ["Review"]
+        assert actions[0]["url"] == review_url
+
+    @patch("preloop.services.approval_service.httpx.AsyncClient")
+    async def test_post_webhook_generic_payload_review_action_and_deprecated_aliases(
+        self,
+        mock_client_class,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+    ):
+        """The generic payload names the link "review" and keeps the old keys."""
+        sample_approval_workflow.approval_type = "webhook"
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        with patch.object(approval_service, "update_approval_request"):
+            await approval_service.post_webhook_notification(
+                sample_approval_request, sample_approval_workflow
+            )
+
+        actions = mock_client.post.call_args[1]["json"]["actions"]
+        review_url = (
+            f"/approval/{sample_approval_request.id}"
+            f"?token={sample_approval_request.approval_token}"
+        )
+        assert actions["review"].endswith(review_url)
+        # The deprecated keys are a machine contract: a receiver doing
+        # payload["actions"]["approve"] must not start raising KeyError.
+        assert set(actions) == {"review", "approve", "decline", "view"}
+        assert len(set(actions.values())) == 1
+
+    @patch("preloop.services.approval_service.httpx.AsyncClient")
     async def test_post_webhook_with_agent_reasoning(
         self,
         mock_client_class,
