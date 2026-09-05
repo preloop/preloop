@@ -206,6 +206,11 @@ export class ToolListItem extends LitElement {
           order: 2;
           margin-left: auto;
         }
+        /* MCP rows carry a three-dots menu after the toggle. Without an
+           order it would default to 0 and sort ahead of the name. */
+        .tool-menu {
+          order: 2;
+        }
         .tool-badges {
           order: 3;
           flex-basis: 100%;
@@ -612,7 +617,10 @@ export class ToolListItem extends LitElement {
             this._isNativeTool()
               ? ''
               : html`
-                  <div @click=${(e: Event) => e.stopPropagation()}>
+                  <div
+                    class="tool-menu"
+                    @click=${(e: Event) => e.stopPropagation()}
+                  >
                     <sl-dropdown>
                       <sl-icon-button
                         slot="trigger"

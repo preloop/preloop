@@ -307,6 +307,27 @@ describe('ToolListItem – justification settings', () => {
     await setViewport({ width: 1280, height: 800 });
   });
 
+  it('keeps the MCP tool settings menu right of the name at 390px', async () => {
+    stubApi();
+    await setViewport({ width: 390, height: 844 });
+    const el = await createItem({
+      source: 'mcp',
+      source_name: 'GitHub',
+    } as any);
+    await el.updateComplete;
+
+    const name = el.shadowRoot?.querySelector('.tool-name') as HTMLElement;
+    const menu = el.shadowRoot?.querySelector('.tool-menu') as HTMLElement;
+    expect(menu).to.exist;
+    // The wrapper has no order of its own without .tool-menu, so it would
+    // sort with the chevron and land left of the name.
+    expect(menu.getBoundingClientRect().left).to.be.greaterThan(
+      name.getBoundingClientRect().left
+    );
+
+    await setViewport({ width: 1280, height: 800 });
+  });
+
   it('shows per-tool schema token estimate', async () => {
     stubApi();
     const el = await createItem({ schema_tokens_estimate: 245 } as any);
