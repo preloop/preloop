@@ -14,6 +14,7 @@ import '../../../components/preloop-session-observer';
 import '../../../components/budget-policy-editor';
 import '../../../components/tools-editor-component';
 import '../../../components/view-header';
+import { confirmDialog, showToast } from '../../../components/confirm-dialog';
 
 import {
   getApiKey,
@@ -258,11 +259,15 @@ export class ApiKeyView extends LitElement {
   private async handleRevoke() {
     if (!this.keyId) return;
 
-    if (
-      !confirm(
-        `Are you sure you want to revoke API key "${this.apiKey?.name}"? This action cannot be undone.`
-      )
-    ) {
+    const confirmed = await confirmDialog({
+      title: 'Revoke API key',
+      message: `Revoke "${this.apiKey?.name}"?`,
+      detail:
+        'Anything still authenticating with this key stops working immediately. This cannot be undone.',
+      confirmLabel: 'Revoke key',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -271,7 +276,7 @@ export class ApiKeyView extends LitElement {
       Router.go('/console/settings/api-keys');
     } catch (err: any) {
       console.error('Error revoking API key:', err);
-      alert(err.message || 'Failed to revoke API key');
+      showToast(err.message || 'Failed to revoke API key', 'danger');
     }
   }
 
@@ -408,15 +413,26 @@ export class ApiKeyView extends LitElement {
 
     return html`
       <div class="container">
-        <view-header
-          title=${this.apiKey.name}
-          backUrl="/console/settings/api-keys"
-          backLabel="API Keys"
-        >
-          <div slot="actions">
-            <sl-button variant="danger" @click=${this.handleRevoke}>
+        <!-- view-header takes headerText, and its slots are top / title-prefix
+             / main-column / meta / description. Passing title, backUrl and
+             backLabel rendered an empty band with no title, no way back and no
+             Revoke button. -->
+        <view-header headerText=${this.apiKey.name}>
+          <div slot="top" style="margin-bottom: var(--sl-spacing-small);">
+            <sl-button
+              variant="text"
+              size="small"
+              href="/console/settings/api-keys"
+              style="margin-left: -12px;"
+            >
+              <sl-icon slot="prefix" name="arrow-left"></sl-icon>
+              Back to API keys
+            </sl-button>
+          </div>
+          <div slot="main-column">
+            <sl-button variant="danger" outline @click=${this.handleRevoke}>
               <sl-icon slot="prefix" name="trash"></sl-icon>
-              Revoke Key
+              Revoke key
             </sl-button>
           </div>
         </view-header>
@@ -455,8 +471,12 @@ export class ApiKeyView extends LitElement {
                   ${
                     this.apiKey.expires_at &&
                     new Date(this.apiKey.expires_at) < new Date()
-                      ? html`<sl-badge variant="danger">Expired</sl-badge>`
-                      : html`<sl-badge variant="success">Active</sl-badge>`
+                      ? html`<sl-badge class="chip" pill variant="neutral"
+                          >Expired</sl-badge
+                        >`
+                      : html`<sl-badge class="chip" pill variant="success"
+                          >Active</sl-badge
+                        >`
                   }
                 </div>
 

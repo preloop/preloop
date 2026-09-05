@@ -126,6 +126,154 @@ describe('ApiKeysView', () => {
     expect(content).to.contain('1 tool');
   });
 
+  it('hides revoked and expired keys behind a footer and reveals them on Show all', async () => {
+    fetchStub.restore();
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (
+        url.includes('/api/v1/auth/api-keys') &&
+        !url.includes('/governance')
+      ) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 'live-key',
+              name: 'Production Key',
+              created_at: '2026-03-10T09:00:00Z',
+              last_used_at: null,
+              activity_status: 'idle',
+              expires_at: null,
+            },
+            {
+              id: 'revoked-key',
+              name: 'Flow Execution 389da654',
+              created_at: '2026-03-01T09:00:00Z',
+              last_used_at: null,
+              activity_status: 'revoked',
+              expires_at: null,
+            },
+            {
+              id: 'expired-key',
+              name: 'Old Laptop Key',
+              created_at: '2025-03-01T09:00:00Z',
+              last_used_at: null,
+              activity_status: 'idle',
+              expires_at: '2025-06-01T09:00:00Z',
+            },
+          ]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.endsWith('/api/v1/features')) {
+        return new Response(JSON.stringify({ features: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'API keys view did not finish loading'
+    );
+    await element.updateComplete;
+
+    let content = element.shadowRoot?.textContent || '';
+    expect(content).to.contain('Production Key');
+    expect(content).to.not.contain('Flow Execution 389da654');
+    expect(content).to.not.contain('Old Laptop Key');
+    expect(content).to.contain('2 keys are revoked or expired and hidden');
+
+    const showAll = Array.from(
+      element.shadowRoot?.querySelectorAll('.link-button') || []
+    ).find((button) => button.textContent?.trim() === 'Show all');
+    expect(showAll, 'Show all control is rendered').to.exist;
+
+    (showAll as HTMLButtonElement).click();
+    await element.updateComplete;
+
+    content = element.shadowRoot?.textContent || '';
+    expect(content).to.contain('Flow Execution 389da654');
+    expect(content).to.contain('Old Laptop Key');
+    expect(content).to.contain('Revoked');
+    expect(content).to.contain('Expired');
+  });
+
+  it('offers Revoke only on keys that can still be used', async () => {
+    fetchStub.restore();
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (
+        url.includes('/api/v1/auth/api-keys') &&
+        !url.includes('/governance')
+      ) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 'live-key',
+              name: 'Production Key',
+              created_at: '2026-03-10T09:00:00Z',
+              last_used_at: null,
+              activity_status: 'idle',
+              expires_at: null,
+            },
+            {
+              id: 'revoked-key',
+              name: 'Flow Execution 389da654',
+              created_at: '2026-03-01T09:00:00Z',
+              last_used_at: null,
+              activity_status: 'revoked',
+              expires_at: null,
+            },
+          ]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.endsWith('/api/v1/features')) {
+        return new Response(JSON.stringify({ features: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'API keys view did not finish loading'
+    );
+    (element as any).showAllKeys = true;
+    await element.updateComplete;
+
+    // No standalone danger button survives: the action lives in a kebab.
+    expect(element.shadowRoot?.querySelector('sl-button[variant="danger"]')).to
+      .not.exist;
+
+    const actionLists = Array.from(
+      element.shadowRoot?.querySelectorAll('resource-actions') || []
+    ).map((element_) => (element_ as any).actions as { id: string }[]);
+    expect(actionLists.length).to.equal(2);
+    expect(actionLists[0].map((action) => action.id)).to.deep.equal(['revoke']);
+    expect(actionLists[1]).to.deep.equal([]);
+  });
+
   it('renders Agent badge when managed_agent_id is present', async () => {
     fetchStub.restore();
     fetchStub = sinon.stub(window, 'fetch');

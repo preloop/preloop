@@ -113,8 +113,40 @@ describe('ApiKeyView', () => {
 
     expect((element as any).apiKey?.name).to.equal('Production Key');
     const header = element.shadowRoot?.querySelector('view-header');
-    expect(header?.getAttribute('title')).to.equal('Production Key');
+    expect((header as any)?.headerText).to.equal('Production Key');
+    expect(header?.shadowRoot?.querySelector('h1')?.textContent).to.contain(
+      'Production Key'
+    );
     expect(element.shadowRoot?.textContent).to.contain('Active');
+  });
+
+  it('renders the back link and a Revoke button in slots view-header has', async () => {
+    fetchStub = createFetchStub();
+    const element = (await fixture(
+      html`<api-key-view
+        .location=${{ params: { keyId: 'key-1' } }}
+      ></api-key-view>`
+    )) as ApiKeyView;
+
+    await waitUntil(
+      () => !(element as any).loading,
+      'API key view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const back = element.shadowRoot?.querySelector(
+      'view-header [slot="top"] sl-button'
+    );
+    expect(back, 'back link is rendered').to.exist;
+    expect(back?.getAttribute('href')).to.equal('/console/settings/api-keys');
+    expect(back?.textContent?.trim()).to.contain('Back to API keys');
+
+    const revoke = element.shadowRoot?.querySelector(
+      'view-header [slot="main-column"] sl-button[variant="danger"]'
+    );
+    expect(revoke, 'Revoke button is rendered').to.exist;
+    expect(revoke?.hasAttribute('outline')).to.be.true;
+    expect(revoke?.textContent?.trim()).to.contain('Revoke key');
   });
 
   it('renders an error state when the key fails to load', async () => {
