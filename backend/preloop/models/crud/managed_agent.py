@@ -459,9 +459,16 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         runtime_session_id: Optional[Any] = None,
         observed_at: datetime,
         control_session_mode: Optional[str] = None,
+        control_heartbeat_at: Optional[datetime] = None,
         commit: bool = False,
     ) -> Optional[ManagedAgent]:
-        """Update last-seen timestamp for one durable managed agent."""
+        """Update last-seen timestamp for one durable managed agent.
+
+        ``control_heartbeat_at`` is passed only by the Agent Control
+        WebSocket. It is a separate column from ``last_seen_at`` because
+        enrollment and gateway traffic stamp that one too, and presence has to
+        mean "the plugin is connected", not "this agent did something".
+        """
         db_obj = self.get_by_source(
             db,
             account_id=str(account_id),
@@ -473,6 +480,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         if db_obj.lifecycle_state != "active":
             return db_obj
         db_obj.last_seen_at = observed_at
+        if control_heartbeat_at is not None:
+            db_obj.control_last_heartbeat_at = control_heartbeat_at
         if control_session_mode in {"local", "remote", "queued"}:
             db_obj.control_session_mode = control_session_mode
         if runtime_session_id is not None:
@@ -570,6 +579,48 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         ):
             return db_obj
         db_obj.runtime_session_id = None
+        db.add(db_obj)
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
+        return db_obj
+
+    def clear_control_heartbeat(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        session_source_type: str,
+        session_source_id: str,
+        not_newer_than: datetime,
+        commit: bool = False,
+    ) -> Optional[ManagedAgent]:
+        """Drop the presence heartbeat when a control socket closes cleanly.
+
+        Without this the badge would keep saying online for the length of the
+        presence window after somebody quits their agent. ``not_newer_than``
+        is the last heartbeat this connection wrote: if the stored value has
+        moved past it the plugin already reconnected (possibly to another api
+        replica), and this late close must not report it offline.
+        """
+        db_obj = self.get_by_source(
+            db,
+            account_id=account_id,
+            session_source_type=session_source_type,
+            session_source_id=session_source_id,
+        )
+        if db_obj is None:
+            return None
+        stored = db_obj.control_last_heartbeat_at
+        if stored is not None:
+            if stored.tzinfo is None:
+                stored = stored.replace(tzinfo=UTC)
+            if stored > not_newer_than:
+                return db_obj
+        db_obj.control_last_heartbeat_at = None
+        db_obj.control_session_mode = None
         db.add(db_obj)
         if commit:
             db.commit()
@@ -832,6 +883,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.lifecycle_reason,
                 self.model.lifecycle_updated_at,
                 self.model.last_seen_at,
+                self.model.control_session_mode,
+                self.model.control_last_heartbeat_at,
                 self.model.tags,
                 User.username.label("owner_username"),
                 User.email.label("owner_email"),
@@ -863,6 +916,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.lifecycle_reason,
                 self.model.lifecycle_updated_at,
                 self.model.last_seen_at,
+                self.model.control_session_mode,
+                self.model.control_last_heartbeat_at,
                 self.model.tags,
                 User.username,
                 User.email,
@@ -941,6 +996,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.lifecycle_reason,
                 self.model.lifecycle_updated_at,
                 self.model.last_seen_at,
+                self.model.control_session_mode,
+                self.model.control_last_heartbeat_at,
                 self.model.tags,
                 User.username.label("owner_username"),
                 User.email.label("owner_email"),
@@ -972,6 +1029,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.lifecycle_reason,
                 self.model.lifecycle_updated_at,
                 self.model.last_seen_at,
+                self.model.control_session_mode,
+                self.model.control_last_heartbeat_at,
                 self.model.tags,
                 User.username,
                 User.email,
@@ -1156,6 +1215,9 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             "last_seen_at": row.last_seen_at,
             "control_session_mode": getattr(row, "control_session_mode", None)
             or "offline",
+            "control_last_heartbeat_at": getattr(
+                row, "control_last_heartbeat_at", None
+            ),
             "started_at": row.started_at,
             "last_activity_at": row.last_activity_at,
             "ended_at": row.ended_at,

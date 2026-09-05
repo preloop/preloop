@@ -16,6 +16,7 @@ from preloop.models.crud import (
     crud_runtime_session_activity,
 )
 from preloop.schemas.agent_control import AgentControlSendMessageRequest
+from preloop.services.agent_control_presence import control_heartbeat_is_fresh
 
 
 def _issue_runtime_token(client, *, session_source_id: str = "openclaw-live"):
@@ -1051,3 +1052,89 @@ def test_agent_control_ws_evicted_connection_does_not_clear_agent_binding(
         assert refreshed is not None
         # After ws2 (the active binding) disconnects, the session is cleared.
         assert refreshed.runtime_session_id is None
+
+
+def test_agent_control_ws_persists_heartbeat_for_other_replicas(
+    client, db_session, test_user
+):
+    """Presence has to outlive this process: api runs more than one replica."""
+    token_body = _issue_runtime_token(client, session_source_id="openclaw-heartbeat")
+    managed_agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="openclaw",
+        session_source_id="openclaw-heartbeat",
+    )
+    assert managed_agent is not None
+
+    url = f"/api/v1/agents/control/ws?token={token_body['token']}"
+    with client.websocket_connect(url) as websocket:
+        assert websocket.receive_json()["type"] == "presence"
+        websocket.send_json(
+            {
+                "type": "heartbeat",
+                "message_id": "hb-persist",
+                "payload": {"session_mode": "local"},
+            }
+        )
+        assert websocket.receive_json()["type"] == "ack"
+
+        db_session.expire_all()
+        refreshed = crud_managed_agent.get_for_account(
+            db_session,
+            account_id=str(test_user.account_id),
+            agent_id=str(managed_agent.id),
+        )
+        assert refreshed is not None
+        assert refreshed.control_last_heartbeat_at is not None
+        assert refreshed.control_session_mode == "local"
+        beat = refreshed.control_last_heartbeat_at
+        if beat.tzinfo is None:
+            beat = beat.replace(tzinfo=UTC)
+        # Fresh enough that a replica with no socket calls this agent online.
+        assert control_heartbeat_is_fresh(beat)
+
+    # A clean close retires presence instead of waiting out the window.
+    db_session.expire_all()
+    after_close = crud_managed_agent.get_for_account(
+        db_session,
+        account_id=str(test_user.account_id),
+        agent_id=str(managed_agent.id),
+    )
+    assert after_close is not None
+    assert after_close.control_last_heartbeat_at is None
+    assert control_heartbeat_is_fresh(after_close.control_last_heartbeat_at) is False
+
+
+def test_agent_control_ws_reconnect_keeps_the_newer_heartbeat(
+    client, db_session, test_user
+):
+    """A late close from an evicted socket must not report the agent offline."""
+    token_body = _issue_runtime_token(client, session_source_id="openclaw-hb-evict")
+    managed_agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="openclaw",
+        session_source_id="openclaw-hb-evict",
+    )
+    assert managed_agent is not None
+    url = f"/api/v1/agents/control/ws?token={token_body['token']}"
+
+    with client.websocket_connect(url) as ws1:
+        assert ws1.receive_json()["type"] == "presence"
+
+        with client.websocket_connect(url) as ws2:
+            assert ws2.receive_json()["type"] == "presence"
+
+            # ws1 is evicted and tears down after ws2 already registered.
+            with pytest.raises(WebSocketDisconnect):
+                ws1.receive_json()
+
+            db_session.expire_all()
+            refreshed = crud_managed_agent.get_for_account(
+                db_session,
+                account_id=str(test_user.account_id),
+                agent_id=str(managed_agent.id),
+            )
+            assert refreshed is not None
+            assert refreshed.control_last_heartbeat_at is not None

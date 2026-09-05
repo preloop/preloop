@@ -412,6 +412,10 @@ def _touch_presence(
         runtime_session_id=context.runtime_session.id,
         observed_at=observed_at,
         control_session_mode=session_mode,
+        # This function is only reachable from the Agent Control WebSocket, so
+        # every call here is proof the plugin is connected right now. It is the
+        # only presence signal the other api replicas can read.
+        control_heartbeat_at=observed_at,
         commit=False,
     )
     if commit:
@@ -846,6 +850,9 @@ async def managed_agent_control_websocket(
 
     now = datetime.now(UTC)
     _touch_presence(db, context, observed_at=now)
+    # The last heartbeat this connection wrote, so a clean close can retire
+    # its own presence without stealing a newer connection's.
+    last_presence_at = now
     connected = _connection_envelope(
         connection,
         envelope_type="presence",
@@ -910,10 +917,11 @@ async def managed_agent_control_websocket(
                 inbound_mode = inbound.payload.get("session_mode")
                 if inbound_mode not in {"local", "remote", "queued"}:
                     inbound_mode = None
+                last_presence_at = datetime.now(UTC)
                 _touch_presence(
                     db,
                     context,
-                    observed_at=datetime.now(UTC),
+                    observed_at=last_presence_at,
                     session_mode=inbound_mode,
                 )
                 _mark_control_verified_from_capabilities(db, context, inbound)
@@ -959,6 +967,26 @@ async def managed_agent_control_websocket(
                 )
         removed_active = await agent_control_manager.disconnect(connection_id)
         if removed_active:
+            # A clean close is presence information every replica can read, so
+            # retire the heartbeat instead of waiting out the window. This runs
+            # in a finally block: a session that already failed must not stop
+            # the disconnect bookkeeping below.
+            try:
+                crud_managed_agent.clear_control_heartbeat(
+                    db,
+                    account_id=connection.account_id,
+                    session_source_type=connection.managed_agent_session_source_type,
+                    session_source_id=connection.managed_agent_session_source_id,
+                    not_newer_than=last_presence_at,
+                    commit=True,
+                )
+            except _DB_DELIVERY_ERRORS:
+                logger.warning(
+                    "Failed to clear control heartbeat for managed agent %s",
+                    connection.managed_agent_id,
+                    exc_info=True,
+                )
+                db.rollback()
             crud_managed_agent.clear_runtime_session_binding(
                 db,
                 account_id=connection.account_id,
