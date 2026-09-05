@@ -1,0 +1,4 @@
+User: Please rename the variable.
+Assistant: Done, renamed foo to bar.
+It compiles.
+User: Thanks

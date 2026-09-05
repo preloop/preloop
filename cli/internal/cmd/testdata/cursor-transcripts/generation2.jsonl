@@ -1,0 +1,4 @@
+{"role":"user","message":{"content":[{"type":"text","text":"Now delete the oldest one."}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"git rm cli/old.go"}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Removed cli/old.go."}]}}
+{"type":"turn_ended","status":"success"}

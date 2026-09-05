@@ -55,6 +55,31 @@ MAX_TITLES_PER_LIST_REQUEST = 8
 TITLE_REFRESH_REQUEST_DELTA = 5
 
 
+_TRANSCRIPT_ROLE_TITLES = {
+    "user": "User message",
+    "assistant": "Assistant message",
+    "tool": "Tool result",
+    "tool_use": "Tool call",
+}
+
+
+def _default_activity_title(activity: Any) -> str:
+    """Human title for an activity row that names no tool.
+
+    Transcript messages (ingested from harness hooks that opted into
+    transcript storage) are titled by role so a session timeline reads as
+    a conversation; operator messages and tool calls keep their labels.
+    """
+    activity_type = getattr(activity, "activity_type", None)
+    if activity_type == "agent_control_message":
+        return "Operator message"
+    if activity_type == "transcript_message":
+        metadata = getattr(activity, "metadata_", None) or {}
+        role = str(metadata.get("role") or "").lower()
+        return _TRANSCRIPT_ROLE_TITLES.get(role, "Transcript message")
+    return "Tool call"
+
+
 class RuntimeSessionExplorerService:
     """Build runtime session explorer responses."""
 
@@ -831,12 +856,7 @@ class RuntimeSessionExplorerService:
                 RuntimeSessionActivityItem(
                     activity_type=activity.activity_type,
                     timestamp=self._normalize_timestamp(activity.timestamp),
-                    title=activity.tool_name
-                    or (
-                        "Operator message"
-                        if activity.activity_type == "agent_control_message"
-                        else "Tool call"
-                    ),
+                    title=activity.tool_name or _default_activity_title(activity),
                     summary=activity.summary or activity.server_name,
                     status=activity.status,
                     tool_name=activity.tool_name,

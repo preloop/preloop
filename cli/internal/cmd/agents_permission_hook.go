@@ -94,6 +94,12 @@ type permissionHookCredential struct {
 	// "git status". Written by onboarding; a missing field means enabled so
 	// pre-existing credential files keep the fatigue fix.
 	SafeReadAutoAllow *bool `json:"safe_read_auto_allow,omitempty"`
+	// StoreTranscript opts the Cursor usage hook into shipping transcript
+	// text (as runtime session activities) in addition to the token counts,
+	// titles and short summaries it ships by default. Written by
+	// `preloop agents onboard Cursor --store-transcript`; the hook command's
+	// own --store-transcript flag has the same effect.
+	StoreTranscript *bool `json:"store_transcript,omitempty"`
 }
 
 // safeReadAutoAllowEnabled reports whether the built-in read-only command

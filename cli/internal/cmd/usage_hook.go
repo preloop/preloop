@@ -63,9 +63,12 @@ const (
 // responding, the closest observable "one response happened" marker.
 //
 // Events outside this map (permission/file/observation hooks such as
-// beforeShellExecution, beforeReadFile, afterFileEdit, beforeSubmitPrompt,
-// afterAgentResponse) are acknowledged without a POST: they would inflate
-// event counts without adding any cost signal.
+// beforeShellExecution, beforeReadFile, afterFileEdit, afterAgentResponse)
+// are acknowledged without a POST: they would inflate event counts without
+// adding any cost signal. beforeSubmitPrompt is the one exception: it also
+// skips the POST, but captures the session title locally and answers
+// {"continue":true} on stdout (see the special case in
+// recordsFromCursorHook).
 var cursorHookEventMap = map[string]string{
 	"sessionStart":  "session_start",
 	"sessionEnd":    "session_end",
@@ -77,15 +80,36 @@ var cursorHookEventMap = map[string]string{
 
 // cursorHookInput mirrors the fields of a Cursor hook stdin payload this
 // command uses, per the hook schemas published at cursor.com/docs/agent/
-// hooks (verified 2026-08-27). Fields we do not use (prompt text, file
-// paths, transcripts, user email) are deliberately not decoded: they never
-// leave the machine through this command.
+// hooks (verified 2026-09-05). Fields we do not use (file paths touched by
+// tools, user email, workspace roots) are deliberately not decoded.
+// transcript_path is decoded so the command can read the local transcript
+// for a token estimate; transcript text itself never leaves the machine
+// unless the operator opts in with --store-transcript.
 type cursorHookInput struct {
 	// Common fields (all agent hooks).
 	ConversationID string `json:"conversation_id"`
 	GenerationID   string `json:"generation_id"`
 	HookEventName  string `json:"hook_event_name"`
 	Model          string `json:"model"`
+	TranscriptPath string `json:"transcript_path"`
+
+	// beforeSubmitPrompt. Read for one purpose only: the first line of the
+	// first prompt becomes the runtime session title. The prompt itself is
+	// never shipped.
+	Prompt string `json:"prompt"`
+
+	// subagentStop: the subagent's own transcript, separate from the
+	// parent conversation's.
+	AgentTranscriptPath string `json:"agent_transcript_path"`
+
+	// preCompact context measurements. context_tokens is Cursor's own
+	// count of the context about to be compacted, the only ground-truth
+	// token figure any Cursor hook reports.
+	ContextTokens       *int     `json:"context_tokens"`
+	ContextWindowSize   *int     `json:"context_window_size"`
+	ContextUsagePercent *float64 `json:"context_usage_percent"`
+	MessagesToCompact   *int     `json:"messages_to_compact"`
+	IsFirstCompaction   *bool    `json:"is_first_compaction"`
 
 	// sessionStart / sessionEnd. The docs state session_id equals
 	// conversation_id; it is decoded as a fallback only.
@@ -128,12 +152,17 @@ By default the command auto-detects the payload:
 
 Override detection with --from cursor|generic|codex.
 
-Cursor hook payloads carry no token counts and no billed amounts, so
-those records are lifecycle markers on the 'estimated' basis with no
-cost attached. Generic events and Codex rollouts may carry token
-counts; cost_basis stays 'estimated' unless the event explicitly
-includes a billed amount from a provider ledger. Null stays null,
-never 0.
+Cursor hook payloads carry no token counts and no billed amounts. When
+Cursor names a transcript file (transcript_path, or the
+CURSOR_TRANSCRIPT_PATH environment variable), stop, sessionEnd and
+subagentStop records carry a token estimate derived from the transcript
+text since the last shipped offset (4 characters per token, the same
+heuristic the gateway budget preflight uses), on the 'estimated' basis.
+Only counts leave the machine; transcript text never does unless you
+opt in with --store-transcript. Generic events and Codex rollouts may
+carry token counts; cost_basis stays 'estimated' unless the event
+explicitly includes a billed amount from a provider ledger. Null stays
+null, never 0.
 
 The command is fail-open by design: any error (unreachable server,
 missing auth, malformed payload) is reported on stderr and the command
@@ -151,6 +180,7 @@ func init() {
 	usageHookCmd.Flags().String("parent-conversation-id", "", "conversation this chat was spawned from, when the payload reports none (also PRELOOP_PARENT_CONVERSATION_ID)")
 	usageHookCmd.Flags().String("from", "auto", "payload format: auto, cursor, generic, or codex")
 	usageHookCmd.Flags().String("file", "", "read events from a file instead of stdin (generic NDJSON or a Codex rollout JSONL)")
+	usageHookCmd.Flags().Bool("store-transcript", false, "Cursor only: also ship the transcript text since the last event as runtime session activities (default: counts, title and a short summary only; a store_transcript key in the Cursor hook credential file has the same effect)")
 }
 
 func runUsageHook(cmd *cobra.Command, _ []string) error {
@@ -159,6 +189,7 @@ func runUsageHook(cmd *cobra.Command, _ []string) error {
 	parentFlag, _ := cmd.Flags().GetString("parent-conversation-id")
 	fromRaw, _ := cmd.Flags().GetString("from")
 	filePath, _ := cmd.Flags().GetString("file")
+	storeTranscriptFlag, _ := cmd.Flags().GetBool("store-transcript")
 	sourceChanged := cmd.Flags().Changed("source")
 
 	if agentID != "" && !uuidRe.MatchString(agentID) {
@@ -202,7 +233,12 @@ func runUsageHook(cmd *cobra.Command, _ []string) error {
 	var records []map[string]interface{}
 	switch detected {
 	case usageHookFormatCursor:
-		records, err = recordsFromCursorHook(raws[0], parentFlag, now)
+		options := cursorHookOptions{
+			StoreTranscript: storeTranscriptFlag || cursorStoreTranscriptFromCredential(),
+		}
+		records, err = recordsFromCursorHook(raws[0], parentFlag, now, options, func(warnErr error) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "preloop usage hook: %v\n", warnErr)
+		})
 	case usageHookFormatGeneric:
 		records = recordsFromGenericEvents(cmd, raws, parentFlag, now)
 	case usageHookFormatCodex:
@@ -216,6 +252,13 @@ func runUsageHook(cmd *cobra.Command, _ []string) error {
 		return usageHookFailOpen(cmd, err)
 	}
 	if len(records) == 0 {
+		if detected == usageHookFormatCursor && isCursorBeforeSubmitPrompt(raws[0]) {
+			// Cursor's beforeSubmitPrompt contract expects a JSON decision
+			// on stdout ({"continue": true|false, "user_message"?}); empty
+			// stdout is treated as a hook failure. This hook never blocks
+			// a prompt, so the answer is always continue.
+			fmt.Fprintln(cmd.OutOrStdout(), `{"continue":true}`)
+		}
 		return nil
 	}
 
@@ -303,6 +346,19 @@ func detectUsageHookFormat(raw json.RawMessage) usageHookFormat {
 	return ""
 }
 
+// isCursorBeforeSubmitPrompt reports whether a Cursor hook payload is the
+// beforeSubmitPrompt event, the one event whose contract reads a JSON
+// decision from the hook's stdout.
+func isCursorBeforeSubmitPrompt(raw json.RawMessage) bool {
+	var probe struct {
+		HookEventName string `json:"hook_event_name"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return false
+	}
+	return probe.HookEventName == "beforeSubmitPrompt"
+}
+
 func jsonRawString(raw json.RawMessage) (string, bool) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return "", false
@@ -331,12 +387,51 @@ func resolveUsageHookSource(format usageHookFormat, flagValue string, flagChange
 	}
 }
 
+// cursorHookOptions carries operator choices for Cursor hook handling.
+type cursorHookOptions struct {
+	// StoreTranscript ships the transcript delta's text as session
+	// activities. Off by default: only counts, the title and a short
+	// summary leave the machine.
+	StoreTranscript bool
+}
+
+// cursorStoreTranscriptFromCredential reports whether the newest Cursor
+// hook credential file (~/.preloop/agents/*/permission_hook.json with
+// source cursor) opted into transcript storage.
+func cursorStoreTranscriptFromCredential() bool {
+	creds, err := loadPermissionHookCredentials(permissionSourceCursor)
+	if err != nil || len(creds) == 0 {
+		return false
+	}
+	return creds[0].StoreTranscript != nil && *creds[0].StoreTranscript
+}
+
 func recordsFromCursorHook(
-	payload json.RawMessage, parentFlag string, now time.Time,
+	payload json.RawMessage,
+	parentFlag string,
+	now time.Time,
+	options cursorHookOptions,
+	warn func(error),
 ) ([]map[string]interface{}, error) {
 	var input cursorHookInput
 	if err := json.Unmarshal(payload, &input); err != nil {
 		return nil, fmt.Errorf("parse hook payload: %w", err)
+	}
+
+	if input.HookEventName == "beforeSubmitPrompt" {
+		// Title capture only: nothing is posted for this event, and the
+		// prompt text is reduced to its first line before it is stored
+		// locally for the next stop record.
+		conversationID := input.ConversationID
+		if conversationID == "" {
+			conversationID = input.SessionID
+		}
+		if conversationID != "" {
+			if err := rememberCursorTitleFromPrompt(conversationID, input.Prompt); err != nil {
+				warn(fmt.Errorf("session title not remembered: %w", err))
+			}
+		}
+		return nil, nil
 	}
 
 	eventType, shipped := cursorHookEventMap[input.HookEventName]
@@ -348,7 +443,89 @@ func recordsFromCursorHook(
 	if err != nil {
 		return nil, err
 	}
+	enrichCursorRecordFromTranscript(input, record, now, options, warn)
 	return []map[string]interface{}{record}, nil
+}
+
+// enrichCursorRecordFromTranscript adds the transcript-derived token
+// estimate to lifecycle records that close a generation. Any transcript
+// problem is reported through warn and leaves the lifecycle record intact:
+// a missing or unreadable transcript must never cost the event itself.
+func enrichCursorRecordFromTranscript(
+	input cursorHookInput,
+	record map[string]interface{},
+	now time.Time,
+	options cursorHookOptions,
+	warn func(error),
+) {
+	conversationID, _ := record["conversation_id"].(string)
+	switch input.HookEventName {
+	case "sessionStart":
+		pruneCursorTranscriptState(now)
+		setCursorRecordMetadata(record, "session_title_default", cursorDefaultSessionTitle(conversationID))
+		return
+	case "stop", "sessionEnd":
+		state, stateErr := loadCursorTranscriptState(conversationID)
+		if stateErr == nil && state.Title != "" {
+			setCursorRecordMetadata(record, "session_title", state.Title)
+		}
+		path := resolveCursorTranscriptPath(input.TranscriptPath)
+		if path == "" {
+			return
+		}
+		estimate, _, err := estimateCursorGeneration(conversationID, path, input.GenerationID, options.StoreTranscript)
+		if err != nil {
+			warn(fmt.Errorf("transcript estimate skipped: %w", err))
+		}
+		attachCursorTokenEstimate(record, estimate)
+		attachCursorSessionText(record, estimate, options)
+	case "subagentStop":
+		path := strings.TrimSpace(input.AgentTranscriptPath)
+		if path == "" {
+			return
+		}
+		key := cursorSubagentStateKey(input, path)
+		estimate, _, err := estimateCursorGeneration(key, path, input.GenerationID, false)
+		if err != nil {
+			warn(fmt.Errorf("subagent transcript estimate skipped: %w", err))
+		}
+		attachCursorTokenEstimate(record, estimate)
+	case "preCompact":
+		attachCursorCompactionContext(input, record)
+		if input.ContextTokens == nil {
+			return
+		}
+		if err := rememberCursorContextTokens(conversationID, input.GenerationID, *input.ContextTokens); err != nil {
+			warn(fmt.Errorf("context tokens not remembered: %w", err))
+		}
+	}
+}
+
+// attachCursorCompactionContext copies preCompact's context measurements
+// into record metadata. context_tokens is Cursor's own count and the only
+// ground-truth token figure a Cursor hook ever reports; the rest describe
+// how full the window was when compaction started.
+func attachCursorCompactionContext(input cursorHookInput, record map[string]interface{}) {
+	metadata, _ := record["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+		record["metadata"] = metadata
+	}
+	if input.ContextTokens != nil {
+		metadata["context_tokens"] = *input.ContextTokens
+	}
+	if input.ContextWindowSize != nil {
+		metadata["context_window_size"] = *input.ContextWindowSize
+	}
+	if input.ContextUsagePercent != nil {
+		metadata["context_usage_percent"] = *input.ContextUsagePercent
+	}
+	if input.MessagesToCompact != nil {
+		metadata["messages_to_compact"] = *input.MessagesToCompact
+	}
+	if input.IsFirstCompaction != nil {
+		metadata["is_first_compaction"] = *input.IsFirstCompaction
+	}
 }
 
 func postUsageIngestRecords(

@@ -13,6 +13,7 @@ from sqlalchemy import Integer, distinct, func
 
 from preloop.models.crud import crud_managed_agent
 from preloop.models.models.api_usage import ApiUsage
+from preloop.models.models.runtime_session import RuntimeSession
 
 INGEST_URL = "/api/v1/usage/ingest"
 COST_SUMMARY_URL = "/api/v1/cost/summary"
@@ -28,6 +29,19 @@ def _make_cursor_agent(db, account_id, *, source_id="cursor-ws-1", name="Cursor"
         session_source_id=source_id,
         display_name=name,
         agent_kind="cursor",
+    )
+
+
+def _make_codex_agent(db, account_id, *, source_id="codex-ws-1", name="Codex"):
+    """Register a managed Codex agent like `preloop agents onboard Codex`."""
+    return crud_managed_agent.upsert_from_runtime_session(
+        db,
+        account_id=account_id,
+        runtime_session_id=None,
+        session_source_type="desktop_agent",
+        session_source_id=source_id,
+        display_name=name,
+        agent_kind="codex",
     )
 
 
@@ -583,3 +597,415 @@ class TestIngestRecords:
         assert lifecycle["total_tokens"] is None
         assert lifecycle["estimated_cost"] is None
         assert lifecycle["reconciled_cost"] is None
+
+
+class TestEstimatedPricing:
+    """Estimated records with tokens and no billed amount get a catalog price."""
+
+    def _ingest_one(self, client, db_session, test_user, record):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        response = client.post(INGEST_URL, json=_payload([record]))
+        assert response.status_code == 200, response.text
+        assert response.json()["accepted"] == 1
+        row = (
+            db_session.query(ApiUsage)
+            .filter(ApiUsage.action_type == "imported_usage")
+            .one()
+        )
+        return row
+
+    def test_estimated_record_with_tokens_gets_catalog_cost(
+        self, client, db_session, test_user
+    ):
+        """gpt-5 at 1200 in / 850 out prices to $0.01 from the catalog."""
+        record = _record(external_id="turn-est", model="gpt-5")
+        del record["charged_cost"]
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        assert abs(row.estimated_cost - 0.01) < 1e-9
+        assert row.cost_source == "catalog"
+        assert row.cost_basis == "estimated"
+        assert row.currency == "USD"
+        assert row.meta_data["pricing"] == {"source": "catalog", "model": "gpt-5"}
+
+    def test_cursor_model_spelling_is_priced(self, client, db_session, test_user):
+        """Cursor's claude-4.5-sonnet is priced as the catalog's claude-sonnet-4-5."""
+        record = _record(external_id="turn-cursor", model="claude-4.5-sonnet")
+        del record["charged_cost"]
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        # 1200 * $3/Mtok + 850 * $15/Mtok
+        assert abs(row.estimated_cost - 0.01635) < 1e-9
+        assert row.cost_source == "catalog"
+        assert row.meta_data["pricing"]["model"] == "claude-sonnet-4-5"
+
+    def test_unpriced_model_stays_null(self, client, db_session, test_user):
+        """A model the catalog does not know stays unpriced: null, not $0."""
+        record = _record(external_id="turn-composer", model="composer")
+        del record["charged_cost"]
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        assert row.estimated_cost is None
+        assert row.cost_source is None
+        assert row.currency is None
+        assert "pricing" not in row.meta_data
+
+    def test_charged_cost_is_never_replaced_by_an_estimate(
+        self, client, db_session, test_user
+    ):
+        """A vendor charge on a reconciled record is stored as-is."""
+        record = _record(
+            external_id="turn-billed",
+            model="gpt-5",
+            charged_cost="0.42",
+            cost_basis="reconciled",
+        )
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        assert abs(row.estimated_cost - 0.42) < 1e-9
+        assert row.cost_source == "imported"
+        assert row.cost_basis == "reconciled"
+        assert "pricing" not in row.meta_data
+
+    def test_reconciled_without_amount_is_not_estimated(
+        self, client, db_session, test_user
+    ):
+        """An 'Included' reconciled row must not be back-filled with a guess."""
+        record = _record(
+            external_id="turn-included", model="gpt-5", cost_basis="reconciled"
+        )
+        del record["charged_cost"]
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        assert row.estimated_cost is None
+        assert row.cost_source is None
+
+    def test_cursor_hook_response_record_is_priced(self, client, db_session, test_user):
+        """The shape `preloop usage hook` ships for Cursor stop events is priced."""
+        record = {
+            "external_id": "stop:gen-1:0",
+            "conversation_id": "conv-hook",
+            "timestamp": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
+            "event_type": "response",
+            "model": "claude-4.5-sonnet",
+            "cost_basis": "estimated",
+            "input_tokens": 1200,
+            "output_tokens": 850,
+            "metadata": {
+                "hook_event_name": "stop",
+                "token_estimate": {
+                    "method": "transcript_chars",
+                    "chars_per_token": 4,
+                    "transcript_bytes": 8200,
+                },
+            },
+        }
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        assert abs(row.estimated_cost - 0.01635) < 1e-9
+        assert row.cost_source == "catalog"
+        assert row.cost_basis == "estimated"
+        assert row.meta_data["token_estimate"]["method"] == "transcript_chars"
+
+        summary = client.get(COST_SUMMARY_URL).json()
+        imported = summary["imported_usage"]
+        assert abs(imported["imported_cost"] - 0.01635) < 1e-9
+        conversation = imported["usage_by_conversation"][0]
+        assert conversation["conversation_id"] == "conv-hook"
+        assert abs(conversation["estimated_cost"] - 0.01635) < 1e-9
+        assert conversation["reconciled_cost"] is None
+
+    def test_lifecycle_record_without_tokens_is_not_priced(
+        self, client, db_session, test_user
+    ):
+        """A bare lifecycle marker with a model but no tokens stays unpriced."""
+        record = {
+            "external_id": "sessionStart:conv-x",
+            "conversation_id": "conv-x",
+            "timestamp": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
+            "event_type": "session_start",
+            "model": "gpt-5",
+        }
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        assert row.estimated_cost is None
+        assert row.cost_source is None
+
+
+class TestRuntimeSessions:
+    """Pushed records register the conversation as a runtime session."""
+
+    @staticmethod
+    def _session(db_session, account_id, conversation_id, source="cursor"):
+        return (
+            db_session.query(RuntimeSession)
+            .filter(
+                RuntimeSession.account_id == account_id,
+                RuntimeSession.session_source_type == source,
+                RuntimeSession.session_source_id == conversation_id,
+            )
+            .one_or_none()
+        )
+
+    @staticmethod
+    def _lifecycle(event_type, conversation_id, external_id, minutes_ago, **extra):
+        record = {
+            "external_id": external_id,
+            "conversation_id": conversation_id,
+            "timestamp": (
+                datetime.now(UTC) - timedelta(minutes=minutes_ago)
+            ).isoformat(),
+            "event_type": event_type,
+            "model": "claude-4.5-sonnet",
+            "cost_basis": "estimated",
+        }
+        record.update(extra)
+        return record
+
+    def test_session_start_registers_session_with_principal_and_default_title(
+        self, client, db_session, test_user
+    ):
+        agent = _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        started = self._lifecycle(
+            "session_start",
+            "conv-ses",
+            "sessionStart:conv-ses",
+            10,
+            metadata={
+                "hook_event_name": "sessionStart",
+                "session_title_default": "Cursor conversation conv-ses",
+            },
+        )
+        response = client.post(INGEST_URL, json=_payload([started]))
+        assert response.status_code == 200, response.text
+
+        session = self._session(db_session, test_user.account_id, "conv-ses")
+        assert session is not None
+        assert session.runtime_principal_type == agent.session_source_type
+        assert session.runtime_principal_id == agent.session_source_id
+        assert session.runtime_principal_name == "Cursor"
+        assert session.title == "Cursor conversation conv-ses"
+        assert session.summary is None
+        assert session.ended_at is None
+        assert session.started_at == session.last_activity_at
+        assert session.activities == []
+
+        row = (
+            db_session.query(ApiUsage)
+            .filter(ApiUsage.action_type == "imported_usage")
+            .one()
+        )
+        assert row.runtime_session_id == session.id
+
+    def test_stop_touches_activity_and_sets_title_and_summary(
+        self, client, db_session, test_user
+    ):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        started = self._lifecycle(
+            "session_start",
+            "conv-live",
+            "sessionStart:conv-live",
+            10,
+            metadata={"session_title_default": "Cursor conversation conv-liv"},
+        )
+        stop = self._lifecycle(
+            "response",
+            "conv-live",
+            "stop:gen-1:0",
+            5,
+            input_tokens=28,
+            output_tokens=36,
+            metadata={
+                "hook_event_name": "stop",
+                "session_title": "Count the Go files in cli",
+                "session_summary": "That is the whole count; nothing else changed.",
+            },
+        )
+        assert (
+            client.post(INGEST_URL, json=_payload([started, stop])).json()["accepted"]
+            == 2
+        )
+
+        session = self._session(db_session, test_user.account_id, "conv-live")
+        assert session.title == "Count the Go files in cli"
+        assert session.summary == "That is the whole count; nothing else changed."
+        assert session.summary_updated_at is not None
+        assert session.last_activity_at > session.started_at
+        assert session.ended_at is None
+        # Summaries only: no transcript text was stored.
+        assert session.activities == []
+
+        # A later default title never overrides a real one.
+        later = self._lifecycle(
+            "response",
+            "conv-live",
+            "stop:gen-2:0",
+            4,
+            metadata={"session_title_default": "Cursor conversation conv-liv"},
+        )
+        client.post(INGEST_URL, json=_payload([later]))
+        db_session.refresh(session)
+        assert session.title == "Count the Go files in cli"
+
+    def test_session_end_closes_and_session_start_reopens(
+        self, client, db_session, test_user
+    ):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        started = self._lifecycle(
+            "session_start", "conv-end", "sessionStart:conv-end", 10
+        )
+        ended = self._lifecycle("session_end", "conv-end", "sessionEnd:conv-end", 2)
+        client.post(INGEST_URL, json=_payload([started, ended]))
+
+        session = self._session(db_session, test_user.account_id, "conv-end")
+        assert session.ended_at is not None
+        assert session.last_activity_at == session.ended_at
+
+        # Out-of-order replays never move activity backwards.
+        older = self._lifecycle("response", "conv-end", "stop:old:0", 30)
+        client.post(INGEST_URL, json=_payload([older]))
+        db_session.refresh(session)
+        assert session.last_activity_at == session.ended_at
+
+        resumed = self._lifecycle(
+            "session_start", "conv-end", "sessionStart:conv-end:2", 1
+        )
+        client.post(INGEST_URL, json=_payload([resumed]))
+        db_session.refresh(session)
+        assert session.ended_at is None
+
+    def test_opt_in_transcript_becomes_activities_once(
+        self, client, db_session, test_user
+    ):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        stop = self._lifecycle(
+            "response",
+            "conv-text",
+            "stop:gen-1:0",
+            5,
+            input_tokens=28,
+            output_tokens=36,
+            transcript=[
+                {"role": "user", "text": "List the Go files in cli and count them."},
+                {"role": "assistant", "text": "I will list the files first."},
+                {"role": "tool_use", "text": "Shell"},
+                {"role": "assistant", "text": "There are 12 Go files in cli."},
+            ],
+        )
+        assert client.post(INGEST_URL, json=_payload([stop])).json()["accepted"] == 1
+
+        session = self._session(db_session, test_user.account_id, "conv-text")
+        activities = sorted(session.activities, key=lambda item: item.summary)
+        assert [item.activity_type for item in activities] == ["transcript_message"] * 4
+        assert {item.status for item in activities} == {"user", "assistant", "tool_use"}
+        by_text = {item.summary: item for item in activities}
+        user = by_text["List the Go files in cli and count them."]
+        assert user.metadata_["role"] == "user"
+        assert user.metadata_["source"] == "usage_ingest:cursor"
+        assert user.metadata_["external_id"] == "stop:gen-1:0"
+
+        # Replaying the same record is deduplicated and stores nothing twice.
+        replay = client.post(INGEST_URL, json=_payload([stop])).json()
+        assert replay["deduplicated"] == 1
+        db_session.refresh(session)
+        assert len(session.activities) == 4
+
+    def test_transcript_over_cap_is_rejected(self, client, db_session, test_user):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        stop = self._lifecycle(
+            "response",
+            "conv-big",
+            "stop:gen-1:0",
+            5,
+            transcript=[{"role": "assistant", "text": "x" * 4000} for _ in range(17)],
+        )
+        response = client.post(INGEST_URL, json=_payload([stop]))
+        assert response.status_code == 422
+        assert "transcript exceeds" in response.text
+
+    def test_record_without_conversation_registers_no_session(
+        self, client, db_session, test_user
+    ):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        response = client.post(
+            INGEST_URL, json=_payload([_record(external_id="turn-solo")])
+        )
+        assert response.status_code == 200
+        assert (
+            db_session.query(RuntimeSession)
+            .filter(RuntimeSession.account_id == test_user.account_id)
+            .count()
+            == 0
+        )
+        row = (
+            db_session.query(ApiUsage)
+            .filter(ApiUsage.action_type == "imported_usage")
+            .one()
+        )
+        assert row.runtime_session_id is None
+
+    def test_codex_source_registers_session(self, client, db_session, test_user):
+        """A Codex rollout import registers the thread as a runtime session."""
+        agent = _make_codex_agent(db_session, test_user.account_id)
+        db_session.commit()
+        started = self._lifecycle(
+            "session_start",
+            "thread-01a054f7",
+            "codex:thread-01a054f7:session_meta",
+            10,
+            model="gpt-5",
+        )
+        usage = self._lifecycle(
+            "usage",
+            "thread-01a054f7",
+            "codex:thread-01a054f7:token_count:1",
+            9,
+            model="gpt-5",
+            input_tokens=1200,
+            output_tokens=850,
+        )
+        response = client.post(
+            INGEST_URL, json=_payload([started, usage], source="codex")
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["accepted"] == 2
+
+        session = self._session(
+            db_session, test_user.account_id, "thread-01a054f7", source="codex"
+        )
+        assert session is not None
+        assert session.runtime_principal_id == agent.session_source_id
+        rows = (
+            db_session.query(ApiUsage)
+            .filter(ApiUsage.action_type == "imported_usage")
+            .all()
+        )
+        assert {row.runtime_session_id for row in rows} == {session.id}
+
+    def test_sessions_are_listed_in_the_runtime_sessions_explorer(
+        self, client, db_session, test_user
+    ):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        started = self._lifecycle(
+            "session_start",
+            "conv-list",
+            "sessionStart:conv-list",
+            10,
+            metadata={"session_title_default": "Cursor conversation conv-lis"},
+        )
+        client.post(INGEST_URL, json=_payload([started]))
+
+        response = client.get("/api/v1/runtime-sessions?session_source_type=cursor")
+        assert response.status_code == 200, response.text
+        sessions = response.json()["items"]
+        assert [item["session_source_id"] for item in sessions] == ["conv-list"]
+        assert sessions[0]["title"] == "Cursor conversation conv-lis"
+        assert sessions[0]["runtime_principal_name"] == "Cursor"

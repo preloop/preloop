@@ -25,9 +25,13 @@ in the console), never as 0 or $0.00. Estimated and reconciled amounts
 are always displayed separately and are never summed together.
 
 Privacy: the shipper sends ids, event names, the reported model name,
-token counts, billed amounts when the source provided them, and small
-metadata. It never sends prompt text, task descriptions, file paths,
-shell commands, or workspace contents.
+token counts (reported or estimated), billed amounts when the source
+provided them, and small metadata. For Cursor it also sends a session
+title (the first line of the first prompt) and a short summary (the last
+assistant paragraph, 280 characters) so the runtime sessions list is
+readable; transcript text itself is shipped only when you opt in with
+`--store-transcript`. It never sends file paths, shell commands, or
+workspace contents.
 
 ## Generic event schema (`preloop.usage.event.v1`)
 
@@ -85,52 +89,133 @@ Example with a billed ledger amount:
 ## Cursor
 
 Cursor's bundled models never pass through the Preloop model gateway, so
-Preloop cannot meter that traffic itself. Wired into Cursor's hooks, this
-command ships conversation lifecycle events as they happen.
+Preloop cannot meter that traffic itself; Cursor's agent hooks are the
+only signal. Wired into them, this command stores every conversation as
+a runtime session and ships a per-generation token and cost estimate.
 
 Hook payload fields referenced below come from Cursor's hooks reference
-(https://cursor.com/docs/agent/hooks, checked 2026-08-27).
+(https://cursor.com/docs/agent/hooks, checked 2026-09-05).
 
 For headless cursor-agent runs, the [`preloop cursor` launcher](cursor-cli.md)
 captures print-mode output and ships estimated usage without any hook
 configuration.
 
-Cursor hook payloads carry no token counts and no billed amounts. This
-integration therefore records lifecycle facts only:
+### What Cursor reports, and what is estimated
 
-- which conversations were active, and when
-- session, response, subagent, and compaction lifecycle events
-- parent and child conversation links (`parent_conversation_id` from
-  `subagentStart` payloads)
-- message and tool-call counters where Cursor reports them
-  (`subagentStop`), as growth tripwires
+Cursor hook payloads carry no token counts and no billed amounts. Two
+sources fill the gap:
 
-Billed amounts enter the system only through a reconciled import (for
-example a Cursor dashboard Usage export via `preloop usage import`).
+- Transcript-derived estimate. Every agent hook names the conversation
+  transcript (`transcript_path`; the process environment also carries
+  `CURSOR_TRANSCRIPT_PATH`), and `subagentStop` names the subagent's own
+  transcript (`agent_transcript_path`). At `stop`, `sessionEnd` and
+  `subagentStop` the command reads the transcript from the last shipped
+  byte offset, splits the new text by role, and ships
+  `input_tokens = ceil(context characters / 4)` and
+  `output_tokens = ceil(assistant characters / 4)`. The context is the
+  whole transcript before the generation plus the generation's own prompt
+  and tool results, because Cursor re-sends the conversation each turn;
+  the output is the assistant text plus its tool calls. The divisor is
+  the same chars-per-token heuristic the gateway budget preflight uses
+  (`billing_budget_chars_per_token`, default 4), so client and server
+  numbers agree. Each record's `metadata.token_estimate` names the method
+  (`transcript_chars`), the divisor, the bytes read and the input source.
+- Cursor's own context count. `preCompact` reports `context_tokens`, the
+  only real token figure any Cursor hook carries. The command ships it in
+  the compaction record's metadata and uses it as `input_tokens` for the
+  next generation (`input_source: pre_compact_context_tokens`).
+
+The estimate also biases the other way after a compaction: the transcript
+keeps growing while Cursor's real context shrank, so chars-based input is
+overstated until the next `preCompact` replaces it with Cursor's own
+count.
+
+The server prices estimated records that carry tokens through the model
+pricing catalog. Cursor's version-first Claude spellings are mapped onto
+catalog keys (`claude-4.5-sonnet` prices as `claude-sonnet-4-5`). The
+amount lands on the `estimated` basis with `cost_source: catalog`; models
+the catalog does not know (for example `composer` or `auto`) stay
+unpriced, never $0. A later reconciled import (a Cursor dashboard Usage
+export via `preloop usage import`) supersedes the estimates for the same
+conversation and is never summed with them.
+
+Per-conversation offsets live in
+`~/.preloop/agents/cursor/transcripts/<conversation_id>.json` (offset,
+last generation, running totals, pending context tokens, title). Files
+untouched for 30 days are pruned at the next `sessionStart`. Reads are
+bounded to the delta since the last offset (8 MiB per hook process).
+
+Transcript format, checked 2026-09-05 against 169 local files under
+`~/.cursor/projects/<workspace>/agent-transcripts/<conversation_id>/`
+(subagents under `subagents/<subagent_id>.jsonl`): JSONL, one
+`{"role": "user" | "assistant", "message": {"content": [...]}}` object per
+line with `text` and `tool_use` content blocks, plus role-less control
+lines such as `{"type": "turn_ended", "status": "success"}`. Tool output
+is not recorded. Half-written trailing lines are left for the next read.
+The parser also accepts a plain-text transcript: everything counts as
+input except lines under an `Assistant:` marker.
+
+### Sessions
+
+Every conversation is stored as a runtime session (source type `cursor`,
+source id `conversation_id`, principal = the managed Cursor agent the
+records are attributed to). It appears in the runtime sessions explorer
+next to gateway-metered sessions:
+
+- `sessionStart` opens the session with the title
+  "Cursor conversation <short id>".
+- `beforeSubmitPrompt` keeps the first line of the first prompt locally.
+  Nothing is posted for this event and the prompt is otherwise ignored.
+  The next `stop` sends that line as the session title.
+- `stop` advances the session's last activity and sets its summary to
+  the last assistant paragraph (280 characters).
+- `sessionEnd` closes the session.
+
+By default only counts, the title and that short summary leave the
+machine, matching the Claude Code plugin's summaries-only design. Full
+transcript text is opt-in: `preloop usage hook --store-transcript` (or
+`preloop agents onboard Cursor --store-transcript`, which puts the flag
+in `hooks.json` and records `store_transcript: true` in the hook
+credential file) ships the new transcript text with each `stop` as
+`transcript_message` activities on the session, capped at 50 messages
+and 64 KiB per record.
 
 ### Prerequisites
 
 1. The Preloop CLI installed and logged in (`preloop login`), with a user
    allowed to import usage.
-2. A managed Cursor agent to attribute events to. Either onboard one with
-   `preloop agents onboard cursor`, or pass `--agent-id` explicitly.
+2. A managed Cursor agent to attribute events to:
+   `preloop agents onboard Cursor`.
 
 ### Configure Cursor
 
-Cursor reads hook configuration from `hooks.json`, either user wide at
-`~/.cursor/hooks.json` or per project at `<project>/.cursor/hooks.json`.
-Create or extend it:
+`preloop agents onboard Cursor` installs the usage hooks in
+`~/.cursor/hooks.json` for `sessionStart`, `sessionEnd`, `subagentStart`,
+`subagentStop`, `stop`, `preCompact` and `beforeSubmitPrompt`, each running
+`<absolute path to preloop> usage hook --from cursor` with a 5 second
+timeout. The install is idempotent, keeps entries it does not own, and
+`preloop agents offboard Cursor` removes exactly its own entries. Flags:
+
+- `--no-usage-hooks` skips the usage hooks (approval hooks are unaffected).
+- `--store-transcript` opts into transcript storage (see Sessions).
+- Re-run `preloop agents onboard Cursor` to change either choice.
+
+To wire the hooks by hand instead, create or extend `hooks.json` (user
+wide at `~/.cursor/hooks.json` or per project at
+`<project>/.cursor/hooks.json`), using the absolute path of the binary
+so Cursor's PATH does not matter:
 
 ```json
 {
   "version": 1,
   "hooks": {
-    "sessionStart": [{ "command": "preloop usage hook" }],
-    "sessionEnd": [{ "command": "preloop usage hook" }],
-    "subagentStart": [{ "command": "preloop usage hook" }],
-    "subagentStop": [{ "command": "preloop usage hook" }],
-    "stop": [{ "command": "preloop usage hook" }],
-    "preCompact": [{ "command": "preloop usage hook" }]
+    "sessionStart": [{ "command": "/usr/local/bin/preloop usage hook --from cursor", "timeout": 5 }],
+    "sessionEnd": [{ "command": "/usr/local/bin/preloop usage hook --from cursor", "timeout": 5 }],
+    "subagentStart": [{ "command": "/usr/local/bin/preloop usage hook --from cursor", "timeout": 5 }],
+    "subagentStop": [{ "command": "/usr/local/bin/preloop usage hook --from cursor", "timeout": 5 }],
+    "stop": [{ "command": "/usr/local/bin/preloop usage hook --from cursor", "timeout": 5 }],
+    "preCompact": [{ "command": "/usr/local/bin/preloop usage hook --from cursor", "timeout": 5 }],
+    "beforeSubmitPrompt": [{ "command": "/usr/local/bin/preloop usage hook --from cursor", "timeout": 5 }]
   }
 }
 ```
@@ -143,13 +228,14 @@ decides from `hook_event_name` what to do.
 
 | Cursor hook event | Shipped as | Notes |
 | ----------------- | ---------- | ----- |
-| `sessionStart` | `session_start` | Fires when a new conversation is created. |
-| `sessionEnd` | `session_end` | End reason recorded in metadata. |
+| `sessionStart` | `session_start` | Opens the runtime session with the default title. |
+| `sessionEnd` | `session_end` | Closes the session. End reason in metadata; any transcript text not yet counted is estimated here. |
 | `subagentStart` | `subagent_start` | Carries the documented `parent_conversation_id`, which powers thread nesting in the rollup. |
-| `subagentStop` | `subagent_stop` | Ships the documented `message_count` and `tool_call_count`. |
-| `stop` | `response` | Fires when the agent loop finishes responding. |
-| `preCompact` | `compaction` | Context compaction marker. |
-| any other event | not shipped | Permission, file, prompt, and thought hooks would inflate event counts without adding cost signal. The command acknowledges them and exits 0. |
+| `subagentStop` | `subagent_stop` | Ships the documented `message_count` and `tool_call_count`, plus a token estimate from `agent_transcript_path`. |
+| `stop` | `response` | Token estimate, session title and summary. Fires when the agent loop finishes responding. |
+| `preCompact` | `compaction` | `context_tokens`, `context_window_size`, `context_usage_percent`, `messages_to_compact` and `is_first_compaction` in metadata; `message_count` as a column. |
+| `beforeSubmitPrompt` | not shipped | The first prompt line is kept locally for the session title; the prompt is otherwise ignored. Answers `{"continue": true}` on stdout, the decision JSON this event's contract expects. |
+| any other event | not shipped | Permission, file, and thought hooks would inflate event counts without adding cost signal. The command acknowledges them and exits 0. |
 
 Deduplication: the server deduplicates on `(source, external_id)`.
 Records are keyed by conversation id (`sessionStart`/`sessionEnd`),
@@ -158,12 +244,15 @@ Records are keyed by conversation id (`sessionStart`/`sessionEnd`),
 per-fire id, so those records get a receive-time suffix; they stay unique
 across parallel workers but do not deduplicate on replay. The command
 makes a single delivery attempt, so duplicates cannot originate from it.
+The transcript offset file is the second guard: a replayed `stop` finds
+nothing new in the transcript and ships no token fields.
 
 ### Subagent conversations
 
 When Cursor spawns a subagent (Task tool), the `subagentStart` payload
 reports `parent_conversation_id`, and the rollup nests the record under
-that parent thread automatically.
+that parent thread automatically. `subagentStop` reads the subagent's own
+transcript, so its tokens are counted once, separately from the parent's.
 
 One documented ambiguity: Cursor's reference does not state whether the
 common `conversation_id` field on subagent events refers to the worker's
@@ -181,13 +270,22 @@ variable. When none is present the field is omitted; it is never guessed.
 ### Verify the wiring
 
 ```bash
-echo '{"conversation_id":"test-conv","generation_id":"test-gen-1","hook_event_name":"stop","status":"completed","loop_count":0}' \
-  | preloop usage hook
+printf '%s\n' \
+  '{"role":"user","message":{"content":[{"type":"text","text":"hello"}]}}' \
+  '{"role":"assistant","message":{"content":[{"type":"text","text":"hi there"}]}}' \
+  > /tmp/preloop-cursor-test.jsonl
+echo '{"conversation_id":"test-conv","generation_id":"test-gen-1","hook_event_name":"stop","status":"completed","loop_count":0,"model":"claude-4.5-sonnet","transcript_path":"/tmp/preloop-cursor-test.jsonl"}' \
+  | preloop usage hook --from cursor
 ```
 
 Then open Cost analytics in the console. The "Imported usage" section
-shows a "Conversations" rollup listing `test-conv` with one event and its
-tokens and costs marked "not reported" (hooks report neither).
+shows a "Conversations" rollup listing `test-conv` with one event,
+2 input tokens ("hello" is 5 characters), 2 output tokens ("hi there" is
+8 characters) and an estimated amount from the catalog price of
+`claude-sonnet-4-5`. The runtime sessions list shows a `cursor` session
+`test-conv` with the summary "hi there". Delete
+`~/.preloop/agents/cursor/transcripts/test-conv.json` afterwards if you
+want to replay the check.
 
 ## Codex CLI
 
@@ -267,7 +365,10 @@ preloop usage hook --from codex < ~/.codex/sessions/2026/08/31/rollout-....jsonl
 
 Stdin is capped at 1 MiB (the same bound as live hooks). Use `--file`
 for larger rollouts. `--source` defaults to `codex` in this mode so the
-ingest API can attribute events to the onboarded Codex agent.
+ingest API can attribute events to the onboarded Codex agent. Every
+shipped record carries the thread's conversation id, so importing a
+historical rollout also registers the thread as a runtime session (source
+type `codex`) and populates the sessions explorer.
 
 ### Event mapping
 
@@ -290,8 +391,10 @@ The command is fail-open by design:
   stall). File imports use the CLI's default API timeout
 - any error (server unreachable, expired login, malformed payload) is
   printed to stderr and the command still exits 0
-- stdin hooks write nothing to stdout. `--file` prints a one-line
-  shipment summary
+- stdin hooks write nothing to stdout, except Cursor's
+  `beforeSubmitPrompt`, which answers `{"continue": true}` so Cursor
+  never treats the hook as failed. `--file` prints a one-line shipment
+  summary
 
 A failed shipment means missing events, nothing more.
 

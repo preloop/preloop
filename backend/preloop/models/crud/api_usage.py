@@ -2587,6 +2587,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         cache_read_tokens: Optional[int] = None,
         cache_creation_tokens: Optional[int] = None,
         cost_usd: Optional[float] = None,
+        cost_source: Optional[str] = None,
         cost_basis: Optional[str] = None,
         conversation_id: Optional[str] = None,
         parent_conversation_id: Optional[str] = None,
@@ -2595,6 +2596,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         runtime_principal_type: Optional[str] = None,
         runtime_principal_id: Optional[str] = None,
         runtime_principal_name: Optional[str] = None,
+        runtime_session_id: Optional[Any] = None,
         import_fingerprint: Optional[str] = None,
         meta_data: Optional[Dict[str, Any]] = None,
         endpoint: Optional[str] = None,
@@ -2618,8 +2620,13 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 absent.
             cache_read_tokens: Cache-read tokens reported by the source.
             cache_creation_tokens: Cache-write tokens reported by the source.
-            cost_usd: Amount the source vendor charged, in USD. Stored in
-                ``estimated_cost`` with ``cost_source='imported'``.
+            cost_usd: Amount stored in ``estimated_cost``: the source
+                vendor's charge, or a catalog estimate for hook-derived
+                records that carry tokens but no billed amount.
+            cost_source: Provenance of ``cost_usd``. Defaults to
+                ``imported`` when an amount is present (the vendor charged
+                it); usage ingest passes the pricing service's source
+                (``catalog``) for estimated amounts.
             cost_basis: ``estimated`` or ``reconciled``; reconciled rows
                 supersede estimated rows with the same (account, source,
                 conversation_id) in imported-cost sums. NULL rows never
@@ -2632,6 +2639,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             runtime_principal_type: Managed-agent principal type attribution.
             runtime_principal_id: Managed-agent principal id attribution.
             runtime_principal_name: Managed-agent display name attribution.
+            runtime_session_id: Runtime session the record's conversation
+                was registered as, so the row shows up in that session's
+                usage like gateway rows do.
             import_fingerprint: Stable dedupe key; when a row with the same
                 fingerprint already exists for the account, the event is
                 skipped and ``None`` is returned (re-importing the same CSV
@@ -2686,7 +2696,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             cache_creation_tokens=cache_creation_tokens,
             estimated_cost=cost_usd,
             currency="USD" if cost_usd is not None else None,
-            cost_source="imported" if cost_usd is not None else None,
+            cost_source=(cost_source or ("imported" if cost_usd is not None else None)),
             cost_basis=cost_basis,
             conversation_id=conversation_id,
             parent_conversation_id=parent_conversation_id,
@@ -2696,6 +2706,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             runtime_principal_type=runtime_principal_type,
             runtime_principal_id=runtime_principal_id,
             runtime_principal_name=runtime_principal_name,
+            runtime_session_id=runtime_session_id,
             meta_data=merged_meta,
             timestamp=timestamp,
         )

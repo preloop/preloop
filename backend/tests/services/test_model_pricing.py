@@ -1027,3 +1027,96 @@ class TestUpdateModelPriceOverlays:
         assert len(stale) == 1
         assert "older than 30 days" in stale[0]
         assert script.overlay_sources_over_max_age({}, 30, now=now) == []
+
+
+# ---------------------------------------------------------------------------
+# Harness-reported model names (usage ingest pricing)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        ("claude-4.5-sonnet", "claude-sonnet-4-5"),
+        ("claude-4-sonnet", "claude-sonnet-4"),
+        ("claude-4-opus", "claude-opus-4"),
+        ("claude-4.5-opus", "claude-opus-4-5"),
+        ("Claude-4.5-Sonnet", "claude-sonnet-4-5"),
+        ("claude-opus-4.1", "claude-opus-4-1"),
+        ("gpt-5", "gpt-5"),
+        ("  composer ", "composer"),
+        ("", ""),
+    ],
+)
+def test_normalize_external_model_name(reported: str, expected: str) -> None:
+    """Cursor's version-first Claude spellings map onto catalog keys."""
+    from preloop.services.model_pricing import normalize_external_model_name
+
+    assert normalize_external_model_name(reported) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "provider"),
+    [
+        ("claude-sonnet-4-5", "anthropic"),
+        ("gpt-5", "openai"),
+        ("o3-mini", "openai"),
+        ("gemini-2.5-pro", "gemini"),
+        ("grok-4", "xai"),
+        ("deepseek-v3", "deepseek"),
+        ("openrouter/anthropic/claude-sonnet-4-5", "openrouter"),
+        ("composer", "openai"),
+    ],
+)
+def test_infer_provider_for_model_name(name: str, provider: str) -> None:
+    """Bare model names get the provider prefix the catalog resolver expects."""
+    from preloop.services.model_pricing import infer_provider_for_model_name
+
+    assert infer_provider_for_model_name(name) == provider
+
+
+def test_estimate_external_model_usage_cost_prices_catalog_models() -> None:
+    """A reported model name is priced through the same catalog as gateway rows."""
+    from preloop.services.model_pricing import estimate_external_model_usage_cost
+
+    estimate = estimate_external_model_usage_cost(
+        "gpt-5", prompt_tokens=1200, completion_tokens=850
+    )
+    # 1200 * $1.25/Mtok + 850 * $10/Mtok
+    assert estimate.cost == pytest.approx(0.01)
+    assert estimate.source == "catalog"
+
+
+def test_estimate_external_model_usage_cost_maps_cursor_alias() -> None:
+    """claude-4.5-sonnet (Cursor spelling) prices as claude-sonnet-4-5."""
+    from preloop.services.model_pricing import estimate_external_model_usage_cost
+
+    estimate = estimate_external_model_usage_cost(
+        "claude-4.5-sonnet", prompt_tokens=1200, completion_tokens=850
+    )
+    # 1200 * $3/Mtok + 850 * $15/Mtok
+    assert estimate.cost == pytest.approx(0.01635)
+    assert estimate.source == "catalog"
+
+
+@pytest.mark.parametrize("name", ["composer", "auto", "claude-4-sonnet", ""])
+def test_estimate_external_model_usage_cost_unknown_stays_unpriced(name: str) -> None:
+    """Unknown or catalog-less names return unpriced rather than a guess."""
+    from preloop.services.model_pricing import estimate_external_model_usage_cost
+
+    estimate = estimate_external_model_usage_cost(
+        name, prompt_tokens=1200, completion_tokens=850
+    )
+    assert estimate.cost is None
+    assert estimate.source == "unpriced"
+
+
+def test_estimate_external_model_usage_cost_zero_tokens_unpriced() -> None:
+    """Zero tokens never produce a cost."""
+    from preloop.services.model_pricing import estimate_external_model_usage_cost
+
+    estimate = estimate_external_model_usage_cost(
+        "gpt-5", prompt_tokens=0, completion_tokens=0
+    )
+    assert estimate.cost is None
+    assert estimate.source == "unpriced"

@@ -21,6 +21,7 @@ func newUsageHookTestCmd(stdin string) (*cobra.Command, *bytes.Buffer, *bytes.Bu
 	cmd.Flags().String("parent-conversation-id", "", "")
 	cmd.Flags().String("from", "auto", "")
 	cmd.Flags().String("file", "", "")
+	cmd.Flags().Bool("store-transcript", false, "")
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
@@ -313,8 +314,14 @@ func TestUsageHookSkipsNonLifecycleEventsWithoutPosting(t *testing.T) {
 		if posted {
 			t.Fatalf("%s must not be shipped", hookEvent)
 		}
-		if stdout.String() != "" || stderr.String() != "" {
-			t.Fatalf("expected silence for %s, got stdout=%q stderr=%q",
+		// beforeSubmitPrompt is the one event whose contract reads a JSON
+		// decision from stdout; every other event stays silent.
+		wantStdout := ""
+		if hookEvent == "beforeSubmitPrompt" {
+			wantStdout = "{\"continue\":true}\n"
+		}
+		if stdout.String() != wantStdout || stderr.String() != "" {
+			t.Fatalf("unexpected output for %s, got stdout=%q stderr=%q",
 				hookEvent, stdout.String(), stderr.String())
 		}
 	}

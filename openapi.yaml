@@ -21598,6 +21598,22 @@ components:
             type: object
           - type: 'null'
           title: Metadata
+          description: 'Small JSON object. Recognized session keys: `session_title`
+            (sets the runtime session title), `session_title_default` (fills the title
+            only while it is empty) and `session_summary` (replaces the runtime session
+            summary).'
+        transcript:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/UsageIngestTranscriptMessage'
+            type: array
+            maxItems: 50
+          - type: 'null'
+          title: Transcript
+          description: Opt-in transcript text for this record's conversation, stored
+            as runtime session activities. Shippers send it only when the operator
+            enabled transcript storage; by default only counts, titles and short summaries
+            leave the machine.
       type: object
       required:
       - external_id
@@ -21713,6 +21729,33 @@ components:
         payload differs from the stored record are additionally flagged
 
         ``conflict`` (first write wins; never a 409).'
+    UsageIngestTranscriptMessage:
+      properties:
+        role:
+          type: string
+          enum:
+          - user
+          - assistant
+          - tool
+          - tool_use
+          title: Role
+        text:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Text
+        timestamp:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Timestamp
+      type: object
+      required:
+      - role
+      - text
+      title: UsageIngestTranscriptMessage
+      description: One role-tagged text chunk of a conversation transcript.
     ValidationError:
       properties:
         loc:

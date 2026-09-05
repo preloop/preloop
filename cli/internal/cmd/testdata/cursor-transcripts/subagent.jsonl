@@ -1,0 +1,4 @@
+{"role":"user","message":{"content":[{"type":"text","text":"Explore the auth flow and summarize it."}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"path":"backend/auth.py"}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Auth uses JWT bearer tokens with a refresh endpoint."}]}}
+{"type":"turn_ended","status":"success"}
