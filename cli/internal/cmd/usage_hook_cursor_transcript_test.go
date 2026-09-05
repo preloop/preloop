@@ -65,6 +65,21 @@ func cursorStopPayload(conversationID, generationID, transcriptPath string) stri
 	return string(data)
 }
 
+func cursorSessionEndPayload(conversationID, generationID, transcriptPath string) string {
+	payload := map[string]interface{}{
+		"conversation_id": conversationID,
+		"generation_id":   generationID,
+		"hook_event_name": "sessionEnd",
+		"model":           "claude-4.5-sonnet",
+		"reason":          "completed",
+	}
+	if transcriptPath != "" {
+		payload["transcript_path"] = transcriptPath
+	}
+	data, _ := json.Marshal(payload)
+	return string(data)
+}
+
 func runCursorHook(t *testing.T, stdin string) (map[string]interface{}, string) {
 	t.Helper()
 	var gotBody map[string]interface{}
@@ -450,9 +465,36 @@ func TestUsageHookCursorStopAfterPreCompactUsesContextTokens(t *testing.T) {
 	}
 }
 
+func TestUsageHookCursorSessionEndWithoutNewTextKeepsPendingContextTokens(t *testing.T) {
+	home := testenv.SetHome(t, t.TempDir())
+	transcript := copyCursorFixture(t, "conversation.jsonl")
+	runCursorHook(t, cursorStopPayload("conv-9", "gen-1", transcript))
+	runCursorHook(t, cursorPreCompactPayload("conv-9", "gen-2", 121000))
+
+	// sessionEnd fires before the next generation produced any text: the
+	// read finds nothing new, and the pending ground truth must survive
+	// for the first generation of the resumed conversation.
+	runCursorHook(t, cursorSessionEndPayload("conv-9", "gen-2", transcript))
+	state := readCursorState(t, home, "conv-9")
+	if state.PendingContextTokens == nil || *state.PendingContextTokens != 121000 {
+		t.Fatalf("sessionEnd with no new text dropped the pending context tokens: %#v", state)
+	}
+
+	appendCursorFixture(t, transcript, "generation2.jsonl")
+	body, _ := runCursorHook(t, cursorStopPayload("conv-9", "gen-2", transcript))
+	record := decodeSingleIngestRecord(t, body)
+	if record["input_tokens"] != float64(121000) {
+		t.Errorf("the next generation must use the pending ground truth, got %v", record["input_tokens"])
+	}
+	if tokenEstimateMeta(t, record)["input_source"] != "pre_compact_context_tokens" {
+		t.Errorf("input_source=%v", tokenEstimateMeta(t, record)["input_source"])
+	}
+}
+
 // runCursorHookCounting is runCursorHook that also reports how many POSTs
-// reached the server, for events that must not post at all.
-func runCursorHookCounting(t *testing.T, stdin string, args ...string) (map[string]interface{}, int, string) {
+// reached the server, for events that must not post at all, plus what the
+// command wrote to stdout.
+func runCursorHookCounting(t *testing.T, stdin string, args ...string) (map[string]interface{}, int, string, string) {
 	t.Helper()
 	var gotBody map[string]interface{}
 	posts := 0
@@ -460,12 +502,12 @@ func runCursorHookCounting(t *testing.T, stdin string, args ...string) (map[stri
 		posts++
 		usageHookOKHandler(t, &gotBody)(w, r)
 	})
-	cmd, _, stderr := newUsageHookTestCmd(stdin)
+	cmd, stdout, stderr := newUsageHookTestCmd(stdin)
 	cmd.SetArgs(args)
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("hook must exit 0, got %v", err)
 	}
-	return gotBody, posts, stderr.String()
+	return gotBody, posts, stdout.String(), stderr.String()
 }
 
 func TestCursorTitleFromPrompt(t *testing.T) {
@@ -500,7 +542,7 @@ func TestCursorSummaryFromAssistantText(t *testing.T) {
 func TestUsageHookCursorSessionStartShipsDefaultTitle(t *testing.T) {
 	testenv.SetHome(t, t.TempDir())
 	payload := `{"conversation_id":"0f3c9a1e-1111-2222-3333-444444444444","hook_event_name":"sessionStart","model":"claude-4.5-sonnet"}`
-	body, posts, _ := runCursorHookCounting(t, payload)
+	body, posts, _, _ := runCursorHookCounting(t, payload)
 	if posts != 1 {
 		t.Fatalf("expected one POST, got %d", posts)
 	}
@@ -517,9 +559,12 @@ func TestUsageHookCursorSessionStartShipsDefaultTitle(t *testing.T) {
 func TestUsageHookCursorBeforeSubmitPromptCapturesTitleWithoutPosting(t *testing.T) {
 	home := testenv.SetHome(t, t.TempDir())
 	first := `{"conversation_id":"conv-t","generation_id":"g1","hook_event_name":"beforeSubmitPrompt","prompt":"Count the Go files in cli\nand report back"}`
-	_, posts, stderr := runCursorHookCounting(t, first)
+	_, posts, stdout, stderr := runCursorHookCounting(t, first)
 	if posts != 0 {
 		t.Fatalf("beforeSubmitPrompt must not POST, got %d", posts)
+	}
+	if stdout != "{\"continue\":true}\n" {
+		t.Errorf("beforeSubmitPrompt must answer Cursor's JSON contract on stdout, got %q", stdout)
 	}
 	if stderr != "" {
 		t.Errorf("unexpected stderr: %s", stderr)
@@ -535,7 +580,7 @@ func TestUsageHookCursorBeforeSubmitPromptCapturesTitleWithoutPosting(t *testing
 	}
 
 	transcript := copyCursorFixture(t, "conversation.jsonl")
-	body, _, _ := runCursorHookCounting(t, cursorStopPayload("conv-t", "g1", transcript))
+	body, _, _, _ := runCursorHookCounting(t, cursorStopPayload("conv-t", "g1", transcript))
 	record := decodeSingleIngestRecord(t, body)
 	metadata := record["metadata"].(map[string]interface{})
 	if metadata["session_title"] != "Count the Go files in cli" {
@@ -556,7 +601,7 @@ func TestUsageHookCursorBeforeSubmitPromptCapturesTitleWithoutPosting(t *testing
 func TestUsageHookCursorStoreTranscriptFlagShipsDeltaText(t *testing.T) {
 	testenv.SetHome(t, t.TempDir())
 	transcript := copyCursorFixture(t, "conversation.jsonl")
-	body, _, _ := runCursorHookCounting(t, cursorStopPayload("conv-s", "g1", transcript), "--store-transcript")
+	body, _, _, _ := runCursorHookCounting(t, cursorStopPayload("conv-s", "g1", transcript), "--store-transcript")
 	record := decodeSingleIngestRecord(t, body)
 	messages, ok := record["transcript"].([]interface{})
 	if !ok || len(messages) != 4 {
@@ -593,7 +638,7 @@ func TestUsageHookCursorStoreTranscriptFromCredentialFile(t *testing.T) {
 		StoreTranscript: &optIn,
 	})
 	transcript := copyCursorFixture(t, "conversation.jsonl")
-	body, _, _ := runCursorHookCounting(t, cursorStopPayload("conv-c", "g1", transcript))
+	body, _, _, _ := runCursorHookCounting(t, cursorStopPayload("conv-c", "g1", transcript))
 	record := decodeSingleIngestRecord(t, body)
 	if _, ok := record["transcript"]; !ok {
 		t.Errorf("credential store_transcript=true must ship transcript: %#v", record)
@@ -608,7 +653,7 @@ func TestUsageHookCursorCredentialWithoutOptInShipsNoText(t *testing.T) {
 		Source:  permissionSourceCursor,
 	})
 	transcript := copyCursorFixture(t, "conversation.jsonl")
-	body, _, _ := runCursorHookCounting(t, cursorStopPayload("conv-d", "g1", transcript))
+	body, _, _, _ := runCursorHookCounting(t, cursorStopPayload("conv-d", "g1", transcript))
 	record := decodeSingleIngestRecord(t, body)
 	if _, ok := record["transcript"]; ok {
 		t.Errorf("no opt-in must mean no transcript: %#v", record)

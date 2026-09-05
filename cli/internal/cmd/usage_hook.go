@@ -63,9 +63,12 @@ const (
 // responding, the closest observable "one response happened" marker.
 //
 // Events outside this map (permission/file/observation hooks such as
-// beforeShellExecution, beforeReadFile, afterFileEdit, beforeSubmitPrompt,
-// afterAgentResponse) are acknowledged without a POST: they would inflate
-// event counts without adding any cost signal.
+// beforeShellExecution, beforeReadFile, afterFileEdit, afterAgentResponse)
+// are acknowledged without a POST: they would inflate event counts without
+// adding any cost signal. beforeSubmitPrompt is the one exception: it also
+// skips the POST, but captures the session title locally and answers
+// {"continue":true} on stdout (see the special case in
+// recordsFromCursorHook).
 var cursorHookEventMap = map[string]string{
 	"sessionStart":  "session_start",
 	"sessionEnd":    "session_end",
@@ -249,6 +252,13 @@ func runUsageHook(cmd *cobra.Command, _ []string) error {
 		return usageHookFailOpen(cmd, err)
 	}
 	if len(records) == 0 {
+		if detected == usageHookFormatCursor && isCursorBeforeSubmitPrompt(raws[0]) {
+			// Cursor's beforeSubmitPrompt contract expects a JSON decision
+			// on stdout ({"continue": true|false, "user_message"?}); empty
+			// stdout is treated as a hook failure. This hook never blocks
+			// a prompt, so the answer is always continue.
+			fmt.Fprintln(cmd.OutOrStdout(), `{"continue":true}`)
+		}
 		return nil
 	}
 
@@ -334,6 +344,19 @@ func detectUsageHookFormat(raw json.RawMessage) usageHookFormat {
 		return usageHookFormatGeneric
 	}
 	return ""
+}
+
+// isCursorBeforeSubmitPrompt reports whether a Cursor hook payload is the
+// beforeSubmitPrompt event, the one event whose contract reads a JSON
+// decision from the hook's stdout.
+func isCursorBeforeSubmitPrompt(raw json.RawMessage) bool {
+	var probe struct {
+		HookEventName string `json:"hook_event_name"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return false
+	}
+	return probe.HookEventName == "beforeSubmitPrompt"
 }
 
 func jsonRawString(raw json.RawMessage) (string, bool) {

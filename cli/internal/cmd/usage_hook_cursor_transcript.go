@@ -497,9 +497,12 @@ func estimateCursorGeneration(
 		state.Generations++
 		state.InputTokens += int64(estimate.InputTokens)
 		state.OutputTokens += int64(estimate.OutputTokens)
+		// The pending ground truth is consumed only when a generation
+		// actually used it. A read that found no model text (sessionEnd
+		// right after preCompact, before the next stop) must not drop it.
+		state.PendingContextTokens = nil
+		state.PendingContextGenerationID = ""
 	}
-	state.PendingContextTokens = nil
-	state.PendingContextGenerationID = ""
 	state.Offset += delta.Consumed
 	state.TotalChars += delta.totalChars()
 	if generationID != "" {
