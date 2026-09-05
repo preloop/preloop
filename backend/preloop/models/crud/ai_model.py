@@ -635,6 +635,7 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 if self._model_kind(existing_model) == target_model_kind:
                     existing_model.is_default = False
 
+        previous_secret_id = db_obj.credentials_secret_id
         self._apply_secret_reference_fields(
             db,
             obj_data=obj_data,
@@ -643,7 +644,28 @@ class CRUDAIModel(CRUDBase[AIModel]):
             existing_secret_id=db_obj.credentials_secret_id,
         )
 
-        return super().update(db, db_obj=db_obj, obj_in=obj_data)
+        updated = super().update(db, db_obj=db_obj, obj_in=obj_data)
+        if previous_secret_id is not None and str(updated.credentials_secret_id) != str(
+            previous_secret_id
+        ):
+            self._delete_unreferenced_credential_secret(db, previous_secret_id)
+            db.commit()
+        return updated
+
+    def _delete_unreferenced_credential_secret(
+        self, db: Session, secret_id: uuid.UUID
+    ) -> None:
+        """Delete a SecretReference when no AIModel still points at it."""
+        remaining_reference = (
+            db.query(self.model.id)
+            .filter(self.model.credentials_secret_id == secret_id)
+            .first()
+        )
+        if remaining_reference is not None:
+            return
+        secret_ref = crud_secret_reference.get(db, id=secret_id)
+        if secret_ref is not None:
+            db.delete(secret_ref)
 
     def remove(self, db: Session, *, id: uuid.UUID) -> Optional[AIModel]:
         """Delete an AIModel and any unreferenced credential secret."""
@@ -656,15 +678,7 @@ class CRUDAIModel(CRUDBase[AIModel]):
         db.flush()
 
         if secret_id is not None:
-            remaining_reference = (
-                db.query(self.model.id)
-                .filter(self.model.credentials_secret_id == secret_id)
-                .first()
-            )
-            if remaining_reference is None:
-                secret_ref = crud_secret_reference.get(db, id=secret_id)
-                if secret_ref is not None:
-                    db.delete(secret_ref)
+            self._delete_unreferenced_credential_secret(db, secret_id)
 
         db.commit()
         return obj

@@ -9860,6 +9860,15 @@ components:
             type: object
           - type: 'null'
           title: Credentials Meta Data
+        credentials_secret_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Credentials Secret Id
+          description: Repoint this model at an existing SecretReference instead of
+            minting a new one. Used to keep several models on one provider key or
+            OAuth lineage. The secret must already belong to the caller's account.
         is_default:
           anyOf:
           - type: boolean

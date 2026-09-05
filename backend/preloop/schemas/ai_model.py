@@ -135,6 +135,14 @@ class AIModelUpdate(BaseModel):
     credentials_backend_type: Optional[str] = None
     credentials_external_ref: Optional[str] = None
     credentials_meta_data: Optional[Dict] = None
+    credentials_secret_id: Optional[uuid.UUID] = Field(
+        None,
+        description=(
+            "Repoint this model at an existing SecretReference instead of minting a "
+            "new one. Used to keep several models on one provider key or OAuth "
+            "lineage. The secret must already belong to the caller's account."
+        ),
+    )
     is_default: Optional[bool] = None
     model_parameters: Optional[Dict] = None
     meta_data: Optional[Dict] = None
@@ -152,6 +160,12 @@ class AIModelUpdate(BaseModel):
                 self.credentials_meta_data,
             )
         )
+        if self.credentials_secret_id is not None and (
+            self.api_key or has_inline_payload or has_external
+        ):
+            raise ValueError(
+                "credentials_secret_id cannot be combined with new credential material"
+            )
         if self.api_key and (has_external or has_inline_payload):
             raise ValueError("api_key cannot be combined with other credential fields")
         if has_inline_payload and has_external:

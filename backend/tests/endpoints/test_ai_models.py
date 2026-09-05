@@ -179,6 +179,37 @@ async def test_update_ai_model(mock_account: Account, mocker: MockerFixture):
 
 
 @pytest.mark.asyncio
+async def test_update_ai_model_repoint_foreign_secret_is_400(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Cross-account secret reuse is a 400, not a silent no-op."""
+    model_id = uuid.uuid4()
+    ai_model_update = AIModelUpdate(credentials_secret_id=uuid.uuid4())
+    mock_crud_ai_model = mocker.patch(
+        "preloop.api.endpoints.ai_models.crud_ai_model",
+        new_callable=MagicMock,
+    )
+    mock_ai_model = MagicMock(account_id=mock_account.account_id)
+    mock_crud_ai_model.get.return_value = mock_ai_model
+    mock_crud_ai_model.update.side_effect = ValueError(
+        "Referenced credential secret belongs to a different account"
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            ai_models.update_ai_model(
+                db=MagicMock(),
+                model_id=model_id,
+                ai_model_in=ai_model_update,
+                current_user=mock_account,
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "different account" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
 async def test_delete_ai_model(mock_account: Account, mocker: MockerFixture):
     """Tests that an AI model is deleted correctly."""
     # Arrange
@@ -265,6 +296,10 @@ def test_ai_model_schema_accepts_reused_credentials_secret_id():
     assert model.credentials_secret_id == secret_id
     assert model.api_key is None
 
+    update = AIModelUpdate(credentials_secret_id=secret_id)
+    assert update.credentials_secret_id == secret_id
+    assert update.model_dump(exclude_unset=True)["credentials_secret_id"] == secret_id
+
 
 @pytest.mark.parametrize(
     "extra",
@@ -284,6 +319,30 @@ def test_ai_model_schema_rejects_secret_reuse_with_new_credentials(extra):
             name="Confused Model",
             provider_name="anthropic",
             model_identifier="claude-haiku-4-5",
+            credentials_secret_id=uuid.uuid4(),
+            **extra,
+        )
+
+    assert "credentials_secret_id cannot be combined with new credential material" in (
+        str(error.value)
+    )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"api_key": "inline-key"},
+        {"credential_type": "oauth_openai_codex", "credential_payload": {}},
+        {
+            "credentials_backend_type": "vault_kv_v2",
+            "credentials_external_ref": "providers/anthropic/team-a",
+        },
+    ],
+)
+def test_ai_model_update_schema_rejects_secret_repoint_with_new_credentials(extra):
+    """Repointing a secret and supplying new credential material is contradictory."""
+    with pytest.raises(ValidationError) as error:
+        AIModelUpdate(
             credentials_secret_id=uuid.uuid4(),
             **extra,
         )
