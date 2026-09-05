@@ -90,6 +90,9 @@ async function card(
     showUsers: boolean;
     loading: boolean;
     usageLoading: boolean;
+    usageLoadingFlows: boolean;
+    usageLoadingModels: boolean;
+    usageLoadingTools: boolean;
     flowRunsCapped: boolean;
   }> = {}
 ): Promise<InventoryCard> {
@@ -109,6 +112,9 @@ async function card(
       .toolsTotal=${16}
       .loading=${props.loading ?? false}
       .usageLoading=${props.usageLoading ?? false}
+      .usageLoadingFlows=${props.usageLoadingFlows ?? null}
+      .usageLoadingModels=${props.usageLoadingModels ?? null}
+      .usageLoadingTools=${props.usageLoadingTools ?? null}
       rangeLabel="30d"
     ></inventory-card>
   `);
@@ -308,6 +314,51 @@ describe('inventory-card', () => {
     expect(
       el.shadowRoot!.querySelectorAll('tbody tr')[0].textContent
     ).to.contain('Quiet Agent');
+    expect(el.shadowRoot!.querySelector('sl-skeleton')).to.not.exist;
+  });
+
+  it('names a flow before its runs land, without turning the row into a skeleton', async () => {
+    const el = await card({
+      usageLoadingFlows: true,
+      flowRows: [flowRow({ runs: 0, failed: 0, cost: 0, lastRun: null })],
+    });
+    await showTab(el, 'flows');
+
+    const row = el.shadowRoot!.querySelector('tbody tr')!;
+    expect(row.textContent).to.contain('Pull Request Reviewer');
+    expect(row.querySelectorAll('sl-skeleton').length).to.be.greaterThan(0);
+    expect(el.shadowRoot?.textContent).to.not.contain('No run in range');
+    expect(el.shadowRoot?.querySelectorAll('.skeleton-row').length).to.equal(0);
+
+    (el as any).usageLoadingFlows = false;
+    (el as any).flowRows = [flowRow()];
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('tbody tr')!.textContent).to.contain(
+      'Pull Request Reviewer'
+    );
+    expect(el.shadowRoot!.querySelector('sl-skeleton')).to.not.exist;
+    expect(el.shadowRoot?.textContent).to.contain('12');
+  });
+
+  it('names a model and a tool before their usage lands', async () => {
+    const el = await card({
+      usageLoadingModels: true,
+      usageLoadingTools: true,
+    });
+    await showTab(el, 'models');
+    const modelRowEl = el.shadowRoot!.querySelector('tbody tr')!;
+    expect(modelRowEl.textContent).to.contain('claude-sonnet-4');
+    expect(modelRowEl.querySelectorAll('sl-skeleton').length).to.equal(3);
+    expect(el.shadowRoot?.querySelectorAll('.skeleton-row').length).to.equal(0);
+
+    await showTab(el, 'tools');
+    const toolRowEl = el.shadowRoot!.querySelector('tbody tr')!;
+    expect(toolRowEl.textContent).to.contain('Bash');
+    expect(toolRowEl.querySelectorAll('sl-skeleton').length).to.equal(2);
+
+    (el as any).usageLoadingModels = false;
+    (el as any).usageLoadingTools = false;
+    await el.updateComplete;
     expect(el.shadowRoot!.querySelector('sl-skeleton')).to.not.exist;
   });
 

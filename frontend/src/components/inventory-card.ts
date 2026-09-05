@@ -286,6 +286,16 @@ export class InventoryCard extends LitElement {
    * answer, not a slow one.
    */
   @property({ type: Boolean }) usageLoading = false;
+  /**
+   * Per-tab overrides for {@link usageLoading}. The tabs do not share one
+   * usage request: Agents / Users / Tools read the account breakdown, Flows
+   * read executions plus `usage_by_flow`, Models read `ai-models/overview`.
+   * `null` means "use the shared flag", so a host that sets nothing behaves
+   * as it did when every usage column waited on the same breakdown.
+   */
+  @property({ type: Boolean }) usageLoadingFlows: boolean | null = null;
+  @property({ type: Boolean }) usageLoadingModels: boolean | null = null;
+  @property({ type: Boolean }) usageLoadingTools: boolean | null = null;
   /** The page range, already worded ("30d"), shown but not editable here. */
   @property({ type: String }) rangeLabel = '30d';
   /**
@@ -689,6 +699,22 @@ export class InventoryCard extends LitElement {
     return perTab === null || perTab === undefined ? this.loading : perTab;
   }
 
+  /**
+   * Whether this tab's usage columns are still on their way. Identity rows
+   * stay put; only the number cells wait.
+   */
+  private isUsageLoading(tab: InventoryTab): boolean {
+    const perTab =
+      tab === 'flows'
+        ? this.usageLoadingFlows
+        : tab === 'models'
+          ? this.usageLoadingModels
+          : tab === 'tools'
+            ? this.usageLoadingTools
+            : null;
+    return perTab === null || perTab === undefined ? this.usageLoading : perTab;
+  }
+
   private countFor(tab: InventoryTab): number {
     if (tab === 'agents') return this.agentsTotal;
     if (tab === 'flows') return this.flowsTotal;
@@ -782,6 +808,10 @@ export class InventoryCard extends LitElement {
 
   private get sortedFlows(): InventoryFlowRow[] {
     const rows = [...this.flowRows];
+    if (this.isUsageLoading('flows')) {
+      rows.sort((a, b) => a.name.localeCompare(b.name));
+      return rows;
+    }
     const sort = this.sorts.flows;
     if (sort === 'runs') {
       rows.sort((a, b) => b.runs - a.runs);
@@ -800,6 +830,10 @@ export class InventoryCard extends LitElement {
 
   private get sortedModels(): InventoryModelRow[] {
     const rows = [...this.modelRows];
+    if (this.isUsageLoading('models')) {
+      rows.sort((a, b) => a.alias.localeCompare(b.alias));
+      return rows;
+    }
     const sort = this.sorts.models;
     if (sort === 'requests') {
       rows.sort((a, b) => b.requests - a.requests);
@@ -821,6 +855,10 @@ export class InventoryCard extends LitElement {
 
   private get sortedTools(): InventoryToolRow[] {
     const rows = [...this.toolRows];
+    if (this.isUsageLoading('tools')) {
+      rows.sort((a, b) => a.name.localeCompare(b.name));
+      return rows;
+    }
     const sort = this.sorts.tools;
     if (sort === 'failures') {
       rows.sort((a, b) => b.failed - a.failed);
@@ -909,8 +947,8 @@ export class InventoryCard extends LitElement {
    * of a number rather than the width of the column, so the cell does not
    * shimmer across half the table while it waits.
    */
-  private renderUsageCell(value: unknown) {
-    if (this.usageLoading) {
+  private renderUsageCell(value: unknown, pending = this.usageLoading) {
+    if (pending) {
       return html`<sl-skeleton
         class="usage-skeleton"
         effect="none"
@@ -1026,6 +1064,12 @@ export class InventoryCard extends LitElement {
 
   private renderLastRun(run: InventoryFlowRun | null) {
     if (!run) {
+      if (this.isUsageLoading('flows')) {
+        return html`<sl-skeleton
+          class="usage-skeleton"
+          effect="none"
+        ></sl-skeleton>`;
+      }
       // "No run in range" is only true when the page saw the whole range.
       return this.flowRunsCapped
         ? html`<span class="muted" title=${this.flowCountTitle}
@@ -1100,7 +1144,10 @@ export class InventoryCard extends LitElement {
                           <a
                             class="row-name"
                             href="/console/flows/executions?flow_id=${row.id}"
-                            >${this.formatCompactNumber(row.runs)}</a
+                            >${this.renderUsageCell(
+                              this.formatCompactNumber(row.runs),
+                              this.isUsageLoading('flows')
+                            )}</a
                           >
                         </td>
                         <td
@@ -1108,9 +1155,17 @@ export class InventoryCard extends LitElement {
                           data-label="Failed"
                           title=${this.flowCountTitle}
                         >
-                          ${this.formatCompactNumber(row.failed)}
+                          ${this.renderUsageCell(
+                            this.formatCompactNumber(row.failed),
+                            this.isUsageLoading('flows')
+                          )}
                         </td>
-                        <td class="num">${this.formatCurrency(row.cost)}</td>
+                        <td class="num">
+                          ${this.renderUsageCell(
+                            this.formatCurrency(row.cost),
+                            this.isUsageLoading('flows')
+                          )}
+                        </td>
                       </tr>
                     `
                   )}
@@ -1180,12 +1235,23 @@ export class InventoryCard extends LitElement {
                           ${row.provider || 'Unknown'}
                         </td>
                         <td class="num" data-label="Requests">
-                          ${this.formatCompactNumber(row.requests)}
+                          ${this.renderUsageCell(
+                            this.formatCompactNumber(row.requests),
+                            this.isUsageLoading('models')
+                          )}
                         </td>
                         <td class="num" data-label="Tokens">
-                          ${this.formatCompactNumber(row.tokens)}
+                          ${this.renderUsageCell(
+                            this.formatCompactNumber(row.tokens),
+                            this.isUsageLoading('models')
+                          )}
                         </td>
-                        <td class="num">${this.formatCurrency(row.cost)}</td>
+                        <td class="num">
+                          ${this.renderUsageCell(
+                            this.formatCurrency(row.cost),
+                            this.isUsageLoading('models')
+                          )}
+                        </td>
                       </tr>
                     `
                   )}
@@ -1319,10 +1385,16 @@ export class InventoryCard extends LitElement {
                           ${row.server || 'Unknown'}
                         </td>
                         <td class="num" data-label="Calls">
-                          ${this.formatCompactNumber(row.calls)}
+                          ${this.renderUsageCell(
+                            this.formatCompactNumber(row.calls),
+                            this.isUsageLoading('tools')
+                          )}
                         </td>
                         <td class="num" data-label="Failed">
-                          ${this.formatCompactNumber(row.failed)}
+                          ${this.renderUsageCell(
+                            this.formatCompactNumber(row.failed),
+                            this.isUsageLoading('tools')
+                          )}
                         </td>
                       </tr>
                     `
