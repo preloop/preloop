@@ -125,6 +125,12 @@ know this run was spawned from another conversation.
 ## Related commands
 
 - `preloop usage hook` ships editor hook lifecycle events (no tokens).
+- `preloop agents onboard Cursor --approvals` installs the permission hook
+  for `beforeShellExecution`, `beforeMCPExecution`, and `preToolUse`; the
+  `preToolUse` hook answers Shell and MCP tools locally (they are already
+  gated by the two `before*` hooks) and only raises approvals for native
+  file tools such as `Write`, `StrReplace`, and `Delete`, so one command
+  creates one approval request.
 - `preloop usage import` records billed Cursor dashboard exports as
   imported spend. Reconciled per-conversation amounts supersede these
   estimates in Cost analytics summaries; the two bases are never summed.

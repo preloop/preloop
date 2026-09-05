@@ -83,6 +83,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Cursor permission hook raised two approvals per shell command**:
+  `preloop agents onboard Cursor --approvals` installs the same hook for
+  `beforeShellExecution`, `beforeMCPExecution`, and `preToolUse`, and
+  Cursor's `preToolUse` fires for every tool, so each shell command and MCP
+  call reached the permission-check endpoint twice (two approval rows, or
+  two prompts under enforce). The `preToolUse` hook now answers Shell and
+  MCP tools locally and only raises approvals for native file tools such as
+  `Write`, `StrReplace`, and `Delete`. The hook also reads the documented
+  `mcp_server_name` key when matching the Cursor MCP allowlist and
+  detecting the Preloop MCP server.
 - **Unpinned flows fall back to hosted compute when every private runner is
   busy**: a busy runner cannot be leased, so it no longer counts as online
   capacity for the account default pool. The Runners page still shows a
