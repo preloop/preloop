@@ -61,6 +61,19 @@ router = APIRouter()
 # ``integrations/agent_control/core.py``; keep them in sync.
 EVICTION_CLOSE_CODE: int = 4000
 
+# How long the control WebSocket waits for an inbound frame before it pings the
+# agent, and how many of those windows may pass in silence before the socket is
+# closed.
+#
+# Two windows is 120s, past the 90s presence TTL. A half-open socket (a closed
+# laptop lid, a network that dropped without sending a FIN) would otherwise keep
+# this replica answering "online" from its in-process registry for as long as
+# the kernel holds the connection, while every other replica has already timed
+# the heartbeat out. Closing runs the disconnect path, which drops the registry
+# entry and clears the heartbeat, so all replicas agree again.
+AGENT_CONTROL_RECEIVE_TIMEOUT_SECONDS: float = 60.0
+AGENT_CONTROL_MAX_SILENT_RECEIVES: int = 2
+
 # Operational failures on the delivery path (NATS / DB / WS). Catch these
 # instead of bare ``Exception`` so programming bugs (AttributeError, TypeError,
 # etc.) still surface.
@@ -875,15 +888,37 @@ async def managed_agent_control_websocket(
     # (or alongside) sending their capabilities envelope.
     await _redeliver_pending_commands(db, connection, websocket)
 
+    # Consecutive receive timeouts. A live plugin beats every 30s, so one
+    # timeout is a slow agent and two is a socket nobody is on the other end of.
+    silent_receives = 0
     try:
         while True:
             try:
                 raw_message = await asyncio.wait_for(
-                    websocket.receive_json(), timeout=60.0
+                    websocket.receive_json(),
+                    timeout=AGENT_CONTROL_RECEIVE_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
+                silent_receives += 1
+                if silent_receives >= AGENT_CONTROL_MAX_SILENT_RECEIVES:
+                    logger.info(
+                        "Managed agent %s control websocket silent for %ss; "
+                        "closing so presence can be retired",
+                        connection.managed_agent_id,
+                        int(AGENT_CONTROL_RECEIVE_TIMEOUT_SECONDS * silent_receives),
+                    )
+                    # Close explicitly: the client has to learn the socket is
+                    # gone so a plugin that is merely wedged can reconnect.
+                    try:
+                        await websocket.close(code=status.WS_1001_GOING_AWAY)
+                    except _WS_DELIVERY_ERRORS:
+                        logger.debug(
+                            "Silent control websocket already gone", exc_info=True
+                        )
+                    break
                 await websocket.send_json({"type": "ping"})
                 continue
+            silent_receives = 0
 
             try:
                 inbound = AgentControlInboundEnvelope.model_validate(raw_message)

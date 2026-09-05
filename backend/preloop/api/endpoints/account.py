@@ -660,8 +660,14 @@ def _managed_agent_control_fields(
         # runs more than one api replica. The socket writes a heartbeat
         # timestamp on every frame, so every replica reaches the same verdict
         # instead of the badge toggling with whichever pod answered.
-        ws_connected = bool(snapshot.get("online")) or control_heartbeat_is_fresh(
-            heartbeat_at
+        #
+        # The local registry only counts when the heartbeat agrees or has never
+        # been written (an old socket from before the column existed). A stale
+        # heartbeat with a live registry entry means the socket stopped talking:
+        # this replica must not keep claiming online while the others say
+        # offline.
+        ws_connected = control_heartbeat_is_fresh(heartbeat_at) or (
+            bool(snapshot.get("online")) and heartbeat_at is None
         )
     control_online = bool(control_enabled and ws_connected)
     if control_online:

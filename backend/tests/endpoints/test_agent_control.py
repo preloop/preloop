@@ -15,6 +15,7 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_runtime_session_activity,
 )
+from preloop.api.endpoints.agent_control import agent_control_snapshot
 from preloop.schemas.agent_control import AgentControlSendMessageRequest
 from preloop.services.agent_control_presence import control_heartbeat_is_fresh
 
@@ -1138,3 +1139,76 @@ def test_agent_control_ws_reconnect_keeps_the_newer_heartbeat(
             )
             assert refreshed is not None
             assert refreshed.control_last_heartbeat_at is not None
+
+
+def test_agent_control_ws_closes_a_socket_that_went_silent(
+    client, db_session, test_user
+):
+    """A half-open socket must be closed so presence can be retired.
+
+    The plugin beats every 30s. Two receive timeouts in a row is 120s of
+    silence, past the presence window, so the socket-holding replica has to
+    let go: otherwise its in-process registry keeps answering "online" while
+    every other replica has already timed the heartbeat out.
+    """
+    token_body = _issue_runtime_token(client, session_source_id="openclaw-silent")
+    managed_agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="openclaw",
+        session_source_id="openclaw-silent",
+    )
+    assert managed_agent is not None
+    url = f"/api/v1/agents/control/ws?token={token_body['token']}"
+
+    # Shrink the window so the test costs milliseconds, not four minutes.
+    with patch(
+        "preloop.api.endpoints.agent_control.AGENT_CONTROL_RECEIVE_TIMEOUT_SECONDS",
+        0.05,
+    ):
+        with client.websocket_connect(url) as websocket:
+            assert websocket.receive_json()["type"] == "presence"
+            # First timeout pings, second closes.
+            assert websocket.receive_json() == {"type": "ping"}
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_json()
+
+    # The registry entry is gone and the heartbeat with it, so every replica
+    # reports the same agent offline.
+    assert agent_control_snapshot(str(managed_agent.id)).get("online") is not True
+    db_session.expire_all()
+    refreshed = crud_managed_agent.get_for_account(
+        db_session,
+        account_id=str(test_user.account_id),
+        agent_id=str(managed_agent.id),
+    )
+    assert refreshed is not None
+    assert refreshed.control_last_heartbeat_at is None
+
+
+def test_agent_control_ws_stays_open_while_the_agent_talks(
+    client, db_session, test_user
+):
+    """One quiet window is a busy plugin, not a dead one: the counter resets."""
+    token_body = _issue_runtime_token(client, session_source_id="openclaw-talkative")
+    url = f"/api/v1/agents/control/ws?token={token_body['token']}"
+
+    with patch(
+        "preloop.api.endpoints.agent_control.AGENT_CONTROL_RECEIVE_TIMEOUT_SECONDS",
+        0.05,
+    ):
+        with client.websocket_connect(url) as websocket:
+            assert websocket.receive_json()["type"] == "presence"
+            for index in range(3):
+                # Let one window lapse, then speak: the socket must survive.
+                assert websocket.receive_json() == {"type": "ping"}
+                websocket.send_json(
+                    {
+                        "type": "heartbeat",
+                        "message_id": f"hb-quiet-{index}",
+                        "payload": {},
+                    }
+                )
+                ack = websocket.receive_json()
+                assert ack["type"] == "ack"
+                assert ack["message_id"] == f"hb-quiet-{index}"

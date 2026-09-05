@@ -259,6 +259,63 @@ def test_managed_agent_control_online_ignores_enrollment_last_seen():
     assert fields["control_session_mode"] == "offline"
 
 
+def _online_snapshot(_agent_id: str) -> dict:
+    return {"online": True, "session_mode": "local", "supports_interrupt": True}
+
+
+def test_managed_agent_control_online_ignores_a_registry_entry_gone_stale():
+    """A half-open socket must not keep one replica claiming online.
+
+    The replica holding the socket knows it is registered, but if the
+    heartbeat it writes has stopped moving then the plugin is gone and every
+    other replica already says offline. Trust the shared signal.
+    """
+    with patch(
+        "preloop.api.endpoints.agent_control.agent_control_snapshot",
+        _online_snapshot,
+    ):
+        stale = _managed_agent_control_fields(
+            {
+                "id": "agent-half-open",
+                "agent_kind": "claude_code",
+                "session_source_type": "claude_code",
+                "lifecycle_state": "active",
+                "runtime_session_id": "runtime-claude",
+                "ended_at": None,
+                "last_seen_at": datetime.now(UTC),
+                "control_session_mode": "local",
+                "control_last_heartbeat_at": (
+                    datetime.now(UTC)
+                    - AGENT_CONTROL_PRESENCE_TTL
+                    - timedelta(seconds=5)
+                ),
+            },
+            _control_enrollment(),
+        )
+
+        assert stale["control_online"] is False
+        assert stale["control_session_mode"] == "offline"
+
+        # A socket from before the heartbeat column existed still counts.
+        never_beat = _managed_agent_control_fields(
+            {
+                "id": "agent-half-open",
+                "agent_kind": "claude_code",
+                "session_source_type": "claude_code",
+                "lifecycle_state": "active",
+                "runtime_session_id": "runtime-claude",
+                "ended_at": None,
+                "last_seen_at": datetime.now(UTC),
+                "control_session_mode": "local",
+                "control_last_heartbeat_at": None,
+            },
+            _control_enrollment(),
+        )
+
+        assert never_beat["control_online"] is True
+        assert never_beat["control_session_mode"] == "local"
+
+
 def test_managed_agent_summary_coerces_null_session_mode():
     from preloop.schemas.gateway_usage import ManagedAgentSummary
 
