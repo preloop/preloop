@@ -2853,23 +2853,26 @@ class OpenAIGatewayService:
             # verbatim on the Anthropic OAuth passthrough, so the user's 1M
             # selection keeps working while authorization and pricing key on
             # the base model.
+            # Codex ChatGPT-OAuth rows are stored as ``openai/<id>`` (onboarding
+            # already collapses ``openai-codex`` to ``openai``). The client may
+            # send the bare id, ``openai/<id>``, or ``openai-codex/<id>``; all
+            # three must address the same row so a second request does not mint
+            # a duplicate.
             # On a tie (two bindings answering to the same spelling — e.g. a
             # user-created model and an agent-onboarding import that silently
             # took the same alias) the explicitly user-created binding wins:
             # it encodes routing intent, while imports are bookkeeping. Ties
             # within the same class fall back to the stable inventory order,
             # and every tie is logged + surfaced as a client warning.
-            normalized_requested = self._strip_claude_variant_marker(
+            spellings, suffix_tail = self._gateway_request_spellings(
                 str(requested_model)
             )
             exact_matches: List[AIModel] = []
             suffix_matches: List[AIModel] = []
             for ai_model, alias in gateway_enabled_models:
-                if alias == requested_model or alias == normalized_requested:
+                if alias in spellings:
                     exact_matches.append(ai_model)
-                elif alias.endswith(f"/{requested_model}") or alias.endswith(
-                    f"/{normalized_requested}"
-                ):
+                elif suffix_tail and alias.endswith(f"/{suffix_tail}"):
                     suffix_matches.append(ai_model)
             for candidates in (exact_matches, suffix_matches):
                 if not candidates:
@@ -2903,7 +2906,9 @@ class OpenAIGatewayService:
                 )
                 return chosen
             for _, alias in unauthorized_gateway_models:
-                if alias == requested_model or alias.endswith(f"/{requested_model}"):
+                if alias in spellings or (
+                    suffix_tail and alias.endswith(f"/{suffix_tail}")
+                ):
                     available = (
                         ", ".join(
                             authorized_alias
@@ -2923,6 +2928,13 @@ class OpenAIGatewayService:
                         code="model_not_authorized",
                     )
             autoregistered = self._maybe_autoregister_claude_family_model(
+                requested_model,
+                provider=provider,
+                gateway_enabled_models=gateway_enabled_models,
+            )
+            if autoregistered is not None:
+                return autoregistered
+            autoregistered = self._maybe_autoregister_codex_family_model(
                 requested_model,
                 provider=provider,
                 gateway_enabled_models=gateway_enabled_models,
@@ -3027,6 +3039,158 @@ class OpenAIGatewayService:
         if template is None:
             return None
 
+        return self._autoregister_subscription_oauth_sibling(
+            identifier=base_requested,
+            alias=f"anthropic/{base_requested}",
+            template=template,
+            provider_name="anthropic",
+            source_agent="claude_code",
+            managed_by="model-gateway claude-family autoregister",
+            name_prefix="Claude Code",
+            description=(
+                "Auto-registered by the model gateway for a Claude "
+                "Code subscription-OAuth request."
+            ),
+            log_label="Claude family",
+        )
+
+    @staticmethod
+    def _codex_autoregister_identifier(model_ref: str) -> Optional[str]:
+        """Return the Codex/OpenAI model id if it is safe to auto-register.
+
+        Codex CLI updates ship new built-in identifiers (``gpt-6-astra``,
+        ``gpt-5.6-sol``, ``o4-mini``) that the ChatGPT subscription already
+        authorizes. Accept the families Codex actually selects: ``gpt-*``,
+        ``chatgpt-*``, and the o-series (``o`` followed by a digit). Reject
+        other providers' prefixes so a stray ``bedrock/...`` or ``claude-*``
+        request cannot mint an openai-codex row.
+        """
+        trimmed = (model_ref or "").strip()
+        if not trimmed:
+            return None
+        prefix, separator, tail = trimmed.partition("/")
+        if separator:
+            if prefix.strip().lower() not in {"openai", "openai-codex"}:
+                return None
+            trimmed = tail.strip()
+        if not trimmed or "/" in trimmed:
+            return None
+        lower = trimmed.lower()
+        if lower.startswith("gpt-") or lower.startswith("chatgpt-"):
+            return trimmed
+        if len(lower) >= 2 and lower[0] == "o" and lower[1].isdigit():
+            return trimmed
+        return None
+
+    def _gateway_request_spellings(self, requested_model: str) -> tuple[set[str], str]:
+        """Equivalent alias spellings and suffix tail for one client model string.
+
+        Returns:
+            A set of strings an existing gateway alias may equal (exact match),
+            and the bare identifier used for ``alias.endswith("/"+tail)``.
+        """
+        normalized = self._strip_claude_variant_marker(requested_model)
+        spellings = {requested_model, normalized}
+        suffix_tail = normalized.rpartition("/")[2].strip() or normalized
+        codex_id = self._codex_autoregister_identifier(normalized)
+        if codex_id:
+            spellings.update(
+                {codex_id, f"openai/{codex_id}", f"openai-codex/{codex_id}"}
+            )
+            suffix_tail = codex_id
+        return spellings, suffix_tail
+
+    def _maybe_autoregister_codex_family_model(
+        self,
+        requested_model: Optional[str],
+        *,
+        provider: GatewayProvider,
+        gateway_enabled_models: List[tuple[AIModel, str]],
+    ) -> Optional[AIModel]:
+        """Auto-register an unknown Codex/OpenAI model for ChatGPT OAuth.
+
+        Codex CLI ships a built-in picker (``gpt-6-astra``, dated gpt-5.6
+        snapshots, o-series). ``preloop models sync`` cannot discover against
+        principal-bound ChatGPT OAuth, so a registry snapshotted at onboard
+        time 404s those requests until the user re-onboards — even though
+        OpenAI itself authorizes whatever the subscription may use. When this
+        account already holds an authorized openai-codex subscription-OAuth
+        model, an unknown Codex-shaped request lazily creates a sibling
+        ``AIModel`` sharing the same credential secret (one live OAuth token
+        lineage — never a copy), binds it to the requesting managed agent,
+        and serves the request.
+
+        Only the registry check is relaxed. Budget preflight, subject-scoped
+        ``allowed_models``, attribution, and usage accounting run unchanged.
+
+        Args:
+            requested_model: The client's requested model string.
+            provider: Gateway protocol of the request.
+            gateway_enabled_models: Authorized (model, alias) pairs for this
+                principal, from the caller's resolution pass.
+
+        Returns:
+            The newly registered model, or ``None`` when preconditions fail
+            (feature disabled, non-OpenAI protocol, non-Codex identifier, or
+            no subscription-OAuth template) — the caller then raises 404.
+        """
+        if not settings.model_gateway_codex_family_autoregister_enabled:
+            return None
+        if provider != "openai" or not requested_model:
+            return None
+        base_requested = self._codex_autoregister_identifier(str(requested_model))
+        if base_requested is None:
+            return None
+
+        template: Optional[AIModel] = None
+        for ai_model, _alias in gateway_enabled_models:
+            if (
+                (ai_model.provider_name or "").strip().lower() == "openai-codex"
+                and ai_model.credential_type == OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE
+                and ai_model.credentials_secret_id is not None
+            ):
+                template = ai_model
+                break
+        if template is None:
+            return None
+
+        return self._autoregister_subscription_oauth_sibling(
+            identifier=base_requested,
+            alias=f"openai/{base_requested}",
+            template=template,
+            provider_name="openai-codex",
+            source_agent="codex",
+            managed_by="model-gateway codex-family autoregister",
+            name_prefix="Codex CLI",
+            description=(
+                "Auto-registered by the model gateway for a Codex "
+                "ChatGPT-OAuth request."
+            ),
+            log_label="Codex family",
+        )
+
+    def _autoregister_subscription_oauth_sibling(
+        self,
+        *,
+        identifier: str,
+        alias: str,
+        template: AIModel,
+        provider_name: str,
+        source_agent: str,
+        managed_by: str,
+        name_prefix: str,
+        description: str,
+        log_label: str,
+    ) -> Optional[AIModel]:
+        """Create a sibling AIModel + agent binding under a savepoint.
+
+        A failure here must undo ONLY the auto-registration writes. A
+        session-level rollback would also discard unrelated pending state
+        from earlier in the request pipeline, so both rows flush inside one
+        nested transaction (commit=False keeps the CRUD layer from committing
+        the outer transaction mid-savepoint) and the final commit happens
+        only after the savepoint released cleanly.
+        """
         managed_agent_id = resolve_managed_agent_id_for_context(
             self.db, self.auth_context
         )
@@ -3037,7 +3201,45 @@ class OpenAIGatewayService:
             return None
 
         account_id = self.auth_context.user.account_id
-        alias = f"anthropic/{base_requested}"
+        for model in crud_ai_model.get_by_account(self.db, account_id=account_id):
+            if (
+                (model.model_identifier or "").strip() == identifier
+                and model.credentials_secret_id == template.credentials_secret_id
+            ):
+                # Sequential retry / alternate spelling: the row already
+                # exists. A unique index on the *effective* alias is
+                # intentionally absent (see
+                # ``CRUDAIModel._enforce_unique_gateway_alias``); this
+                # lookup is the sequential idempotency so we do not
+                # auto-suffix a duplicate sibling. Still bind this agent:
+                # principal-bound OAuth is authorized per binding, and
+                # another agent on the same secret must not 400.
+                try:
+                    with self.db.begin_nested():
+                        now = datetime.now(timezone.utc)
+                        crud_managed_agent_ai_model_binding.create(
+                            self.db,
+                            obj_in={
+                                "account_id": account_id,
+                                "managed_agent_id": managed_agent_id,
+                                "ai_model_id": model.id,
+                                "binding_type": "configured",
+                                "config_key": f"gateway.autoregister.{identifier}",
+                                "gateway_alias": alias,
+                                "is_primary": False,
+                                "status": "gateway_ready",
+                                "first_seen_at": now,
+                                "last_seen_at": now,
+                            },
+                            commit=False,
+                        )
+                    self.db.commit()
+                except (SQLAlchemyError, ValueError):
+                    # Binding slot already occupied for this agent.
+                    pass
+                self._authorized_model_ids_cache = None
+                return model
+
         template_meta = (
             template.meta_data if isinstance(template.meta_data, dict) else {}
         )
@@ -3046,24 +3248,15 @@ class OpenAIGatewayService:
             if isinstance(template_meta.get("gateway"), dict)
             else {}
         )
-        # Savepoint scope: a failure here must undo ONLY the auto-registration
-        # writes. A session-level rollback would also discard unrelated pending
-        # state from earlier in the request pipeline, so both rows flush inside
-        # one nested transaction (commit=False keeps the CRUD layer from
-        # committing the outer transaction mid-savepoint) and the final commit
-        # happens only after the savepoint released cleanly.
         try:
             with self.db.begin_nested():
                 created = crud_ai_model.create_with_account(
                     self.db,
                     obj_in={
-                        "name": f"Claude Code {alias}",
-                        "description": (
-                            "Auto-registered by the model gateway for a Claude "
-                            "Code subscription-OAuth request."
-                        ),
-                        "provider_name": "anthropic",
-                        "model_identifier": base_requested,
+                        "name": f"{name_prefix} {alias}",
+                        "description": description,
+                        "provider_name": provider_name,
+                        "model_identifier": identifier,
                         "api_endpoint": template.api_endpoint,
                         "credentials_secret_id": template.credentials_secret_id,
                         "meta_data": {
@@ -3075,8 +3268,8 @@ class OpenAIGatewayService:
                                 ),
                                 "model_alias": alias,
                             },
-                            "managed_by": ("model-gateway claude-family autoregister"),
-                            "source_agent": "claude_code",
+                            "managed_by": managed_by,
+                            "source_agent": source_agent,
                             "managed_agent_id": managed_agent_id,
                             "autoregistered_from_ai_model_id": str(template.id),
                         },
@@ -3084,9 +3277,7 @@ class OpenAIGatewayService:
                     account_id=account_id,
                     commit=False,
                 )
-                from datetime import timezone as _tz
-
-                now = datetime.now(_tz.utc)
+                now = datetime.now(timezone.utc)
                 crud_managed_agent_ai_model_binding.create(
                     self.db,
                     obj_in={
@@ -3094,7 +3285,7 @@ class OpenAIGatewayService:
                         "managed_agent_id": managed_agent_id,
                         "ai_model_id": created.id,
                         "binding_type": "configured",
-                        "config_key": f"gateway.autoregister.{base_requested}",
+                        "config_key": f"gateway.autoregister.{identifier}",
                         "gateway_alias": alias,
                         "is_primary": False,
                         "status": "gateway_ready",
@@ -3108,15 +3299,17 @@ class OpenAIGatewayService:
             # begin_nested already rolled back to the savepoint; unrelated
             # pending session state from earlier in the pipeline survives.
             logger.warning(
-                "Claude family auto-registration failed for %s",
-                requested_model,
+                "%s auto-registration failed for %s",
+                log_label,
+                identifier,
                 exc_info=True,
             )
             return None
         # The memoized authorized-id set predates the new row and binding.
         self._authorized_model_ids_cache = None
         logger.info(
-            "Auto-registered Claude family model %s for managed agent %s",
+            "Auto-registered %s model %s for managed agent %s",
+            log_label,
             alias,
             managed_agent_id,
         )

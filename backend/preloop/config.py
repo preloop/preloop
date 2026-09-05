@@ -363,6 +363,21 @@ class Settings(BaseSettings):
             "subject-scoped allowed_models checks still apply afterwards."
         ),
     )
+    model_gateway_codex_family_autoregister_enabled: bool = Field(
+        True,
+        description=(
+            "When an OpenAI-protocol gateway request over a Codex ChatGPT "
+            "subscription-OAuth credential asks for a gpt-*/o-series/"
+            "chatgpt-* model the account has not registered (e.g. gpt-6-astra "
+            "after a Codex CLI update), auto-register the model against the "
+            "same OAuth credential and bind it to the requesting managed "
+            "agent instead of answering 404. OpenAI itself remains the "
+            "authorization boundary for what the subscription may use; "
+            "subject-scoped allowed_models checks still apply afterwards. "
+            "preloop models sync cannot cover this path: those credentials "
+            "cannot authenticate server-side listing."
+        ),
+    )
     model_price_live_lookup_enabled: bool = Field(
         True,
         description=(
