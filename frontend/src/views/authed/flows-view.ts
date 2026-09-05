@@ -2034,7 +2034,7 @@ export class FlowsView extends LitElement {
           </div>
           <div class="flow-footer-actions">
             <sl-button size="small" @click=${() => this.clonePreset(preset.id)}>
-              Use template
+              Use preset
             </sl-button>
             ${
               preset.account_id

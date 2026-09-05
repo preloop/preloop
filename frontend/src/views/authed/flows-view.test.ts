@@ -987,3 +987,13 @@ describe('FlowsView', () => {
     });
   });
 });
+
+describe('FlowsView preset action copy', () => {
+  it('labels the preset card action Use preset', async () => {
+    const res = await fetch(new URL('./flows-view.ts', import.meta.url).href);
+    expect(res.ok).to.be.true;
+    const source = await res.text();
+    expect(source).to.include('Use preset');
+    expect(source).to.not.include('Use template');
+  });
+});
