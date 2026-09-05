@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20260905_control_heartbeat"
-down_revision = "20260904_flow_notifications"
+down_revision = "20260905_flow_cli_session"
 branch_labels = None
 depends_on = None
 _ALEMBIC_IDENTIFIERS = (revision, down_revision, branch_labels, depends_on)
