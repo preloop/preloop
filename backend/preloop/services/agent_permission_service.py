@@ -7,9 +7,10 @@ endpoint before running a native/built-in tool. We reuse the existing
 :class:`ApprovalService` pipeline (create + notify mobile/watch + decide) and
 return a simple allow/deny the adapter maps back into the agent's hook format.
 
-Policy: native access rules on the agent-source configuration run before
-the hook's ``client_decision`` is honoured. A matching rule wins. Only when
-no rule matches does the client's own allow/deny stand, and only ``ask`` or
+Policy: a client ``deny`` is honoured before native access rules so a
+Preloop allow cannot widen the host agent's policy. Matching rules then
+run before the hook's ``client_decision`` ``allow`` is honoured. Only when
+no rule matches does the client's own allow stand, and only ``ask`` or
 an absent decision escalates to a human (unless a require_approval rule
 already decided).
 """
@@ -42,10 +43,19 @@ AGENT_TOOL_SOURCE = "agent"
 AGENT_TOOL_APPROVALS_WORKFLOW_NAME = "Agent Tool Approvals"
 
 # Founder decision 2026-09-05: evaluate native access rules before honouring
-# the agent's client_decision. A matching rule wins.
+# the agent's client_decision allow. A matching rule wins over allow. A
+# client deny is still honoured first and is never widened.
 NATIVE_RULES_OVERRIDE_CLIENT_DECISION = True
 
 BLOCKED_TOOL_REASON = "Tool blocked in Preloop"
+
+# evaluate_policy_async returns these allow descriptions when no rule won.
+_NO_MATCH_ALLOW_REASONS = {
+    "No rules matched (default allow)",
+    "No tool configuration found",
+    "No scoped rules matched (default allow for subject)",
+    "No access rules defined",
+}
 
 
 def _managed_agent_governance_field(managed_agent_id: uuid.UUID, field: str):
@@ -324,6 +334,66 @@ async def resolve_tool_config(
     )
 
 
+def _native_decision_source(decision: Any) -> Optional[str]:
+    """Return the decision's source, not the approval snapshot.
+
+    Allow and deny rules leave ``rule_context`` as None. Prefer the
+    ``source`` attribute; fall back to ``rule_context["source"]`` for
+    require_approval snapshots and evaluation errors.
+    """
+    source = getattr(decision, "source", None)
+    if isinstance(source, str) and source:
+        return source
+    ctx = getattr(decision, "rule_context", None)
+    if isinstance(ctx, dict):
+        raw = ctx.get("source")
+        if isinstance(raw, str) and raw:
+            return raw
+    return None
+
+
+def _honour_native_policy_decision(decision: Any) -> bool:
+    """True when the evaluator outcome is a real match, not a default allow.
+
+    A match is the decision's ``action`` plus ``source``. Deny (including
+    a subject-level disable with no source) always matches. Allow matches
+    when ``source`` names a rule, or when the description is not a
+    no-match sentinel. Scoped rules with a stored source other than
+    ``agent`` do not match.
+    """
+    from preloop.services.approval_rule_context import (
+        SOURCE_RULE_EVALUATION_ERROR,
+        SOURCE_SUBJECT_SCOPED_RULE,
+        SOURCE_TOOL_ACCESS_RULE,
+    )
+
+    if not isinstance(decision, (tuple, list)) or not decision:
+        return False
+    action = decision[0]
+    source = _native_decision_source(decision)
+    stored_source = getattr(decision, "stored_source", None)
+    if source == SOURCE_SUBJECT_SCOPED_RULE and stored_source not in (
+        None,
+        "",
+        AGENT_TOOL_SOURCE,
+    ):
+        return False
+    if action == "deny":
+        return True
+    if action == "require_approval":
+        return True
+    if action != "allow":
+        return False
+    if source in {
+        SOURCE_TOOL_ACCESS_RULE,
+        SOURCE_SUBJECT_SCOPED_RULE,
+        SOURCE_RULE_EVALUATION_ERROR,
+    }:
+        return True
+    reason = decision[2] if len(decision) > 2 else None
+    return reason not in _NO_MATCH_ALLOW_REASONS and reason is not None
+
+
 async def apply_native_access_rules(
     db: Any,
     *,
@@ -338,14 +408,13 @@ async def apply_native_access_rules(
     """Evaluate blocked-tool and access rules for a native call.
 
     Returns ``(action, reason, approval_workflow_id, rule_context)`` when a
-    matching rule or a blocked configuration decides the call. Returns
-    ``None`` when no rule matched so the caller keeps the legacy path.
+    matching rule or a blocked configuration decides the call. A match is
+    read from the decision's ``action`` and ``source`` (allow and deny
+    rules return ``rule_context=None``). Subject-level disables are
+    honoured as deny. Scoped rules whose stored ``source`` is not
+    ``agent`` or absent are ignored. Returns ``None`` when no rule
+    matched so the caller keeps the legacy path.
     """
-    from preloop.services.approval_rule_context import (
-        SOURCE_RULE_EVALUATION_ERROR,
-        SOURCE_SUBJECT_SCOPED_RULE,
-        SOURCE_TOOL_ACCESS_RULE,
-    )
     from preloop.services.policy_evaluator import evaluate_policy_async
 
     if config is not None and not bool(config.is_enabled):
@@ -365,23 +434,18 @@ async def apply_native_access_rules(
             "runtime_session_id": str(runtime_session_id)
             if runtime_session_id
             else None,
+            "tool_source": AGENT_TOOL_SOURCE,
         },
     )
-    ctx = getattr(decision, "rule_context", None)
-    source = ctx.get("source") if isinstance(ctx, dict) else None
-    matching_sources = {
-        SOURCE_TOOL_ACCESS_RULE,
-        SOURCE_SUBJECT_SCOPED_RULE,
-        SOURCE_RULE_EVALUATION_ERROR,
-    }
-    if source not in matching_sources:
+    if not _honour_native_policy_decision(decision):
         return None
+    ctx = getattr(decision, "rule_context", None)
     action, approval_workflow_id, rule_description = decision
     return (
         action,
         rule_description or f"{action} by access rule",
         approval_workflow_id,
-        ctx,
+        ctx if isinstance(ctx, dict) else None,
     )
 
 
@@ -401,13 +465,14 @@ async def request_agent_permission(
 ) -> Tuple[str, str, Optional[str]]:
     """Decide whether an agent's native tool call may proceed.
 
-    Native access rules run first when
+    A client ``deny`` is honoured before rules so a Preloop allow cannot
+    widen the host agent's policy. Native access rules then run when
     :data:`NATIVE_RULES_OVERRIDE_CLIENT_DECISION` is true (founder decision
-    2026-09-05). A matching rule wins over ``client_decision``, including
-    ``allow``. A blocked (``is_enabled=false``) configuration denies the
-    call. When no rule matches, ``client_decision`` ``allow``/``deny`` is
-    honoured; otherwise an approval request is created, human approvers
-    are notified, and this function polls until decided or timed out.
+    2026-09-05). A matching rule wins over ``client_decision`` ``allow``.
+    A blocked (``is_enabled=false``) configuration denies the call. When
+    no rule matches, ``client_decision`` ``allow`` is honoured; otherwise
+    an approval request is created, human approvers are notified, and this
+    function polls until decided or timed out.
 
     Escalation can be disabled per agent: when the managed agent's
     subject-governance config sets ``native_tool_approvals`` to ``"off"``,
@@ -442,11 +507,11 @@ async def request_agent_permission(
         fall back to the agent's local prompt instead of hard-denying.
     """
     decision = (client_decision or "").strip().lower()
-    if not NATIVE_RULES_OVERRIDE_CLIENT_DECISION:
-        if decision == "allow":
-            return ("allow", "", None, False)
-        if decision == "deny":
-            return ("deny", "Denied by client policy", None, False)
+    # A client deny is never widened by a Preloop allow rule.
+    if decision == "deny":
+        return ("deny", "Denied by client policy", None, False)
+    if not NATIVE_RULES_OVERRIDE_CLIENT_DECISION and decision == "allow":
+        return ("allow", "", None, False)
 
     from preloop.services.approval_rule_context import (
         SOURCE_AGENT_PERMISSION_HOOK,
@@ -485,11 +550,12 @@ async def request_agent_permission(
             if action == "require_approval":
                 matched_require = (reason, rule_wf_id, rule_ctx)
 
-        if matched_require is None and NATIVE_RULES_OVERRIDE_CLIENT_DECISION:
-            if decision == "allow":
-                return ("allow", "", None, False)
-            if decision == "deny":
-                return ("deny", "Denied by client policy", None, False)
+        if (
+            matched_require is None
+            and NATIVE_RULES_OVERRIDE_CLIENT_DECISION
+            and decision == "allow"
+        ):
+            return ("allow", "", None, False)
 
         approvals_off = managed_agent_id is not None and (
             await native_tool_approvals_disabled(db, account_id, managed_agent_id)
@@ -560,7 +626,7 @@ async def request_agent_permission(
             # row is bad; silently gating a tool call the operator said should
             # not be gated is worse, and would read as a regression. Enforced
             # agents still fail closed by propagating.
-            if not approvals_off:
+            if not approvals_off or matched_require is not None:
                 raise
             logger.exception(
                 "Failed to record the auto-approved request for managed agent %s "

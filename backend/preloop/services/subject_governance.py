@@ -221,7 +221,15 @@ def get_scoped_tool_rules(
             continue
         rules = tool_rules.get(tool_name)
         if isinstance(rules, list):
-            return [rule for rule in deepcopy(rules) if isinstance(rule, dict)]
+            copied = [rule for rule in deepcopy(rules) if isinstance(rule, dict)]
+            wanted_source = subject_context.get("tool_source")
+            if wanted_source:
+                copied = [
+                    rule
+                    for rule in copied
+                    if rule.get("source") in (None, "", wanted_source)
+                ]
+            return copied
     return matched_rules
 
 

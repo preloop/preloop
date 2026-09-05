@@ -11,11 +11,15 @@ from sqlalchemy.exc import IntegrityError
 from preloop.models import models
 from preloop.services.agent_permission_service import (
     AGENT_TOOL_APPROVALS_WORKFLOW_NAME,
+    BLOCKED_TOOL_REASON,
     _managed_agent_approval_workflow_pin,
+    apply_native_access_rules,
     resolve_workflow,
     request_agent_permission,
 )
+from preloop.services.approval_rule_context import SOURCE_SUBJECT_SCOPED_RULE
 from preloop.services.approval_workflow_service import DEFAULT_APPROVAL_TYPE
+from preloop.services.policy_evaluator import PolicyDecision
 
 
 @pytest.mark.asyncio
@@ -532,6 +536,229 @@ def _permission_kwargs(**overrides: object) -> dict:
     return values
 
 
+def _native_rule_kwargs(**overrides: object) -> dict:
+    values: dict = dict(
+        tool_name="Write",
+        tool_input={"file_path": ".github/workflows/ci.yml", "content": "x"},
+        account_id=str(uuid.uuid4()),
+        user_id=uuid.uuid4(),
+        managed_agent_id=uuid.uuid4(),
+        runtime_session_id=None,
+    )
+    values.update(overrides)
+    return values
+
+
+@pytest.mark.asyncio
+async def test_apply_native_access_rules_deny_match() -> None:
+    """A real-shaped deny PolicyDecision (rule_context None) is a match."""
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+    tool_config.is_enabled = True
+    call_kwargs = _native_rule_kwargs()
+    evaluate = AsyncMock(
+        return_value=PolicyDecision("deny", None, "Block .github writes", None)
+    )
+
+    with patch(
+        "preloop.services.policy_evaluator.evaluate_policy_async",
+        evaluate,
+    ):
+        result = await apply_native_access_rules(
+            AsyncMock(), config=tool_config, **call_kwargs
+        )
+
+    assert result is not None
+    assert result[0] == "deny"
+    assert result[1] == "Block .github writes"
+    kwargs = evaluate.await_args.kwargs
+    assert kwargs["tool_configuration_id"] == tool_config.id
+    assert kwargs["subject_context"]["tool_source"] == "agent"
+    assert kwargs["subject_context"]["managed_agent_id"] == str(
+        call_kwargs["managed_agent_id"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_native_access_rules_allow_match() -> None:
+    """A real-shaped allow PolicyDecision (rule_context None) is a match."""
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+    tool_config.is_enabled = True
+    evaluate = AsyncMock(return_value=PolicyDecision("allow", None, "Safe read", None))
+
+    with patch(
+        "preloop.services.policy_evaluator.evaluate_policy_async",
+        evaluate,
+    ):
+        result = await apply_native_access_rules(
+            AsyncMock(),
+            config=tool_config,
+            **_native_rule_kwargs(tool_input={"command": "ls"}),
+        )
+
+    assert result is not None
+    assert result[0] == "allow"
+    assert result[1] == "Safe read"
+
+
+@pytest.mark.asyncio
+async def test_apply_native_access_rules_require_approval_carries_workflow_and_context() -> (
+    None
+):
+    """require_approval forwards the workflow id and rule_context snapshot."""
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+    tool_config.is_enabled = True
+    workflow_id = uuid.uuid4()
+    rule_context = {
+        "source": "tool_access_rule",
+        "decision": "require_approval",
+        "rule_name": "Force-push needs a human",
+    }
+    evaluate = AsyncMock(
+        return_value=PolicyDecision(
+            "require_approval",
+            workflow_id,
+            "Force-push needs a human",
+            rule_context,
+        )
+    )
+
+    with patch(
+        "preloop.services.policy_evaluator.evaluate_policy_async",
+        evaluate,
+    ):
+        result = await apply_native_access_rules(
+            AsyncMock(), config=tool_config, **_native_rule_kwargs()
+        )
+
+    assert result == (
+        "require_approval",
+        "Force-push needs a human",
+        workflow_id,
+        rule_context,
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_native_access_rules_no_match_sentinel_returns_none() -> None:
+    """The evaluator's default-allow sentinel is not a matching rule."""
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+    tool_config.is_enabled = True
+    evaluate = AsyncMock(
+        return_value=PolicyDecision("allow", None, "No rules matched (default allow)")
+    )
+
+    with patch(
+        "preloop.services.policy_evaluator.evaluate_policy_async",
+        evaluate,
+    ):
+        result = await apply_native_access_rules(
+            AsyncMock(), config=tool_config, **_native_rule_kwargs()
+        )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_apply_native_access_rules_blocked_config_short_circuits() -> None:
+    """is_enabled=false denies without calling the evaluator."""
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+    tool_config.is_enabled = False
+    evaluate = AsyncMock()
+
+    with patch(
+        "preloop.services.policy_evaluator.evaluate_policy_async",
+        evaluate,
+    ):
+        result = await apply_native_access_rules(
+            AsyncMock(), config=tool_config, **_native_rule_kwargs()
+        )
+
+    assert result == ("deny", BLOCKED_TOOL_REASON, None, None)
+    evaluate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_native_access_rules_subject_disable_is_honoured() -> None:
+    """A subject-level disable is a deny even with no rule_context."""
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+    tool_config.is_enabled = True
+    evaluate = AsyncMock(
+        return_value=PolicyDecision(
+            "deny", None, "Tool disabled by agent or API key configuration"
+        )
+    )
+
+    with patch(
+        "preloop.services.policy_evaluator.evaluate_policy_async",
+        evaluate,
+    ):
+        result = await apply_native_access_rules(
+            AsyncMock(), config=tool_config, **_native_rule_kwargs()
+        )
+
+    assert result is not None
+    assert result[0] == "deny"
+    assert result[1] == "Tool disabled by agent or API key configuration"
+
+
+@pytest.mark.asyncio
+async def test_apply_native_access_rules_ignores_scoped_mcp_source() -> None:
+    """Scoped rules tagged source=mcp do not decide native calls."""
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+    tool_config.is_enabled = True
+    decision = PolicyDecision("deny", None, "MCP Write deny", None)
+    decision.source = SOURCE_SUBJECT_SCOPED_RULE
+    decision.stored_source = "mcp"
+    evaluate = AsyncMock(return_value=decision)
+
+    with patch(
+        "preloop.services.policy_evaluator.evaluate_policy_async",
+        evaluate,
+    ):
+        result = await apply_native_access_rules(
+            AsyncMock(), config=tool_config, **_native_rule_kwargs()
+        )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_apply_native_access_rules_honours_scoped_agent_or_absent_source() -> (
+    None
+):
+    """Scoped rules with source=agent or no source still decide native calls."""
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+    tool_config.is_enabled = True
+    agent_decision = PolicyDecision("deny", None, "Agent Write deny", None)
+    agent_decision.source = SOURCE_SUBJECT_SCOPED_RULE
+    agent_decision.stored_source = "agent"
+    absent_decision = PolicyDecision("deny", None, "Legacy scoped deny", None)
+    absent_decision.source = SOURCE_SUBJECT_SCOPED_RULE
+    evaluate = AsyncMock(side_effect=[agent_decision, absent_decision])
+
+    with patch(
+        "preloop.services.policy_evaluator.evaluate_policy_async",
+        evaluate,
+    ):
+        agent_result = await apply_native_access_rules(
+            AsyncMock(), config=tool_config, **_native_rule_kwargs()
+        )
+        absent_result = await apply_native_access_rules(
+            AsyncMock(), config=tool_config, **_native_rule_kwargs()
+        )
+
+    assert agent_result is not None and agent_result[0] == "deny"
+    assert absent_result is not None and absent_result[0] == "deny"
+
+
 @pytest.mark.asyncio
 async def test_request_agent_permission_deny_rule_short_circuits_before_approval() -> (
     None
@@ -832,6 +1059,126 @@ async def test_request_agent_permission_rule_overrides_client_allow() -> None:
     assert request_id is None
     assert timed_out is False
     mock_service_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_request_agent_permission_real_shaped_deny_overrides_client_allow() -> (
+    None
+):
+    """Patch evaluate_policy_async only: a deny with no rule_context still wins."""
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+    tool_config.is_enabled = True
+    db = AsyncMock()
+
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as mock_get_session,
+        patch("preloop.services.approval_service.ApprovalService") as mock_service_cls,
+        patch(
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=tool_config),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.evaluate_policy_async",
+            new=AsyncMock(
+                return_value=PolicyDecision("deny", None, "Block .github writes", None)
+            ),
+        ),
+    ):
+        mock_get_session.return_value.__aenter__.return_value = db
+        decision, reason, request_id, timed_out = await request_agent_permission(
+            **_permission_kwargs(
+                tool_name="Write",
+                tool_input={"file_path": ".github/workflows/ci.yml", "content": "x"},
+                client_decision="allow",
+            )
+        )
+
+    assert decision == "deny"
+    assert reason == "Block .github writes"
+    assert request_id is None
+    assert timed_out is False
+    mock_service_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_request_agent_permission_client_deny_is_honoured_before_rules() -> None:
+    """A client deny returns before rules so a Preloop allow cannot widen it."""
+    with patch(
+        "preloop.services.agent_permission_service.apply_native_access_rules",
+        new=AsyncMock(
+            return_value=(
+                "allow",
+                "Safe read",
+                None,
+                {"source": "tool_access_rule"},
+            )
+        ),
+    ) as mock_rules:
+        decision, reason, request_id, timed_out = await request_agent_permission(
+            **_permission_kwargs(client_decision="deny")
+        )
+
+    assert decision == "deny"
+    assert reason == "Denied by client policy"
+    assert request_id is None
+    assert timed_out is False
+    mock_rules.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_request_agent_permission_require_approval_rule_recording_failure_raises() -> (
+    None
+):
+    """approvals_off does not swallow a create failure after a require_approval rule."""
+    account_id = str(uuid.uuid4())
+    default_workflow = models.ApprovalWorkflow(
+        id=uuid.uuid4(),
+        account_id=account_id,
+        name="Default Approval Workflow",
+        approval_type=DEFAULT_APPROVAL_TYPE,
+        is_default=True,
+        timeout_seconds=300,
+    )
+    db = _governance_off_db(default_workflow)
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+    tool_config.is_enabled = True
+
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as mock_get_session,
+        patch("preloop.services.approval_service.ApprovalService") as mock_service_cls,
+        patch(
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=tool_config),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.apply_native_access_rules",
+            new=AsyncMock(
+                return_value=(
+                    "require_approval",
+                    "Force-push needs a human",
+                    None,
+                    {"source": "tool_access_rule"},
+                )
+            ),
+        ),
+    ):
+        mock_get_session.return_value.__aenter__.return_value = db
+        mock_service = AsyncMock()
+        mock_service.create_and_notify = AsyncMock(
+            side_effect=RuntimeError("database is on fire")
+        )
+        mock_service_cls.return_value = mock_service
+
+        with pytest.raises(RuntimeError, match="database is on fire"):
+            await request_agent_permission(**_permission_kwargs(account_id=account_id))
 
 
 def test_native_tool_approvals_setting_reads_on_real_database(db_session, test_user):

@@ -72,3 +72,43 @@ def test_scoped_tool_rules_prioritize_api_key_before_agent():
     )
 
     assert [rule["action"] for rule in rules] == ["require_approval"]
+
+
+def test_scoped_tool_rules_honour_agent_or_absent_source_when_requested():
+    """Native evaluation asks for source=agent; MCP-tagged scoped rules drop."""
+    meta_data = {}
+    meta_data = set_subject_governance(
+        meta_data,
+        subject_type=SUBJECT_TYPE_MANAGED_AGENTS,
+        subject_id="agent-1",
+        config={
+            "tool_rules": {
+                "Write": [
+                    {"action": "deny", "source": "mcp"},
+                    {"action": "allow", "source": "agent"},
+                    {"action": "require_approval"},
+                ]
+            },
+        },
+    )
+
+    filtered = get_scoped_tool_rules(
+        meta_data,
+        tool_name="Write",
+        subject_context={
+            "managed_agent_id": "agent-1",
+            "tool_source": "agent",
+        },
+    )
+    assert [rule["action"] for rule in filtered] == ["allow", "require_approval"]
+
+    unfiltered = get_scoped_tool_rules(
+        meta_data,
+        tool_name="Write",
+        subject_context={"managed_agent_id": "agent-1"},
+    )
+    assert [rule["action"] for rule in unfiltered] == [
+        "deny",
+        "allow",
+        "require_approval",
+    ]
