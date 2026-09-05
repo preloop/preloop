@@ -62,7 +62,6 @@ import { formatRelativeTime } from '../../utils/date';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 import {
   AGENTS_VIEW_MODES,
-  effectiveViewMode,
   loadViewMode,
   saveViewMode,
   subscribeNarrowViewport,
@@ -1196,7 +1195,7 @@ export class AgentsView extends LitElement {
     if (this.narrowViewport && this.currentView !== 'cards') {
       return 'cards';
     }
-    return effectiveViewMode(this.currentView, this.narrowViewport);
+    return this.currentView;
   }
 
   disconnectedCallback(): void {

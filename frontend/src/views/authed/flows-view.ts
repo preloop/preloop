@@ -79,7 +79,10 @@ const EXECUTIONS_SAMPLE_LIMIT = 200;
 /** One day, for the ranges whose labels are counted in hours and days. */
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Kept for flows-view.test.ts. Storage and fallback live in view-mode.ts. */
+/**
+ * Thin wrapper around `loadViewMode` so flows-view.test.ts can assert the
+ * default/cast directly. Also used to initialise and restore the page view.
+ */
 export function loadInitialFlowsViewMode(): FlowsViewMode {
   return loadViewMode(VIEW_MODE_KEY) as FlowsViewMode;
 }
