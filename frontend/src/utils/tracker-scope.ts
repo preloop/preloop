@@ -39,7 +39,7 @@ export function describeTrackerScope(
   if (!rules?.length) {
     return synced > 0
       ? `${synced} project${synced === 1 ? '' : 's'} synced from this tracker.`
-      : 'No scope configured — sync to discover groups and projects from your tracker.';
+      : 'No scope configured. Sync to discover groups and projects from your tracker.';
   }
 
   const orgIncludes = rules.filter(
