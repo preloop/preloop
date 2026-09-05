@@ -117,8 +117,14 @@ prompt_template: |
     "decisions": ["<choice you made and the reason>"],
     "skipped": ["<what you did not do and why>"],
     "commits": ["<short sha> <subject>"],
+    "pr_title": "<title the flow should use when it opens the pull request>",
+    "pr_body": "<markdown description for that pull request>",
     "reason": "<only when status is failure>"
   }
+
+  The flow opens the pull request after you exit. It reads `pr_title` and
+  `pr_body` from this file when they are present. Write a real title and a
+  real description: what changed, why, and `Closes #<issue number>`.
 
   Use "success" when you committed a change you believe is correct, even
   if some checks could not run (list those under "skipped"). Use "failure"

@@ -74,7 +74,9 @@ so the reviewer sees what was assumed rather than having to infer it.
   "tests": ["pytest tests/services: 212 passed"],
   "decisions": ["chose the additive migration, no data rewrite"],
   "skipped": ["full backend suite: needs Postgres, not available"],
-  "commits": ["550ca71c preserve retry_after_seconds when re-wrapping"]
+  "commits": ["550ca71c preserve retry_after_seconds when re-wrapping"],
+  "pr_title": "Preserve retry_after_seconds when re-wrapping",
+  "pr_body": "Keeps the retry hint on the wrapped error.\n\nCloses #212"
 }
 ```
 
@@ -82,6 +84,14 @@ so the reviewer sees what was assumed rather than having to infer it.
 not run (those belong under `skipped`), and `failure` with a `reason` when the
 issue could not be implemented. Checks that cannot run are reported, never
 faked.
+
+The flow opens the pull request after the agent exits. When `pr_title` and
+`pr_body` are present it uses those; otherwise it uses interpolated
+`git_clone_config.pull_request_title` / `pull_request_description`, then a
+flow-attribution fallback (execution link, and a `**Commits:**` list when
+more than one commit landed). New branches are named
+`preloop/issue-{number}-{execution[:8]}` when the trigger carries an issue
+number.
 
 ## Timeout
 
