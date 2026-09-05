@@ -2626,7 +2626,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             cost_source: Provenance of ``cost_usd``. Defaults to
                 ``imported`` when an amount is present (the vendor charged
                 it); usage ingest passes the pricing service's source
-                (``catalog``, ``override``) for estimated amounts.
+                (``catalog``) for estimated amounts.
             cost_basis: ``estimated`` or ``reconciled``; reconciled rows
                 supersede estimated rows with the same (account, source,
                 conversation_id) in imported-cost sums. NULL rows never

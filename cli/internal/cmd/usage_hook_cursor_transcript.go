@@ -34,7 +34,8 @@ import (
 //
 // The token estimate is the same chars-per-token heuristic the gateway
 // budget preflight uses (billing_budget_chars_per_token, default 4.0, in
-// backend/preloop/config.py) so client and server numbers agree.
+// backend/preloop/config.py) so client and server numbers agree at the
+// default. The hook does not read a non-default server setting.
 const (
 	cursorTranscriptCharsPerToken = 4
 

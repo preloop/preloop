@@ -18,6 +18,15 @@ func cursorFixturePath(name string) string {
 	return filepath.Join(cursorTranscriptFixtureDir, name)
 }
 
+func cursorFixtureSize(t *testing.T, name string) int64 {
+	t.Helper()
+	data, err := os.ReadFile(cursorFixturePath(name))
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", name, err)
+	}
+	return int64(len(data))
+}
+
 // copyCursorFixture copies a fixture into a temp dir so tests can append to
 // it without touching testdata.
 func copyCursorFixture(t *testing.T, name string) string {
@@ -129,8 +138,9 @@ func TestCursorTranscriptDeltaCountsJSONLFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read delta: %v", err)
 	}
-	if delta.Bytes != 548 || delta.Consumed != 548 {
-		t.Errorf("bytes=%d consumed=%d, want 548/548", delta.Bytes, delta.Consumed)
+	wantBytes := cursorFixtureSize(t, "conversation.jsonl")
+	if delta.Bytes != wantBytes || delta.Consumed != wantBytes {
+		t.Errorf("bytes=%d consumed=%d, want %d/%d", delta.Bytes, delta.Consumed, wantBytes, wantBytes)
 	}
 	if delta.Lines != 4 || delta.BadLines != 0 {
 		t.Errorf("lines=%d bad=%d, want 4/0", delta.Lines, delta.BadLines)
@@ -191,8 +201,9 @@ func TestCursorTranscriptDeltaLeavesPartialJSONLineForNextRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read delta: %v", err)
 	}
-	if delta.Consumed != 548 {
-		t.Errorf("consumed=%d, want 548 (partial line left for next read)", delta.Consumed)
+	wantConsumed := cursorFixtureSize(t, "conversation.jsonl")
+	if delta.Consumed != wantConsumed {
+		t.Errorf("consumed=%d, want %d (partial line left for next read)", delta.Consumed, wantConsumed)
 	}
 	if delta.BadLines != 0 || delta.UserChars != 112 {
 		t.Errorf("partial line leaked into counts: bad=%d user=%d", delta.BadLines, delta.UserChars)
@@ -202,13 +213,15 @@ func TestCursorTranscriptDeltaLeavesPartialJSONLineForNextRead(t *testing.T) {
 func TestCursorTranscriptDeltaResumesFromOffset(t *testing.T) {
 	path := copyCursorFixture(t, "conversation.jsonl")
 	appendCursorFixture(t, path, "generation2.jsonl")
-	delta, err := readCursorTranscriptDelta(path, 548, false)
+	offset := cursorFixtureSize(t, "conversation.jsonl")
+	wantBytes := cursorFixtureSize(t, "generation2.jsonl")
+	delta, err := readCursorTranscriptDelta(path, offset, false)
 	if err != nil {
 		t.Fatalf("read delta: %v", err)
 	}
-	if delta.Bytes != 343 || delta.UserChars != 26 || delta.AssistantTextChars != 19 || delta.ToolUseChars != 36 {
-		t.Errorf("delta from offset: bytes=%d user=%d assistant=%d tool_use=%d, want 343/26/19/36",
-			delta.Bytes, delta.UserChars, delta.AssistantTextChars, delta.ToolUseChars)
+	if delta.Bytes != wantBytes || delta.UserChars != 26 || delta.AssistantTextChars != 19 || delta.ToolUseChars != 36 {
+		t.Errorf("delta from offset: bytes=%d user=%d assistant=%d tool_use=%d, want %d/26/19/36",
+			delta.Bytes, delta.UserChars, delta.AssistantTextChars, delta.ToolUseChars, wantBytes)
 	}
 }
 
@@ -234,7 +247,8 @@ func TestUsageHookCursorStopShipsTranscriptEstimate(t *testing.T) {
 	if estimate["method"] != "transcript_chars" || estimate["chars_per_token"] != float64(4) {
 		t.Errorf("estimate method/cpt wrong: %#v", estimate)
 	}
-	if estimate["transcript_bytes"] != float64(548) || estimate["input_source"] != "transcript_chars" {
+	wantBytes := cursorFixtureSize(t, "conversation.jsonl")
+	if estimate["transcript_bytes"] != float64(wantBytes) || estimate["input_source"] != "transcript_chars" {
 		t.Errorf("estimate bytes/source wrong: %#v", estimate)
 	}
 	if estimate["input_chars"] != float64(112) || estimate["output_chars"] != float64(143) {
@@ -247,9 +261,10 @@ func TestUsageHookCursorStopShipsTranscriptEstimate(t *testing.T) {
 	}
 
 	state := readCursorState(t, home, "conv-1")
-	if state.Offset != 548 || state.TotalChars != 255 || state.Generations != 1 {
-		t.Errorf("state offset=%d total_chars=%d generations=%d, want 548/255/1",
-			state.Offset, state.TotalChars, state.Generations)
+	wantOffset := cursorFixtureSize(t, "conversation.jsonl")
+	if state.Offset != wantOffset || state.TotalChars != 255 || state.Generations != 1 {
+		t.Errorf("state offset=%d total_chars=%d generations=%d, want %d/255/1",
+			state.Offset, state.TotalChars, state.Generations, wantOffset)
 	}
 	if state.LastGenerationID != "gen-1" || state.InputTokens != 28 || state.OutputTokens != 36 {
 		t.Errorf("state gen=%q in=%d out=%d", state.LastGenerationID, state.InputTokens, state.OutputTokens)
@@ -269,13 +284,15 @@ func TestUsageHookCursorSecondStopReadsOnlyDelta(t *testing.T) {
 		t.Errorf("tokens in=%v out=%v, want 71/14", record["input_tokens"], record["output_tokens"])
 	}
 	estimate := tokenEstimateMeta(t, record)
-	if estimate["transcript_bytes"] != float64(343) {
+	wantDelta := cursorFixtureSize(t, "generation2.jsonl")
+	if estimate["transcript_bytes"] != float64(wantDelta) {
 		t.Errorf("second read must cover only the delta, got %v bytes", estimate["transcript_bytes"])
 	}
 	state := readCursorState(t, home, "conv-2")
-	if state.Offset != 891 || state.TotalChars != 336 || state.Generations != 2 {
-		t.Errorf("state offset=%d total_chars=%d generations=%d, want 891/336/2",
-			state.Offset, state.TotalChars, state.Generations)
+	wantOffset := cursorFixtureSize(t, "conversation.jsonl") + wantDelta
+	if state.Offset != wantOffset || state.TotalChars != 336 || state.Generations != 2 {
+		t.Errorf("state offset=%d total_chars=%d generations=%d, want %d/336/2",
+			state.Offset, state.TotalChars, state.Generations, wantOffset)
 	}
 }
 
@@ -326,8 +343,9 @@ func TestUsageHookCursorSubagentStopUsesAgentTranscript(t *testing.T) {
 		t.Errorf("counters lost: %#v", record)
 	}
 	state := readCursorState(t, home, "subagent-sub-42")
-	if state.Offset != 383 {
-		t.Errorf("subagent state offset=%d, want 383", state.Offset)
+	wantOffset := cursorFixtureSize(t, "subagent.jsonl")
+	if state.Offset != wantOffset {
+		t.Errorf("subagent state offset=%d, want %d", state.Offset, wantOffset)
 	}
 }
 
