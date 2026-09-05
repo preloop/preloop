@@ -1149,14 +1149,14 @@ class TestPostWebhookNotification:
         assert actions[0]["url"] == review_url
 
     @patch("preloop.services.approval_service.httpx.AsyncClient")
-    async def test_post_webhook_generic_payload_has_one_review_action(
+    async def test_post_webhook_generic_payload_review_action_and_deprecated_aliases(
         self,
         mock_client_class,
         approval_service,
         sample_approval_request,
         sample_approval_workflow,
     ):
-        """The generic payload states one review link, not fake decisions."""
+        """The generic payload names the link "review" and keeps the old keys."""
         sample_approval_workflow.approval_type = "webhook"
 
         mock_response = MagicMock()
@@ -1171,11 +1171,15 @@ class TestPostWebhookNotification:
             )
 
         actions = mock_client.post.call_args[1]["json"]["actions"]
-        assert set(actions) == {"review"}
-        assert actions["review"].endswith(
+        review_url = (
             f"/approval/{sample_approval_request.id}"
             f"?token={sample_approval_request.approval_token}"
         )
+        assert actions["review"].endswith(review_url)
+        # The deprecated keys are a machine contract: a receiver doing
+        # payload["actions"]["approve"] must not start raising KeyError.
+        assert set(actions) == {"review", "approve", "decline", "view"}
+        assert len(set(actions.values())) == 1
 
     @patch("preloop.services.approval_service.httpx.AsyncClient")
     async def test_post_webhook_with_agent_reasoning(

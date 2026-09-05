@@ -1648,11 +1648,17 @@ class ApprovalService:
                     if approval_request.expires_at
                     else None
                 ),
-                # One key, because one thing happens: the link opens the
-                # approval page. Decisions are taken with
+                # "review" is the honest name: the link opens the approval
+                # page, it does not decide anything. Decisions are taken with
                 # POST /api/v1/approval-requests/{id}/approve or /decline.
+                # "approve", "decline" and "view" are the same URL and always
+                # were; they stay for receivers that read those keys today and
+                # are deprecated, to be removed once no integration reads them.
                 "actions": {
                     "review": review_url,
+                    "approve": review_url,  # deprecated, same page as review
+                    "decline": review_url,  # deprecated, same page as review
+                    "view": review_url,  # deprecated, same page as review
                 },
             }
 
