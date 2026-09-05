@@ -7,7 +7,11 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive \
     NODE_VERSION=22.18.0 \
-    NATS_SERVER_VERSION=2.11.8
+    NATS_SERVER_VERSION=2.11.8 \
+    NODE_SHA256_AMD64=c1bfeecf1d7404fa74728f9db72e697decbd8119ccc6f5a294d795756dfcfca7 \
+    NODE_SHA256_ARM64=04fca1b9afecf375f26b41d65d52aa1703a621abea5a8948c7d1e351e85edade \
+    NATS_SHA256_AMD64=397a6deffb5533e160de0cca322bc3dcaec7fb7282d66a3dfa87a9c183152ad1 \
+    NATS_SHA256_ARM64=b08936cb1dc0ae7086137bda14c352df64397c4af45ed2b392705c19585aeb84
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -29,20 +33,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
-         amd64) node_arch=x64; nats_arch=amd64 ;; \
-         arm64) node_arch=arm64; nats_arch=arm64 ;; \
+         amd64) node_arch=x64; nats_arch=amd64; node_sha="$NODE_SHA256_AMD64"; nats_sha="$NATS_SHA256_AMD64" ;; \
+         arm64) node_arch=arm64; nats_arch=arm64; node_sha="$NODE_SHA256_ARM64"; nats_sha="$NATS_SHA256_ARM64" ;; \
          *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
        esac \
-    && curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
-    && curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
-    && echo "<node-sha256>  /tmp/node.tar.xz" | sha256sum -c - \
+    && curl -fsSL -o /tmp/node.tar.xz \
+         "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
+    && echo "${node_sha}  /tmp/node.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
-    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
-         | tar -xJ -C /usr/local --strip-components=1 \
-    && curl -fsSL "https://github.com/nats-io/nats-server/releases/download/v${NATS_SERVER_VERSION}/nats-server-v${NATS_SERVER_VERSION}-linux-${nats_arch}.tar.gz" \
-         | tar -xz -C /tmp \
+    && rm /tmp/node.tar.xz \
+    && curl -fsSL -o /tmp/nats.tar.gz \
+         "https://github.com/nats-io/nats-server/releases/download/v${NATS_SERVER_VERSION}/nats-server-v${NATS_SERVER_VERSION}-linux-${nats_arch}.tar.gz" \
+    && echo "${nats_sha}  /tmp/nats.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/nats.tar.gz -C /tmp \
     && install -m 0755 "/tmp/nats-server-v${NATS_SERVER_VERSION}-linux-${nats_arch}/nats-server" /usr/local/bin/nats-server \
-    && rm -rf "/tmp/nats-server-v${NATS_SERVER_VERSION}-linux-${nats_arch}"
+    && rm -rf /tmp/nats.tar.gz "/tmp/nats-server-v${NATS_SERVER_VERSION}-linux-${nats_arch}"
 
 RUN echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ubuntu \
     && chmod 0440 /etc/sudoers.d/ubuntu
