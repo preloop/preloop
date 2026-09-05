@@ -27,6 +27,7 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_runtime_session_activity,
 )
+from preloop.models.crud.api_usage import REPLAY_VALIDATION_PURPOSE
 from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.services.execution_metrics import ExecutionMetricsService
@@ -52,7 +53,9 @@ def _create_flow(db_session, test_user, name="Totals Flow"):
     )
 
 
-def _gateway_row(db_session, test_user, execution_id, cost, flow_id=None):
+def _gateway_row(
+    db_session, test_user, execution_id, cost, flow_id=None, meta_data=None
+):
     return crud_api_usage.log_gateway_request(
         db_session,
         endpoint="/openai/v1/chat/completions",
@@ -68,6 +71,7 @@ def _gateway_row(db_session, test_user, execution_id, cost, flow_id=None):
         completion_tokens=5,
         total_tokens=15,
         estimated_cost=cost,
+        meta_data=meta_data,
     )
 
 
@@ -204,6 +208,18 @@ async def test_flow_stats_window_answers_runs_failed_and_cost(db_session, test_u
 
     _gateway_row(db_session, test_user, recent.id, 0.25, flow_id=flow.id)
     _gateway_row(db_session, test_user, failed.id, 0.08, flow_id=flow.id)
+    # Replay-validation traffic is Preloop checking itself, not the flow's
+    # spend. The Overview usage summary and the per-execution aggregation
+    # both drop it, so this window has to drop it too or the same period
+    # reads $0.33 in one place and $9.33 in another.
+    _gateway_row(
+        db_session,
+        test_user,
+        recent.id,
+        9.00,
+        flow_id=flow.id,
+        meta_data={"purpose": REPLAY_VALIDATION_PURPOSE},
+    )
 
     since = now - timedelta(days=30)
     result = await maybe_await(

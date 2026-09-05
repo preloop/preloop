@@ -437,6 +437,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             return []
 
         from sqlalchemy import func, case
+        from preloop.models.crud.api_usage import exclude_replay_usage_condition
         from preloop.models.models.api_usage import ApiUsage
 
         # Fetch execution stats
@@ -473,6 +474,11 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             .filter(
                 ApiUsage.flow_id.in_(flow_ids),
                 ApiUsage.action_type == "model_gateway",
+                # Replay-validation traffic is not the flow's spend. The
+                # Overview usage summary and the per-execution aggregation
+                # both exclude it, so this had to as well or the same window
+                # would read differently in two places.
+                exclude_replay_usage_condition(),
             )
             .group_by(ApiUsage.flow_id)
             .all()
@@ -509,6 +515,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     ApiUsage.flow_id.in_(flow_ids),
                     ApiUsage.action_type == "model_gateway",
                     ApiUsage.timestamp >= start_date,
+                    exclude_replay_usage_condition(),
                 )
                 .group_by(ApiUsage.flow_id)
                 .all()
