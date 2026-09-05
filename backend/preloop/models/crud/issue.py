@@ -145,6 +145,63 @@ class CRUDIssue(CRUDBase[Issue]):
 
         return query.order_by(Issue.created_at.desc()).offset(skip).limit(limit).all()
 
+    def list_filtered(
+        self,
+        db: Session,
+        *,
+        project_id: Optional[str] = None,
+        tracker_id: Optional[str] = None,
+        status: Optional[str] = None,
+        q: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 20,
+        account_id: Optional[str] = None,
+    ) -> tuple[List[Issue], int]:
+        """List issues for a project or tracker, newest updated first.
+
+        ``status`` of ``open`` also matches GitLab's stored ``opened`` value.
+        ``all`` or a missing status applies no status filter.
+
+        Args:
+            db: Database session.
+            project_id: Optional project to scope the list.
+            tracker_id: Optional tracker to scope the list.
+            status: ``open``, ``closed``, ``all``, or a raw Issue.status value.
+            q: Optional ILIKE filter on key and title.
+            skip: Offset.
+            limit: Page size.
+            account_id: When set, restrict to issues on that account's trackers.
+
+        Returns:
+            A (items, total) tuple ordered by ``updated_at`` descending.
+        """
+        from sqlalchemy import or_
+        from sqlalchemy.orm import joinedload
+
+        query = db.query(Issue).options(
+            joinedload(Issue.project).joinedload(Project.organization)
+        )
+        if project_id:
+            query = query.filter(Issue.project_id == project_id)
+        if tracker_id:
+            query = query.filter(Issue.tracker_id == tracker_id)
+        if status and status != "all":
+            if status == "open":
+                query = query.filter(Issue.status.in_(["open", "opened"]))
+            else:
+                query = query.filter(Issue.status == status)
+        if q:
+            search_term = f"%{q}%"
+            query = query.filter(
+                or_(Issue.key.ilike(search_term), Issue.title.ilike(search_term))
+            )
+        if account_id:
+            query = query.join(Tracker).filter(Tracker.account_id == account_id)
+
+        total = query.order_by(None).count()
+        items = query.order_by(Issue.updated_at.desc()).offset(skip).limit(limit).all()
+        return items, int(total)
+
     def get_issue_counts_per_project(
         self,
         db: Session,

@@ -730,6 +730,102 @@ class TestUpdateIssue:
         assert data["title"] == "Test Issue"
 
 
+class TestListIssues:
+    """Tests for GET /api/v1/issues."""
+
+    def test_list_issues_by_project_open_default(
+        self,
+        client: TestClient,
+        db_session: Session,
+        test_user: User,
+        issue_test_data: dict,
+    ) -> None:
+        """Default status=open returns only open issues for the project."""
+        project = issue_test_data["project"]
+        tracker = issue_test_data["tracker"]
+        crud_issue.create(
+            db_session,
+            obj_in={
+                "title": "Closed Issue",
+                "description": "Already done",
+                "project_id": str(project.id),
+                "tracker_id": str(tracker.id),
+                "external_id": "124",
+                "key": "TEST-2",
+                "status": "closed",
+                "external_url": "https://example.com/issues/124",
+            },
+        )
+        db_session.flush()
+
+        response = client.get(f"/api/v1/issues?project_id={project.id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["skip"] == 0
+        assert data["limit"] == 20
+        assert len(data["items"]) == 1
+        assert data["items"][0]["key"] == "TEST-1"
+        assert data["items"][0]["status"] == "open"
+
+    def test_list_issues_status_all_and_pagination(
+        self,
+        client: TestClient,
+        db_session: Session,
+        test_user: User,
+        issue_test_data: dict,
+    ) -> None:
+        """status=all returns every issue and respects skip/limit."""
+        project = issue_test_data["project"]
+        tracker = issue_test_data["tracker"]
+        crud_issue.create(
+            db_session,
+            obj_in={
+                "title": "Second Issue",
+                "description": "Another one",
+                "project_id": str(project.id),
+                "tracker_id": str(tracker.id),
+                "external_id": "125",
+                "key": "TEST-3",
+                "status": "closed",
+                "external_url": "https://example.com/issues/125",
+            },
+        )
+        db_session.flush()
+
+        first_page = client.get(
+            f"/api/v1/issues?project_id={project.id}&status=all&limit=1&skip=0"
+        )
+        assert first_page.status_code == 200
+        first_data = first_page.json()
+        assert first_data["total"] == 2
+        assert first_data["limit"] == 1
+        assert first_data["skip"] == 0
+        assert len(first_data["items"]) == 1
+
+        second_page = client.get(
+            f"/api/v1/issues?project_id={project.id}&status=all&limit=1&skip=1"
+        )
+        assert second_page.status_code == 200
+        second_data = second_page.json()
+        assert second_data["total"] == 2
+        assert len(second_data["items"]) == 1
+        assert first_data["items"][0]["id"] != second_data["items"][0]["id"]
+
+    def test_list_issues_project_not_visible_404(
+        self,
+        client: TestClient,
+        db_session: Session,
+        test_user: User,
+        issue_test_data: dict,
+    ) -> None:
+        """A project outside the account's trackers returns 404."""
+        del issue_test_data
+        missing_id = uuid4()
+        response = client.get(f"/api/v1/issues?project_id={missing_id}")
+        assert response.status_code == 404
+
+
 class TestGetIssueCount:
     """Tests for GET /api/v1/issues-count."""
 
