@@ -1108,9 +1108,6 @@ export class AgentsView extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
 
-    // Restore saved view preference (the default is applied at field init so
-    // the very first render already knows which view to paint).
-    this.currentView = loadViewMode(VIEW_MODE_KEY, AGENTS_VIEW_MODES);
     this.narrowViewportSubscription = subscribeNarrowViewport((narrow) => {
       this.narrowViewport = narrow;
     });
@@ -1191,8 +1188,14 @@ export class AgentsView extends LitElement {
   /**
    * The view actually painted. On phone widths a seven-column table would
    * either scroll sideways or crush every cell, so `list` renders as cards.
+   * Canvas is remapped too: the toolbar hides the switcher below 640, and
+   * DESIGN.md says cards render regardless. The stored preference is left
+   * alone.
    */
   private get effectiveView(): AgentsViewMode {
+    if (this.narrowViewport && this.currentView !== 'cards') {
+      return 'cards';
+    }
     return effectiveViewMode(this.currentView, this.narrowViewport);
   }
 
