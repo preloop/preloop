@@ -9,6 +9,7 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
 import { fetchWithAuth } from '../api';
+import { humaniseAction } from '../utils/outcome-label';
 import { showToast } from './confirm-dialog';
 import consoleStyles from '../styles/console-styles.css?inline';
 import {
@@ -199,66 +200,10 @@ export interface AuditGroupLike {
   outcome?: string;
 }
 
-const ACRONYMS: Record<string, string> = {
-  api: 'API',
-  ai: 'AI',
-  mcp: 'MCP',
-  id: 'ID',
-  url: 'URL',
-  sso: 'SSO',
-  oauth: 'OAuth',
-  ip: 'IP',
-};
-
-/** `api_key_created` reads as "API key created", not "api key created". */
-export function humaniseAction(action: string): string {
-  const words = (action || '')
-    .replace(/[_-]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .map((word) => ACRONYMS[word.toLowerCase()] || word);
-  if (words.length === 0) return '';
-  const first = words[0];
-  words[0] = ACRONYMS[first.toLowerCase()]
-    ? first
-    : first.charAt(0).toUpperCase() + first.slice(1);
-  return words.join(' ');
-}
-
-/**
- * Enum values that a badge would otherwise print raw: `success`, `error`,
- * `timeout`. The feed says what happened in the past tense, so a badge on a
- * session request or an activity row says the same word the feed does
- * ("Succeeded", not "success"). Anything outside this list falls back to
- * `humaniseAction`, so a value the console has never seen is still shown.
- */
-const OUTCOME_LABELS: Record<string, string> = {
-  success: 'Succeeded',
-  succeeded: 'Succeeded',
-  ok: 'Succeeded',
-  completed: 'Completed',
-  error: 'Failed',
-  failed: 'Failed',
-  failure: 'Failed',
-  denied: 'Denied',
-  budget_denied: 'Denied by budget',
-  declined: 'Declined',
-  timeout: 'Timed out',
-  cancelled: 'Cancelled',
-  canceled: 'Cancelled',
-  running: 'Running',
-  pending: 'Pending',
-  started: 'Started',
-  executed: 'Executed',
-  info: 'Info',
-};
-
-/** A status or outcome enum as a word a reader recognises. */
-export function outcomeLabel(value: string | null | undefined): string {
-  const key = (value || '').trim().toLowerCase();
-  if (!key) return '';
-  return OUTCOME_LABELS[key] || humaniseAction(key);
-}
+// Enum wording lives in utils/outcome-label so components that are not the
+// feed can use it; re-exported here because the feed is where callers found
+// it first.
+export { humaniseAction, outcomeLabel } from '../utils/outcome-label';
 
 const PAST_TENSE = new Set([
   'created',
