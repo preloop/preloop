@@ -6,6 +6,7 @@ import landingStyles from '../../styles/landing.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import './../../components/news-capsule';
 import './../../components/ide-setup-tabs';
+import './../../components/app-footer';
 import { trackGoal } from '../../services/web-analytics';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/carousel/carousel.js';
@@ -212,16 +213,6 @@ export class LandingView extends LitElement {
         font-weight: 500;
         font-size: 1.1rem;
         color: rgb(161, 161, 170);
-      }
-
-      .legal-disclaimer {
-        max-width: 720px;
-        margin: 0 auto 48px;
-        padding: 0 16px;
-        font-size: 1rem;
-        line-height: 1.6;
-        color: rgb(161, 161, 170);
-        text-align: center;
       }
 
       .feature-stacked-block {
@@ -1218,26 +1209,6 @@ export class LandingView extends LitElement {
                             : ''
                         }
                       </div>
-                      ${
-                        this._ctaSecondary
-                          ? html`<div class="hero-secondary-cta">
-                              <span class="hero-secondary-text"
-                                >Want a guided tour first?</span
-                              >
-                              <sl-button
-                                variant="default"
-                                size="large"
-                                href=${this._ctaSecondaryUrl}
-                                target=${
-                                  this._ctaSecondaryUrl.startsWith('http')
-                                    ? '_blank'
-                                    : '_self'
-                                }
-                                >${this._ctaSecondary}</sl-button
-                              >
-                            </div>`
-                          : ''
-                      }
                     `
                   : ''
               }
@@ -1313,6 +1284,28 @@ export class LandingView extends LitElement {
                   : ''
             }
           </div>
+          ${
+            this._heroInstall && this._ctaSecondary
+              ? html`<div class="section-container hero-secondary-cta">
+                  <span class="hero-secondary-text"
+                    >Want a guided tour first?</span
+                  >
+                  <sl-button
+                    variant="default"
+                    size="large"
+                    href=${this._ctaSecondaryUrl}
+                    target=${
+                      this._ctaSecondaryUrl.startsWith('http')
+                        ? '_blank'
+                        : '_self'
+                    }
+                    @click=${this._handleSecondaryCta}
+                    data-track="cta_demo_hero"
+                    >${this._ctaSecondary}</sl-button
+                  >
+                </div>`
+              : ''
+          }
         </section>
 
         <section
@@ -1830,13 +1823,6 @@ export class LandingView extends LitElement {
                     </div>
                   </div>
                 </section>
-                ${
-                  this._legalDisclaimer
-                    ? html`<p class="legal-disclaimer">
-                        ${this._legalDisclaimer}
-                      </p>`
-                    : ''
-                }
               `
             : ''
         }
@@ -1869,7 +1855,7 @@ export class LandingView extends LitElement {
             : ''
         }
       </main>
-      <app-footer></app-footer>
+      <app-footer .legalDisclaimer=${this._legalDisclaimer}></app-footer>
 
       <sl-dialog
         class="lightbox-dialog"

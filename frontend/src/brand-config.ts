@@ -183,6 +183,11 @@ export interface BrandRuntimeConfig {
    * routes by dropping files; OSS never lists pages it does not ship.
    */
   static_markdown_pages?: Array<{ path: string; src: string }>;
+  /**
+   * Optional legal disclaimer from the landing content knob. The shared
+   * footer renders it above the copyright row when this is set.
+   */
+  legal_disclaimer?: string;
 }
 
 // Full config - used at build time only (includes landing content)
