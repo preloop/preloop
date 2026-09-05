@@ -227,13 +227,6 @@ export class RunPresetDialog extends LitElement {
     void (alert as unknown as { toast: () => Promise<void> }).toast();
   }
 
-  private goEditFlow(): void {
-    if (this.flowId) {
-      Router.go(`/console/flows/${this.flowId}`);
-    }
-    this.close();
-  }
-
   render() {
     return html`
       <sl-dialog
@@ -259,7 +252,7 @@ export class RunPresetDialog extends LitElement {
                           variant="text"
                           size="small"
                           href="/console/flows/${this.flowId}"
-                          @click=${() => this.goEditFlow()}
+                          @click=${() => this.close()}
                           >Edit flow</sl-button
                         >
                       </div>`
@@ -274,10 +267,7 @@ export class RunPresetDialog extends LitElement {
                           variant="text"
                           size="small"
                           href="/console/ai-models"
-                          @click=${() => {
-                            Router.go('/console/ai-models');
-                            this.close();
-                          }}
+                          @click=${() => this.close()}
                           >Models</sl-button
                         >
                       </sl-alert>`

@@ -287,6 +287,15 @@ export class TrackerDetailView extends LitElement {
         font-size: var(--console-text-meta);
       }
 
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+
       .project-info {
         display: flex;
         align-items: flex-start;
@@ -747,7 +756,9 @@ export class TrackerDetailView extends LitElement {
                           <th>Title</th>
                           <th>Status</th>
                           <th>Updated</th>
-                          <th></th>
+                          <th>
+                            <span class="visually-hidden">Actions</span>
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
