@@ -20,6 +20,10 @@ describe('AccountView', () => {
     opts: {
       billing?: boolean;
       accountFails?: boolean;
+      subscription?: Record<string, unknown> | null;
+      trial?: Record<string, unknown>;
+      plans?: Record<string, unknown>[];
+      extraCreditPricePerUsd?: number;
     } = {}
   ) {
     return sinon
@@ -62,13 +66,16 @@ describe('AccountView', () => {
 
         if (url.includes('/api/v1/billing/summary')) {
           return json({
-            subscription: {
-              plan_id: 'plan-pro',
-              status: 'active',
-              current_period_end: '2026-12-31T00:00:00Z',
-            },
+            subscription:
+              opts.subscription === undefined
+                ? {
+                    plan_id: 'plan-pro',
+                    status: 'active',
+                    current_period_end: '2026-12-31T00:00:00Z',
+                  }
+                : opts.subscription,
             plan: { id: 'plan-pro', name: 'Pro Plan' },
-            trial: {
+            trial: opts.trial ?? {
               is_trialing: false,
               days: 0,
               requires_payment_method: false,
@@ -81,22 +88,24 @@ describe('AccountView', () => {
               active_limit_usd: 100,
               current_usage_usd: 25,
               remaining_limit_usd: 75,
-              extra_credit_price_per_usd: 1.2,
+              extra_credit_price_per_usd: opts.extraCreditPricePerUsd ?? 1.2,
               models: [],
             },
           });
         }
 
         if (url.includes('/api/v1/billing/plans')) {
-          return json([
-            {
-              id: 'plan-enterprise',
-              name: 'Enterprise',
-              price_monthly: 99,
-              price_annually: 990,
-              features: {},
-            },
-          ]);
+          return json(
+            opts.plans ?? [
+              {
+                id: 'plan-enterprise',
+                name: 'Enterprise',
+                price_monthly: 99,
+                price_annually: 990,
+                features: {},
+              },
+            ]
+          );
         }
 
         if (url.includes('/api/v1/billing/custom-plans')) {
@@ -190,5 +199,87 @@ describe('AccountView', () => {
       .getCalls()
       .find((c) => (c.args[1]?.method || 'GET').toUpperCase() === 'PATCH');
     expect(patchCall, 'expected a PATCH request').to.exist;
+  });
+
+  it('says a trial ended when the period end is in the past (D13)', async () => {
+    fetchStub = createFetchStub({
+      billing: true,
+      subscription: {
+        plan_id: 'plan-pro',
+        status: 'trialing',
+        current_period_end: '2025-07-27T00:00:00Z',
+      },
+      trial: {
+        is_trialing: true,
+        days: 0,
+        requires_payment_method: false,
+        hosted_model_hard_cap_usd: null,
+      },
+    });
+    const element = (await fixture(
+      html`<account-view></account-view>`
+    )) as AccountView;
+
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+
+    const text = element.shadowRoot?.textContent ?? '';
+    expect(text).to.contain('Trial ended');
+    expect(text).to.contain('Jul 27');
+    expect(text).to.not.contain('Renews on');
+  });
+
+  it('still says "Renews on" for a future period end', async () => {
+    fetchStub = createFetchStub({ billing: true });
+    const element = (await fixture(
+      html`<account-view></account-view>`
+    )) as AccountView;
+
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.textContent).to.contain('Renews on');
+  });
+
+  it('hides the interval toggle and grid when no plans render (D13)', async () => {
+    fetchStub = createFetchStub({ billing: true, plans: [] });
+    const element = (await fixture(
+      html`<account-view></account-view>`
+    )) as AccountView;
+
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.querySelector('billing-toggle')).to.not.exist;
+    expect(element.shadowRoot?.querySelector('.plans-grid')).to.not.exist;
+  });
+
+  it('shows the interval toggle when there is a plan to upgrade to', async () => {
+    fetchStub = createFetchStub({ billing: true });
+    const element = (await fixture(
+      html`<account-view></account-view>`
+    )) as AccountView;
+
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.querySelector('billing-toggle')).to.exist;
+    expect(
+      element.shadowRoot?.querySelectorAll('pricing-card').length
+    ).to.equal(1);
+  });
+
+  it('does not claim a dollar costs a dollar at a 1:1 credit rate (D13)', async () => {
+    fetchStub = createFetchStub({ billing: true, extraCreditPricePerUsd: 1 });
+    const element = (await fixture(
+      html`<account-view></account-view>`
+    )) as AccountView;
+
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+
+    const text = element.shadowRoot?.textContent ?? '';
+    expect(text).to.contain('Usage beyond the cap is billed at cost');
+    expect(text).to.not.contain('$1.00 per');
   });
 });
