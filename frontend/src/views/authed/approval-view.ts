@@ -10,7 +10,9 @@ import {
   withoutApprovalMetadata,
 } from '../../utils/approval-identity';
 import {
+  APPROVAL_REQUESTS_PAGE_LIMIT,
   approvalStatusLabel,
+  formatNextWaitingLabel,
   isExpiringSoon,
   isUnexpiredPendingRequest,
   millisUntilExpiry,
@@ -65,6 +67,14 @@ export class ApprovalView extends AuthedElement {
   /** Other requests still waiting for this operator, fetched after a decision. */
   @state()
   private waitingNext: ApprovalRequest[] = [];
+
+  /**
+   * How many pending rows the queue fetch returned, before client-side
+   * filtering. Used to say "100+" when the page is full rather than a
+   * count that looks total and is not.
+   */
+  @state()
+  private waitingNextFetched = 0;
 
   /**
    * True while the deny confirmation is on screen. The decision keys listen on
@@ -392,6 +402,7 @@ export class ApprovalView extends AuthedElement {
       return;
     }
     const key = event.key.toLowerCase();
+    // Founder call: Approve fires immediately; Deny confirms. No undo window.
     if (key === 'a') {
       event.preventDefault();
       void this.handleApprove();
@@ -537,9 +548,10 @@ export class ApprovalView extends AuthedElement {
   private async loadWaitingNext() {
     try {
       const data = await this.fetchData(
-        '/api/v1/approval-requests?status=pending&limit=100'
+        `/api/v1/approval-requests?status=pending&limit=${APPROVAL_REQUESTS_PAGE_LIMIT}`
       );
       if (Array.isArray(data)) {
+        this.waitingNextFetched = data.length;
         this.waitingNext = (data as ApprovalRequest[]).filter(
           (request) =>
             request.id !== this.requestId &&
@@ -1009,7 +1021,10 @@ export class ApprovalView extends AuthedElement {
         ${
           waiting.length > 0
             ? html`<a href="/console/approval/${waiting[0].id}"
-                >Next waiting (${waiting.length})</a
+                >${formatNextWaitingLabel(
+                  waiting.length,
+                  this.waitingNextFetched
+                )}</a
               >`
             : html`<span class="muted">Nothing else is waiting for you</span>`
         }

@@ -15,6 +15,26 @@ import { parseUTCDate } from './date';
 /** Requests past this margin get the amber countdown: a decision is urgent. */
 export const EXPIRING_SOON_MS = 5 * 60 * 1000;
 
+/**
+ * The approval-requests list endpoint caps here. A count at this size is a
+ * floor, not a total — there may be more waiting past the page.
+ */
+export const APPROVAL_REQUESTS_PAGE_LIMIT = 100;
+
+/**
+ * Label for the post-decision "next waiting" link. When the pending page is
+ * full the number is a floor (`100+`), not an authoritative total.
+ */
+export function formatNextWaitingLabel(
+  waitingCount: number,
+  fetchedCount: number,
+  pageLimit: number = APPROVAL_REQUESTS_PAGE_LIMIT
+): string {
+  const count =
+    fetchedCount >= pageLimit ? `${pageLimit}+` : String(waitingCount);
+  return `Next waiting (${count})`;
+}
+
 /** True when the request is pending and its expiry (if any) is still ahead. */
 export function isUnexpiredPendingRequest(
   request: ApprovalRequest,

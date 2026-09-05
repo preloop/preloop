@@ -59,6 +59,7 @@ describe('ApprovalView', () => {
     opts: {
       request?: Record<string, unknown> | null;
       getFails?: boolean;
+      pendingQueue?: Record<string, unknown>[];
     } = {}
   ) {
     return sinon
@@ -84,13 +85,15 @@ describe('ApprovalView', () => {
           /\/api\/v1\/approval-requests\?status=pending/.test(url) &&
           method === 'GET'
         ) {
-          return json([
-            pendingRequest(),
-            pendingRequest({
-              id: 'req-2',
-              expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
-            }),
-          ]);
+          return json(
+            opts.pendingQueue ?? [
+              pendingRequest(),
+              pendingRequest({
+                id: 'req-2',
+                expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+              }),
+            ]
+          );
         }
 
         if (url.includes('/approve') && method === 'POST') {
@@ -355,6 +358,31 @@ describe('ApprovalView', () => {
       expect(line?.textContent).to.contain('Next waiting (1)');
       const next = line?.querySelector('a[href*="/console/approval/"]');
       expect(next?.getAttribute('href')).to.equal('/console/approval/req-2');
+    });
+
+    it('says 100+ when the pending page is full, not a count that looks total', async () => {
+      const pendingQueue = Array.from({ length: 100 }, (_, i) =>
+        pendingRequest({
+          id: `queued-${i}`,
+          expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+        })
+      );
+      fetchStub = createFetchStub({
+        request: pendingRequest(),
+        pendingQueue,
+      });
+      const element = (await fixture(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      )) as ApprovalView;
+      await waitUntil(() => !(element as any).loading, 'still loading');
+      await element.updateComplete;
+
+      await (element as any).handleApprove();
+      await element.updateComplete;
+
+      const line = element.shadowRoot?.querySelector('.post-decision');
+      expect(line?.textContent).to.contain('Next waiting (100+)');
+      expect(line?.textContent).to.not.contain('Next waiting (99)');
     });
   });
 

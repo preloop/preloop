@@ -1,7 +1,9 @@
 import { expect } from '@open-wc/testing';
 
 import {
+  APPROVAL_REQUESTS_PAGE_LIMIT,
   approvalStatusLabel,
+  formatNextWaitingLabel,
   isExpiringSoon,
   isUnexpiredPendingRequest,
   millisUntilExpiry,
@@ -119,5 +121,20 @@ describe('approvalStatusLabel', () => {
     expect(approvalStatusLabel('declined')).to.equal('Denied');
     expect(approvalStatusLabel('expired')).to.equal('Timed out');
     expect(approvalStatusLabel('cancelled')).to.equal('Cancelled');
+  });
+});
+
+describe('formatNextWaitingLabel', () => {
+  it('states the filtered count when the pending page is not full', () => {
+    expect(formatNextWaitingLabel(7, 8)).to.equal('Next waiting (7)');
+  });
+
+  it('says 100+ when the pending page is full, not a count that looks total', () => {
+    expect(formatNextWaitingLabel(99, APPROVAL_REQUESTS_PAGE_LIMIT)).to.equal(
+      'Next waiting (100+)'
+    );
+    expect(formatNextWaitingLabel(100, APPROVAL_REQUESTS_PAGE_LIMIT)).to.equal(
+      'Next waiting (100+)'
+    );
   });
 });

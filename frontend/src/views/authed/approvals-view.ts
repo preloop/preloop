@@ -11,6 +11,7 @@ import {
 } from '../../utils/date';
 import { formatApprovalRequester } from '../../utils/approval-identity';
 import {
+  APPROVAL_REQUESTS_PAGE_LIMIT,
   approvalStatusLabel,
   isExpiringSoon,
   isUnexpiredPendingRequest,
@@ -103,7 +104,16 @@ export class ApprovalsView extends AuthedElement {
   @state()
   private answerError: string | null = null;
 
+  /**
+   * Ticks once a second while anything in "Waiting for you" can still expire,
+   * so a request that times out with the list open leaves that group and
+   * loses its Approve/Deny buttons instead of offering a dead decision.
+   */
+  @state()
+  private nowMs = Date.now();
+
   private unsubscribe?: () => void;
+  private tickTimer?: ReturnType<typeof setInterval>;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -331,6 +341,31 @@ export class ApprovalsView extends AuthedElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this.unsubscribe?.();
+    this.stopTicking();
+  }
+
+  private startTicking() {
+    if (this.tickTimer) return;
+    this.tickTimer = setInterval(() => {
+      this.nowMs = Date.now();
+      this.applyFilters();
+    }, 1000);
+  }
+
+  private stopTicking() {
+    if (this.tickTimer) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = undefined;
+    }
+  }
+
+  /** Tick only while a waiting row still has an expiry that can pass. */
+  private syncExpiryTick() {
+    if (this.waitingRequests.some((request) => request.expires_at)) {
+      this.startTicking();
+    } else {
+      this.stopTicking();
+    }
   }
 
   private connectWebSocket() {
@@ -414,8 +449,9 @@ export class ApprovalsView extends AuthedElement {
   private async loadApprovalRequests() {
     this.loading = true;
     try {
-      // Fetch approval requests (API max limit is 100)
-      const data = await this.fetchData('/api/v1/approval-requests?limit=100');
+      const data = await this.fetchData(
+        `/api/v1/approval-requests?limit=${APPROVAL_REQUESTS_PAGE_LIMIT}`
+      );
       if (data && Array.isArray(data)) {
         // Sort by requested_at descending (most recent first)
         this.approvalRequests = (data as ApprovalRequest[])
@@ -498,6 +534,15 @@ export class ApprovalsView extends AuthedElement {
   }
 
   private applyFilters() {
+    const now = this.nowMs;
+    const normalized = this.approvalRequests.map((request) =>
+      normalizeApprovalRequest(request, now)
+    );
+    if (normalized.some((request, i) => request !== this.approvalRequests[i])) {
+      this.approvalRequests = normalized;
+      this.calculateStats();
+    }
+
     let filtered = [...this.approvalRequests];
 
     // Status filter
@@ -528,9 +573,10 @@ export class ApprovalsView extends AuthedElement {
 
     // What still needs a person comes first, soonest expiry at the top; the
     // rest is history and keeps its newest-first order.
-    const { waiting, history } = partitionApprovalRequests(filtered);
+    const { waiting, history } = partitionApprovalRequests(filtered, now);
     this.waitingRequests = waiting;
     this.historyRequests = history;
+    this.syncExpiryTick();
   }
 
   private getUniqueTools(): string[] {
@@ -639,10 +685,22 @@ export class ApprovalsView extends AuthedElement {
   }
 
   /**
+   * Re-read the clock at click time so a row whose expiry passed between
+   * ticks cannot still post Approve or Deny.
+   */
+  private ensureStillWaiting(request: ApprovalRequest): boolean {
+    this.nowMs = Date.now();
+    if (isUnexpiredPendingRequest(request, this.nowMs)) return true;
+    this.applyFilters();
+    return false;
+  }
+
+  /**
    * Row-level approve: the same call the detail page makes, taken where the
    * request is seen. Approving is not destructive, so it does not confirm.
    */
   private async handleRowApprove(request: ApprovalRequest) {
+    if (!this.ensureStillWaiting(request)) return;
     this.decidingId = request.id;
     try {
       const updated = await approveRequest(request.id);
@@ -661,6 +719,7 @@ export class ApprovalsView extends AuthedElement {
 
   /** Denying stops the agent, so it confirms first (DESIGN.md destructive). */
   private async handleRowDeny(request: ApprovalRequest) {
+    if (!this.ensureStillWaiting(request)) return;
     const confirmed = await confirmDialog({
       title: 'Deny this request?',
       message: `${request.tool_name} will not run.`,
@@ -672,6 +731,7 @@ export class ApprovalsView extends AuthedElement {
       variant: 'danger',
     });
     if (!confirmed) return;
+    if (!this.ensureStillWaiting(request)) return;
     this.decidingId = request.id;
     try {
       const updated = await declineRequest(request.id);
@@ -1095,7 +1155,9 @@ export class ApprovalsView extends AuthedElement {
                           pill
                           class="chip"
                           variant=${
-                            isExpiringSoon(request) ? 'warning' : 'neutral'
+                            isExpiringSoon(request, this.nowMs)
+                              ? 'warning'
+                              : 'neutral'
                           }
                         >
                           <sl-icon name="hourglass"></sl-icon>

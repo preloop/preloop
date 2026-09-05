@@ -215,6 +215,50 @@ describe('ApprovalsView', () => {
       expect(element.shadowRoot?.querySelector('.row-approve')).to.not.exist;
       expect(element.shadowRoot?.textContent).to.contain('Timed out');
     });
+
+    it('moves a pending row to history when it expires while the list is open', async () => {
+      const element = await renderList([
+        baseRequest({
+          id: 'about-to-expire',
+          expires_at: new Date(Date.now() + 400).toISOString(),
+        }),
+      ]);
+
+      expect(
+        (element as any).waitingRequests.map((r: { id: string }) => r.id)
+      ).to.deep.equal(['about-to-expire']);
+      expect(element.shadowRoot?.querySelector('.row-approve')).to.exist;
+
+      await waitUntil(
+        () => (element as any).waitingRequests.length === 0,
+        'expired row stayed in Waiting for you',
+        { timeout: 3500 }
+      );
+      await element.updateComplete;
+
+      expect(element.shadowRoot?.querySelector('.row-approve')).to.not.exist;
+      expect(element.shadowRoot?.textContent).to.contain('Timed out');
+      expect(
+        (element as any).historyRequests.map((r: { id: string }) => r.id)
+      ).to.deep.equal(['about-to-expire']);
+    });
+
+    it('does not post approve once the row has timed out', async () => {
+      const element = await renderList([
+        baseRequest({
+          id: 'ar-1',
+          expires_at: new Date(Date.now() + 60_000).toISOString(),
+        }),
+      ]);
+      const request = (element as any).waitingRequests[0];
+      request.expires_at = new Date(Date.now() - 1000).toISOString();
+
+      await (element as any).handleRowApprove(request);
+
+      expect(decisionCall('approve'), 'approved after expiry').to.be.undefined;
+      expect((element as any).waitingRequests.length).to.equal(0);
+      expect(element.shadowRoot?.querySelector('.row-approve')).to.not.exist;
+    });
   });
 
   it('renders the approval list view', async () => {
