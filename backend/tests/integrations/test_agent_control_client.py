@@ -11,6 +11,7 @@ from preloop.integrations.agent_control import (
     AgentControlClient,
     AgentControlConfig,
     AgentControlResult,
+    ConnectionEvictedError,
     HookedAgentControlAdapter,
     OperatorCommand,
     load_openclaw_control_config,
@@ -20,9 +21,15 @@ pytestmark = pytest.mark.asyncio
 
 
 class FakeWebSocket:
-    def __init__(self, messages: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        messages: list[dict[str, Any]] | None = None,
+        *,
+        close_code: int | None = None,
+    ) -> None:
         self.sent: list[dict[str, Any]] = []
         self._messages = list(messages or [])
+        self.close_code = close_code
 
     async def send_json(self, payload: dict[str, Any]) -> None:
         self.sent.append(payload)
@@ -290,3 +297,67 @@ async def test_client_reconnects_after_connection_failure() -> None:
 
     assert sleeps == [0.5, 0.5]
     assert websocket.sent[0]["name"] == "capabilities"
+
+
+async def test_client_stops_on_eviction_close_code_4000() -> None:
+    """Close code 4000 must stop the client without reconnecting."""
+    websocket = FakeWebSocket(close_code=4000)
+    sleeps: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    client = AgentControlClient(
+        AgentControlConfig(
+            control_ws_url="wss://preloop.example/api/v1/agents/control/ws",
+            bearer_token="runtime-token",
+            runtime_principal_id="openclaw-live",
+        ),
+        HookedAgentControlAdapter.with_hooks(send_message=lambda _: "ok"),
+        reconnect_delay_seconds=0.1,
+        session_factory=lambda headers: FakeSession(websocket, headers),
+        sleep=sleep,
+    )
+
+    with pytest.raises(ConnectionEvictedError):
+        await client.run_forever(max_attempts=3)
+
+    # No reconnect sleep -- the client must stop immediately.
+    assert sleeps == []
+    # Only one connection attempt (the evicted one), not three.
+    assert websocket.sent[0]["name"] == "capabilities"
+
+
+async def test_client_reconnects_normally_without_eviction_code() -> None:
+    """Connections closed without code 4000 must still reconnect."""
+    # close_code=None simulates a normal server-initiated close.
+    websocket = FakeWebSocket(close_code=None)
+    sessions_created: list[FakeSession] = []
+
+    def session_factory(headers: dict[str, str]) -> FakeSession:
+        session = FakeSession(websocket, headers)
+        sessions_created.append(session)
+        return session
+
+    sleeps: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    client = AgentControlClient(
+        AgentControlConfig(
+            control_ws_url="wss://preloop.example/api/v1/agents/control/ws",
+            bearer_token="runtime-token",
+            runtime_principal_id="openclaw-live",
+        ),
+        HookedAgentControlAdapter.with_hooks(send_message=lambda _: "ok"),
+        reconnect_delay_seconds=0.1,
+        session_factory=session_factory,
+        sleep=sleep,
+    )
+
+    await client.run_forever(max_attempts=2)
+
+    # Two attempts, two sleeps (reconnect happened).
+    assert len(sleeps) == 2
+    assert len(sessions_created) == 2

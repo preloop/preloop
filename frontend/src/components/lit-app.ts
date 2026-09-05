@@ -2,7 +2,11 @@ import { LitElement, html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { router } from '../router';
 import { Router } from '@vaadin/router';
-import { isSaaS } from '../brand-config';
+import { getBrandConfig, isSaaS } from '../brand-config';
+import {
+  pagesFromRuntimeConfig,
+  type StaticMarkdownPage,
+} from '../static-markdown-pages';
 import { getFeatures } from '../api';
 import '../views/public/landing-view';
 import './static-view-wrapper';
@@ -16,12 +20,14 @@ import '../views/public/delete-account-view';
 import '../views/public/whatis-mcp-view';
 import '../views/public/pricing-view';
 import '../views/public/welcome-view';
+import '../views/public/not-found-view';
 import '../views/public/static-view';
 import '../views/authed/console-shell';
 import '../views/authed/oauth-consent-view';
 import '../views/authed/dashboard-control-plane-view';
 import '../views/authed/trackers-view';
 import '../views/authed/tracker-detail-view';
+import '../views/authed/tracker-issue-view';
 import '../views/authed/tools-view';
 import '../views/authed/issues-view';
 import '../views/authed/issues-compliance-view';
@@ -45,6 +51,7 @@ import '../views/authed/settings/invitation-management-view';
 import '../views/authed/notification-preferences-view';
 import '../components/settings-tabs';
 import '../views/authed/flows-view';
+import '../views/authed/runners-view';
 import '../views/authed/flow-view';
 import '../views/authed/flow-executions-view';
 import '../views/authed/flow-execution-view';
@@ -55,6 +62,8 @@ import '../views/authed/policies-view';
 import '../views/authed/audit-view';
 import '../views/authed/agents-view';
 import '../views/authed/agent-detail-view';
+import '../views/authed/agent-talk-view';
+import '../views/authed/attention-view';
 import './app-header';
 import './app-footer';
 import './update-banner';
@@ -149,145 +158,24 @@ export class LitApp extends LitElement {
       { path: '/request-demo', component: 'request-demo-view' },
       { path: '/delete-account', component: 'delete-account-view' },
       {
-        path: '/about',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (existingWrapper && ssrRoute === '/about' && !this.hasNavigated) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
-          }
-
-          // Load markdown dynamically
-          const view = commands.component('static-view') as any;
-          view.src = '/content/about.md';
-          return view;
-        },
-      },
-      {
-        path: '/whatis-mcp',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (
-            existingWrapper &&
-            ssrRoute === '/whatis-mcp' &&
-            !this.hasNavigated
-          ) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
-          }
-
-          // Load markdown dynamically
-          const view = commands.component('static-view') as any;
-          view.src = '/content/whatis-mcp.md';
-          return view;
-        },
-      },
-      {
         path: '/docs',
-        action: (context, commands) => {
-          const view = commands.component('static-view') as any;
+        action: (_context, commands) => {
+          const view = commands.component('static-view') as HTMLElement & {
+            src: string;
+          };
           view.src = '/content/docs.md';
           return view;
         },
       },
-      {
-        path: '/terms',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (existingWrapper && ssrRoute === '/terms' && !this.hasNavigated) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
-          }
-
-          // Load markdown dynamically
-          const view = commands.component('static-view') as any;
-          view.src = '/content/terms.md';
-          return view;
-        },
-      },
-      {
-        path: '/privacy',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (
-            existingWrapper &&
-            ssrRoute === '/privacy' &&
-            !this.hasNavigated
-          ) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
-          }
-
-          // Load markdown dynamically
-          const view = commands.component('static-view') as any;
-          view.src = '/content/privacy.md';
-          return view;
-        },
-      },
+      ...this.contentMarkdownRoutes(),
       {
         path: '/pricing',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (
-            existingWrapper &&
-            ssrRoute === '/pricing' &&
-            !this.hasNavigated
-          ) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
+        action: (_context, commands) => {
+          const existing = this.reuseSsrStaticWrapper('/pricing');
+          if (existing) {
+            return existing;
           }
-
-          // Load pricing view dynamically
           return commands.component('public-pricing-view');
-        },
-      },
-      {
-        path: '/ai-act-readiness',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (
-            existingWrapper &&
-            ssrRoute === '/ai-act-readiness' &&
-            !this.hasNavigated
-          ) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
-          }
-
-          // Load markdown dynamically
-          const view = commands.component('static-view') as any;
-          view.src = '/content/ai-act-readiness.md';
-          return view;
         },
       },
       {
@@ -298,9 +186,6 @@ export class LitApp extends LitElement {
         // client-side navigation.
         path: '/vs/:slug',
         action: (context, commands) => {
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
           const slug = (context.params?.slug as string) || '';
 
           // Reject obviously unsafe slug input (route params are strings but
@@ -310,16 +195,14 @@ export class LitApp extends LitElement {
             return commands.redirect('/');
           }
 
-          if (
-            existingWrapper &&
-            ssrRoute === `/vs/${slug}` &&
-            !this.hasNavigated
-          ) {
-            this.hasNavigated = true;
-            return existingWrapper;
+          const existing = this.reuseSsrStaticWrapper(`/vs/${slug}`);
+          if (existing) {
+            return existing;
           }
 
-          const view = commands.component('static-view') as any;
+          const view = commands.component('static-view') as HTMLElement & {
+            src: string;
+          };
           view.src = `/content/vs/${slug}.md`;
           return view;
         },
@@ -338,16 +221,14 @@ export class LitApp extends LitElement {
           if (!isSaaS()) {
             return commands.redirect('/');
           }
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (existingWrapper && ssrRoute === '/blog' && !this.hasNavigated) {
-            this.hasNavigated = true;
-            return existingWrapper;
+          const existing = this.reuseSsrStaticWrapper('/blog');
+          if (existing) {
+            return existing;
           }
 
-          const view = commands.component('static-view') as any;
+          const view = commands.component('static-view') as HTMLElement & {
+            src: string;
+          };
           view.src = '/content/blog/index.html';
           return view;
         },
@@ -358,9 +239,6 @@ export class LitApp extends LitElement {
           if (!isSaaS()) {
             return commands.redirect('/');
           }
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
           const slug = (context.params?.slug as string) || '';
 
           // Route params are unconstrained strings; accept slug characters
@@ -369,41 +247,15 @@ export class LitApp extends LitElement {
             return commands.redirect('/blog');
           }
 
-          if (
-            existingWrapper &&
-            ssrRoute === `/blog/${slug}` &&
-            !this.hasNavigated
-          ) {
-            this.hasNavigated = true;
-            return existingWrapper;
+          const existing = this.reuseSsrStaticWrapper(`/blog/${slug}`);
+          if (existing) {
+            return existing;
           }
 
-          const view = commands.component('static-view') as any;
+          const view = commands.component('static-view') as HTMLElement & {
+            src: string;
+          };
           view.src = `/content/blog/${slug}.html`;
-          return view;
-        },
-      },
-      {
-        path: '/resources/ai-agent-control-plane-2026',
-        action: (context, commands) => {
-          // Check if we have SSR content for this EXACT route on first load
-          const outlet = this.renderRoot.querySelector('main');
-          const existingWrapper = outlet?.querySelector('static-view-wrapper');
-          const ssrRoute = this.getAttribute('data-ssr-route');
-
-          if (
-            existingWrapper &&
-            ssrRoute === '/resources/ai-agent-control-plane-2026' &&
-            !this.hasNavigated
-          ) {
-            // Reuse SSR content on first load only
-            this.hasNavigated = true;
-            return existingWrapper;
-          }
-
-          // Load markdown dynamically
-          const view = commands.component('static-view') as any;
-          view.src = '/content/resources/ai-agent-control-plane-2026.md';
           return view;
         },
       },
@@ -498,10 +350,15 @@ export class LitApp extends LitElement {
             path: 'trackers',
             children: [
               { path: '', component: 'trackers-view' },
+              {
+                path: ':trackerId/issues/:issueId',
+                component: 'tracker-issue-view',
+              },
               { path: ':trackerId', component: 'tracker-detail-view' },
             ],
           },
           { path: 'tools', component: 'tools-view' },
+          { path: 'policies', component: 'policies-view' },
           {
             path: 'issues',
             children: [
@@ -525,8 +382,18 @@ export class LitApp extends LitElement {
               { path: ':flowId', component: 'flow-view' },
             ],
           },
+          {
+            path: 'runners',
+            action: (_context, commands) => {
+              return commands.redirect('/console/settings/runners');
+            },
+          },
           { path: '/runtime-sessions', component: 'runtime-sessions-view' },
           { path: '/agents', component: 'agents-view' },
+          // Before ':agentId' would not matter to Vaadin Router (it matches
+          // the full path), but keeping the more specific route first is how
+          // the file reads elsewhere.
+          { path: '/agents/:agentId/talk', component: 'agent-talk-view' },
           { path: '/agents/:agentId', component: 'agent-detail-view' },
           {
             path: '/onboarding',
@@ -542,6 +409,7 @@ export class LitApp extends LitElement {
           { path: 'settings/profile', component: 'profile-view' },
           { path: 'settings/security', component: 'security-view' },
           { path: 'settings/api-keys', component: 'api-keys-view' },
+          { path: 'settings/runners', component: 'runners-view' },
           {
             path: 'settings/api-keys/:keyId',
             component: 'api-key-view',
@@ -570,14 +438,64 @@ export class LitApp extends LitElement {
           {
             path: 'governance',
             action: (_context, commands) => {
-              // Governance is now integrated into the Tools page
-              return commands.redirect('/console/tools');
+              return commands.redirect('/console/policies');
             },
           },
           { path: 'audit', component: 'audit-view' },
+          { path: 'attention', component: 'attention-view' },
         ],
       },
+      // Must stay last: Vaadin Router matches in order, so a catch-all above
+      // any real route would swallow it.
+      { path: '(.*)', component: 'not-found-view' },
     ]);
+  }
+
+  /**
+   * Reuse SSR-slotted static markup on the first load of this exact path.
+   * Client-side navigations always build a fresh <static-view>.
+   */
+  private reuseSsrStaticWrapper(path: string): Element | undefined {
+    const outlet = this.renderRoot.querySelector('main');
+    const existingWrapper = outlet?.querySelector('static-view-wrapper');
+    const ssrRoute = this.getAttribute('data-ssr-route');
+    if (existingWrapper && ssrRoute === path && !this.hasNavigated) {
+      this.hasNavigated = true;
+      return existingWrapper;
+    }
+    return undefined;
+  }
+
+  /**
+   * Markdown pages come from BRAND_CONFIG.static_markdown_pages, which the
+   * Vite plugin fills from files on disk. EE adds a page by dropping
+   * markdown under frontend/content/<brand>/; OSS never registers routes
+   * for files it does not ship.
+   */
+  private contentMarkdownRoutes() {
+    let pages: StaticMarkdownPage[] = [];
+    try {
+      pages = pagesFromRuntimeConfig(getBrandConfig());
+    } catch {
+      pages = [];
+    }
+    return pages.map(({ path, src }) => ({
+      path,
+      action: (
+        _context: unknown,
+        commands: { component: (name: string) => HTMLElement }
+      ) => {
+        const existing = this.reuseSsrStaticWrapper(path);
+        if (existing) {
+          return existing;
+        }
+        const view = commands.component('static-view') as HTMLElement & {
+          src: string;
+        };
+        view.src = src;
+        return view;
+      },
+    }));
   }
 
   /**

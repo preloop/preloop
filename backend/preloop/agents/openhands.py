@@ -3,19 +3,22 @@
 import json
 import logging
 import os
+import shlex
 from typing import Any, Dict
 
 from aiodocker.exceptions import DockerError
 
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.services.model_runtime_resolver import gateway_url_for_api
-from preloop.utils.repo_urls import (
-    inject_oauth_token,
-    repo_url_log_location,
-    tracker_host_kind,
+from preloop.utils.git_credentials import (
+    GitCredential,
+    build_credential_setup_shell,
+    needs_http_path_scoping,
+    strip_url_credentials,
 )
 
 from .container import ContainerAgentExecutor
+from .images import default_agent_image
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +41,7 @@ class OpenHandsAgent(ContainerAgentExecutor):
                 - max_iterations: Maximum number of agent iterations
                 - custom settings for OpenHands
         """
-        # Use OpenHands Docker image (custom build with tmux for local runtime)
-        image = os.getenv("OPENHANDS_IMAGE", "spacebridge/openhands:latest-tmux")
+        image = default_agent_image("openhands") or "spacebridge/openhands:latest-tmux"
 
         super().__init__(
             agent_type="openhands",
@@ -150,7 +152,12 @@ class OpenHandsAgent(ContainerAgentExecutor):
         # Container configuration
         container_config = {
             "Image": self.image,
-            "Env": [f"{k}={v}" for k, v in env.items()],
+            "Env": [
+                f"{k}={v}"
+                for k, v in self._apply_git_credential_env(
+                    env, execution_context
+                ).items()
+            ],
             # Override entrypoint completely - set to empty list to disable entrypoint.sh
             "Entrypoint": [],
             # Run OpenHands in headless mode
@@ -311,6 +318,12 @@ class OpenHandsAgent(ContainerAgentExecutor):
         else:
             self.logger.debug("No git_clone_config in execution context")
 
+        # Seed /workspace files declared on the trigger payload (see base
+        # class): after git clone, before custom commands.
+        seed_cmd = self._prepare_workspace_seed_commands(execution_context)
+        if seed_cmd:
+            commands.append(seed_cmd)
+
         # Prepare custom commands if enabled
         custom_commands = execution_context.get("custom_commands")
         if custom_commands and custom_commands.get("enabled"):
@@ -361,6 +374,7 @@ class OpenHandsAgent(ContainerAgentExecutor):
                     return ""
 
             clone_commands = []
+            credentials: Dict[int, GitCredential] = {}
             trigger_data = execution_context.get("trigger_event_data", {})
             trigger_project_id = execution_context.get("trigger_project_id")
 
@@ -385,51 +399,16 @@ class OpenHandsAgent(ContainerAgentExecutor):
                     )
                     continue
 
-                # Inject token if URL doesn't have credentials
-                if repo_url and "@" not in repo_url:
-                    token = None
-                    tracker_type = None
+                # Resolve the tracker credential without touching the URL, so
+                # the remote written into .git/config stays secret-free and
+                # `git remote -v` cannot leak it (issue #173).
+                credential = self._build_git_credential(
+                    repo_url, repo_config, execution_context
+                )
+                if credential is not None:
+                    credentials[idx] = credential
 
-                    # Try to get credentials from repo config's tracker_id
-                    tracker_id = repo_config.get("tracker_id")
-                    git_credentials_map = execution_context.get(
-                        "git_credentials_map", {}
-                    )
-
-                    if tracker_id and tracker_id in git_credentials_map:
-                        tracker_creds = git_credentials_map.get(tracker_id)
-                        token = tracker_creds.get("token")
-                        tracker_type = tracker_creds.get("tracker_type")
-                    elif trigger_project_id:
-                        # Fallback: try to get token from trigger project's tracker
-                        token, tracker_type = self._get_token_from_project(
-                            trigger_project_id, execution_context.get("account_id")
-                        )
-
-                    if token:
-                        host_kind = tracker_host_kind(repo_url)
-                        if host_kind == "github" or tracker_type == "github":
-                            repo_url = inject_oauth_token(
-                                repo_url, token, token_as_username=True
-                            )
-                            self.logger.info("Injected GitHub token into URL")
-                        elif host_kind == "gitlab" or tracker_type == "gitlab":
-                            repo_url = inject_oauth_token(
-                                repo_url, token, user="gitlab-ci-token"
-                            )
-                            self.logger.info("Injected GitLab token into URL")
-                        else:
-                            self.logger.warning(
-                                "Could not determine tracker type for token injection. "
-                                "URL: %s, tracker_type: %s",
-                                repo_url_log_location(repo_url),
-                                tracker_type,
-                            )
-                    else:
-                        self.logger.warning(
-                            "No token available for repository URL. "
-                            "Clone may fail if the repository is private."
-                        )
+                repo_url = strip_url_credentials(repo_url)
 
                 # Get clone path - if it starts with /, use as-is (absolute), otherwise make it relative to /workspace
                 clone_path = repo_config.get("clone_path", f"workspace-{idx + 1}")
@@ -442,10 +421,13 @@ class OpenHandsAgent(ContainerAgentExecutor):
 
                 # Get branch if specified
                 branch = repo_config.get("branch")
-                branch_arg = f" -b {branch}" if branch else ""
+                branch_arg = f" -b {shlex.quote(branch)}" if branch else ""
 
                 # Build git clone command
-                git_cmd = f"git clone{branch_arg} {repo_url} {full_path}"
+                git_cmd = (
+                    f"git clone{branch_arg} "
+                    f"{shlex.quote(repo_url)} {shlex.quote(full_path)}"
+                )
                 clone_commands.append(git_cmd)
 
                 self.logger.info(f"Prepared git clone command for {full_path}")
@@ -453,8 +435,16 @@ class OpenHandsAgent(ContainerAgentExecutor):
             if not clone_commands:
                 return ""
 
-            # Create workspace directory first, then clone all repos
-            all_commands = ["mkdir -p /workspace"] + clone_commands
+            self._register_git_credentials(execution_context, credentials)
+
+            # Create workspace directory, install the credential helper, then
+            # clone all repos.
+            all_commands = [
+                "mkdir -p /workspace",
+                build_credential_setup_shell(
+                    use_http_path=needs_http_path_scoping(credentials.values())
+                ),
+            ] + clone_commands
             return " && ".join(all_commands)
 
         except Exception as e:

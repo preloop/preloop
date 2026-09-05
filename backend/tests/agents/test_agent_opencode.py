@@ -307,7 +307,12 @@ class TestOpenCodeBuildConfig:
     def test_mcp_server_config(self):
         """MCP config has preloop server with correct structure."""
         agent = OpenCodeAgent({})
-        config = agent._build_opencode_config("model-1", "anthropic", {}, 600000)
+        config = agent._build_opencode_config(
+            "model-1",
+            "anthropic",
+            {"allowed_mcp_servers": ["preloop-mcp"]},
+            600000,
+        )
         preloop = config["mcp"]["preloop"]
         assert preloop["type"] == "remote"
         assert preloop["url"] == "$PRELOOP_MCP_URL"
@@ -326,6 +331,47 @@ class TestOpenCodeBuildConfig:
         assert provider["options"]["baseURL"] == "https://custom.api.com/v1"
         assert provider["options"]["apiKey"] == "$OPENAI_API_KEY"
         assert "model-1" in provider["models"]
+
+    def test_llm_request_timeout_aligned_with_gateway_stack(self):
+        """The provider LLM timeout must sit at 600s, not OpenCode-fatal 120s.
+
+        OpenCode aborts any LLM request after ``provider.options.timeout`` ms
+        ("The operation timed out."). 120s was below real upstream latency
+        (slow-but-successful gateway calls finished after the CLI had already
+        exited), so the timeout must align with the MCP tool timeout (600s)
+        and stay under the gateway proxy readTimeout (900s).
+        """
+        agent = OpenCodeAgent({})
+        context = {"model_endpoint": "https://custom.api.com/v1"}
+        config = agent._build_opencode_config("model-1", "customllm", context, 600000)
+        options = config["provider"]["customllm"]["options"]
+        assert options["timeout"] == 600000
+        assert options["chunkTimeout"] == 600000
+
+    def test_llm_request_timeout_env_override(self):
+        """OPENCODE_LLM_TIMEOUT_SEC overrides the 600s default."""
+        agent = OpenCodeAgent({})
+        context = {"model_endpoint": "https://custom.api.com/v1"}
+        with patch.dict(os.environ, {"OPENCODE_LLM_TIMEOUT_SEC": "750"}):
+            config = agent._build_opencode_config(
+                "model-1", "customllm", context, 600000
+            )
+        options = config["provider"]["customllm"]["options"]
+        assert options["timeout"] == 750000
+        assert options["chunkTimeout"] == 750000
+
+    def test_llm_request_timeout_invalid_override_falls_back(self):
+        """A malformed OPENCODE_LLM_TIMEOUT_SEC must not fail the run."""
+        agent = OpenCodeAgent({})
+        context = {"model_endpoint": "https://custom.api.com/v1"}
+        for bad in ("ninety", "", "-5", "0"):
+            with patch.dict(os.environ, {"OPENCODE_LLM_TIMEOUT_SEC": bad}):
+                config = agent._build_opencode_config(
+                    "model-1", "customllm", context, 600000
+                )
+            options = config["provider"]["customllm"]["options"]
+            assert options["timeout"] == 600000, bad
+            assert options["chunkTimeout"] == 600000, bad
 
     def test_gateway_endpoint_uses_preloop_provider(self):
         """Gateway-enabled config uses gateway provider and URL."""
@@ -383,8 +429,21 @@ class TestOpenCodeBuildConfig:
     def test_timeout_in_milliseconds(self):
         """MCP timeout is in milliseconds."""
         agent = OpenCodeAgent({})
-        config = agent._build_opencode_config("model-1", "anthropic", {}, 900000)
+        config = agent._build_opencode_config(
+            "model-1",
+            "anthropic",
+            {"allowed_mcp_servers": ["preloop-mcp"]},
+            900000,
+        )
         assert config["mcp"]["preloop"]["timeout"] == 900000
+
+    def test_empty_allowlist_still_attaches_preloop_mcp(self):
+        """Empty allowlist still attaches Preloop MCP. Overhead is tools."""
+        agent = OpenCodeAgent({})
+        config = agent._build_opencode_config("model-1", "anthropic", {}, 600000)
+        assert "preloop" in config["mcp"]
+        assert "repo-audit" not in config["mcp"]
+        assert config["mcp"]["preloop"]["url"] == "$PRELOOP_MCP_URL"
 
 
 class TestOpenCodePrepareEnvironment:
@@ -494,3 +553,152 @@ class TestOpenCodeKubernetesStartup:
             assert call_ctx["_container_command"] == ["/bin/bash"]
             assert call_ctx["_container_args"][0] == "-c"
             assert len(call_ctx["_container_args"]) == 2
+
+
+class TestOpenCodeStderrCapture:
+    """OpenCode failures must be diagnosable from the execution log.
+
+    Staging PR-reviewer runs died with "OpenCode CLI exited with code: 1" and
+    nothing else: opencode's internal logger writes to log files (not stderr)
+    unless --print-logs is passed, and stderr was not routed through the JSON
+    log filter, so fatal errors never reached the captured log stream
+    (issue #212).
+    """
+
+    def _context(self):
+        return {
+            "prompt": "test",
+            "opencode_model": "model-1",
+            "execution_id": "exec-1",
+            "flow_name": "test-flow",
+        }
+
+    def test_script_enables_opencode_logging(self):
+        """opencode run must print its internal logs to stderr."""
+        agent = OpenCodeAgent({})
+        script = agent._build_opencode_script(self._context())
+        assert "--print-logs" in script
+        assert "--log-level WARN" in script
+
+    def test_script_routes_stderr_through_log_filter(self):
+        """stderr must be merged into the pipe feeding the JSON log filter.
+
+        The filter passes non-JSON lines through verbatim, so plain-text
+        stderr log lines reach the captured log stream in order.
+        """
+        agent = OpenCodeAgent({})
+        script = agent._build_opencode_script(self._context())
+        assert "2>&1 | node /tmp/opencode-json-log-filter.js" in script
+
+
+class TestOpenCodeMultiModelConfig:
+    """Test that OpenCode config includes all authorized models."""
+
+    def test_single_model_when_no_authorized_list(self):
+        """Without authorized_gateway_models the config has only the primary."""
+        agent = OpenCodeAgent({})
+        context = {"model_endpoint": "https://gw.example/v1"}
+        config = agent._build_opencode_config("model-a", "custom", context, 600000)
+        models = config["provider"]["custom"]["models"]
+        assert models == {"model-a": {"name": "model-a"}}
+
+    def test_multi_model_from_authorized_list(self):
+        """authorized_gateway_models populates the full models map."""
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example/v1",
+            "model_gateway_enabled": True,
+            "model_gateway_provider": "preloop",
+            "model_gateway_url": "https://gw.example/openai/v1",
+            "authorized_gateway_models": [
+                {
+                    "alias": "anthropic/claude-sonnet-4",
+                    "display_name": "Claude Sonnet 4",
+                },
+                {"alias": "openai/gpt-5", "display_name": "GPT 5"},
+                {"alias": "deepseek/deepseek-v4", "display_name": "DeepSeek V4"},
+            ],
+        }
+        config = agent._build_opencode_config(
+            "anthropic/claude-sonnet-4", "anthropic", context, 600000
+        )
+        models = config["provider"]["preloop"]["models"]
+        # Primary model is always present
+        assert "anthropic/claude-sonnet-4" in models
+        # All authorized models are present
+        assert "openai/gpt-5" in models
+        assert "deepseek/deepseek-v4" in models
+        assert len(models) == 3
+
+    def test_primary_model_always_present(self):
+        """Primary model is in the map even if not in the authorized list."""
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example/v1",
+            "model_gateway_enabled": True,
+            "model_gateway_provider": "preloop",
+            "model_gateway_url": "https://gw.example/openai/v1",
+            "authorized_gateway_models": [
+                {"alias": "openai/gpt-5", "display_name": "GPT 5"},
+            ],
+        }
+        config = agent._build_opencode_config(
+            "anthropic/claude-sonnet-4", "anthropic", context, 600000
+        )
+        models = config["provider"]["preloop"]["models"]
+        assert "anthropic/claude-sonnet-4" in models
+        assert "openai/gpt-5" in models
+
+    def test_primary_remains_default_model(self):
+        """model and small_model stay set to the primary, not an authorized one."""
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example/v1",
+            "model_gateway_enabled": True,
+            "model_gateway_provider": "preloop",
+            "model_gateway_url": "https://gw.example/openai/v1",
+            "authorized_gateway_models": [
+                {"alias": "openai/gpt-5", "display_name": "GPT 5"},
+            ],
+        }
+        config = agent._build_opencode_config(
+            "anthropic/claude-sonnet-4", "anthropic", context, 600000
+        )
+        assert config["model"] == "preloop/anthropic/claude-sonnet-4"
+        assert config["small_model"] == "preloop/anthropic/claude-sonnet-4"
+
+    def test_duplicate_alias_not_duplicated(self):
+        """If the primary alias appears in authorized_gateway_models it is not doubled."""
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example/v1",
+            "model_gateway_enabled": True,
+            "model_gateway_provider": "preloop",
+            "model_gateway_url": "https://gw.example/openai/v1",
+            "authorized_gateway_models": [
+                {
+                    "alias": "anthropic/claude-sonnet-4",
+                    "display_name": "Claude Sonnet 4",
+                },
+                {"alias": "openai/gpt-5", "display_name": "GPT 5"},
+            ],
+        }
+        config = agent._build_opencode_config(
+            "anthropic/claude-sonnet-4", "anthropic", context, 600000
+        )
+        models = config["provider"]["preloop"]["models"]
+        assert len(models) == 2
+        # Primary is keyed by local id which strips provider prefix
+        assert "anthropic/claude-sonnet-4" in models
+        assert "openai/gpt-5" in models
+
+    def test_empty_authorized_list_keeps_primary(self):
+        """An empty authorized_gateway_models list still keeps the primary."""
+        agent = OpenCodeAgent({})
+        context = {
+            "model_endpoint": "https://gw.example/v1",
+            "authorized_gateway_models": [],
+        }
+        config = agent._build_opencode_config("model-a", "custom", context, 600000)
+        models = config["provider"]["custom"]["models"]
+        assert models == {"model-a": {"name": "model-a"}}

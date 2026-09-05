@@ -8,6 +8,7 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import type SlInput from '@shoelace-style/shoelace/dist/components/input/input.js';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 @customElement('mcp-server-form')
 export class MCPServerForm extends LitElement {
@@ -43,26 +44,29 @@ export class MCPServerForm extends LitElement {
   @state()
   private errorMessage = '';
 
-  static styles = css`
-    .error {
-      color: var(--sl-color-danger-700);
-      margin-top: 1rem;
-    }
-    sl-input,
-    sl-select,
-    sl-textarea {
-      margin-bottom: 1rem;
-    }
-    .help-text {
-      font-size: 0.875rem;
-      color: var(--sl-color-neutral-600);
-      margin-top: 0.25rem;
-      margin-bottom: 1rem;
-    }
-    sl-textarea::part(base) {
-      min-height: 120px;
-    }
-  `;
+  static styles = [
+    consoleDialogStyles,
+    css`
+      .error {
+        color: var(--sl-color-danger-700);
+        margin-top: 1rem;
+      }
+      sl-input,
+      sl-select,
+      sl-textarea {
+        margin-bottom: 1rem;
+      }
+      .help-text {
+        font-size: 0.875rem;
+        color: var(--sl-color-neutral-600);
+        margin-top: 0.25rem;
+        margin-bottom: 1rem;
+      }
+      sl-textarea::part(base) {
+        min-height: 120px;
+      }
+    `,
+  ];
 
   connectedCallback() {
     super.connectedCallback();

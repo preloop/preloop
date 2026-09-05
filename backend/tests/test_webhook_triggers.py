@@ -25,6 +25,30 @@ def test_client(app_with_flows):
     return TestClient(app_with_flows)
 
 
+def _make_client(db: Session) -> TestClient:
+    """Build a TestClient with the flows router and a db override."""
+    from fastapi import FastAPI
+    from preloop.api.endpoints.flows import router
+    from preloop.models.db.session import get_db_session as get_db
+
+    def override_get_db():
+        try:
+            yield db
+        finally:
+            pass
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_db] = override_get_db
+    return TestClient(app)
+
+
+def _executions_for_flow(db: Session, flow_id):
+    from preloop.models.models.flow_execution import FlowExecution
+
+    return db.query(FlowExecution).filter(FlowExecution.flow_id == flow_id).all()
+
+
 def test_create_webhook_flow(db_session: Session, test_user):
     """Test creating a flow with webhook trigger."""
     import secrets
@@ -126,45 +150,49 @@ async def test_trigger_flow_via_webhook_success(db_session: Session, test_user):
     flow = crud_flow.create(db=db, flow_in=flow_data, account_id=test_user.account_id)
     webhook_secret = flow.webhook_config["webhook_secret"]
 
-    # Mock the FlowTriggerService
-    with patch(
-        "preloop.services.flow_trigger_service.FlowTriggerService"
-    ) as mock_trigger_service:
-        mock_service = AsyncMock()
-        mock_trigger_service.return_value = mock_service
+    from preloop.services.flow_trigger_service import FlowTriggerService
 
-        # Create test client with proper database override
-        from fastapi import FastAPI
-        from preloop.api.endpoints.flows import router
-        from preloop.models.db.session import get_db_session as get_db
+    client = _make_client(db)
 
-        def override_get_db():
-            try:
-                yield db
-            finally:
-                pass
-
-        app = FastAPI()
-        app.include_router(router)
-        app.dependency_overrides[get_db] = override_get_db
-        client = TestClient(app)
-
-        # Trigger the webhook
+    # Patch only the dispatch step: the real trigger path creates the
+    # execution row; no orchestrator/worker is started.
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
         response = client.post(
             f"/webhooks/flows/{flow.id}/{webhook_secret}",
             json={"data": "test payload"},
         )
 
-        assert response.status_code == 200
-        assert response.json()["status"] == "triggered"
-        assert response.json()["flow_id"] == str(flow.id)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "triggered"
+    assert body["flow_id"] == str(flow.id)
+    assert body["deduplicated"] is False
 
-        # Verify the trigger service was called
-        mock_service.process_event.assert_called_once()
-        call_args = mock_service.process_event.call_args[0][0]
-        assert call_args["source"] == "webhook"
-        assert call_args["type"] == "webhook"
-        assert call_args["payload"]["data"] == "test payload"
+    # The response must include the created execution's id so callers
+    # (CI/cron bridges) can poll for completion.
+    execution_id = body["execution_id"]
+    assert body["execution_status"] == "PENDING"
+    assert execution_id in body["execution_url"]
+    # Nested execution object mirrors the /flows/{flow_id}/trigger contract.
+    assert body["execution"] == {
+        "id": execution_id,
+        "status": "PENDING",
+        "flow_id": str(flow.id),
+    }
+
+    # The addressed flow was triggered directly: a real execution row exists
+    # carrying the webhook payload as trigger event details.
+    executions = _executions_for_flow(db, flow.id)
+    assert len(executions) == 1
+    execution = executions[0]
+    assert str(execution.id) == execution_id
+    details = execution.trigger_event_details
+    assert details["source"] == "webhook"
+    assert details["type"] == "webhook"
+    assert details["payload"]["data"] == "test payload"
+    assert details["test_mode"] is False
 
 
 @pytest.mark.asyncio
@@ -307,3 +335,427 @@ async def test_trigger_disabled_webhook_flow(db_session: Session, test_user):
 
     assert response.status_code == 400
     assert "Flow is disabled" in response.json()["detail"]
+
+
+def _create_webhook_flow(db, test_user, name, **overrides):
+    import secrets
+
+    webhook_secret = secrets.token_urlsafe(32)
+    fields = {
+        "name": name,
+        "trigger_event_source": "webhook",
+        "trigger_event_types": ["webhook"],
+        "webhook_config": schemas.WebhookConfig(webhook_secret=webhook_secret),
+        "prompt_template": "Process: {{trigger_event.payload.data}}",
+        "agent_type": "openhands",
+        "agent_config": {},
+        "allowed_mcp_servers": [],
+        "allowed_mcp_tools": [],
+        "is_enabled": True,
+    }
+    fields.update(overrides)
+    flow_data = schemas.FlowCreate(**fields)
+    flow = crud_flow.create(db=db, flow_in=flow_data, account_id=test_user.account_id)
+    return flow, flow.webhook_config["webhook_secret"]
+
+
+@pytest.mark.asyncio
+async def test_webhook_trigger_creates_execution_when_generic_matching_would_skip(
+    db_session: Session, test_user
+):
+    """Regression test: a valid webhook call must create an execution even when
+    generic event matching would silently skip the flow.
+
+    Previously the endpoint routed through process_event(), which re-matched
+    flows by trigger_event_types. A flow whose trigger_event_types did not
+    contain "webhook" was silently skipped while the endpoint still returned
+    {"status": "triggered"} with no execution_id. The payload below DOES
+    satisfy the flow's trigger_config, so the direct path must execute it.
+    """
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    db = db_session
+    flow, webhook_secret = _create_webhook_flow(
+        db,
+        test_user,
+        "Webhook Flow Generic Matching Would Skip",
+        # Generic matching (process_event) requires "webhook" in
+        # trigger_event_types; this flow would be silently dropped there.
+        trigger_event_types=["push"],
+        trigger_config={"branch": "main"},
+    )
+
+    client = _make_client(db)
+
+    # Patch only the dispatch step so the execution record is still created
+    # by the real trigger path, but no orchestrator/worker is started.
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
+        response = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}",
+            json={"branch": "main", "data": "test payload"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "triggered"
+    assert body["deduplicated"] is False
+    # No silent drop: an execution must exist and its id must be returned.
+    assert "execution_id" in body, (
+        "Webhook response must include execution_id so callers can poll"
+    )
+    executions = _executions_for_flow(db, flow.id)
+    assert len(executions) == 1
+    execution = executions[0]
+    assert str(execution.id) == body["execution_id"]
+    assert execution.trigger_event_details["payload"]["data"] == "test payload"
+
+
+@pytest.mark.asyncio
+async def test_webhook_trigger_config_mismatch_returns_422(
+    db_session: Session, test_user
+):
+    """A payload that fails the addressed flow's trigger_config policy must be
+    rejected with an explicit 422 — neither silent success (the old generic
+    path) nor silent execution (ignoring the filter)."""
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    db = db_session
+    flow, webhook_secret = _create_webhook_flow(
+        db,
+        test_user,
+        "Webhook Flow With Unmatched Trigger Config",
+        trigger_config={"branch": "main"},
+    )
+
+    client = _make_client(db)
+
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ) as mock_dispatch:
+        response = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}",
+            json={"branch": "feature", "data": "test"},
+        )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "trigger_config" in detail
+    assert "No execution was created" in detail
+    # Policy rejection: nothing was executed and no row exists.
+    mock_dispatch.assert_not_awaited()
+    assert _executions_for_flow(db, flow.id) == []
+
+
+@pytest.mark.asyncio
+async def test_webhook_double_delivery_deduplicates_on_commit_sha(
+    db_session: Session, test_user
+):
+    """At-least-once webhook redelivery for the same commit must not create a
+    duplicate execution: the second delivery returns 200 with the EXISTING
+    execution_id and "deduplicated": true (never a bare skip).
+
+    Uses the real trigger_flow(); only worker dispatch is patched out.
+    """
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    db = db_session
+    flow, webhook_secret = _create_webhook_flow(
+        db, test_user, "Webhook Flow Dedup On Commit SHA"
+    )
+
+    client = _make_client(db)
+    payload = {"sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", "data": "ci run"}
+
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
+        first = client.post(f"/webhooks/flows/{flow.id}/{webhook_secret}", json=payload)
+        second = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json=payload
+        )
+
+    assert first.status_code == 200
+    first_body = first.json()
+    assert first_body["status"] == "triggered"
+    assert first_body["deduplicated"] is False
+
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["deduplicated"] is True
+    # The existing execution is returned, not a new one.
+    assert second_body["execution_id"] == first_body["execution_id"]
+    assert second_body["execution"]["id"] == first_body["execution_id"]
+
+    # Exactly one execution row exists for the flow.
+    executions = _executions_for_flow(db, flow.id)
+    assert len(executions) == 1
+    assert str(executions[0].id) == first_body["execution_id"]
+
+    # A different commit for the same flow is NOT deduplicated.
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
+        third = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}",
+            json={"sha": "ffff111122223333444455556666777788889999", "data": "x"},
+        )
+    assert third.status_code == 200
+    assert third.json()["deduplicated"] is False
+    assert len(_executions_for_flow(db, flow.id)) == 2
+
+
+@pytest.mark.asyncio
+async def test_webhook_double_delivery_deduplicates_without_commit_sha(
+    db_session: Session, test_user
+):
+    """Commit-less GlitchTip-style retries must coalesce on the default
+    dedupe path (attachments[0].title_link): the second identical delivery
+    returns the existing execution with "deduplicated": true (issue #241).
+    """
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    db = db_session
+    flow, webhook_secret = _create_webhook_flow(
+        db, test_user, "Webhook Flow Dedup Without Commit SHA"
+    )
+
+    client = _make_client(db)
+    glitchtip_payload = {
+        "alias": "alert",
+        "text": "Error rate high",
+        "attachments": [
+            {"title": "Alert", "title_link": "https://glitchtip.example/issues/42"}
+        ],
+    }
+
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
+        first = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json=glitchtip_payload
+        )
+        second = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json=glitchtip_payload
+        )
+
+    assert first.status_code == 200
+    first_body = first.json()
+    assert first_body["status"] == "triggered"
+    assert first_body["deduplicated"] is False
+
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["deduplicated"] is True
+    assert second_body["execution_id"] == first_body["execution_id"]
+
+    # Exactly one execution row exists for the flow.
+    assert len(_executions_for_flow(db, flow.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_different_glitchtip_issue_is_not_deduplicated(
+    db_session: Session, test_user
+):
+    """A later webhook for a DIFFERENT GlitchTip issue id must still start a
+    new execution — only identical deliveries are coalesced (issue #241).
+    """
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    db = db_session
+    flow, webhook_secret = _create_webhook_flow(
+        db, test_user, "Webhook Flow Different Issue Not Deduped"
+    )
+
+    client = _make_client(db)
+
+    def _payload(issue_number: int) -> dict:
+        return {
+            "text": "alert",
+            "attachments": [
+                {
+                    "title": "Alert",
+                    "title_link": f"https://glitchtip.example/issues/{issue_number}",
+                }
+            ],
+        }
+
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
+        first = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json=_payload(42)
+        )
+        second = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json=_payload(43)
+        )
+
+    assert first.status_code == 200
+    assert first.json()["deduplicated"] is False
+
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["deduplicated"] is False
+    assert second_body["execution_id"] != first.json()["execution_id"]
+    assert len(_executions_for_flow(db, flow.id)) == 2
+
+
+@pytest.mark.asyncio
+async def test_webhook_custom_dedupe_path_deduplicates(db_session: Session, test_user):
+    """A flow-configured webhook_config.dedupe_path overrides the defaults."""
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    import secrets
+
+    db = db_session
+    flow, webhook_secret = _create_webhook_flow(
+        db,
+        test_user,
+        "Webhook Flow Custom Dedupe Path",
+        webhook_config=schemas.WebhookConfig(
+            webhook_secret=secrets.token_urlsafe(32),
+            dedupe_path="event_id",
+        ),
+    )
+
+    client = _make_client(db)
+
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
+        first = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json={"event_id": "abc-1"}
+        )
+        second = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json={"event_id": "abc-1"}
+        )
+
+    assert first.status_code == 200
+    assert first.json()["deduplicated"] is False
+
+    assert second.status_code == 200
+    assert second.json()["deduplicated"] is True
+    assert second.json()["execution_id"] == first.json()["execution_id"]
+    assert len(_executions_for_flow(db, flow.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_payload_with_no_identity_never_deduplicates(
+    db_session: Session, test_user
+):
+    """Payloads with neither a commit SHA nor a resolvable dedupe path are
+    never deduplicated — behavior preserved from before issue #241.
+    """
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    db = db_session
+    flow, webhook_secret = _create_webhook_flow(
+        db, test_user, "Webhook Flow No Identity Never Deduped"
+    )
+
+    client = _make_client(db)
+    payload = {"foo": "bar"}
+
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
+        first = client.post(f"/webhooks/flows/{flow.id}/{webhook_secret}", json=payload)
+        second = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json=payload
+        )
+
+    assert first.status_code == 200
+    assert first.json()["deduplicated"] is False
+    assert second.status_code == 200
+    assert second.json()["deduplicated"] is False
+    assert len(_executions_for_flow(db, flow.id)) == 2
+
+
+@pytest.mark.asyncio
+async def test_webhook_trigger_returns_202_when_dispatch_fails_after_commit(
+    db_session: Session, test_user
+):
+    """If the execution row is committed but dispatch fails afterwards, the
+    endpoint must return 202 with the execution id — not a 500 claiming that
+    no execution was created (which would invite duplicating retries).
+
+    Uses the real trigger_flow(); the failure is injected below the
+    transaction boundary (worker dispatch), after the row is committed.
+    """
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    db = db_session
+    flow, webhook_secret = _create_webhook_flow(
+        db, test_user, "Webhook Flow Dispatch Failure"
+    )
+
+    client = _make_client(db)
+    payload = {"sha": "0123456789abcdef0123456789abcdef01234567", "data": "ci"}
+
+    with patch.object(
+        FlowTriggerService,
+        "_start_flow_execution",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("NATS publish failed"),
+    ):
+        response = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}", json=payload
+        )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert "could not be dispatched" in body["detail"]
+
+    # The committed row is reported honestly with its id.
+    executions = _executions_for_flow(db, flow.id)
+    assert len(executions) == 1
+    execution = executions[0]
+    assert str(execution.id) == body["execution_id"]
+    assert execution.status == "PENDING"
+    assert body["execution"]["id"] == str(execution.id)
+
+    # A redelivery of the same payload dedups against the committed PENDING
+    # row instead of creating a duplicate.
+    with patch.object(
+        FlowTriggerService, "_start_flow_execution", new_callable=AsyncMock
+    ):
+        retry = client.post(f"/webhooks/flows/{flow.id}/{webhook_secret}", json=payload)
+    assert retry.status_code == 200
+    retry_body = retry.json()
+    assert retry_body["deduplicated"] is True
+    assert retry_body["execution_id"] == str(execution.id)
+    assert len(_executions_for_flow(db, flow.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_trigger_reports_error_when_no_execution_created(
+    db_session: Session, test_user
+):
+    """If no execution row can be created (failure at/before the insert), the
+    webhook must NOT report success and must not leave any execution row."""
+    db = db_session
+    flow, webhook_secret = _create_webhook_flow(
+        db, test_user, "Webhook Flow Failing Execution Creation"
+    )
+
+    client = _make_client(db)
+
+    # Fail below trigger_flow() at the row insert itself, so the real
+    # endpoint + service code runs and no row is ever committed.
+    with patch(
+        "preloop.services.flow_trigger_service.crud_flow_execution.create",
+        side_effect=RuntimeError("db write failed"),
+    ):
+        response = client.post(
+            f"/webhooks/flows/{flow.id}/{webhook_secret}",
+            json={"data": "test"},
+        )
+
+    assert response.status_code == 500
+    body = response.json()
+    assert "no execution could be created" in body["detail"]
+    assert body.get("status") != "triggered"
+    # Matches the wording: truly no execution row exists.
+    assert _executions_for_flow(db, flow.id) == []

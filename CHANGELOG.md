@@ -9,19 +9,1581 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-flow timeout budget**: `timeout_seconds` on a flow (create/update
+  API, preset YAML, 60..86400 seconds) sets the wall-clock budget for one
+  execution; unset keeps the deployment default
+  (`FLOW_EXECUTION_MAX_WAIT_SECONDS`, 3600). A run that overruns it fails
+  with a message that names the budget that expired, so a stuck run is
+  distinguishable from work that legitimately needs longer. The PR reviewer
+  preset ships with 1800 and the release security audit with 7200.
+- **In-place completion nudge**: when an agent exits cleanly without
+  confirming completion, its own container now reminds it once, on the same
+  harness session and workspace, to write `result.json` and print the
+  completion sentinel. The reminder runs before any push or PR creation and
+  can never repeat a side effect, is bounded to one round
+  (`FLOW_COMPLETION_NUDGE_TIMEOUT_SECONDS`, default 300; disable fleet-wide
+  with `FLOW_COMPLETION_NUDGE_ENABLED=false`), and appears on the execution
+  timeline as `completion_nudge`. Runs that used to fail as "exited 0 but
+  did not produce the success sentinel", the largest failure class on
+  staging, now mostly confirm themselves. For runtimes that cannot resume a
+  session (Gemini, Aider, OpenHands, remote runners) a written
+  `/workspace/result.json` is accepted as the completion signal instead.
+- **Issue-implementation pickup and PR-comment resume**: `update_issue` can add a GitHub reaction (eyes on pickup) with no other fields. Flow prompts can use `{{execution.url}}`. Opening a PR records its URL on the execution, so a human comment on that PR restarts the same flow on the same branch. Unmatched comments do not start a run. Native CLI `--resume` is a follow-up (#356).
+- **`preloop agents refresh` (alias `sync`), `preloop models sync`, and `POST /api/v1/ai-models/sync`**: refresh rewrites managed model sections of onboarded agent configs from the account catalog; models sync (and the endpoint) pull newly released provider models into that catalog using stored credentials.
+- **Opt-in scheduled model-catalog sync**: `MODEL_CATALOG_SYNC_SCHEDULED_ENABLED` (default false; helm `config.modelCatalogSync.*`) runs the same discovery as `preloop models sync` for every account, attributing audit events to the `model-catalog-sync` system actor.
+- **`preloop usage hook` accepts harness-agnostic events**: stdin is
+  auto-detected as Cursor hooks (unchanged), generic NDJSON
+  (`preloop.usage.event.v1`), or Codex CLI session rollouts. Codex
+  one-shot import uses `--from codex --file`. Guide:
+  `docs/guide/usage-hooks.md` (old `cursor-usage-hooks.md` path kept as
+  a stub).
+
+### Changed
+
+- **Issue-duplicates AI errors use `{code, message}`**: `GET /issue-duplicates/check` and `POST /ai-suggestion` return `detail` as `{code, message}` instead of a string. `no_default_ai_model` is HTTP 422; `ai_model_error` (model-call failure) is still HTTP 500. Clients that parsed `detail` as a string need to read `detail.message`.
+
+- **GitHub merged PRs emit `pull_request_merged`**: a closed-and-merged pull request is no longer normalized as `pull_request_closed`. GitLab Job Hooks expose `build_name` / `build_status`, and GitHub issue close exposes `state_reason`, so flows can filter `deploy:staging` success and merge-completed closes. The event pickers list Job Event and Deployment.
+
+- **GitHub backend CI uses 8 pytest-split shards**: group 1 of 4 was the
+  wall-clock pole (~7-9m vs ~3-4.5m). Eight `duration_based_chunks` slices
+  split that first quarter in half. Coverage still combines before the 60%
+  floor.
+
+- **Blog posts can show a hero image**: `og_image` in frontmatter is
+  rendered as a figure under the tags on the post, as a linked thumbnail
+  on `/blog`, and a missing `og_image` logs a build warning.
+
+- **Policies console hidden behind `policies_console` (off by default)**:
+  the page is still being reworked, so `/api/v1/features` now advertises
+  `policies_console: false` unless an operator sets
+  `PRELOOP_POLICIES_CONSOLE=true`. Instance admins (`is_superuser`) still
+  see the sidebar link and the page. A direct `/console/policies` URL
+  without access renders the usual permission-denied surface instead of an
+  empty shell, and `/console/governance` still redirects there. Backend
+  policy APIs are untouched, and per-tool policy on the Tools page is
+  unaffected.
+- **Policies page reworked into a working editor**: primary actions
+  (Describe a change, Add rule, Import YAML, Export YAML) now live once in
+  the view header, matching Tools, so Export is no longer duplicated and
+  Import no longer hides inside the YAML tab. The YAML tab is a live editor
+  over the active policy: it loads the current export, validates through
+  `POST /api/v1/policies/validate` and shows schema errors inline, and only
+  applies YAML that validates. Version history stays below the editor and
+  the format example moved into a collapsed section.
+- **YAML editor Save shows a diff first**: editor Save now uses the same
+  `previewPolicyFile` flow as Import YAML, so applying a full policy cannot
+  silently drop rules, MCP servers, or workflows. Validate-before-save,
+  inline schema errors, Revert, and version history are unchanged.
+- **Public markdown routes come from discovered content files**: `lit-app`
+  registers `/terms`, `/dora`, and other static pages from
+  `BRAND_CONFIG.static_markdown_pages` (Vite scans `content/<brand>/*.md`
+  and `resources/*.md`). Nginx serves any `/<slug>.html` the build emitted
+  instead of an allowlist. OSS does not hardcode EU instrument paths; EE
+  adds a page by dropping a markdown file.
+
+### Fixed
+
+- **Unpinned flows fall back to hosted compute when every private runner is
+  busy**: a busy runner cannot be leased, so it no longer counts as online
+  capacity for the account default pool. The Runners page still shows a
+  saved default that is currently offline.
+- **Native tool approval workflow select reverts on a failed save**: the
+  dropdown no longer keeps an unsaved pick after "Could not save", and the
+  account default workflow is listed once (the empty option).
+- **Automated Issue Implementation prompt uses normalized issue fields**:
+  title, description, and number come from
+  ``trigger_event.payload.object_attributes`` so GitHub ``issue.body`` and
+  GitLab ``description`` both resolve. Label filters match GitHub
+  ``issue.labels[].name`` and GitLab ``labels[].title`` as well as
+  already-enriched string lists.
+- **Similarity search embeddings no longer block the event loop**: comment,
+  issue, and generic search query embeddings run in a worker thread so a
+  slow OpenAI embedding call cannot serialize concurrent requests. Gemini
+  aux 429s (`google.api_core.exceptions.ResourceExhausted`) classify as
+  retryable rate limits, matching the OpenAI SDK path.
+- **Unpriced-model admin mail skips customer-owned endpoints**:
+  ``openai-compatible`` / ``custom`` models on a host we do not catalog
+  (home LiteLLM, OpenCode Zen, a private proxy) stay unpriced on the
+  Attention page, but no longer page an admin to add a global price.
+  OpenRouter- and DashScope-fronted configs still alert.
+- **Spending-limit save no longer posts a null notify user**: `/auth/users/me`
+  has no `id`, so the limits editor used to send `notification_user_ids: [null]`
+  and the API rejected the create. Recipients now come from the users list
+  (matched by email, case-insensitive) or are omitted. Overlay clicks no
+  longer close the limits dialog, so opening the notify dropdowns does not
+  dismiss it.
+- **Picking a period or subject no longer closes spending limits**:
+  `sl-select` / `sl-dropdown` fire composed `sl-hide` when their popup
+  closes. Overview and Attention treated that as the dialog hiding.
+  The outer dialog ignores nested hides; parents listen for
+  `budget-limits-hide`. The inner "Delete limit" confirm still receives
+  its own `sl-hide` so dismissals clear `pendingDeleteId`.
+- **Overview first paint no longer waits on the attention usage breakdown**:
+  the shared attention loader used to fetch ``include_breakdown=true`` in
+  parallel with wave 1, and the page waited for it before drawing. Attention
+  now starts after the fold and still uses the shared 30-day window, so
+  Overview and ``/console/attention`` stay in agreement. Wave 2's selected
+  range is a separate query for the cards; a calendar-month Overview range
+  is not reused as the 30-day attention window. The background refresh
+  also bumps the "Updated … ago" stamp. `relative-time-label` does not
+  start its timer until a timestamp is set.
+- **CLI runner interrupt test no longer races `exec.Cmd`**: GitLab
+  `test:unit:cli` (`-race`) failed because the test read `Process` /
+  `ProcessState` while the runner called `Start`/`Wait`. It now watches a
+  pid file from a helper process. Windows GitHub CLI CI does not implement
+  `Signal(0)`, so liveness uses `tasklist` there.
+- **Unused dashboard test helper and redundant asyncio import**: drop
+  `isReddish` from `dashboard-view.test.ts` and the second `import asyncio`
+  in the Kubernetes log streamer (`container.py` already imports it at
+  module scope).
+- **`POST /openai/v1/responses` forwards to the upstream Responses API**:
+  a Responses request used to be transcoded into a chat-completions call,
+  so an upstream that implements `/responses` but not `/chat/completions`
+  (measured: OpenCode Zen) answered every request with
+  `502 InternalServerError - Internal server error`. OpenAI-shaped API-key
+  upstreams now receive the payload on their own `/responses` endpoint and
+  the answer is relayed verbatim, streaming included, which also stops
+  `instructions`, `reasoning`, `include`, `store` and `prompt_cache_key`
+  from being dropped in translation. Upstreams that only speak chat
+  completions are detected automatically (404/405/501, remembered per base
+  URL for 15 minutes) and keep the previous behaviour with no configuration.
+  `meta_data.gateway.responses_api` on the model row pins the choice
+  (`auto` default, `native`, `transcode`). Auth, budgets, governance
+  tool-stripping, accounting and audit run on both paths.
+- **`preloop runner fg` reconnects when the control-plane WebSocket drops**: close 1006 (and other transport errors) no longer exit the process. The runner redials with backoff, keeps an in-flight Docker job, resends `complete`/`logs` on the new socket, and sends WebSocket pings alongside the JSON heartbeat. Ctrl-C still unregisters. Auth/`gone` errors stay fatal.
+- **Console Runners page updates live**: register, connect, disconnect, lease, and complete publish `runner_updated` on the account websocket (`runners` topic) so status changes without a manual refresh.
+
+- **Migration job now syncs global flow presets after alembic**: the
+  post-upgrade hook runs `scripts/sync_flow_presets.py --no-propagate`
+  in the same container so global presets stop drifting between deploys
+  without rewriting derived user flows.
+- **API and console pods carry `app:` labels**: the selector lived only
+  on Deployment metadata, so `kubectl -l app=api` found nothing. Extra
+  pod-template labels do not change `spec.selector.matchLabels`.
+- **Console nginx accepts avatar uploads over 1 MB**: `client_max_body_size`
+  now matches `gateway.proxy.bodySize` (default 32m). Oversized requests
+  used to 413 at nginx; the console now surfaces an HTML 413 as "Image
+  too large to upload." instead of a generic failure.
+- **Scorecard supply-chain job pulls from GHCR**: `ossf/scorecard-action`
+  is pinned to v2.4.4 (`ghcr.io/ossf/scorecard-action`). v2.4.0 pulled
+  `gcr.io/openssf/scorecard-action`, which now denies unauthenticated pulls
+  without GCP billing.
+
+- **Blog posts no longer repeat the title**: the article template already
+  emits `<h1>` from frontmatter. A leading `# Title` in the markdown (or
+  the matching `<h1>` in the rendered body) is stripped so
+  `/blog/preloop-0-15-0` does not show the headline twice.
+
+- **Avatar upload rejects oversized files before buffering the body**:
+  `PUT /users/me/avatar` reads the multipart in 1 MiB chunks and returns
+  413 once the 5 MB cap is crossed, matching the audio upload helper.
+  `process_avatar` still validates size after a complete read; this closes
+  the same memory-exhaustion class as the decompression-bomb fix, on the
+  upload-read path.
+- **Describe a change no longer opens against a stale policy**: the button
+  refetches the current export first and reports an error instead of
+  silently opening an empty dialog when the export fails. Closing the dialog
+  (including a programmatic hide after Save) resets the prompt and YAML so
+  the next open is a fresh form; nested `sl-details` toggles do not reset it.
+- **Tool-rule CEL detection matches the backend**: the Policies editor and
+  the access-rule create/update endpoints classify `!`, ` in `, ternaries,
+  and CEL functions as `cel`, so a deny rule cannot be stored as `simple`
+  and silently fail closed to an approval prompt.
+- **Add rule dialog no longer closes on every choice**: the dialog listened
+  for `sl-hide`, which every inner `sl-select` emits when its dropdown
+  closes, so picking a target or action dismissed the form. It now listens
+  for `sl-request-close` and only Cancel, the close button, or Escape can
+  dismiss it. The form also asks for the rule type first (tool call versus
+  model text, then request versus response in plain words), offers presets
+  that wire detector, condition, and action together, explains that
+  detectors only produce facts (`pii.found`, `injection.score`,
+  `moderation.flagged`) while the condition decides when a rule fires, warns
+  when a condition reads a detector that is switched off, and refuses to
+  save a deny or require_approval rule with an empty condition rather than
+  defaulting it to match everything.
+- **Switching back to a policy preset re-applies it**: choosing
+  "Start from a preset" after writing a custom expression restores that
+  preset's detectors and condition, instead of keeping the custom values
+  while the preset card still looks selected.
+- **Dismissing the policy diff dialog clears a pending YAML save**: Escape
+  or the dialog close control now resets `_pendingYamlSave`, so a later
+  Import apply cannot be treated as an editor save.
+- **`get_route_from_filename` maps `pandora.html` to `/pandora`, not `/dora`**:
+  top-level HTML files use the basename as the route, with no substring
+  match against `dora`.
+- **Token-free approval links open the console**: MCP and in-session
+  notices now emit `/console/approval/<id>` (the registered SPA route)
+  instead of `/approval/<id>`, which is the public token page and 404s
+  without `?token=`. Bare `/approval/<id>` 404s unless `id` is a UUID,
+  then 302s to `/console/approval/<id>`; email/Slack links with
+  `?token=` are unchanged.
+- **Edit-mode model refresh lists live models**: refreshing the picker
+  while editing a saved AI model (for example a Z.ai key that now serves
+  `glm-5.3-flash`) sends the model id so the server decrypts the stored
+  key and lists live. Create-with-a-typed-key already did this; edit
+  previously sent an empty key and fell back to a stale bundled catalog.
+  Stored secrets are never returned to the browser. Typed keys still win.
+- **Model I/O policy API 500 under RBAC**: `/api/v1/policies/model-io-rules`
+  list/create/update/patch/delete used `@require_permission` without a
+  `current_user` FastAPI dependency. Nested `get_account_for_user` does
+  not put `current_user` in the handler kwargs, so the fail-closed
+  permission check returned 500
+  `Permission check requires current_user and db dependencies`.
+- **Dev compose no longer races postgres/NATS or schema init**:
+  `docker-compose.yml` healthchecks postgres (`pg_isready`) and NATS
+  (`/healthz`, with `-m 8222`) and runs `init_db.py --force` in a
+  one-shot `migrate` service. api/gateway/scheduler/worker wait for
+  postgres, NATS, and `migrate` (`service_completed_successfully`) so
+  they no longer crash-loop on an empty schema or race two concurrent
+  inits. `start.sh` still waits for `DATABASE_URL` before `init_db.py`
+  for non-compose local runs.
+- **Vite blocked hosts behind a public hostname**: the console honors
+  `VITE_ALLOWED_HOSTS` / `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` (and
+  the hostname from `VITE_HMR_HOST` / `VITE_API_URL`) so Docker Compose
+  behind nginx does not fail with "host is not allowed".
+- **Approval poll logs approver lookup failures**: resolving a voter
+  user-id to email is still best-effort (raw id is kept), but the except
+  path now logs the traceback instead of a silent `pass`.
+- **OTLP init-failed flag is process state, not a write-only global**:
+  exporter setup failure is stored on a runtime object that `is_enabled()`
+  and `_ensure_provider()` both read, so a broken collector is not retried
+  on every span and CodeQL no longer flags an unused global.
+- **OSS installer Compose `.env` `$` escaping**: passwords and other
+  secrets that start with (or contain) `$` are written as `$$` so Docker
+  Compose does not interpolate them or leak the rest of the value via
+  `variable is not set` warnings. Re-runs unescape on read so values
+  round-trip.
+- **Overview Top Models card no longer flashes on live refresh**: websocket
+  reloads fetched a lightweight gateway summary that cleared
+  `usage_by_session`, then a second request filled the nested list back in.
+  The card now keeps the breakdown until the detailed summary arrives and
+  does not flip loading flags on background refresh.
+- **Private-cluster Helm tests after OTLP merge**: default `values.yaml`
+  now includes the `otlp` block from main. The private-cluster suite no
+  longer asserts that block is absent, and the README no longer claims
+  the chart does not define `otlp` values.
+- **Bot-sender loop guard no longer swallows legitimate PR events**: the
+  loop guard in `flow_trigger_service._is_preloop_triggered_event`
+  dropped all webhook events whose sender started with "preloop",
+  including `pull_request.opened` from the Preloop GitHub App. PRs
+  created by the App on a human's behalf (e.g. #306, #307) never
+  reached trigger matching, so the reviewer flow did not run. The guard
+  now exempts PR/MR opened/reopened event types (intentional actions,
+  not loop vectors) and matches bot identities by exact name instead of
+  prefix, preventing false positives on usernames like "preloop-fan".
+
+### Security
+
+- **Frontend `fflate` 0.7.5**: override the `deck.gl` transitive so ZIP64
+  inflate cannot loop on a malformed archive (GHSA-px8p-9vwx-vf98 /
+  Dependabot #126).
+- **CodeQL runs from an in-repo workflow** on every pull request and every
+  push to `main`, so OpenSSF Scorecard can see `github/codeql-action` on
+  all commits rather than only the GitHub default-setup checks that some
+  merged PRs skipped. SARIF upload stays off until GitHub default CodeQL
+  setup is disabled (both cannot upload at once); then set ``upload: true``
+  in ``.github/workflows/codeql.yml``.
+- **`@preloop-ai/claude-plugin` overrides `fast-uri` 3.1.6 and `qs` 6.16.0**
+  (Dependabot GHSA-5jgf-p345-68v8 / GHSA-f65p-4m7j-42xc / GHSA-fph4-wmhf-6fwf
+  / GHSA-jqff-g426-hqxp, GHSA-x5fp-wj9c-mxmx / GHSA-4mjr-xmp4-gh2g).
+- **Model I/O ``text_sha256`` stays a SHA-256 prompt fingerprint**:
+  GitHub default CodeQL traces the Anthropic OAuth HTTP response into
+  scanned model I/O and reports ``hashlib.sha256(...)`` as a password
+  KDF. Inline ``# codeql[...]`` comments are not honored by that check.
+  The digest is still SHA-256 (via ``hashlib.file_digest``) so existing
+  ``text_sha256`` rows keep matching; it is an audit fingerprint, not
+  password storage.
+
+- **Drop python-jose for PyJWT**: auth tokens, email/reset tokens, WebAuthn
+  challenge state, MCP OAuth authorize codes, and APNs ES256 client
+  assertions now use PyJWT. python-jose pulled unmaintained
+  `python-ecdsa` (CVE-2024-23342, no patch). Auth is HS256; APNs ES256
+  already uses `cryptography` when present. PyJWT was already in the
+  tree via firebase-admin / MCP.
+
+### Added
+
+- **`resolve_sbom_upstreams` builtin (default-disabled)**: maps vendored
+  Arduino/PlatformIO SBOM components (name + version) to an upstream
+  repository URL and version-shaped tag candidates via the public library
+  registries. A resolution requires a registry-confirmed name AND version
+  match with a usable repository URL; everything else is unresolved with a
+  reason. Default-off so regular sessions do not pay the tools/list context
+  tax; security-audit presets 005 (SBOM Exploit Check) and 006 (Release
+  Security Audit) allow-list it.
+- **CRA result.json contract**: the four security-audit presets pin
+  `/workspace/result.json` as a versioned contract (`preloop.cra.sbomaudit/v1`,
+  `vulnscan/v1`, `releaseaudit/v1`, `duediligence/v1`). Tests parse each YAML
+  Required shape, require the honesty line, validate example artifacts against
+  those keys, and reject banned claims (`compliant: true`, `ce_mark: true`,
+  "Article 14 filed").
+- **CRA / AI Act evidence runbook**: rewrite of
+  `docs/guide/flows/security-audit-presets.md` as a manufacturer-facing
+  runbook for the shipped Apache presets (SBOM Verify, SBOM Exploit
+  Check, Release Security Audit, Component Due Diligence). Opens with
+  what the pack is not (Regulation (EU) 2024/2847; Art. 14 reporting
+  from 11 Sep 2026; full CRA 11 Dec 2027; Preloop does not file Article
+  14 reports), then the `result.json` contract aligned to the YAML
+  prompts, a copy-paste CI hook (`workspace_files` plus poll `/result`
+  and retain `/evidence`), and honest limits. Not a conformity
+  assessment, CE marking, or certification.
+- **Model I/O content policies**: instance policies can `allow`, `deny`,
+  or `require_approval` on `model.request` and `model.response` using
+  the existing policy engine. Built-in detectors cover PII, prompt
+  injection heuristics, and a local moderation ruleset. The console
+  restores `/console/policies` (sidebar next to Tools;
+  `/console/governance` redirects there) as a rule-centric page. Describe
+  a change edits the current policy with the account default model and
+  shows a unified YAML diff that must be Saved. YAML import/export
+  round-trips the new targets. Streaming buffers until the assembled
+  response can be evaluated (deny cannot retract tokens already sent).
+  See `docs/guide/model-content-policies.md`.
+- **Private-cluster Helm install**: `helm/preloop/README.md` documents a
+  ClusterIP + ingress install with private registry pull secrets, existing
+  Postgres, Kubernetes Secrets (not values committed to git), and mounting a
+  private CA via `extraVolumes` / `extraEnv` (`SSL_CERT_FILE`). Example
+  overlay: `helm/preloop/values-private-cluster.yaml`. Compose and Helm are
+  the supported install surfaces; this repo does not ship Terraform.
+- **OpenAI-compatible upstream TLS**: LiteLLM completions and model
+  discovery honor `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE`
+  (and `PRELOOP_SSL_VERIFY=false` as a last resort) so a private
+  OpenAI-compatible base URL such as `https://gateway.internal/v1` works
+  with operator PKI. Public OpenAI, Anthropic, and OpenRouter keep the
+  default trust store (including an `openai-compatible` model whose
+  endpoint is `https://openrouter.ai/api/v1`).
+- **OTLP export for gateway and MCP telemetry**: optional OpenTelemetry
+  export (disabled by default) emits GenAI spans for governed model
+  calls and MCP tool calls, including `gen_ai.conversation.id` when a
+  runtime session id is present. Token and cost attributes match the
+  `ApiUsage` row for that request. Exporter errors are logged and never
+  fail the user-facing call. Helm `otlp.*` values and
+  `docs/guide/observability-otlp.md` cover a generic collector, Langfuse
+  OTLP ingest, and Datadog OTLP ingest.
+- **GitLab `issue_labeled`**: an Issue Hook whose `changes.labels` adds
+  a label now normalizes to `issue_labeled` (remove-only is
+  `issue_unlabeled`). Filter field `added_labels` is set on GitHub and
+  GitLab.
+
+### Changed
+
+- **Provider model pickers are live-only**: bundled fallback catalogs
+  are gone. A failed or keyless listing returns an empty picker with a
+  safe `source`/`error` reason (timeout, network, empty_response,
+  missing_endpoint, sdk_missing, missing_key, auth) instead of a stale
+  guess. OpenAI STT/TTS ids are filtered from the same live
+  `GET /v1/models` list. The pricing table is unchanged.
+- **README is the product intro, not the operator manual**: ~390 lines
+  down to ~200. Locked category line and lead, install + evidence first,
+  ops (TLS, SMTP, Agent Control internals, QM proxy, smoke tests) moved
+  to docs.preloop.ai and in-repo docs. Agents get a repo map
+  (ARCHITECTURE.md by section, AGENTS.md, CONTRIBUTING.md). Capability
+  pass after inventory: Flows and Talk named; Audit/AI Act pack is
+  Cloud/Enterprise (`audit_logs`); `preloop policy apply` next to the
+  YAML sample; trackers as flow triggers; imported usage in Cost.
+- **ARCHITECTURE.md is an index of per-subsystem chapters**: subsystem
+  docs moved to `docs/architecture/*.md`. The index is the map; read
+  the chapter for the subsystem you are changing. Flows architecture
+  lives at `docs/architecture/flows.md`. Empty leftover headers in
+  `docs/architecture/overview.md` were removed. Redaction comments
+  in `approval_service` point at `docs/architecture/security.md`.
+  Frontend test/auth conventions that were only in
+  `frontend/CLAUDE.md` now live in `frontend/README.md`; the stale
+  file is not restored.
+- **Named-instrument EU pages**: SaaS landing can ship `/cra-readiness`,
+  `/dora`, and `/nis2` next to `/ai-act-readiness` when those markdown
+  files exist. Each page names the regulation and article or date.
+  Homepage FAQ can repeat the not-a-law-firm disclaimer. Evidence packs
+  stay Apache presets, not an edition gate. Page titles and descriptions
+  are brand-parameterized, and the footer links only the regulation pages
+  a build actually pre-rendered.
+- **Editions table lists differences only**: OSS is one operator per
+  account. Users, teams, and RBAC are Cloud / Enterprise. Cloud is
+  managed hosting; Cloud and Enterprise include support plans. Dropped
+  Yes/Yes capability-tour rows and overclaims (CEL, AI-driven/quorum
+  evaluation, AI Act pack, chargeback/forecasting as edition gates).
+  CEL, AI-driven approvals, and quorum evaluation are OSS. Chargeback
+  and forecasting stay Cloud / Enterprise cost features; they were
+  dropped from the table because they are not users/teams/RBAC
+  edition gates, not because they went away.
+- **CRA / AI Act evidence named as an OSS use case**: README intro and
+  What-you-get name the security-audit presets (`result.json`) as machine
+  evidence, not a conformity assessment. Editions table still lists only
+  users, teams, and RBAC.
+- **Overview Top Models shows a preview per model**: each model lists its
+  top four agents/flows/sessions by spend or usage, with a See N more
+  control when there are more. Expanded groups cap nested sessions the
+  same way so a busy model cannot dominate the card.
+- **GitHub CI backend tests run in parallel**: the backend unit suite is
+  sharded across four GitHub Actions jobs with pytest-split, each with
+  its own Postgres, so PRs are no longer gated on a single ~12-minute
+  pytest process. Coverage from the shards is combined before the 60%
+  floor is applied.
+- **Codex onboarding is config-only**: `preloop agents onboard` no longer
+  installs a `~/.local/bin/codex` PATH wrapper. Codex only requires a
+  process environment variable when `env_key` or `bearer_token_env_var` is
+  set; if `env_key` is set and the var is missing, Codex errors and never
+  falls back to an inline token. Desktop onboarding writes
+  `experimental_bearer_token` and inlined MCP `http_headers` instead, so
+  Homebrew's `codex` can run without a wrapper. The flow runner still uses
+  `env_key` because it launches Codex as a subprocess. Re-onboarding
+  removes leftover Preloop wrappers. Gemini CLI still uses a wrapper
+  because it reads gateway credentials from the environment.
+
+### Fixed
+
+- **Agent Control eviction now sends close code 4000**: when a second
+  WebSocket connects for the same managed agent, the server closes the
+  previous connection with close code 4000 and a reason string instead
+  of silently orphaning it. All runtime plugin clients (Python shared
+  library, Hermes, OpenClaw, OpenCode, Claude Code sidecar) treat
+  close code 4000 as a non-retryable eviction and stop reconnecting to
+  avoid an eviction ping-pong loop. A warning-level log on the server
+  names both connection identities.
+- **Empty upstream streams no longer complete "successfully"**: an
+  OpenAI-Responses stream whose upstream produced zero output items
+  (or reported an in-band `error` chunk) used to be folded into a
+  successful empty `response.completed`. Codex treats that as a
+  completed no-op turn and exits 0 without printing anything, which a
+  flow then fails as a missing success confirmation (staging
+  executions 1ded95c8 / ffb122bd: 18,268 prompt / 0 completion
+  tokens, agent silent). Such streams now emit an SSE `error` event
+  and are recorded as a 502 upstream failure, so Codex retries the
+  turn (verified against codex-cli 0.149.0: 5 retries, then a loud
+  stream error) instead of dying silently.
+- **z.ai GLM-5.3 was unpriced**: first-party list prices from docs.z.ai
+  are now in the vendored catalog ($1.4 input, $0.26 cached input, $4.4
+  output per 1M). z.ai has no price API, so
+  `scripts/update_model_prices.py` refreshes those rows from the public
+  pricing page alongside the litellm map.
+- **Preloop-bot label events were dropped**: `_is_preloop_triggered_event`
+  no longer skips `issue_labeled` / `issue_unlabeled`, so
+  `update_issue` adding `agent-ready` can start an implementation flow.
+
+## [0.15.0] - 2026-08-20
+
+Highlights: **native flow schedules** run flows on cron or friendly
+interval/daily/weekly cadences with a console editor and next-run previews,
+**self-hosted runners** lease flow jobs onto your own machines with
+`preloop runner`, **`preloop claude`** brings Happy-class remote control of
+Claude Code sessions, **eval-grade flows** gain matrix fan-out, workspace
+seeding, and a first-class `result.json` verdict channel, and **cost
+accounting gets honest**: provider-reported cost is authoritative, unpriced
+usage is never shown as $0.00, and reprice plus ledger backfill repair
+history.
+
+### Added
+
+- **Security audit preset pack** (#259): three single-execution presets built
+  on the Observe/Eval pattern (read-only toolset, mandatory
+  `/workspace/result.json` with a versioned schema, evidence pack under
+  `/workspace/evidence/`). **SBOM Verify** (`preloop.cra.sbomaudit/v1`)
+  checks validity, NTIA/CRA minimum elements, completeness against delivered
+  build manifests, and license flags for CI-emitted SPDX/CycloneDX documents
+  (it verifies, never generates, an SBOM). **SBOM Exploit Check**
+  (`preloop.cra.vulnscan/v1`) maps components to CVEs via OSV.dev, adds
+  known-exploited flags from the CISA KEV catalog and best-effort EPSS
+  scores, uses NVD as a rate-limited fallback only, applies a severity gate,
+  and echoes VEX suppressions instead of dropping them. **Release Security
+  Audit** (`preloop.cra.releaseaudit/v1`) runs both in one execution plus a
+  drift comparison against a previous run's `result.json`, intended for
+  webhook-fed release builds and scheduled re-audits. Payload contract,
+  schemas, and honest limits in `docs/guide/flows/security-audit-presets.md`.
+- **Layered preset directories** (#261): `PRELOOP_PRESETS_PATH` accepts an
+  `os.pathsep`-separated list of directories. Later directories override
+  earlier ones only when a preset declares the same slug; otherwise catalogs
+  union, and a `disabled: true` preset in a later directory suppresses its
+  same-slug predecessor (tombstone). Single-directory values match the
+  previous behavior except that two files resolving to the same slug now
+  de-duplicate (later file wins, with a warning) instead of both loading.
+  Overlay deployments can now surface upstream presets without re-shipping
+  them.
+- **Observe / Eval preset with a first-class `result.json` artifact** (#231):
+  new global preset with an empty MCP toolset by default (no write tools)
+  whose prompt enforces a run-measure-report protocol ending with
+  `/workspace/result.json` (`preloop.eval.result/v1`:
+  status/summary/metrics/checks/artifacts). The runner captures the artifact
+  after the agent finishes via the Docker archive API (works on exited
+  containers; 256 KiB cap; invalid or oversized artifacts recorded as
+  wrapped error objects), persists it as `flow_execution.result` (new JSONB
+  migration), and serves it on `GET /flows/executions/{id}` plus a new
+  `GET /flows/executions/{id}/result` (404 when no artifact). List rows stay
+  light. Kubernetes capture is a stubbed TODO.
+- **`result.json` is a second success-confirmation channel** (#234): agent
+  CLIs exit 0 even when the agent died mid-task, so the printed sentinel
+  stays a fail-closed positive-confirmation contract; but a
+  `/workspace/result.json` with a success status now counts as positive
+  confirmation of equal standing, cutting false negatives (a verifiably
+  completed review was FAILED because the model forgot to print the sentinel
+  after a 3.7M-token run). An explicit failure status in `result.json` wins
+  over everything, including a printed sentinel, and an eval "fail" verdict
+  is a completed evaluation, not a flow failure. A run failing only for
+  missing confirmation says so explicitly and names both channels. The PR
+  reviewer preset writes `result.json` as its completion act.
+- **Matrix/batch trigger fan-out** (#230): one flow definition can drive a
+  model x harness evaluation grid without cloning the flow per cell. The
+  trigger body accepts a reserved `matrix` key: up to 25
+  `{agent_type?, ai_model_id?}` cells, each producing one execution, all
+  sharing a `batch_id` (new indexed column). Validation is all-or-nothing
+  (cap, allowed keys, factory agent types, account-visible model, else 422)
+  and all rows are committed before any cell is dispatched, so a mid-batch
+  crash leaves visible PENDING rows rather than silently missing cells. The
+  response returns `batch_id` plus per-cell execution refs, and a new
+  `GET /flows/batches/{batch_id}/executions` lists a batch with a
+  status/cost/token rollup. Non-matrix triggers are wire-identical to before.
+- **Workspace seeding from trigger payloads** (#236, #238, #239): webhook
+  trigger payloads can declare inline files to materialize in the agent's
+  `/workspace` before the agent starts
+  (`{"workspace_files": [{"path": ..., "content_base64": ...}]}`) instead of
+  embedding fixtures into the prompt. Strict validation: relative paths only
+  with path-traversal and `.git` guards (including nested `.git` and runtime
+  symlink containment), strict base64, a 1 MiB total cap enforced on encoded
+  size before decoding, and a 50-file cap. The orchestrator validates before
+  any container starts; seeded paths are stamped into
+  `trigger_event_details._workspace_file_paths` for audit and
+  `content_base64` is redacted from prompt embeds.
+- **Usage ingest push API** (#254): `POST /api/v1/usage/ingest`, the
+  continuous-push evolution of the CSV usage import: an API-key-authenticated
+  harness posts sanitized spend records as they occur. Records are identified
+  by (source, external_id) per account; replays return 200 with per-record
+  `deduplicated` flags and never double-count spend (a replay whose content
+  hash differs is additionally flagged `conflict=true`, never a 409).
+  Hook-shaped lifecycle events (`session_start`, `session_end`,
+  `subagent_start`, `subagent_stop`, `response`, `compaction`) land as
+  zero-cost imported rows so subagent fan-out is countable in near-real-time;
+  `conversation_id` / `parent_conversation_id` are first-class indexed
+  columns so worker spend can roll up under its parent thread. `cost_basis`
+  distinguishes reconciled billing-export rows from hook-derived estimates:
+  reconciled rows supersede estimates for the same scope and the two are
+  never summed. Rows land as `usage_source='imported'`, identical to the CSV
+  path, and stay out of gateway budget accounting.
+- **CNPG scheduled backups in the Helm chart** (#257): CloudNativePG
+  continuous backups replace the deploy-time pg_dump. The Cluster template
+  gains `endpointURL` (S3-compatible stores), optional `serverName`,
+  base-backup compression, and fail-fast validation when backups are enabled
+  without a destination; a new ScheduledBackup CR template runs periodic base
+  backups while WAL archiving stays continuous. Backup profiles for
+  production and staging ship as value overlays, the chart README documents
+  enablement, verification, on-demand backups, and the full restore
+  procedure including PITR, and `scripts/helm-render-check.sh` runs lint and
+  render assertions in CI. Base backups default to
+  `backupOwnerReference=none` so pausing or uninstalling the schedule can
+  never garbage-collect the restore anchors.
+- **Signed release provenance**: the release workflow attests every published
+  asset with SLSA build provenance and ships the `.intoto.jsonl` bundle as a
+  release asset. Verify any downloaded artifact with
+  `gh attestation verify <file> --repo preloop/preloop`.
+
+- **Happy-class Claude Code control**: `preloop claude` owns the process
+  (native TUI locally, Agent SDK when phone/web/watch takes over, any-key
+  or Release returns to the TUI). Sidecar `@preloop-ai/claude-plugin`
+  (`runtime-plugins/claude-preloop`) plus Agent Control G1/G2 (`claude_code`
+  kind, native `session_source_id` on command envelopes). Approvals stay
+  on the existing PreToolUse hook. Config lives in
+  `~/.claude/preloop-control.json`. Live e2e in
+  `runtime-plugins/claude-preloop/test/live-sdk.e2e.mjs` exercises query,
+  session reuse, interrupt, takeover, and release against the latest
+  Claude Agent SDK (`PRELOOP_LIVE_CLAUDE_SDK=1`).
+- **Provider daily-ledger CSV backfill**: `POST /api/v1/cost/ledger-backfill/csv`
+  (permission `manage_budgets`) and `scripts/backfill_openrouter_ledger.py
+  --csv` accept an OpenRouter Activity → Explore daily export
+  (`date__day,model,total_usage`) and distribute each (day × model) total
+  across that account's still-unpriced gateway rows for the day — pro-rata
+  by tokens, equal split when the bucket recorded no tokens. Display names
+  are matched to recorded aliases via a shared family key; the export's
+  "Other" bucket names no model, so its spend is reported as a residual and
+  never allocated. Allocated rows are tagged `cost_source='reconciled'`
+  (never mixed with estimates), re-runs are idempotent (only still-unpriced
+  rows are ever written), and the default is a dry run that returns the full
+  allocation plan. CSV mode needs no management API key and has no 30-day
+  activity-endpoint horizon.
+- **Synchronous reprice endpoint**: `POST /api/v1/cost/reprice` (permission
+  `manage_budgets`) scans the requested window in-request — keyset-paginated,
+  up to 92 days — and returns real examined/updated counters, avoiding the
+  billing plugin's 7-day async cliff whose acknowledgement serialized as
+  "examined 0 rows".
+
+- **Flow execution duration in the console**: the executions table now shows a
+  **Duration** column in place of the raw "End Time" (the start time already
+  said when the run happened; the end time alone never said how long it took),
+  and the same value is appended to the "Started …" line on the Flows and
+  dashboard execution lists. Running executions display `Running · <elapsed>`,
+  ticking every second on the execution detail page and recomputed on each
+  render elsewhere; runs that ended without an `end_time` show `—` instead of
+  claiming to still be running. Both timestamps were already returned by the
+  API, so this is a console-only change.
+
+- **Chat-style session transcript ("Conversation" view)**: the session observer
+  now reconstructs a chat-shaped transcript from the captured gateway events
+  and activity rows. Only top-level user prompts and final agent responses are
+  expanded; tool calls, tool results, system prompts, injected harness segments
+  (system reminders, compaction summaries, Preloop question notices) and
+  intermediate agent output are collapsed into expandable step groups.
+  Tool results are detected exactly from the raw request body structure when it
+  was captured; otherwise the view discloses how many requests lacked structure
+  instead of guessing.
+
+- **Per-request and per-session prompt-cache accounting**: the session request
+  timeline now reports each request's cache read/write/miss tokens (`null`
+  means "not reported by the provider", never zero; misses are labelled
+  `reported` or `derived`) and a whole-session rollup with hit ratio over
+  covered requests, coverage disclosure, a per-model breakdown, and estimated
+  cache savings computed only from exact catalog prices (`catalog_exact`, or
+  `catalog_exact_partial` as a lower bound in mixed-model sessions; omitted
+  with a stated reason otherwise). Replay-validation traffic is excluded.
+
+- **Nginx route parity test**: `backend/tests/test_nginx_route_parity.py`
+  asserts that every prerendered marketing route resolves to prerendered HTML
+  in BOTH the docker nginx template and the production Helm ConfigMap by
+  implementing nginx location-matching precedence, preventing the recurring
+  "works locally, serves the SPA homepage in production" drift. Also adds the
+  missing `/ai-act-readiness` route to the docker template.
+
+- **Admin alert for unpriceable models**: the gateway now notifies admins the
+  first time a `(model_alias, provider)` pair proves unpriceable, including the
+  account and token volume, so missing pricing is noticed instead of silently
+  surfacing as no spend. Deduplicated via a persisted `audit_log` marker with a
+  24h cooldown (`UNPRICED_MODEL_ALERT_COOLDOWN_HOURS`), so it holds across
+  replicas rather than firing once per process, and every failure path is
+  swallowed so alerting can never break a user request.
+
+- **`scripts/reprice_unpriced_usage.py`**: operator script to backfill costs for
+  historical rows recorded while a model was unpriced. Dry run by default;
+  requires `--apply` to persist.
+
+- **`test:integration:cli-onboard` CI job** (manual): builds the CLI from the
+  branch, onboards a planted Claude Code install in API-key mode against the
+  deployed test environment, and asserts that the enrollment routes through the
+  gateway and that a request made with the minted credential is metered. Shares
+  its onboarding semantics with the recorded e2e rig module 08 via
+  `scripts/e2e-rig/lib/cli_onboard.py`. Uses the existing `PRELOOP_TEST_API_KEY`
+  variable; no new secrets.
+- **`test:unit:scripts` CI job**: runs the install script's shell-helper tests
+  and the e2e rig's pure-python unit tests, neither of which any existing job
+  executed.
+
+- **Agent Control for Claude Code (G1) and native session targeting (G2)**:
+  `claude_code` is now a supported Agent Control kind. `control_enabled`
+  still requires sidecar/capability flags, not a blanket true. When a
+  command targets an existing session, the persisted outbound envelope
+  includes that session's `session_source_id` and `session_reference`.
+  Clients keep sending the Preloop `target_session_id` UUID. Those
+  native fields are response-only: request models ignore any
+  client-supplied value. `start_new_session` responses also return
+  the minted history session's native identity.
+- **Claude Code Agent Control sidecar** (`@preloop-ai/claude-plugin`,
+  `runtime-plugins/claude-preloop`): steer sidecar-owned Claude Code sessions
+  (send_message, resume, interrupt, takeover, release) over the
+  `preloop.agent_control.v1` WebSocket via the Claude Agent SDK.
+- **`preloop update`**: download the matching GitHub release asset for this
+  OS/architecture and replace the current binary in place. `--check` prints
+  the latest version and exits; `--yes` / `-y` skips the confirmation
+  prompt. Version lookup honors `PRELOOP_DISABLE_TELEMETRY` the same way
+  `preloop version --check` does. The daily update notice now asks
+  "Update now? [y/N]" when stdin is a TTY and the running binary is
+  writable. If the binary cannot be replaced, the CLI stays silent (no
+  nag, no sudo hint).
+- **Gateway overhead script**: `scripts/measure_gateway_overhead.py`
+  (Python 3 stdlib) times streaming TTFB and time-to-close through the
+  gateway versus an optional same-model direct upstream. Keys stay in
+  the environment. See the script docstring for the env vars.
+- **`preloop flow trigger`**: CI-native trigger for an existing flow by id
+  or name. Posts to `POST /api/v1/flows/{flow_id}/trigger`, accepts
+  `--payload JSON` or `--payload -` (stdin), and waits for a terminal
+  status when stdin is not a TTY (override with `--wait=false`). Logs are
+  polled from `GET /api/v1/flows/executions/{id}/logs` and printed to
+  stdout. Non-zero exit on FAILED, STOPPED, or TIMEOUT. `--runner` pins
+  the execution to a self-hosted runner id, name, or label. See
+  `docs/guide/flows/ci-trigger.md`.
+- **Self-hosted runners**: `preloop runner fg` registers with the account,
+  keeps a durable WebSocket, heartbeats, leases matching flow jobs, and
+  uploads logs (server republishes to `flow-updates.{id}`).
+  `enable`/`disable`/`start`/`stop`/`restart`/`status` install a launchd
+  plist (Darwin), systemd user unit (Linux), or scheduled task (Windows).
+  Flows may set `runner_pool`; offline matching runners queue for 15
+  minutes then FAIL with no hosted-compute fallback. Console
+  `/console/settings/runners` lists this account's runners. This is the
+  lease path, not a claim that every agent harness already runs
+  identically on the CLI host.
+- **Matched-rule context on approval requests**: the approval the human
+  reviews now records which access rule gated the call (id, name, expression,
+  priority, and any lower-priority rules that also matched), snapshotted at
+  create time so later rule edits cannot rewrite history. The console shows a
+  "Why this needs approval" block with the expression verbatim; list rows and
+  push payloads show the rule name only. Rule-less gates (tool default,
+  evaluation error, agent permission hook) say so plainly instead of
+  inventing an expression. New nullable JSONB `rule_context` column; the
+  API field is optional so historical rows stay blank.
+- **Native scheduled (cron) flow triggers**: flows can now run on a schedule
+  without an external cron caller hitting the webhook endpoint. Create or
+  update a flow with `trigger_event_source: "schedule"` and
+  `schedule_config: {"cron": "<5-field crontab>", "timezone": "<IANA name>"}`
+  (sending a `schedule_config` alone implies the schedule source, mirroring
+  the webhook default; a `schedule_config` on any other trigger source is
+  rejected instead of stored inert). Cron expressions are validated against a
+  5-minute minimum interval by simulating the schedule's own future fire
+  times, so month/day-restricted expressions are checked too. Flow responses
+  expose a read-only `schedule_state` (active, cron, timezone, next run).
+  Ticks are reconciled by the existing sync scheduler daemon and dispatched
+  as a new `run_scheduled_flow` NATS worker task; paused flows never fire,
+  and a tick that lands while a previous execution is still running is
+  skipped and recorded as a `flow_schedule_tick_skipped` audit event. New
+  migration adds the nullable `flow.schedule_config` column.
+- **Friendly schedule forms and schedule preview**: `schedule_config` is now
+  a typed union — besides the raw cron form (`{"type": "cron", "expr": ...}`;
+  the legacy `{"cron": ...}` shape is still accepted), flows can use
+  `{"type": "interval", "every": N, "unit": "minutes"|"hours"|"days"}`,
+  `{"type": "daily", "at": "HH:MM"}`, or
+  `{"type": "weekly", "days": ["mon", ...], "at": "HH:MM"}` (all with an
+  optional IANA `timezone`, default UTC). Intervals are bounded between the
+  5-minute minimum and a 366-day maximum. A new
+  `POST /api/v1/flows/schedule/preview` endpoint (permission-gated like flow
+  reads) validates a config without saving and returns its `type`, a human
+  `description`, and the next few run times; `schedule_state` on flow
+  responses now carries the same `type`/`description` fields.
+- **Schedules in the console** (#235): the flow editor gains a "Schedule"
+  trigger type with friendly-first forms (interval / daily / weekly) and
+  cron behind an Advanced toggle, a timezone picker defaulting to the
+  browser timezone, and a live preview of the next 3 run times with backend
+  validation errors surfaced inline. The flows list shows a next-run
+  indicator on scheduled flow cards (with a warning badge when the flow is
+  paused and the schedule suspended), and the flow detail page shows a
+  schedule summary card with cadence description, active/paused state, the
+  next 3 runs, and the last run status.
+- **Provider-reported cost is ingested as authoritative**: when the upstream
+  reports the request's actual cost inside the response usage payload
+  (OpenRouter usage accounting: `usage.cost` and
+  `usage.cost_details.upstream_inference_cost`; on BYOK requests the two are
+  complementary and are summed), the gateway now records that figure as
+  `estimated_cost` with the new `cost_source='provider'` marker, winning over
+  catalog estimates. Explicit operator pricing (account overrides /
+  model-config pricing) still outranks it. To make the provider figure
+  present on every response, OpenRouter-bound requests (the `openrouter`
+  provider or any model with an openrouter.ai base URL, both endpoint kinds,
+  streaming included) now ask for usage accounting via
+  `usage: {"include": true}` — strictly provider-scoped, config-gated by
+  `OPENROUTER_USAGE_ACCOUNTING` (default on). This fixes models that have no
+  catalog price at all — OpenRouter's Auto Router (`openrouter/auto-beta`)
+  lists price `-1` by design, so its traffic was recorded as unpriced/$0 and
+  a customer's real spend was understated ~1.5x against OpenRouter's ledger.
+  The per-row repricing entry point also adopts a provider cost stored in a
+  row's `usage_details`, so historical rows can be fixed retroactively.
+
+### Security
+
+- **Hash-pinned application installs**: Docker and GitHub CI install
+  third-party Python deps from `uv pip compile --generate-hashes` locks,
+  then `pip install --no-deps -e .` for the local package. ClawHub CLI
+  and the Claude live e2e SDK install go through `npm ci` lockfiles
+  instead of unpinned `npm i -g` / `@latest`.
+- **image-size DoS advisories**: the console lockfile now resolves
+  `image-size` to the `image-size-next@2.1.1` fork. Upstream never
+  published `2.0.3`, which is the version GHSA-w3rx-r6r6-pgpr /
+  GHSA-5p2g-fcmc-qvqq advertise as patched.
+- **Hono pin**: `@preloop-ai/claude-plugin` installs `hono@4.13.3`
+  instead of a floating `^4`.
+
+### Changed
+
+- **Model gateway stream close** (#263): the gateway yields the terminal
+  SSE event (`message_stop` / `[DONE]`) and finishes the HTTP body
+  before writing the usage row, so bookkeeping cannot hold the last
+  event on the client-visible stream. A client that disconnects after
+  that terminal event is recorded as 200 with captured usage, not
+  499/partial. The Gemini `streamGenerateContent` route now uses the
+  same `GatewayStreamingResponse`, so deferred success rows flush after
+  the body instead of being dropped.
+- **OSS TLS proxy and Helm ingress skip the console hop for the model
+  gateway**: `/openai`, `/anthropic`, and `/gemini` now proxy straight to
+  the gateway instead of hairpinning through console nginx. Helm does
+  this with a second Ingress on the same host so SSE buffering can stay
+  off on those prefixes without changing `/`. Usage accounting is
+  unchanged: the gateway process still writes the request row. Re-run
+  `scripts/measure_gateway_overhead.py` against a public install to
+  confirm the TTFB delta.
+- **Qwen / Model Studio catalog**: the keyless picker now lists current chat
+  models (`qwen3.8-max` first) instead of `qwen-plus` / `qwen-turbo` /
+  `qwen-max` / `qwq-32b-preview`. Live `/models` listing honors a
+  user-supplied DashScope or Model Studio base URL (China Beijing default is
+  unchanged so existing keys keep working) and drops dedicated image, video,
+  audio, and NSFW ids. International list prices were added for the fallback
+  ids. DeepSeek-V4 / GLM 5.2 / Kimi remain their own providers; a Model
+  Studio key that also serves those SKUs will surface them via live listing.
+- **PR Reviewer preset: token-optimised prompt**: the stock Pull Request
+  Reviewer preset now bounds every open-ended read that previously let agents
+  walk the repository. Project doc reads are capped (agent-instruction files in
+  full, README/ARCHITECTURE/CONTRIBUTING heads only, CHANGELOG dropped,
+  manifests/CI/linter configs only when the diff touches them); project-context
+  discovery is limited to the diff plus at most 3 files outside it; Phase 2
+  works hunk-first instead of opening whole changed files; each finding gets a
+  verification budget (2 greps + 2 file reads, then phrase as a question); the
+  documentation-impact pass runs only when the diff adds user-facing surface;
+  previous-finding re-verification reads the ±40-line region instead of the
+  whole file; the PR description is only rewritten when its content changed;
+  persisting-issue stamps are replaced instead of stacked and unchanged-status
+  comments are left alone; a single-fetch rule forbids re-calling
+  `get_pull_request`; empty severity sections are omitted from the summary; and
+  small first-time PRs (<~50 changed lines) take a fast path that skips the
+  ceremony while keeping the full security/quality checks. New: incremental
+  re-review — the summary comment now records the reviewed HEAD SHA in a
+  `<!-- preloop-review:reviewed-sha:... -->` marker, and on
+  `pull_request_updated` triggers the reviewer diffs against that SHA via git
+  in the clone and reviews only the new hunks (with a full-review fallback on
+  force-push/rebase or a missing marker), making per-push review cost
+  proportional to the push delta instead of the whole PR.
+
+- **"Halt" is now "Pause" throughout the console**, rendered as a play/pause
+  toggle in amber/warning tones. Red/danger styling stays reserved for the
+  genuinely destructive offboard and remove actions, matching the fact that
+  pausing is now reversible.
+
+- **`identity.*` tags are hidden from the default agent tag chips** and shown
+  instead under a collapsed "Identity history" disclosure on the agent detail
+  view. These tags are server-written bookkeeping from agent re-keying, not
+  operator labels; they are preserved unchanged when an operator edits tags.
+
+### Fixed
+
+- **Edit and Delete on the AI model detail page** (#265): the header
+  actions on `/console/ai-models/{id}` had no click handlers and the
+  edit modal was not mounted, so Edit worked from the models list but
+  did nothing on the detail page. Both now use the same dialog as the
+  list; Delete confirms and returns to the list.
+- **Webhook trigger returns `execution_id` and fails honestly** (#227): the
+  public webhook endpoint validated the addressed flow (id, secret, enabled)
+  but then routed through generic event matching that swallowed failures, so
+  a flow whose trigger filters did not match (or any dispatch error) was
+  silently dropped while the endpoint still answered
+  `{"status": "triggered"}` with no execution reference. The endpoint now
+  triggers the addressed flow directly and returns
+  `execution_id`/`execution_status`/`execution_url` (plus a nested
+  `execution` object aligned with `/flows/{id}/trigger`). Semantics are
+  explicit: a redelivered payload for the same repo and commit returns 200
+  with the existing `execution_id` and `deduplicated: true`; a
+  `trigger_config` mismatch is a 422 with actionable detail; 500 is reserved
+  for "no execution row was created"; and a post-commit dispatch failure
+  returns 202 with the committed `execution_id` so callers poll instead of
+  retrying into duplicates.
+- **Flow deletion no longer orphans a running agent's logs** (#237):
+  `DELETE /flows/{flow_id}` cascaded to executions (and their logs) with no
+  guard for running agents, so an agent still streaming logs hit
+  foreign-key-violating inserts and a spurious data-loss admin alert.
+  Deleting a flow with executions in progress is now refused with a 409
+  pointing at the stop command, the log persister drops entries for
+  since-deleted executions with a single structured warning (persisting the
+  rest of the batch, no alert for known orphans), and the residual drop
+  alert reports the real attempt count and carries the captured exception.
+- **OpenCode aborted long LLM requests at ~120s**: the generated
+  `opencode.json` hardcoded a 120s whole-request timeout, far below the rest
+  of the stack (gateway proxy 900s, MCP tools 600s), so reviewer runs with
+  large prompts died with "The operation timed out." while the upstream call
+  completed seconds later. The timeout is now 600s (aligned with the MCP
+  tool budget, under the proxy's 900s so gateway failures still surface as
+  retryable HTTP errors), the SSE inter-chunk timeout gets the same budget
+  so a long silent reasoning gap is not treated as a dead stream, and
+  operators can override via `OPENCODE_LLM_TIMEOUT_SEC` (malformed values
+  are tolerated and logged, not fatal).
+- **Credits-based OpenRouter provider cost was recorded at exactly 2x**
+  (#224): credits-based responses return `usage.cost` AND an identical
+  `usage.cost_details.upstream_inference_cost`; summing both doubled the
+  real charge. The two are now summed only in the BYOK shape (where `cost`
+  is OpenRouter's fee excluding the vendor charge); otherwise `cost` alone
+  is the total. Retained precision widened from 10 to 12 decimal places so
+  live micro-charges round-trip, and historical rows carrying the duplicated
+  shape reprice correctly through the same helper.
+- **Deploy rollouts killed in-flight gateway streams**: gateway and api pods
+  ran with the Kubernetes default 30s termination grace period, so kubelet
+  SIGKILLed uvicorn while it was still draining streaming connections and
+  agents' flow executions failed during every deploy window.
+  `terminationGracePeriodSeconds` is now pinned via values (default 900,
+  aligned with the proxy read timeout). The grace period is a ceiling, not a
+  delay: idle pods still terminate in about 10s.
+- **Blog URLs served the SPA homepage in production**: the Helm nginx
+  ConfigMap never received the `/blog` rules, so every blog URL returned
+  homepage HTML, and the RSS feed was served with the wrong MIME type. Both
+  are fixed and the route parity test now locks the docker and Helm configs
+  together.
+- **Access rules with a bare `true`/`false` condition failed closed** (#213):
+  a literal `true` condition expression was normalised to `args.true`, which
+  failed to parse, so allow rules configured with a catch-all condition fell
+  back to require_approval. Boolean literals are now handled
+  case-insensitively before normalisation.
+- **`create_project` returned 500 on the duplicate check** (#214):
+  `CRUDProject.get_by_identifier` did not accept the `organization_id`
+  argument its callers passed (also breaking `create_issue` and project
+  `test_connection`). It now takes the optional filter and the duplicate
+  check is scoped to the target organization as intended.
+
+- **OpenRouter Kimi slug is unpriced under provider `openai`**: traffic
+  recorded as `moonshotai/kimi-k3` is the same SKU as bundled
+  `moonshot/kimi-k3` ($3/$15 per million). Lookup now maps the OpenRouter
+  org slug onto the Moonshot catalog key so those rows get a cost instead
+  of `$0`. Reprice still-unpriced historical rows after deploy
+  (`POST /api/v1/cost/reprice` with `only_unpriced=true`).
+- **Reprice row selection**: `only_unpriced` repricing now also examines rows
+  tagged `cost_source='unpriced'` that carry a stray stored cost (legacy $0
+  writes), and the ledger backfill additionally admits legacy rows recorded
+  before cost provenance existed (`cost_source IS NULL` with a NULL cost).
+- **Estimates can no longer overwrite actuals**: repricing (bulk and
+  single-row) refuses to touch `provider`, `reconciled`, and `imported`
+  cost sources even with `only_unpriced=false` — provider-reported and
+  ledger-reconciled figures are never replaced by catalog estimates.
+- **Async reprice acknowledgements**: `RepriceResponse` counters are `null`
+  (not `0`) when the run was dispatched to a background worker, so an async
+  submission is no longer indistinguishable from "the window contained no
+  rows".
+- **Ledger CSV parser rejects non-finite totals**: `nan` / `inf` in
+  `total_usage` are skipped like negatives, so they cannot land in
+  `estimated_cost`.
+
+- **GitLab CI against MCP Python SDK v2 and CLI telemetry**: integration
+  jobs now pin `mcp>=1.0.0,<2` (`pip install mcp` was pulling v2, which
+  removed `streamablehttp_client`). CLI unit tests disable adoption
+  telemetry so `preloop login --token` does not POST `/api/v1/events/batch`
+  at hermetic httptest servers. The frontend e2e seeder looks up the admin
+  account through ``User`` CRUD; ``CRUDAccount.get_by_email`` is gone.
+
+- **Unpriced-model admin alert on accounted $0 and empty completions**:
+  when OpenRouter usage accounting was requested, an explicit `usage.cost`
+  of `0` is now recorded as provider $0 (`cost_source=provider`) instead of
+  treated as "not accounted". A response with `completion_tokens == 0` and
+  no `cost` / `cost_details` fields may still land unpriced, but it no
+  longer pages admins to add catalog pricing. `cost: -1` stays the catalog
+  sentinel (not accounted). Prompt plus completion with no cost and no
+  catalog price still alerts.
+
+- **Per-execution cost rollup understated real gateway spend (#209)**:
+  `flow_execution.estimated_cost` is written once when the run finishes, but
+  most gateway usage rows are priced *later* — the live price lookup and the
+  repricing backfill fill in `api_usage.estimated_cost` after the fact — so
+  the stored rollup kept its `0.0` placeholder (or a stale partial sum) while
+  the usage views showed the real cost (~14x understatement in production).
+  Both repricing paths now re-derive the affected executions' rollups from
+  the attributed usage rows (same rule the metrics endpoint uses:
+  `action_type='model_gateway'` rows with a matching `flow_execution_id`,
+  replay-validation traffic excluded), and a bulk reprice pass heals every
+  rollup its window touches — including rollups left stale by earlier
+  backfills. When nothing attributable is priced the rollup becomes `NULL`
+  ("unknown"), never a `0.0` that reads as "free". Running a repricing
+  backfill over the affected window (`only_unpriced=True` suffices) also
+  repairs historical rows.
+- **Unpriced-model alerts triple-fired for alias spellings of one model**:
+  the alert dedup key used the raw recorded alias, so one model reachable as
+  `openrouter/auto-beta`, `openai-compatible/openrouter/auto-beta` and
+  `openrouter/openrouter/auto-beta` produced three admin alerts. The dedup
+  key now canonicalises through the runtime resolver's alias candidates, so
+  every spelling of a model shares one alert cooldown.
+
+- **Preset updates never reached renamed flow clones**: preset propagation
+  (`sync_preset_to_derived_flows`) only finds flows via `source_preset_id`,
+  and the one-time linking migration only matched flows named
+  "Copy of <preset name>". A flow cloned from a preset and then renamed —
+  with a prompt still byte-identical to the preset — stayed unlinked forever
+  and silently never received preset updates. A new content-hash linking pass
+  (`link_unlinked_flows_by_content`, also run by
+  `scripts/sync_flow_presets.py` before propagation) links unlinked,
+  non-preset, account-owned flows whose prompt hash equals a preset's current
+  prompt or a historical link-time version of it, regardless of name.
+  Conservative by construction: only byte-identical prompts link (customized
+  prompts can never match, so user edits can never be overwritten), hashes
+  matching multiple presets are skipped and logged, and differing tools are
+  marked customized and notified rather than replaced.
+
+- **Unhelpful failure messages and no retry when an upstream model provider
+  failed**: when the model provider in front of an agent returned a gateway
+  timeout, the agent CLI exhausted its own internal retries hundreds of log
+  lines before exiting, and the extractor that builds
+  `FlowExecution.error_message` returned only the tail of the log. A user
+  reviewing a failed run saw exactly
+  `"  status: 504\n}\nAn unexpected critical error occurred:[object Object]"`
+  — 69 characters that name no cause and suggest no action. Agent-log failure
+  analysis now scans the whole log for the *meaningful* signal (an upstream
+  HTTP status plus the agent's exhausted retry loop) instead of the last
+  error-shaped line, and produces messages like `Upstream model provider timed
+  out (HTTP 504) after 3 attempts.` Lines that carry no information
+  (`[object Object]`, bare `status: NNN` fragments, proxy HTML error pages) are
+  never surfaced as the cause when a real signal exists. Classification reuses
+  the shared upstream-error taxonomy, so a hard quota exhaustion is still
+  distinguished from a transient throttle.
+
+  A transient upstream failure is also no longer terminal: a flow execution
+  whose attempt failed on a retryable upstream error (timeout, bad gateway,
+  overload, throttling, connection reset) is retried with exponential backoff
+  (`FLOW_EXECUTION_MAX_ATTEMPTS`, default 2;
+  `FLOW_EXECUTION_RETRY_BACKOFF_SECONDS`, default 15). Retries are never
+  silent — each one is recorded as an `execution_retry_scheduled` milestone and
+  surfaced on the execution timeline. Non-transient failures (bad credentials,
+  denied permissions, exhausted quota, unknown model) are never retried. To
+  rule out double-posting a review comment, push or pull request, an attempt is
+  only retried when the agent process exited non-zero, which is the condition
+  under which the container's post-execution git block does not run.
+
+- **Streaming gateway requests killed in front of the gateway left no trace**:
+  every streaming endpoint calls the upstream model provider *before* handing
+  its SSE generator to the web layer, so that upstream failures surface as real
+  HTTP errors instead of empty `200` streams. If the client was already gone
+  when the first chunk was due — which is exactly what a proxy read-timeout in
+  front of the gateway looks like — the generator body never ran, and neither
+  did the usage accounting inside it (a Python generator closed before its
+  first `next()` never executes, `finally` included). The provider had already
+  been asked to generate and was billing for it, but Preloop recorded no usage
+  row, no status code and no error class: the user's agent failed while the
+  console reported a clean bill of health. Such requests are now recorded as
+  status `499` with a new `stream_abandoned` error class, distinct from the
+  `client_cancelled` class used when a client drops a stream it was actively
+  reading. `ApiUsage.error_class` is also exposed on the per-request session
+  timeline API, so failures that share a status code (a proxy timeout versus a
+  user cancelling) can finally be told apart in the product. Spend semantics
+  are unchanged: an abandoned stream streamed nothing, so no provider tokens
+  are invented, and the already-working mid-stream disconnect path still
+  records exactly one row.
+
+- **Backfilled costs stayed $0 for models missing from the price snapshot**:
+  `reprice_unpriced_usage.py` recomputed every row against the locally bundled
+  price catalog only. A row is recorded `unpriced` precisely when the model was
+  absent from that snapshot, so the backfill re-derived the same "unpriced"
+  result and reported `updated=0` — those rows could never become priceable by
+  repricing, and the account's dashboard kept showing ~$0 for real usage. The
+  gateway already resolves this at record time via the live upstream price
+  lookup; repricing now performs the same lookup (once per model, not per row,
+  and never fatal when the upstream source is unavailable).
+
+- **Tracker sync loop on out-of-scope repositories**: a webhook naming a
+  project we never imported triggered a full forced tracker re-sync on *every*
+  event, and logged a "Project ... not found. Triggering a sync" warning plus
+  an admin notification each time. When the repository is outside the
+  integration's scope (a GitHub App installed on *selected repositories*, or an
+  `EXCLUDE` scope rule) the sync can never resolve it, so every subsequent
+  webhook repeated the whole cycle — burning GitHub API calls and admin noise
+  indefinitely. Unknown projects are now tracked per (tracker, project) with
+  exponential backoff (5m doubling to a 1h cap) and are marked **degraded**
+  after 5 failed attempts, at which point syncs stop entirely and the project
+  is surfaced to the user via the new `degraded_projects` field on the tracker
+  API response. The log line is now actionable (account, tracker, project,
+  attempt count and the likely cause) and the per-event admin notification is
+  gone. State clears automatically when the project later syncs successfully.
+- **Database connection pool exhaustion and execution-log data loss**: a
+  production gateway pod exhausted its SQLAlchemy pool
+  (`QueuePool limit of size 3 overflow 7 reached`) under PR-reviewer load,
+  which dropped a batch of NATS execution logs, failed the readiness probe,
+  broke token validation, and ended in a pod restart. Four changes:
+  - `_sync_batch_insert_logs` now retries transient failures
+    (`TimeoutError`/`OperationalError`) up to 3 times with exponential backoff
+    (0.5s, 1.0s) before dropping a batch, rolls back on failure so no dirty
+    transaction is returned to the pool, and returns a success boolean.
+    Background log persistence is additionally bounded by a semaphore so it
+    cannot starve request-serving connections. Batches are still only dropped
+    as a last resort, and admins are still notified when that happens.
+  - Health checks use a dedicated single-connection engine with fast timeouts
+    instead of a pooled request session, so readiness reports "can I reach
+    Postgres" rather than "is the request pool momentarily full".
+  - `/api/v1/ping` (the liveness probe) is now `async`, keeping it on the event
+    loop. As a sync endpoint it ran in Starlette's bounded anyio threadpool and
+    could queue behind blocked database calls, causing Kubernetes to SIGKILL a
+    pod that was merely busy.
+  - Gateway connection pool sizing raised from 3+7 to 6+14 per pod, api tuned
+    to 8+12 and workers to 2+4. Chart comments now document that each pod
+    creates two pools (sync + async engine) and reflect real production replica
+    counts (api=2, gateway=5, workers=8).
+
+- **Gateway log noise**: WebSocket broadcasts with no matching listeners logged
+  at INFO on every event, accounting for ~69% of gateway log lines (8170 of
+  11810 in a two-hour sample). These now log at DEBUG; broadcasts with actual
+  listeners still log at INFO.
+- **PR reviewer flows killed by a false "repeated MCP tool loop"**: removing a
+  reaction that was already gone (the `eyes` "I'm looking at this" marker that
+  PR-review presets clear when finishing) was reported by
+  `update_pull_request` as `FAILED: remove reaction (eyes)`. Agents believed
+  the call had failed and retried it verbatim; after four identical retries the
+  orchestrator's loop guard stopped the run and marked the whole execution
+  FAILED — even though the review had already been posted to the PR. Reaction
+  removal is now idempotent: "already absent" is reported as success. This was
+  the single largest source of PR-reviewer failures for daily users.
+
+- **User-requested stops reported as "Execution timed out after 3600 seconds"**:
+  the stop branch of the agent monitoring loop used `break`, falling through to
+  the timeout handler at the end of the loop. Executions cancelled after a few
+  seconds were persisted as FAILED with a bogus 3600-second timeout message.
+  Stops now return status `STOPPED` with an accurate elapsed time.
+
+- **Opaque git checkout failures**: every step of the checkout fallback chain
+  discards stderr, so an unrecoverable failure produced only
+  `FATAL ERROR: Could not checkout commit <sha>` with no cause. The failure
+  path now re-runs the fetch/checkout with stderr attached and prints the
+  remote plus available refs, so the log shows whether the commit was
+  force-pushed away, the ref is missing, or credentials failed.
+
+- **Unpriced usage no longer reports as $0.00**: gateway traffic routed through
+  OpenRouter/`openai-compatible` endpoints was metered correctly (tokens
+  captured) but could never be priced, so flows that cost real money displayed
+  a confident `$0.00`. Three defects combined: the synthetic
+  `openai-compatible/` prefix was carried into price-catalog lookups where it
+  can never match; OpenRouter-routed models were not tried under litellm's
+  `openrouter/vendor/model` keys; and a `sum()` over NULL costs was coalesced
+  to `0.0` in `get_gateway_usage_for_execution`, with `FlowOrchestrator`
+  defaulting `estimated_cost` to `0.0`. Cost now stays NULL when nothing could
+  be priced, and the token volume is surfaced instead of a fake zero. Aggregates
+  that mix priced and unpriced rows expose `cost_is_partial` plus the unpriced
+  request/token counts so a subtotal is never presented as a complete bill.
+  Subscription-covered traffic (`cost_source='subscription'`) is unchanged and
+  still reports a legitimate `$0.00`.
+
+- **OpenRouter model pricing**: models served from `openrouter.ai` are now
+  priced from OpenRouter's own `/api/v1/models` endpoint when litellm's map
+  does not carry them, cached and backed off like the existing price-map fetch.
+  Date-stamped marketplace ids (e.g. `deepseek-v4-flash-0731`) are deliberately
+  NOT aliased to their undated entry: they are separately priced SKUs, and the
+  fallback would have overstated cost by ~55% for that model. Models that still
+  cannot be priced stay explicitly unpriced rather than being given a guess.
+- **Re-onboarding could reactivate an enrollment server-side and then refuse
+  it locally**: when `preloop agents onboard` matched an existing enrollment by
+  a v1 or legacy runtime-principal id, it PATCHed `lifecycle_action=reenroll`
+  and printed "Reactivated ..." *before* deciding whether to re-attach — and
+  the re-attach confirmation only ever ran for fuzzy ("fallback") matches. An
+  interactive run without `-y` therefore failed with "declined re-attaching
+  enrollment ..." without ever asking, leaving the account with a reactivated
+  agent and the machine with no config written. The confirmation now runs for
+  every non-v2 match (default yes) and happens before any server-side change;
+  if the subsequent re-key fails, the enrollment is restored to its previous
+  lifecycle state instead of being left reactivated.
+- **Paused (suspended) enrollments are now resumed automatically on
+  re-onboarding**: only decommissioned agents were revived, so re-onboarding a
+  suspended agent left it suspended and every token issuance for it kept
+  failing with 403. Onboarding now maps the lifecycle state to the correct
+  revival action — `decommissioned` → `reenroll`, `suspended` → `resume`, per
+  the backend's lifecycle map — and prints "Resuming paused enrollment ..."
+  before doing it.
+- **`preloop login` no longer re-authenticates when you are already signed
+  in**: it prints the current identity and exits; pass `--force` to switch
+  accounts. `--token` and non-interactive logins are unchanged. The install
+  script does the same check before prompting, so re-running the installer on
+  a machine that already has a valid session goes straight to onboarding
+  instead of asking you to log in again.
+- **Keychain service names in onboarding output are now quoted**, so the
+  hyphenated macOS service `"Claude Code-credentials"` can no longer be
+  misread as running into the surrounding prose.
+- **Agent pause is now fully reversible** (#193): pausing an agent
+  (`lifecycle_action=suspend`) deactivated *every* runtime API key the agent
+  owned and closed its runtime session, but resume only flipped the lifecycle
+  flag back to `active` — nothing reactivated the keys or reopened the session.
+  A resumed agent therefore looked healthy in the console while every gateway
+  request 401'd before a usage row could be written, so the agent silently
+  logged nothing. Pause is now enforced purely as a lifecycle check on the
+  read-through auth path (`authenticate_bearer_token`, API-key auth, and
+  runtime token issuance already re-read `lifecycle_state` from the database on
+  every request), so credentials are left untouched and resume is an exact
+  inverse. Hard credential revocation is now reserved for the terminal states:
+  decommission and delete. Resume and `reenroll` additionally heal agents
+  bricked by the previous behavior — reactivating that agent's own unexpired
+  keys and clearing `ended_at` — without ever reviving a credential an operator
+  revoked on purpose.
+
+- **Deterministic agent lookup by source**: `managed_agent.get_by_source()`
+  returned an arbitrary row when several agents shared a session source, so a
+  stale suspended or decommissioned sibling could shadow the live agent during
+  token issuance. It now orders by lifecycle state (active, then suspended,
+  then decommissioned) and falls back to most-recent-first.
+
+- **Streaming model-gateway requests were cut off at 60s with a 504**: the
+  `/openai`, `/anthropic` and `/gemini` routes are the only ones that relay
+  streaming LLM responses, and they were the only proxied routes with no
+  `proxy_read_timeout` override — so they inherited nginx's 60s default at
+  *both* proxy layers (the console nginx and the ingress, which has its own
+  independent default). Time-to-first-byte on a streaming completion is the
+  model's thinking time, so this was deterministic on prompt size rather than
+  intermittent: short prompts answered in seconds, while one large enough to
+  make the model reason past a minute was killed by the proxy. The client saw
+  a 504 that the gateway never observed and could not report, since the
+  request was terminated in front of the application. All three routes now
+  carry an explicit timeout (configurable via `gateway.proxy.*`, default
+  900s), the ingress carries the matching annotations so a default install is
+  correct without extra flags, and `proxy_buffering` is off so tokens are
+  relayed as they arrive instead of being accumulated by nginx. A chart test
+  asserts all of this so the override cannot be silently dropped again.
+
+## [0.14.0] - 2026-08-07
+
+Highlights: **Cursor usage import** brings bundled-model spend into Cost
+analytics, **rate-limit intelligence** turns upstream 429s into a headroom
+report, and **agent identity v2** gives managed agents a stable durable id
+across renames and re-onboarding.
+
+### Added
+
+- **Auxiliary model fallback to system-wide default**: approval summaries and
+  session/interaction titles now automatically retry with the system-wide
+  default model when the account's primary model fails (auth error, provider
+  error, or timeout). The fallback is subject to a per-account daily cap
+  (default 50, configurable via `PRELOOP_AUX_FALLBACK_DAILY_CAP`) and emits a
+  deduped warning per account per day when triggered. No fallback occurs if the
+  system default is the same model that failed or if no system default is
+  configured. The main gateway/completion path is unaffected and never falls
+  back. Failures degrade gracefully (approval summary returns None, session
+  titles use local fallback).
+
+- **Cursor bundled-model usage import** (#123): Cursor's Composer/Auto models
+  never traverse the model gateway, so their spend was invisible. Two new
+  endpoints ingest it: `POST /api/v1/usage/import` for normalized events and
+  `POST /api/v1/usage/import/csv` for the Cursor dashboard Usage CSV export
+  (case-insensitive, order-independent headers, with an optional `column_map`
+  for other export shapes). Imported events are attributed to a managed agent
+  and land in the cost ledger as `action_type='imported_usage'` rows labeled
+  `usage_source='imported'` / `cost_source='imported'`. Imports are idempotent:
+  every event carries a dedupe fingerprint backed by a unique database index,
+  so re-importing the same CSV reports `skipped_duplicates` instead of
+  double-counting. Imported spend surfaces as a separate `imported_usage`
+  block in `GET /api/v1/cost/summary` and never mixes into gateway
+  `estimated_cost`, budgets, or spend caps. Cost analytics renders this as an
+  "Imported usage" section showing imported events, tokens, and cost, plus a
+  per-model table with the source and the last event time. The section carries a
+  "Not gateway metered" badge and stays out of the spend metrics, budgets, and
+  breakdowns, which continue to describe gateway-metered traffic only. It is
+  hidden when the selected window holds no imported usage.
+- **Rate-limit intelligence and subscription headroom** (#136): the gateway now
+  captures upstream 429s and provider rate-limit headers (`Retry-After`,
+  `anthropic-ratelimit-*`, `x-ratelimit-*`) as real observations, normalizes
+  them into rate-limit snapshots, and persists them on the usage row.
+  `GET /api/v1/account/gateway-usage/rate-limits` reports rate-limited request
+  counts, blocked time, quota-exhausted vs transient breakdown, and per-model
+  and per-session detail. Undocumented provider headers are preserved verbatim
+  rather than presented as normalized facts.
+- **Stable v2 managed-agent identity**: the CLI derives `session_source_id`
+  from host + source type + config path, so an agent keeps one durable
+  identity when its display name changes or it is re-onboarded. Use
+  `--no-reuse` for a salted escape hatch. Adds `enrollment_hostname` and
+  `identity_derivation` columns.
+- **`POST /api/v1/agents/{id}/rekey`** and **`POST /api/v1/agents/{id}/merge`**:
+  rewrite or consolidate durable principal ids across usage, sessions,
+  budgets, and approvals, with dry-run support. Exposed as
+  `preloop agents merge`.
+- **`permission_prompt` builtin for Claude Code approvals** (#132): implements
+  Claude Code's `--permission-prompt-tool` contract, resolving native tool
+  permissions through Preloop policies and approvals.
+  `PRELOOP_PERMISSION_PROMPT_WAIT_SECONDS` (default 25) tunes the in-call wait
+  before a retryable pending deny. Default-off, so accounts that do not opt in
+  pay no context tax. Ships with a general per-agent tool-config scope
+  (`ToolConfiguration.managed_agent_id`); null preserves account-wide
+  semantics.
+- **Per-tool context cost on the Tools page** (#128): every tool shows
+  `~N tokens/request` computed from the schema as actually served (including
+  injected justification parameters), plus a summary line totalling what
+  enabled tools add to every agent request.
+- **Optimizer recommends disabling unused builtins** (#146): a deterministic
+  `disable-builtin-tools` suggestion for Preloop builtins unused in the session
+  with zero account-wide invocations over 30 days, with a one-click apply.
+  Savings are not double-counted against `scope-tools`, and agent-provided
+  tools are never touched.
+- **ask_user in-session delivery** (#130): pending `ask_user` /
+  `request_approval` responses now include token-free deep links to the
+  specific question (`approval_console_url`, `approval_mobile_link` /
+  `preloop://approve/<id>`), and when the asking session's runtime has an
+  active Agent Control connection (hermes-preloop / openclaw-preloop), the
+  question is also delivered as an audited in-session prompt through the
+  existing `send_message` channel. Answers still flow only through the
+  governed approval surfaces; first answer wins and late answers get an
+  already-resolved response.
+- **Review newly unlocked tracker tools after connecting a tracker**:
+  `POST /trackers` returns additive `unlocked_tool_names` (server-side
+  before/after diff of tracker-gated builtins that are effectively enabled).
+  The Trackers page opens an opt-out review dialog listing each unlocked
+  tool with its `~N tokens/request` cost and the keep-enabled context-tax
+  delta; deselected tools are persisted as builtin `ToolConfiguration`
+  rows with `is_enabled: false`.
+- **Idle prompt-cache expiry detection**: session context analysis now flags
+  content-stable request pairs whose inter-request gap exceeds the provider
+  cache TTL and whose ApiUsage rows show a `cache_read` collapse with a
+  `cache_creation` spike. Optimize surfaces a measured write-vs-read premium
+  (``reduce-idle-cache-expiry`` suggestion + aggregate line); Replay annotates
+  the expiry turn. USD figures are catalog-priced or omitted, never invented
+  from session averages.
 - **Passkey (WebAuthn) sign-in and registration**: register passkeys in user
   settings and sign in from the login page with discoverable credentials (no
   username needed). Feature-flagged via `PASSKEYS_ENABLED` (default `true`);
   relying party and origin overridable with `WEBAUTHN_RP_ID` and
   `WEBAUTHN_ORIGIN`. Passkey logins are audit-logged and trigger the same
   inactivity notifications as password logins.
+- **Approval email staggered behind push** (#119): for users with both channels
+  enabled, push goes out immediately and email waits 60 seconds, sending only
+  if the approval is still pending. Email-only users are unaffected, and any
+  push failure falls back to immediate email so delivery never degrades.
+  Per-user `stagger_email` toggle (default on) in notification preferences.
+- **Security-screen scoring endpoint** (#155):
+  `POST /api/v1/security-screen/score` implements QM's external
+  security-screen proxy contract. Accepts `{text, hook, metadata}` with the
+  operator token in `x-api-key` and returns
+  `{score, threshold, primary_outcome}` from a deterministic rule-based
+  scorer (prompt-injection markers, destructive commands, destructive SQL,
+  secret-exfiltration patterns). Threshold configurable via
+  `PRELOOP_SECURITY_SCREEN_THRESHOLD` (default 0.7). Screened text is never
+  logged or persisted; no schema changes.
+- **`preloop agents remove`**: permanently delete a managed-agent registry
+  entry. Refuses when the agent has usage history unless `--force` is passed.
+- **CLI install-runtime UX** (#113): an interactive managed-model picker before
+  `agents onboard` / `install-runtime` (with `--model` for non-interactive
+  use), an explicit gateway round-trip check at the end of install
+  (`round-trip OK, model=..., latency=...s`) with an actionable failure
+  message, and printed reconfigure/undo hints after mutating agents commands.
+- **OpenRouter as a first-class provider in the add-model dialog**: the backend
+  has routed OpenRouter since the gateway fix, but the console never listed it,
+  so adding an OpenRouter model meant choosing "OpenAI-compatible" and knowing
+  the base URL by heart. OpenRouter is now its own entry in the provider list
+  with `https://openrouter.ai/api/v1` prefilled, so "Fetch Available Models"
+  works without typing an endpoint. The model list comes from OpenRouter's own
+  `GET /models` (300+ entries render in full), and the "Other..." escape hatch
+  still accepts custom identifiers such as the Auto Router
+  (`openrouter/auto-beta`).
+- **Moonshot (Kimi), Z.ai (GLM) and Mistral as first-class providers**: three
+  new entries in the add-model dialog, each with its base URL prefilled and a
+  link to the provider's key page, so "Fetch Available Models" works without
+  typing an endpoint. Moonshot ships with bundled pricing for `kimi-k3`,
+  `kimi-k2.7-code`, `kimi-k2.7-code-highspeed` and `kimi-k2.6` taken from
+  Moonshot's published price list, so Kimi traffic is cost attributed from the
+  first request instead of landing as unpriced usage. `kimi-k3` leads the
+  keyless Moonshot list. Mistral is a BYOK option that keeps model traffic with
+  a European provider for teams that care where inference runs.
+- **Model lists say where they came from**: the available-models endpoint now
+  returns `{models, source, error}` instead of a bare array, and the dialog
+  renders a short notice when a list is the bundled fallback rather than the
+  provider's live catalog, naming the reason (request timed out, network error,
+  provider returned nothing, no API endpoint configured). With no key entered
+  the notice invites you to add one and fetch again instead of blaming the
+  provider. The reason vocabulary is fixed and carries no provider text, so a
+  failing provider cannot echo a URL or key material into the console.
+
+### Changed
+
+- **`preloop agents offboard` archives instead of deleting**: offboard now
+  decommissions the managed-agent row (PATCH `lifecycle_action=decommission`)
+  so usage history and audit trail remain. Re-onboarding reactivates an
+  archived match; use `preloop agents remove` for permanent deletion.
 
 ### Fixed
 
+- **Session tracking for all agents** (#190): agents that authenticate with a
+  durable managed-agent credential share one machine-scoped runtime principal,
+  so every conversation on a machine collapsed into a single runtime session
+  that never ended. Codex (`Session-Id`/`Thread-Id`), OpenCode (`X-Session-Id`)
+  and any client sending OpenAI's `prompt_cache_key` are now split per
+  conversation. Agent-native headers are only trusted when the credential
+  identifies that agent, since `Session-Id` and `X-Session-Id` are generic
+  names an intermediary may stamp. `X-Preloop-Session-Id` still takes
+  precedence over everything. The `preloop agents` OpenClaw provider now
+  enables `supportsPromptCacheKey`, so OpenClaw stops stripping its own
+  conversation key against the Preloop gateway (this also improves upstream
+  prompt-cache hit rate). Session identity telemetry follows OpenTelemetry
+  GenAI's `gen_ai.conversation.id` vocabulary.
+
+- **Sessions from agents that send no conversation id are now bounded by
+  inactivity** (#190): Gemini CLI, Hermes and OpenClaw's Anthropic transport
+  put no session id on the wire at all, so their sessions previously grew
+  forever. After an idle window (`RUNTIME_SESSION_IDLE_TIMEOUT_MINUTES`,
+  default 720, set to `0` to disable) the stale session is closed at its own
+  last activity, so history is never rewritten, and the next request starts a
+  new one. This is a fallback only: an agent that does identify its
+  conversation is never split by the clock.
+
+- **Codex flows failed at their first model call** (#190): every Codex flow
+  errored with `Missing required parameter: 'tools[N].name'` on OpenAI models
+  or `unknown variant 'namespace'` on DeepSeek, because the Codex CLI sends
+  tool shapes (freeform `custom` tools, `namespace` containers, host-executed
+  search tools) that upstreams reject, and the gateway rewrote custom tools
+  into a form that dropped their name for models routed to the Responses API.
+  Tools are now translated into plain function tools, with namespaced tools
+  flattened rather than dropped so an agent keeps its MCP toolset, and tool
+  calls are rendered back in the shape Codex expects.
+
+- **OpenClaw plugin manifest migrated to the OpenClaw 2026.7.2-beta.7 schema**
+  (`@preloop-ai/openclaw-plugin` 0.2.1): the ClawHub listing showed a
+  `manifest-unknown-fields` warning because `openclaw.plugin.json` declared 11
+  top-level keys that are not part of OpenClaw's published `PluginManifest`
+  type. The manifest now carries only `id`, `name`, `description`, `version`
+  and a real JSON Schema `configSchema`; the packaging and runtime metadata
+  (`before_tool_call` hook, `tool_approval` capability, permission strings,
+  config path, and the `preloop-openclaw-plugin verify` command) moved into the
+  `openclaw` object in `package.json`, which is where OpenClaw and ClawHub read
+  package-level metadata. Plugin behaviour is unchanged: the hook is registered
+  in code and the config is read from the same
+  `plugins.entries.preloop-plugin.config` path as before. The package lockfile
+  was also regenerated (it still claimed 0.1.0 while the package said 0.2.0).
+  ClawHub validation against an OpenClaw 2026.7.2-beta.7 checkout now reports 0
+  errors and 0 warnings.
+- **Gateway no longer returns 502 when activity metadata contains binary
+  content**: an agent that fetched a gzip or otherwise binary URL through the
+  gateway could take down its own request. The response body was embedded into
+  `runtime_session_activity.metadata` (JSONB), Postgres rejected the NUL byte
+  it contained (`UntranslatableCharacter`), and because that insert shares the
+  request's database session, the failed flush left the session in a
+  pending-rollback state. A model call that had already succeeded upstream came
+  back to the customer as a 502, and later operations on the same session
+  failed too. Three changes: all activity and usage metadata is now sanitized
+  of NUL, control characters and lone surrogates (tab, newline and carriage
+  return are preserved) before any JSONB write; request and response bodies
+  stored in activity metadata are capped (default 8192 characters per string,
+  `MODEL_GATEWAY_ACTIVITY_MAX_BODY_CHARS`) with an explicit truncation marker,
+  since one incident row reached 533,682 characters; and usage recording is now
+  non-fatal, rolling the session back and logging the failure type so that
+  bookkeeping can never fail a request whose model call succeeded.
+
+- **Auxiliary model calls resolve credentials from the secret service**: nine
+  internal sites (approval summaries, session/interaction titles, policy
+  generation, agent name extraction, issue compliance/duplicates/dependencies)
+  were reading the raw `api_key` column directly instead of resolving via the
+  secret service, so accounts whose models use `credentials_secret_id` got
+  silent 401s. All nine sites now route through a shared credential resolver
+  that handles legacy plaintext keys, vault-backed secrets, OAuth, and ambient
+  credentials identically to the main gateway path. The `os.getenv` fallback in
+  issue compliance and duplicates endpoints is preserved.
+  - The compliance improvement suggestion and duplicate resolution suggestion
+    endpoints built their client with no credentials at all, so they used
+    whatever ambient `OPENAI_API_KEY` the process happened to have (and failed
+    outright when it had none) regardless of the account's configured model.
+    Both now resolve the account model's credentials and honor its custom
+    endpoint.
+  - Dependency detection now forwards the model's custom endpoint as
+    `base_url`; previously it resolved the key but dropped the endpoint,
+    sending traffic for custom-endpoint models to the default provider.
+
+- **DeepSeek and Qwen model pickers show the models the provider actually
+  serves**: both providers were queried with a valid API key and the response
+  was thrown away, the key being validated and nothing more, so the picker only
+  ever offered a catalog hardcoded in early 2025. Newer models such as
+  `deepseek-v4-flash` and `deepseek-v4-pro` were invisible in the console even
+  though the bundled price table already prices them. The live list is now
+  returned (sorted and de-duplicated) whenever a key is supplied. An invalid
+  key still surfaces as an authentication error; a network or listing failure
+  falls back to the bundled catalog instead of emptying the picker. The
+  keyless fallback catalog now includes the DeepSeek v4 models.
+
+- **Every provider now attempts a live model list**: DeepSeek and Qwen were
+  fixed earlier, but the same fetch-and-discard pattern survived elsewhere.
+  Anthropic returned a list hardcoded in early 2025 after spending a paid
+  `messages.create` call purely to check the key; it now lists models through
+  the Anthropic models endpoint and costs nothing to refresh. Google spent a
+  paid `generate_content` call for the same reason and silently returned its
+  hardcoded list when the listing came back empty; the paid ping is gone and an
+  empty listing is reported rather than hidden. OpenAI truncated the account's
+  catalog to the first ten ids and filtered to `gpt-*`, which hid the entire
+  o-series and would have hidden every future family; the cap is removed and
+  non-chat ids (embeddings, whisper, tts, image, moderation) are excluded
+  instead. No provider returns a bundled list without saying so.
+
+- **Failed model tests said nothing useful**: testing a model that the upstream
+  provider rejected showed only "Failed to run model request" while the real
+  reason, for example "No allowed providers are available for the selected
+  model", was visible only in the gateway log. The provider's own message is now
+  lifted out of the upstream error and shown, with a short hint naming the
+  provider. The surfaced text is scrubbed for credentials and capped in length,
+  and stack traces and provider metadata blobs are not included.
+
+- **Editing a model with a stored key failed**: opening any saved model and
+  changing a field posted the whole form back, including the credential fields
+  belonging to the stored secret, and the API rejected it with
+  `credential_type/credential_payload cannot be combined with external
+  credential fields`. Editing was effectively impossible without deleting and
+  recreating the model. The update now sends only the fields the form manages,
+  and credential fields only when a new API key is actually typed.
+
+- **Commit statuses post to the repository that triggered the flow** (#175): a
+  flow watching several projects always posted its GitHub check to
+  `trigger_project_ids[0]`, so a push or pull request in any other watched
+  repository targeted the wrong repository and the provider rejected the call
+  with `422 No commit found for SHA`. The failure was swallowed, so the run
+  still looked healthy while no check ever appeared. The project is now
+  resolved from the repository that actually triggered the execution. When the
+  triggering repository cannot be matched to a Preloop project, Preloop refuses
+  to guess and skips the status instead of posting to an unrelated repository,
+  and every skip or provider failure is surfaced as a warning on the execution
+  timeline rather than only in the server log.
+- **Dashboard Recent Flow Executions dismiss control stays reachable** (#174):
+  a long error message, typically a git clone failure containing an unbreakable
+  repository URL, widened the text column past the card and pushed the dismiss
+  button outside it, so a failed run could not be cleared from the dashboard.
+  The text column can now shrink, long URLs and paths wrap, the message is
+  capped at three lines with the full text available on hover, and the status
+  tag, links, and dismiss button keep their size at every viewport width.
+- **Managed agents report their real product kind** (#123): Cursor, Windsurf,
+  VS Code, Antigravity, and Devin agents all recorded `agent_kind` as
+  `desktop_agent` (or `custom` when created via `POST /api/v1/agents`), because
+  the kind was derived from the connection's `session_source_type`. As a
+  result they showed as generic agents in the console, and the default
+  attribution target for `POST /api/v1/usage/import` could never be resolved
+  (a bare import returned HTTP 422 for every account). `agent_kind` is now
+  decoupled from `session_source_type`: `POST /api/v1/agents` accepts an
+  optional `agent_kind`, and the CLI reports the product it is onboarding when
+  minting a runtime-session token. `session_source_type` is deliberately
+  unchanged, since it is part of the durable v2 principal-id fingerprint:
+  existing enrollments keep their identity, spend history, and credentials,
+  and are refined in place rather than re-keyed. An older CLI that does not
+  send `agent_kind` can no longer reset a known kind back to the generic one.
+- **Gateway upstream provider errors are classified** (#116, #117, #118): a
+  shared `classify_upstream_error` taxonomy (`network`,
+  `upstream_overloaded`, `upstream_rate_limited`, `upstream_quota_exhausted`,
+  `upstream_auth`, `upstream_disconnect`, `upstream_error`,
+  `client_cancelled`) covers streaming and non-streaming paths. Connection
+  refused and transport failures now return a clear **503** instead of an
+  opaque 500, mid-stream provider disconnects emit an SSE
+  `upstream_disconnect` event followed by `[DONE]`, and quota-exhausted 429s
+  are marked terminal with `Retry-After` / `X-Preloop-Retry-Terminal` so
+  runtimes fail fast. The failure class is persisted on the usage row
+  (`ApiUsage.error_class`) so cost and session views can separate
+  provider-side failures.
+- **ask_user approve→execute handoff**: replaying an approved `ask_user`
+  through `get_approval_status` now returns the approver's comment (the
+  human's answer) as the tool result instead of losing it; async-workflow
+  pending payloads pass through to the agent instead of being misreported
+  as "No answer provided".
 - **Sessions no longer expire aggressively**: refresh failures caused by
   transient errors (5xx, network) no longer clear tokens and force re-login;
   only definitive 401/403 does. OAuth logins now store refresh tokens.
   Active sessions slide up to a 30-day cap.
+- **CLI build repair** (#144): restore `recoverDeferredGatewayValidationFailure`
+  in `cli/internal/cmd`, which a bad merge left uncompilable and which broke
+  the Windows CLI test job on every open PR.
+- **Code Quality / Scorecard hygiene**: clear GitHub Code Quality
+  maintainability warnings (implicit string concat in gateway tests;
+  unused-export false positives), pin GitHub Actions and Docker base images by
+  digest, bump the CLI Go toolchain to 1.26.5 and
+  `golang.org/x/{text,crypto,sys}` for Scorecard vulnerability findings,
+  override frontend `basic-ftp`/`yaml` advisories, harden refresh-token error
+  responses, and document/wire `REFRESH_TOKEN_EXPIRE_DAYS` / `MAX_SESSION_DAYS`
+  in Helm.
+- **Single Alembic head restored** (#162, #163): parallel feature merges left
+  the migration graph with multiple heads, breaking `alembic upgrade head` on
+  self-hosted upgrades. The heads are collapsed into one mergepoint
+  (`20260801_stagger_email`) with a regression guard.
+- **Hermes plugin verify crash** #165: AgentControlConfig in preloop 0.13.x
+  does not expose a runtime attribute. The Hermes plugin reads config.runtime,
+  but that field is only present in the raw YAML config block, not the parsed
+  dataclass.
+- **OpenRouter models routed to the wrong vendor** (#172): a model id
+  containing a slash was treated as `provider/model` before the stored
+  provider and endpoint were consulted, so an "OpenAI-compatible" model on
+  `https://openrouter.ai/api/v1` with the id
+  `deepseek/deepseek-v4-flash-0731` was sent to api.deepseek.com with the
+  vendor prefix stripped, producing upstream `502 Invalid URL` errors. The
+  Auto Router (`openrouter/auto-beta`) failed for the same reason. The stored
+  `provider_name` and `api_endpoint` now take precedence over the prefix
+  heuristic: concrete OpenRouter ids, the `openrouter/`-prefixed workaround
+  form, and the Auto Router all route to OpenRouter with the model id intact.
+  Users who added the `openrouter/` prefix by hand are not broken by the fix.
+- **Model picker was empty for OpenRouter** (#171):
+  `available-models` returned `[]` for every openai-compatible provider,
+  because only the built-in providers had a discovery path. The configured
+  endpoint's OpenAI-compatible `GET /models` is now queried, so OpenRouter,
+  vLLM, LM Studio, and similar endpoints populate the picker. The request
+  takes an `api_endpoint`, which the picker sends from the form.
+
+### Security
+
+- **Provider API keys no longer travel in the URL**: the
+  `/api/v1/ai-models/providers/{provider}/available-models` endpoint accepted
+  `api_key` as a query parameter, so live provider keys were written to
+  server access logs in plaintext. The key now travels in the POST body (or
+  the `X-Provider-Api-Key` header on the deprecated GET form) and the query
+  parameter has been removed rather than deprecated. These endpoints also now
+  require authentication, and the endpoint they fetch is validated so it
+  cannot be aimed at loopback or link-local addresses. **Operators should
+  rotate any provider key entered through the model picker before this
+  release**, and check access logs for `api_key=`.
 
 ## [0.13.1] - 2026-07-28
 

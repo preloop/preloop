@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/preloop/preloop/cli/internal/config"
 
 	"github.com/preloop/preloop/cli/internal/testenv"
@@ -239,12 +241,14 @@ func snapshotLoginFlags() func() {
 	originalLoginHeadless := loginHeadless
 	originalLoginLoopback := loginLoopback
 	originalLoginCode := loginCode
+	originalLoginForce := loginForce
 
 	return func() {
 		loginToken = originalLoginToken
 		loginHeadless = originalLoginHeadless
 		loginLoopback = originalLoginLoopback
 		loginCode = originalLoginCode
+		loginForce = originalLoginForce
 	}
 }
 
@@ -288,14 +292,22 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 
+	// GitHub CLI CI sets this; GitLab OSS did not. Successful login posts
+	// /api/v1/events/batch unless telemetry is off, which fails hermetic
+	// httptest servers that only expect the user-info path.
+	if err := os.Setenv("PRELOOP_DISABLE_TELEMETRY", "true"); err != nil {
+		panic(err)
+	}
+
 	// Scrub ambient agent/model env vars so upstream-resolution tests see a
 	// hermetic environment. When the test suite itself runs inside a managed
 	// agent session (e.g. Preloop-managed Claude Code exporting
-	// ANTHROPIC_BASE_URL=https://.../anthropic), resolvers like
-	// parseClaudeManagedGatewayUpstream read os.Getenv and correctly refuse
-	// to treat the managed gateway as an upstream — failing tests that
-	// expect detection. Tests that need these vars set them via t.Setenv.
-	scrubPrefixes := []string{"ANTHROPIC_", "CLAUDE_CODE_", "CLAUDE_"}
+	// ANTHROPIC_BASE_URL=https://.../anthropic, or Cursor exporting
+	// CURSOR_TRACE_ID), resolvers like parseClaudeManagedGatewayUpstream
+	// and isCursorHostInvokingClaudeHook read os.Getenv and would otherwise
+	// fail tests that expect a bare host. Tests that need these vars set
+	// them via t.Setenv or permissionHookGetenv.
+	scrubPrefixes := []string{"ANTHROPIC_", "CLAUDE_CODE_", "CLAUDE_", "CURSOR_"}
 	scrubExact := []string{
 		"AWS_BEARER_TOKEN_BEDROCK",
 		"GEMINI_API_KEY",
@@ -324,4 +336,221 @@ func TestMain(m *testing.M) {
 	restoreHome()
 	_ = os.RemoveAll(tempHome)
 	os.Exit(code)
+}
+
+// A valid existing login must short-circuit `preloop login` (the install
+// script re-runs it on every install); --force must re-authenticate.
+func TestRunAuthLoginSkipsWhenAlreadyAuthenticated(t *testing.T) {
+	tempHome := t.TempDir()
+	testenv.SetHome(t, tempHome)
+
+	restore := snapshotLoginFlags()
+	defer restore()
+	loginToken = ""
+	loginForce = false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != userInfoPath {
+			t.Fatalf("unexpected path %q (login should not start OAuth)", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"u1","email":"user@example.com","name":"Test User","organization":"Acme"}`))
+	}))
+	defer server.Close()
+
+	if err := config.Save(&config.Config{
+		AccessToken: "valid-token",
+		APIURL:      server.URL,
+	}); err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	output := captureStdout(t, func() error {
+		return runAuthLogin(authLoginCmd, nil)
+	})
+	if !strings.Contains(output, "Already logged in") {
+		t.Fatalf("expected already-logged-in short circuit, got %q", output)
+	}
+	if !strings.Contains(output, "Test User") || !strings.Contains(output, "user@example.com") {
+		t.Fatalf("expected identity in output, got %q", output)
+	}
+	if !strings.Contains(output, "--force") {
+		t.Fatalf("expected --force hint, got %q", output)
+	}
+}
+
+// An invalid/unverifiable stored login must NOT short-circuit: the login flow
+// should proceed (here: headless OAuth against an unreachable server errors,
+// proving we got past the pre-check).
+func TestRunAuthLoginProceedsWhenStoredLoginInvalid(t *testing.T) {
+	tempHome := t.TempDir()
+	testenv.SetHome(t, tempHome)
+
+	restore := snapshotLoginFlags()
+	defer restore()
+	loginToken = ""
+	loginForce = false
+	loginHeadless = true
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"detail":"invalid token"}`))
+	}))
+	server.Close() // immediately unreachable
+
+	if err := config.Save(&config.Config{
+		AccessToken: "stale-token",
+		APIURL:      server.URL,
+	}); err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	var loginErr error
+	output := captureStdout(t, func() error {
+		loginErr = runAuthLogin(authLoginCmd, nil)
+		return nil
+	})
+	if strings.Contains(output, "Already logged in") {
+		t.Fatalf("stale login must not short-circuit, got %q", output)
+	}
+	if loginErr == nil {
+		t.Fatal("expected headless OAuth against a dead server to fail (proves pre-check passed through)")
+	}
+}
+
+// --token login must ignore the pre-check entirely (unattended/CI flows).
+func TestRunAuthLoginTokenBypassesPreCheck(t *testing.T) {
+	tempHome := t.TempDir()
+	testenv.SetHome(t, tempHome)
+
+	restore := snapshotLoginFlags()
+	defer restore()
+	loginForce = false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != userInfoPath {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"u2","email":"new@example.com","name":"New User"}`))
+	}))
+	defer server.Close()
+
+	if err := config.Save(&config.Config{
+		AccessToken: "old-token",
+		APIURL:      server.URL,
+	}); err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+	loginToken = "new-token"
+
+	output := captureStdout(t, func() error {
+		return runAuthLogin(authLoginCmd, nil)
+	})
+	if strings.Contains(output, "Already logged in") {
+		t.Fatalf("--token must bypass the pre-check, got %q", output)
+	}
+	if !strings.Contains(output, "Authenticated successfully") {
+		t.Fatalf("expected token login to complete, got %q", output)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config load: %v", err)
+	}
+	if cfg.AccessToken != "new-token" {
+		t.Fatalf("expected new token saved, got %q", cfg.AccessToken)
+	}
+}
+
+// --force must skip the pre-check and start a real login even when the stored
+// session is perfectly valid (switching accounts).
+func TestRunAuthLoginForceIgnoresExistingSession(t *testing.T) {
+	tempHome := t.TempDir()
+	testenv.SetHome(t, tempHome)
+
+	restore := snapshotLoginFlags()
+	defer restore()
+	loginToken = ""
+	loginForce = true
+	loginHeadless = true
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"u1","email":"user@example.com","name":"Test User"}`))
+	}))
+	server.Close() // OAuth must fail; we only care that it was attempted
+
+	if err := config.Save(&config.Config{
+		AccessToken: "valid-token",
+		APIURL:      server.URL,
+	}); err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	var loginErr error
+	output := captureStdout(t, func() error {
+		loginErr = runAuthLogin(authLoginCmd, nil)
+		return nil
+	})
+	if strings.Contains(output, "Already logged in") {
+		t.Fatalf("--force must not short-circuit, got %q", output)
+	}
+	if loginErr == nil {
+		t.Fatal("expected --force to attempt OAuth against the dead server")
+	}
+}
+
+// The re-auth hint must name the command the user actually ran, so that
+// `preloop auth login` does not tell them to run `preloop login --force`.
+func TestPrintAlreadyLoggedInNamesTheInvokedCommand(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		cmd      *cobra.Command
+		identity UserInfo
+		wants    []string
+		notWant  string
+	}{
+		{
+			name:     "login",
+			cmd:      loginCmd,
+			identity: UserInfo{Name: "Test User", Email: "user@example.com", Organization: "Acme"},
+			wants:    []string{"Test User (user@example.com)", "Org:     Acme", "'preloop login --force'"},
+		},
+		{
+			name:     "auth login alias",
+			cmd:      authLoginCmd,
+			identity: UserInfo{Name: "Test User", Email: "user@example.com"},
+			wants:    []string{"'preloop auth login --force'"},
+			notWant:  "Org:",
+		},
+		{
+			name:     "signup alias",
+			cmd:      signupCmd,
+			identity: UserInfo{Name: "Test User", Email: "user@example.com"},
+			wants:    []string{"'preloop signup --force'"},
+		},
+		{
+			// Accounts without a display name still get an unambiguous line.
+			name:     "email only",
+			cmd:      loginCmd,
+			identity: UserInfo{Email: "user@example.com"},
+			wants:    []string{"User:    user@example.com"},
+			notWant:  "()",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			identity := tt.identity
+			printAlreadyLoggedIn(&buf, tt.cmd, &identity)
+			for _, want := range tt.wants {
+				if !strings.Contains(buf.String(), want) {
+					t.Fatalf("expected %q in %q", want, buf.String())
+				}
+			}
+			if tt.notWant != "" && strings.Contains(buf.String(), tt.notWant) {
+				t.Fatalf("did not expect %q in %q", tt.notWant, buf.String())
+			}
+		})
+	}
 }

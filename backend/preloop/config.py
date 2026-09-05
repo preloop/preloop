@@ -47,22 +47,30 @@ class DatabaseSettings(BaseModel):
 
     url: str = Field(..., description="Database URL")
     pool_size: int = Field(
-        20,
+        10,
         description=(
             "Database connection pool size per worker process. With default "
-            "max_overflow this allows up to 60 concurrent connections per worker "
-            "(pool_size + max_overflow). Reduce both values on small Postgres "
+            "max_overflow this allows up to 30 concurrent connections per pool "
+            "(pool_size + max_overflow), and a process builds two pools plus a "
+            "one-connection health engine. Reduce both values on small Postgres "
             "instances or when running many workers."
         ),
     )
     max_overflow: int = Field(
-        40,
+        20,
         description=(
             "Maximum overflow connections beyond pool_size for each worker. "
             "Total peak connections per worker is pool_size + max_overflow."
         ),
     )
-    pool_timeout: int = Field(30, description="Pool timeout in seconds")
+    pool_timeout: int = Field(
+        5,
+        description=(
+            "Seconds a request waits for a pooled connection before failing "
+            "with 503. Short on purpose: a saturated pool should shed load "
+            "rather than hold requests open."
+        ),
+    )
     pool_recycle: int = Field(1800, description="Pool recycle time in seconds")
 
 
@@ -150,6 +158,48 @@ class GitLabOAuthSettings(BaseModel):
     )
 
 
+class OtlpSettings(BaseModel):
+    """Optional OTLP export for gateway and MCP telemetry.
+
+    Disabled by default. When enabled, Preloop exports GenAI spans (and
+    duration metrics) to the configured collector or vendor OTLP endpoint.
+    """
+
+    enabled: bool = Field(False, description="Enable OTLP export")
+    endpoint: str = Field(
+        "",
+        description=(
+            "OTLP endpoint. HTTP protocols append /v1/traces (and /v1/metrics) "
+            "when those suffixes are missing. gRPC uses host:port."
+        ),
+    )
+    protocol: str = Field(
+        "http/protobuf",
+        description="OTLP protocol: http/protobuf or grpc",
+    )
+    headers: str = Field(
+        "",
+        description=(
+            "OTLP headers as key=value pairs separated by commas "
+            "(vendor ingest keys, for example Langfuse Basic auth or a "
+            "Datadog API key header)"
+        ),
+    )
+    service_name: str = Field("preloop", description="Resource service.name")
+    service_namespace: str = Field("", description="Resource service.namespace")
+    deployment_environment: str = Field(
+        "",
+        description="Resource deployment.environment (falls back to ENVIRONMENT)",
+    )
+    sampler_ratio: float = Field(
+        1.0,
+        description=(
+            "Parent-based TraceIdRatioBased sampler ratio in [0, 1]. "
+            "Use a lower ratio or collector-side sampling when volume is high."
+        ),
+    )
+
+
 class VaultKVV2Settings(BaseModel):
     """Vault/OpenBao-compatible KV v2 secret backend settings."""
 
@@ -229,6 +279,10 @@ class Settings(BaseSettings):
         default_factory=VaultKVV2Settings,
         description="Optional Vault/OpenBao-compatible secret backend settings",
     )
+    otlp: OtlpSettings = Field(
+        default_factory=OtlpSettings,
+        description="Optional OTLP export for gateway and MCP telemetry",
+    )
     model_gateway_capture_content: bool = Field(
         True,
         description="Whether model gateway events may include redacted content previews",
@@ -254,6 +308,47 @@ class Settings(BaseSettings):
             "Current supported value: litellm"
         ),
     )
+    model_gateway_upstream_retry_max_attempts: int = Field(
+        3,
+        description=(
+            "Total attempts (1 initial + retries) the gateway makes for ONE "
+            "upstream model call when the provider fails transiently: "
+            "mid-stream disconnect, provider_unavailable, network error, "
+            "overload, or a non-terminal 429. Auth, quota and request errors "
+            "are never retried. Set to 1 to disable."
+        ),
+    )
+    model_gateway_upstream_retry_base_seconds: float = Field(
+        0.2,
+        description=(
+            "Base backoff between upstream retry attempts. Doubles per "
+            "attempt and carries jitter; a provider Retry-After hint raises "
+            "it, capped by MODEL_GATEWAY_UPSTREAM_RETRY_AFTER_CAP_SECONDS."
+        ),
+    )
+    model_gateway_upstream_retry_after_cap_seconds: float = Field(
+        8.0,
+        description=(
+            "Ceiling applied to a provider Retry-After hint, so one hostile "
+            "or mistaken header cannot stall a gateway worker."
+        ),
+    )
+    runtime_session_idle_timeout_minutes: int = Field(
+        720,
+        description=(
+            "Idle window after which a gateway runtime session is considered "
+            "finished, so the next request opens a NEW session row instead of "
+            "appending to a stale one. This is the honest fallback for agents "
+            "that put no session id on the wire (Gemini CLI, Hermes, OpenClaw's "
+            "Anthropic transport): without it their sessions grow forever. It is "
+            "a safety net only — a native session id always wins, so agents that "
+            "do identify their conversation (Claude Code, Codex, OpenCode, and "
+            "anything sending X-Preloop-Session-Id or prompt_cache_key) are "
+            "split by that id and are unaffected by this timeout. Set to 0 to "
+            "disable the closer entirely and restore the previous "
+            "never-ending-session behavior."
+        ),
+    )
     model_gateway_claude_family_autoregister_enabled: bool = Field(
         True,
         description=(
@@ -275,6 +370,28 @@ class Settings(BaseSettings):
             "price from the live upstream price map once in the background "
             "and re-price the row. Unknown models are negative-cached for a "
             "day so repeated traffic never re-triggers lookups."
+        ),
+    )
+    model_catalog_sync_scheduled_enabled: bool = Field(
+        False,
+        description=(
+            "Schedule the automatic model-catalog sync (the scheduled "
+            "equivalent of 'preloop models sync'): periodically discover "
+            "newly released provider models with stored API-key credentials "
+            "and add them to each account catalog. Principal-bound "
+            "subscription-OAuth credentials (Claude Code / Codex) are never "
+            "used. Default off so self-hosted catalogs never change on "
+            "upgrade without an explicit opt-in; set "
+            "MODEL_CATALOG_SYNC_SCHEDULED_ENABLED=true (helm: "
+            "config.modelCatalogSync.scheduledEnabled) to enable."
+        ),
+    )
+    model_catalog_sync_interval_hours: int = Field(
+        24,
+        description=(
+            "How often the scheduled model-catalog sync runs, in hours. "
+            "Only meaningful when model_catalog_sync_scheduled_enabled is "
+            "true (helm: config.modelCatalogSync.intervalHours)."
         ),
     )
     provider_billing_sync_enabled: bool = Field(
@@ -302,6 +419,27 @@ class Settings(BaseSettings):
             "penny-sized spend where drift percentages are meaningless."
         ),
     )
+    workspace_snapshot_max_bytes: int = Field(
+        512 * 1024 * 1024,
+        description=(
+            "Cap on the workspace snapshot (tar.gz of /workspace) captured at "
+            "the end of every hosted flow run so an execution that failed "
+            "before pushing can be restored. Workspaces larger than this are "
+            "skipped with a logged reason. On Kubernetes the snapshot travels "
+            "through the pod log stream and is additionally capped at 2 MiB "
+            "(K8S_WORKSPACE_STREAM_MAX_BYTES)."
+        ),
+    )
+    workspace_snapshot_ttl_hours: int = Field(
+        24,
+        description=(
+            "How long captured workspace snapshots (and Docker "
+            "agent-workspace-* volumes) are retained before the janitor "
+            "deletes them, in hours. 0 disables retention: snapshots are "
+            "deleted on the next janitor pass "
+            "(WORKSPACE_SNAPSHOT_TTL_HOURS)."
+        ),
+    )
     cost_digest_enabled: bool = Field(
         True,
         description=(
@@ -322,9 +460,97 @@ class Settings(BaseSettings):
             "and untruncated; a cleaner follow-up is to read those directly.)"
         ),
     )
+    model_gateway_activity_max_body_chars: int = Field(
+        8192,
+        description=(
+            "Maximum characters retained per string inside the request and "
+            "response bodies embedded in runtime_session_activity metadata "
+            "(JSONB). This is deliberately tighter than "
+            "MODEL_GATEWAY_MAX_PREVIEW_CHARS because the UI never renders "
+            "these bodies in full: the transcript reads conversation_preview, "
+            "and the only direct consumers take a 300-character substring for "
+            "the activity preview or read request.tools. A gateway request "
+            "that returned a binary body once produced a 533KB activity row, "
+            "which is a database bloat and query-latency problem independent "
+            "of encoding. Tune via MODEL_GATEWAY_ACTIVITY_MAX_BODY_CHARS."
+        ),
+    )
     flow_execution_max_wait_seconds: int = Field(
         3600,
         description="Maximum wall-clock time to wait for one flow execution before failing it",
+    )
+    flow_execution_max_attempts: int = Field(
+        2,
+        description=(
+            "Maximum agent attempts per flow execution. Attempts beyond the "
+            "first are only made when the failure was a transient upstream "
+            "model-provider error (timeout, overload, throttling) and the "
+            "failed attempt produced no external side effects. Set to 1 to "
+            "disable flow-level retries."
+        ),
+    )
+    flow_execution_retry_backoff_seconds: int = Field(
+        15,
+        description=(
+            "Base backoff before retrying a flow execution attempt. Doubles "
+            "per attempt, giving an overloaded provider time to recover."
+        ),
+    )
+    agent_job_create_max_attempts: int = Field(
+        3,
+        description=(
+            "Attempts to create the Kubernetes agent Job before failing the "
+            "execution. Covers 409 AlreadyExists (a leftover Job from an "
+            "earlier session of the same execution, or a duplicate dispatch) "
+            "and 429/5xx from the API server. Set to 1 to disable."
+        ),
+    )
+    agent_job_create_retry_base_seconds: float = Field(
+        0.5,
+        description=(
+            "Base backoff before re-attempting Kubernetes agent Job "
+            "creation. Doubles per attempt and carries jitter, so concurrent "
+            "dispatchers do not retry in lockstep."
+        ),
+    )
+    flow_confirmation_nudge_max_tokens: int = Field(
+        4096,
+        description=(
+            "Token ceiling for the one-shot confirmation round (layer 2 of "
+            "the completion contract). Bounds the prior-context excerpt "
+            "embedded in the nudge prompt (~4 chars/token) and is passed to "
+            "the nudge session as model_parameters.max_output_tokens for "
+            "runtimes that honor it. The nudge only asks the agent to "
+            "confirm or deny completion, so it should stay small."
+        ),
+    )
+    flow_confirmation_nudge_timeout_seconds: int = Field(
+        300,
+        description=(
+            "Maximum wall-clock time to wait for the one-shot confirmation "
+            "round before failing closed with the standard "
+            "missing-confirmation message."
+        ),
+    )
+    flow_completion_nudge_enabled: bool = Field(
+        True,
+        description=(
+            "When true, agent scripts carry the in-place completion nudge: "
+            "after a clean harness exit with no completion signal, the same "
+            "container re-invokes the same harness session once with a short "
+            "reminder to write result.json and print the sentinel. Runs "
+            "before the container's post-execution git block, so it can "
+            "never re-run a push. Set to false to disable fleet-wide."
+        ),
+    )
+    flow_completion_nudge_timeout_seconds: int = Field(
+        300,
+        description=(
+            "Wall clock for the in-place completion nudge round inside the "
+            "agent container. The round is one short reminder, so this "
+            "should stay small; when it expires the run falls back to the "
+            "standard missing-confirmation handling."
+        ),
     )
     flow_execution_worker_enabled: bool = Field(
         False,
@@ -487,9 +713,10 @@ class Settings(BaseSettings):
         # Create database settings
         database = DatabaseSettings(
             url=database_url,
-            pool_size=int(os.getenv("DATABASE_POOL_SIZE", "20")),
-            max_overflow=int(os.getenv("DATABASE_MAX_OVERFLOW", "40")),
-            pool_timeout=int(os.getenv("DATABASE_POOL_TIMEOUT", "30")),
+            # Keep in sync with models/db/session.py, the actual consumer.
+            pool_size=int(os.getenv("DATABASE_POOL_SIZE", "10")),
+            max_overflow=int(os.getenv("DATABASE_MAX_OVERFLOW", "20")),
+            pool_timeout=int(os.getenv("DATABASE_POOL_TIMEOUT", "5")),
             pool_recycle=int(os.getenv("DATABASE_POOL_RECYCLE", "1800")),
         )
 
@@ -568,6 +795,26 @@ class Settings(BaseSettings):
             ca_cert_path=os.getenv("VAULT_KV_V2_CA_CERT_PATH", ""),
             timeout_seconds=int(os.getenv("VAULT_KV_V2_TIMEOUT_SECONDS", "5")),
         )
+        otlp_ratio_raw = os.getenv("OTLP_SAMPLER_RATIO", "1.0")
+        try:
+            otlp_sampler_ratio = float(otlp_ratio_raw)
+        except ValueError:
+            otlp_sampler_ratio = 1.0
+        otlp = OtlpSettings(
+            enabled=os.getenv("OTLP_ENABLED", "false").lower()
+            in ("true", "1", "t", "yes"),
+            endpoint=os.getenv("OTLP_ENDPOINT")
+            or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+            protocol=os.getenv("OTLP_PROTOCOL")
+            or os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"),
+            headers=os.getenv("OTLP_HEADERS")
+            or os.getenv("OTEL_EXPORTER_OTLP_HEADERS", ""),
+            service_name=os.getenv("OTLP_SERVICE_NAME")
+            or os.getenv("OTEL_SERVICE_NAME", "preloop"),
+            service_namespace=os.getenv("OTLP_SERVICE_NAMESPACE", ""),
+            deployment_environment=os.getenv("OTLP_DEPLOYMENT_ENVIRONMENT", ""),
+            sampler_ratio=otlp_sampler_ratio,
+        )
 
         return cls(
             app_name=os.getenv("APP_NAME", "Preloop"),
@@ -586,6 +833,7 @@ class Settings(BaseSettings):
             google_oauth=google_oauth,
             gitlab_oauth=gitlab_oauth,
             vault_kv_v2=vault_kv_v2,
+            otlp=otlp,
             model_gateway_capture_content=os.getenv(
                 "MODEL_GATEWAY_CAPTURE_CONTENT", "true"
             ).lower()
@@ -601,8 +849,45 @@ class Settings(BaseSettings):
             model_gateway_max_preview_chars=int(
                 os.getenv("MODEL_GATEWAY_MAX_PREVIEW_CHARS", "32768")
             ),
+            model_gateway_activity_max_body_chars=int(
+                os.getenv("MODEL_GATEWAY_ACTIVITY_MAX_BODY_CHARS", "8192")
+            ),
             flow_execution_max_wait_seconds=int(
                 os.getenv("FLOW_EXECUTION_MAX_WAIT_SECONDS", "3600")
+            ),
+            flow_execution_max_attempts=int(
+                os.getenv("FLOW_EXECUTION_MAX_ATTEMPTS", "2")
+            ),
+            flow_execution_retry_backoff_seconds=int(
+                os.getenv("FLOW_EXECUTION_RETRY_BACKOFF_SECONDS", "15")
+            ),
+            agent_job_create_max_attempts=int(
+                os.getenv("AGENT_JOB_CREATE_MAX_ATTEMPTS", "3")
+            ),
+            agent_job_create_retry_base_seconds=float(
+                os.getenv("AGENT_JOB_CREATE_RETRY_BASE_SECONDS", "0.5")
+            ),
+            model_gateway_upstream_retry_max_attempts=int(
+                os.getenv("MODEL_GATEWAY_UPSTREAM_RETRY_MAX_ATTEMPTS", "3")
+            ),
+            model_gateway_upstream_retry_base_seconds=float(
+                os.getenv("MODEL_GATEWAY_UPSTREAM_RETRY_BASE_SECONDS", "0.2")
+            ),
+            model_gateway_upstream_retry_after_cap_seconds=float(
+                os.getenv("MODEL_GATEWAY_UPSTREAM_RETRY_AFTER_CAP_SECONDS", "8.0")
+            ),
+            flow_confirmation_nudge_max_tokens=int(
+                os.getenv("FLOW_CONFIRMATION_NUDGE_MAX_TOKENS", "4096")
+            ),
+            flow_confirmation_nudge_timeout_seconds=int(
+                os.getenv("FLOW_CONFIRMATION_NUDGE_TIMEOUT_SECONDS", "300")
+            ),
+            flow_completion_nudge_enabled=os.getenv(
+                "FLOW_COMPLETION_NUDGE_ENABLED", "true"
+            ).lower()
+            in ("true", "1", "t", "yes"),
+            flow_completion_nudge_timeout_seconds=int(
+                os.getenv("FLOW_COMPLETION_NUDGE_TIMEOUT_SECONDS", "300")
             ),
             flow_execution_worker_enabled=os.getenv(
                 "FLOW_EXECUTION_WORKER_ENABLED", "false"

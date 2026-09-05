@@ -159,7 +159,17 @@ class TestJiraTrackerWebhooks(unittest.IsolatedAsyncioTestCase):
         mock_response = MagicMock()
         mock_response.json.return_value = mock_webhooks_data
         self.mock_jira_client._session.get.return_value = mock_response
-        result = self.tracker.cleanup_stale_webhooks(preloop_url)
+        with (
+            patch(
+                "preloop.models.crud.crud_webhook.get_by_external_id",
+                return_value=None,
+            ),
+            patch(
+                "preloop.models.db.session.get_db_session",
+                side_effect=lambda: iter([MagicMock()]),
+            ),
+        ):
+            result = self.tracker.cleanup_stale_webhooks(preloop_url)
         self.assertEqual(result, {"unregistered": 2, "failed": 0})
         self.mock_jira_client._session.get.assert_called_once_with(
             "https://myjira.atlassian.net/rest/webhooks/1.0/webhook"
@@ -186,7 +196,17 @@ class TestJiraTrackerWebhooks(unittest.IsolatedAsyncioTestCase):
             MagicMock(status_code=204),
             JIRAError(status_code=500, text="Internal Server Error"),
         ]
-        result = self.tracker.cleanup_stale_webhooks(preloop_url)
+        with (
+            patch(
+                "preloop.models.crud.crud_webhook.get_by_external_id",
+                return_value=None,
+            ),
+            patch(
+                "preloop.models.db.session.get_db_session",
+                side_effect=lambda: iter([MagicMock()]),
+            ),
+        ):
+            result = self.tracker.cleanup_stale_webhooks(preloop_url)
         self.assertEqual(result, {"unregistered": 1, "failed": 1})
         self.mock_jira_client._session.get.assert_called_once_with(
             "https://myjira.atlassian.net/rest/webhooks/1.0/webhook"

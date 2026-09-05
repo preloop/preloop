@@ -1,4 +1,8 @@
-"""Gemini-compatible ingress built on top of the OpenAI gateway service."""
+"""Gemini-compatible ingress built on top of the OpenAI gateway service.
+
+Upstream provider failures are classified by the shared helper in
+``preloop.services.upstream_errors`` via ``OpenAIGatewayService`` (#118).
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
+from preloop.services.model_gateway_stream_observer import ObservedGatewayStream
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.services.openai_gateway import OpenAIGatewayService
 
@@ -160,7 +165,15 @@ class GeminiGatewayService(OpenAIGatewayService):
                 )
             yield self._sse_event(final_payload)
 
-        return event_stream()
+        # The Gemini stream is a translating generator wrapped around the
+        # shared responses stream, which owns the usage accounting. Closing
+        # this outer generator does not close the inner one (and if this outer
+        # generator was never started, closing it runs no code at all), so the
+        # inner stream would only be torn down whenever the garbage collector
+        # got around to it — by which point the request's database session can
+        # already be closed and the usage row is lost. Hand the inner stream to
+        # the observer so it is closed deterministically.
+        return ObservedGatewayStream(event_stream(), closes=(upstream_events,))
 
     def _translate_generate_content_request(
         self, model_name: str, payload: Dict[str, Any]

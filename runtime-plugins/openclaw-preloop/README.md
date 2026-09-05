@@ -133,6 +133,18 @@ either; OpenClaw builds that validate config schemas reject unknown root keys.
 | `tool_approval_fail_open` | `false` | Fail-closed by default: if Preloop is unreachable, the tool call is **blocked**. Set `true` only if you accept ungoverned execution during an outage |
 | `permission_check_url` | derived from `control_ws_url` | Override the approval endpoint |
 
+### Where the plugin metadata lives
+
+`openclaw.plugin.json` carries only the fields in OpenClaw's published
+`PluginManifest` type (`id`, `name`, `description`, `version`, `configSchema`).
+As of OpenClaw 2026.7.2-beta.7 the ClawHub validator rejects any other
+top-level key. Packaging and runtime metadata (the `before_tool_call` hook, the
+`tool_approval` capability, the permission strings, the config path, and the
+`preloop-openclaw-plugin verify` command) live under the `openclaw` object in
+`package.json` instead. Nothing about plugin behaviour changed: the plugin
+reads its config through the OpenClaw plugin entry and registers its hook in
+code, not from manifest declarations.
+
 ### How a decision is made
 
 1. **OpenClaw's own policy runs first.** The plugin reads

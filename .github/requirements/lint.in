@@ -1,0 +1,4 @@
+# Regenerate with: uv pip compile --universal --generate-hashes --python-version 3.11 lint.in -o lint.txt
+pip
+pre-commit
+ruff

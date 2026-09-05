@@ -29,6 +29,7 @@ spec:
       labels:
         {{- include "preloop.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: console
+        app: console
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

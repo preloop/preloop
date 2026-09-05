@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -157,6 +158,7 @@ var (
 	loginHeadless bool
 	loginLoopback bool
 	loginCode     string
+	loginForce    bool
 	// signupRequested tracks whether the current OAuth login flow was
 	// initiated via 'preloop signup'. When true, the browser is sent to the
 	// sign-up page first instead of the sign-in page.
@@ -198,6 +200,16 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 
 	if token != "" {
 		return runTokenLogin(token)
+	}
+
+	// Skip the interactive OAuth flow when a valid login already exists.
+	// --force re-authenticates anyway; token login above is always explicit
+	// and proceeds regardless (unattended flows keep working).
+	if !loginForce {
+		if identity := currentVerifiedLoginIdentity(); identity != nil {
+			printAlreadyLoggedIn(os.Stdout, cmd, identity)
+			return nil
+		}
 	}
 
 	if loginLoopback && loginHeadless {
@@ -273,11 +285,67 @@ func runTokenLogin(token string) error {
 	return nil
 }
 
+// printAlreadyLoggedIn reports the identity behind an existing session and how
+// to override it. The hint names the command the user actually typed
+// ('preloop login', 'preloop signup', 'preloop auth login', ...) so it stays
+// correct for every alias configureLoginFlags is applied to.
+func printAlreadyLoggedIn(output io.Writer, cmd *cobra.Command, identity *UserInfo) {
+	invocation := "preloop login"
+	if cmd != nil {
+		if path := strings.TrimSpace(cmd.CommandPath()); path != "" {
+			invocation = path
+		}
+	}
+	name := strings.TrimSpace(identity.Name)
+	if name == "" {
+		// The server omits a display name for accounts that never set one;
+		// the email alone is still an unambiguous identity.
+		fmt.Fprintf(output, "Already logged in\n  User:    %s\n", identity.Email) //nolint:errcheck
+	} else {
+		fmt.Fprintf(output, "Already logged in\n  User:    %s (%s)\n", name, identity.Email) //nolint:errcheck
+	}
+	if identity.Organization != "" {
+		fmt.Fprintf(output, "  Org:     %s\n", identity.Organization) //nolint:errcheck
+	}
+	fmt.Fprintf( //nolint:errcheck
+		output,
+		"Run '%s --force' to re-authenticate as a different user.\n",
+		invocation,
+	)
+}
+
+// currentVerifiedLoginIdentity returns the identity behind the stored login
+// when it is still usable (refreshing the access token if needed and
+// verifying it against the server). Returns nil when there is no stored
+// login or it can no longer be verified — callers should proceed with a
+// fresh login in that case.
+func currentVerifiedLoginIdentity() *UserInfo {
+	cfg, err := config.Resolve(FlagToken, FlagURL)
+	if err != nil || cfg.AccessToken == "" {
+		return nil
+	}
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil {
+		return nil
+	}
+	if FlagToken == "" && cfg.RefreshToken != "" {
+		if err := client.RefreshAccessToken(); err != nil {
+			return nil
+		}
+	}
+	var userInfo UserInfo
+	if err := client.Get(userInfoPath, &userInfo); err != nil {
+		return nil
+	}
+	return &userInfo
+}
+
 func configureLoginFlags(command *cobra.Command) {
 	command.Flags().StringVar(&loginToken, "token", "", "API access token (skip OAuth and save directly)")
 	command.Flags().BoolVar(&loginHeadless, "headless", false, "use copy/paste OAuth for SSH or no-GUI environments")
 	command.Flags().BoolVar(&loginLoopback, "loopback", false, "force the local loopback callback OAuth flow")
 	command.Flags().StringVar(&loginCode, "code", "", "authorization code from a previous headless OAuth login")
+	command.Flags().BoolVar(&loginForce, "force", false, "re-authenticate even when a valid login already exists")
 }
 
 func shouldUseHeadlessOAuth() bool {
@@ -466,7 +534,9 @@ func conversionEventName() string {
 	return "Login"
 }
 
-func stdinIsTerminal() bool {
+var stdinIsTerminal = defaultStdinIsTerminal
+
+func defaultStdinIsTerminal() bool {
 	stat, err := os.Stdin.Stat()
 	if err != nil {
 		return false

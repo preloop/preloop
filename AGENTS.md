@@ -19,11 +19,37 @@ Use the Lit.dev framework for frontend code. If you create new web components en
 - **PostgreSQL access**: `docker compose exec postgres psql -U postgres -d preloop`
 - **Database migrations**: `alembic upgrade head` (from backend/preloop/models)
 
+## CLI dev builds
+
+- The only sanctioned way to update a local dev CLI is `cd cli && make install-local` (builds, then `install -m 755 build/preloop ~/.local/bin/preloop`; `PREFIX`, `BINDIR`, `INSTALL_MODE` override the defaults).
+- Never `cp` a build onto `~/.local/bin/preloop`. `cp` writes into the existing inode, which invalidates the macOS code-signature cache; the next exec dies with `SIGKILL (Code Signature Invalid)`. `install(1)` unlinks and recreates the file, which is what keeps that cache valid.
+- Never `go build -o ~/.local/bin/preloop` either: it skips the version ldflags (the binary reports the compiled-in fallback version and looks like a release to the update check) and it replaces the file even when the target is read-only, so the guard below does not catch it.
+- On macOS dev machines keep the binary guarded with `chmod a-w ~/.local/bin/preloop` (or install with `INSTALL_MODE=555`; the default 755 install drops the guard, so re-apply it). `make install-local` still works on a read-only target, a stray `cp` is refused, and `preloop update` honours the guard instead of replacing a dev build with the release.
+- A dev build reports the `git describe` version (`v0.15.0-678-g5c9e8bc3`), which the CLI treats as newer than the `0.15.0` release; `preloop update --check` prints `newer than latest release` for it.
+
 ## Git Workflow
 
 - **NEVER use git push in any form unless explicitly requested by the user**
 - After making changes, present them to the user for review before any git operations beyond committing locally
 - After making significant changes, consider their impact on README.md and ARCHITECTURE.md and update these files accordingly.
+
+## Keep sample data generic
+This repository is public, so anything written here is written for a general
+audience. In commit messages, PR and issue text, comments, docstrings,
+fixtures and changelog entries, prefer generic examples over data copied from
+a real deployment:
+
+- use `example.com` addresses and placeholder names such as `Jane Doe`
+- describe a configuration by its shape ("a user configured an
+  OpenAI-compatible provider"), not by whose it is
+- use synthetic ids in fixtures rather than real account, tracker or project
+  identifiers
+- keep infrastructure sizing (replica counts, resource limits, database
+  tuning) in deployment config and internal runbooks, not in prose
+
+Generic examples read better anyway: they describe the case under test
+instead of an anecdote the reader has no context for. Citing a public issue
+number is fine and usually more useful than restating its background.
 
 ## Code Style
 - **Formatting**: Ruff format with 88 character line length

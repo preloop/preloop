@@ -7,6 +7,39 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, computed_field
 
 
+def classify_approval_risk(
+    tool_name: Optional[str], tool_args: Optional[Dict[str, Any]] = None
+) -> str:
+    """Return `low` or `danger`. Unknown tools fail closed as danger."""
+    name = (tool_name or "").lower()
+    args = tool_args if isinstance(tool_args, dict) else {}
+    command = str(args.get("command") or args.get("cmd") or "").lower()
+    blob = f"{name} {command}"
+    danger_tokens = (
+        "push",
+        "deploy",
+        "rm ",
+        "rm\t",
+        "delete",
+        "drop ",
+        "force",
+        "prod",
+        "production",
+        "stripe",
+        "charge",
+        "transfer",
+    )
+    if any(token in blob for token in danger_tokens):
+        return "danger"
+    if name in {"bash", "shell"} and any(
+        token in command for token in ("rm", "git push", "kubectl", "terraform")
+    ):
+        return "danger"
+    if name in {"read", "glob", "grep", "ls", "list_dir"}:
+        return "low"
+    return "danger"
+
+
 class ApprovalRequestBase(BaseModel):
     """Base schema for approval requests."""
 
@@ -85,6 +118,21 @@ class ApprovalRequestResponse(ApprovalRequestBase):
     # MUST NOT count them as human approvals in approval-rate stats.
     auto_approved_reason: Optional[str] = None
     auto_approval_bypass_id: Optional[UUID] = None
+    # Why this request exists: the rule that gated the call, snapshotted at
+    # creation time. Optional for backward compatibility: rows created before
+    # this field existed, and approvals raised without rule evaluation (the
+    # request_approval builtin), carry None and surfaces must omit the block
+    # rather than fabricate a reason. Shape is documented in
+    # services/approval_rule_context.py.
+    rule_context: Optional[Dict[str, Any]] = None
+
+    @computed_field
+    def risk_level(self) -> str:
+        """danger for destructive/spend tools, otherwise low.
+
+        Unknown is treated as danger so notification actions stay fail-closed.
+        """
+        return classify_approval_risk(self.tool_name, self.tool_args)
 
     @computed_field
     def was_bypassed(self) -> bool:

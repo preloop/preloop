@@ -19,6 +19,7 @@ from preloop.api.common import get_account_for_user
 from preloop.models.models.user import User
 from preloop.models.crud import (
     crud_approval_workflow,
+    crud_managed_agent,
     crud_mcp_server,
     crud_mcp_tool,
     crud_tool_configuration,
@@ -41,13 +42,20 @@ from preloop.schemas.tool_approval_condition import (
     ConditionTestRequest,
     ConditionTestResponse,
 )
+from preloop.services.policy.loader import _detect_condition_type
 from preloop.services.policy_evaluator import evaluate_cel_expression
+from preloop.services.tool_schema_tokens import estimate_tool_schema_tokens
 from preloop.services.tool_usage_stats import ToolUsageStatsService
 from preloop.schemas.gateway_usage import GatewayUsageByTool
 from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
 
-from preloop.tools.builtin_defs import ASK_USER_TOOL
+from preloop.tools.builtin_defs import (
+    ASK_USER_TOOL,
+    PERMISSION_PROMPT_TOOL,
+    RESOLVE_SBOM_UPSTREAMS_TOOL,
+)
+from preloop.tools.native_defs import NATIVE_TOOL_NAMES, NATIVE_TOOLS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -89,6 +97,8 @@ BUILTIN_TOOLS = [
         },
     },
     ASK_USER_TOOL,
+    PERMISSION_PROMPT_TOOL,
+    RESOLVE_SBOM_UPSTREAMS_TOOL,
     {
         "name": "get_issue",
         "description": "Get detailed information about an issue by its identifier (URL, key, or ID)",
@@ -132,7 +142,7 @@ BUILTIN_TOOLS = [
     },
     {
         "name": "update_issue",
-        "description": "Update an existing issue",
+        "description": "Update an existing issue's metadata and/or manage GitHub issue reactions. To add or remove a reaction only, pass add_reaction or remove_reaction without other fields.",
         "source": "builtin",
         "requires_tracker": True,
         "required_tracker_types": [],
@@ -146,6 +156,14 @@ BUILTIN_TOOLS = [
                 "priority": {"type": "string", "description": "New priority"},
                 "assignee": {"type": "string", "description": "New assignee"},
                 "labels": {"type": "array", "items": {"type": "string"}},
+                "add_reaction": {
+                    "type": "string",
+                    "description": "Reaction to add (GitHub: eyes, +1, heart, hooray, rocket, laugh, confused, -1). GitLab issues do not support reactions.",
+                },
+                "remove_reaction": {
+                    "type": "string",
+                    "description": "Reaction to remove (same names as add_reaction)",
+                },
             },
             "required": ["issue"],
         },
@@ -485,6 +503,56 @@ def get_tool_usage_stats(
     )
 
 
+def _native_tool_row(
+    *,
+    name: str,
+    description: str,
+    adapters: List[str],
+    parameters: Dict[str, Any],
+    config: Any,
+    rules_by_config: Dict[str, list],
+    condition_map: Dict[str, bool],
+    agent_scoped_enables: Dict[tuple, list],
+) -> Dict[str, Any]:
+    """Build a list-endpoint row for a native (agent-source) tool."""
+    config_id = str(config.id) if config else None
+    justification_mode = config.justification_mode if config else None
+    if justification_mode is not None and not isinstance(justification_mode, str):
+        justification_mode = None
+    schema = {"type": "object", "properties": parameters}
+    has_condition = bool(config_id and condition_map.get(config_id, False))
+    return {
+        "name": name,
+        "description": description,
+        "source": "agent",
+        "source_id": None,
+        "source_name": "Agent",
+        "adapters": list(adapters),
+        "parameters": parameters,
+        "schema": schema,
+        "is_enabled": config.is_enabled if config else True,
+        "requires_tracker": False,
+        "required_tracker_types": [],
+        "is_supported": True,
+        "unsupported_reason": None,
+        "approval_workflow_id": str(config.approval_workflow_id)
+        if config and config.approval_workflow_id
+        else None,
+        "config_id": config_id,
+        "has_condition": has_condition,
+        "has_approval_condition": has_condition,
+        "access_rules": rules_by_config.get(config_id, []) if config_id else [],
+        "justification_mode": justification_mode,
+        "enabled_for_agents": agent_scoped_enables.get((name, "agent", None), []),
+        "schema_tokens_estimate": estimate_tool_schema_tokens(
+            name=name,
+            description=description,
+            schema=schema,
+            justification_mode=justification_mode,
+        ),
+    }
+
+
 @router.get("/tools", response_model=List[Dict])
 @require_permission("view_tools")
 def list_all_tools(
@@ -497,6 +565,8 @@ def list_all_tools(
     Returns a comprehensive list of:
     - All builtin tools
     - All tools from active MCP servers
+    - Native agent tools from the catalogue, plus any seen agent-source
+      configurations that are not in the catalogue
     - Configuration status for each tool (enabled/disabled, preloop)
 
     Args:
@@ -511,7 +581,11 @@ def list_all_tools(
         db, account_id=str(account.id)
     )
 
-    # Create a lookup map: (tool_name, source, mcp_server_id) -> config
+    # Create a lookup map: (tool_name, source, mcp_server_id) -> config.
+    # Only account-wide rows (managed_agent_id is null) drive the page-level
+    # is_enabled/config reporting; agent-scoped rows are collected separately
+    # so the UI can show which agents have their own enablement without
+    # misreporting the account-wide state.
     config_map = {
         (
             tc.tool_name,
@@ -519,7 +593,18 @@ def list_all_tools(
             str(tc.mcp_server_id) if tc.mcp_server_id else None,
         ): tc
         for tc in tool_configs
+        if tc.managed_agent_id is None
     }
+    agent_scoped_enables: Dict[tuple, list] = {}
+    for tc in tool_configs:
+        if tc.managed_agent_id is None or not tc.is_enabled:
+            continue
+        key = (
+            tc.tool_name,
+            tc.tool_source,
+            str(tc.mcp_server_id) if tc.mcp_server_id else None,
+        )
+        agent_scoped_enables.setdefault(key, []).append(str(tc.managed_agent_id))
 
     # Get all access rules for this account
     access_rules = crud_tool_access_rule.get_multi_by_account(
@@ -558,7 +643,8 @@ def list_all_tools(
 
     # Add builtin tools
     for builtin_tool in BUILTIN_TOOLS:
-        config = config_map.get((builtin_tool["name"], "builtin", None))
+        builtin_key = (builtin_tool["name"], "builtin", None)
+        config = config_map.get(builtin_key)
         config_id = str(config.id) if config else None
 
         requires_tracker = builtin_tool.get("requires_tracker", False)
@@ -576,6 +662,9 @@ def list_all_tools(
             required_str = ", ".join(required_tracker_types)
             unsupported_reason = f"Add a {required_str} tracker to enable this tool"
 
+        justification_mode = config.justification_mode if config else None
+        if justification_mode is not None and not isinstance(justification_mode, str):
+            justification_mode = None
         tools.append(
             {
                 "name": builtin_tool["name"],
@@ -599,7 +688,14 @@ def list_all_tools(
                 if config_id
                 else False,
                 "access_rules": rules_by_config.get(config_id, []) if config_id else [],
-                "justification_mode": config.justification_mode if config else None,
+                "justification_mode": justification_mode,
+                "enabled_for_agents": agent_scoped_enables.get(builtin_key, []),
+                "schema_tokens_estimate": estimate_tool_schema_tokens(
+                    name=builtin_tool["name"],
+                    description=builtin_tool["description"],
+                    schema=builtin_tool["schema"],
+                    justification_mode=justification_mode,
+                ),
             }
         )
 
@@ -610,12 +706,19 @@ def list_all_tools(
         mcp_tools = crud_mcp_tool.get_by_server(db, server_id=server.id)
 
         for mcp_tool in mcp_tools:
-            config = config_map.get((mcp_tool.name, "mcp", str(server.id)))
+            mcp_key = (mcp_tool.name, "mcp", str(server.id))
+            config = config_map.get(mcp_key)
             config_id = str(config.id) if config else None
+            justification_mode = config.justification_mode if config else None
+            if justification_mode is not None and not isinstance(
+                justification_mode, str
+            ):
+                justification_mode = None
+            description = mcp_tool.description or ""
             tools.append(
                 {
                     "name": mcp_tool.name,
-                    "description": mcp_tool.description or "",
+                    "description": description,
                     "source": "mcp",
                     "source_id": str(server.id),
                     "source_name": server.name,
@@ -635,13 +738,64 @@ def list_all_tools(
                     "access_rules": rules_by_config.get(config_id, [])
                     if config_id
                     else [],
-                    "justification_mode": config.justification_mode if config else None,
+                    "justification_mode": justification_mode,
+                    "enabled_for_agents": agent_scoped_enables.get(mcp_key, []),
+                    "schema_tokens_estimate": estimate_tool_schema_tokens(
+                        name=mcp_tool.name,
+                        description=description,
+                        schema=mcp_tool.input_schema,
+                        justification_mode=justification_mode,
+                    ),
                 }
             )
 
+    builtin_and_mcp_count = len(tools)
+
+    for native_tool in NATIVE_TOOLS:
+        native_key = (native_tool["name"], "agent", None)
+        config = config_map.get(native_key)
+        tools.append(
+            _native_tool_row(
+                name=native_tool["name"],
+                description=native_tool["description"],
+                adapters=native_tool["adapters"],
+                parameters=native_tool["parameters"],
+                config=config,
+                rules_by_config=rules_by_config,
+                condition_map=condition_map,
+                agent_scoped_enables=agent_scoped_enables,
+            )
+        )
+
+    for (tool_name, tool_source, mcp_server_id), config in config_map.items():
+        if tool_source != "agent" or mcp_server_id is not None:
+            continue
+        if tool_name in NATIVE_TOOL_NAMES:
+            continue
+        seen_parameters: Dict[str, Any] = {}
+        if isinstance(getattr(config, "tool_schema", None), dict):
+            properties = config.tool_schema.get("properties")
+            if isinstance(properties, dict):
+                seen_parameters = properties
+        tools.append(
+            _native_tool_row(
+                name=tool_name,
+                description=config.tool_description or "",
+                adapters=[],
+                parameters=seen_parameters,
+                config=config,
+                rules_by_config=rules_by_config,
+                condition_map=condition_map,
+                agent_scoped_enables=agent_scoped_enables,
+            )
+        )
+
+    native_count = len(tools) - builtin_and_mcp_count
     logger.info(
         f"Returning {len(tools)} tools for account {account.id} "
-        f"({len(BUILTIN_TOOLS)} builtin, {len(tools) - len(BUILTIN_TOOLS)} external)"
+        f"({len(BUILTIN_TOOLS)} builtin, "
+        f"{builtin_and_mcp_count - len(BUILTIN_TOOLS)} external, "
+        f"{native_count} native)"
     )
 
     return tools
@@ -668,10 +822,27 @@ async def create_tool_configuration(
     Raises:
         HTTPException: If configuration already exists or creation fails
     """
-    # Check if configuration already exists
+    # An agent-scoped configuration must reference an agent of this account.
+    if config_data.managed_agent_id:
+        agent = crud_managed_agent.get_for_account(
+            db,
+            account_id=str(account.id),
+            agent_id=str(config_data.managed_agent_id),
+        )
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Managed agent not found or access denied",
+            )
+
+    # Check if configuration already exists (per scope: an account-wide row
+    # and per-agent rows for the same tool are distinct configurations)
     # Get all configs and filter in Python since we need multi-field matching
     all_configs = crud_tool_configuration.get_multi_by_account(
         db, account_id=str(account.id), limit=1000
+    )
+    requested_agent_id = (
+        str(config_data.managed_agent_id) if config_data.managed_agent_id else None
     )
     existing_config = next(
         (
@@ -680,6 +851,8 @@ async def create_tool_configuration(
             if c.tool_name == config_data.tool_name
             and c.tool_source == config_data.tool_source
             and c.mcp_server_id == config_data.mcp_server_id
+            and (str(c.managed_agent_id) if c.managed_agent_id else None)
+            == requested_agent_id
         ),
         None,
     )
@@ -716,12 +889,20 @@ async def create_tool_configuration(
             f"Tool configuration for {config_data.tool_name} already exists, fetching existing config"
         )
 
-        # Fetch the existing configuration
-        existing_config = crud_tool_configuration.get_by_tool_name_and_source(
-            db,
-            account_id=str(account.id),
-            tool_name=config_data.tool_name,
-            tool_source=config_data.tool_source,
+        # Fetch the existing configuration for the same scope
+        race_configs = crud_tool_configuration.get_multi_by_account(
+            db, account_id=str(account.id), limit=1000
+        )
+        existing_config = next(
+            (
+                c
+                for c in race_configs
+                if c.tool_name == config_data.tool_name
+                and c.tool_source == config_data.tool_source
+                and (str(c.managed_agent_id) if c.managed_agent_id else None)
+                == requested_agent_id
+            ),
+            None,
         )
 
         if existing_config:
@@ -1766,7 +1947,9 @@ async def create_access_rule(
                 "account_id": str(account.id),
                 "action": rule_in.action,
                 "condition_expression": rule_in.condition_expression,
-                "condition_type": rule_in.condition_type,
+                "condition_type": _detect_condition_type(
+                    rule_in.condition_expression or ""
+                ),
                 "priority": rule_in.priority,
                 "description": rule_in.description,
                 "is_enabled": rule_in.is_enabled,
@@ -1846,6 +2029,10 @@ async def update_access_rule(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Action must be 'allow', 'deny', or 'require_approval'",
         )
+
+    if "condition_expression" in update_data or "condition_type" in update_data:
+        expression = update_data.get("condition_expression", rule.condition_expression)
+        update_data["condition_type"] = _detect_condition_type(expression or "")
 
     try:
         old_snapshot = {

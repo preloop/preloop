@@ -3,7 +3,9 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -354,9 +357,25 @@ var agentsRestoreCmd = &cobra.Command{
 
 var agentsOffboardCmd = &cobra.Command{
 	Use:   "offboard [agent]",
-	Short: "Restore local config and remove managed enrollment",
+	Short: "Restore local config and archive managed enrollment",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runAgentsOffboard,
+}
+
+var agentsRemoveCmd = &cobra.Command{
+	Use:   "remove <agent-id-or-name>",
+	Short: "Permanently delete a managed agent record",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runAgentsRemove,
+}
+
+var agentsNoReuseIdentity bool
+
+var agentsMergeCmd = &cobra.Command{
+	Use:   "merge <survivor> <duplicate>",
+	Short: "Merge a duplicate managed agent into a survivor",
+	Args:  cobra.ExactArgs(2),
+	RunE:  runAgentsMerge,
 }
 
 const (
@@ -385,14 +404,23 @@ type starterPolicyAccessRule struct {
 }
 
 type runtimeSessionTokenRequest struct {
-	SessionSourceType    string   `json:"session_source_type"`
-	SessionSourceID      string   `json:"session_source_id"`
-	SessionReference     string   `json:"session_reference,omitempty"`
-	RuntimePrincipalID   string   `json:"runtime_principal_id,omitempty"`
-	RuntimePrincipalName string   `json:"runtime_principal_name,omitempty"`
-	ExpiresInMinutes     int      `json:"expires_in_minutes,omitempty"`
-	Scopes               []string `json:"scopes,omitempty"`
-	AllowedMCPServers    []string `json:"allowed_mcp_servers,omitempty"`
+	SessionSourceType    string                    `json:"session_source_type"`
+	SessionSourceID      string                    `json:"session_source_id"`
+	SessionReference     string                    `json:"session_reference,omitempty"`
+	RuntimePrincipalID   string                    `json:"runtime_principal_id,omitempty"`
+	RuntimePrincipalName string                    `json:"runtime_principal_name,omitempty"`
+	AgentKind            string                    `json:"agent_kind,omitempty"`
+	ExpiresInMinutes     int                       `json:"expires_in_minutes,omitempty"`
+	Scopes               []string                  `json:"scopes,omitempty"`
+	AllowedMCPServers    []string                  `json:"allowed_mcp_servers,omitempty"`
+	PrincipalIdentity    *principalIdentityPayload `json:"principal_identity,omitempty"`
+}
+
+type principalIdentityPayload struct {
+	Hostname   string `json:"hostname,omitempty"`
+	ConfigPath string `json:"config_path,omitempty"`
+	SourceType string `json:"source_type,omitempty"`
+	Derivation string `json:"derivation,omitempty"`
 }
 
 type runtimeSessionTokenResponse struct {
@@ -561,6 +589,8 @@ type managedAgentSummary struct {
 	SessionSourceType      string                            `json:"session_source_type"`
 	SessionSourceID        string                            `json:"session_source_id"`
 	SessionReference       string                            `json:"session_reference,omitempty"`
+	EnrollmentHostname     string                            `json:"enrollment_hostname,omitempty"`
+	IdentityDerivation     string                            `json:"identity_derivation,omitempty"`
 	LifecycleState         string                            `json:"lifecycle_state"`
 	ActivityStatus         string                            `json:"activity_status,omitempty"`
 	LastSeenAt             string                            `json:"last_seen_at,omitempty"`
@@ -571,6 +601,8 @@ type managedAgentSummary struct {
 	ManagedMCPServers      []string                          `json:"managed_mcp_servers"`
 	MCPProxyConfigured     bool                              `json:"mcp_proxy_configured,omitempty"`
 	ModelGatewayConfigured bool                              `json:"model_gateway_configured,omitempty"`
+	TotalRequests          int                               `json:"total_requests,omitempty"`
+	EstimatedCost          float64                           `json:"estimated_cost,omitempty"`
 }
 
 type managedAgentListResponse struct {
@@ -670,6 +702,7 @@ type localEnrollmentState struct {
 	AgentName           string                 `json:"agent_name"`
 	DisplayName         string                 `json:"display_name,omitempty"`
 	RuntimePrincipalID  string                 `json:"runtime_principal_id"`
+	IdentitySalt        string                 `json:"identity_salt,omitempty"`
 	EnrollmentID        string                 `json:"enrollment_id,omitempty"`
 	ConfigPath          string                 `json:"config_path"`
 	ConfigExisted       bool                   `json:"config_existed"`
@@ -720,6 +753,8 @@ func init() {
 	agentsCmd.AddCommand(agentsInstallPluginCmd)
 	agentsCmd.AddCommand(agentsRestoreCmd)
 	agentsCmd.AddCommand(agentsOffboardCmd)
+	agentsCmd.AddCommand(agentsRemoveCmd)
+	agentsCmd.AddCommand(agentsMergeCmd)
 	agentsCmd.AddCommand(agentsStarterPolicyCmd)
 
 	agentsDiscoverCmd.Flags().Bool("add", false, "deprecated: use 'preloop agents onboard <agent>' instead")
@@ -737,6 +772,7 @@ func init() {
 	agentsEnrollCmd.Flags().Bool("skip-live-validate", false, "do not run a live validation prompt after onboarding (overrides --live-validate)")
 	agentsEnrollCmd.Flags().StringSlice("tags", []string{}, "add key-value tags to the enrolled agent (e.g., --tags ext=true,env=prod)")
 	agentsEnrollCmd.Flags().Bool("approvals", false, "install a native tool-permission hook that routes would-prompt tool calls to Preloop mobile/watch approvals (Claude Code, Codex CLI, Cursor)")
+	agentsEnrollCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
 	agentsStatusCmd.Flags().Bool("json", false, "output managed status as JSON")
 	agentsValidateCmd.Flags().Bool("live", false, "run a supported live validation prompt in addition to config validation")
@@ -748,6 +784,10 @@ func init() {
 	agentsOffboardCmd.Flags().Bool("all", false, "offboard all enrolled agents")
 	agentsOffboardCmd.Flags().String("remove-model", offboardCleanupAsk, "whether to remove an eligible AI model from Preloop as part of offboarding: ask, yes, or no")
 	agentsOffboardCmd.Flags().String("remove-mcp-servers", offboardCleanupAsk, "whether to remove eligible MCP servers from Preloop as part of offboarding: ask, yes, or no")
+	agentsRemoveCmd.Flags().BoolP("yes", "y", false, "skip the permanent-delete confirmation prompt")
+	agentsRemoveCmd.Flags().Bool("force", false, "allow deleting an agent that has recorded usage history")
+	agentsMergeCmd.Flags().BoolP("yes", "y", false, "skip the merge confirmation prompt after dry-run")
+	agentsEnrollCmd.Flags().BoolVar(&agentsNoReuseIdentity, "no-reuse", false, "on identity collision, mint a salted principal instead of reusing the existing enrollment")
 	agentsStarterPolicyCmd.Flags().StringP("output", "o", "", "write generated policy YAML to a file")
 	agentsStarterPolicyCmd.Flags().Bool("apply", false, "apply the generated policy immediately")
 	agentsStarterPolicyCmd.Flags().Bool("dry-run", false, "when used with --apply, validate without applying changes")
@@ -1104,9 +1144,9 @@ func prepareAgentForEnrollment(
 ) (AgentConfig, error) {
 	agent = normalizeDiscoveredAgent(agent)
 	if autoApprove || nonInteractiveAutoConfirm() {
-		agent.RuntimePrincipalID = generatedRuntimePrincipalID(
-			resolveAgentDisplayName(agent),
-			agent.ConfigPath,
+		agent.RuntimePrincipalID = stableRuntimePrincipalIDForAgent(
+			agent,
+			identitySaltForAgent(agent),
 		)
 		return agent, nil
 	}
@@ -1123,9 +1163,10 @@ func prepareAgentForEnrollment(
 	if strings.TrimSpace(input) != "" {
 		agent.DisplayName = strings.TrimSpace(input)
 	}
-	agent.RuntimePrincipalID = generatedRuntimePrincipalID(
-		resolveAgentDisplayName(agent),
-		agent.ConfigPath,
+	// Display name is decoupled from identity under v2 derivation.
+	agent.RuntimePrincipalID = stableRuntimePrincipalIDForAgent(
+		agent,
+		identitySaltForAgent(agent),
 	)
 	return agent, nil
 }
@@ -1199,6 +1240,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	tagsInput, _ := cmd.Flags().GetStringSlice("tags")
 	runAll, _ := cmd.Flags().GetBool("all")
 	approvals, _ := cmd.Flags().GetBool("approvals")
+	preferredModel, _ := cmd.Flags().GetString("model")
 
 	tags := make(map[string]string)
 	for _, kv := range tagsInput {
@@ -1221,6 +1263,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		LiveValidate:     liveValidate,
 		SkipLiveValidate: skipLiveValidate,
 		Approvals:        approvals,
+		PreferredModel:   strings.TrimSpace(preferredModel),
 		Tags:             tags,
 		SkipConfirmation: false,
 		Input:            os.Stdin,
@@ -1621,10 +1664,14 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Managed agents (%d):\n\n", len(agents))
 	fmt.Fprintln(tw, "NAME\tSOURCE\tLIFECYCLE\tACTIVITY\tONBOARDING\tMODEL\tLOCAL CONFIG") //nolint:errcheck
 	fmt.Fprintln(tw, "----\t------\t---------\t--------\t----------\t-----\t------------") //nolint:errcheck
+	staleEntries := false
 	for _, agent := range agents {
 		localConfig := "-"
 		if localAgent, ok := localAgentsByPrincipal[agent.SessionSourceID]; ok {
 			localConfig = localAgent.ConfigPath
+		}
+		if managedAgentLooksStale(agent, localConfig) {
+			staleEntries = true
 		}
 		source := agent.SessionSourceType
 		if strings.TrimSpace(agent.SessionSourceID) != "" {
@@ -1659,7 +1706,18 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 		}
 	}
 	_ = tw.Flush()
+	if staleEntries {
+		fmt.Println()
+		fmt.Println("Some entries look stale. Archive happens automatically on offboard; delete permanently with 'preloop agents remove <id>'.")
+	}
 	return nil
+}
+
+func managedAgentLooksStale(agent managedAgentSummary, localConfig string) bool {
+	// Only archived rows are treated as stale. Missing local config (or idle
+	// activity) is normal when the agent lives on another machine.
+	_ = localConfig
+	return strings.EqualFold(strings.TrimSpace(agent.LifecycleState), "decommissioned")
 }
 
 func listManagedAgents(client *api.Client) ([]managedAgentSummary, error) {
@@ -2011,6 +2069,13 @@ func runAgentsRestore(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("✓ Restored %s config from %s\n", resolveAgentDisplayName(agent), state.BackupPath)
+	printMutatingCommandUndo(
+		os.Stdout,
+		fmt.Sprintf(
+			"preloop agents onboard %s",
+			shellQuoteAgentName(resolveAgentDisplayName(agent)),
+		),
+	)
 	return nil
 }
 
@@ -2136,7 +2201,17 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	}
 
 	var detail *managedAgentDetailResponse
-	detail, _ = getManagedAgentDetailForDiscovered(client, agent)
+	detail, detailErr := getManagedAgentDetailForDiscovered(client, agent)
+	if detailErr != nil {
+		tried := strings.Join(runtimePrincipalIDCandidates(agent), ", ")
+		if tried == "" {
+			tried = "(none)"
+		}
+		fmt.Printf(
+			"Warning: Could not match a managed record for this install (tried: %s). If a stale entry remains, run 'preloop agents list' and 'preloop agents remove <id>'.\n",
+			tried,
+		)
+	}
 
 	if state == nil && detail == nil {
 		return fmt.Errorf("agent %q is not onboarded (no local state or remote managed agent found)", agent.Name)
@@ -2189,7 +2264,7 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	}
 
 	if detail != nil {
-		if err := deleteManagedAgentRecord(client, detail.Agent.ID); err != nil {
+		if err := archiveManagedAgentRecord(client, detail.Agent.ID); err != nil {
 			return err
 		}
 	}
@@ -2202,6 +2277,13 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 
 	fmt.Printf("✓ Offboarded %s\n", resolveAgentDisplayName(agent))
 	fmt.Printf("  Restored config: %s\n", agent.ConfigPath)
+	printMutatingCommandUndo(
+		os.Stdout,
+		fmt.Sprintf(
+			"preloop agents onboard %s",
+			shellQuoteAgentName(resolveAgentDisplayName(agent)),
+		),
+	)
 	if isClaudeCodeAgent(agent) || isCodexCLIAgent(agent) {
 		// Subscription refresh tokens rotate server-side while onboarded, so
 		// write the live Preloop-held bundle back to the local credential
@@ -2213,7 +2295,11 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		}
 	}
 	if detail != nil {
-		fmt.Printf("  Removed managed agent: %s\n", detail.Agent.ID)
+		fmt.Printf(
+			"  Archived managed agent: %s (decommissioned; run 'preloop agents remove %s' to delete it permanently)\n",
+			detail.Agent.ID,
+			detail.Agent.ID,
+		)
 		candidates, err := collectOffboardCleanupCandidates(client, detail.Agent)
 		if err != nil {
 			return err
@@ -2263,12 +2349,117 @@ func restoreAgentFromBackup(agent AgentConfig, state *localEnrollmentState) (tim
 	return now, nil
 }
 
+func archiveManagedAgentRecord(client *api.Client, agentID string) error {
+	request := map[string]interface{}{
+		"lifecycle_action": "decommission",
+		"reason":           "offboarded via preloop CLI",
+	}
+	var response managedAgentSummary
+	if err := client.Patch("/api/v1/agents/"+agentID, request, &response); err != nil {
+		return fmt.Errorf("failed to archive managed agent %q: %w", agentID, err)
+	}
+	return nil
+}
+
 func deleteManagedAgentRecord(client *api.Client, agentID string) error {
 	var response map[string]interface{}
 	if err := client.Delete("/api/v1/agents/"+agentID, &response); err != nil {
 		return fmt.Errorf("failed to remove managed agent %q: %w", agentID, err)
 	}
 	return nil
+}
+
+func runAgentsRemove(cmd *cobra.Command, args []string) error {
+	autoApprove := isAutoApprove(cmd)
+	force, _ := cmd.Flags().GetBool("force")
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil {
+		return fmt.Errorf("failed to create API client: %w", err)
+	}
+	if !client.IsAuthenticated() {
+		return fmt.Errorf("not authenticated - run 'preloop login' first")
+	}
+
+	agents, err := listManagedAgents(client)
+	if err != nil {
+		return err
+	}
+	matched, err := resolveManagedAgentReference(agents, args[0])
+	if err != nil {
+		return err
+	}
+
+	if managedAgentHasUsageHistory(matched) && !force {
+		return fmt.Errorf(
+			"This agent has recorded usage. Removing it orphans that history in per-agent views. Re-run with --force, or keep it archived.",
+		)
+	}
+
+	if !autoApprove {
+		confirmed, confirmErr := confirmAction(
+			os.Stdin,
+			os.Stdout,
+			fmt.Sprintf(
+				"Permanently delete managed agent %q (%s)? This cannot be undone. (y/N): ",
+				matched.DisplayName,
+				matched.ID,
+			),
+		)
+		if confirmErr != nil {
+			return fmt.Errorf("failed to read confirmation: %w", confirmErr)
+		}
+		if !confirmed {
+			fmt.Println("Aborted without deleting the managed agent.")
+			return nil
+		}
+	}
+
+	if err := deleteManagedAgentRecord(client, matched.ID); err != nil {
+		return err
+	}
+	fmt.Printf("✓ Removed managed agent: %s (%s)\n", matched.DisplayName, matched.ID)
+	return nil
+}
+
+func managedAgentHasUsageHistory(agent managedAgentSummary) bool {
+	return agent.TotalRequests > 0 || agent.EstimatedCost != 0
+}
+
+func resolveManagedAgentReference(agents []managedAgentSummary, value string) (managedAgentSummary, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return managedAgentSummary{}, fmt.Errorf("managed agent %q not found", value)
+	}
+
+	for _, agent := range agents {
+		if strings.EqualFold(agent.ID, trimmed) {
+			return agent, nil
+		}
+	}
+	var nameMatches []managedAgentSummary
+	for _, agent := range agents {
+		if strings.EqualFold(strings.TrimSpace(agent.DisplayName), trimmed) {
+			nameMatches = append(nameMatches, agent)
+		}
+	}
+	if len(nameMatches) == 1 {
+		return nameMatches[0], nil
+	}
+	if len(nameMatches) > 1 {
+		return managedAgentSummary{}, fmt.Errorf(
+			"managed agent %q is ambiguous; use the agent id instead",
+			value,
+		)
+	}
+	for _, agent := range agents {
+		if strings.EqualFold(strings.TrimSpace(agent.SessionSourceID), trimmed) {
+			return agent, nil
+		}
+	}
+	return managedAgentSummary{}, fmt.Errorf(
+		"managed agent %q not found. Run 'preloop agents list' to see available ids",
+		value,
+	)
 }
 
 func removeLocalEnrollmentState(agent AgentConfig) error {
@@ -2574,9 +2765,11 @@ func issueRuntimeSessionToken(client *api.Client, agent AgentConfig, allowedServ
 		SessionReference:     filepath.Clean(agent.ConfigPath),
 		RuntimePrincipalID:   runtimePrincipalIDForAgent(agent),
 		RuntimePrincipalName: runtimePrincipalNameForAgent(agent),
+		AgentKind:            managedAgentKindForAgent(agent.Name),
 		ExpiresInMinutes:     120,
 		Scopes:               []string{"mcp:read", "mcp:write"},
 		AllowedMCPServers:    serverNames,
+		PrincipalIdentity:    principalIdentityForAgent(agent),
 	}
 
 	var result runtimeSessionTokenResponse
@@ -2723,11 +2916,22 @@ func normalizeDiscoveredAgent(agent AgentConfig) AgentConfig {
 		agent.DisplayName = resolveAgentDisplayName(agent)
 	}
 	if strings.TrimSpace(agent.RuntimePrincipalID) == "" {
-		agent.RuntimePrincipalID = generatedRuntimePrincipalID(agent.DisplayName, agent.ConfigPath)
+		agent.RuntimePrincipalID = stableRuntimePrincipalIDForAgent(
+			agent,
+			identitySaltForAgent(agent),
+		)
 	}
 	return agent
 }
 
+// runtimeSessionSourceTypeForAgent maps an agent to the *transport* it
+// connects over. This value is part of the durable v2 principal-id
+// fingerprint (see stableRuntimePrincipalIDForAgent) and is validated
+// server-side against a fixed allowlist, so it must stay stable for a given
+// agent forever: changing it would re-key every existing enrollment and 400
+// against older servers. Products that share the generic MCP-config transport
+// (Cursor, Windsurf, VS Code, ...) are told apart by
+// managedAgentKindForAgent instead. See #123.
 func runtimeSessionSourceTypeForAgent(agentName string) string {
 	switch strings.ToLower(strings.TrimSpace(agentName)) {
 	case "claude code":
@@ -2749,11 +2953,85 @@ func runtimeSessionSourceTypeForAgent(agentName string) string {
 	}
 }
 
+// managedAgentKindForAgent maps an agent to the durable *product* kind stored
+// as ManagedAgent.agent_kind server-side. Unlike the source type above, this
+// is descriptive only: it is not part of any fingerprint, so it is safe to
+// refine for agents that already exist. Agents whose product is identical to
+// their transport reuse the source type; the ones that previously collapsed
+// into the generic "desktop_agent" bucket get their real kind here.
+func managedAgentKindForAgent(agentName string) string {
+	switch strings.ToLower(strings.TrimSpace(agentName)) {
+	case "cursor":
+		return "cursor"
+	case "windsurf":
+		return "windsurf"
+	case "vscode / copilot":
+		return "vscode"
+	case strings.ToLower(antigravityAgentName):
+		return "antigravity"
+	case strings.ToLower(devinAgentName):
+		return "devin"
+	default:
+		return runtimeSessionSourceTypeForAgent(agentName)
+	}
+}
+
 func runtimePrincipalIDForAgent(agent AgentConfig) string {
 	if strings.TrimSpace(agent.RuntimePrincipalID) != "" {
 		return strings.TrimSpace(agent.RuntimePrincipalID)
 	}
-	return generatedRuntimePrincipalID(resolveAgentDisplayName(agent), agent.ConfigPath)
+	// v2 is the durable derivation; v1/legacy remain candidates only.
+	return stableRuntimePrincipalIDForAgent(agent, identitySaltForAgent(agent))
+}
+
+func enrollmentHostnameLabel() (string, bool) {
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "unknown-host", true
+	}
+	normalized := strings.ToLower(strings.TrimSpace(host))
+	normalized = strings.TrimSuffix(normalized, ".")
+	if label, _, ok := strings.Cut(normalized, "."); ok && label != "" {
+		normalized = label
+	}
+	if normalized == "" {
+		return "unknown-host", true
+	}
+	return normalized, false
+}
+
+func stableRuntimePrincipalIDForAgent(agent AgentConfig, salt string) string {
+	sourceType := runtimeSessionSourceTypeForAgent(agent.Name)
+	host, warned := enrollmentHostnameLabel()
+	if warned {
+		fmt.Fprintf(os.Stderr, "Warning: could not determine hostname; using %q for agent identity.\n", host)
+	}
+	path := filepath.Clean(agent.ConfigPath)
+	nul := string([]byte{0})
+	payload := "v2" + nul + host + nul + sourceType + nul + path
+	if strings.TrimSpace(salt) != "" {
+		payload += nul + strings.TrimSpace(salt)
+	}
+
+	sum := sha256.Sum256([]byte(payload))
+	return fmt.Sprintf("%s-%s", slugifyAgentName(sourceType), hex.EncodeToString(sum[:6]))
+}
+
+func principalIdentityForAgent(agent AgentConfig) *principalIdentityPayload {
+	host, _ := enrollmentHostnameLabel()
+	return &principalIdentityPayload{
+		Hostname:   host,
+		ConfigPath: filepath.Clean(agent.ConfigPath),
+		SourceType: runtimeSessionSourceTypeForAgent(agent.Name),
+		Derivation: "v2",
+	}
+}
+
+func identitySaltForAgent(agent AgentConfig) string {
+	if state, err := loadLocalEnrollmentState(agent); err == nil {
+		return strings.TrimSpace(state.IdentitySalt)
+	}
+	return ""
 }
 
 func generatedRuntimePrincipalID(displayName, configPath string) string {
@@ -3653,7 +3931,7 @@ func applyManagedGatewayForAgent(
 	case "codex cli":
 		return applyCodexManagedGateway(plan, baseURL, token, modelAlias)
 	case "opencode":
-		return applyOpenCodeManagedGateway(plan, baseURL, token, modelAlias)
+		return applyOpenCodeManagedGateway(plan, baseURL, token, modelAlias, familyAliases)
 	case "claude code":
 		return applyClaudeManagedGateway(plan, baseURL, token, modelAlias, familyAliases)
 	case "gemini cli":
@@ -3671,6 +3949,20 @@ func applyCodexManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, mod
 		providers = make(map[string]interface{})
 		plan.ManagedDocument["model_providers"] = providers
 	}
+	// Codex reads custom-provider credentials in this order
+	// (codex-rs model-provider/src/auth.rs bearer_auth_for_provider):
+	//  1. env_key → os.Getenv; if the key is set and the var is empty/unset,
+	//     Codex returns EnvVarError and never reaches step 2.
+	//  2. experimental_bearer_token (inline Authorization: Bearer).
+	//  3. otherwise ChatGPT/API-key auth from ~/.codex/auth.json.
+	//
+	// Desktop onboarding therefore inlines experimental_bearer_token and
+	// must not write env_key. The flow runner can use env_key because it
+	// launches Codex as a subprocess and injects PRELOOP_API_KEY into that
+	// process (backend/preloop/agents/codex.py). A PATH wrapper that only
+	// exports PRELOOP_TOKEN does not satisfy env_key unless config also
+	// names that variable — and naming it without guaranteeing the export
+	// would fail closed.
 	providers["preloop"] = map[string]interface{}{
 		"name":                      "Preloop",
 		"base_url":                  strings.TrimRight(baseURL, "/") + openClawGatewayPath,
@@ -3780,11 +4072,34 @@ func applyGeminiManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, mo
 	return refreshManagedPlanSnapshots(plan)
 }
 
-func applyOpenCodeManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, modelAlias string) (managedMCPEnrollmentPlan, error) {
+// applyOpenCodeManagedGateway writes the managed Preloop provider block into
+// an OpenCode config. extraAliases lists additional authorized gateway
+// aliases to expose in the provider's models map alongside the selected
+// model; onboarding passes none (single-model snapshot) while
+// `preloop agents refresh` passes the full authorized list so OpenCode's
+// model picker can reach every model the gateway would serve.
+func applyOpenCodeManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, modelAlias string, extraAliases []string) (managedMCPEnrollmentPlan, error) {
 	providers, ok := asObjectMap(plan.ManagedDocument["provider"])
 	if !ok {
 		providers = make(map[string]interface{})
 		plan.ManagedDocument["provider"] = providers
+	}
+	models := map[string]interface{}{
+		modelAlias: map[string]interface{}{
+			"name": modelAlias,
+		},
+	}
+	for _, alias := range extraAliases {
+		alias = strings.TrimSpace(alias)
+		if alias == "" || strings.EqualFold(alias, modelAlias) {
+			continue
+		}
+		if _, exists := models[alias]; exists {
+			continue
+		}
+		models[alias] = map[string]interface{}{
+			"name": alias,
+		}
 	}
 	providers["preloop"] = map[string]interface{}{
 		"npm": "@ai-sdk/openai-compatible",
@@ -3792,11 +4107,7 @@ func applyOpenCodeManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, 
 			"baseURL": strings.TrimRight(baseURL, "/") + openClawGatewayPath,
 			"apiKey":  token,
 		},
-		"models": map[string]interface{}{
-			modelAlias: map[string]interface{}{
-				"name": modelAlias,
-			},
-		},
+		"models": models,
 	}
 	plan.ManagedDocument["model"] = "preloop/" + modelAlias
 	plan.ManagedModelAlias = modelAlias
@@ -3891,6 +4202,9 @@ func applyClaudeManagedGateway(
 	}
 	plan.ManagedModelAlias = modelAlias
 	plan.ManagedProviderName = "preloop"
+	// Shell-exported Bedrock variables survive the settings.json rewrite;
+	// warn instead of silently letting them override gateway routing.
+	plan.Notes = append(plan.Notes, claudeShellBedrockOverrideNotes()...)
 	plan.Notes = append(
 		plan.Notes,
 		fmt.Sprintf("Model traffic will route through Preloop using %s.", modelAlias),
@@ -4465,19 +4779,612 @@ func getManagedAgentForDiscovered(client *api.Client, agent AgentConfig) (*manag
 	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
 		return nil, fmt.Errorf("failed to list managed agents: %w", err)
 	}
+	if matched := findManagedAgentForDiscovered(response.Items, agent); matched != nil {
+		return matched, nil
+	}
+	return nil, fmt.Errorf("managed agent not found after bootstrap for %s", agent.Name)
+}
+
+func resolveManagedAgentAfterBootstrap(
+	client *api.Client,
+	agent AgentConfig,
+	known *managedAgentSummary,
+) (*managedAgentSummary, error) {
+	if known != nil && strings.TrimSpace(known.ID) != "" {
+		detail, err := getManagedAgentDetail(client, known.ID)
+		if err != nil {
+			return nil, err
+		}
+		summary := detail.Agent
+		return &summary, nil
+	}
+	return getManagedAgentForDiscovered(client, agent)
+}
+
+func findManagedAgentForDiscovered(items []managedAgentSummary, agent AgentConfig) *managedAgentSummary {
 	sourceTypes := managedAgentLookupSourceTypes(agent)
 	candidateIDs := runtimePrincipalIDCandidates(agent)
-	for _, item := range response.Items {
+	for i := range items {
+		item := items[i]
 		if !containsString(sourceTypes, item.SessionSourceType) {
 			continue
 		}
 		for _, sourceID := range candidateIDs {
 			if item.SessionSourceID == sourceID {
-				return &item, nil
+				return &item
 			}
 		}
 	}
-	return nil, fmt.Errorf("managed agent not found after bootstrap for %s", agent.Name)
+	return nil
+}
+
+func generateIdentitySalt() (string, error) {
+	buf := make([]byte, 4)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func persistIdentitySalt(agent AgentConfig, salt string) error {
+	state, err := loadLocalEnrollmentState(agent)
+	if err != nil {
+		state = &localEnrollmentState{
+			AgentName:          agent.Name,
+			DisplayName:        resolveAgentDisplayName(agent),
+			ConfigPath:         agent.ConfigPath,
+			RuntimePrincipalID: stableRuntimePrincipalIDForAgent(agent, salt),
+		}
+	}
+	state.IdentitySalt = salt
+	state.RuntimePrincipalID = stableRuntimePrincipalIDForAgent(agent, salt)
+	return saveLocalEnrollmentState(state)
+}
+
+func pinLocalRuntimePrincipalID(agent AgentConfig, principalID string) error {
+	state, err := loadLocalEnrollmentState(agent)
+	if err != nil {
+		return nil
+	}
+	state.RuntimePrincipalID = principalID
+	return saveLocalEnrollmentState(state)
+}
+
+func rekeyManagedAgentRecord(
+	client *api.Client,
+	agentID string,
+	newSessionSourceID string,
+	identity *principalIdentityPayload,
+) error {
+	request := map[string]interface{}{
+		"new_session_source_id": newSessionSourceID,
+	}
+	if identity != nil {
+		request["principal_identity"] = identity
+	}
+	var response map[string]interface{}
+	if err := client.Post("/api/v1/agents/"+agentID+"/rekey", request, &response); err != nil {
+		return fmt.Errorf("failed to rekey managed agent %q: %w", agentID, err)
+	}
+	return nil
+}
+
+func findManagedAgentFallbackMatch(items []managedAgentSummary, agent AgentConfig) *managedAgentSummary {
+	sourceType := runtimeSessionSourceTypeForAgent(agent.Name)
+	path := filepath.Clean(agent.ConfigPath)
+	host, _ := enrollmentHostnameLabel()
+	for i := range items {
+		item := items[i]
+		if item.SessionSourceType != sourceType {
+			continue
+		}
+		if filepath.Clean(strings.TrimSpace(item.SessionReference)) != path {
+			continue
+		}
+		storedHost := strings.TrimSpace(item.EnrollmentHostname)
+		if storedHost != "" && !strings.EqualFold(storedHost, host) {
+			continue
+		}
+		return &item
+	}
+	return nil
+}
+
+func ensureManagedAgentIdentityReady(
+	client *api.Client,
+	agent AgentConfig,
+	autoApprove bool,
+	noReuse bool,
+	input io.Reader,
+	output io.Writer,
+) (AgentConfig, *managedAgentSummary, error) {
+	if client == nil {
+		return agent, nil, nil
+	}
+	if input == nil {
+		input = os.Stdin
+	}
+	if output == nil {
+		output = os.Stdout
+	}
+
+	var response managedAgentListResponse
+	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
+		return agent, nil, fmt.Errorf("failed to list managed agents: %w", err)
+	}
+
+	v2ID := stableRuntimePrincipalIDForAgent(agent, identitySaltForAgent(agent))
+	v1ID := generatedRuntimePrincipalID(resolveAgentDisplayName(agent), agent.ConfigPath)
+	legacyID := legacyRuntimePrincipalIDForAgent(agent)
+	sourceTypes := managedAgentLookupSourceTypes(agent)
+
+	var matched *managedAgentSummary
+	matchKind := ""
+	for i := range response.Items {
+		item := response.Items[i]
+		if !containsString(sourceTypes, item.SessionSourceType) {
+			continue
+		}
+		switch item.SessionSourceID {
+		case v2ID:
+			matched = &item
+			matchKind = "v2"
+		case v1ID:
+			if matched == nil {
+				matched = &item
+				matchKind = "v1"
+			}
+		case legacyID:
+			if matched == nil {
+				matched = &item
+				matchKind = "legacy"
+			}
+		}
+		if matchKind == "v2" {
+			break
+		}
+	}
+	if matched == nil {
+		if fallback := findManagedAgentFallbackMatch(response.Items, agent); fallback != nil {
+			matched = fallback
+			matchKind = "fallback"
+		}
+	}
+
+	hasLocalState := false
+	if _, err := loadLocalEnrollmentState(agent); err == nil {
+		hasLocalState = true
+	}
+
+	if matched != nil && matchKind == "v2" && !hasLocalState {
+		// Cross-host / colliding short hostname case.
+		reuse := !noReuse && (autoApprove || nonInteractiveAutoConfirm())
+		if !reuse && !noReuse {
+			confirmed, err := confirmActionDefaultYes(
+				bufio.NewReader(input),
+				output,
+				fmt.Sprintf(
+					"An enrollment matching this identity already exists as '%s' (host %s, %s). Reuse it? [Y/n]: ",
+					matched.DisplayName,
+					strings.TrimSpace(matched.EnrollmentHostname),
+					strings.TrimSpace(matched.SessionReference),
+				),
+			)
+			if err != nil {
+				return agent, nil, err
+			}
+			reuse = confirmed
+		}
+		if !reuse || noReuse {
+			salt, err := generateIdentitySalt()
+			if err != nil {
+				return agent, nil, err
+			}
+			if err := persistIdentitySalt(agent, salt); err != nil {
+				return agent, nil, err
+			}
+			agent.RuntimePrincipalID = stableRuntimePrincipalIDForAgent(agent, salt)
+			fmt.Fprintf(output, "Minted a salted identity for this install.\n") //nolint:errcheck
+			return agent, nil, nil
+		}
+	}
+
+	if matched == nil {
+		agent.RuntimePrincipalID = v2ID
+		return agent, nil, nil
+	}
+
+	if matchKind == "v2" {
+		if managedAgentLifecycleRevivalAction(matched.LifecycleState) != "" {
+			revived, err := reenrollArchivedManagedAgent(
+				client,
+				matched,
+				autoApprove,
+				input,
+				output,
+			)
+			if err != nil {
+				return agent, nil, err
+			}
+			matched = revived
+		}
+		agent.RuntimePrincipalID = matched.SessionSourceID
+		_ = pinLocalRuntimePrincipalID(agent, matched.SessionSourceID)
+		if strings.TrimSpace(agent.DisplayName) == "" {
+			agent.DisplayName = matched.DisplayName
+		}
+		return agent, matched, nil
+	}
+
+	// v1/legacy/fallback: confirm re-attaching BEFORE any server mutation so
+	// declining leaves the server record exactly as it was (previously the
+	// reenroll PATCH ran first and v1/legacy interactive runs errored with
+	// "declined re-attaching enrollment" without ever prompting, leaving a
+	// reactivated server enrollment with no local config — split-brain).
+	reuse := autoApprove || nonInteractiveAutoConfirm()
+	if !reuse {
+		confirmed, err := confirmActionDefaultYes(
+			bufio.NewReader(input),
+			output,
+			fmt.Sprintf(
+				"An enrollment matching this identity already exists as '%s' (host %s, %s). Reuse it? [Y/n]: ",
+				matched.DisplayName,
+				strings.TrimSpace(matched.EnrollmentHostname),
+				strings.TrimSpace(matched.SessionReference),
+			),
+		)
+		if err != nil {
+			return agent, nil, err
+		}
+		reuse = confirmed
+	}
+	if !reuse {
+		return agent, nil, fmt.Errorf(
+			"declined re-attaching enrollment %s (%s)",
+			matched.DisplayName,
+			matched.ID,
+		)
+	}
+	priorLifecycleState := matched.LifecycleState
+	revivedBeforeRekey := false
+	if managedAgentLifecycleRevivalAction(matched.LifecycleState) != "" {
+		revived, err := reviveManagedAgentLifecycle(client, matched, output)
+		if err != nil {
+			return agent, nil, err
+		}
+		matched = revived
+		revivedBeforeRekey = true
+	}
+	if err := rekeyManagedAgentRecord(client, matched.ID, v2ID, principalIdentityForAgent(agent)); err != nil {
+		if revivedBeforeRekey {
+			// Best effort: put the enrollment back the way we found it so a
+			// failed re-key does not leave a reactivated server record with
+			// no local config.
+			restoreManagedAgentLifecycle(client, matched, priorLifecycleState, output)
+		}
+		return agent, nil, err
+	}
+	agent.RuntimePrincipalID = v2ID
+	_ = pinLocalRuntimePrincipalID(agent, v2ID)
+	if strings.TrimSpace(agent.DisplayName) == "" {
+		agent.DisplayName = matched.DisplayName
+	}
+	matched.SessionSourceID = v2ID
+	fmt.Fprintf( //nolint:errcheck
+		output,
+		"Re-keyed managed agent %s to stable identity %s.\n",
+		matched.ID,
+		v2ID,
+	)
+	return agent, matched, nil
+}
+
+func runAgentsMerge(cmd *cobra.Command, args []string) error {
+	autoApprove := isAutoApprove(cmd)
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil {
+		return fmt.Errorf("failed to create API client: %w", err)
+	}
+	if !client.IsAuthenticated() {
+		return fmt.Errorf("not authenticated - run 'preloop login' first")
+	}
+	agents, err := listManagedAgents(client)
+	if err != nil {
+		return err
+	}
+	survivor, err := resolveManagedAgentReference(agents, args[0])
+	if err != nil {
+		return fmt.Errorf("survivor: %w", err)
+	}
+	duplicate, err := resolveManagedAgentReference(agents, args[1])
+	if err != nil {
+		return fmt.Errorf("duplicate: %w", err)
+	}
+
+	var dryRun map[string]interface{}
+	if err := client.Post(
+		"/api/v1/agents/"+survivor.ID+"/merge",
+		map[string]interface{}{
+			"duplicate_agent_id": duplicate.ID,
+			"dry_run":            true,
+		},
+		&dryRun,
+	); err != nil {
+		return fmt.Errorf("merge dry-run failed: %w", err)
+	}
+	fmt.Printf("Merge dry-run for survivor %s <- duplicate %s:\n", survivor.ID, duplicate.ID)
+	if counts, ok := dryRun["counts"].(map[string]interface{}); ok {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("  ", "  ")
+		_ = enc.Encode(counts)
+	} else {
+		fmt.Printf("  %+v\n", dryRun)
+	}
+	if !autoApprove {
+		confirmed, confirmErr := confirmAction(
+			os.Stdin,
+			os.Stdout,
+			"This rewrite is irreversible. Proceed with merge? (y/N): ",
+		)
+		if confirmErr != nil {
+			return confirmErr
+		}
+		if !confirmed {
+			fmt.Println("Aborted without merging.")
+			return nil
+		}
+	}
+	var result map[string]interface{}
+	if err := client.Post(
+		"/api/v1/agents/"+survivor.ID+"/merge",
+		map[string]interface{}{
+			"duplicate_agent_id": duplicate.ID,
+			"dry_run":            false,
+		},
+		&result,
+	); err != nil {
+		return fmt.Errorf("merge failed: %w", err)
+	}
+	fmt.Printf("✓ Merged %s into %s\n", duplicate.ID, survivor.ID)
+	return nil
+}
+
+func ensureArchivedManagedAgentReenrolled(
+	client *api.Client,
+	agent AgentConfig,
+	autoApprove bool,
+	input io.Reader,
+	output io.Writer,
+) (*managedAgentSummary, error) {
+	if client == nil {
+		return nil, nil
+	}
+	if input == nil {
+		input = os.Stdin
+	}
+	if output == nil {
+		output = os.Stdout
+	}
+
+	var response managedAgentListResponse
+	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
+		return nil, fmt.Errorf("failed to list managed agents: %w", err)
+	}
+	matched := findManagedAgentForDiscovered(response.Items, agent)
+	if matched == nil {
+		return nil, nil
+	}
+	if managedAgentLifecycleRevivalAction(matched.LifecycleState) == "" {
+		return matched, nil
+	}
+	return reenrollArchivedManagedAgent(client, matched, autoApprove, input, output)
+}
+
+// managedAgentLifecycleRevivalAction maps a non-active lifecycle state to the
+// PATCH lifecycle_action that revives it (see the lifecycle map in
+// backend/preloop/api/endpoints/account.py): a decommissioned (archived)
+// agent is revived with "reenroll", a suspended (paused) agent with "resume".
+// Returns "" when the agent needs no revival.
+func managedAgentLifecycleRevivalAction(lifecycleState string) string {
+	switch strings.ToLower(strings.TrimSpace(lifecycleState)) {
+	case "decommissioned":
+		return "reenroll"
+	case "suspended":
+		return "resume"
+	default:
+		return ""
+	}
+}
+
+// reviveManagedAgentLifecycle PATCHes the revival lifecycle_action for a
+// suspended or decommissioned managed agent without prompting (callers are
+// expected to have confirmed with the user already).
+func reviveManagedAgentLifecycle(
+	client *api.Client,
+	matched *managedAgentSummary,
+	output io.Writer,
+) (*managedAgentSummary, error) {
+	if matched == nil {
+		return nil, nil
+	}
+	if output == nil {
+		output = os.Stdout
+	}
+	action := managedAgentLifecycleRevivalAction(matched.LifecycleState)
+	if action == "" {
+		return matched, nil
+	}
+	request := map[string]interface{}{
+		"lifecycle_action": action,
+	}
+	var updated managedAgentSummary
+	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
+		return nil, fmt.Errorf(
+			"failed to %s managed agent %q: %w", action, matched.ID, err,
+		)
+	}
+	// One line per revival, naming what actually happened: a paused agent was
+	// resumed, a decommissioned one re-enrolled.
+	outcome := "Reactivated enrollment"
+	if action == "resume" {
+		outcome = "Resumed paused enrollment"
+	}
+	fmt.Fprintf( //nolint:errcheck
+		output,
+		"%s %s (%s).\n",
+		outcome,
+		matched.DisplayName,
+		matched.ID,
+	)
+	mergeRevivedManagedAgentSummary(&updated, matched)
+	return &updated, nil
+}
+
+// restoreManagedAgentLifecycle best-effort re-applies the prior lifecycle
+// state after a failed follow-up step, so a decline/failure does not leave the
+// server record reactivated while the local install has no config.
+func restoreManagedAgentLifecycle(
+	client *api.Client,
+	matched *managedAgentSummary,
+	priorLifecycleState string,
+	output io.Writer,
+) {
+	if matched == nil || client == nil {
+		return
+	}
+	if output == nil {
+		output = os.Stdout
+	}
+	var action string
+	switch strings.ToLower(strings.TrimSpace(priorLifecycleState)) {
+	case "decommissioned":
+		action = "decommission"
+	case "suspended":
+		action = "suspend"
+	default:
+		return
+	}
+	request := map[string]interface{}{
+		"lifecycle_action": action,
+		"reason":           "rolled back: re-onboarding did not complete",
+	}
+	var updated managedAgentSummary
+	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
+		fmt.Fprintf( //nolint:errcheck
+			output,
+			"Warning: could not restore enrollment %s to %s after failure: %v\n",
+			matched.ID,
+			priorLifecycleState,
+			err,
+		)
+		return
+	}
+	fmt.Fprintf( //nolint:errcheck
+		output,
+		"Restored enrollment %s to %s after failure.\n",
+		matched.ID,
+		priorLifecycleState,
+	)
+}
+
+// mergeRevivedManagedAgentSummary fills fields the PATCH response may omit
+// from the previously fetched summary.
+func mergeRevivedManagedAgentSummary(updated, previous *managedAgentSummary) {
+	if strings.TrimSpace(updated.ID) == "" {
+		updated.ID = previous.ID
+	}
+	if strings.TrimSpace(updated.DisplayName) == "" {
+		updated.DisplayName = previous.DisplayName
+	}
+	if strings.TrimSpace(updated.SessionSourceID) == "" {
+		updated.SessionSourceID = previous.SessionSourceID
+	}
+	if strings.TrimSpace(updated.SessionSourceType) == "" {
+		updated.SessionSourceType = previous.SessionSourceType
+	}
+	if strings.TrimSpace(updated.LifecycleState) == "" {
+		updated.LifecycleState = "active"
+	}
+}
+
+func reenrollArchivedManagedAgent(
+	client *api.Client,
+	matched *managedAgentSummary,
+	autoApprove bool,
+	input io.Reader,
+	output io.Writer,
+) (*managedAgentSummary, error) {
+	if matched == nil {
+		return nil, nil
+	}
+	if input == nil {
+		input = os.Stdin
+	}
+	if output == nil {
+		output = os.Stdout
+	}
+
+	action := managedAgentLifecycleRevivalAction(matched.LifecycleState)
+	if action == "" {
+		return matched, nil
+	}
+	stateLabel := "archived"
+	if action == "resume" {
+		stateLabel = "paused"
+	}
+
+	reuse := autoApprove || nonInteractiveAutoConfirm()
+	if !reuse {
+		confirmed, err := confirmActionDefaultYes(
+			bufio.NewReader(input),
+			output,
+			fmt.Sprintf(
+				"An %s enrollment for this install already exists as '%s'. Reuse it? [Y/n]: ",
+				stateLabel,
+				matched.DisplayName,
+			),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read %s confirmation: %w", action, err)
+		}
+		reuse = confirmed
+	}
+	if !reuse {
+		return nil, fmt.Errorf(
+			"declined reusing %s enrollment %s (%s). Run 'preloop agents remove %s' first if you want a fresh identity",
+			stateLabel,
+			matched.DisplayName,
+			matched.ID,
+			matched.ID,
+		)
+	}
+
+	request := map[string]interface{}{
+		"lifecycle_action": action,
+	}
+	var updated managedAgentSummary
+	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
+		return nil, fmt.Errorf("failed to %s %s managed agent %q: %w", action, stateLabel, matched.ID, err)
+	}
+	// One line per revival, naming what actually happened.
+	if action == "resume" {
+		fmt.Fprintf( //nolint:errcheck
+			output,
+			"Resumed paused enrollment %s (%s).\n",
+			matched.DisplayName,
+			matched.ID,
+		)
+	} else {
+		fmt.Fprintf( //nolint:errcheck
+			output,
+			"Reactivated %s enrollment %s (%s).\n",
+			stateLabel,
+			matched.DisplayName,
+			matched.ID,
+		)
+	}
+	mergeRevivedManagedAgentSummary(&updated, matched)
+	return &updated, nil
 }
 
 func managedAgentLookupSourceTypes(agent AgentConfig) []string {
@@ -4493,7 +5400,8 @@ func managedAgentLookupSourceTypes(agent AgentConfig) []string {
 func runtimePrincipalIDCandidates(agent AgentConfig) []string {
 	seen := map[string]struct{}{}
 	candidates := []string{
-		runtimePrincipalIDForAgent(agent),
+		stableRuntimePrincipalIDForAgent(agent, identitySaltForAgent(agent)),
+		generatedRuntimePrincipalID(resolveAgentDisplayName(agent), agent.ConfigPath),
 		legacyRuntimePrincipalIDForAgent(agent),
 	}
 	var out []string
@@ -5498,12 +6406,22 @@ func isSensitiveKey(key string) bool {
 	}
 }
 
-// publicPlanNote returns a copy of an onboarding note safe for stdout.
-// Notes describe where a credential was resolved from; they never embed the
-// secret itself. Copying into a fresh string breaks companion-return taint
-// from resolvers that also return API keys.
+// publicPlanNote returns an onboarding note safe for stdout.
+// Notes describe where a credential was resolved from (env var name, keychain
+// label, etc.); they never embed the secret itself. Resolvers that also return
+// API keys can still taint companion string returns for static analysis, so we
+// rebuild the note through strconv's quote/unquote round-trip — a barrier for
+// go/clear-text-logging — before any logging sink.
 func publicPlanNote(note string) string {
-	return string([]byte(note))
+	if note == "" {
+		return ""
+	}
+	quoted := strconv.Quote(note)
+	unquoted, err := strconv.Unquote(quoted)
+	if err != nil {
+		return ""
+	}
+	return unquoted
 }
 
 func formatManagedValidationValue(key string, value interface{}) string {

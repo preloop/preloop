@@ -12,7 +12,7 @@ Template Sync System:
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -23,6 +23,24 @@ from preloop.models.db.session import get_session_factory
 from preloop.models.models.flow import Flow
 from preloop.flow_presets import FLOW_PRESETS
 from preloop.utils.hashing import compute_content_hash
+
+_CLONE_EXCLUDE = {
+    "_sa_instance_state",
+    "id",
+    "created_at",
+    "updated_at",
+    "name",
+    "is_preset",
+    "is_enabled",
+    "account_id",
+    "ai_model_id",
+    "source_preset_id",
+    "source_prompt_hash",
+    "source_tools_hash",
+    "prompt_customized",
+    "tools_customized",
+    "preset_update_available",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +151,86 @@ def get_preset_by_name(name: str) -> Optional[dict]:
     return None
 
 
+def clone_preset_for_account(
+    db: Session,
+    preset: Any,
+    account_id: UUID,
+    name: Optional[str] = None,
+    *,
+    bound_ai_model_id: Optional[UUID] = None,
+    flow_crud: Any = None,
+    clear_event_triggers: bool = False,
+) -> Any:
+    """Clone a global preset into an account-owned enabled flow.
+
+    Args:
+        db: Database session.
+        preset: Source preset row.
+        account_id: Account that will own the clone.
+        name: Requested flow name. When unset or already taken, uses the
+            ``Copy of {preset}`` suffix loop that the clone endpoint uses.
+        bound_ai_model_id: Model chosen by the caller. When omitted, resolved
+            with ``_resolve_clone_model_binding`` (422 if the account has no
+            usable model).
+        flow_crud: CRUD object. Defaults to the module ``crud_flow``. The
+            clone endpoint passes its own instance so existing tests keep
+            patching ``preloop.api.endpoints.flows.crud_flow``.
+        clear_event_triggers: When True, the clone has no tracker event
+            trigger (empty types, no source). Used by ad-hoc run-preset so
+            the first run does not also subscribe to ``issue_labeled``.
+
+    Returns:
+        The created flow row.
+
+    Raises:
+        HTTPException: 422 when no usable AI model can be bound.
+    """
+    crud = flow_crud if flow_crud is not None else crud_flow
+    if bound_ai_model_id is None:
+        from preloop.api.endpoints.flows import _resolve_clone_model_binding
+
+        bound_ai_model_id = _resolve_clone_model_binding(db, preset, account_id)
+
+    preset_dict = {
+        key: value
+        for key, value in preset.__dict__.items()
+        if key not in _CLONE_EXCLUDE
+    }
+    if clear_event_triggers:
+        preset_dict["trigger_event_types"] = []
+        preset_dict["trigger_event_source"] = None
+        preset_dict["trigger_project_ids"] = None
+
+    if name and not crud.get_by_name_and_account(db, name=name, account_id=account_id):
+        final_name = name
+    else:
+        base_name = f"Copy of {preset.name}"
+        final_name = base_name
+        suffix = 1
+        while crud.get_by_name_and_account(db, name=final_name, account_id=account_id):
+            suffix += 1
+            final_name = f"{base_name} ({suffix})"
+
+    source_prompt_hash = compute_content_hash(preset.prompt_template)
+    source_tools_hash = compute_content_hash(preset.allowed_mcp_tools or [])
+
+    cloned_flow_in = schemas.FlowCreate(
+        **preset_dict,
+        name=final_name,
+        is_preset=False,
+        is_enabled=True,
+        account_id=str(account_id),
+        ai_model_id=bound_ai_model_id,
+        source_preset_id=str(preset.id),
+        source_prompt_hash=source_prompt_hash,
+        source_tools_hash=source_tools_hash,
+        prompt_customized=False,
+        tools_customized=False,
+        preset_update_available=False,
+    )
+    return crud.create(db=db, flow_in=cloned_flow_in, account_id=account_id)
+
+
 def ensure_global_presets_exist_background() -> None:
     """
     Background task-safe wrapper for ensuring global presets exist.
@@ -176,6 +274,138 @@ def create_default_presets_for_account_background(
 # =============================================================================
 # Template Sync System
 # =============================================================================
+
+
+def link_unlinked_flows_by_content(db: Session, dry_run: bool = False) -> int:
+    """
+    Link unlinked flows to presets by prompt content hash.
+
+    The name-based linking pass in scripts/sync_flow_presets.py only matches
+    flows named "Copy of <preset name>". Flows that were cloned from a preset
+    and then RENAMED (but never edited) end up with source_preset_id=NULL and
+    silently never receive preset updates.
+
+    This pass links any flow whose prompt_template is byte-identical to:
+    - a preset's CURRENT prompt content, or
+    - a preset's prompt content at some earlier link time (recovered from the
+      distinct source_prompt_hash values of flows already linked to that
+      preset — i.e. a pristine clone of an older preset version).
+
+    Conservative semantics:
+    - Only byte-identical prompts are linked (hash equality). A flow whose
+      prompt was customized in any way can never match and is never touched,
+      so user work can never be overwritten by this pass.
+    - If a prompt hash matches more than one preset, the flow is skipped and
+      the ambiguity is logged. No guess is made.
+    - Linked flows get prompt_customized=False (identity is proven by the
+      hash) and source_prompt_hash set to the matched (link-time) hash, so a
+      flow matching an OLDER preset version is auto-updated by the next
+      sync_preset_to_derived_flows run. Tools are handled exactly like the
+      name-based path: source_tools_hash is the preset's current tools hash
+      and tools_customized reflects whether the flow's tools differ (differing
+      tools are notified, never overwritten).
+
+    Args:
+        db: Database session
+        dry_run: If True, only log what would be linked without changes
+
+    Returns:
+        Number of flows linked (or that would be linked in dry_run)
+    """
+    presets = (
+        db.query(Flow)
+        .filter(
+            Flow.is_preset.is_(True),
+            Flow.account_id.is_(None),
+        )
+        .all()
+    )
+    if not presets:
+        return 0
+
+    # Map prompt-content hash -> {preset_id: preset} for current and
+    # historical (link-time) preset prompt versions.
+    hash_to_presets: dict = {}
+
+    def _register(hash_value: str, preset: Flow) -> None:
+        hash_to_presets.setdefault(hash_value, {})[preset.id] = preset
+
+    presets_by_id = {preset.id: preset for preset in presets}
+    for preset in presets:
+        _register(compute_content_hash(preset.prompt_template), preset)
+
+    # Historical (link-time) hashes for ALL presets in one query rather than
+    # one query per preset.
+    historical_rows = (
+        db.query(Flow.source_preset_id, Flow.source_prompt_hash)
+        .filter(
+            Flow.source_preset_id.in_(presets_by_id.keys()),
+            Flow.source_prompt_hash.isnot(None),
+        )
+        .distinct()
+        .all()
+    )
+    for preset_id, historical_hash in historical_rows:
+        _register(historical_hash, presets_by_id[preset_id])
+
+    candidates = (
+        db.query(Flow)
+        .filter(
+            Flow.is_preset.is_(False),
+            Flow.account_id.isnot(None),
+            Flow.source_preset_id.is_(None),
+        )
+        .all()
+    )
+
+    linked_count = 0
+    for flow in candidates:
+        flow_prompt_hash = compute_content_hash(flow.prompt_template)
+        matches = hash_to_presets.get(flow_prompt_hash)
+        if not matches:
+            continue
+
+        if len(matches) > 1:
+            preset_names = sorted(p.name for p in matches.values())
+            logger.warning(
+                f"Flow {flow.id} ({flow.name}) prompt matches multiple presets "
+                f"{preset_names}; skipping ambiguous content-hash link"
+            )
+            continue
+
+        preset = next(iter(matches.values()))
+        logger.info(
+            f"Linking flow '{flow.name}' ({flow.id}) to preset "
+            f"'{preset.name}' ({preset.id}) by prompt content hash"
+        )
+        linked_count += 1
+        if dry_run:
+            continue
+
+        flow.source_preset_id = preset.id
+        # The matched hash IS the flow's current prompt hash, so the prompt is
+        # provably unmodified since link time: not customized. If it matched an
+        # older preset version, the hash mismatch against the preset's current
+        # content lets sync_preset_to_derived_flows auto-update it.
+        flow.source_prompt_hash = flow_prompt_hash
+        flow.prompt_customized = False
+
+        # Tools: identical to the name-based linking path.
+        flow.source_tools_hash = compute_content_hash(preset.allowed_mcp_tools or [])
+        current_flow_tools_hash = compute_content_hash(flow.allowed_mcp_tools or [])
+        flow.tools_customized = current_flow_tools_hash != flow.source_tools_hash
+        flow.preset_update_available = flow.prompt_customized or flow.tools_customized
+
+        db.add(flow)
+
+    if not dry_run and linked_count:
+        db.commit()
+
+    logger.info(
+        f"Content-hash linking: {'would link' if dry_run else 'linked'} "
+        f"{linked_count} flows to their source presets"
+    )
+    return linked_count
 
 
 def sync_preset_to_derived_flows(db: Session, preset_id: UUID) -> PresetSyncResult:

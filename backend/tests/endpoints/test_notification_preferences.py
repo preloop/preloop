@@ -305,6 +305,7 @@ def test_get_my_notification_preferences(
     assert "preferred_channel" in data
     assert "enable_email" in data
     assert "enable_mobile_push" in data
+    assert data["stagger_email"] is True
 
 
 def test_update_my_notification_preferences(
@@ -326,6 +327,37 @@ def test_update_my_notification_preferences(
     assert data["preferred_channel"] == "mobile_push"
     assert data["enable_email"] is True
     assert data["enable_mobile_push"] is True
+
+
+def test_stagger_email_defaults_true_and_persists_toggle(
+    client: TestClient, test_user: User, db_session: Session
+):
+    """GET /me defaults stagger_email true; PUT persists false then true."""
+    get_response = client.get("/api/v1/notification-preferences/me")
+    assert get_response.status_code == 200
+    assert get_response.json()["stagger_email"] is True
+
+    off_response = client.put(
+        "/api/v1/notification-preferences/me",
+        json={"stagger_email": False},
+    )
+    assert off_response.status_code == 200
+    assert off_response.json()["stagger_email"] is False
+
+    on_response = client.put(
+        "/api/v1/notification-preferences/me",
+        json={"stagger_email": True},
+    )
+    assert on_response.status_code == 200
+    assert on_response.json()["stagger_email"] is True
+
+    # Existing preference rows created before the field still read as on
+    # once the column default/server_default is applied (migration default).
+    from preloop.models.crud import notification_preferences
+
+    prefs = notification_preferences.get_by_user(db_session, test_user.id)
+    assert prefs is not None
+    assert prefs.stagger_email is True
 
 
 def test_register_mobile_device_direct(

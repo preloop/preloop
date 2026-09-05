@@ -39,4 +39,17 @@ describe('NotifyRecipientsField', () => {
 
     expect(element.shadowRoot?.textContent).to.contain('alerts@example.com');
   });
+
+  it('drops empty user slots from a select change', async () => {
+    const element = (await fixture(
+      html`<notify-recipients-field></notify-recipients-field>`
+    )) as NotifyRecipientsField;
+    const select = element.shadowRoot?.querySelector('sl-select') as
+      (HTMLElement & { value: unknown }) | null;
+    expect(select).to.exist;
+    select!.value = ['user:', 'user:abc', '', null];
+    select!.dispatchEvent(new CustomEvent('sl-change', { bubbles: true }));
+    await element.updateComplete;
+    expect(element.userIds).to.deep.equal(['abc']);
+  });
 });

@@ -73,7 +73,22 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # OpenAI-compatible model gateway endpoints
+    # Model gateway endpoints (OpenAI-, Anthropic- and Gemini-compatible).
+    #
+    # These three carry streaming LLM traffic and are the route class that most
+    # needs a long timeout, yet they were the only proxied routes without one —
+    # so they silently inherited nginx's 60s default. On a streaming completion
+    # the clock to the first byte is the model's thinking time: a short prompt
+    # answers in seconds, while a large one (a full diff, a repository's worth
+    # of context) can reason for minutes before emitting a single token. At 60s
+    # that connection is killed and the caller sees a 504 from the proxy — a
+    # failure the gateway never observes and cannot report, and one that looks
+    # intermittent because it depends entirely on prompt size.
+    #
+    # proxy_buffering must stay off: with buffering on nginx accumulates the
+    # token stream rather than relaying it, which both defeats the point of SSE
+    # for the client and pushes the observed first byte later, making any
+    # ceiling easier to hit.
     location ^~ /openai/ {
         set $gateway_backend "${GATEWAY_URL}";
 
@@ -83,9 +98,14 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 900s;
+        proxy_read_timeout 900s;
+        proxy_buffering off;
+        proxy_cache off;
+        client_max_body_size 32m;
     }
 
-    # Anthropic-compatible model gateway endpoints
     location ^~ /anthropic/ {
         set $gateway_backend "${GATEWAY_URL}";
 
@@ -95,9 +115,14 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 900s;
+        proxy_read_timeout 900s;
+        proxy_buffering off;
+        proxy_cache off;
+        client_max_body_size 32m;
     }
 
-    # Gemini-compatible model gateway endpoints
     location ^~ /gemini/ {
         set $gateway_backend "${GATEWAY_URL}";
 
@@ -107,6 +132,12 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 900s;
+        proxy_read_timeout 900s;
+        proxy_buffering off;
+        proxy_cache off;
+        client_max_body_size 32m;
     }
 
     # OAuth server endpoints (authorize, token, register, revoke)
@@ -178,24 +209,11 @@ server {
         try_files $uri =404;
     }
 
-    location = /about {
-        try_files /about.html =404;
-    }
-
-    location = /pricing {
-        try_files /pricing.html =404;
-    }
-
-    location = /privacy {
-        try_files /privacy.html =404;
-    }
-
-    location = /terms {
-        try_files /terms.html =404;
-    }
-
-    location = /whatis-mcp {
-        try_files /whatis-mcp.html =404;
+    # Prerendered top-level pages. Serve the .html the build emitted; otherwise
+    # the SPA. This is not an allowlist: EE adds a page by dropping markdown
+    # under frontend/content/<brand>/, which Vite prerenders to /<slug>.html.
+    location ~ ^/([a-z0-9][a-z0-9-]*)$ {
+        try_files /$1.html /index.html;
     }
 
     location = /robots.txt {
@@ -233,6 +251,10 @@ server {
 
     # RSS feed. Exact-match so it wins over the /blog/<slug> regex below.
     location = /blog/feed.xml {
+        # `types { }` empties the MIME map for this location. Without it
+        # mime.types already maps .xml -> text/xml, that match wins, and
+        # default_type (which only applies when nothing matched) is dead code.
+        types { }
         default_type application/rss+xml;
         try_files /blog/feed.xml =404;
     }
@@ -254,10 +276,11 @@ server {
         add_header Expires "0";
     }
 
-    # Health check endpoint
-    location /health {
+    # Health check endpoint. `default_type` (not `add_header Content-Type`,
+    # which is dead code after `return`) sets the response MIME type.
+    location = /health {
         access_log off;
+        default_type text/plain;
         return 200 "healthy\n";
-        add_header Content-Type text/plain;
     }
 }

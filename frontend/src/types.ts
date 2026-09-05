@@ -1,3 +1,114 @@
+export interface GitCloneRepository {
+  tracker_id: string;
+  repository_url?: string;
+  clone_path: string;
+  branch?: string;
+}
+
+export interface GitCloneConfig {
+  enabled: boolean;
+  repositories?: GitCloneRepository[];
+  git_user_name?: string;
+  git_user_email?: string;
+  source_branch?: string;
+  target_branch?: string;
+  create_pull_request?: boolean;
+  pull_request_title?: string;
+  pull_request_description?: string;
+}
+
+export interface FlowCustomCommands {
+  enabled: boolean;
+  commands?: string[];
+}
+
+export interface FlowFailureNotifications {
+  comment_on_trigger_issue?: boolean;
+  attention_item?: boolean;
+}
+
+export interface FlowSuccessNotifications {
+  comment_on_trigger_issue?: boolean;
+}
+
+/** Per-flow terminal notifications. Null means no comments or attention items. */
+export interface FlowNotifications {
+  on_failure?: FlowFailureNotifications;
+  on_success?: FlowSuccessNotifications;
+}
+
+export function defaultFlowNotifications(): FlowNotifications {
+  return {
+    on_failure: {
+      comment_on_trigger_issue: false,
+      attention_item: false,
+    },
+    on_success: {
+      comment_on_trigger_issue: false,
+    },
+  };
+}
+
+export interface FlowWebhookConfig {
+  webhook_secret: string;
+}
+
+/** Server-computed schedule state; read-only for the console. */
+export interface FlowScheduleState {
+  active: boolean;
+  type: string;
+  description: string;
+  timezone: string;
+  next_run_at: string | null;
+  cron?: string;
+}
+
+export interface FlowExecutionStats {
+  total_execs?: number;
+  running_execs?: number;
+  last_seen_at?: string | null;
+  estimated_cost?: number;
+}
+
+/**
+ * Canonical console-side shape of a flow. Views must import this rather than
+ * redeclaring a local copy, so filter and trigger fields cannot drift.
+ *
+ * `trigger_config` holds the tracker event filters. `null` means "clear the
+ * saved filters" on update; absent means "leave them untouched".
+ */
+export interface Flow {
+  id?: string;
+  name?: string;
+  description?: string;
+  icon?: string;
+  account_id?: string;
+  prompt_template?: string;
+  agent_type?: string;
+  agent_config?: Record<string, unknown>;
+  ai_model_id?: string;
+  trigger_event_source?: string;
+  trigger_event_types?: string[];
+  trigger_organization_id?: string;
+  trigger_project_ids?: string[];
+  trigger_config?: Record<string, unknown> | null;
+  schedule_config?: Record<string, unknown> | null;
+  schedule_state?: FlowScheduleState | null;
+  webhook_config?: FlowWebhookConfig;
+  allowed_mcp_servers?: string[];
+  allowed_mcp_tools?: Array<{ server_name: string; tool_name: string }>;
+  git_clone_config?: GitCloneConfig;
+  notifications?: FlowNotifications | null;
+  custom_commands?: FlowCustomCommands;
+  max_iterations?: number | null;
+  max_budget?: number | null;
+  is_preset?: boolean;
+  is_enabled?: boolean;
+  runner_pool?: string | null;
+  execution_stats?: FlowExecutionStats;
+  [key: string]: unknown;
+}
+
 export interface AIModel {
   id: string;
   name: string;
@@ -161,6 +272,14 @@ export interface GatewayUsageByModel {
   token_usage: GatewayTokenUsage;
   estimated_cost: number;
   last_request_at?: string | null;
+  /**
+   * Requests this model served that carry no cost at all, and requests it
+   * served at exactly $0. Optional: servers older than wave 8 omit both, and
+   * the console falls back to `estimated_cost` alone there.
+   */
+  unpriced_request_count?: number;
+  zero_priced_request_count?: number;
+  failed_request_count?: number;
 }
 
 export interface GatewayUsageByFlow {
@@ -394,6 +513,7 @@ export interface ManagedAgentSummary {
   supports_existing_session?: boolean;
   supports_voice?: boolean;
   supports_interrupt?: boolean;
+  control_session_mode?: 'local' | 'remote' | 'queued' | 'offline' | string;
   supported_input_modes?: string[];
   supported_output_modes?: string[];
 }
@@ -404,6 +524,8 @@ export interface AgentControlCommandRequest {
   target_session_id?: string | null;
   session_mode?: 'new' | 'existing' | string;
   start_new_session?: boolean;
+  interrupt?: boolean;
+  spawn_worktree?: boolean;
 }
 
 export interface AgentControlVoiceTranscriptRequest {
@@ -549,7 +671,13 @@ export interface RuntimeSessionUpdateRequest {
 }
 
 export interface RuntimeSessionActivityItem {
-  activity_type: 'model_interaction' | 'tool_call' | string;
+  activity_type:
+    | 'model_interaction'
+    | 'tool_call'
+    | 'session_started'
+    | 'session_ended'
+    | 'agent_control_message'
+    | string;
   timestamp: string;
   title: string;
   summary: string | null;
@@ -580,6 +708,23 @@ export interface RuntimeSessionRequestTool {
   stripped: boolean;
 }
 
+/**
+ * Prompt-cache accounting for one gateway request.
+ *
+ * `null` on any token field means the provider did NOT report that number.
+ * It must be rendered as "not reported", never as zero — a `0` here is a real
+ * provider-reported zero and carries the opposite meaning.
+ */
+export interface RuntimeSessionRequestCache {
+  cache_read_tokens: number | null;
+  cache_creation_tokens: number | null;
+  cache_miss_tokens: number | null;
+  /** 'reported' = provider sent a miss count; 'derived' = prompt - read - write. */
+  cache_miss_source: 'reported' | 'derived' | null;
+  has_cache_data: boolean;
+  usage_source: string | null;
+}
+
 export interface RuntimeSessionRequestItem {
   id: string;
   timestamp: string | null;
@@ -596,6 +741,48 @@ export interface RuntimeSessionRequestItem {
   endpoint: string | null;
   tools: RuntimeSessionRequestTool[];
   tools_total_schema_tokens: number;
+  cache?: RuntimeSessionRequestCache;
+}
+
+/**
+ * Whole-session prompt-cache rollup.
+ *
+ * The hit ratio covers only requests whose provider reported a cache split;
+ * `uncovered_prompt_tokens` is the traffic excluded from that denominator.
+ * `cache_write_tokens` is null when no provider in the session has a billable
+ * cache-write concept at all. `estimated_cache_savings_usd` is null unless the
+ * price catalog supports an exact figure, with `savings_omitted_reason` set.
+ */
+export interface RuntimeSessionCacheModelGroup {
+  model_alias: string | null;
+  provider_name: string | null;
+  requests: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  prompt_tokens: number;
+  /** Rows whose provider reported no prompt total; excluded from
+   *  `prompt_tokens` rather than counted as zero. */
+  requests_with_unknown_prompt_tokens?: number;
+  write_reported: boolean;
+}
+
+export interface RuntimeSessionCacheSummary {
+  requests_total: number;
+  requests_with_cache_data: number;
+  requests_without_cache_data: number;
+  covered_prompt_tokens: number;
+  uncovered_prompt_tokens: number;
+  cached_prompt_tokens: number;
+  uncached_prompt_tokens: number;
+  cache_write_tokens: number | null;
+  cache_hit_ratio: number | null;
+  estimated_cache_savings_usd: number | null;
+  /** 'catalog_exact' | 'catalog_exact_partial' (lower bound) | null. */
+  savings_basis: string | null;
+  savings_omitted_reason: string | null;
+  /** Covered requests whose provider reported no prompt total at all. */
+  requests_with_unknown_prompt_tokens?: number;
+  models?: RuntimeSessionCacheModelGroup[];
 }
 
 export interface RuntimeSessionRequestListResponse {
@@ -606,6 +793,7 @@ export interface RuntimeSessionRequestListResponse {
   offset: number;
   next_offset: number | null;
   has_more: boolean;
+  cache_summary?: RuntimeSessionCacheSummary;
 }
 
 export interface RuntimeSessionSummaryInsight {
@@ -684,13 +872,38 @@ export interface SessionContextProfileSegment {
   sample_excerpt?: string | null;
 }
 
+/** One measured idle-TTL prompt-cache expiry from context analysis. */
+export interface SessionCacheIdleExpiryEvent {
+  event_id: string;
+  previous_event_id: string;
+  api_usage_id?: string | null;
+  idle_seconds: number;
+  provider_ttl_seconds?: number;
+  provider_name?: string | null;
+  rewritten_tokens?: number;
+  previous_cache_read_tokens?: number;
+  current_cache_read_tokens?: number;
+  measured_extra_cost_usd?: number | null;
+}
+
+export interface SessionCacheProfile {
+  avg_repeated_prefix_tokens?: number;
+  repeated_prefix_share?: number;
+  prefix_stability?: string;
+  cache_breaking_events?: Array<Record<string, unknown>>;
+  measured_cache_read_tokens?: number;
+  idle_expiry_events?: SessionCacheIdleExpiryEvent[];
+  measured_idle_expiry_tokens?: number;
+  measured_idle_expiry_extra_cost_usd?: number;
+}
+
 export interface SessionContextProfileData {
   session_id: string;
   analyzed_event_count: number;
   total_prompt_tokens: number;
   total_completion_tokens: number;
   segments?: SessionContextProfileSegment[];
-  cache_profile?: Record<string, unknown> | null;
+  cache_profile?: SessionCacheProfile | null;
   retry_profile?: Record<string, unknown> | null;
   tool_bloat?: Record<string, unknown> | null;
   tool_schema_overhead?: Record<string, unknown> | null;
@@ -792,12 +1005,122 @@ export interface AccountGatewayUsageSummaryResponse {
   usage_by_flow: GatewayUsageByFlow[];
   usage_by_session: GatewayUsageBySession[];
   usage_by_tool?: GatewayUsageByTool[];
+  /**
+   * Set when the server answered from a pre-aggregated rollup rather than the
+   * raw request rows, which is how a year of usage comes back in a second.
+   * A rollup is coarser than the rows behind it, so the card says where the
+   * number came from instead of implying it counted every request.
+   *
+   * Both spellings are read because neither is universal across deployments;
+   * absent on servers that do not roll up, and the label is then not shown.
+   */
+  from_rollup?: boolean | null;
+  source?: string | null;
+}
+
+export interface RateLimitTotals {
+  rate_limited_requests: number;
+  // Sum of provider-advised Retry-After values observed on 429 responses:
+  // a lower bound on wall-clock stall, read from real provider headers.
+  blocked_ms: number;
+  last_rate_limited_at: string | null;
+  quota_exhausted_count: number;
+  transient_count: number;
+}
+
+export interface RateLimitByModel {
+  model_alias: string | null;
+  provider_name: string | null;
+  rate_limited_requests: number;
+  blocked_ms: number;
+  last_rate_limited_at: string | null;
+}
+
+export interface RateLimitBySession {
+  runtime_session_id: string | null;
+  runtime_principal_name: string | null;
+  rate_limited_requests: number;
+  blocked_ms: number;
+  last_rate_limited_at: string | null;
+}
+
+export interface RateLimitSnapshotData {
+  retry_after_ms?: number;
+  requests_limit?: number;
+  requests_remaining?: number;
+  requests_reset_at?: string;
+  requests_reset_after_ms?: number;
+  tokens_limit?: number;
+  tokens_remaining?: number;
+  tokens_reset_at?: string;
+  tokens_reset_after_ms?: number;
+  subtype?: string;
+  subtype_source?: string;
+  headers?: Record<string, string>;
+}
+
+export interface RateLimitSnapshotItem {
+  provider_name: string | null;
+  model_alias: string | null;
+  observed_at: string;
+  status_code: number;
+  upstream_credential_type: string | null;
+  rate_limit: RateLimitSnapshotData;
+}
+
+export interface AccountRateLimitReportResponse {
+  period_start: string;
+  period_end: string;
+  totals: RateLimitTotals;
+  by_model: RateLimitByModel[];
+  by_session: RateLimitBySession[];
+  latest_snapshots: RateLimitSnapshotItem[];
 }
 
 export interface PriceCatalogInfo {
   source_url?: string | null;
   fetched_at?: string | null;
   model_count?: number | null;
+}
+
+/** One price in USD per million tokens, as providers publish them. */
+export interface AIModelPrice {
+  input_per_1m?: number | null;
+  output_per_1m?: number | null;
+  cached_input_per_1m?: number | null;
+  blended_per_1m?: number | null;
+  request_price?: number | null;
+}
+
+export type AIModelPricingSource =
+  'override' | 'model_config' | 'catalog' | 'none';
+
+/** What one model actually costs this account, and where that came from. */
+export interface AIModelPricingResponse {
+  ai_model_id: string;
+  model_alias?: string | null;
+  provider_name?: string | null;
+  source: AIModelPricingSource;
+  price: AIModelPrice;
+  currency: string;
+  override_id?: string | null;
+  effective_from?: string | null;
+  effective_until?: string | null;
+  catalog_key?: string | null;
+  /** True when the provider publishes a price list Preloop can read. */
+  fetch_supported: boolean;
+  fetch_provider_label?: string | null;
+}
+
+/** A price read from the provider for confirmation. Nothing is saved. */
+export interface AIModelPriceQuote {
+  ai_model_id: string;
+  provider_name?: string | null;
+  source_url: string;
+  model_key: string;
+  price: AIModelPrice;
+  currency: string;
+  fetched_at: string;
 }
 
 export interface ModelPriceOverride {
@@ -832,7 +1155,59 @@ export type ModelPriceOverrideCreate = Omit<
 
 export type ModelPriceOverrideUpdate = Partial<ModelPriceOverrideCreate>;
 
-export interface CostAnalyticsSummaryResponse extends AccountGatewayUsageSummaryResponse {}
+// Usage ingested from outside the gateway (e.g. a Cursor CSV/JSON export).
+// Reported as its own block so imported spend is never mixed into
+// `estimated_cost` or any budget figure (issue #123).
+export interface ImportedUsageByModel {
+  model_alias: string | null;
+  source: string | null;
+  request_count: number;
+  total_tokens: number;
+  imported_cost: number;
+  last_event_at: string | null;
+}
+
+// One source-side conversation (thread) of imported usage. `estimated_cost`
+// (hook/transcript-derived) and `reconciled_cost` (billing export) are kept
+// as SEPARATE fields and must never be summed into one number. `null` means
+// the source reported nothing ("not reported") — it is not zero. Entries
+// whose parent_conversation_id matches another entry's conversation_id are
+// subagent workers of that parent thread.
+export interface ImportedUsageByConversation {
+  conversation_id: string;
+  parent_conversation_id: string | null;
+  source: string | null;
+  event_count: number;
+  total_tokens: number | null;
+  estimated_cost: number | null;
+  reconciled_cost: number | null;
+  last_event_at: string | null;
+}
+
+export interface ImportedUsageSummary {
+  event_count: number;
+  total_tokens: number;
+  imported_cost: number;
+  usage_by_model: ImportedUsageByModel[];
+  // Absent on older servers; the console treats missing as "no rollup".
+  usage_by_conversation?: ImportedUsageByConversation[];
+}
+
+// One model's share of the window's unpriced gateway usage. Names the models
+// behind `unpriced_requests`/`unpriced_tokens` so the banner can point at a
+// fix instead of only counting the damage.
+export interface UnpricedModelUsage {
+  model: string;
+  requests: number;
+  tokens: number;
+}
+
+export interface CostAnalyticsSummaryResponse extends AccountGatewayUsageSummaryResponse {
+  // Absent (null) when the window contains no imported usage.
+  imported_usage?: ImportedUsageSummary | null;
+  // Absent on older servers; the console treats missing as "none named".
+  unpriced_models?: UnpricedModelUsage[];
+}
 
 export interface ProviderBillingConnection {
   id: string;
@@ -864,11 +1239,13 @@ export interface CostReconciliationResponse {
 
 export interface RepriceResponse {
   submitted_async: boolean;
-  rows_examined: number;
-  rows_updated: number;
-  rows_skipped: number;
-  cost_before: number;
-  cost_after: number;
+  // Null when submitted_async: nothing was scanned in-request, which is
+  // different from "the window contained 0 rows".
+  rows_examined: number | null;
+  rows_updated: number | null;
+  rows_skipped: number | null;
+  cost_before: number | null;
+  cost_after: number | null;
   dry_run: boolean;
 }
 
@@ -901,6 +1278,30 @@ export interface AIModelGatewayUsageSummaryResponse {
   estimated_cost: number;
   requests_by_day: GatewayUsageByDay[];
   usage_by_session: GatewayUsageBySession[];
+}
+
+export interface AIModelOverviewItem {
+  ai_model_id: string;
+  model_name: string;
+  provider_name: string;
+  model_identifier: string;
+  model_alias: string | null;
+  is_default: boolean;
+  total_requests: number;
+  successful_requests: number;
+  failed_requests: number;
+  token_usage: GatewayTokenUsage;
+  estimated_cost: number;
+  unpriced_request_count: number;
+  active_session_count: number;
+  last_request_at: string | null;
+  pricing_source: 'override' | 'model_config' | 'catalog' | 'none';
+}
+
+export interface AIModelsOverviewResponse {
+  period_start: string;
+  period_end: string;
+  models: AIModelOverviewItem[];
 }
 
 export interface ApiKeyGatewayUsageSummaryResponse {
@@ -1007,6 +1408,71 @@ export interface Issue {
   key: string;
   source: string;
   url: string;
+  labels?: string[] | null;
+  assignee?: string | null;
+}
+
+export interface IssueListItem {
+  id: string;
+  external_id: string;
+  key: string;
+  title: string;
+  description?: string | null;
+  status?: string | null;
+  priority?: string | null;
+  assignee?: string | null;
+  labels?: string[] | null;
+  organization: string;
+  project: string;
+  project_id: string;
+  project_identifier?: string | null;
+  url: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IssueListResponse {
+  items: IssueListItem[];
+  total: number;
+  skip: number;
+  limit: number;
+}
+
+export interface PullRequestListItem {
+  number: number;
+  iid: number;
+  title: string;
+  description?: string | null;
+  url: string;
+  author?: string | null;
+  source_branch?: string | null;
+  target_branch?: string | null;
+  state: string;
+  draft: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface PullRequestListResponse {
+  items: PullRequestListItem[];
+  page: number;
+  limit: number;
+  has_more: boolean;
+  supported: boolean;
+  fetched_at: string;
+}
+
+export type VerdictStatus =
+  'checking' | 'done' | 'failed' | 'timeout' | 'no_model';
+
+export interface VerdictState {
+  state: VerdictStatus;
+  verdict?: {
+    decision?: string;
+    reason?: string;
+    suggestion?: string;
+    resolution?: string;
+  };
 }
 
 export interface DuplicatePair {
@@ -1245,6 +1711,61 @@ export interface ApprovalRequest {
    * would overstate how much human oversight actually happened.
    */
   decided_by_human?: boolean;
+  /**
+   * Why this request exists: the policy rule that gated the call, captured
+   * when the request was created. Absent on rows created before this field
+   * existed and on approvals raised without rule evaluation (the
+   * `request_approval` builtin). Surfaces must omit the explanation rather
+   * than guess at one.
+   */
+  rule_context?: ApprovalRuleContext | null;
+}
+
+/**
+ * Where an approval's gating came from.
+ *
+ * `tool_access_rule` and `subject_scoped_rule` name an actual rule with an
+ * expression. The rest describe gating that no rule produced, and carry an
+ * `explanation` instead.
+ */
+export type ApprovalRuleContextSource =
+  | 'tool_access_rule'
+  | 'subject_scoped_rule'
+  | 'tool_default_workflow'
+  | 'rule_evaluation_error'
+  | 'agent_permission_hook'
+  | 'model_io_rule';
+
+/**
+ * Snapshot of the policy rule that required an approval.
+ *
+ * Recorded at request creation, not recomputed at read time, so editing or
+ * deleting a rule later cannot rewrite the reason a past approval was asked
+ * for. It states WHAT matched. It is not a risk assessment: nobody scored
+ * this call, an expression simply evaluated true.
+ */
+export interface ApprovalRuleContext {
+  source: ApprovalRuleContextSource;
+  /** The policy action taken. In practice always `'require_approval'`. */
+  decision: string;
+  /** Rule description, falling back to its expression, then a generic label. */
+  rule_name: string;
+  /** Plain statement used when no named rule fired. */
+  explanation?: string;
+  rule_id?: string;
+  /** The condition as the operator wrote it, e.g. `args.amount > 1000`. */
+  expression?: string;
+  expression_type?: string;
+  /** Evaluation order; lower runs first. */
+  priority?: number;
+  /** Argument names the expression mentions. Presentational hint only. */
+  referenced_args?: string[];
+  /** Tool config the rule belongs to, for linking to where it is edited. */
+  tool_configuration_id?: string;
+  /** Lower-priority rules that would also have matched. Informational. */
+  also_matched_rule_ids?: string[];
+  /** Detector attributes for model I/O holds (never a full prompt). */
+  detector_summary?: Record<string, unknown>;
 }
 
 /** Mode of a time-boxed approval bypass. */

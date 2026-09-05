@@ -10,7 +10,12 @@ account overrides. It exists to:
 
 Budget-spend buckets are deliberately NOT rewritten: spend was charged at
 request time and repricing is analytics-only. Rows priced as ``subscription``
-are skipped — their $0 cost is correct by construction.
+are skipped — their $0 cost is correct by construction. Rows whose cost came
+from the provider itself are equally off-limits: ``provider`` (the upstream
+reported the request's actual cost), ``reconciled`` (backfilled from the
+provider's daily activity ledger) and ``imported`` (external spend ingested
+as-is) are actuals, and a catalog ESTIMATE must never overwrite an actual —
+not even on a full ``only_unpriced=False`` recompute.
 """
 
 from __future__ import annotations
@@ -19,16 +24,26 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Sequence, Union
 
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_ai_model, crud_api_usage
 from preloop.models.models.ai_model import AIModel
-from preloop.services.model_pricing import estimate_ai_model_usage_cost_detailed
+from preloop.services.model_price_catalog import lookup_model_price_now
+from preloop.services.model_pricing import (
+    _iter_litellm_model_candidates,
+    estimate_ai_model_usage_cost_detailed,
+)
 from preloop.services.pricing_overrides import resolve_pricing_override
 
 logger = logging.getLogger(__name__)
+
+#: Cost sources a catalog estimate must never overwrite. ``subscription`` is
+#: correct-by-construction $0; the rest are provider-side actuals.
+PROTECTED_COST_SOURCES = frozenset(
+    {"subscription", "provider", "reconciled", "imported"}
+)
 
 
 @dataclass
@@ -51,8 +66,9 @@ def reprice_single_row(
     """Re-price one gateway usage row against current prices/overrides.
 
     Used by the live price lookup to fix the row that triggered it. Follows
-    the same rules as the bulk path: subscription rows are left alone and
-    budget spend is never rewritten.
+    the same rules as the bulk path: rows with a protected cost source
+    (subscription $0s and provider-side actuals) are left alone and budget
+    spend is never rewritten.
 
     Args:
         db: Database session.
@@ -62,7 +78,9 @@ def reprice_single_row(
         True when the row was updated with a new cost/source.
     """
     row = crud_api_usage.get(db, id=api_usage_id)
-    if row is None or row.cost_source == "subscription" or not row.ai_model_id:
+    if row is None or row.cost_source in PROTECTED_COST_SOURCES:
+        return False
+    if not row.ai_model_id:
         return False
     ai_model = crud_ai_model.get(db, id=str(row.ai_model_id))
     if ai_model is None or row.account_id is None:
@@ -99,7 +117,44 @@ def reprice_single_row(
             "repriced_by": "live_price_lookup",
         },
     )
+    if row.flow_execution_id is not None:
+        # The stored per-execution cost rollup was computed before this row
+        # gained a price; refresh it so the per-run number stays equal to the
+        # sum of its usage rows (issue #209).
+        sync_execution_rollups(db, [row.flow_execution_id])
     return True
+
+
+def sync_execution_rollups(
+    db: Session, execution_ids: Sequence[Union[uuid.UUID, str]]
+) -> int:
+    """Refresh stored per-execution cost rollups after repricing.
+
+    Public entry point for any path that re-prices `api_usage` rows outside
+    this module (e.g. the ledger backfill) and needs the per-execution
+    rollups to follow.
+
+    Args:
+        db: Database session.
+        execution_ids: Flow execution ids whose rollups may be stale.
+
+    Returns:
+        Number of executions whose rollup was recomputed.
+    """
+    from preloop.services.execution_metrics import sync_execution_cost_rollup
+
+    synced = 0
+    for execution_id in execution_ids:
+        try:
+            if sync_execution_cost_rollup(db, str(execution_id)):
+                synced += 1
+        except Exception:  # noqa: BLE001 - a rollup miss must not fail repricing
+            logger.exception(
+                "Failed to sync cost rollup for execution %s", execution_id
+            )
+    if synced:
+        db.commit()
+    return synced
 
 
 def reprice_gateway_usage(
@@ -114,14 +169,23 @@ def reprice_gateway_usage(
 ) -> RepriceResult:
     """Re-price gateway usage rows in a time window.
 
+    Note on cost: after the repricing pass, every execution with gateway
+    usage in the window gets its stored cost rollup re-derived one at a time
+    (two queries per execution). This keeps the heal path on the exact same
+    code and semantics as the live rollup sync at the price of O(N)
+    round-trips — acceptable for an operator-triggered backfill.
+
     Args:
         db: Database session.
         account_id: Account whose rows are repriced.
         start: Window start (inclusive).
         end: Window end (exclusive).
-        only_unpriced: When True (default), only rows with NULL cost are
-            touched; when False every row is recomputed against current
-            pricing (retroactive override application).
+        only_unpriced: When True (default), only rows without a resolved
+            cost are touched (NULL cost, or tagged ``unpriced`` with a stray
+            stored cost); when False every non-protected row is recomputed
+            against current pricing (retroactive override application).
+            Rows whose ``cost_source`` is in :data:`PROTECTED_COST_SOURCES`
+            are never rewritten in either mode.
         dry_run: Compute and report without persisting.
         batch_size: Rows fetched per query page.
 
@@ -131,6 +195,9 @@ def reprice_gateway_usage(
     result = RepriceResult(dry_run=dry_run)
     model_cache: Dict[str, Optional[AIModel]] = {}
     override_cache: Dict[str, Optional[dict]] = {}
+    # Models already offered to the live upstream lookup, so a backfill over
+    # thousands of rows performs at most one lookup per model, not per row.
+    lookup_attempted: set[str] = set()
     repriced_at = datetime.now(timezone.utc).isoformat()
     pending_updates = 0
 
@@ -145,7 +212,7 @@ def reprice_gateway_usage(
         result.rows_examined += 1
         result.cost_before += float(row.estimated_cost or 0.0)
 
-        if row.cost_source == "subscription":
+        if row.cost_source in PROTECTED_COST_SOURCES:
             result.rows_skipped += 1
             result.cost_after += float(row.estimated_cost or 0.0)
             continue
@@ -178,14 +245,38 @@ def reprice_gateway_usage(
         usage_details = meta.get("usage_details")
         usage_details = usage_details if isinstance(usage_details, dict) else None
 
-        estimate = estimate_ai_model_usage_cost_detailed(
-            ai_model,
-            prompt_tokens=int(row.prompt_tokens or 0),
-            completion_tokens=int(row.completion_tokens or 0),
-            total_tokens=int(row.total_tokens or 0),
-            usage_details=usage_details,
-            pricing_override=pricing_override,
-        )
+        estimate_kwargs = {
+            "prompt_tokens": int(row.prompt_tokens or 0),
+            "completion_tokens": int(row.completion_tokens or 0),
+            "total_tokens": int(row.total_tokens or 0),
+            "usage_details": usage_details,
+            "pricing_override": pricing_override,
+        }
+        estimate = estimate_ai_model_usage_cost_detailed(ai_model, **estimate_kwargs)
+
+        # A row is recorded ``unpriced`` precisely when the model was missing
+        # from the local price snapshot, and the snapshot ships frozen at
+        # build time. Without consulting the live upstream map here, a
+        # backfill re-derives the same "unpriced" for every such row and
+        # reports updated=0 — the model can never become priceable by
+        # repricing alone. The gateway already resolves this at record time
+        # via schedule_price_lookup; this is the same lookup, run
+        # synchronously because the operator is waiting on the result.
+        # Registration is process-wide, so retrying the estimate afterwards
+        # prices this row and every later row on the same model.
+        if estimate.cost is None and model_id not in lookup_attempted:
+            lookup_attempted.add(model_id)
+            try:
+                if lookup_model_price_now(
+                    list(_iter_litellm_model_candidates(ai_model))
+                ):
+                    estimate = estimate_ai_model_usage_cost_detailed(
+                        ai_model, **estimate_kwargs
+                    )
+            except Exception:  # noqa: BLE001 - pricing must never break a backfill
+                logger.exception(
+                    "Live price lookup failed while repricing model %s", model_id
+                )
 
         unchanged = (
             estimate.cost == row.estimated_cost and estimate.source == row.cost_source
@@ -218,6 +309,18 @@ def reprice_gateway_usage(
 
     if pending_updates and not dry_run:
         db.commit()
+
+    if not dry_run:
+        # Stored per-execution cost rollups were written at execution end,
+        # typically before these rows were priced. Re-derive every rollup the
+        # window touches — not just the ones with rows updated in THIS pass —
+        # so a rollup left stale by an earlier backfill also heals (#209).
+        sync_execution_rollups(
+            db,
+            crud_api_usage.list_execution_ids_with_gateway_usage(
+                db, account_id=account_id, start=start, end=end
+            ),
+        )
 
     logger.info(
         "Repriced gateway usage for account %s: examined=%s updated=%s "

@@ -4,7 +4,10 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
+
+if TYPE_CHECKING:
+    from .failure_analysis import AgentFailureAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,11 @@ class AgentExecutionResult:
     actions_taken: Optional[list] = None
     artifacts: Optional[Dict[str, Any]] = None  # Generated files, logs, etc.
     exit_code: Optional[int] = None
+    # First-pass failure classification made against the FULL container logs
+    # (set when status is FAILED and logs were analysed). ``error_message``
+    # keeps only the generated sentence, which cannot encode the
+    # transient/terminal verdict — this carries it to the retry decision.
+    failure_analysis: Optional["AgentFailureAnalysis"] = None
 
 
 class AgentExecutor(ABC):
@@ -41,6 +49,27 @@ class AgentExecutor(ABC):
     (OpenHands, Claude Code, Aider, etc.) in various execution environments
     (Docker containers, Kubernetes pods, local processes).
     """
+
+    #: Whether this runtime supports the one-shot completion-confirmation
+    #: round ("nudge", layer 2 of the flow completion contract): a fresh,
+    #: cheap invocation carrying prior context (original prompt + output
+    #: tail) whose only job is to confirm or deny that the original task
+    #: completed. Runtimes that cannot cheaply re-invoke with prior context
+    #: (e.g. queued remote runners) leave this False and the orchestrator
+    #: no-ops the nudge for them, keeping the fail-closed behaviour.
+    #: The orchestrator checks ``is True`` strictly, so mocks without an
+    #: explicit opt-in never trigger a nudge.
+    supports_confirmation_nudge: bool = False
+
+    #: Whether this runtime's agent script re-invokes the harness IN PLACE
+    #: for the completion contract: same container, same workspace, same
+    #: harness session (``opencode run --continue``, ``codex exec resume
+    #: --last``), bounded to one round and emitted before the container's
+    #: post-execution git block. This is the cheap path: no second session,
+    #: no second Job, no re-clone. Runtimes without a resume mechanism leave
+    #: this False, and the orchestrator widens the completion signals it
+    #: accepts for them instead of failing a run that wrote a report.
+    supports_inplace_completion_nudge: bool = False
 
     def __init__(self, agent_type: str, config: Dict[str, Any]):
         """

@@ -180,6 +180,7 @@ class TestGeminiBuildScript:
         }
         script = agent._build_gemini_script(context)
         assert "gemini mcp add preloop" in script
+        assert "repo-audit" not in script
         assert "-t http" in script
         assert "-s user" in script
         assert "--trust" in script
@@ -308,3 +309,113 @@ class TestGeminiKubernetesStartup:
             assert call_ctx["_container_command"] == ["/bin/bash"]
             assert call_ctx["_container_args"][0] == "-c"
             assert len(call_ctx["_container_args"]) == 2
+
+
+class TestGeminiGatewayHelperModelSettings:
+    """Gateway mode must pin gemini-cli's internal helper models to the flow model.
+
+    gemini-cli's utility subsystems (loop detection, next-speaker check,
+    web-fetch fallback, summarizers, chat compression) default to hardcoded
+    Google model names (e.g. gemini-2.5-flash). Behind the Preloop gateway only
+    the flow's configured alias exists, so those calls 404 and silently degrade
+    — including the auto-continuation check whose failure lets the CLI exit 0
+    without the success sentinel (issue #212).
+    """
+
+    def _gateway_context(self, **overrides):
+        context = {
+            "prompt": "review the PR",
+            "gemini_model": "openrouter/auto-beta",
+            "model_gateway_enabled": True,
+            "execution_id": "exec-1",
+            "flow_name": "test-flow",
+        }
+        context.update(overrides)
+        return context
+
+    def test_gateway_mode_writes_settings_json_before_mcp_add(self):
+        """Script writes ~/.gemini/settings.json (helper pins) before gemini mcp add."""
+        agent = GeminiAgent({})
+        script = agent._build_gemini_script(
+            self._gateway_context(allowed_mcp_servers=["preloop-mcp"])
+        )
+        assert "settings.json" in script
+        # Settings must land before `gemini mcp add` merges into the same file.
+        assert script.index("settings.json") < script.index("gemini mcp add")
+
+    def test_gateway_helper_settings_pin_helper_aliases_to_flow_model(self):
+        """customAliases must point every helper alias at the flow's model."""
+        agent = GeminiAgent({})
+        settings = agent._build_gateway_helper_settings("openrouter/auto-beta")
+        aliases = settings["modelConfigs"]["customAliases"]
+        for alias in (
+            "loop-detection",
+            "loop-detection-double-check",
+            "next-speaker-checker",
+            "web-fetch-fallback",
+            "summarizer-default",
+            "summarizer-shell",
+            "edit-corrector",
+            "llm-edit-fixer",
+            "chat-compression-default",
+        ):
+            assert aliases[alias]["modelConfig"]["model"] == "openrouter/auto-beta"
+
+    def test_gateway_helper_settings_do_not_override_url_context_tools(self):
+        """web-fetch / web-search primaries need Google server-side tools.
+
+        They must NOT be pinned to a non-Google model: web_fetch has a local
+        fallback path (web-fetch-fallback) that works with any model, and
+        overriding the primary would make the model hallucinate page content.
+        """
+        agent = GeminiAgent({})
+        settings = agent._build_gateway_helper_settings("openrouter/auto-beta")
+        aliases = settings["modelConfigs"]["customAliases"]
+        assert "web-fetch" not in aliases
+        assert "web-search" not in aliases
+
+    def test_gateway_helper_settings_disable_loop_detection(self):
+        """CLI loop detection must be disabled for gateway runs.
+
+        The deterministic tool-call loop detector aborts the run (exit 0, no
+        sentinel) on bursts of identical malformed tool calls; the orchestrator
+        has its own MCP tool-loop backstop and execution timeouts.
+        """
+        agent = GeminiAgent({})
+        settings = agent._build_gateway_helper_settings("openrouter/auto-beta")
+        assert settings["model"]["disableLoopDetection"] is True
+
+    def test_gateway_settings_embedded_base64_decodes_to_valid_json(self):
+        """The script embeds the settings as base64 that decodes to valid JSON."""
+        import base64
+        import json as jsonlib
+        import re
+
+        agent = GeminiAgent({})
+        script = agent._build_gemini_script(self._gateway_context())
+        match = re.search(
+            r"echo '([A-Za-z0-9+/=]+)' \| base64 -d > \"\$HOME/.gemini/settings.json\"",
+            script,
+        )
+        assert match, "settings.json base64 write not found in script"
+        decoded = jsonlib.loads(base64.b64decode(match.group(1)))
+        assert decoded["model"]["disableLoopDetection"] is True
+        aliases = decoded["modelConfigs"]["customAliases"]
+        assert (
+            aliases["next-speaker-checker"]["modelConfig"]["model"]
+            == "openrouter/auto-beta"
+        )
+
+    def test_direct_mode_does_not_write_helper_settings(self):
+        """Direct-provider runs keep stock gemini-cli behavior (helpers work)."""
+        agent = GeminiAgent({})
+        context = {
+            "prompt": "review the PR",
+            "gemini_model": "gemini-3-pro-preview",
+            "model_gateway_enabled": False,
+            "execution_id": "exec-1",
+            "flow_name": "test-flow",
+        }
+        script = agent._build_gemini_script(context)
+        assert "settings.json" not in script
+        assert "disableLoopDetection" not in script

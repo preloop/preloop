@@ -309,8 +309,14 @@ func TestRuntimePrincipalIDForAgent_IsStable(t *testing.T) {
 	if got1 != got2 {
 		t.Fatalf("expected stable source id, got %q and %q", got1, got2)
 	}
-	if !strings.HasPrefix(got1, "repo-assistant-") {
-		t.Fatalf("expected slugged prefix, got %q", got1)
+	// v2 prefixes with the source type slug, not the display name.
+	if !strings.HasPrefix(got1, "claude-code-") {
+		t.Fatalf("expected v2 source-type prefix, got %q", got1)
+	}
+	renamed := agent
+	renamed.DisplayName = "Totally Different"
+	if runtimePrincipalIDForAgent(renamed) != got1 {
+		t.Fatal("display name must not change the v2 principal id")
 	}
 }
 
@@ -372,8 +378,14 @@ func TestIssueRuntimeSessionToken(t *testing.T) {
 	if capturedBody.RuntimePrincipalID == "" {
 		t.Fatal("expected runtime principal id to be set")
 	}
+	if !strings.HasPrefix(capturedBody.RuntimePrincipalID, "claude-code-") {
+		t.Fatalf("expected v2 source-type principal id, got %q", capturedBody.RuntimePrincipalID)
+	}
 	if !strings.HasPrefix(capturedBody.SessionSourceID, capturedBody.RuntimePrincipalID+"-") {
 		t.Fatalf("expected session source id %q to use principal id prefix %q", capturedBody.SessionSourceID, capturedBody.RuntimePrincipalID)
+	}
+	if capturedBody.PrincipalIdentity == nil || capturedBody.PrincipalIdentity.Derivation != "v2" {
+		t.Fatalf("expected principal_identity derivation=v2, got %#v", capturedBody.PrincipalIdentity)
 	}
 	if len(capturedBody.AllowedMCPServers) != 2 || capturedBody.AllowedMCPServers[0] != "github" || capturedBody.AllowedMCPServers[1] != "jira" {
 		t.Fatalf("unexpected allowed servers: %+v", capturedBody.AllowedMCPServers)
@@ -1901,8 +1913,16 @@ func TestPrepareAgentForEnrollment_AllowsEditingAgentName(t *testing.T) {
 	if agent.DisplayName != "Octavia" {
 		t.Fatalf("expected edited display name, got %#v", agent)
 	}
-	if !strings.HasPrefix(agent.RuntimePrincipalID, "octavia-") {
-		t.Fatalf("expected name-based principal id, got %q", agent.RuntimePrincipalID)
+	// Display name is decoupled from identity under v2.
+	wantID := stableRuntimePrincipalIDForAgent(
+		AgentConfig{Name: "OpenClaw", ConfigPath: "/tmp/openclaw.json"},
+		"",
+	)
+	if agent.RuntimePrincipalID != wantID {
+		t.Fatalf("expected v2 principal id %q, got %q", wantID, agent.RuntimePrincipalID)
+	}
+	if !strings.HasPrefix(agent.RuntimePrincipalID, "openclaw-") {
+		t.Fatalf("expected source-type v2 prefix, got %q", agent.RuntimePrincipalID)
 	}
 }
 
@@ -2564,6 +2584,9 @@ func TestApplyCodexManagedGatewayConfiguresCustomProvider(t *testing.T) {
 	if preloop["experimental_bearer_token"] != "codex-durable-token" {
 		t.Fatalf("unexpected codex gateway token: %#v", preloop)
 	}
+	if _, hasEnvKey := preloop["env_key"]; hasEnvKey {
+		t.Fatalf("Codex desktop onboarding must not set env_key; unset PRELOOP_TOKEN would fail closed: %#v", preloop)
+	}
 	if preloop["wire_api"] != "responses" {
 		t.Fatalf("unexpected codex gateway wire_api: %#v", preloop)
 	}
@@ -2575,6 +2598,28 @@ func TestApplyCodexManagedGatewayConfiguresCustomProvider(t *testing.T) {
 	legacyHeaders := legacyPreloop["http_headers"].(map[string]interface{})
 	if legacyHeaders["Authorization"] != "Bearer codex-durable-token" {
 		t.Fatalf("unexpected Codex legacy Authorization header: %#v", legacyPreloop)
+	}
+	if _, hasBearerEnv := legacyPreloop["bearer_token_env_var"]; hasBearerEnv {
+		t.Fatalf("tokenful Codex MCP entry must not require bearer_token_env_var, got %#v", legacyPreloop)
+	}
+
+	agent := AgentConfig{Name: "Codex CLI", ConfigPath: configPath}
+	if err := writeAgentConfigDocument(agent, plan.ManagedDocument); err != nil {
+		t.Fatalf("failed to write Codex config: %v", err)
+	}
+	written, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read written Codex config: %v", err)
+	}
+	body := string(written)
+	if !strings.Contains(body, "experimental_bearer_token") {
+		t.Fatalf("expected experimental_bearer_token in written config, got:\n%s", body)
+	}
+	if strings.Contains(body, "env_key") {
+		t.Fatalf("written Codex config must not contain env_key, got:\n%s", body)
+	}
+	if strings.Contains(body, "bearer_token_env_var") {
+		t.Fatalf("written Codex config must not require bearer_token_env_var when a token is present, got:\n%s", body)
 	}
 }
 
@@ -2949,6 +2994,7 @@ func TestApplyOpenCodeManagedGatewayConfiguresProvider(t *testing.T) {
 		"https://preloop.example",
 		"opencode-durable-token",
 		"openai/gpt-5.4",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
@@ -3641,15 +3687,10 @@ func TestSyncManagedAgentRuntimeArtifactsReplacesLegacyGeminiLauncher(t *testing
 	}
 }
 
-func TestSyncManagedAgentRuntimeArtifactsInstallsCodexLauncher(t *testing.T) {
-	skipManagedLauncherOnWindows(t, "installing the Codex managed launcher")
+func TestSyncManagedAgentRuntimeArtifactsSkipsCodexLauncher(t *testing.T) {
 	home := t.TempDir()
 	testenv.SetHome(t, home)
 
-	launcherDir := filepath.Join(home, ".local", "bin")
-	if err := os.MkdirAll(launcherDir, 0o755); err != nil {
-		t.Fatalf("failed to create launcher dir: %v", err)
-	}
 	originalDir := filepath.Join(home, "orig-bin")
 	if err := os.MkdirAll(originalDir, 0o755); err != nil {
 		t.Fatalf("failed to create original bin dir: %v", err)
@@ -3662,26 +3703,64 @@ func TestSyncManagedAgentRuntimeArtifactsInstallsCodexLauncher(t *testing.T) {
 	); err != nil {
 		t.Fatalf("failed to write fake codex executable: %v", err)
 	}
-	t.Setenv(
-		"PATH",
-		launcherDir+string(os.PathListSeparator)+originalDir+string(os.PathListSeparator)+os.Getenv("PATH"),
-	)
+	t.Setenv("PATH", originalDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	if err := syncManagedAgentRuntimeArtifacts(
 		AgentConfig{Name: "Codex CLI"},
 		"https://preloop.example",
 		"codex-durable-token",
 	); err != nil {
-		t.Fatalf("unexpected codex launcher install error: %v", err)
+		t.Fatalf("unexpected Codex runtime sync error: %v", err)
 	}
 
-	wrapperPath := filepath.Join(launcherDir, "codex")
-	output, err := exec.Command(wrapperPath).CombinedOutput()
-	if err != nil {
-		t.Fatalf("managed codex launcher failed: %v (%s)", err, string(output))
+	wrapperPath := filepath.Join(home, ".local", "bin", "codex")
+	if _, err := os.Stat(wrapperPath); !os.IsNotExist(err) {
+		t.Fatalf("expected Codex onboarding not to write a PATH wrapper, stat err=%v", err)
 	}
-	if got := string(output); got != "codex-durable-token" {
-		t.Fatalf("unexpected codex launcher env output: %q", got)
+	envPath := filepath.Join(home, ".preloop", "agents", "runtime", "codex-cli.env")
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Fatalf("expected Codex onboarding not to write a runtime env file, stat err=%v", err)
+	}
+}
+
+func TestSyncManagedAgentRuntimeArtifactsRemovesLegacyCodexLauncher(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+
+	runtimeDir := filepath.Join(home, ".preloop", "agents", "runtime")
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		t.Fatalf("failed to create runtime dir: %v", err)
+	}
+	envPath := filepath.Join(runtimeDir, "codex-cli.env")
+	if err := os.WriteFile(envPath, []byte("export PRELOOP_TOKEN='legacy'\n"), 0o600); err != nil {
+		t.Fatalf("failed to write runtime env file: %v", err)
+	}
+
+	launcherDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(launcherDir, 0o755); err != nil {
+		t.Fatalf("failed to create launcher dir: %v", err)
+	}
+	wrapperPath := filepath.Join(launcherDir, "codex")
+	if err := os.WriteFile(
+		wrapperPath,
+		[]byte("#!/usr/bin/env bash\n"+preloopManagedLauncherMarker+"\nexec /usr/bin/env true\n"),
+		0o755,
+	); err != nil {
+		t.Fatalf("failed to write legacy Codex wrapper: %v", err)
+	}
+
+	if err := syncManagedAgentRuntimeArtifacts(
+		AgentConfig{Name: "Codex CLI"},
+		"https://preloop.example",
+		"codex-durable-token",
+	); err != nil {
+		t.Fatalf("unexpected Codex runtime sync error: %v", err)
+	}
+	if _, err := os.Stat(wrapperPath); !os.IsNotExist(err) {
+		t.Fatalf("expected leftover Codex wrapper to be removed, got err=%v", err)
+	}
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Fatalf("expected leftover Codex runtime env file to be removed, got err=%v", err)
 	}
 }
 

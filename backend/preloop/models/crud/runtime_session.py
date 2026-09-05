@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from sqlalchemy import (
     String,
@@ -23,6 +24,8 @@ from ..models.flow import Flow
 from ..models.runtime_session import RuntimeSession
 from .base import CRUDBase
 
+logger = logging.getLogger(__name__)
+
 _summary_columns_cache: dict[int, bool] = {}
 
 # Preloop-internal model-gateway calls (session summarization/optimization,
@@ -35,6 +38,15 @@ _summary_columns_cache: dict[int, bool] = {}
 # gateway; its presence here is defense in depth so a mis-attributed replay row
 # can never inflate the session it was validating.
 INTERNAL_USAGE_PURPOSES = ("session_optimization", "session_title", "replay_validation")
+
+# Infix marking a runtime session row minted by the gateway's inactivity closer
+# rather than by an agent-declared conversation id. A source id shaped
+# ``<principal>:idle-<epoch>`` is the Nth generation of a signal-less agent's
+# session; ``<principal>:<something-else>`` is keyed by a real session id the
+# agent (or the client's X-Preloop-Session-Id) supplied. Keeping the two
+# namespaces distinguishable is what lets provenance be reported honestly and
+# stops the closer from ever matching a natively-keyed row.
+IDLE_GENERATION_INFIX = ":idle-"
 
 
 def _exclude_internal_usage_condition():
@@ -179,6 +191,58 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             .first()
         )
 
+    def get_latest_idle_generation(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        session_source_type: str,
+        session_source_id: str,
+    ) -> Optional[RuntimeSession]:
+        """Return the newest generation of one source-keyed runtime session.
+
+        Sources that put no session id on the wire (Gemini CLI, Hermes,
+        OpenClaw's Anthropic transport) can only be bounded by an idle window.
+        When one goes idle, the gateway closes the row and rolls to a fresh
+        generation whose source id is ``<base>:idle-<timestamp>`` — the row
+        itself is preserved, so the session's history is never rewritten. This
+        returns the generation that traffic should currently land on: the
+        newest of the base row and its ``:idle-`` descendants.
+
+        The ``:idle-`` infix is what keeps this unambiguous. Rows suffixed with
+        an agent's *native* conversation id (``<base>:<uuid>``) are resolved by
+        exact source key and are deliberately NOT matched here.
+
+        Args:
+            db: Database session.
+            account_id: Owning account.
+            session_source_type: Runtime principal type (e.g. ``gemini_cli``).
+            session_source_id: The BASE source id, without any generation
+                suffix.
+
+        Returns:
+            The newest matching runtime session, or ``None`` when the principal
+            has no session row yet.
+        """
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.session_source_type == session_source_type,
+                or_(
+                    self.model.session_source_id == session_source_id,
+                    self.model.session_source_id.startswith(
+                        f"{session_source_id}{IDLE_GENERATION_INFIX}"
+                    ),
+                ),
+            )
+            .order_by(
+                self.model.started_at.desc(),
+                self.model.id.desc(),
+            )
+            .first()
+        )
+
     def touch_activity(
         self,
         db: Session,
@@ -238,6 +302,62 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         if ended_at is not None:
             db_obj.ended_at = ended_at
             db_obj.last_activity_at = ended_at
+        db.add(db_obj)
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
+        return db_obj
+
+    def reopen_for_managed_agent(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        session_source_type: str,
+        session_source_id: str,
+        commit: bool = True,
+    ) -> Optional[RuntimeSession]:
+        """Reopen the identity session of a resumed managed agent.
+
+        A previous release stamped ``ended_at`` when an agent was suspended
+        and never cleared it, so session-bound runtime keys kept failing after
+        resume. Reopening is a no-op when no session exists or the session is
+        already open.
+
+        Args:
+            db: Database session.
+            account_id: Account that owns the session.
+            session_source_type: Durable principal type of the agent.
+            session_source_id: Durable principal id of the agent.
+            commit: Commit the transaction when True.
+
+        Returns:
+            The reopened session, or None when there is nothing to reopen.
+        """
+        db_obj = self.get_by_source(
+            db,
+            account_id=account_id,
+            session_source_type=session_source_type,
+            session_source_id=session_source_id,
+        )
+        if db_obj is None:
+            logger.info(
+                "No runtime session to reopen for %s/%s (account %s)",
+                session_source_type,
+                session_source_id,
+                account_id,
+            )
+            return None
+        if db_obj.ended_at is None:
+            # Already open: resuming an agent that was never session-ended.
+            return db_obj
+        now = datetime.now(UTC)
+        db_obj.ended_at = None
+        # started_at is NOT NULL, so it is left alone: reopening continues the
+        # original session rather than pretending it began now.
+        db_obj.last_activity_at = now
         db.add(db_obj)
         if commit:
             db.commit()
@@ -670,6 +790,67 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             )
             .count()
         )
+
+    def count_active_sessions_by_model(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        ai_model_ids: Sequence[str],
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> dict[str, int]:
+        """Count active runtime sessions per AI model in a single query.
+
+        The Models page needs this number for every model on screen. Asking
+        per model meant one request (and one pooled connection) per row; one
+        grouped query answers the whole page.
+
+        Filters match :meth:`list_account_sessions` with ``status="active"``
+        and an ``ai_model_id``: sessions the account owns that have not ended
+        and carry at least one gateway request for the model inside the
+        window. Internal purposes are not excluded here either, so the count
+        agrees with the per-model list the detail page shows.
+
+        Args:
+            db: Database session.
+            account_id: Account whose sessions are counted.
+            ai_model_ids: Models to count for. An empty sequence returns ``{}``
+                without touching the database.
+            start_date: Inclusive lower bound on gateway request timestamp.
+            end_date: Exclusive upper bound on gateway request timestamp.
+
+        Returns:
+            Mapping of model id (as a string) to active session count. Models
+            with no active sessions are absent.
+        """
+        model_ids = [str(model_id) for model_id in ai_model_ids]
+        if not model_ids:
+            return {}
+
+        query = (
+            db.query(
+                ApiUsage.ai_model_id.label("ai_model_id"),
+                func.count(func.distinct(ApiUsage.runtime_session_id)).label(
+                    "session_count"
+                ),
+            )
+            .join(self.model, self.model.id == ApiUsage.runtime_session_id)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.ended_at.is_(None),
+                ApiUsage.runtime_session_id.isnot(None),
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.ai_model_id.in_(model_ids),
+            )
+        )
+        if start_date is not None:
+            query = query.filter(ApiUsage.timestamp >= start_date)
+        if end_date is not None:
+            query = query.filter(ApiUsage.timestamp < end_date)
+
+        rows = query.group_by(ApiUsage.ai_model_id).all()
+        return {str(row.ai_model_id): int(row.session_count or 0) for row in rows}
 
     def get_latest_by_principal(
         self,

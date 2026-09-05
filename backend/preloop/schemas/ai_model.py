@@ -135,6 +135,14 @@ class AIModelUpdate(BaseModel):
     credentials_backend_type: Optional[str] = None
     credentials_external_ref: Optional[str] = None
     credentials_meta_data: Optional[Dict] = None
+    credentials_secret_id: Optional[uuid.UUID] = Field(
+        None,
+        description=(
+            "Repoint this model at an existing SecretReference instead of minting a "
+            "new one. Used to keep several models on one provider key or OAuth "
+            "lineage. The secret must already belong to the caller's account."
+        ),
+    )
     is_default: Optional[bool] = None
     model_parameters: Optional[Dict] = None
     meta_data: Optional[Dict] = None
@@ -152,6 +160,12 @@ class AIModelUpdate(BaseModel):
                 self.credentials_meta_data,
             )
         )
+        if self.credentials_secret_id is not None and (
+            self.api_key or has_inline_payload or has_external
+        ):
+            raise ValueError(
+                "credentials_secret_id cannot be combined with new credential material"
+            )
         if self.api_key and (has_external or has_inline_payload):
             raise ValueError("api_key cannot be combined with other credential fields")
         if has_inline_payload and has_external:
@@ -242,6 +256,219 @@ class AIModelCredentialExportResponse(BaseModel):
     refresh: Optional[str] = None
     expires: Optional[int] = None
     account_id: Optional[str] = None
+
+
+class AvailableModelsRequest(BaseModel):
+    """Discovery request for a provider's model catalog.
+
+    The API key is carried in the body rather than the query string on
+    purpose: as a query parameter it was written to access logs in plaintext
+    and leaked live provider keys.
+    """
+
+    api_key: Optional[str] = Field(
+        None,
+        description=(
+            "Provider API key used to list models. Never logged and never "
+            "persisted by this endpoint. When omitted, pass ai_model_id so "
+            "the server can decrypt the stored key; the stored key is never "
+            "returned to the client. A typed key always wins over the stored "
+            "one."
+        ),
+    )
+    ai_model_id: Optional[uuid.UUID] = Field(
+        None,
+        description=(
+            "Existing AI model id. When no typed api_key is sent, the server "
+            "decrypts the stored credentials via CRUD and lists live. The "
+            "plaintext key is never returned in the response."
+        ),
+    )
+    api_endpoint: Optional[str] = Field(
+        None,
+        description=(
+            "Base URL of an OpenAI-compatible endpoint, e.g. "
+            "https://openrouter.ai/api/v1. Required for the "
+            "'openai-compatible' and 'custom' providers, which have no fixed "
+            "model catalog."
+        ),
+    )
+    model_kind: Literal["llm", "stt", "tts"] = Field(
+        "llm", description="Model service kind to fetch"
+    )
+    aws_access_key_id: Optional[str] = Field(
+        None,
+        description=(
+            "AWS access key id for the bedrock provider. Never logged and "
+            "never persisted by this endpoint."
+        ),
+    )
+    aws_secret_access_key: Optional[str] = Field(
+        None,
+        description=(
+            "AWS secret access key for the bedrock provider. Never logged "
+            "and never persisted by this endpoint."
+        ),
+    )
+    aws_session_token: Optional[str] = Field(
+        None,
+        description=(
+            "Optional temporary-session token for the bedrock provider. "
+            "Never logged and never persisted by this endpoint."
+        ),
+    )
+    aws_region_name: Optional[str] = Field(
+        None,
+        description=(
+            "AWS region for the bedrock provider, e.g. us-east-1. Falls "
+            "back to boto3's default region chain when omitted."
+        ),
+    )
+
+    @field_serializer("api_key")
+    def _hide_api_key(self, value: Optional[str]) -> Optional[str]:
+        """Keep the key out of any serialized copy of this model (logs, traces)."""
+        return "***" if value else value
+
+    @field_serializer("aws_access_key_id", "aws_secret_access_key", "aws_session_token")
+    def _hide_aws_secrets(self, value: Optional[str]) -> Optional[str]:
+        """Keep AWS credential material out of serialized copies (logs, traces)."""
+        return "***" if value else value
+
+
+class AvailableModelsResponse(BaseModel):
+    """A provider's model listing plus the provenance of the result.
+
+    ``source`` reports whether the ids came from the provider's live listing
+    endpoint ("live") or an empty fallback ("fallback"). There is no bundled
+    picker catalog. ``error`` is a short machine-readable reason drawn from a
+    fixed vocabulary (e.g. "timeout", "network", "empty_response",
+    "unsupported", "missing_endpoint", "sdk_missing", "missing_key", "auth",
+    "unknown", "subscription_oauth") when a live attempt failed or was
+    impossible; it never carries raw exception text, which can embed endpoint
+    URLs or key material. "subscription_oauth" marks a stored principal-bound
+    subscription-OAuth credential (e.g. Claude Code): the server never
+    queries the provider with such a token, and the models list is the
+    account's own catalog for the provider instead.
+    """
+
+    models: List[str] = Field(
+        default_factory=list, description="Model identifiers to offer in the picker"
+    )
+    source: Literal["live", "fallback"] = Field(
+        "fallback",
+        description=(
+            "'live' when the provider's listing endpoint answered; 'fallback' "
+            "when an empty list was returned instead of a live catalog"
+        ),
+    )
+    error: Optional[str] = Field(
+        None,
+        description=(
+            "Short safe reason for a fallback after a failed or impossible "
+            "live attempt (fixed vocabulary, never raw provider error text). "
+            "None for a clean live result."
+        ),
+    )
+
+
+class AIModelCatalogSyncRequest(BaseModel):
+    """Request body for the account model-catalog sync."""
+
+    provider: Optional[str] = Field(
+        None,
+        description=(
+            "Optional provider filter, e.g. 'anthropic'. When omitted, every "
+            "provider the account has credentialed models for is synced."
+        ),
+    )
+    dry_run: bool = Field(
+        False,
+        description="Report what would be added without creating any models",
+    )
+
+
+class AIModelCatalogSyncProviderResult(BaseModel):
+    """Sync outcome for one provider."""
+
+    provider: str = Field(..., description="Provider name, e.g. 'anthropic'")
+    source: Literal["live", "fallback"] = Field(
+        "fallback",
+        description=(
+            "'live' when the provider's listing endpoint answered; "
+            "'fallback' when discovery failed or was impossible"
+        ),
+    )
+    error: Optional[str] = Field(
+        None,
+        description=(
+            "Short safe reason when nothing could be discovered (fixed "
+            "vocabulary; never raw provider error text)"
+        ),
+    )
+    discovered: int = Field(
+        0, description="Total model identifiers the provider listed"
+    )
+    added: List[str] = Field(
+        default_factory=list,
+        description="Gateway aliases of newly added catalog models",
+    )
+    skipped_existing: int = Field(
+        0, description="Discovered identifiers already present in the catalog"
+    )
+    note: Optional[str] = Field(
+        None, description="Human-readable context for skips and errors"
+    )
+
+
+class AIModelCatalogSyncResponse(BaseModel):
+    """Per-provider results of one model-catalog sync run."""
+
+    providers: List[AIModelCatalogSyncProviderResult] = Field(default_factory=list)
+    dry_run: bool = False
+
+
+class AIModelOverviewItem(BaseModel):
+    """One row of the Models page: what this model did in the window."""
+
+    ai_model_id: str
+    model_name: str
+    provider_name: str
+    model_identifier: str
+    model_alias: Optional[str] = Field(
+        None, description="Gateway alias clients call this model by, if configured"
+    )
+    is_default: bool = False
+    total_requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    token_usage: GatewayTokenUsage = Field(default_factory=GatewayTokenUsage)
+    estimated_cost: float = 0.0
+    unpriced_request_count: int = Field(
+        0, description="Requests with tokens but no price to apply"
+    )
+    active_session_count: int = Field(
+        0, description="Runtime sessions still open that used this model"
+    )
+    last_request_at: Optional[datetime] = Field(
+        None, description="Timestamp of the most recent gateway request"
+    )
+    pricing_source: Literal["override", "model_config", "catalog", "none"] = Field(
+        "none", description="Where this model's effective price comes from"
+    )
+
+
+class AIModelsOverviewResponse(BaseModel):
+    """Batch answer for the Models page and the dashboard inventory tab.
+
+    Replaces one request per model per panel with a single response, so
+    opening the page costs a fixed number of queries no matter how many
+    models an account has configured.
+    """
+
+    period_start: datetime
+    period_end: datetime
+    models: List[AIModelOverviewItem] = Field(default_factory=list)
 
 
 class AIModelGatewayUsageSummaryResponse(BaseModel):

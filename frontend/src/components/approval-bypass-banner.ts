@@ -97,6 +97,22 @@ export class ApprovalBypassBanner extends LitElement {
       cursor: default;
     }
 
+    .actions {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .policies-link {
+      color: inherit;
+      text-decoration: underline;
+      font-size: 13px;
+      font-weight: 600;
+      opacity: 0.95;
+      padding: 6px 10px;
+      border-radius: var(--sl-border-radius-small);
+    }
+
     @media (prefers-color-scheme: light) {
       .banner {
         color: #1c2128;
@@ -192,13 +208,16 @@ export class ApprovalBypassBanner extends LitElement {
             }
           </div>
         </div>
-        <button
-          @click=${this.handleRestore}
-          ?disabled=${this.revoking}
-          part="restore"
-        >
-          ${this.revoking ? 'Restoring…' : 'Restore approvals'}
-        </button>
+        <div class="actions">
+          <a class="policies-link" href="/console/tools">Review policies</a>
+          <button
+            @click=${this.handleRestore}
+            ?disabled=${this.revoking}
+            part="restore"
+          >
+            ${this.revoking ? 'Restoring…' : 'Restore approvals'}
+          </button>
+        </div>
       </div>
     `;
   }

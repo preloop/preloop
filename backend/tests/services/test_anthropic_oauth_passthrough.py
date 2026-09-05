@@ -61,6 +61,14 @@ def _oauth_credentials():
     )
 
 
+def _patch_passthrough_http_client(client: MagicMock):
+    """Passthrough uses a process-level client, not module-level httpx.post."""
+    return patch(
+        "preloop.services.openai_gateway._anthropic_passthrough_http_client",
+        return_value=client,
+    )
+
+
 def _claude_code_payload():
     """A representative Claude Code request: system array + cache_control."""
     return {
@@ -125,15 +133,14 @@ def test_oauth_passthrough_preserves_system_array_and_cache_control(
     upstream_response = MagicMock()
     upstream_response.status_code = 200
     upstream_response.json.return_value = _upstream_message_response()
+    upstream_client = MagicMock()
+    upstream_client.post.return_value = upstream_response
 
     with (
         patch(
             "preloop.services.openai_gateway.get_secret_service"
         ) as mock_secret_service,
-        patch(
-            "preloop.services.openai_gateway.httpx.post",
-            return_value=upstream_response,
-        ) as mock_post,
+        _patch_passthrough_http_client(upstream_client),
         patch("preloop.services.openai_gateway.litellm.completion") as mock_completion,
     ):
         mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
@@ -146,9 +153,12 @@ def test_oauth_passthrough_preserves_system_array_and_cache_control(
         )
 
     mock_completion.assert_not_called()
-    mock_post.assert_called_once()
-    call_kwargs = mock_post.call_args.kwargs
-    assert mock_post.call_args.args[0] == "https://api.anthropic.com/v1/messages"
+    upstream_client.post.assert_called_once()
+    call_kwargs = upstream_client.post.call_args.kwargs
+    assert (
+        upstream_client.post.call_args.args[0]
+        == "https://api.anthropic.com/v1/messages"
+    )
 
     body = call_kwargs["json"]
     # System survives as an ARRAY of blocks, sentinel first, byte-faithful.
@@ -235,6 +245,8 @@ def test_oauth_passthrough_governance_strip_keeps_system_untouched(
     upstream_response = MagicMock()
     upstream_response.status_code = 200
     upstream_response.json.return_value = _upstream_message_response()
+    upstream_client = MagicMock()
+    upstream_client.post.return_value = upstream_response
 
     with (
         patch(
@@ -244,17 +256,14 @@ def test_oauth_passthrough_governance_strip_keeps_system_untouched(
             "preloop.services.openai_gateway.get_cached_account_meta_data",
             return_value=governance_meta,
         ),
-        patch(
-            "preloop.services.openai_gateway.httpx.post",
-            return_value=upstream_response,
-        ) as mock_post,
+        _patch_passthrough_http_client(upstream_client),
     ):
         mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
             _oauth_credentials()
         )
         service.create_message(request_payload)
 
-    body = mock_post.call_args.kwargs["json"]
+    body = upstream_client.post.call_args.kwargs["json"]
     # The disabled tool is stripped; the surviving tool is untouched
     # (including its cache_control breakpoint).
     assert [tool["name"] for tool in body["tools"]] == ["Bash"]
@@ -301,10 +310,9 @@ def test_api_key_anthropic_path_still_uses_litellm(db_session, test_user):
         db_session, ModelGatewayAuthContext(token="t", user=test_user)
     )
 
+    unused_passthrough_client = MagicMock()
     with (
-        patch(
-            "preloop.services.openai_gateway.httpx.post",
-        ) as mock_post,
+        _patch_passthrough_http_client(unused_passthrough_client),
         patch(
             "preloop.services.openai_gateway.litellm.completion",
             return_value={
@@ -332,7 +340,7 @@ def test_api_key_anthropic_path_still_uses_litellm(db_session, test_user):
             }
         )
 
-    mock_post.assert_not_called()
+    unused_passthrough_client.post.assert_not_called()
     mock_completion.assert_called_once()
     assert payload["content"][0]["text"] == "ok"
 
@@ -356,14 +364,14 @@ def test_oauth_passthrough_maps_upstream_error(db_session, test_user):
         }
     )
 
+    upstream_client = MagicMock()
+    upstream_client.post.return_value = upstream_response
+
     with (
         patch(
             "preloop.services.openai_gateway.get_secret_service"
         ) as mock_secret_service,
-        patch(
-            "preloop.services.openai_gateway.httpx.post",
-            return_value=upstream_response,
-        ),
+        _patch_passthrough_http_client(upstream_client),
     ):
         mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
             _oauth_credentials()
@@ -427,16 +435,14 @@ def test_oauth_passthrough_stream_relays_sse_verbatim(db_session, test_user):
         patch(
             "preloop.services.openai_gateway.get_secret_service"
         ) as mock_secret_service,
-        patch(
-            "preloop.services.openai_gateway.httpx.Client",
-            return_value=upstream_client,
-        ),
+        _patch_passthrough_http_client(upstream_client),
         patch("preloop.services.openai_gateway.litellm.completion") as mock_completion,
     ):
         mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
             _oauth_credentials()
         )
         emitted = list(service.stream_message(request_payload))
+        service.flush_deferred_stream_record()
 
     mock_completion.assert_not_called()
     # Chunks relayed verbatim, in order.
@@ -448,7 +454,7 @@ def test_oauth_passthrough_stream_relays_sse_verbatim(db_session, test_user):
     assert body["system"][0]["text"] == CLAUDE_CODE_SENTINEL
     assert body["stream"] is True
     upstream_response.close.assert_called_once()
-    upstream_client.close.assert_called_once()
+    upstream_client.close.assert_not_called()
 
     usage_row = (
         db_session.query(ApiUsage)
@@ -486,10 +492,7 @@ def test_oauth_passthrough_stream_upstream_error_raises_before_stream(
         patch(
             "preloop.services.openai_gateway.get_secret_service"
         ) as mock_secret_service,
-        patch(
-            "preloop.services.openai_gateway.httpx.Client",
-            return_value=upstream_client,
-        ),
+        _patch_passthrough_http_client(upstream_client),
     ):
         mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
             _oauth_credentials()
@@ -500,4 +503,4 @@ def test_oauth_passthrough_stream_upstream_error_raises_before_stream(
     assert exc_info.value.status_code == 429
     assert exc_info.value.error_type == "rate_limit_error"
     upstream_response.close.assert_called_once()
-    upstream_client.close.assert_called_once()
+    upstream_client.close.assert_not_called()

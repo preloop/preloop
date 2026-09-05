@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional
 from uuid import UUID
 
@@ -213,6 +213,68 @@ class PriceCatalogInfo(BaseModel):
     model_count: Optional[int] = None
 
 
+class ImportedUsageByModel(BaseModel):
+    """Imported (observed) usage aggregate grouped by source model."""
+
+    model_alias: Optional[str] = None
+    source: Optional[str] = None
+    request_count: int = 0
+    total_tokens: int = 0
+    imported_cost: float = 0.0
+    last_event_at: Optional[datetime] = None
+
+
+class ImportedUsageByConversation(BaseModel):
+    """Imported usage rolled up by source-side conversation.
+
+    ``estimated_cost`` (hook/transcript-derived) and ``reconciled_cost``
+    (billing export) are reported as SEPARATE fields and must never be
+    summed into one number by any consumer. ``None`` means the source
+    reported nothing for that quantity ("not reported") — it is not zero.
+    Entries whose ``parent_conversation_id`` matches another entry's
+    ``conversation_id`` are subagent workers of that parent thread.
+    """
+
+    conversation_id: str
+    parent_conversation_id: Optional[str] = None
+    source: Optional[str] = None
+    event_count: int = 0
+    total_tokens: Optional[int] = None
+    estimated_cost: Optional[float] = None
+    reconciled_cost: Optional[float] = None
+    last_event_at: Optional[datetime] = None
+
+
+class ImportedUsageSummary(BaseModel):
+    """Spend ingested from outside the gateway (``usage_source='imported'``).
+
+    Kept as a separate block — never merged into ``estimated_cost`` or the
+    budget figures — so gateway-metered and imported spend cannot be
+    silently mixed.
+    """
+
+    event_count: int = 0
+    total_tokens: int = 0
+    imported_cost: float = 0.0
+    usage_by_model: List[ImportedUsageByModel] = Field(default_factory=list)
+    usage_by_conversation: List[ImportedUsageByConversation] = Field(
+        default_factory=list
+    )
+
+
+class UnpricedModelUsage(BaseModel):
+    """One model's share of the window's unpriced gateway usage.
+
+    Names the models behind ``unpriced_requests``/``unpriced_tokens`` so the
+    console can say WHICH models are missing from the price catalog instead
+    of only how many requests are affected.
+    """
+
+    model: str
+    requests: int = 0
+    tokens: int = 0
+
+
 class CostAnalyticsSummaryResponse(BaseModel):
     """Open-source cost overview response."""
 
@@ -225,6 +287,7 @@ class CostAnalyticsSummaryResponse(BaseModel):
     estimated_cost: float = 0.0
     unpriced_requests: int = 0
     unpriced_tokens: int = 0
+    unpriced_models: List[UnpricedModelUsage] = Field(default_factory=list)
     price_catalog: Optional[PriceCatalogInfo] = None
     budget: GatewayBudgetSummary
     requests_by_day: List[GatewayUsageByDay] = Field(default_factory=list)
@@ -232,6 +295,7 @@ class CostAnalyticsSummaryResponse(BaseModel):
     usage_by_flow: List[GatewayUsageByFlow] = Field(default_factory=list)
     usage_by_session: List[GatewayUsageBySession] = Field(default_factory=list)
     usage_by_tool: List[GatewayUsageByTool] = Field(default_factory=list)
+    imported_usage: Optional[ImportedUsageSummary] = None
 
 
 class RepriceRequest(BaseModel):
@@ -251,15 +315,75 @@ class RepriceRequest(BaseModel):
 
 
 class RepriceResponse(BaseModel):
-    """Result of a repricing run (or async submission)."""
+    """Result of a repricing run (or async submission).
+
+    The counters are ``None`` — not ``0`` — when the run was dispatched to a
+    background worker (``submitted_async=True``): nothing has been scanned in
+    this request, so reporting zeros would be indistinguishable from "the
+    window really contained no rows" (the exact confusion behind "reprice
+    examined 0 rows" on large windows).
+    """
 
     submitted_async: bool = False
-    rows_examined: int = 0
-    rows_updated: int = 0
-    rows_skipped: int = 0
-    cost_before: float = 0.0
-    cost_after: float = 0.0
+    rows_examined: Optional[int] = None
+    rows_updated: Optional[int] = None
+    rows_skipped: Optional[int] = None
+    cost_before: Optional[float] = None
+    cost_after: Optional[float] = None
     dry_run: bool = False
+
+
+class LedgerBackfillBucket(BaseModel):
+    """One (day x model family) allocation bucket of a ledger backfill."""
+
+    day: date
+    family: str
+    ledger_total: float
+    row_count: int
+    allocated_total: float
+    ledger_models: List[str] = Field(default_factory=list)
+
+
+class LedgerBackfillResidual(BaseModel):
+    """Ledger spend with no eligible usage rows to receive it."""
+
+    day: date
+    family: str
+    amount_usd: float
+
+
+class LedgerBackfillUnmatched(BaseModel):
+    """Unpriced usage rows whose family had no ledger spend that day."""
+
+    day: date
+    family: str
+    row_count: int
+
+
+class LedgerBackfillResponse(BaseModel):
+    """Outcome (or dry-run preview) of a provider daily-ledger backfill.
+
+    ``rows_updated`` is ``None`` on a dry run — nothing was written, which is
+    different from "wrote 0 rows". ``other_residual_usd`` is the export's
+    "Other" bucket inside the window: the provider does not say which models
+    it covers, so that spend is reported but never allocated and the matching
+    rows stay unpriced.
+    """
+
+    dry_run: bool = True
+    provider: str
+    start: date
+    end: date
+    ledger_entries: int = 0
+    eligible_rows: int = 0
+    rows_to_reconcile: int = 0
+    total_allocated: float = 0.0
+    rows_updated: Optional[int] = None
+    other_residual_usd: float = 0.0
+    buckets: List[LedgerBackfillBucket] = Field(default_factory=list)
+    unallocated_ledger: List[LedgerBackfillResidual] = Field(default_factory=list)
+    unmatched_rows: List[LedgerBackfillUnmatched] = Field(default_factory=list)
+    skipped_csv_rows: List[str] = Field(default_factory=list)
 
 
 class CostHealthCheck(BaseModel):

@@ -5,6 +5,7 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
+import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
@@ -20,7 +21,9 @@ import '../../components/tool-cost-flags-panel.ts';
 import '../../components/preloop-session-observer.ts';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
-import '../../components/agent-talk-composer.ts';
+import '../../components/talk-button.ts';
+import '../../components/confirm-dialog.ts';
+import { confirmDialog } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import {
   fetchWithAuth,
@@ -60,13 +63,31 @@ import {
   type ScopedToolRules,
 } from '../../utils/scoped-governance';
 import { getAgentControlState } from '../../utils/agent-control';
+import { isCliOnboardableAgentKind } from '../../utils/agent-kinds';
 import { renderAgentIcon } from '../../utils/agent-icons';
+import {
+  REMOVE_AGENT_CONSEQUENCE,
+  getAgentSourceLabel,
+  getAgentStatusChip,
+  getSystemAgentTags,
+  getVisibleAgentTags,
+} from '../../utils/agent-display';
+import { consoleDialogStyles } from '../../styles/console-dialog';
 
 interface GovernanceToolDefinition {
   name: string;
   description?: string;
   schema?: Record<string, unknown>;
 }
+
+/** The subset of an account AI model the allowlist editor keys on. */
+type AllowedModelCandidate = {
+  id: string;
+  name: string;
+  provider_name?: string;
+  model_identifier?: string;
+  meta_data?: Record<string, unknown> | null;
+};
 
 @customElement('agent-detail-view')
 export class AgentDetailView extends LitElement {
@@ -179,6 +200,15 @@ export class AgentDetailView extends LitElement {
   @state()
   private allowedModelsText = '';
 
+  /**
+   * Last server-confirmed governance config; model-editor saves roll back to
+   * this on failure so toggles never show unpersisted selections.
+   */
+  private confirmedGovernance: SubjectGovernanceConfig | null = null;
+
+  /** Serializes available-model saves so rapid toggles cannot race. */
+  private modelSaveChain: Promise<void> = Promise.resolve();
+
   @state()
   private modelBudgetsText = '{}';
 
@@ -219,6 +249,7 @@ export class AgentDetailView extends LitElement {
   private refreshTimer: number | null = null;
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {
@@ -265,11 +296,12 @@ export class AgentDetailView extends LitElement {
         }
       }
 
+      /* Depth limit: two. A stat inside a card is spacing and type, not a
+         second box with its own fill and border. */
       .stat-card {
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
+        border: none;
         padding: var(--sl-spacing-medium);
-        background: var(--sl-color-neutral-50);
+        background: transparent;
       }
 
       .summary-grid .stat-card {
@@ -293,7 +325,7 @@ export class AgentDetailView extends LitElement {
       }
 
       .info-icon {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: 0.95rem;
       }
 
@@ -318,14 +350,17 @@ export class AgentDetailView extends LitElement {
         color: var(--sl-color-neutral-900);
       }
 
+      /* The identity block is a card: it sits on the page, so it takes the
+         card rung of the ladder rather than a named gray step. */
       .agent-overview {
         display: flex;
         flex-direction: column;
         gap: var(--sl-spacing-small);
         padding: var(--sl-spacing-large);
-        border-radius: var(--sl-border-radius-large);
-        background: var(--sl-color-neutral-50);
-        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--console-card-radius);
+        background: var(--console-surface);
+        border: var(--console-card-border);
+        box-shadow: var(--console-card-shadow);
       }
 
       .section-header {
@@ -339,7 +374,45 @@ export class AgentDetailView extends LitElement {
       .badge-row {
         display: flex;
         flex-wrap: wrap;
+        align-items: center;
         gap: var(--sl-spacing-small);
+      }
+
+      /* "Recently active" is real but not live: a fainter tint of the same
+         tone, no border (wave 4 depth limit). */
+      .status-chip.outline::part(base) {
+        background-color: color-mix(
+          in srgb,
+          var(--sl-color-success-500) 8%,
+          transparent
+        );
+        color: var(--sl-color-success-800);
+        border-width: 0;
+      }
+
+      .capability-chip::part(base) {
+        text-transform: none;
+      }
+
+      /* Tags are the operator's own labels, so they stay quiet: text with a
+         leading icon, no pill at all. */
+      .tag-chip::part(base) {
+        background-color: transparent;
+        color: var(--console-meta-color);
+        border-width: 0;
+        padding: 2px 0;
+        text-transform: none;
+        font-weight: var(--sl-font-weight-normal);
+      }
+
+      .tag-chip-value {
+        opacity: 0.7;
+      }
+
+      .tag-chip sl-icon {
+        font-size: 13px;
+        vertical-align: -2px;
+        margin-right: 3px;
       }
 
       .server-badges {
@@ -394,13 +467,10 @@ export class AgentDetailView extends LitElement {
         min-width: 220px;
       }
 
+      /* No decorative gradient: the control card is a card like the others,
+         and its subject is stated by its title. */
       .agent-control-card::part(base) {
-        border-color: var(--sl-color-primary-200);
-        background: linear-gradient(
-          180deg,
-          var(--sl-color-primary-50),
-          var(--sl-color-neutral-0)
-        );
+        background: var(--console-surface);
       }
 
       .agent-control-panel {
@@ -417,10 +487,9 @@ export class AgentDetailView extends LitElement {
       }
 
       .agent-control-status {
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
+        border-left: 1px solid var(--console-hairline);
         padding: var(--sl-spacing-medium);
-        background: var(--sl-color-neutral-0);
+        background: transparent;
         display: flex;
         flex-direction: column;
         gap: var(--sl-spacing-small);
@@ -598,6 +667,7 @@ export class AgentDetailView extends LitElement {
         };
       }
       this.governance = governance.config;
+      this.confirmedGovernance = governance.config;
       // Resolve what "inherit" currently means for the approvals selector.
       void getAccountGovernanceDefaults()
         .then((defaults) => {
@@ -612,7 +682,9 @@ export class AgentDetailView extends LitElement {
       );
       this.toolEnabledOverrides =
         governance.config.tool_enabled_overrides || {};
-      this.allowedModelsText = governance.config.allowed_models.join(', ');
+      this.allowedModelsText = this.formatAllowedModelsText(
+        governance.config.allowed_models
+      );
       this.modelBudgetsText = JSON.stringify(
         governance.config.model_budgets || {},
         null,
@@ -699,28 +771,7 @@ export class AgentDetailView extends LitElement {
   }
 
   private getSourceLabel(sourceType: string | null | undefined): string {
-    switch (sourceType) {
-      case 'claude_code':
-        return 'Claude Code';
-      case 'claude_desktop':
-        return 'Claude Desktop';
-      case 'codex':
-        return 'Codex';
-      case 'openclaw':
-        return 'OpenClaw';
-      case 'gemini_cli':
-        return 'Gemini CLI';
-      case 'opencode':
-        return 'OpenCode';
-      case 'hermes':
-        return 'Hermes';
-      case 'desktop_agent':
-        return 'Desktop Agent';
-      case 'custom':
-        return 'Custom Agent';
-      default:
-        return sourceType || 'Unknown';
-    }
+    return getAgentSourceLabel(sourceType);
   }
 
   private formatMoney(amount: number | null | undefined): string {
@@ -741,7 +792,7 @@ export class AgentDetailView extends LitElement {
     if (!this.agent) return 'Unknown';
     if (this.agent.lifecycle_state === 'decommissioned')
       return 'Decommissioned';
-    if (this.agent.lifecycle_state === 'suspended') return 'Suspended';
+    if (this.agent.lifecycle_state === 'suspended') return 'Paused';
     if (this.agent.activity_status === 'active_now') return 'Active now';
     if (this.agent.activity_status === 'recently_active')
       return 'Recently active';
@@ -847,7 +898,7 @@ export class AgentDetailView extends LitElement {
       if (binding.gateway_alias) models.add(binding.gateway_alias);
     }
 
-    for (const model of this.governance?.allowed_models || []) {
+    for (const model of this.getAllowedModelAliases()) {
       if (model) models.add(model);
     }
 
@@ -930,14 +981,96 @@ export class AgentDetailView extends LitElement {
     // gateway plumbing is proven but model traffic is UNVERIFIED. Never
     // present this as a check that is still in flight.
     if (this.agent.live_validation_status === 'throttled')
-      return 'Live check throttled — unverified';
+      return 'Live check throttled, unverified';
     if (this.agent.live_validation_status === 'upstream_unavailable')
-      return 'Upstream refused — unverified';
+      return 'Upstream refused, unverified';
     // ``not_run`` means the CLI was never invoked with ``--live-validate`` —
     // it's an opt-in step, not a check that's currently in flight.
     if (this.agent.live_validation_status === 'not_run')
       return 'Live check not run';
     return 'Live check pending';
+  }
+
+  /**
+   * The chips under the agent name, in one deliberate order: what the agent is
+   * doing right now, then anything that is switched off and costing you
+   * governance, then the operator's own labels.
+   *
+   * Everything here used to be a chip of its own -- onboarding state,
+   * lifecycle, live check, Agent Control, enrolment method -- which produced a
+   * row of five or six badges in four colours where nothing stood out. The
+   * status chip now carries lifecycle and onboarding (see getAgentStatusChip),
+   * capability gaps are amber and only appear when there is a gap, and tags
+   * are outlined neutral so they read as labels rather than as state.
+   */
+  private renderHeaderChips(): TemplateResult | typeof nothing {
+    if (!this.agent) return nothing;
+
+    const status = getAgentStatusChip(this.agent);
+    const control = getAgentControlState(this.agent);
+    const liveCount =
+      this.liveActivity.modelCalls + this.liveActivity.toolCalls;
+
+    // "Off" here means the check exists for this kind of agent but has not
+    // proven anything yet: never run, throttled, refused upstream or failed.
+    const liveCheckOff =
+      this.agent.live_validation_supported &&
+      this.agent.live_validation_status !== 'passed';
+    const controlOff = control.visible && !control.enabled;
+
+    return html`
+      <sl-tooltip
+        content=${(() => {
+          const lastSeen = `Last seen: ${this.formatDateTime(
+            this.liveActivity.lastActivityAt || this.agent.last_seen_at
+          )}`;
+          // A partial-onboarding chip explains itself first; the header
+          // already carries one tooltip, so the two share it.
+          return status.tooltip ? `${status.tooltip} · ${lastSeen}` : lastSeen;
+        })()}
+      >
+        <sl-badge
+          class="status-chip ${status.outline ? 'outline' : ''}"
+          variant=${status.variant}
+          pill
+          >${status.label}</sl-badge
+        >
+      </sl-tooltip>
+      ${
+        liveCount > 0
+          ? html`<sl-badge variant="success" pill>Live ${liveCount}</sl-badge>`
+          : nothing
+      }
+      ${
+        liveCheckOff
+          ? html`<sl-tooltip content=${this.getLiveValidationLabel()}>
+              <sl-badge class="capability-chip" variant="warning" pill
+                >Live check: off</sl-badge
+              >
+            </sl-tooltip>`
+          : nothing
+      }
+      ${
+        controlOff
+          ? html`<sl-tooltip content=${control.detail}>
+              <sl-badge class="capability-chip" variant="warning" pill
+                >Agent Control: off</sl-badge
+              >
+            </sl-tooltip>`
+          : nothing
+      }
+      ${getVisibleAgentTags(this.agent.tags).map(
+        ([key, value]) => html`
+          <sl-badge class="tag-chip" variant="neutral" pill>
+            <sl-icon name="tag"></sl-icon>${key}${
+              value && value !== 'true'
+                ? html`<span class="tag-chip-value">=${value}</span>`
+                : nothing
+            }
+          </sl-badge>
+        `
+      )}
+    `;
   }
 
   private handleGatewayActivity(message: any): void {
@@ -1069,7 +1202,7 @@ export class AgentDetailView extends LitElement {
 
   private promptEditTags(): void {
     if (!this.agent) return;
-    const currentTags = Object.entries(this.agent.tags || {})
+    const currentTags = getVisibleAgentTags(this.agent.tags)
       .map(([k, v]) => (v && v !== 'true' ? `${k}=${v}` : k))
       .join(' ');
 
@@ -1079,7 +1212,9 @@ export class AgentDetailView extends LitElement {
 
   private submitTagsDialog(): void {
     if (this.tagsDialogInput !== null) {
-      const tags: Record<string, string> = {};
+      // Server-owned identity.* tags are hidden from the editor, so carry
+      // them over explicitly; the PATCH replaces the whole tag map.
+      const tags: Record<string, string> = getSystemAgentTags(this.agent?.tags);
       this.tagsDialogInput.split(/\s+/).forEach((t: string) => {
         if (!t) return;
         const [k, ...vParts] = t.split('=');
@@ -1088,6 +1223,40 @@ export class AgentDetailView extends LitElement {
       void this.saveTags(tags);
     }
     this.showTagsDialog = false;
+  }
+
+  /**
+   * Render re-keying history behind a collapsed disclosure.
+   *
+   * Re-keying records the agent's superseded principal ids as an
+   * `identity.previous_ids` tag. It is useful for support, but rendering it
+   * as a normal tag chip put a long comma-separated id string in the header.
+   */
+  private renderIdentityHistory() {
+    const previousIds = (this.agent?.tags || {})['identity.previous_ids'];
+    if (!previousIds) return nothing;
+    const ids = previousIds
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+    if (ids.length === 0) return nothing;
+    return html`
+      <details
+        style="margin-top: var(--sl-spacing-x-small); font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600);"
+      >
+        <summary style="cursor: pointer;">
+          Identity history (${ids.length})
+        </summary>
+        <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">
+          ${ids.map(
+            (id) =>
+              html`<code style="font-size: var(--sl-font-size-x-small);"
+                >${id}</code
+              >`
+          )}
+        </div>
+      </details>
+    `;
   }
 
   private async saveTags(tags: Record<string, string>): Promise<void> {
@@ -1113,9 +1282,9 @@ export class AgentDetailView extends LitElement {
     try {
       const parsedBudgets = JSON.parse(this.modelBudgetsText || '{}');
       const config: SubjectGovernanceConfig = {
-        allowed_models: Object.keys(parsedBudgets).filter(
-          (key) => key.trim() !== ''
-        ),
+        // The available-model list is managed explicitly from the Models &
+        // Spend tab; budget edits must not silently rewrite it.
+        allowed_models: this.governance.allowed_models || [],
         model_budgets: parsedBudgets,
         tool_rules: serializeScopedToolRules(this.scopedToolRules),
         tool_enabled_overrides: this.toolEnabledOverrides,
@@ -1124,11 +1293,14 @@ export class AgentDetailView extends LitElement {
       };
       const response = await updateAgentGovernance(this.agentId, config);
       this.governance = response.config;
+      this.confirmedGovernance = response.config;
       this.scopedToolRules = normalizeScopedToolRules(
         response.config.tool_rules
       );
       this.toolEnabledOverrides = response.config.tool_enabled_overrides || {};
-      this.allowedModelsText = response.config.allowed_models.join(', ');
+      this.allowedModelsText = this.formatAllowedModelsText(
+        response.config.allowed_models
+      );
       this.modelBudgetsText = JSON.stringify(
         response.config.model_budgets || {},
         null,
@@ -1141,6 +1313,193 @@ export class AgentDetailView extends LitElement {
     } finally {
       this.actionLoading = false;
     }
+  }
+
+  /**
+   * Persist an explicit available-model list for this agent through the
+   * governance endpoint, preserving every other governance field.
+   *
+   * Updates are applied optimistically for immediate checkbox feedback, then
+   * serialized through a promise chain so rapid toggles cannot resolve out of
+   * order; a failed PUT rolls the editor back to the last server-confirmed
+   * state instead of leaving unpersisted selections on screen.
+   */
+  private async saveAllowedModels(models: string[]): Promise<void> {
+    if (!this.agentId) {
+      return;
+    }
+    this.governance = { ...this.governance, allowed_models: [...models] };
+    this.allowedModelsText = this.formatAllowedModelsText(models);
+    this.actionLoading = true;
+    const task = this.modelSaveChain.then(() => this.persistAllowedModels());
+    this.modelSaveChain = task.then(
+      () => undefined,
+      () => undefined
+    );
+    try {
+      await task;
+    } finally {
+      this.actionLoading = false;
+    }
+  }
+
+  private async persistAllowedModels(): Promise<void> {
+    if (!this.agentId) {
+      return;
+    }
+    try {
+      const response = await updateAgentGovernance(this.agentId, {
+        ...this.governance,
+      });
+      this.confirmedGovernance = response.config;
+      this.governance = response.config;
+      this.scopedToolRules = normalizeScopedToolRules(
+        response.config.tool_rules
+      );
+      this.toolEnabledOverrides = response.config.tool_enabled_overrides || {};
+      this.allowedModelsText = this.formatAllowedModelsText(
+        response.config.allowed_models
+      );
+      this.error = null;
+    } catch (error) {
+      console.error('Failed to update agent models:', error);
+      this.error =
+        error instanceof Error ? error.message : 'Failed to update models';
+      // Roll back to the last state the server confirmed so the toggles do
+      // not keep showing a selection that was never persisted.
+      if (this.confirmedGovernance) {
+        this.governance = { ...this.confirmedGovernance };
+        this.allowedModelsText = this.formatAllowedModelsText(
+          this.confirmedGovernance.allowed_models
+        );
+      }
+    }
+  }
+
+  private handleAllowedModelToggle(modelAlias: string, checked: boolean): void {
+    // While unrestricted (empty allowlist) every checkbox renders unchecked,
+    // so checking a model switches the agent into restricted mode with just
+    // that model. Unchecking simply removes it from the restriction. The
+    // list is normalised to gateway aliases on the way out, so a legacy
+    // allowlist of display names or ids is rewritten to aliases the first
+    // time it is edited.
+    const current = this.getAllowedModelAliases();
+    let next: string[];
+    if (checked) {
+      if (current.includes(modelAlias)) {
+        return;
+      }
+      next = [...current, modelAlias].sort();
+    } else {
+      if (!current.includes(modelAlias)) {
+        return;
+      }
+      next = current.filter((m) => m !== modelAlias);
+    }
+    void this.saveAllowedModels(next);
+  }
+
+  private handleAllowedModelsTextChange(value: string): void {
+    const models = Array.from(
+      new Set(
+        value
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map((entry) => this.resolveAllowedModelEntry(entry))
+      )
+    );
+    void this.saveAllowedModels(models);
+  }
+
+  /**
+   * The gateway alias an account model answers to: the explicit
+   * ``meta_data.gateway.model_alias`` when set, else ``provider/identifier``.
+   * This is the key the governance allowlist is written with, because the
+   * gateway preflight keys on it and it reads as a policy.
+   */
+  private gatewayAliasForModel(model: AllowedModelCandidate): string {
+    const meta = (model.meta_data || {}) as Record<string, unknown>;
+    const gateway = (meta.gateway as Record<string, unknown> | undefined) || {};
+    const explicit = gateway.model_alias;
+    if (typeof explicit === 'string' && explicit.trim()) {
+      return explicit.trim();
+    }
+    const provider = (model.provider_name || 'openai').trim().toLowerCase();
+    const identifier = (model.model_identifier || '').trim();
+    return identifier ? `${provider}/${identifier}` : provider;
+  }
+
+  /**
+   * Find the account model one stored allowlist entry refers to.
+   * Matching contract: backend/preloop/services/model_allowlist.py
+   * Entries may be a gateway alias (or its bare tail), an AI model id, or a
+   * display name (case-insensitive).
+   */
+  private findModelForAllowedEntry(
+    entry: string
+  ): AllowedModelCandidate | null {
+    const needle = entry.trim();
+    if (!needle) return null;
+    const folded = needle.toLowerCase();
+    const models = this.availableModels as AllowedModelCandidate[];
+    for (const model of models) {
+      if (this.gatewayAliasForModel(model) === needle) return model;
+    }
+    for (const model of models) {
+      if (String(model.id).toLowerCase() === folded) return model;
+    }
+    for (const model of models) {
+      if ((model.name || '').trim().toLowerCase() === folded) return model;
+    }
+    // A bare tail may be shared by two imports of the same upstream model
+    // (acme/alpha-chat and vendor/alpha-chat). The backend honours the
+    // entry for both rows, so rewriting it to one alias would silently
+    // narrow the policy: only resolve when exactly one row matches.
+    let tailMatch: AllowedModelCandidate | null = null;
+    let tailMatches = 0;
+    for (const model of models) {
+      const alias = this.gatewayAliasForModel(model);
+      const tail = alias.includes('/')
+        ? alias.split('/').slice(1).join('/')
+        : '';
+      if (tail && tail === needle) {
+        tailMatch = model;
+        tailMatches += 1;
+      }
+    }
+    return tailMatches === 1 ? tailMatch : null;
+  }
+
+  /** Persisted key for an allowlist entry: its model's alias, else as typed. */
+  private resolveAllowedModelEntry(entry: string): string {
+    const model = this.findModelForAllowedEntry(entry);
+    return model ? this.gatewayAliasForModel(model) : entry.trim();
+  }
+
+  /**
+   * Collect stored allowlist entries as gateway aliases, order preserved.
+   * Matching contract: backend/preloop/services/model_allowlist.py
+   * Non-string values are dropped, not stringified.
+   */
+  private collectAllowedModelAliases(entries: unknown[] | undefined): string[] {
+    const aliases: string[] = [];
+    for (const entry of entries || []) {
+      if (typeof entry !== 'string') continue;
+      const alias = this.resolveAllowedModelEntry(entry);
+      if (alias && !aliases.includes(alias)) aliases.push(alias);
+    }
+    return aliases;
+  }
+
+  /** The current allowlist expressed as gateway aliases, order preserved. */
+  private getAllowedModelAliases(): string[] {
+    return this.collectAllowedModelAliases(this.governance?.allowed_models);
+  }
+
+  /** Comma-separated alias list shown in the manual override input. */
+  private formatAllowedModelsText(entries: unknown[] | undefined): string {
+    return this.collectAllowedModelAliases(entries).join(', ');
   }
 
   private saveApprovalWorkflowSelection(workflowId: string | null): void {
@@ -1324,11 +1683,14 @@ export class AgentDetailView extends LitElement {
     if (!this.agentId || !this.agent) {
       return;
     }
-    if (
-      !window.confirm(
-        `Remove ${this.agent.display_name} from the managed agents list?\n\nThis also revokes the agent's Preloop credentials: if this agent is still onboarded on a machine, its gateway and MCP access will stop working until you run \`preloop agents onboard\` again. To disconnect cleanly, run \`preloop agents offboard\` on that machine instead.`
-      )
-    ) {
+    const confirmed = await confirmDialog({
+      title: 'Remove agent',
+      message: `Remove ${this.agent.display_name} from the managed agents list?`,
+      detail: REMOVE_AGENT_CONSEQUENCE,
+      confirmLabel: 'Remove agent',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
     this.actionLoading = true;
@@ -1352,12 +1714,18 @@ export class AgentDetailView extends LitElement {
     if (!this.agentId || !this.agent) {
       return;
     }
-    const actionLabel = lifecycleAction === 'suspend' ? 'halt' : 'resume';
-    if (
-      !window.confirm(
-        `Are you sure you want to ${actionLabel} ${this.agent.display_name}?`
-      )
-    ) {
+    const isSuspend = lifecycleAction === 'suspend';
+    const confirmed = await confirmDialog({
+      title: isSuspend ? 'Pause agent' : 'Resume agent',
+      message: isSuspend
+        ? `Pause ${this.agent.display_name}?`
+        : `Resume ${this.agent.display_name}?`,
+      detail: isSuspend
+        ? 'Requests are blocked while paused. Resume restores the agent without re-onboarding it.'
+        : 'The existing credentials start working again immediately.',
+      confirmLabel: isSuspend ? 'Pause' : 'Resume',
+    });
+    if (!confirmed) {
       return;
     }
     this.actionLoading = true;
@@ -1366,7 +1734,7 @@ export class AgentDetailView extends LitElement {
         lifecycle_action: lifecycleAction,
         reason:
           lifecycleAction === 'suspend'
-            ? 'Manually halted by admin'
+            ? 'Manually paused by admin'
             : 'Manually resumed by admin',
       });
       await this.loadData();
@@ -1420,13 +1788,6 @@ export class AgentDetailView extends LitElement {
         onClick: () => this.promptRename(),
       },
       {
-        id: 'remove',
-        label: 'Remove',
-        variant: 'danger',
-        loading: this.actionLoading,
-        onClick: () => this.removeAgent(),
-      },
-      {
         id: 'edit-tags',
         label: 'Edit Tags',
         icon: 'tag',
@@ -1447,26 +1808,30 @@ export class AgentDetailView extends LitElement {
       this.agent.lifecycle_state === 'suspended' ||
       this.agent.lifecycle_state === 'decommissioned';
 
+    // Resume is a green "start it again"; Pause is an everyday, reversible
+    // control, so it stays neutral. Amber read as a warning next to Talk and
+    // pulled the eye away from the action people actually came for.
     if (isSuspendedOrDecommissioned) {
       actions.push({
         id: 'resume',
         label: 'Resume',
         variant: 'success',
-        icon: 'plug',
+        icon: 'play-fill',
         loading: this.actionLoading,
         onClick: () => this.updateAgentLifecycle('resume'),
-        tooltip: "This action re-enables the agent's API keys.",
+        tooltip:
+          'Resume this agent. Its existing credentials start working again immediately.',
       });
     } else {
       actions.push({
-        id: 'halt',
-        label: 'Halt',
-        variant: 'danger',
-        icon: 'power',
+        id: 'pause',
+        label: 'Pause',
+        variant: 'default',
+        icon: 'pause-fill',
         loading: this.actionLoading,
         onClick: () => this.updateAgentLifecycle('suspend'),
         tooltip:
-          "This action immediately disables the agent's API keys and is fully reversible.",
+          'Pause this agent. Requests are blocked while paused; Resume restores it without re-onboarding.',
       });
     }
 
@@ -1476,15 +1841,27 @@ export class AgentDetailView extends LitElement {
         id: 'talk',
         label: 'Talk',
         render: () => html`
-          <agent-talk-composer
+          <talk-button
             .agent=${this.agent}
-            .sessions=${this.sessions}
-            sourceContext="agent-detail-view"
-            @agent-control-sent=${() => this.loadData(true)}
-          ></agent-talk-composer>
+            source-context="agent-detail-view"
+          ></talk-button>
         `,
       });
     }
+
+    // Remove goes last, set apart from the everyday actions and outlined
+    // rather than solid: it is the one action on this page you cannot undo,
+    // and a solid red block next to Rename invites a mis-click.
+    actions.push({
+      id: 'remove',
+      label: 'Remove',
+      icon: 'trash',
+      variant: 'danger',
+      outline: true,
+      separated: true,
+      loading: this.actionLoading,
+      onClick: () => this.removeAgent(),
+    });
 
     return actions;
   }
@@ -1860,25 +2237,21 @@ export class AgentDetailView extends LitElement {
                   style="display: flex; flex-direction: column; gap: var(--sl-spacing-small); font-size: var(--sl-font-size-small);"
                 >
                   <div style="display: flex; justify-content: space-between;">
-                    <span style="color: var(--sl-color-neutral-500);"
-                      >Host:</span
-                    >
+                    <span style="color: var(--console-meta-color);">Host:</span>
                     <strong style="font-family: monospace;">${host}</strong>
                   </div>
                   <div style="display: flex; justify-content: space-between;">
-                    <span style="color: var(--sl-color-neutral-500);"
-                      >Port:</span
-                    >
+                    <span style="color: var(--console-meta-color);">Port:</span>
                     <strong style="font-family: monospace;">${port}</strong>
                   </div>
                   <div style="display: flex; justify-content: space-between;">
-                    <span style="color: var(--sl-color-neutral-500);"
+                    <span style="color: var(--console-meta-color);"
                       >Username:</span
                     >
                     <strong style="font-family: monospace;">${username}</strong>
                   </div>
                   <div style="display: flex; justify-content: space-between;">
-                    <span style="color: var(--sl-color-neutral-500);"
+                    <span style="color: var(--console-meta-color);"
                       >Authentication:</span
                     >
                     <strong>SSH Key / Password</strong>
@@ -2220,7 +2593,7 @@ export class AgentDetailView extends LitElement {
                     padding: var(--sl-spacing-3x-large);
                     background: var(--sl-color-neutral-50);
                     border-radius: var(--sl-border-radius-medium);
-                    color: var(--sl-color-neutral-500);
+                    color: var(--console-meta-color);
                   "
                   >
                     <sl-icon
@@ -2278,7 +2651,7 @@ export class AgentDetailView extends LitElement {
                               ${flow.name}
                             </div>
                             <div
-                              style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-500); margin-top: 4px;"
+                              style="font-size: var(--sl-font-size-small); color: var(--console-meta-color); margin-top: 4px;"
                             >
                               ${flow.description || 'No description provided.'}
                             </div>
@@ -2341,6 +2714,8 @@ export class AgentDetailView extends LitElement {
     }
 
     const aggregate = this.aggregate;
+    // Resolved once per render instead of once per model row.
+    const allowedModelAliases = this.getAllowedModelAliases();
 
     return html`
       <view-header headerText=${this.agent.display_name}>
@@ -2374,7 +2749,7 @@ export class AgentDetailView extends LitElement {
         >
           <div style="flex: 1; min-width: 300px;">
             <div
-              style="color: var(--sl-color-neutral-500); font-size: 0.9rem; margin-top: 4px;"
+              style="color: var(--console-meta-color); font-size: 0.9rem; margin-top: 4px;"
             >
               ${this.getSourceLabel(
                 this.agent.agent_kind || this.agent.session_source_type
@@ -2390,93 +2765,9 @@ export class AgentDetailView extends LitElement {
             <div
               style="display: flex; flex-direction: column; align-items: flex-start; gap: var(--sl-spacing-small); margin-top: var(--sl-spacing-small);"
             >
-              <div class="badge-row">
-                <sl-tooltip content=${this.getOnboardingDescription()}>
-                  <sl-badge variant=${this.getOnboardingVariant()}>
-                    ${this.getOnboardingLabel()}
-                  </sl-badge>
-                </sl-tooltip>
-                <sl-tooltip
-                  content=${`Last seen: ${this.formatDateTime(this.liveActivity.lastActivityAt || this.agent.last_seen_at)}`}
-                >
-                  <sl-badge variant=${this.getLifecycleVariant()}>
-                    ${this.getLifecycleLabel()}
-                  </sl-badge>
-                </sl-tooltip>
-                <sl-badge variant=${this.getLiveValidationVariant()}>
-                  ${this.getLiveValidationLabel()}
-                </sl-badge>
-                ${
-                  getAgentControlState(this.agent).visible
-                    ? html`
-                        <sl-tooltip
-                          content=${getAgentControlState(this.agent).detail}
-                        >
-                          <sl-badge
-                            variant=${
-                              getAgentControlState(this.agent).badgeVariant
-                            }
-                          >
-                            ${getAgentControlState(this.agent).label}
-                          </sl-badge>
-                        </sl-tooltip>
-                      `
-                    : html`<sl-badge variant="neutral"
-                        >No Agent Control</sl-badge
-                      >`
-                }
-                <sl-badge variant="primary"
-                  >${this.agent.enrolled_via}</sl-badge
-                >
-                ${
-                  this.liveActivity.modelCalls || this.liveActivity.toolCalls
-                    ? html`
-                        <sl-badge variant="primary">
-                          Live
-                          ${
-                            this.liveActivity.modelCalls +
-                            this.liveActivity.toolCalls
-                          }
-                        </sl-badge>
-                      `
-                    : null
-                }
-              </div>
+              <div class="badge-row">${this.renderHeaderChips()}</div>
 
-              ${
-                this.agent.tags && Object.keys(this.agent.tags).length > 0
-                  ? html`
-                      <div
-                        style="display: flex; gap: var(--sl-spacing-small); align-items: center; margin-top: var(--sl-spacing-x-small);"
-                      >
-                        <div
-                          style="font-size: var(--sl-font-size-small); font-weight: 500; color: var(--sl-color-neutral-700);"
-                        >
-                          Tags:
-                        </div>
-                        <div style="display: flex; flex-wrap: wrap; gap: 4px;">
-                          ${Object.entries(this.agent.tags).map(
-                            ([k, v]) => html`
-                              <sl-badge
-                                variant="neutral"
-                                style="text-transform: none;"
-                              >
-                                <span style="opacity: 0.7">${k}</span>${
-                                  v && v !== 'true'
-                                    ? html`<span
-                                          style="opacity: 0.4; margin: 0 4px;"
-                                          >=</span
-                                        >${v}`
-                                    : ''
-                                }
-                              </sl-badge>
-                            `
-                          )}
-                        </div>
-                      </div>
-                    `
-                  : nothing
-              }
+              ${this.renderIdentityHistory()}
             </div>
           </div>
 
@@ -2624,10 +2915,10 @@ export class AgentDetailView extends LitElement {
                                 class="hero-title"
                                 style="display: flex; align-items: center; gap: 8px;"
                               >
-                                Sessions History
+                                Session History
                                 <sl-icon-button
                                   name="arrow-clockwise"
-                                  style="font-size: 1.1rem; color: var(--sl-color-neutral-500);"
+                                  style="font-size: 1.1rem; color: var(--console-meta-color);"
                                   @click=${() => this.loadData(true)}
                                 ></sl-icon-button>
                               </div>
@@ -2642,6 +2933,7 @@ export class AgentDetailView extends LitElement {
                           scope="managed_agent"
                           .scopeId=${this.agentId}
                           .sessions=${this.sessions}
+                          .talkAgent=${this.agent}
                           layout="embedded"
                           defaultReplayMode="timeline"
                           .features=${{
@@ -2737,10 +3029,10 @@ export class AgentDetailView extends LitElement {
                                   })
                                 </sl-option>
                                 <sl-option value="enforce">
-                                  Enforce — always require approval
+                                  Enforce: always require approval
                                 </sl-option>
                                 <sl-option value="off">
-                                  Off — auto-approve (recorded)
+                                  Off: auto-approve (recorded)
                                 </sl-option>
                               </sl-select>
                               <sl-select
@@ -2801,35 +3093,58 @@ export class AgentDetailView extends LitElement {
                                     still recorded in Approvals, marked
                                     auto-approved and excluded from your
                                     approval stats, so you keep the audit trail.
-                                    The local hook installed at onboarding still
-                                    adds a network round-trip to Preloop on
-                                    every tool call.
-                                    <sl-details
-                                      summary="How to fully disable the hook locally"
-                                      style="margin-top: var(--sl-spacing-small);"
-                                    >
-                                      <div class="meta-line">
-                                        Re-onboard without approvals:
-                                        <code
-                                          >preloop agents offboard
-                                          &lt;agent&gt;</code
-                                        >
-                                        then
-                                        <code
-                                          >preloop agents onboard
-                                          &lt;agent&gt;</code
-                                        >
-                                        without <code>--approvals</code>. Or
-                                        remove the hook entry by hand: delete
-                                        the Preloop PreToolUse entry from
-                                        <code>~/.claude/settings.json</code>
-                                        (Claude Code), or the Preloop entries in
-                                        <code>~/.cursor/hooks.json</code>
-                                        (Cursor) /
-                                        <code>~/.codex/hooks.json</code> (Codex
-                                        CLI).
-                                      </div>
-                                    </sl-details>
+                                    ${
+                                      // The local hook, and the command that
+                                      // removes it, only exist for agents the
+                                      // CLI onboarded. A custom agent has no
+                                      // hook to disable, so telling its owner
+                                      // to re-onboard would send them at a
+                                      // command that cannot find it.
+                                      isCliOnboardableAgentKind(
+                                        this.agent?.agent_kind ||
+                                          this.agent?.session_source_type
+                                      )
+                                        ? html`The local hook installed at
+                                            onboarding still adds a network
+                                            round-trip to Preloop on every tool
+                                            call.
+                                            <sl-details
+                                              summary="How to fully disable the hook locally"
+                                              style="margin-top: var(--sl-spacing-small);"
+                                            >
+                                              <div class="meta-line">
+                                                Re-onboard without approvals:
+                                                <code
+                                                  >preloop agents offboard
+                                                  &lt;agent&gt;</code
+                                                >
+                                                then
+                                                <code
+                                                  >preloop agents onboard
+                                                  &lt;agent&gt;</code
+                                                >
+                                                without
+                                                <code>--approvals</code>. Or
+                                                remove the hook entry by hand:
+                                                delete the Preloop PreToolUse
+                                                entry from
+                                                <code
+                                                  >~/.claude/settings.json</code
+                                                >
+                                                (Claude Code), or the Preloop
+                                                entries in
+                                                <code
+                                                  >~/.cursor/hooks.json</code
+                                                >
+                                                (Cursor) /
+                                                <code>~/.codex/hooks.json</code>
+                                                (Codex CLI).
+                                              </div>
+                                            </sl-details>`
+                                        : html`This agent is started by you, so
+                                          there is no Preloop hook on a machine
+                                          to remove.`
+                                    }
                                   </sl-alert>
                                 `
                               : nothing
@@ -2890,9 +3205,8 @@ export class AgentDetailView extends LitElement {
                             <div>
                               <div class="hero-title">Models & Spend</div>
                               <div class="meta-line">
-                                Assign budget limits restricting maximum spend
-                                per month. If a model does not have a budget, it
-                                will be prohibited.
+                                Update the models this agent can use and set
+                                monthly spend limits per model.
                               </div>
                             </div>
                             <sl-button
@@ -2987,6 +3301,89 @@ export class AgentDetailView extends LitElement {
                               `;
                             }
                           )}
+                        </div>
+                        <div
+                          style="margin-top: var(--sl-spacing-large); padding-top: var(--sl-spacing-large); border-top: 1px solid var(--sl-color-neutral-200); display: flex; flex-direction: column; gap: var(--sl-spacing-small);"
+                        >
+                          <div class="hero-title" id="available-models-title">
+                            Available models
+                          </div>
+                          <div class="meta-line" id="available-models-status">
+                            ${
+                              (this.governance.allowed_models || []).length ===
+                              0
+                                ? html`Every model is currently allowed. Check a
+                                  model to restrict this agent to selected
+                                  models only.`
+                                : html`This agent may only use the checked
+                                  models.`
+                            }
+                          </div>
+                          <div
+                            style="display: flex; flex-direction: column; gap: var(--sl-spacing-x-small); max-height: 260px; overflow-y: auto;"
+                          >
+                            ${this.availableModels.map((model: any) => {
+                              const alias = this.gatewayAliasForModel(model);
+                              // While unrestricted (empty list) every box
+                              // renders unchecked; checking one switches to
+                              // restricted mode instead of faking "checked
+                              // because everything is allowed".
+                              const isChecked =
+                                allowedModelAliases.includes(alias);
+                              return html`
+                                <sl-checkbox
+                                  data-model-allow-toggle=${alias}
+                                  ?checked=${isChecked}
+                                  @sl-change=${(e: Event) =>
+                                    this.handleAllowedModelToggle(
+                                      alias,
+                                      (e.target as HTMLInputElement).checked
+                                    )}
+                                >
+                                  ${model.name}
+                                  ${
+                                    alias !== model.name
+                                      ? html`<span
+                                          class="meta-line"
+                                          style="margin: 0 0 0 var(--sl-spacing-x-small); display: inline;"
+                                          >${alias}</span
+                                        >`
+                                      : nothing
+                                  }
+                                </sl-checkbox>
+                              `;
+                            })}
+                            ${
+                              this.availableModels.length === 0
+                                ? html`<div
+                                    class="meta-line"
+                                    style="margin: 0;"
+                                  >
+                                    No models configured yet. Add one with the
+                                    model list below.
+                                  </div>`
+                                : nothing
+                            }
+                          </div>
+                          <sl-input
+                            label="Allowed models"
+                            placeholder="provider/model-name, ..."
+                            .value=${this.allowedModelsText}
+                            @sl-change=${(e: Event) => {
+                              this.handleAllowedModelsTextChange(
+                                (e.target as HTMLInputElement).value
+                              );
+                            }}
+                          ></sl-input>
+                          <div
+                            style="font-size: 0.8rem; color: var(--console-meta-color);"
+                          >
+                            The authoritative comma separated list of gateway
+                            aliases behind the checkboxes above, including
+                            aliases not offered as checkboxes. Model names and
+                            ids typed here are converted to aliases on save.
+                            Leave empty to allow all models.
+                          </div>
                         </div>
                       </div>
                     </sl-card>

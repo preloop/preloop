@@ -4,26 +4,70 @@ import { when } from 'lit/directives/when.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
   getAIModels,
-  getAIModelGatewayUsageSummary,
-  getAIModelRuntimeSessions,
+  getAIModelsOverview,
   updateAIModel,
   deleteAIModel,
 } from '../../../api';
-import type {
-  AIModel,
-  AIModelGatewayUsageSummaryResponse,
-} from '../../../types';
+import type { AIModel, AIModelOverviewItem } from '../../../types';
 
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import '@shoelace-style/shoelace/dist/components/option/option.js';
+import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '../../../components/add-ai-model-modal';
+import '../../../components/list-toolbar';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
+import { formatRelativeTime } from '../../../utils/date';
+import {
+  effectiveViewMode,
+  loadViewMode,
+  saveViewMode,
+  subscribeNarrowViewport,
+  type ListViewMode,
+  type NarrowViewportSubscription,
+} from '../../../utils/view-mode';
 import consoleStyles from '../../../styles/console-styles.css?inline';
+import { consoleDialogStyles } from '../../../styles/console-dialog';
+
+const VIEW_MODE_KEY = 'preloop.models.view_mode';
+
+export function isGatewayEnabled(model: AIModel): boolean {
+  const gateway = model.meta_data?.gateway;
+  if (!gateway || typeof gateway !== 'object') {
+    return false;
+  }
+  return (gateway as { enabled?: boolean }).enabled === true;
+}
+
+export function filterModels(
+  models: AIModel[],
+  search: string,
+  provider: string,
+  status: string
+): AIModel[] {
+  const query = search.trim().toLowerCase();
+  return models.filter((model) => {
+    if (provider && model.provider_name !== provider) {
+      return false;
+    }
+    if (status === 'enabled' && !isGatewayEnabled(model)) {
+      return false;
+    }
+    if (status === 'disabled' && isGatewayEnabled(model)) {
+      return false;
+    }
+    if (!query) {
+      return true;
+    }
+    const haystack = [model.name, model.provider_name].join(' ').toLowerCase();
+    return haystack.includes(query);
+  });
+}
 
 @customElement('ai-models-view')
 export class AIModelsView extends LitElement {
@@ -57,19 +101,30 @@ export class AIModelsView extends LitElement {
   private modelToDelete: AIModel | null = null;
 
   @state()
-  private modelOverview = new Map<
-    string,
-    {
-      summary: AIModelGatewayUsageSummaryResponse;
-      activeSessions: number;
-    }
-  >();
+  private modelOverview = new Map<string, AIModelOverviewItem>();
+
+  @state()
+  private search = '';
+
+  @state()
+  private providerFilter = '';
+
+  @state()
+  private statusFilter = '';
+
+  @state()
+  private currentView: ListViewMode = loadViewMode(VIEW_MODE_KEY);
+
+  @state()
+  private narrowViewport = false;
 
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
   private refreshInFlight = false;
+  private narrowViewportSubscription: NarrowViewportSubscription | null = null;
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       table {
@@ -80,6 +135,9 @@ export class AIModelsView extends LitElement {
         display: flex;
         flex-direction: column;
         gap: var(--sl-spacing-large);
+      }
+      .toolbar-wrap {
+        width: 100%;
       }
       .summary-grid {
         display: grid;
@@ -110,10 +168,10 @@ export class AIModelsView extends LitElement {
       .styled-table td {
         padding: var(--sl-spacing-medium);
         text-align: left;
-        border-bottom: 1px solid var(--sl-color-neutral-200);
+        border-bottom: 1px solid var(--console-hairline);
       }
       .styled-table th {
-        background-color: var(--sl-color-neutral-50);
+        background-color: transparent;
         font-weight: var(--sl-font-weight-semibold);
       }
       .styled-table td {
@@ -131,6 +189,65 @@ export class AIModelsView extends LitElement {
         color: var(--sl-color-primary-600);
         text-decoration: none;
         cursor: pointer;
+      }
+      .empty-state-wrapper {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        margin-top: var(--sl-spacing-large);
+      }
+      .empty-card {
+        width: 100%;
+        max-width: 580px;
+      }
+      .empty-card::part(base) {
+        border: 1px solid
+          color-mix(in srgb, var(--sl-color-primary-600) 35%, transparent);
+        box-shadow: var(--sl-shadow-large);
+        border-radius: var(--sl-border-radius-large);
+        overflow: hidden;
+      }
+      .empty-card-body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        padding: var(--sl-spacing-large);
+      }
+      .empty-icon-circle {
+        width: 72px;
+        height: 72px;
+        border-radius: 50%;
+        background: color-mix(
+          in srgb,
+          var(--sl-color-primary-600) 15%,
+          transparent
+        );
+        color: var(--sl-color-primary-600);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: var(--sl-spacing-medium);
+      }
+      .empty-icon-circle sl-icon {
+        font-size: 2.5rem;
+      }
+      .empty-card-title {
+        margin: 0 0 var(--sl-spacing-2x-small);
+        font-size: 1.25rem;
+        font-weight: 700;
+        color: var(--sl-color-neutral-900);
+      }
+      .empty-card-desc {
+        margin: 0 0 var(--sl-spacing-large);
+        max-width: 440px;
+        font-size: 0.95rem;
+        line-height: 1.55;
+        color: var(--sl-color-neutral-600);
+      }
+      .empty-cta-btn {
+        width: 100%;
+        max-width: 280px;
       }
       .model-link {
         color: var(--sl-color-primary-700);
@@ -170,6 +287,44 @@ export class AIModelsView extends LitElement {
         color: var(--sl-color-neutral-600);
         font-size: var(--sl-font-size-small);
       }
+      .filter-empty {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-body);
+        padding: var(--sl-spacing-large) 0;
+      }
+      .models-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: var(--sl-spacing-large);
+      }
+      .model-card-body {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-small);
+      }
+      .model-card-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--sl-spacing-small);
+      }
+      .model-card-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-x-small);
+        justify-content: flex-end;
+      }
+      sl-select::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
     `,
   ];
 
@@ -177,12 +332,18 @@ export class AIModelsView extends LitElement {
     super.connectedCallback();
     const isDismissed = localStorage.getItem(this.INFO_ALERT_DISMISSED_KEY);
     this._isInfoAlertOpen = isDismissed !== 'true';
+    this.narrowViewportSubscription = subscribeNarrowViewport((narrow) => {
+      this.narrowViewport = narrow;
+    });
+    this.narrowViewport = this.narrowViewportSubscription.matches;
     void this.fetchModels();
     this.connectRealtime();
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.narrowViewportSubscription?.disconnect();
+    this.narrowViewportSubscription = null;
     this.unsubscribeRealtime?.();
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
@@ -231,27 +392,17 @@ export class AIModelsView extends LitElement {
     }
     this.error = null;
     try {
-      this.models = await getAIModels();
-      const overviewEntries = await Promise.all(
-        this.models.map(async (model) => {
-          const [summary, sessions] = await Promise.all([
-            getAIModelGatewayUsageSummary(model.id, this.getOverviewParams()),
-            getAIModelRuntimeSessions(model.id, {
-              ...this.getOverviewParams(),
-              status: 'active',
-              limit: 100,
-            }),
-          ]);
-          return [
-            model.id,
-            {
-              summary,
-              activeSessions: sessions.total,
-            },
-          ] as const;
-        })
+      // One request for the page, whatever the fleet size. The per-model
+      // endpoints stay for the detail view: a burst of them is what emptied
+      // the API connection pool on 2026-09-03.
+      const [models, overview] = await Promise.all([
+        getAIModels(),
+        getAIModelsOverview(this.getOverviewParams()),
+      ]);
+      this.models = models;
+      this.modelOverview = new Map(
+        overview.models.map((item) => [item.ai_model_id, item])
       );
-      this.modelOverview = new Map(overviewEntries);
     } catch (error) {
       this.error =
         error instanceof Error ? error.message : 'Failed to fetch AI models';
@@ -280,34 +431,34 @@ export class AIModelsView extends LitElement {
 
   private get fleetRequestCount(): number {
     return [...this.modelOverview.values()].reduce(
-      (total, item) => total + item.summary.total_requests,
+      (total, item) => total + item.total_requests,
       0
     );
   }
 
   private get fleetSpend(): number {
     return [...this.modelOverview.values()].reduce(
-      (total, item) => total + item.summary.estimated_cost,
+      (total, item) => total + item.estimated_cost,
       0
     );
   }
 
   private get activeFleetSessions(): number {
     return [...this.modelOverview.values()].reduce(
-      (total, item) => total + item.activeSessions,
+      (total, item) => total + item.active_session_count,
       0
     );
   }
 
   private get activeModelsCount(): number {
     return [...this.modelOverview.values()].filter(
-      (item) => item.summary.total_requests > 0
+      (item) => item.total_requests > 0
     ).length;
   }
 
   private get modelsNeedingAttentionCount(): number {
     return [...this.modelOverview.values()].filter(
-      (item) => item.summary.failed_requests > 0
+      (item) => item.failed_requests > 0
     ).length;
   }
 
@@ -325,10 +476,10 @@ export class AIModelsView extends LitElement {
 
   private getHealthVariant(modelId: string): 'success' | 'warning' | 'neutral' {
     const overview = this.getModelOverview(modelId);
-    if (!overview || overview.summary.total_requests === 0) {
+    if (!overview || overview.total_requests === 0) {
       return 'neutral';
     }
-    if (overview.summary.failed_requests > 0) {
+    if (overview.failed_requests > 0) {
       return 'warning';
     }
     return 'success';
@@ -336,13 +487,33 @@ export class AIModelsView extends LitElement {
 
   private getHealthLabel(modelId: string): string {
     const overview = this.getModelOverview(modelId);
-    if (!overview || overview.summary.total_requests === 0) {
+    if (!overview || overview.total_requests === 0) {
       return 'Idle';
     }
-    if (overview.summary.failed_requests > 0) {
+    if (overview.failed_requests > 0) {
       return 'Attention';
     }
     return 'Healthy';
+  }
+
+  private getPricingSourceLabel(modelId: string): string {
+    switch (this.getModelOverview(modelId)?.pricing_source) {
+      case 'override':
+        return 'Priced by account override';
+      case 'model_config':
+        return 'Priced by model config';
+      case 'catalog':
+        return 'Priced from catalog';
+      default:
+        return 'No price set';
+    }
+  }
+
+  private getLastRequestLabel(modelId: string): string | null {
+    const lastRequestAt = this.getModelOverview(modelId)?.last_request_at;
+    return lastRequestAt
+      ? `Last request ${formatRelativeTime(lastRequestAt)}`
+      : null;
   }
 
   private getGatewayAlias(model: AIModel): string | null {
@@ -368,6 +539,56 @@ export class AIModelsView extends LitElement {
       default:
         return 'Inference';
     }
+  }
+
+  private get visibleModels(): AIModel[] {
+    return filterModels(
+      this.models,
+      this.search,
+      this.providerFilter,
+      this.statusFilter
+    );
+  }
+
+  private get effectiveView(): ListViewMode {
+    return effectiveViewMode(this.currentView, this.narrowViewport);
+  }
+
+  private get providerOptions(): string[] {
+    return [...new Set(this.models.map((model) => model.provider_name))]
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  private get resultsLabel(): string {
+    const shown = this.visibleModels.length;
+    const total = this.models.length;
+    const noun = total === 1 ? 'model' : 'models';
+    if (shown === total) {
+      return `${shown} ${noun}`;
+    }
+    return `${shown} of ${total} ${noun}`;
+  }
+
+  private handleSearchChange(event: CustomEvent<{ value: string }>) {
+    this.search = event.detail.value;
+  }
+
+  private handleViewChange(event: CustomEvent<{ value: ListViewMode }>) {
+    this.currentView = event.detail.value;
+    saveViewMode(VIEW_MODE_KEY, event.detail.value);
+  }
+
+  private handleProviderChange(event: Event) {
+    const select = event.target as HTMLElement & { value: string | string[] };
+    const value = Array.isArray(select.value) ? select.value[0] : select.value;
+    this.providerFilter = value || '';
+  }
+
+  private handleStatusChange(event: Event) {
+    const select = event.target as HTMLElement & { value: string | string[] };
+    const value = Array.isArray(select.value) ? select.value[0] : select.value;
+    this.statusFilter = value || '';
   }
 
   private renderFleetOverview() {
@@ -437,16 +658,31 @@ export class AIModelsView extends LitElement {
         description="The AI models your agents reach through the gateway. Each model gets a gateway alias; every call through it is metered and attributed to an agent and session."
         width="narrow"
       >
-        <div slot="main-column">
-          <sl-button variant="primary" @click=${this.openAddModelModal}>
-            <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add Model
-          </sl-button>
-        </div>
+        ${
+          this.models.length > 0
+            ? html`
+                <div slot="main-column">
+                  <sl-button variant="primary" @click=${this.openAddModelModal}>
+                    <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add Model
+                  </sl-button>
+                </div>
+              `
+            : ''
+        }
       </view-header>
       <div class="column-layout narrow">
         <div class="main-column">
           <div class="page">
-            ${this.isLoading || this.error ? null : this.renderFleetOverview()}
+            ${
+              this.isLoading || this.error || this.models.length === 0
+                ? null
+                : this.renderFleetOverview()
+            }
+            ${
+              !this.error && this.models.length > 0
+                ? this.renderToolbar()
+                : null
+            }
             ${renderContent()}
           </div>
         </div>
@@ -462,188 +698,303 @@ export class AIModelsView extends LitElement {
       ${this.renderDeleteConfirm()}
     `;
   }
+  private renderToolbar() {
+    return html`
+      <div class="toolbar-wrap">
+        <list-toolbar
+          .search=${this.search}
+          searchPlaceholder="Search models"
+          toggleLabel="Models view"
+          .view=${this.currentView}
+          @search-change=${this.handleSearchChange}
+          @view-change=${this.handleViewChange}
+        >
+          <sl-select
+            class="provider-filter"
+            label="Provider"
+            clearable
+            placeholder="All providers"
+            .value=${this.providerFilter}
+            @sl-change=${this.handleProviderChange}
+          >
+            ${this.providerOptions.map(
+              (provider) =>
+                html`<sl-option value=${provider}>${provider}</sl-option>`
+            )}
+          </sl-select>
+          <sl-select
+            class="status-filter"
+            label="Status"
+            clearable
+            placeholder="Any status"
+            .value=${this.statusFilter}
+            @sl-change=${this.handleStatusChange}
+          >
+            <sl-option value="enabled">Enabled</sl-option>
+            <sl-option value="disabled">Disabled</sl-option>
+          </sl-select>
+          <span slot="count">${this.resultsLabel}</span>
+        </list-toolbar>
+      </div>
+    `;
+  }
 
   renderModelsList() {
     return html`
+      ${when(
+        this.models.length === 0,
+        () => html`
+          <div class="empty-state-wrapper">
+            <sl-card class="empty-card">
+              <div class="empty-card-body">
+                <div class="empty-icon-circle">
+                  <sl-icon name="cpu"></sl-icon>
+                </div>
+                <h3 class="empty-card-title">No AI models configured</h3>
+                <p class="empty-card-desc">
+                  The AI models your agents reach through the gateway. Add your
+                  OpenAI, Anthropic, Gemini, or custom model endpoints.
+                </p>
+                <sl-button
+                  class="empty-cta-btn"
+                  variant="primary"
+                  @click=${this.openAddModelModal}
+                >
+                  <sl-icon slot="prefix" name="plus-lg"></sl-icon>
+                  Add Model
+                </sl-button>
+              </div>
+            </sl-card>
+          </div>
+        `,
+        () => this.renderFilteredModels()
+      )}
+    `;
+  }
+
+  private renderFilteredModels() {
+    const models = this.visibleModels;
+    if (models.length === 0) {
+      return html`<div class="filter-empty">
+        No models match these filters.
+      </div>`;
+    }
+    return this.effectiveView === 'cards'
+      ? this.renderCardsView(models)
+      : this.renderListView(models);
+  }
+
+  private renderDefaultControl(model: AIModel) {
+    return when(
+      model.is_default,
+      () => html`<sl-badge variant="success" pill>Default</sl-badge>`,
+      () => html`
+        <sl-button size="small" @click=${() => this.handleSetDefault(model)}>
+          Set as default
+        </sl-button>
+      `
+    );
+  }
+
+  private renderModelActions(model: AIModel) {
+    return html`
+      <div class="actions">
+        <sl-button size="small" href=${`/console/ai-models/${model.id}`}>
+          View
+        </sl-button>
+        <sl-button
+          size="small"
+          circle
+          @click=${() => this.openEditModal(model)}
+        >
+          <sl-icon name="pencil"></sl-icon>
+        </sl-button>
+        <sl-button
+          variant="danger"
+          size="small"
+          circle
+          @click=${() => this.openDeleteConfirm(model)}
+        >
+          <sl-icon name="trash"></sl-icon>
+        </sl-button>
+      </div>
+    `;
+  }
+
+  private renderListView(models: AIModel[]) {
+    return html`
       <sl-card class="table-card">
-        ${when(
-          this.models.length === 0,
-          () =>
-            html` <sl-alert variant="primary" open>
-              <sl-icon slot="icon" name="info-circle"></sl-icon>
-              No AI Models configured yet.
-              <a
-                href="#"
-                @click=${(e: Event) => {
-                  e.preventDefault();
-                  this.openAddModelModal();
-                }}
-                >Add a Model</a
-              >
-            </sl-alert>`,
-          () => html`
-            <table class="styled-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Provider</th>
-                  <th>Fleet health</th>
-                  <th>Usage</th>
-                  <th>Default</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${repeat(
-                  this.models,
-                  (model) => model.id,
-                  (model) => html`
-                    <tr>
-                      <td>
-                        <a
-                          class="model-link"
-                          href=${`/console/ai-models/${model.id}`}
-                        >
-                          ${model.name}
-                        </a>
-                        <div class="model-meta">${model.model_identifier}</div>
-                        ${
-                          this.getGatewayAlias(model)
-                            ? html`
-                                <div class="model-meta">
-                                  Gateway alias:
-                                  <code>${this.getGatewayAlias(model)}</code>
-                                </div>
-                              `
-                            : null
-                        }
-                        ${
-                          this.getManagedAgentDisplayName(model)
-                            ? html`
-                                <div class="model-meta">
-                                  Managed agent:
-                                  ${this.getManagedAgentDisplayName(model)}
-                                </div>
-                              `
-                            : null
-                        }
-                      </td>
-                      <td>
-                        <div class="cell-stack">
-                          <div class="cell-primary">${model.provider_name}</div>
-                          <div class="cell-secondary">
-                            ${this.getModelKindLabel(model)}
-                          </div>
-                        </div>
-                      </td>
-                      <td>
-                        <div class="cell-stack">
-                          <div class="badge-row">
-                            <sl-badge
-                              variant=${this.getHealthVariant(model.id)}
-                              pill
-                            >
-                              ${this.getHealthLabel(model.id)}
-                            </sl-badge>
-                            ${
-                              this.getModelOverview(model.id)?.activeSessions
-                                ? html`
-                                    <sl-badge variant="primary" pill>
-                                      ${this.formatNumber(
-                                        this.getModelOverview(model.id)
-                                          ?.activeSessions
-                                      )}
-                                      active sessions
-                                    </sl-badge>
-                                  `
-                                : null
-                            }
-                          </div>
-                          <div class="cell-secondary">
-                            ${this.formatNumber(
-                              this.getModelOverview(model.id)?.summary
-                                .successful_requests
-                            )}
-                            successful ·
-                            ${this.formatNumber(
-                              this.getModelOverview(model.id)?.summary
-                                .failed_requests
-                            )}
-                            failed
-                          </div>
-                        </div>
-                      </td>
-                      <td>
-                        <div class="cell-stack">
-                          <div class="cell-primary">
-                            ${this.formatNumber(
-                              this.getModelOverview(model.id)?.summary
-                                .total_requests
-                            )}
-                            requests
-                          </div>
-                          <div class="cell-secondary">
-                            ${this.formatNumber(
-                              this.getModelOverview(model.id)?.summary
-                                .token_usage.total_tokens
-                            )}
-                            tokens ·
-                            ${this.formatCurrency(
-                              this.getModelOverview(model.id)?.summary
-                                .estimated_cost
-                            )}
-                          </div>
-                        </div>
-                      </td>
-                      <td>
-                        ${when(
-                          model.is_default,
-                          () =>
-                            html`<sl-badge variant="success" pill
-                              >Default</sl-badge
-                            >`,
-                          () => html`
-                            <sl-button
-                              size="small"
-                              @click=${() => this.handleSetDefault(model)}
-                            >
-                              Set as default
-                            </sl-button>
-                          `
+        <table class="styled-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Provider</th>
+              <th>Fleet health</th>
+              <th>Usage</th>
+              <th>Default</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${repeat(
+              models,
+              (model) => model.id,
+              (model) => this.renderModelRow(model)
+            )}
+          </tbody>
+        </table>
+      </sl-card>
+    `;
+  }
+
+  private renderModelRow(model: AIModel) {
+    return html`
+      <tr class="model-row" data-model-id=${model.id}>
+        <td>
+          <a class="model-link" href=${`/console/ai-models/${model.id}`}>
+            ${model.name}
+          </a>
+          <div class="model-meta">${model.model_identifier}</div>
+          ${
+            this.getGatewayAlias(model)
+              ? html`
+                  <div class="model-meta">
+                    Gateway alias:
+                    <code>${this.getGatewayAlias(model)}</code>
+                  </div>
+                `
+              : null
+          }
+          ${
+            this.getManagedAgentDisplayName(model)
+              ? html`
+                  <div class="model-meta">
+                    Managed agent: ${this.getManagedAgentDisplayName(model)}
+                  </div>
+                `
+              : null
+          }
+        </td>
+        <td>
+          <div class="cell-stack">
+            <div class="cell-primary">${model.provider_name}</div>
+            <div class="cell-secondary">${this.getModelKindLabel(model)}</div>
+            <div class="cell-secondary">
+              ${this.getPricingSourceLabel(model.id)}
+            </div>
+          </div>
+        </td>
+        <td>
+          <div class="cell-stack">
+            <div class="badge-row">
+              <sl-badge variant=${this.getHealthVariant(model.id)} pill>
+                ${this.getHealthLabel(model.id)}
+              </sl-badge>
+              ${
+                this.getModelOverview(model.id)?.active_session_count
+                  ? html`
+                      <sl-badge variant="primary" pill>
+                        ${this.formatNumber(
+                          this.getModelOverview(model.id)?.active_session_count
                         )}
-                      </td>
-                      <td>
-                        <div class="actions">
-                          <sl-button
-                            size="small"
-                            href=${`/console/ai-models/${model.id}`}
-                          >
-                            View
-                          </sl-button>
-                          <sl-button
-                            size="small"
-                            circle
-                            @click=${() => this.openEditModal(model)}
-                          >
-                            <sl-icon name="pencil"></sl-icon>
-                          </sl-button>
-                          <sl-button
-                            variant="danger"
-                            size="small"
-                            circle
-                            @click=${() => this.openDeleteConfirm(model)}
-                          >
-                            <sl-icon name="trash"></sl-icon>
-                          </sl-button>
-                        </div>
-                      </td>
-                    </tr>
-                  `
-                )}
-              </tbody>
-            </table>
-          `
+                        active sessions
+                      </sl-badge>
+                    `
+                  : null
+              }
+            </div>
+            <div class="cell-secondary">
+              ${this.formatNumber(
+                this.getModelOverview(model.id)?.successful_requests
+              )}
+              successful ·
+              ${this.formatNumber(
+                this.getModelOverview(model.id)?.failed_requests
+              )}
+              failed
+            </div>
+          </div>
+        </td>
+        <td>
+          <div class="cell-stack">
+            <div class="cell-primary">
+              ${this.formatNumber(
+                this.getModelOverview(model.id)?.total_requests
+              )}
+              requests
+            </div>
+            <div class="cell-secondary">
+              ${this.formatNumber(
+                this.getModelOverview(model.id)?.token_usage.total_tokens
+              )}
+              tokens ·
+              ${this.formatCurrency(
+                this.getModelOverview(model.id)?.estimated_cost
+              )}
+            </div>
+            ${
+              this.getLastRequestLabel(model.id)
+                ? html`<div class="cell-secondary">
+                    ${this.getLastRequestLabel(model.id)}
+                  </div>`
+                : null
+            }
+          </div>
+        </td>
+        <td>${this.renderDefaultControl(model)}</td>
+        <td>${this.renderModelActions(model)}</td>
+      </tr>
+    `;
+  }
+
+  private renderCardsView(models: AIModel[]) {
+    return html`
+      <div class="models-grid">
+        ${repeat(
+          models,
+          (model) => model.id,
+          (model) => this.renderModelCard(model)
         )}
+      </div>
+    `;
+  }
+
+  private renderModelCard(model: AIModel) {
+    return html`
+      <sl-card class="model-card" data-model-id=${model.id}>
+        <div class="model-card-body">
+          <div class="model-card-header">
+            <a class="model-link" href=${`/console/ai-models/${model.id}`}>
+              ${model.name}
+            </a>
+            ${this.renderDefaultControl(model)}
+          </div>
+          <div class="cell-primary">${model.provider_name}</div>
+          <div class="cell-secondary">${this.getModelKindLabel(model)}</div>
+          <div class="cell-secondary">
+            ${this.getPricingSourceLabel(model.id)}
+          </div>
+          <div class="badge-row">
+            <sl-badge variant=${this.getHealthVariant(model.id)} pill>
+              ${this.getHealthLabel(model.id)}
+            </sl-badge>
+            ${
+              isGatewayEnabled(model)
+                ? html`<sl-badge variant="neutral" pill>Enabled</sl-badge>`
+                : html`<sl-badge variant="neutral" pill>Disabled</sl-badge>`
+            }
+          </div>
+          <div class="cell-secondary">
+            ${this.formatNumber(this.getModelOverview(model.id)?.total_requests)}
+            requests ·
+            ${this.formatCurrency(
+              this.getModelOverview(model.id)?.estimated_cost
+            )}
+          </div>
+          <div class="model-card-actions">
+            ${this.renderModelActions(model)}
+          </div>
+        </div>
       </sl-card>
     `;
   }

@@ -1,0 +1,118 @@
+# In-repo CodeQL so Scorecard sees github/codeql-action on every
+# pull_request and every push to main. Default setup only covers some
+# merged PRs (Scorecard SAST: "not run on all commits").
+#
+# Language jobs are path-filtered on PRs. `actions` always runs so a docs-only
+# PR still produces a CodeQL check. Push to main and the weekly schedule scan
+# every language. The matrix is built as JSON so we do not rely on a job-level
+# `if: matrix.language == ...` (that is evaluated before matrix expansion).
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  # No base-branch filter: stacked PRs must still be scanned.
+  pull_request:
+  schedule:
+    - cron: '17 5 * * 2'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.out.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: github.event_name == 'pull_request'
+
+      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3.0.3
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            go:
+              - 'cli/**'
+              - '**/*.go'
+              - '**/*.mod'
+              - '**/*.sum'
+            javascript:
+              - 'frontend/**'
+              - 'runtime-plugins/**/*.ts'
+              - 'runtime-plugins/**/*.js'
+              - 'runtime-plugins/**/*.json'
+            python:
+              - 'backend/**'
+              - 'tests/**'
+              - 'presets/**'
+              - '**/*.py'
+              - 'pyproject.toml'
+              - 'runtime-plugins/**/*.py'
+            workflow:
+              - '.github/workflows/codeql.yml'
+
+      - name: Build language matrix
+        id: out
+        env:
+          EVENT: ${{ github.event_name }}
+          GO: ${{ steps.filter.outputs.go }}
+          JAVASCRIPT: ${{ steps.filter.outputs.javascript }}
+          PYTHON: ${{ steps.filter.outputs.python }}
+          WORKFLOW: ${{ steps.filter.outputs.workflow }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          event = os.environ["EVENT"]
+          force = event != "pull_request" or os.environ.get("WORKFLOW") == "true"
+          include = [{"language": "actions", "build-mode": "none"}]
+          if force or os.environ.get("GO") == "true":
+              include.append({"language": "go", "build-mode": "autobuild"})
+          if force or os.environ.get("JAVASCRIPT") == "true":
+              include.append({"language": "javascript-typescript", "build-mode": "none"})
+          if force or os.environ.get("PYTHON") == "true":
+              include.append({"language": "python", "build-mode": "none"})
+          matrix = json.dumps({"include": include})
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"matrix={matrix}\n")
+          print(matrix)
+          PY
+
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    needs: changes
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@a2983b8bed1923f44751c5c43237f479442827b3 # v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@a2983b8bed1923f44751c5c43237f479442827b3 # v3
+        with:
+          category: "/language:${{ matrix.language }}"
+          # GitHub rejects SARIF from advanced setup while default setup is also
+          # enabled (Settings → Code security). Flip to true after disabling
+          # default setup so uploads and Scorecard SAST see every PR.
+          upload: false

@@ -5,7 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from preloop.utils.agent_kind import (
+    AGENT_KIND_SHAPE_ERROR,
+    is_valid_agent_kind,
+    normalize_agent_kind,
+)
 
 
 class GatewayTokenUsage(BaseModel):
@@ -44,6 +50,25 @@ class GatewayUsageByModel(BaseModel):
     request_count: int = 0
     token_usage: GatewayTokenUsage
     estimated_cost: float = 0.0
+    unpriced_request_count: int = Field(
+        default=0,
+        description=(
+            "Requests that consumed tokens and carried no price at all, so "
+            "their cost is missing from every total."
+        ),
+    )
+    zero_priced_request_count: int = Field(
+        default=0,
+        description=(
+            "Requests a price was applied to and the price was exactly zero. "
+            "Free tier, a promotion, or a price entered wrongly; unlike an "
+            "unpriced request, nothing is missing from the total."
+        ),
+    )
+    failed_request_count: int = Field(
+        default=0,
+        description="Requests the gateway answered with a 4xx or 5xx status.",
+    )
     last_request_at: Optional[datetime] = None
 
 
@@ -259,6 +284,8 @@ class ManagedAgentSummary(BaseModel):
     session_source_type: str
     session_source_id: str
     session_reference: Optional[str] = None
+    enrollment_hostname: Optional[str] = None
+    identity_derivation: Optional[str] = None
     enrolled_via: str
     managed_mcp_servers: List[str] = Field(default_factory=list)
     lifecycle_state: str = "active"
@@ -299,8 +326,16 @@ class ManagedAgentSummary(BaseModel):
     supports_existing_session: bool = False
     supports_voice: bool = False
     supports_interrupt: bool = False
+    control_session_mode: str = "offline"
     supported_input_modes: List[str] = Field(default_factory=list)
     supported_output_modes: List[str] = Field(default_factory=list)
+
+    @field_validator("control_session_mode", mode="before")
+    @classmethod
+    def _offline_if_unset(cls, value: object) -> object:
+        if value is None or value == "":
+            return "offline"
+        return value
 
 
 class ManagedAgentUsageAggregate(BaseModel):
@@ -369,6 +404,29 @@ class ManagedAgentRegisterRequest(BaseModel):
 
     display_name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
+    agent_kind: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description=(
+            "Product kind for the agent, for example 'cursor' or 'windsurf'. "
+            "Defaults to 'custom' when omitted. This records what the agent "
+            "is; it does not change how it connects."
+        ),
+    )
+
+    @field_validator("agent_kind")
+    @classmethod
+    def _normalize_agent_kind(cls, value: Optional[str]) -> Optional[str]:
+        """Lowercase and underscore the kind so lookups stay case-insensitive."""
+        if value is None:
+            return None
+        normalized = normalize_agent_kind(value)
+        if not normalized:
+            raise ValueError("agent_kind must not be blank")
+        if not is_valid_agent_kind(normalized):
+            raise ValueError(AGENT_KIND_SHAPE_ERROR)
+        return normalized
 
 
 class ManagedAgentCredentialCreateRequest(BaseModel):
@@ -482,6 +540,60 @@ class ManagedAgentUpdateRequest(BaseModel):
     tags: Optional[dict[str, str]] = None
 
 
+class PrincipalIdentityLite(BaseModel):
+    """Identity metadata accepted on rekey/token flows."""
+
+    hostname: Optional[str] = Field(None, max_length=255)
+    config_path: Optional[str] = Field(None, max_length=1024)
+    source_type: Optional[str] = Field(None, max_length=64)
+    derivation: Optional[str] = Field(None, max_length=16)
+
+
+class ManagedAgentRekeyRequest(BaseModel):
+    """Request body for rewriting a managed agent's durable principal id."""
+
+    new_session_source_id: str = Field(..., min_length=1, max_length=255)
+    principal_identity: Optional[PrincipalIdentityLite] = None
+
+
+class ManagedAgentMergeRequest(BaseModel):
+    """Request body for merging a duplicate managed agent into a survivor."""
+
+    duplicate_agent_id: str = Field(..., min_length=1)
+    dry_run: bool = False
+
+
+class ManagedAgentIdentityMutationCounts(BaseModel):
+    """Row counts returned by rekey/merge dry-run and execute responses."""
+
+    usage_moved: int = 0
+    usage_deleted: int = 0
+    runtime_sessions_moved: int = 0
+    budget_spend_moved: int = 0
+    budget_spend_merged: int = 0
+    budget_policies_moved: int = 0
+    budget_policies_dropped: int = 0
+    approvals_moved: int = 0
+    keys_deactivated: int = 0
+    dropped_budget_policies: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ManagedAgentRekeyResponse(BaseModel):
+    """Response for a successful rekey."""
+
+    agent: ManagedAgentSummary
+    counts: ManagedAgentIdentityMutationCounts
+
+
+class ManagedAgentMergeResponse(BaseModel):
+    """Response for a merge dry-run or execute."""
+
+    survivor: ManagedAgentSummary
+    duplicate: ManagedAgentSummary
+    dry_run: bool
+    counts: ManagedAgentIdentityMutationCounts
+
+
 class RuntimeSessionUpdateRequest(BaseModel):
     """Operator-driven updates for one runtime session."""
 
@@ -527,6 +639,26 @@ class RuntimeSessionRequestTool(BaseModel):
     stripped: bool = False
 
 
+class RuntimeSessionRequestCache(BaseModel):
+    """Prompt-cache accounting for one gateway request.
+
+    Every token field is ``Optional`` on purpose: ``None`` means *the provider
+    did not report this*, and clients MUST render it as "not reported" rather
+    than as zero. A ``0`` here is a real, provider-reported zero.
+
+    ``cache_miss_source`` distinguishes a miss count the provider sent us
+    (``reported`` — today only DeepSeek's ``prompt_cache_miss_tokens``) from one
+    we derived arithmetically as ``prompt - read - write`` (``derived``).
+    """
+
+    cache_read_tokens: Optional[int] = None
+    cache_creation_tokens: Optional[int] = None
+    cache_miss_tokens: Optional[int] = None
+    cache_miss_source: Optional[str] = None
+    has_cache_data: bool = False
+    usage_source: Optional[str] = None
+
+
 class RuntimeSessionRequestItem(BaseModel):
     """One per-request gateway usage row for the unified session timeline."""
 
@@ -536,6 +668,12 @@ class RuntimeSessionRequestItem(BaseModel):
     provider_name: Optional[str] = None
     status_code: int = 0
     is_error: bool = False
+    #: Stable failure taxonomy (see ``preloop.services.upstream_errors``).
+    #: Distinguishes failures that share a status code — notably a stream the
+    #: client never consumed because something in front of the gateway timed
+    #: it out (``stream_abandoned``) from a client that cancelled a stream it
+    #: was reading (``client_cancelled``); both are recorded as 499.
+    error_class: Optional[str] = None
     finish_reason: Optional[str] = None
     is_retry: bool = False
     prompt_tokens: int = 0
@@ -545,6 +683,65 @@ class RuntimeSessionRequestItem(BaseModel):
     endpoint: Optional[str] = None
     tools: List[RuntimeSessionRequestTool] = Field(default_factory=list)
     tools_total_schema_tokens: int = 0
+    cache: RuntimeSessionRequestCache = Field(
+        default_factory=RuntimeSessionRequestCache
+    )
+
+
+class RuntimeSessionCacheModelGroup(BaseModel):
+    """Per-(model, provider) breakdown inside the session cache rollup.
+
+    ``requests_with_unknown_prompt_tokens`` counts this group's rows whose
+    provider reported no prompt total; their tokens are excluded from
+    ``prompt_tokens`` rather than counted as zero.
+    """
+
+    model_alias: Optional[str] = None
+    provider_name: Optional[str] = None
+    requests: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    prompt_tokens: int = 0
+    requests_with_unknown_prompt_tokens: int = 0
+    write_reported: bool = False
+
+
+class RuntimeSessionCacheSummary(BaseModel):
+    """Whole-session prompt-cache rollup.
+
+    The ratio's denominator is the *covered* traffic only: requests whose
+    provider actually reported a cache split. ``uncovered_prompt_tokens`` is
+    surfaced next to it so the UI can state coverage instead of folding blind
+    rows in as misses. ``requests_with_unknown_prompt_tokens`` counts rows
+    whose provider reported no prompt total at all; their tokens are excluded
+    from both sums rather than counted as zero.
+
+    ``cache_write_tokens`` is ``None`` when no provider in this session has a
+    billable cache-write concept at all (OpenAI, Gemini, DeepSeek), which is
+    not the same statement as zero rewritten tokens.
+
+    ``estimated_cache_savings_usd`` is computed only from explicit catalog
+    input AND cache-read prices — never a multiplier-based approximation.
+    ``savings_basis`` is ``catalog_exact`` when every model that contributed
+    cache reads was priced, ``catalog_exact_partial`` when the figure is a
+    lower bound covering only the priced models. When no contributing model is
+    priced the figure is ``None`` and ``savings_omitted_reason`` says why.
+    """
+
+    requests_total: int = 0
+    requests_with_cache_data: int = 0
+    requests_without_cache_data: int = 0
+    covered_prompt_tokens: int = 0
+    uncovered_prompt_tokens: int = 0
+    cached_prompt_tokens: int = 0
+    uncached_prompt_tokens: int = 0
+    cache_write_tokens: Optional[int] = None
+    cache_hit_ratio: Optional[float] = None
+    estimated_cache_savings_usd: Optional[float] = None
+    savings_basis: Optional[str] = None
+    savings_omitted_reason: Optional[str] = None
+    requests_with_unknown_prompt_tokens: int = 0
+    models: List[RuntimeSessionCacheModelGroup] = Field(default_factory=list)
 
 
 class RuntimeSessionRequestListResponse(BaseModel):
@@ -557,6 +754,11 @@ class RuntimeSessionRequestListResponse(BaseModel):
     offset: int = 0
     next_offset: Optional[int] = None
     has_more: bool = False
+    # Rollup over the whole session, not just the returned page, so the summary
+    # does not change as the user pages through requests. Required on purpose:
+    # a defaulted zeroed-out summary would silently mask an endpoint that
+    # forgot to compute it.
+    cache_summary: RuntimeSessionCacheSummary
 
 
 class RuntimeSessionSummaryInsight(BaseModel):
@@ -708,6 +910,71 @@ class AccountRuntimeSessionDetailResponse(BaseModel):
     period_end: Optional[datetime] = None
     session: RuntimeSessionSummary
     usage_by_model: List[GatewayUsageByModel] = Field(default_factory=list)
+
+
+class RateLimitTotals(BaseModel):
+    """Aggregate 429 telemetry for the report window.
+
+    ``blocked_ms`` sums the provider-advised ``Retry-After`` values observed
+    on 429 responses: a lower bound on real wall-clock stall, taken directly
+    from provider responses (never estimated). Subtype counts come from the
+    per-row classification recorded at capture time; rows recorded before
+    this feature carry no subtype and appear in neither count.
+    """
+
+    rate_limited_requests: int = 0
+    blocked_ms: int = 0
+    last_rate_limited_at: Optional[datetime] = None
+    quota_exhausted_count: int = 0
+    transient_count: int = 0
+
+
+class RateLimitByModel(BaseModel):
+    """429 telemetry grouped by model."""
+
+    model_alias: Optional[str] = None
+    provider_name: Optional[str] = None
+    rate_limited_requests: int = 0
+    blocked_ms: int = 0
+    last_rate_limited_at: Optional[datetime] = None
+
+
+class RateLimitBySession(BaseModel):
+    """429 telemetry grouped by runtime session (agent run)."""
+
+    runtime_session_id: Optional[str] = None
+    runtime_principal_name: Optional[str] = None
+    rate_limited_requests: int = 0
+    blocked_ms: int = 0
+    last_rate_limited_at: Optional[datetime] = None
+
+
+class RateLimitSnapshotItem(BaseModel):
+    """Latest observed rate-limit headers for one provider/model pair.
+
+    ``rate_limit`` echoes the snapshot persisted from a real upstream
+    response (normalized fields plus the verbatim ``headers`` map);
+    ``observed_at`` timestamps that observation so consumers can label
+    staleness. Nothing here is inferred.
+    """
+
+    provider_name: Optional[str] = None
+    model_alias: Optional[str] = None
+    observed_at: datetime
+    status_code: int
+    upstream_credential_type: Optional[str] = None
+    rate_limit: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AccountRateLimitReportResponse(BaseModel):
+    """Account-scoped rate-limit telemetry and observed headroom report."""
+
+    period_start: datetime
+    period_end: datetime
+    totals: RateLimitTotals
+    by_model: List[RateLimitByModel] = Field(default_factory=list)
+    by_session: List[RateLimitBySession] = Field(default_factory=list)
+    latest_snapshots: List[RateLimitSnapshotItem] = Field(default_factory=list)
 
 
 class AccountGatewayUsageSummaryResponse(BaseModel):

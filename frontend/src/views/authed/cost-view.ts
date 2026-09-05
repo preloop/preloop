@@ -25,6 +25,8 @@ import type {
   CostReconciliationRow,
   GatewayUsageBySession,
   GatewayUsageByTool,
+  ImportedUsageByConversation,
+  ImportedUsageByModel,
   ModelPriceOverride,
   ModelPriceOverrideCreate,
   ProviderBillingConnection,
@@ -47,6 +49,7 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
+import { consoleDialogStyles } from '../../styles/console-dialog';
 
 type DateRangePreset =
   | 'today'
@@ -96,6 +99,13 @@ type UserGroupRow = {
   cost: number;
 };
 
+// One imported-usage thread: a conversation plus the subagent conversations
+// spawned from it (rows whose parent_conversation_id points at it).
+type ImportedConversationThread = {
+  row: ImportedUsageByConversation;
+  children: ImportedUsageByConversation[];
+};
+
 const COST_DATE_RANGE_STORAGE_KEY = 'preloop.cost.dateRange';
 const DATE_RANGE_PRESETS: DateRangePreset[] = [
   'today',
@@ -109,6 +119,11 @@ const DATE_RANGE_PRESETS: DateRangePreset[] = [
 
 @customElement('cost-view')
 export class CostView extends AuthedElement {
+  // Async reprice follow-up: check the summary every 5s for up to about a
+  // minute, then stop and say so instead of polling forever.
+  private static readonly REPRICE_POLL_INTERVAL_MS = 5000;
+  private static readonly REPRICE_POLL_MAX_ATTEMPTS = 12;
+
   @state() private summary: CostAnalyticsSummaryResponse | null = null;
   @state() private previousRangeSummary: CostAnalyticsSummaryResponse | null =
     null;
@@ -179,6 +194,7 @@ export class CostView extends AuthedElement {
   };
   @state() private sessionSort: SortState = { key: 'cost', dir: 'desc' };
   @state() private userSort: SortState = { key: 'cost', dir: 'desc' };
+  @state() private importedSort: SortState = { key: 'cost', dir: 'desc' };
 
   private get modelPriceOverridesEnabled(): boolean {
     return this.featureFlags.model_price_overrides === true;
@@ -193,6 +209,7 @@ export class CostView extends AuthedElement {
   }
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       :host {
@@ -376,6 +393,58 @@ export class CostView extends AuthedElement {
         padding: var(--sl-spacing-large);
       }
 
+      .imported-usage-note {
+        margin-bottom: var(--sl-spacing-medium);
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        line-height: 1.5;
+      }
+
+      .imported-usage-totals {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-large);
+        margin-bottom: var(--sl-spacing-medium);
+      }
+
+      .imported-usage-total-label {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+      }
+
+      .imported-usage-total-value {
+        margin-top: var(--sl-spacing-2x-small);
+        font-size: 1.25rem;
+        font-weight: 700;
+        color: var(--sl-color-neutral-950);
+      }
+
+      .imported-conversations-title {
+        margin: var(--sl-spacing-large) 0 var(--sl-spacing-x-small);
+        font-size: var(--sl-font-size-medium);
+        font-weight: 600;
+        color: var(--sl-color-neutral-950);
+      }
+
+      .conversation-child-cell {
+        padding-left: var(--sl-spacing-x-large);
+      }
+
+      .conversation-child-marker {
+        color: var(--sl-color-neutral-500);
+        margin-right: var(--sl-spacing-2x-small);
+      }
+
+      .conversation-thread-total td {
+        font-weight: 600;
+        background: var(--sl-color-neutral-50);
+      }
+
+      .not-reported {
+        color: var(--sl-color-neutral-500);
+        font-style: italic;
+      }
+
       .analytics-table-wrap {
         overflow-x: auto;
       }
@@ -414,8 +483,30 @@ export class CostView extends AuthedElement {
   connectedCallback() {
     super.connectedCallback();
     this.selectedRange = this.loadStoredDateRange();
+    this.requestedPanel = new URLSearchParams(window.location.search).get(
+      'panel'
+    );
     void this.load();
   }
+
+  /**
+   * `?panel=pricing` is how an attention item about unpriced models lands on
+   * the part of this page that fixes it, instead of at the top of a long page
+   * with no hint where to look.
+   */
+  protected updated(): void {
+    if (this.loading || !this.requestedPanel) {
+      return;
+    }
+    const panel = this.requestedPanel;
+    this.requestedPanel = null;
+    const target =
+      this.renderRoot.querySelector(`#panel-${panel}`) ||
+      this.renderRoot.querySelector('#panel-pricing-catalog');
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  private requestedPanel: string | null = null;
 
   private loadStoredDateRange(): DateRangePreset {
     const stored = window.localStorage.getItem(COST_DATE_RANGE_STORAGE_KEY);
@@ -771,15 +862,26 @@ export class CostView extends AuthedElement {
     this.repriceNotice = null;
     try {
       const range = this.getDateParams();
+      const previousUnpriced = this.summary?.unpriced_requests ?? 0;
       const result = await repriceCost({
         start_date: range.startDate,
         end_date: range.endDate,
         only_unpriced: true,
       });
-      this.repriceNotice = result.submitted_async
-        ? 'Repricing scheduled in the background; refresh in a few minutes.'
-        : `Repriced ${result.rows_updated} of ${result.rows_examined} rows.`;
-      if (!result.submitted_async) {
+      if (result.submitted_async) {
+        this.repriceNotice =
+          'Repricing is running in the background. Checking for results...';
+        await this.pollRepriceOutcome(previousUnpriced);
+        await this.load();
+        const remaining = this.summary?.unpriced_requests ?? 0;
+        this.repriceNotice = this.repriceOutcomeNotice(
+          previousUnpriced,
+          remaining
+        );
+      } else {
+        this.repriceNotice =
+          `Reprice finished: ${result.rows_updated ?? 0} of ` +
+          `${result.rows_examined ?? 0} requests priced.`;
         await this.load();
       }
     } catch (error) {
@@ -788,6 +890,71 @@ export class CostView extends AuthedElement {
     } finally {
       this.repricing = false;
     }
+  }
+
+  // The async reprice path (windows over 7 days) acknowledges before anything
+  // is scanned, so the response carries no counts. Poll the summary on a
+  // bounded interval and stop early once the unpriced count moves; the notice
+  // is computed from the reloaded summary afterwards, not from this poll.
+  private async pollRepriceOutcome(previousUnpriced: number): Promise<void> {
+    for (
+      let attempt = 0;
+      attempt < CostView.REPRICE_POLL_MAX_ATTEMPTS;
+      attempt++
+    ) {
+      await new Promise((resolve) =>
+        window.setTimeout(resolve, CostView.REPRICE_POLL_INTERVAL_MS)
+      );
+      try {
+        const summary = await getCostAnalyticsSummary(this.getDateParams());
+        if ((summary.unpriced_requests ?? 0) !== previousUnpriced) {
+          return;
+        }
+      } catch {
+        // A failed poll is not a failed reprice; keep watching.
+      }
+    }
+  }
+
+  // In a fixed window the unpriced count can only DECREASE via pricing, so a
+  // lower remaining count is the precise partial-success signal even when
+  // the job finished after the last poll. Live traffic can add unpriced rows
+  // during the poll window, so an equal-or-higher count reads as no change
+  // (a negative "requests priced" would be nonsense).
+  private repriceOutcomeNotice(
+    previousUnpriced: number,
+    remaining: number
+  ): string {
+    if (remaining === 0) {
+      return 'Reprice finished: every request in this window now has a cost estimate.';
+    }
+    if (remaining < previousUnpriced) {
+      return (
+        `Reprice finished: ${this.formatNumber(previousUnpriced - remaining)} ` +
+        `requests priced, ${this.formatNumber(remaining)} still unpriced. ` +
+        'Set a price override for the models named below, then reprice again.'
+      );
+    }
+    return (
+      'No change after checking for about a minute. If the models named ' +
+      'below are missing from the price catalog, repricing cannot price ' +
+      'them: set a price override (a $0 price is fine for free models), ' +
+      'then reprice again.'
+    );
+  }
+
+  // Route from the unpriced banner into the existing price-override dialog
+  // with the highest-volume unpriced model pre-filled. A $0 override is
+  // honored by repricing, which is the supported escape hatch for custom
+  // models that will never appear in a shared price catalog. The backend
+  // coalesces rows with no model alias to "unknown"; pre-filling that
+  // placeholder would invite a no-op override, so the field stays empty.
+  private openPriceOverrideForUnpriced() {
+    const top = this.summary?.unpriced_models?.[0];
+    if (top && top.model !== 'unknown') {
+      this.priceModelAlias = top.model;
+    }
+    this.priceDialogOpen = true;
   }
 
   private formatCurrency(value?: number | null): string {
@@ -1052,7 +1219,9 @@ export class CostView extends AuthedElement {
 
   // Warning banner when usage rows carry tokens but no cost (model missing
   // from the price catalog at request time). Repricing re-derives their cost
-  // from stored tokens against current prices/overrides (billing flag).
+  // from stored tokens against current prices/overrides (billing flag), and
+  // the named models route into the price-override dialog for the models no
+  // catalog will ever price.
   private renderUnpricedNotice() {
     const unpricedRequests = this.summary?.unpriced_requests ?? 0;
     if (!unpricedRequests) {
@@ -1067,14 +1236,35 @@ export class CostView extends AuthedElement {
           >`
         : nothing;
     }
+    const unpricedModels = this.summary?.unpriced_models ?? [];
     return html`
-      <sl-alert variant="warning" open role="alert">
+      <sl-alert id="panel-pricing-catalog" variant="warning" open role="alert">
         <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
         ${this.formatNumber(unpricedRequests)}
         request${unpricedRequests === 1 ? '' : 's'}
         (${this.formatNumber(this.summary?.unpriced_tokens)} tokens) in this
-        window have no cost estimate — their model was missing from the price
-        catalog when recorded, so total spend is understated.
+        window have no cost estimate, so total spend is understated.
+        ${
+          unpricedModels.length
+            ? html`<div class="unpriced-models">
+                These models are missing from the price catalog, so their cost
+                cannot be estimated automatically:
+                ${unpricedModels.map(
+                  (entry, index) =>
+                    html`${index > 0 ? ', ' : ''}<code>${entry.model}</code>
+                      (${this.formatNumber(entry.tokens)} tokens)`
+                )}.
+              </div>`
+            : nothing
+        }
+        ${
+          unpricedModels.length && this.modelPriceOverridesEnabled
+            ? html`<div>
+                Set a price override (a $0 price is fine for free models), then
+                reprice.
+              </div>`
+            : nothing
+        }
         ${
           this.billingEnabled
             ? html`<sl-button
@@ -1083,6 +1273,17 @@ export class CostView extends AuthedElement {
                 .loading=${this.repricing}
                 @click=${() => void this.handleReprice()}
                 >Reprice now</sl-button
+              >`
+            : nothing
+        }
+        ${
+          unpricedModels.length && this.modelPriceOverridesEnabled
+            ? html`<sl-button
+                size="small"
+                variant="warning"
+                outline
+                @click=${() => this.openPriceOverrideForUnpriced()}
+                >Set price override</sl-button
               >`
             : nothing
         }
@@ -1238,6 +1439,293 @@ export class CostView extends AuthedElement {
       groups.set(owner, existing);
     }
     return [...groups.values()];
+  }
+
+  // Imported usage (issue #123): spend ingested from a provider's own export
+  // (e.g. Cursor) rather than metered by the gateway. It is rendered as its
+  // own section and never folded into the spend metrics, budgets, or the
+  // per-agent/session/tool tabs above, which all describe gateway traffic.
+  // Hidden entirely when the window holds no imported events.
+  private renderImportedUsage() {
+    const imported = this.summary?.imported_usage;
+    if (!imported || !imported.event_count) return nothing;
+    const columns: SortColumn<ImportedUsageByModel>[] = [
+      {
+        key: 'model',
+        label: 'Model',
+        numeric: false,
+        value: (r) => r.model_alias || 'Unknown',
+      },
+      {
+        key: 'source',
+        label: 'Source',
+        numeric: false,
+        value: (r) => r.source || 'Unknown',
+      },
+      {
+        key: 'requests',
+        label: 'Events',
+        numeric: true,
+        value: (r) => r.request_count,
+      },
+      {
+        key: 'tokens',
+        label: 'Tokens',
+        numeric: true,
+        value: (r) => r.total_tokens,
+      },
+      {
+        key: 'cost',
+        label: 'Imported cost',
+        numeric: true,
+        value: (r) => r.imported_cost,
+      },
+      {
+        key: 'last_event',
+        label: 'Last event',
+        numeric: true,
+        value: (r) =>
+          r.last_event_at ? new Date(r.last_event_at).getTime() : 0,
+      },
+    ];
+    const rows = this.sortRows(
+      imported.usage_by_model || [],
+      columns,
+      this.importedSort
+    );
+    return html`
+      <sl-card class="analytics-card">
+        ${this.renderSectionHeader(
+          'box-arrow-in-down',
+          'Imported usage',
+          html`<sl-badge variant="neutral" pill>Not gateway metered</sl-badge>`
+        )}
+        <div class="imported-usage-note">
+          Usage imported from a provider's own export. It is reported separately
+          and is not counted in the spend metrics, budgets, or breakdowns above,
+          which cover gateway-metered traffic only.
+        </div>
+        <div
+          class="imported-usage-totals"
+          role="region"
+          aria-label="Imported usage totals"
+        >
+          <div>
+            <div class="imported-usage-total-label">Imported events</div>
+            <div class="imported-usage-total-value">
+              ${this.formatNumber(imported.event_count)}
+            </div>
+          </div>
+          <div>
+            <div class="imported-usage-total-label">Imported tokens</div>
+            <div class="imported-usage-total-value">
+              ${this.formatNumber(imported.total_tokens)}
+            </div>
+          </div>
+          <div>
+            <div class="imported-usage-total-label">Imported cost</div>
+            <div class="imported-usage-total-value">
+              ${this.formatCurrency(imported.imported_cost)}
+            </div>
+          </div>
+        </div>
+        ${
+          rows.length
+            ? html`<div class="analytics-table-wrap">
+                <table
+                  class="styled-table"
+                  aria-label="Imported usage by model"
+                >
+                  <thead>
+                    <tr>
+                      ${columns.map((column) =>
+                        this.renderSortableHeader(
+                          column,
+                          this.importedSort,
+                          (key) =>
+                            (this.importedSort = this.toggleSort(
+                              this.importedSort,
+                              key
+                            ))
+                        )
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${rows.map(
+                      (row) => html`
+                        <tr>
+                          <td>${row.model_alias || 'Unknown'}</td>
+                          <td>${row.source || 'Unknown'}</td>
+                          <td>${this.formatNumber(row.request_count)}</td>
+                          <td>${this.formatNumber(row.total_tokens)}</td>
+                          <td>${this.formatCurrency(row.imported_cost)}</td>
+                          <td>
+                            ${
+                              row.last_event_at
+                                ? new Date(row.last_event_at).toLocaleString()
+                                : '-'
+                            }
+                          </td>
+                        </tr>
+                      `
+                    )}
+                  </tbody>
+                </table>
+              </div>`
+            : html`<div class="empty">No per-model imported usage yet.</div>`
+        }
+        ${this.renderImportedConversations(imported.usage_by_conversation ?? [])}
+      </sl-card>
+    `;
+  }
+
+  // Per-conversation rollup of imported usage. Subagent conversations
+  // (parent_conversation_id) nest under the thread that spawned them.
+  // Honesty rails: estimated and reconciled amounts stay in separate
+  // columns — they are NEVER added into one number — and a null quantity
+  // renders as "not reported", never as 0 or $0.00.
+  private renderImportedConversations(rows: ImportedUsageByConversation[]) {
+    if (!rows.length) return nothing;
+    const threads = this.buildConversationThreads(rows);
+    return html`
+      <div class="imported-conversations-title">Conversations</div>
+      <div class="imported-usage-note">
+        Per-thread rollup of imported usage. Subagent conversations are nested
+        under the conversation that spawned them. Estimated amounts (derived
+        from hook or transcript data) and reconciled amounts (from a billing
+        export) are shown separately and are never summed together.
+      </div>
+      <div class="analytics-table-wrap">
+        <table class="styled-table" aria-label="Imported usage by conversation">
+          <thead>
+            <tr>
+              <th scope="col">Conversation</th>
+              <th scope="col">Events</th>
+              <th scope="col">Tokens</th>
+              <th scope="col">Estimated cost</th>
+              <th scope="col">Reconciled cost</th>
+              <th scope="col">Last event</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${threads.map((thread) => this.renderConversationThread(thread))}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // Group conversations into threads. A row nests under its parent only
+  // when that parent is itself top-level (one nesting level); a deeper
+  // descendant is promoted to top-level instead so no conversation can
+  // ever disappear from the table.
+  private buildConversationThreads(
+    rows: ImportedUsageByConversation[]
+  ): ImportedConversationThread[] {
+    const byId = new Map(rows.map((row) => [row.conversation_id, row]));
+    const hasKnownParent = (row: ImportedUsageByConversation): boolean => {
+      const parent = row.parent_conversation_id;
+      return !!parent && parent !== row.conversation_id && byId.has(parent);
+    };
+    const isNested = (row: ImportedUsageByConversation): boolean => {
+      if (!hasKnownParent(row)) return false;
+      const parent = byId.get(row.parent_conversation_id as string);
+      return !!parent && !hasKnownParent(parent);
+    };
+    const childrenByParent = new Map<string, ImportedUsageByConversation[]>();
+    const roots: ImportedUsageByConversation[] = [];
+    for (const row of rows) {
+      if (isNested(row)) {
+        const parentId = row.parent_conversation_id as string;
+        const list = childrenByParent.get(parentId) ?? [];
+        list.push(row);
+        childrenByParent.set(parentId, list);
+      } else {
+        roots.push(row);
+      }
+    }
+    return roots.map((row) => ({
+      row,
+      children: childrenByParent.get(row.conversation_id) ?? [],
+    }));
+  }
+
+  private renderConversationThread(thread: ImportedConversationThread) {
+    const { row, children } = thread;
+    if (!children.length) return this.renderConversationRow(row, false);
+    const all = [row, ...children];
+    const totalEvents = all.reduce((sum, r) => sum + (r.event_count || 0), 0);
+    // Thread totals keep the two cost bases apart: an estimated total and a
+    // reconciled total, never one combined figure.
+    const totalTokens = this.sumReported(all.map((r) => r.total_tokens));
+    const totalEstimated = this.sumReported(all.map((r) => r.estimated_cost));
+    const totalReconciled = this.sumReported(all.map((r) => r.reconciled_cost));
+    return html`
+      ${this.renderConversationRow(row, false)}
+      ${children.map((child) => this.renderConversationRow(child, true))}
+      <tr class="conversation-thread-total">
+        <td>Thread total (${all.length} conversations)</td>
+        <td>${this.formatNumber(totalEvents)}</td>
+        <td>${this.renderReportedNumber(totalTokens)}</td>
+        <td>${this.renderReportedCurrency(totalEstimated)}</td>
+        <td>${this.renderReportedCurrency(totalReconciled)}</td>
+        <td></td>
+      </tr>
+    `;
+  }
+
+  private renderConversationRow(
+    row: ImportedUsageByConversation,
+    nested: boolean
+  ) {
+    return html`
+      <tr>
+        <td class=${nested ? 'conversation-child-cell' : ''}>
+          ${
+            nested
+              ? html`<span class="conversation-child-marker" aria-hidden="true"
+                  >&#8627;</span
+                >`
+              : nothing
+          }
+          ${row.conversation_id}
+        </td>
+        <td>${this.formatNumber(row.event_count)}</td>
+        <td>${this.renderReportedNumber(row.total_tokens)}</td>
+        <td>${this.renderReportedCurrency(row.estimated_cost)}</td>
+        <td>${this.renderReportedCurrency(row.reconciled_cost)}</td>
+        <td>
+          ${
+            row.last_event_at
+              ? new Date(row.last_event_at).toLocaleString()
+              : html`<span class="not-reported">not reported</span>`
+          }
+        </td>
+      </tr>
+    `;
+  }
+
+  // Null-preserving sum: null when every input is null ("not reported"),
+  // so a missing value can never be laundered into a fabricated zero.
+  private sumReported(values: Array<number | null | undefined>): number | null {
+    const reported = values.filter(
+      (value): value is number => value !== null && value !== undefined
+    );
+    if (!reported.length) return null;
+    return reported.reduce((sum, value) => sum + value, 0);
+  }
+
+  private renderReportedNumber(value?: number | null) {
+    return value === null || value === undefined
+      ? html`<span class="not-reported">not reported</span>`
+      : html`${this.formatNumber(value)}`;
+  }
+
+  private renderReportedCurrency(value?: number | null) {
+    return value === null || value === undefined
+      ? html`<span class="not-reported">not reported</span>`
+      : html`${this.formatCurrency(value)}`;
   }
 
   private renderBreakdown() {
@@ -1843,7 +2331,7 @@ export class CostView extends AuthedElement {
   private renderPricing() {
     const overrides = this.pricingOverrides;
     return html`
-      <sl-card>
+      <sl-card id="panel-pricing">
         ${this.renderSectionHeader('tags', 'Pricing overrides')}
         <div class="action-card-body">
           <div>
@@ -2221,7 +2709,9 @@ export class CostView extends AuthedElement {
                 ${this.renderMetrics()} ${this.renderCatalogInfo()}
                 ${this.renderUnpricedNotice()}
                 <div class="column-layout dashboard extra-wide">
-                  <div class="main-column">${this.renderBreakdown()}</div>
+                  <div class="main-column">
+                    ${this.renderBreakdown()} ${this.renderImportedUsage()}
+                  </div>
                   <div class="side-column">${this.renderControls()}</div>
                 </div>
               `

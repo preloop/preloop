@@ -1,12 +1,12 @@
 """Tests for JWT authentication functions."""
 
 import uuid
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import jwt
 import pytest
 from fastapi import HTTPException
-from jose import jwt
 
 from preloop.api.auth import jwt as jwt_module
 

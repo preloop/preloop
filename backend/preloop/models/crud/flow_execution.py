@@ -112,6 +112,35 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.first()
 
+    def existing_ids(self, db: Session, ids: List[Any]) -> set:
+        """Return the subset of ``ids`` that exist as flow execution rows.
+
+        Used by the log persister to distinguish logs for a since-deleted
+        execution (drop quietly) from real persistence failures. Ids that are
+        not valid UUIDs cannot exist and are simply excluded from the result.
+
+        Args:
+            db: Database session.
+            ids: Candidate execution ids (str or UUID).
+
+        Returns:
+            Set of canonical string forms of the ids that exist.
+        """
+        candidates: dict[uuid.UUID, str] = {}
+        for raw_id in ids:
+            try:
+                candidates[uuid.UUID(str(raw_id))] = str(raw_id)
+            except (ValueError, AttributeError, TypeError):
+                continue
+        if not candidates:
+            return set()
+        rows = (
+            db.query(FlowExecution.id)
+            .filter(FlowExecution.id.in_(list(candidates)))
+            .all()
+        )
+        return {candidates[row[0]] for row in rows}
+
     def create(self, db: Session, obj_in: FlowExecutionCreate) -> FlowExecution:
         """Create a new flow execution (synchronous)."""
         db_obj = FlowExecution(**obj_in.model_dump())
@@ -156,6 +185,32 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         return db_obj
 
+    def set_evidence_archive(
+        self, db: Session, *, db_obj: FlowExecution, archive: bytes
+    ) -> FlowExecution:
+        """Persist the captured evidence pack archive (tar.gz bytes).
+
+        Separate from ``update`` because the archive is binary and must never
+        travel through the FlowExecutionUpdate schema (which is serialized to
+        NATS for UI updates).
+        """
+        db_obj.evidence_archive = archive  # type: ignore[assignment]
+        db.flush()
+        return db_obj
+
+    def set_workspace_snapshot(
+        self, db: Session, *, db_obj: FlowExecution, archive: Optional[bytes]
+    ) -> FlowExecution:
+        """Persist (or clear) the captured workspace snapshot (tar.gz bytes).
+
+        Separate from ``update`` for the same reason as the evidence pack: the
+        archive is binary and must never travel through the
+        FlowExecutionUpdate schema that is serialized to NATS.
+        """
+        db_obj.workspace_snapshot = archive  # type: ignore[assignment]
+        db.flush()
+        return db_obj
+
     def get_by_flow(
         self,
         db: Session,
@@ -173,6 +228,55 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if account_id:
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.offset(skip).limit(limit).all()
+
+    def get_by_result_pr_url(
+        self,
+        db: Session,
+        flow_id: Any,
+        pr_url: str,
+    ) -> Optional[FlowExecution]:
+        """Return the newest execution of this flow that recorded ``pr_url``.
+
+        Matches ``FlowExecution.result['pr_url']`` exactly so resume does not
+        depend on a recency window. Callers should pass a normalized URL.
+        """
+        if not pr_url:
+            return None
+        return (
+            db.query(FlowExecution)
+            .filter(
+                FlowExecution.flow_id == flow_id,
+                FlowExecution.result["pr_url"].astext == pr_url,
+            )
+            .order_by(FlowExecution.start_time.desc())
+            .first()
+        )
+
+    def get_by_batch(
+        self,
+        db: Session,
+        batch_id: uuid.UUID,
+        account_id: Optional[str] = None,
+    ) -> List[FlowExecution]:
+        """Get all executions created by one matrix/batch trigger.
+
+        Ordered by creation time as a stable default; note this does NOT
+        guarantee matrix-cell order (ids are random UUIDs and created_at has
+        limited resolution) — callers that need cell order must sort by the
+        recorded matrix index, as the batch listing endpoint does. Batches are
+        capped at trigger time, so no pagination is needed. The flow
+        relationship is eagerly loaded because callers render flow names per
+        row.
+        """
+        query = (
+            db.query(FlowExecution)
+            .options(joinedload(FlowExecution.flow))
+            .filter(FlowExecution.batch_id == batch_id)
+            .order_by(FlowExecution.created_at.asc(), FlowExecution.id.asc())
+        )
+        if account_id:
+            query = query.join(Flow).filter(Flow.account_id == account_id)
+        return query.all()
 
     def get_running_by_flow(
         self,
@@ -239,7 +343,14 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     FlowExecution.start_time,
                     FlowExecution.end_time,
                     FlowExecution.error_message,
+                    # Small and the whole point of the list view for
+                    # failures; omitting it here would make the schema
+                    # projection lazy-load it one row at a time.
+                    FlowExecution.failure_category,
+                    FlowExecution.runner_id,
+                    FlowExecution.agent_session_reference,
                     FlowExecution.retry_of_execution_id,
+                    FlowExecution.batch_id,
                     FlowExecution.tool_calls_count,
                     FlowExecution.total_tokens,
                     FlowExecution.estimated_cost,
@@ -376,6 +487,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 after the loop.
         """
         from preloop.models.models.flow_execution_log import FlowExecutionLog
+        from preloop.utils.secret_scrubbing import scrub_secrets, scrub_structure
 
         # NATS messages nest actual content under "payload" (e.g. payload.line
         # for agent_log_line).  Derive message from the best available field
@@ -386,11 +498,14 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         metadata = payload or log_data.get("metadata") or log_data.get("data")
 
+        # Last gate before persistence: redact known credential formats so a
+        # secret cannot be stored even if its producer skipped scrubbing
+        # (issue #173).
         log_entry = FlowExecutionLog(
             execution_id=execution_id,
             log_type=log_data.get("type", "log"),
-            message=message,
-            metadata_=metadata if metadata else None,
+            message=scrub_secrets(message),
+            metadata_=scrub_structure(metadata) if metadata else None,
         )
         db.add(log_entry)
         if commit:

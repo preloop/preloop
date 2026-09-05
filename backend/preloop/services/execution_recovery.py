@@ -8,6 +8,10 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import crud_flow_execution
+from preloop.services.flow_failure_category import (
+    FAILURE_CATEGORY_RUNNER_ERROR,
+    derive_failure_category,
+)
 from preloop.sync.services.event_bus import get_nats_client
 from .flow_orchestrator import FlowExecutionOrchestrator
 
@@ -17,6 +21,39 @@ logger = logging.getLogger(__name__)
 def _exception_message(exc: BaseException) -> str:
     """Return a useful message for exceptions whose str() is empty."""
     return str(exc) or exc.__class__.__name__
+
+
+def _retire_runtime_credentials(db: Session, execution: models.FlowExecution) -> None:
+    """Close the runtime session and revoke the runtime tokens of an execution.
+
+    Recovery decides an execution is over without ever running its
+    orchestrator's teardown, so it has to retire the credentials itself.
+    Otherwise the gateway token of a run that recovery just marked FAILED keeps
+    authenticating until its two-hour expiry.
+    """
+    if execution is None:
+        return
+    account_id = getattr(getattr(execution, "flow", None), "account_id", None)
+    if account_id is None:
+        return
+    from datetime import datetime, timezone
+
+    from preloop.services.flow_runtime_token import (
+        end_flow_execution_runtime_session,
+        revoke_flow_runtime_tokens,
+    )
+
+    end_flow_execution_runtime_session(
+        db,
+        account_id=account_id,
+        execution_id=execution.id,
+        ended_at=datetime.now(timezone.utc),
+    )
+    revoke_flow_runtime_tokens(
+        db,
+        account_id=account_id,
+        execution_id=execution.id,
+    )
 
 
 class ExecutionRecoveryService:
@@ -185,21 +222,43 @@ class ExecutionRecoveryService:
             update_data = FlowExecutionUpdate(
                 status="FAILED",
                 error_message="Execution interrupted during startup (pod restart)",
+                # The run never reached a provider or an agent: the runtime
+                # lost it, so it is a runner failure, not an agent one.
+                failure_category=FAILURE_CATEGORY_RUNNER_ERROR,
                 end_time=datetime.now(timezone.utc),
             )
             crud_flow_execution.update(db, db_obj=execution, obj_in=update_data)
             db.commit()
+            _retire_runtime_credentials(db, execution)
             return
 
         # Check if the container/job still exists before trying to monitor
         # This avoids blocking on containers that were cleaned up during deploy
         try:
-            from preloop.agents import create_agent_executor
+            from preloop.models.models.flow_execution import (
+                resolve_matrix_agent_selection,
+            )
 
             flow = execution.flow
             if flow:
-                agent_executor = create_agent_executor(
-                    flow.agent_type, {"agent_config": flow.agent_config or {}}
+                # Matrix cells override the flow's agent_type per execution;
+                # a recovered cell must be probed with its own harness.
+                effective_agent_type, _ = resolve_matrix_agent_selection(
+                    execution.trigger_event_details,
+                    flow_agent_type=flow.agent_type,
+                )
+                from preloop.agents import create_executor_for_execution
+
+                agent_executor = create_executor_for_execution(
+                    effective_agent_type,
+                    {"agent_config": flow.agent_config or {}},
+                    flow=flow,
+                    execution=execution,
+                    db=db,
+                    execution_context={
+                        "trigger_event_data": execution.trigger_event_details,
+                        "account_id": flow.account_id,
+                    },
                 )
                 try:
                     status = await agent_executor.get_status(
@@ -216,12 +275,14 @@ class ExecutionRecoveryService:
                         update_data = FlowExecutionUpdate(
                             status="FAILED",
                             error_message=f"Container was {status.value} on recovery (likely cleaned up during deploy)",
+                            failure_category=FAILURE_CATEGORY_RUNNER_ERROR,
                             end_time=datetime.now(timezone.utc),
                         )
                         crud_flow_execution.update(
                             db, db_obj=execution, obj_in=update_data
                         )
                         db.commit()
+                        _retire_runtime_credentials(db, execution)
                         return
                     elif status == AgentStatus.SUCCEEDED:
                         logger.info(
@@ -235,6 +296,7 @@ class ExecutionRecoveryService:
                             db, db_obj=execution, obj_in=update_data
                         )
                         db.commit()
+                        _retire_runtime_credentials(db, execution)
                         return
                     # Container is RUNNING/STARTING - proceed with monitoring below
                 finally:
@@ -251,10 +313,14 @@ class ExecutionRecoveryService:
             update_data = FlowExecutionUpdate(
                 status="FAILED",
                 error_message=f"Container check failed during recovery: {check_error_message}",
+                failure_category=FAILURE_CATEGORY_RUNNER_ERROR,
                 end_time=datetime.now(timezone.utc),
             )
             crud_flow_execution.update(db, db_obj=execution, obj_in=update_data)
             db.commit()
+            # Status check failed: agent liveness is unknown. Leave the
+            # runtime token alone (it lapses on expiry) rather than revoking
+            # a credential an agent may still be using.
             return
 
         # Container is still running - create orchestrator and resume monitoring
@@ -331,6 +397,11 @@ class ExecutionRecoveryService:
                 update_data = FlowExecutionUpdate(
                     status="FAILED",
                     error_message=f"Resumed monitoring failed: {str(e)}",
+                    failure_category=derive_failure_category(
+                        status="FAILED",
+                        error_message=error_message,
+                        exception=e,
+                    ),
                     end_time=datetime.now(timezone.utc),
                 )
                 crud_flow_execution.update(
@@ -339,6 +410,7 @@ class ExecutionRecoveryService:
                     obj_in=update_data,
                 )
                 failure_db.commit()
+                _retire_runtime_credentials(failure_db, execution_log)
             except Exception as update_error:
                 logger.error(f"Failed to mark execution as failed: {update_error}")
             finally:

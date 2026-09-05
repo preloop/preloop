@@ -38,9 +38,11 @@ ClawHub steps and smoke tests.
   - `openclaw-preloop/openclaw.plugin.json`
   - `hermes-preloop/pyproject.toml`
   - `hermes-preloop/preloop-plugin.json`
+  - `opencode-preloop/package.json`
 - Confirm the package names are final:
   - npm/OpenClaw: `@preloop-ai/openclaw-plugin`
   - PyPI/Hermes: `preloop-hermes-plugin`
+  - npm/OpenCode: `@preloop-ai/opencode-plugin`
 - Confirm Hermes entry points use the `hermes_agent.plugins` group and point at
   the module that exposes `register(ctx)` (`preloop_hermes_plugin.plugin`).
 - Confirm OpenClaw `package.json` includes ClawHub-required metadata:
@@ -201,6 +203,47 @@ token. Users should never have to hand-author runtime bearer tokens.
 Note: the OpenClaw plugin runtime id must be `preloop-plugin` (not
 `openclaw-plugin`) because ClawHub treats runtime ids as globally unique and
 `openclaw-plugin` is already claimed by another publisher.
+
+## OpenCode Plugin
+
+OpenCode has no central plugin marketplace: discovery is npm plus the
+`plugin` array in `opencode.json`. There is no ClawHub step and no manifest
+file — the only release artifact is the npm package.
+
+Build and validate the npm package:
+
+```bash
+cd preloop/runtime-plugins/opencode-preloop
+npm ci
+npm run build
+npm pack --dry-run
+npm publish --access public --dry-run
+```
+
+Publish to npm:
+
+```bash
+npm publish --access public
+```
+
+Manual smoke test on a machine without the Preloop CLI:
+
+```bash
+npm install -g @preloop-ai/opencode-plugin
+# add {"plugin": ["@preloop-ai/opencode-plugin"]} to ~/.config/opencode/opencode.json
+preloop-opencode-plugin verify --config ~/.config/opencode/opencode.json
+preloop-opencode-plugin run --config ~/.config/opencode/opencode.json
+```
+
+Marketplace UX requirement: if `~/.config/opencode/opencode.json` does not
+already contain `preloop.control`, a separate Preloop connect helper must
+prompt the user to log in or sign up to Preloop in a browser (same flow as
+the Hermes/OpenClaw plugins): use the existing OAuth CLI flow
+(`client_id=cli`, `redirect_uri=urn:ietf:wg:oauth:2.0:oob`) to obtain a
+Preloop API token, call the runtime-session bootstrap endpoint for the
+current OpenCode runtime, then write `preloop.control` with the generated
+runtime bearer token. Users should never have to hand-author runtime bearer
+tokens.
 
 ## Hermes Plugin
 

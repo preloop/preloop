@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -25,6 +24,11 @@ from preloop.models.crud import (
 )
 from preloop.models.models.account import Account
 from preloop.services.litellm_routing import to_litellm_model
+from preloop.services.model_credentials import (
+    build_aux_kwargs,
+    call_with_default_model_fallback,
+    check_reasoning_model_empty_content,
+)
 from preloop.schemas.gateway_usage import (
     AccountGatewayUsageSearchResponse,
     AccountRuntimeSessionDetailResponse,
@@ -484,12 +488,21 @@ class RuntimeSessionExplorerService:
         if model is None:
             return fallback
 
-        try:
-            generated = await asyncio.to_thread(
-                self._call_interaction_summary_model,
-                model=model,
-                payload=payload,
+        def _call(model_to_use: AIModel, creds: dict[str, Any]) -> dict[str, Any]:
+            return self._call_interaction_summary_model(
+                model_to_use, creds, payload=payload
             )
+
+        try:
+            generated = await call_with_default_model_fallback(
+                db=self.db,
+                account_id=str(account.id),
+                primary_model=model,
+                caller=_call,
+                operation_name="session_interaction_summary",
+            )
+            if generated is None:
+                return fallback.model_copy(update={"model_name": model.name})
         except Exception:
             logger.info(
                 "Falling back to local interaction summary",
@@ -637,8 +650,9 @@ class RuntimeSessionExplorerService:
 
     def _call_interaction_summary_model(
         self,
-        *,
         model: AIModel,
+        creds_kwargs: dict[str, Any],
+        *,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         messages = self._extract_request_messages(payload)
@@ -662,7 +676,7 @@ class RuntimeSessionExplorerService:
             },
             "messages": compact_messages,
         }
-        kwargs: dict[str, Any] = {
+        call_site_kwargs: dict[str, Any] = {
             "model": self._to_litellm_model(model),
             "messages": [
                 {
@@ -687,12 +701,12 @@ class RuntimeSessionExplorerService:
             # empty content (no summary) on reasoning-model defaults.
             "max_tokens": 2048,
         }
-        if model.api_key:
-            kwargs["api_key"] = model.api_key
-        if model.api_endpoint:
-            kwargs["api_base"] = model.api_endpoint
+        kwargs = build_aux_kwargs(
+            model, creds_kwargs, call_site_kwargs=call_site_kwargs
+        )
 
         response = litellm.completion(**kwargs)
+        check_reasoning_model_empty_content(response)
         raw = response.choices[0].message.content or "{}"
         raw = raw.strip()
         if raw.startswith("```"):

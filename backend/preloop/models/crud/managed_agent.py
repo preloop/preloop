@@ -9,6 +9,8 @@ from typing import Any, Optional
 from sqlalchemy import and_, case, func, or_, tuple_
 from sqlalchemy.orm import Session
 
+from preloop.utils.agent_kind import normalize_agent_kind
+
 from ..models.api_usage import ApiUsage
 from ..models.managed_agent import ManagedAgent
 from ..models.runtime_session import RuntimeSession
@@ -18,11 +20,67 @@ from .base import CRUDBase
 MANAGED_AGENT_ACTIVE_WINDOW = timedelta(minutes=10)
 MANAGED_AGENT_RECENT_WINDOW = timedelta(hours=24)
 
+# The only lifecycle states the system understands. ``get_by_source`` ranks
+# these explicitly and the auth paths branch on them, so writing anything else
+# would silently change how an agent resolves and authenticates.
+MANAGED_AGENT_LIFECYCLE_STATES = frozenset({"active", "suspended", "decommissioned"})
 
-def normalize_managed_agent_kind(session_source_type: Optional[str]) -> str:
-    """Normalize one durable agent kind from a runtime source type."""
-    normalized = str(session_source_type or "").strip().lower().replace(" ", "_")
-    return normalized or "external_agent"
+
+def normalize_managed_agent_kind(
+    session_source_type: Optional[str], *, agent_kind: Optional[str] = None
+) -> str:
+    """Normalize one durable agent kind for a managed agent.
+
+    ``agent_kind`` records *which product* the agent is (``cursor``), while
+    ``session_source_type`` records *how it connects* (``desktop_agent``). For
+    most agents the two coincide, but several products (Cursor, Windsurf, VS
+    Code, Antigravity, Devin) share the generic ``desktop_agent`` transport, so
+    an explicit kind wins when supplied.
+
+    The two are deliberately decoupled: the source type is part of the v2
+    principal-id fingerprint, so changing it for existing agents would
+    invalidate their identity. See ``#123``.
+
+    Args:
+        session_source_type: Transport-level source type for the agent.
+        agent_kind: Optional explicit product kind supplied by the caller.
+
+    Returns:
+        The normalized durable agent kind.
+    """
+    explicit = normalize_agent_kind(agent_kind)
+    if explicit:
+        return explicit
+    return normalize_agent_kind(session_source_type) or "external_agent"
+
+
+def should_refine_agent_kind(
+    stored_kind: Optional[str],
+    *,
+    session_source_type: Optional[str],
+    agent_kind: Optional[str],
+) -> bool:
+    """Decide whether a re-enrollment may overwrite the stored agent kind.
+
+    Refine the kind, never regress it. A client that supplies an explicit
+    kind always wins: it knows which product it is. A client that supplies
+    none (an older CLI, or one that cannot tell Cursor from Windsurf) may
+    only fill in a kind that is still empty or still the generic transport
+    value, because otherwise every re-enrollment from that client would
+    reset a known ``cursor`` back to ``desktop_agent``.
+
+    Args:
+        stored_kind: Kind currently recorded on the agent row.
+        session_source_type: Transport-level source type for this enrollment.
+        agent_kind: Explicit product kind supplied by the client, if any.
+
+    Returns:
+        True when the caller should write the refined kind.
+    """
+    if agent_kind:
+        return True
+    transport_kind = normalize_managed_agent_kind(session_source_type)
+    return (stored_kind or "") in ("", transport_kind)
 
 
 def _utc_now() -> datetime:
@@ -284,7 +342,36 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         session_source_type: str,
         session_source_id: str,
     ) -> Optional[ManagedAgent]:
-        """Look up one agent by its durable source identity."""
+        """Look up one agent by its durable source identity, deterministically.
+
+        A unique constraint normally keeps one row per
+        ``(account, source_type, source_id)``, but sibling rows do exist in
+        the field (rekey/merge races, databases restored from older dumps).
+        An unordered ``.first()`` let a stale archived sibling shadow the live
+        agent, which nondeterministically blocked runtime token issuance and
+        broke key-to-agent resolution on the gateway auth path. Resolution is
+        therefore explicit: most usable lifecycle first (active, then the
+        resumable suspended, then decommissioned, then anything unrecognised),
+        then most recent.
+
+        Args:
+            db: Database session.
+            account_id: Account that owns the agent.
+            session_source_type: Durable principal type.
+            session_source_id: Durable principal id.
+
+        Returns:
+            The best-matching managed agent, or None when there is no match.
+        """
+        # Unknown states sort last, not between suspended and decommissioned:
+        # an unrecognised value is the one case where we know least, so it must
+        # never win over a state we do understand.
+        lifecycle_rank = case(
+            (self.model.lifecycle_state == "active", 0),
+            (self.model.lifecycle_state == "suspended", 1),
+            (self.model.lifecycle_state == "decommissioned", 2),
+            else_=99,
+        )
         return (
             db.query(self.model)
             .filter(
@@ -292,18 +379,75 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.session_source_type == session_source_type,
                 self.model.session_source_id == session_source_id,
             )
+            .order_by(
+                lifecycle_rank.asc(),
+                self.model.created_at.desc(),
+                self.model.id.desc(),
+            )
             .first()
         )
 
-    def get_for_account(
-        self, db: Session, *, account_id: str, agent_id: str
-    ) -> Optional[ManagedAgent]:
-        """Return one managed agent scoped to the given account."""
-        return (
-            db.query(self.model)
-            .filter(self.model.account_id == account_id, self.model.id == agent_id)
-            .first()
+    def list_by_kind(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        agent_kind: str,
+        active_only: bool = True,
+    ) -> list[ManagedAgent]:
+        """Return the account's managed agents of one kind, newest first.
+
+        Used by usage ingest to resolve the default attribution target when
+        the caller does not name an agent explicitly. By default only
+        rows with ``lifecycle_state == "active"`` are returned so archived
+        duplicates do not trip ambiguity errors.
+
+        Args:
+            db: Database session.
+            account_id: Account that owns the agents.
+            agent_kind: Normalized agent kind (for example ``"cursor"``).
+            active_only: When True (default), keep only
+                ``lifecycle_state == "active"`` rows.
+
+        Returns:
+            Matching managed agents ordered by ``created_at`` descending.
+        """
+        query = db.query(self.model).filter(
+            self.model.account_id == account_id,
+            self.model.agent_kind == agent_kind,
         )
+        if active_only:
+            query = query.filter(self.model.lifecycle_state == "active")
+        return query.order_by(self.model.created_at.desc()).all()
+
+    def get_for_account(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        agent_id: str,
+        for_update: bool = False,
+    ) -> Optional[ManagedAgent]:
+        """Return one managed agent scoped to the given account.
+
+        Args:
+            db: Database session.
+            account_id: Account the agent must belong to.
+            agent_id: Identifier of the agent to load.
+            for_update: Take a row lock (``SELECT ... FOR UPDATE``) so the
+                caller can read ``lifecycle_state``, decide on it, and write
+                without a concurrent operator action landing in between. Only
+                meaningful inside a transaction that commits afterwards.
+
+        Returns:
+            The managed agent, or ``None`` when no such agent exists.
+        """
+        query = db.query(self.model).filter(
+            self.model.account_id == account_id, self.model.id == agent_id
+        )
+        if for_update:
+            query = query.with_for_update()
+        return query.first()
 
     def touch_last_seen_for_principal(
         self,
@@ -314,6 +458,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         session_source_id: str,
         runtime_session_id: Optional[Any] = None,
         observed_at: datetime,
+        control_session_mode: Optional[str] = None,
         commit: bool = False,
     ) -> Optional[ManagedAgent]:
         """Update last-seen timestamp for one durable managed agent."""
@@ -328,6 +473,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         if db_obj.lifecycle_state != "active":
             return db_obj
         db_obj.last_seen_at = observed_at
+        if control_session_mode in {"local", "remote", "queued"}:
+            db_obj.control_session_mode = control_session_mode
         if runtime_session_id is not None:
             db_obj.runtime_session_id = runtime_session_id
         db.add(db_obj)
@@ -354,7 +501,19 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         set_tags: bool = False,
         commit: bool = True,
     ) -> Optional[ManagedAgent]:
-        """Update ownership and lifecycle controls for one managed agent."""
+        """Update ownership and lifecycle controls for one managed agent.
+
+        Raises:
+            ValueError: If ``lifecycle_state`` is not a recognised state.
+        """
+        if (
+            lifecycle_state is not None
+            and lifecycle_state not in MANAGED_AGENT_LIFECYCLE_STATES
+        ):
+            raise ValueError(
+                f"Invalid managed agent lifecycle_state {lifecycle_state!r}; "
+                f"expected one of {sorted(MANAGED_AGENT_LIFECYCLE_STATES)}"
+            )
         db_obj = self.get_for_account(db, account_id=account_id, agent_id=agent_id)
         if db_obj is None:
             return None
@@ -367,9 +526,17 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             db_obj.tags = tags
         if lifecycle_state is not None:
             db_obj.lifecycle_state = lifecycle_state
+            # Reset deliberately, including to None. lifecycle_reason explains
+            # the CURRENT state, alongside lifecycle_updated_at; carrying a
+            # previous transition's reason forward would label a resumed agent
+            # with the reason it was paused.
             db_obj.lifecycle_reason = lifecycle_reason
             db_obj.lifecycle_updated_at = now
-            if lifecycle_state in {"suspended", "decommissioned"}:
+            # Only the terminal state unbinds the runtime session. Pausing is
+            # reversible and every auth path rejects non-active agents on each
+            # request, so dropping the binding here would just make resume
+            # unable to restore the agent to its previous state.
+            if lifecycle_state == "decommissioned":
                 db_obj.runtime_session_id = None
         db.add(db_obj)
         if commit:
@@ -425,6 +592,9 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         enrolled_via: str = "runtime_session_token",
         last_seen_at: Optional[datetime] = None,
         owner_user_id: Any = None,
+        enrollment_hostname: Optional[str] = None,
+        identity_derivation: Optional[str] = None,
+        agent_kind: Optional[str] = None,
     ) -> ManagedAgent:
         """Create or update one registry entry from a runtime-session token flow.
 
@@ -432,6 +602,13 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         update only when the agent has no owner yet, so a manually assigned owner
         is never overwritten. This owner drives per-user cost attribution and
         per-user budgets.
+
+        ``agent_kind`` lets a newer CLI declare the product it is enrolling
+        (``cursor``) while keeping the transport ``session_source_type``
+        (``desktop_agent``) that the v2 principal id is derived from, so the
+        agent's identity is preserved. On update the stored kind is only
+        refined, never reset to the generic transport value, so an older CLI
+        re-enrolling an agent cannot regress a known product kind.
         """
         db_obj = self.get_by_source(
             db,
@@ -446,10 +623,14 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             db_obj = ManagedAgent(
                 account_id=account_id,
                 runtime_session_id=runtime_session_id,
-                agent_kind=normalize_managed_agent_kind(session_source_type),
+                agent_kind=normalize_managed_agent_kind(
+                    session_source_type, agent_kind=agent_kind
+                ),
                 session_source_type=session_source_type,
                 session_source_id=session_source_id,
                 session_reference=session_reference,
+                enrollment_hostname=enrollment_hostname,
+                identity_derivation=identity_derivation,
                 display_name=display_name,
                 enrolled_via=enrolled_via,
                 managed_mcp_servers=normalized_servers,
@@ -464,12 +645,25 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             return db_obj
 
         db_obj.runtime_session_id = runtime_session_id
-        db_obj.agent_kind = normalize_managed_agent_kind(session_source_type)
-        db_obj.display_name = display_name
+        if should_refine_agent_kind(
+            db_obj.agent_kind,
+            session_source_type=session_source_type,
+            agent_kind=agent_kind,
+        ):
+            db_obj.agent_kind = normalize_managed_agent_kind(
+                session_source_type, agent_kind=agent_kind
+            )
+        # Preserve operator renames on reuse; only fill an empty display name.
+        if not (db_obj.display_name or "").strip():
+            db_obj.display_name = display_name
         db_obj.enrolled_via = enrolled_via
         db_obj.last_seen_at = observed_at
         if session_reference is not None:
             db_obj.session_reference = session_reference
+        if enrollment_hostname is not None:
+            db_obj.enrollment_hostname = enrollment_hostname
+        if identity_derivation is not None:
+            db_obj.identity_derivation = identity_derivation
         if owner_user_id is not None and db_obj.owner_user_id is None:
             db_obj.owner_user_id = owner_user_id
         db_obj.managed_mcp_servers = normalized_servers
@@ -485,6 +679,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         display_name: str,
         description: Optional[str] = None,
         owner_user_id: Any = None,
+        agent_kind: Optional[str] = None,
         commit: bool = True,
     ) -> ManagedAgent:
         """Register a custom managed agent the discovery CLI cannot find.
@@ -496,11 +691,19 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         discover`` keys off, so a later discovery run will not be deduped
         against this row.
 
+        ``agent_kind`` records which product the agent is (``cursor``) so
+        API-created agents are no longer indistinguishable from genuinely
+        bespoke ones. The ``custom`` ``session_source_type`` is kept regardless:
+        it drives the generated-id/dedupe contract above and is part of the v2
+        principal-id fingerprint, so it must not vary with the declared kind.
+
         Args:
             db: Active database session.
             account_id: Owning account identifier.
             display_name: Operator-facing name for the agent.
             description: Optional free-form description; stored under ``tags``.
+            owner_user_id: User credited as the agent owner.
+            agent_kind: Optional product kind; defaults to ``custom``.
             commit: Whether to commit the transaction.
 
         Returns:
@@ -515,7 +718,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         db_obj = ManagedAgent(
             account_id=account_id,
             runtime_session_id=None,
-            agent_kind=normalize_managed_agent_kind("custom"),
+            agent_kind=normalize_managed_agent_kind("custom", agent_kind=agent_kind),
             session_source_type="custom",
             session_source_id=session_source_id,
             session_reference=None,
@@ -621,6 +824,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.session_source_type,
                 self.model.session_source_id,
                 self.model.session_reference,
+                self.model.enrollment_hostname,
+                self.model.identity_derivation,
                 self.model.enrolled_via,
                 self.model.managed_mcp_servers,
                 self.model.lifecycle_state,
@@ -650,6 +855,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.session_source_type,
                 self.model.session_source_id,
                 self.model.session_reference,
+                self.model.enrollment_hostname,
+                self.model.identity_derivation,
                 self.model.enrolled_via,
                 self.model.managed_mcp_servers,
                 self.model.lifecycle_state,
@@ -726,6 +933,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.session_source_type,
                 self.model.session_source_id,
                 self.model.session_reference,
+                self.model.enrollment_hostname,
+                self.model.identity_derivation,
                 self.model.enrolled_via,
                 self.model.managed_mcp_servers,
                 self.model.lifecycle_state,
@@ -755,6 +964,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.session_source_type,
                 self.model.session_source_id,
                 self.model.session_reference,
+                self.model.enrollment_hostname,
+                self.model.identity_derivation,
                 self.model.enrolled_via,
                 self.model.managed_mcp_servers,
                 self.model.lifecycle_state,
@@ -932,6 +1143,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             "session_source_type": row.session_source_type,
             "session_source_id": row.session_source_id,
             "session_reference": row.session_reference,
+            "enrollment_hostname": getattr(row, "enrollment_hostname", None),
+            "identity_derivation": getattr(row, "identity_derivation", None),
             "enrolled_via": row.enrolled_via,
             "managed_mcp_servers": row.managed_mcp_servers or [],
             "lifecycle_state": row.lifecycle_state,
@@ -941,6 +1154,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             "is_active_now": is_active_now,
             "activity_status": activity_status,
             "last_seen_at": row.last_seen_at,
+            "control_session_mode": getattr(row, "control_session_mode", None)
+            or "offline",
             "started_at": row.started_at,
             "last_activity_at": row.last_activity_at,
             "ended_at": row.ended_at,

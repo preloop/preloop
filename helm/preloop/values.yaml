@@ -50,6 +50,25 @@ flowExecution:
   # Long enough to stop fetches, cancel in-flight monitors, and re-dispatch
   # owned claims — not to wait for agent Jobs to finish.
   terminationGracePeriodSeconds: 90
+  # Bounded retry around CREATING the agent Job in Kubernetes. Covers the
+  # api-server being briefly unavailable (5xx/429) and name conflicts with a
+  # finished-but-not-yet-collected Job from an earlier attempt. Attempts are
+  # jittered: base * 2^n plus up to base of jitter. Set maxAttempts to 1 to
+  # disable (a single create, failing on the first error).
+  agentJobCreate:
+    maxAttempts: 3
+    retryBaseSeconds: 0.5
+  # Default wall-clock budget for one execution. A flow may carry its own
+  # timeout_seconds, which wins; this is the value used when it does not.
+  maxWaitSeconds: 3600
+  # One in-container reminder when the agent exits 0 without the completion
+  # contract (no sentinel, no result artifact). It runs in the same container
+  # and workspace, before the post-execution git block, and its own exit code
+  # is discarded, so it can never turn a good run bad. Set enabled to false to
+  # go back to failing those runs closed.
+  completionNudge:
+    enabled: true
+    timeoutSeconds: 300
 
 console:
   repository: ghcr.io/preloop/console
@@ -92,6 +111,19 @@ analytics:
 
 # Image pull secrets
 imagePullSecrets: []
+
+# Name of an existing Secret that already contains jwt-secret (and any other
+# keys the enabled features need). When set, the chart does not create its
+# own Secret. Create it with kubectl; do not put real secrets in values files.
+existingSecret: ""
+
+# Extra env, envFrom, volumes, and volumeMounts applied to API, gateway,
+# worker, scheduler, monitor, and jobs. Use these to mount a private CA and
+# set SSL_CERT_FILE / REQUESTS_CA_BUNDLE (or DATABASE_URL from a Secret).
+extraEnv: []
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []
 
 # Service account configuration
 serviceAccount:
@@ -137,6 +169,12 @@ api:
   # When unset, falls back to top-level replicaCount.
   # Staging/prod set this to 2 independently of gateway/console.
   replicaCount: null
+  # Same rationale as gateway.terminationGracePeriodSeconds: the api holds
+  # long-lived MCP sessions/long-polls and websockets behind the same 10s
+  # preStop sleep, so the 30s k8s default SIGKILLs them mid-rollout too.
+  # A generous ceiling costs nothing when connections have drained — uvicorn
+  # exits as soon as the last one closes.
+  terminationGracePeriodSeconds: 900
   resources:
     requests:
       cpu: "50m"
@@ -185,6 +223,38 @@ healthMonitor:
 
 # Gateway resources
 gateway:
+  # Proxy settings applied to the model-gateway routes (/openai, /anthropic,
+  # /gemini) at every proxy in front of the gateway. Helm ingress sends those
+  # prefixes to the gateway Service (skipping console nginx). Console nginx
+  # still proxies the same prefixes for callers that hit the console Service
+  # directly, and the OSS installer TLS overlay does the same at the edge.
+  # These routes relay streaming LLM responses, where the upstream model can
+  # spend minutes reasoning over a large prompt before the first token exists.
+  # nginx's 60s default read timeout is a ceiling on how long a model is
+  # allowed to think, and hitting it returns a 504 the application never sees.
+  # Every remaining proxy layer defaults to 60s, so all of them are set here;
+  # raising only one leaves another cutting the stream.
+  proxy:
+    # Seconds. Generous rather than exact: the cost of waiting is an idle
+    # connection, the cost of being short is a failed request plus whatever
+    # tokens the upstream already billed.
+    readTimeout: 900
+    sendTimeout: 900
+    # Connecting to an in-cluster service either works immediately or is a
+    # real fault; no reason to wait on it.
+    connectTimeout: 10
+    # Agent requests carry whole file trees and diffs as context, which
+    # comfortably exceeds the ingress default of 1m.
+    bodySize: "32m"
+  # Seconds kubelet waits after starting the preStop hook before SIGKILL.
+  # The k8s default of 30 is far too short for this pod: a rollout SIGKILLed
+  # in-flight streaming LLM responses ~20s after preStop (10s sleep + uvicorn
+  # still draining), and agents mid-review saw the socket die ("other side
+  # closed"), failing their flow executions. This is a ceiling, not a delay:
+  # uvicorn exits as soon as the last in-flight request completes, so an idle
+  # pod still terminates in ~10s. Aligned with proxy.readTimeout above — any
+  # stream the proxies are still willing to carry must be allowed to finish.
+  terminationGracePeriodSeconds: 900
   resources:
     requests:
       cpu: "100m"
@@ -221,6 +291,17 @@ environment:
   preloopUrl: "https://preloop.ai"
   debug: false
   modelGatewayCaptureContent: true
+  # Bounded retry the model gateway performs INSIDE one client request when
+  # the upstream provider drops the stream, throttles (429) or 5xx's before
+  # any token has been forwarded. A provider's bad second should not end a
+  # flow run. Retry-After from the provider is honoured, capped at
+  # retryAfterCapSeconds so a hostile header cannot pin a worker. The count
+  # is reported to clients as `retried` on the model_gateway_call event.
+  # Set maxAttempts to 1 to disable.
+  modelGatewayUpstreamRetry:
+    maxAttempts: 3
+    baseSeconds: 0.2
+    retryAfterCapSeconds: 8
   # Set true ONLY on the hosted preloop.ai deployment: it is the version-check
   # tracker itself, so it must never persist update state or show the console
   # "update available" banner (rendered as PRELOOP_HOSTED=1 on the API).
@@ -245,6 +326,11 @@ environment:
   # Access token lifetime. 1440 (24h) matches the documented session design:
   # 24h access token + 7 day rotating refresh token capped at 30 days.
   jwtExpireMinutes: 1440
+  # Refresh-token lifetime in days (REFRESH_TOKEN_EXPIRE_DAYS). Rotating
+  # refresh tokens keep sessions alive until maxSessionDays is reached.
+  refreshTokenExpireDays: 7
+  # Absolute session cap in days from the original login (MAX_SESSION_DAYS).
+  maxSessionDays: 30
 
 # Configuration for external APIs
 config:
@@ -252,6 +338,16 @@ config:
     apiKey: ""
   anthropic:
     apiKey: ""
+  # Scheduled automatic model-catalog sync: periodically discover newly
+  # released provider models with stored API-key credentials and add them to
+  # each account catalog (the scheduled equivalent of 'preloop models sync').
+  # Principal-bound subscription-OAuth credentials (Claude Code / Codex) are
+  # never used for discovery. Default off so catalogs never change on
+  # upgrade without an explicit opt-in; every sync run that adds models
+  # emits an audit event attributed to the "model-catalog-sync" system actor.
+  modelCatalogSync:
+    scheduledEnabled: false
+    intervalHours: 24
   smtp:
     host: ""
     port: 587
@@ -263,29 +359,62 @@ config:
 # Database configuration
 database:
   # SQLAlchemy connection pool sizing per component, injected as
-  # DATABASE_POOL_SIZE / DATABASE_MAX_OVERFLOW. Peak connections per pod =
-  # size + maxOverflow. The application defaults (20 + 40 per pod) are NOT
-  # safe once the gateway autoscales: 11 pods x 60 = 660 potential
-  # connections against max_connections=200. Budget with these values:
-  #   api        (1 pod):   10 + 20 = 30
-  #   gateway (<=5 pods):    3 +  7 = 10 each -> 50
-  #   sync workers/monitor/scheduler (5 pods): 2 + 3 = 5 each -> 25
-  # Peak ~105 against max_connections=200 (see cnpg.parameters below),
-  # leaving headroom for jobs, replication, and superuser connections.
+  # DATABASE_POOL_SIZE / DATABASE_MAX_OVERFLOW.
+  #
+  # IMPORTANT: each pod builds TWO pools (the sync engine and the async
+  # engine in models/db/session.py share these settings), plus one connection
+  # for the dedicated health-check engine. So:
+  #   steady per pod  = size * 2 + 1
+  #   ceiling per pod = (size + maxOverflow) * 2 + 1
+  #
+  # The previous comment assumed 1 api pod and 5 worker pods; production
+  # actually runs api=2, gateway=5 (HPA max), workers/monitor/scheduler=8.
+  #
+  # Budget with the values below (api=2, gateway=5, worker=8 pods):
+  #   api     2 x (8+12):  steady  34, ceiling  82
+  #   gateway 5 x (6+14):  steady  65, ceiling 205
+  #   worker  8 x (2+4):   steady  40, ceiling 104
+  #   TOTAL:               steady 139, ceiling 391
+  #
+  # Steady state (139) fits inside max_connections=200 minus the 3 superuser
+  # reserved slots, with ~58 spare for jobs and psql. The absolute ceiling is
+  # deliberately oversubscribed: overflow connections are short-lived and
+  # never all claimed at once (measured production peak is ~65 total). The
+  # 2026-08-08 incident was per-pod starvation, not a global shortage -- one
+  # gateway pod exhausted its 10-connection ceiling while the server as a
+  # whole was 65/200. Raising the gateway ceiling from 10 to 20 per pod is
+  # what fixes it.
+  #
+  # Approval waits no longer hold connections: the approval paths used to
+  # keep one async-pool connection checked out per pending approval for the
+  # whole human wait (up to the workflow timeout), so ~15-20 concurrent
+  # pending approvals could exhaust a pod's async ceiling. They now release
+  # the session before waiting and poll with short-lived sessions, so this
+  # budget does not need headroom for pending approvals. The DB pool monitor
+  # (DB_MONITORING_ENABLED, default on) logs a WARNING when a pod's
+  # checked-out connections reach 80% of its ceiling.
+  #
+  # If you increase gateway maxReplicas or add components, re-check the
+  # steady total against max_connections (see cnpg.parameters below).
   pool:
     api:
-      size: 10
-      maxOverflow: 20
+      size: 8
+      maxOverflow: 12
     gateway:
-      size: 3
-      maxOverflow: 7
+      size: 6
+      maxOverflow: 14
     worker:
       size: 2
-      maxOverflow: 3
+      maxOverflow: 4
   # If true, deploys a PostgreSQL instance using CloudNativePG
   enabled: true
   # If external is true, uses an external PostgreSQL instance
   external: false
+  # When name is set, every pod reads DATABASE_URL from this Secret instead
+  # of building it from externalDatabase / cnpg values.
+  urlFromSecret:
+    name: ""
+    key: "database-url"
   # External database configuration (if external is true)
   externalDatabase:
     host: ""
@@ -293,6 +422,9 @@ database:
     user: ""
     password: ""
     database: ""
+    # Optional libpq sslmode (require, verify-ca, verify-full). Empty omits it.
+    # Prefer urlFromSecret for production so the URL is not stored in values.
+    sslMode: ""
   # CloudNativePG configuration (if enabled is true and external is false)
   cnpg:
     name: ""
@@ -340,16 +472,43 @@ database:
     # Monitoring - expose PostgreSQL metrics to Prometheus via PodMonitor
     monitoring:
       enablePodMonitor: false  # Set to true if Prometheus is deployed
-    # Continuous backup to object storage (WAL archiving + base backups)
+    # Continuous backup to object storage (WAL archiving + base backups).
+    # Enabling this turns on continuous WAL archiving on the Cluster and
+    # (via scheduled.enabled) a ScheduledBackup CR for periodic base backups.
+    # This replaces any deploy-time pg_dump: recovery point is determined by
+    # WAL archiving (typically < 5 min), not by deploy frequency.
     backup:
-      enabled: false  # Set to true in production
+      enabled: false  # Set to true in production and staging
       destinationPath: ""  # e.g. s3://bucket/cnpg/preloop-prod
+      # Endpoint for S3-compatible object stores (MinIO, R2, Ceph, ...).
+      # Leave empty for AWS S3.
+      endpointURL: ""
+      # Folder name inside destinationPath. Defaults to the cluster name.
+      # Must be changed (or destinationPath moved) when bootstrapping a new
+      # cluster that recovers from an existing backup, so the new cluster
+      # does not overwrite the archive it is restoring from.
+      serverName: ""
       retentionPolicy: "30d"
       walCompression: "gzip"
+      dataCompression: "gzip"  # Compression for base backup data files
       s3Credentials:
         secretName: ""  # K8s secret containing ACCESS_KEY_ID and SECRET_ACCESS_KEY
         accessKeyIdKey: "ACCESS_KEY_ID"
         secretAccessKeyKey: "SECRET_ACCESS_KEY"
+      # Scheduled base backups (CNPG ScheduledBackup CR)
+      scheduled:
+        enabled: true  # Effective only when backup.enabled is true
+        # CNPG cron format has SIX fields (seconds first):
+        # "sec min hour day month weekday" — default: daily at 02:00 UTC
+        schedule: "0 0 2 * * *"
+        # Take a first base backup as soon as the ScheduledBackup is created
+        immediate: true
+        suspend: false
+        # Owner of Backup objects created by the schedule: none|self|cluster.
+        # Default none: deleting/recreating the ScheduledBackup (helm upgrade
+        # with scheduled.enabled=false, or helm uninstall) must not garbage-
+        # collect the base backups. `self` would cascade-delete them.
+        backupOwnerReference: none
     # Slow query logging - enable to monitor query performance
     logging:
       enabled: false  # Set to true to enable slow query logging
@@ -391,6 +550,23 @@ sentry:
   enabled: false
   # The DSN for your Sentry project
   dsn: ""
+
+# OTLP export for gateway completions and MCP tool calls. Disabled by default.
+# Shared by the API and gateway deployments. Put ingest keys in headersSecret
+# (or otlp.headers, which is stored on the chart Secret).
+otlp:
+  enabled: false
+  endpoint: ""
+  protocol: http/protobuf
+  headers: ""
+  headersSecret:
+    name: ""
+    key: otlp-headers
+  resource:
+    serviceName: preloop
+    serviceNamespace: ""
+    deploymentEnvironment: ""
+  samplerRatio: 1.0
 
 # Performance profiling configuration
 profiling:

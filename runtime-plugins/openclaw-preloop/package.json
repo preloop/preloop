@@ -1,6 +1,6 @@
 {
   "name": "@preloop-ai/openclaw-plugin",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Preloop exposure and Agent Control plugin for OpenClaw",
   "license": "Apache-2.0",
   "type": "module",
@@ -38,6 +38,34 @@
     "build": {
       "openclawVersion": "2026.6.11",
       "pluginSdkVersion": "2026.6.11"
+    },
+    "install": {
+      "clawhubSpec": "@preloop-ai/openclaw-plugin",
+      "npmSpec": "@preloop-ai/openclaw-plugin",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.3.24-beta.2"
+    },
+    "release": {
+      "publishToClawHub": true,
+      "publishToNpm": true
+    },
+    "hooks": [
+      "before_tool_call"
+    ],
+    "capabilities": {
+      "tool_approval": true
+    },
+    "permissions": [
+      "read_config:plugins.entries.preloop-plugin.config",
+      "network:wss",
+      "network:https",
+      "agent:send_message",
+      "agent:session_status",
+      "agent:tool_approval"
+    ],
+    "configPath": "plugins.entries.preloop-plugin.config",
+    "verification": {
+      "command": "preloop-openclaw-plugin verify --config ~/.openclaw/openclaw.json"
     }
   },
   "devDependencies": {
@@ -55,5 +83,6 @@
   "homepage": "https://preloop.ai",
   "bugs": {
     "url": "https://github.com/preloop/preloop/issues"
-  }
+  },
+  "displayName": "Preloop"
 }

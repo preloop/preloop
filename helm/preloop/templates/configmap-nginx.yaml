@@ -10,6 +10,11 @@ data:
         listen 80;
         server_name _;
 
+        # Avatar uploads are PUT multipart up to 5 MB. nginx defaults to 1m and
+        # returns 413 HTML before the request reaches the API. Match ingress
+        # proxy-body-size so console-fronted /api/ traffic is not the bottleneck.
+        client_max_body_size {{ .Values.gateway.proxy.bodySize }};
+
         # Security headers
         add_header X-Frame-Options "SAMEORIGIN" always;
         add_header X-XSS-Protection "1; mode=block" always;
@@ -160,7 +165,23 @@ data:
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        # OpenAI-compatible model gateway endpoints
+        # Model gateway endpoints (OpenAI-, Anthropic- and Gemini-compatible).
+        #
+        # These three carry streaming LLM traffic and are the route class that
+        # most needs a long timeout, yet they were the only proxied routes
+        # without one — so they silently inherited nginx's 60s default. On a
+        # streaming completion the clock to the first byte is the model's
+        # thinking time: a short prompt answers in seconds, while a large one
+        # (a full diff, a repository's worth of context) can reason for minutes
+        # before emitting a single token. At 60s that connection is killed and
+        # the caller sees a 504 from the proxy — a failure the gateway never
+        # observes and cannot report, and one that looks intermittent because
+        # it depends entirely on prompt size.
+        #
+        # proxy_buffering must stay off: with buffering on nginx accumulates
+        # the token stream rather than relaying it, which both defeats the
+        # point of SSE for the client and pushes the observed first byte later,
+        # making any ceiling easier to hit.
         location ^~ /openai/ {
             proxy_pass http://{{ include "preloop.fullname" . }}-gateway:80;
             proxy_http_version 1.1;
@@ -168,9 +189,14 @@ data:
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_connect_timeout {{ .Values.gateway.proxy.connectTimeout }}s;
+            proxy_send_timeout {{ .Values.gateway.proxy.sendTimeout }}s;
+            proxy_read_timeout {{ .Values.gateway.proxy.readTimeout }}s;
+            proxy_buffering off;
+            proxy_cache off;
+            client_max_body_size {{ .Values.gateway.proxy.bodySize }};
         }
 
-        # Anthropic-compatible model gateway endpoints
         location ^~ /anthropic/ {
             proxy_pass http://{{ include "preloop.fullname" . }}-gateway:80;
             proxy_http_version 1.1;
@@ -178,9 +204,14 @@ data:
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_connect_timeout {{ .Values.gateway.proxy.connectTimeout }}s;
+            proxy_send_timeout {{ .Values.gateway.proxy.sendTimeout }}s;
+            proxy_read_timeout {{ .Values.gateway.proxy.readTimeout }}s;
+            proxy_buffering off;
+            proxy_cache off;
+            client_max_body_size {{ .Values.gateway.proxy.bodySize }};
         }
 
-        # Gemini-compatible model gateway endpoints
         location ^~ /gemini/ {
             proxy_pass http://{{ include "preloop.fullname" . }}-gateway:80;
             proxy_http_version 1.1;
@@ -188,6 +219,12 @@ data:
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_connect_timeout {{ .Values.gateway.proxy.connectTimeout }}s;
+            proxy_send_timeout {{ .Values.gateway.proxy.sendTimeout }}s;
+            proxy_read_timeout {{ .Values.gateway.proxy.readTimeout }}s;
+            proxy_buffering off;
+            proxy_cache off;
+            client_max_body_size {{ .Values.gateway.proxy.bodySize }};
         }
 
         # Static files with caching
@@ -212,21 +249,39 @@ data:
             try_files /resources/$1.html /index.html;
         }
 
-        # Top-level marketing pages: same prerender-first serving as /vs and
-        # /resources above. Without these they fell through to the SPA
-        # catch-all, so every one of them returned byte-identical home
-        # index.html — including its canonical pointing at "/", which told
-        # crawlers these pages *are* the homepage. Browsers were fine (the
-        # router renders client-side); crawlers and answer engines, which
-        # mostly do not execute JS, saw only the landing page.
-        #
-        # The equivalent rules already existed in the OSS docker nginx
-        # template; this config had drifted from it.
-        #
-        # Falls back to /index.html rather than 404 because these pages are
-        # brand-conditional: a self-hosted build does not prerender them, and
-        # the SPA can still route them.
-        location ~ ^/(about|pricing|privacy|terms|whatis-mcp|ai-act-readiness)/?$ {
+        # Blog index (/blog): prerender-first, same as /vs and /resources.
+        # Exact match, because the generic catch-all below would otherwise
+        # `try_files $uri $uri/` -> see the /blog DIRECTORY -> emit a 301 to
+        # /blog/ instead of serving blog/index.html. Only SaaS builds emit
+        # blog/index.html; self-hosted builds fall through to the SPA, whose
+        # /blog route redirects home.
+        location = /blog {
+            try_files /blog/index.html /index.html;
+        }
+
+        # RSS feed. Exact match so it wins over the /blog/<slug> regex below,
+        # which would otherwise not match "feed.xml" anyway (the dot) but would
+        # leave the feed to the catch-all with the wrong content type.
+        location = /blog/feed.xml {
+            # `types { }` empties the MIME map for this location. Without it
+            # mime.types already maps .xml -> text/xml, that match wins, and
+            # default_type (which only applies when nothing matched) is dead
+            # code. Verified in nginx:alpine: without the empty types block
+            # the feed is served as text/xml.
+            types { }
+            default_type application/rss+xml;
+            try_files /blog/feed.xml =404;
+        }
+
+        # Blog posts (/blog/<slug>): prerender-first, SPA fallback.
+        location ~ ^/blog/([a-z0-9][a-z0-9-]*)/?$ {
+            try_files /blog/$1.html /index.html;
+        }
+
+        # Prerendered top-level pages. Serve the .html the build emitted;
+        # otherwise the SPA. Not an allowlist: EE adds a page by dropping
+        # markdown, which Vite prerenders to /<slug>.html.
+        location ~ ^/([a-z0-9][a-z0-9-]*)$ {
             try_files /$1.html /index.html;
         }
 
@@ -242,10 +297,11 @@ data:
             add_header Expires "0";
         }
 
-        # Health check endpoint
-        location /health {
+        # Health check endpoint. `default_type` (not `add_header Content-Type`,
+        # which is dead code after `return`) sets the response MIME type.
+        location = /health {
             access_log off;
+            default_type text/plain;
             return 200 "healthy\n";
-            add_header Content-Type text/plain;
         }
     }

@@ -11,6 +11,66 @@ from preloop.services.model_pricing import estimate_ai_model_usage_cost
 
 logger = logging.getLogger(__name__)
 
+#: ``flow_execution.estimated_cost`` is ``Numeric(10, 4)``; quantize writes so
+#: comparisons against the stored value are stable.
+_ROLLUP_DECIMALS = 4
+
+
+def sync_execution_cost_rollup(db: Session, execution_id: str) -> bool:
+    """Recompute ``flow_execution.estimated_cost`` from attributed usage rows.
+
+    The rollup is written once when the execution finishes, but most gateway
+    usage rows are priced *later*: the live price lookup and the repricing
+    backfill fill in ``api_usage.estimated_cost`` after the fact (issue #209).
+    This helper re-derives the stored rollup with the same attribution rule
+    the metrics endpoint uses (``action_type='model_gateway'`` rows whose
+    ``flow_execution_id`` matches, replay-validation traffic excluded) so the
+    per-run number a user sees equals the sum of the usage rows behind it.
+
+    When no attributable row could be priced, the rollup is set to ``NULL``
+    ("unknown"), never a placeholder ``0.0`` that would read as "free" —
+    matching the metrics endpoint's semantics.
+
+    Executions without any attributed gateway rows are left untouched: their
+    rollup may come from the legacy log-parsing path, which this helper has
+    no basis to overwrite.
+
+    Args:
+        db: Database session.
+        execution_id: The flow execution whose rollup to refresh.
+
+    Returns:
+        True when the execution has attributed gateway usage and its rollup
+        was recomputed (even if the value was already in sync); False when
+        the execution does not exist or has no attributed gateway rows.
+    """
+    from preloop.models.crud import crud_api_usage, crud_flow_execution
+
+    execution = crud_flow_execution.get(db, id=execution_id)
+    if execution is None:
+        return False
+
+    usage = crud_api_usage.get_gateway_usage_for_execution(db, execution_id)
+    if not usage["api_requests"]:
+        return False
+
+    raw_cost = usage["estimated_cost"]
+    new_cost = None if raw_cost is None else round(float(raw_cost), _ROLLUP_DECIMALS)
+    old_cost = (
+        None if execution.estimated_cost is None else float(execution.estimated_cost)
+    )
+    if old_cost != new_cost:
+        logger.info(
+            "Syncing cost rollup for execution %s: %s -> %s",
+            execution_id,
+            old_cost,
+            new_cost,
+        )
+        execution.estimated_cost = new_cost
+        db.add(execution)
+        db.flush()
+    return True
+
 
 class ExecutionMetricsService:
     """Calculate metrics for flow executions including token usage and costs."""
@@ -29,8 +89,12 @@ class ExecutionMetricsService:
             - tool_calls: Number of MCP tool calls
             - api_requests: Number of API requests made
             - token_usage: Token usage from codex logs
-            - estimated_cost: Estimated cost based on token usage (0.0 if no pricing)
-            - has_pricing: Whether pricing is configured in AI model metadata
+            - estimated_cost: Estimated cost in USD, or None when no usage
+              could be priced (never a placeholder 0.0)
+            - has_pricing: Whether any request could be priced
+            - cost_is_partial: Whether the cost excludes unpriced requests
+            - unpriced_requests: Number of requests that could not be priced
+            - unpriced_tokens: Token volume behind the unpriced requests
         """
         from preloop.models.crud import crud_flow_execution
 
@@ -46,15 +110,27 @@ class ExecutionMetricsService:
         gateway_usage = self._get_gateway_usage(execution)
         api_requests = gateway_usage["api_requests"]
 
+        cost_is_partial = False
+        unpriced_requests = 0
+        unpriced_tokens = 0
         if api_requests > 0:
             token_usage = gateway_usage["token_usage"]
             estimated_cost = gateway_usage["estimated_cost"]
             has_pricing = gateway_usage["has_pricing"]
+            cost_is_partial = bool(gateway_usage.get("cost_is_partial"))
+            unpriced_requests = int(gateway_usage.get("unpriced_requests") or 0)
+            unpriced_tokens = int(gateway_usage.get("unpriced_tokens") or 0)
         else:
             # Fall back to legacy log parsing when the execution did not use
             # explicit gateway attribution.
             token_usage = self._parse_token_usage(execution)
             estimated_cost, has_pricing = self._calculate_cost(execution, token_usage)
+            if not has_pricing and token_usage.get("total_tokens"):
+                # Tokens were spent but no price resolved: report the volume
+                # rather than a $0.00 that the user would read as "free".
+                estimated_cost = None
+                unpriced_tokens = int(token_usage.get("total_tokens") or 0)
+                unpriced_requests = 1
 
         return {
             "tool_calls": tool_calls,
@@ -62,6 +138,9 @@ class ExecutionMetricsService:
             "token_usage": token_usage,
             "estimated_cost": estimated_cost,
             "has_pricing": has_pricing,
+            "cost_is_partial": cost_is_partial,
+            "unpriced_requests": unpriced_requests,
+            "unpriced_tokens": unpriced_tokens,
         }
 
     def _get_gateway_usage(self, execution: models.FlowExecution) -> Dict:

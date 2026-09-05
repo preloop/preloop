@@ -626,6 +626,8 @@ async def update_issue(
     priority: Optional[str] = None,
     assignee: Optional[str] = None,
     labels: Optional[List[str]] = None,
+    add_reaction: Optional[str] = None,
+    remove_reaction: Optional[str] = None,
 ) -> UpdateIssueResponse:
     """
     Handles the 'update_issue' tool call.
@@ -661,7 +663,8 @@ async def update_issue(
     # Filter out None values, as tracker clients might interpret None as "clear this field"
     update_data_for_tracker = issue_update.model_dump(exclude_unset=True)
 
-    if not update_data_for_tracker:
+    has_reactions = bool(add_reaction or remove_reaction)
+    if not update_data_for_tracker and not has_reactions:
         logger.info(
             f"No fields provided to update for issue {issue_obj.id}. Skipping tracker update."
         )
@@ -680,37 +683,73 @@ async def update_issue(
                 detail="Cannot update issue in tracker: Missing external identifier.",
             )
 
-        try:
-            # Determine the correct identifier for the tracker API call
-            # Prefer using the key (e.g., "owner/repo#1" for GitHub) over external_id
-            # since external_id might be the internal tracker ID (e.g., GitHub's numeric ID)
-            issue_repo_id = issue_obj.key if issue_obj.key else issue_obj.external_id
+        issue_repo_id = issue_obj.key if issue_obj.key else issue_obj.external_id
+        issue_number = (
+            issue_obj.key.split("#")[-1]
+            if issue_obj.key and "#" in str(issue_obj.key)
+            else issue_obj.external_id
+        )
 
-            logger.info(
-                f"Calling tracker client to update issue {issue_repo_id} with data: {update_data_for_tracker}"
-            )
-            await tracker_client.update_issue(
-                issue_repo_id, IssueUpdate(**update_data_for_tracker)
-            )
-            logger.info(
-                f"Successfully updated issue {issue_obj.external_id} via tracker client."
-            )
-        except NotImplementedError:
-            logger.warning(
-                f"Tracker type {tracker_client.tracker_type} does not support updating issues."
-            )
-            # Decide if this should be an error or just a warning
-            # raise HTTPException(status_code=501, detail="Issue updates not supported by this tracker type.")
-        except Exception as e:
-            logger.error(
-                f"Error updating issue {issue_obj.external_id} via tracker client: {e}",
-                exc_info=True,
-            )
-            # Depending on requirements, you might still update the local DB or raise an error
-            raise HTTPException(
-                status_code=502,
-                detail=f"Failed to update issue in the external tracker: {str(e)}",
-            )
+        if has_reactions:
+            try:
+                platform = (tracker_client.tracker_type or "").lower()
+                if platform == "github":
+                    if add_reaction:
+                        await tracker_client.add_issue_reaction(
+                            issue_number=str(issue_number),
+                            reaction=add_reaction,
+                        )
+                    if remove_reaction:
+                        await tracker_client.remove_issue_reaction(
+                            issue_number=str(issue_number),
+                            reaction=remove_reaction,
+                        )
+                elif platform == "gitlab":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Issue reactions are not supported on GitLab. Use update_pull_request on the merge request instead.",
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Issue reactions are not supported on {platform}.",
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(
+                    f"Error updating issue reaction on {issue_obj.external_id}: {e}",
+                    exc_info=True,
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to update issue reaction: {str(e)}",
+                )
+
+        if update_data_for_tracker:
+            try:
+                logger.info(
+                    f"Calling tracker client to update issue {issue_repo_id} with data: {update_data_for_tracker}"
+                )
+                await tracker_client.update_issue(
+                    issue_repo_id, IssueUpdate(**update_data_for_tracker)
+                )
+                logger.info(
+                    f"Successfully updated issue {issue_obj.external_id} via tracker client."
+                )
+            except NotImplementedError:
+                logger.warning(
+                    f"Tracker type {tracker_client.tracker_type} does not support updating issues."
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error updating issue {issue_obj.external_id} via tracker client: {e}",
+                    exc_info=True,
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to update issue in the external tracker: {str(e)}",
+                )
 
         # --- Update Local DB ---
         # Prepare data for local DB update using the IssueUpdate model
@@ -2100,6 +2139,10 @@ async def update_pull_request(
         # Handle reactions
         reaction_added = False
         reaction_removed = False
+        # True when the reaction we were asked to remove was already absent.
+        # Removal is idempotent: "not there" is the desired end state, so we
+        # must NOT report it as a failure or the agent will retry forever.
+        reaction_already_absent = False
         reaction_errors = []
 
         if add_reaction or remove_reaction:
@@ -2139,7 +2182,9 @@ async def update_pull_request(
                             )
                             reaction_removed = True
                         else:
-                            # Reaction not found - not an error, but note it
+                            # Reaction not found - not an error. Removal is
+                            # idempotent, so treat "already absent" as success.
+                            reaction_already_absent = True
                             logger.info(
                                 f"Reaction '{remove_reaction}' not found on PR {pr_number} "
                                 "(may have been already removed or never added)"
@@ -2202,6 +2247,11 @@ async def update_pull_request(
         if remove_reaction:
             if reaction_removed:
                 actions_taken.append(f"removed reaction ({remove_reaction})")
+            elif reaction_already_absent:
+                # Idempotent no-op: the end state the caller asked for already
+                # holds. Reporting this as a failure made agents retry the
+                # same call until the loop guard killed the execution.
+                actions_taken.append(f"reaction already absent ({remove_reaction})")
             else:
                 actions_failed.append(f"remove reaction ({remove_reaction})")
 
@@ -2241,6 +2291,33 @@ async def update_pull_request(
         raise HTTPException(
             status_code=502,
             detail=f"Failed to update pull request/merge request: {str(e)}",
+        )
+
+
+def _record_opened_pr_on_execution(
+    db, *, url: Optional[str], source_branch: Optional[str]
+) -> None:
+    """Persist the opened PR on the in-flight execution for later resume."""
+
+    if not url:
+        return
+    try:
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+        from preloop.services.flow_pr_binding import record_opened_pr
+
+        user_context = get_current_user_context()
+        if not user_context or not user_context.flow_execution_id:
+            return
+        record_opened_pr(
+            db,
+            user_context.flow_execution_id,
+            url,
+            source_branch,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to record opened PR URL on the current flow execution",
+            exc_info=True,
         )
 
 
@@ -2353,7 +2430,7 @@ async def create_pull_request(
                 milestone=milestone,
             )
 
-            return CreatePullRequestResponse(
+            response = CreatePullRequestResponse(
                 pull_request_id=str(result["id"]),
                 number=result["number"],
                 status="created",
@@ -2363,6 +2440,10 @@ async def create_pull_request(
                 target_branch=target_branch,
                 is_draft=result.get("is_draft", False),
             )
+            _record_opened_pr_on_execution(
+                db, url=result["url"], source_branch=source_branch
+            )
+            return response
 
         else:  # GitLab
             logger.info(
@@ -2458,7 +2539,7 @@ async def create_pull_request(
             if warnings:
                 message += f". Note: {' '.join(warnings)}"
 
-            return CreatePullRequestResponse(
+            response = CreatePullRequestResponse(
                 pull_request_id=str(result["id"]),
                 number=result["iid"],
                 status="created",
@@ -2468,6 +2549,10 @@ async def create_pull_request(
                 target_branch=target_branch,
                 is_draft=result.get("work_in_progress", False),
             )
+            _record_opened_pr_on_execution(
+                db, url=result["url"], source_branch=source_branch
+            )
+            return response
 
     except HTTPException:
         raise
@@ -2480,6 +2565,20 @@ async def create_pull_request(
             status_code=502,
             detail=f"Failed to create pull request/merge request: {str(e)}",
         )
+
+
+# Markers indicating an expected client-class failure (comment/thread does not
+# exist or its GraphQL node could not be resolved) rather than a tracker/API
+# failure. Matched case-insensitively against exception messages.
+_EXPECTED_NOT_FOUND_MARKERS = (
+    "not found",
+    "could not resolve",
+)
+
+# HTTP-status-style token matched with word boundaries so embedded numeric ids
+# or echoed response bodies containing "404" as a substring are never misread
+# as an HTTP 404 status.
+_HTTP_404_TOKEN_RE = re.compile(r"\b404\b")
 
 
 async def update_comment(
@@ -2782,38 +2881,43 @@ async def update_comment(
                     )
 
                 # GitHub's resolve_review_thread requires the thread's GraphQL node_id
-                # (format: "PRRT_..."), not a comment ID (format: "PRRC_...").
-                if not thread_id:
-                    # Check if comment_id looks like a thread ID
-                    if comment_id.startswith("PRRT_"):
-                        # User passed thread_id as comment_id, use it
-                        thread_id = comment_id
+                # (format: "PRRT_..."), not a comment ID. Numeric REST comment ids
+                # (or comment node ids) must be mapped to their containing thread
+                # node id first, otherwise GraphQL fails with "Could not resolve to
+                # a node with the global id of '<numeric-id>'".
+                if not (thread_id and thread_id.startswith("PRRT_")):
+                    candidate_comment_id = thread_id or comment_id
+                    if candidate_comment_id.startswith("PRRT_"):
+                        # User passed the thread node id as comment_id, use it
+                        thread_id = candidate_comment_id
                         logger.info(
                             "Using comment_id as thread_id since it has PRRT_ prefix"
                         )
                     else:
-                        # Try to look up the thread_id from the comment_id
+                        # Look up the thread node id from the comment id
                         logger.info(
-                            f"Attempting to look up thread_id for comment {comment_id}"
+                            f"Attempting to look up thread_id for comment "
+                            f"{candidate_comment_id}"
                         )
                         try:
                             looked_up_thread_id = (
                                 await tracker_client.get_thread_id_for_comment(
                                     pr_number=pr_mr_number,
-                                    comment_id=comment_id,
+                                    comment_id=candidate_comment_id,
                                 )
                             )
                             if looked_up_thread_id:
                                 thread_id = looked_up_thread_id
                                 logger.info(
-                                    f"Found thread_id {thread_id} for comment {comment_id}"
+                                    f"Found thread_id {thread_id} for comment "
+                                    f"{candidate_comment_id}"
                                 )
                             else:
                                 raise HTTPException(
                                     status_code=400,
                                     detail=(
                                         "Could not find thread_id for the given comment_id. "
-                                        f"The comment_id '{comment_id}' may not be a review comment. "
+                                        f"The comment_id '{candidate_comment_id}' may not be a review comment. "
                                         "Thread resolution only works for review comments (inline diff comments). "
                                         "For issue comments, resolution is not supported."
                                     ),
@@ -2925,6 +3029,20 @@ async def update_comment(
     except HTTPException:
         raise
     except Exception as e:
+        error_msg = str(e).lower()
+        is_expected_not_found = (
+            any(marker in error_msg for marker in _EXPECTED_NOT_FOUND_MARKERS)
+            or _HTTP_404_TOKEN_RE.search(error_msg) is not None
+        )
+        if is_expected_not_found:
+            # Expected client-class failure (stale/wrong comment id, unresolvable
+            # GraphQL node): log at warning without exc_info so Sentry/GlitchTip
+            # does not promote it to an exception event.
+            logger.warning(f"Comment {comment_id} not found for {target}: {e}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Comment {comment_id} not found: {str(e)}",
+            ) from e
         logger.error(
             f"Error updating comment {comment_id} for {target}: {e}",
             exc_info=True,

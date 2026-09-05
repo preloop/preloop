@@ -15,6 +15,11 @@ from preloop.schemas.ai_model import AIModelGatewayUsageSummaryResponse
 from preloop.schemas.gateway_usage import (
     AccountGatewayUsageSearchResponse,
     AccountGatewayUsageSummaryResponse,
+    AccountRateLimitReportResponse,
+    RateLimitByModel,
+    RateLimitBySession,
+    RateLimitSnapshotItem,
+    RateLimitTotals,
     FlowGatewayUsageSummaryResponse,
     GatewayBudgetSummary,
     GatewayTokenUsage,
@@ -26,6 +31,38 @@ from preloop.schemas.gateway_usage import (
     GatewayUsageBySession,
 )
 from preloop.services.tool_usage_stats import ToolUsageStatsService
+
+#: Window every usage report falls back to when the caller names no dates.
+DEFAULT_USAGE_WINDOW_DAYS = 30
+
+
+def normalize_usage_period(
+    start_date: Optional[datetime], end_date: Optional[datetime]
+) -> tuple[datetime, datetime]:
+    """Return the reporting window, defaulting to the last 30 days in UTC.
+
+    Shared so every usage answer for the same page covers the same period:
+    the batch overview and the per-model detail summary must not disagree
+    about what "this window" means.
+
+    Args:
+        start_date: Requested lower bound, naive values read as UTC.
+        end_date: Requested upper bound, naive values read as UTC.
+
+    Returns:
+        Timezone-aware ``(start_date, end_date)``.
+    """
+    if end_date is None:
+        end_date = datetime.now(timezone.utc)
+    elif end_date.tzinfo is None:
+        end_date = end_date.replace(tzinfo=timezone.utc)
+
+    if start_date is None:
+        start_date = end_date - timedelta(days=DEFAULT_USAGE_WINDOW_DAYS)
+    elif start_date.tzinfo is None:
+        start_date = start_date.replace(tzinfo=timezone.utc)
+
+    return start_date, end_date
 
 
 class ModelGatewayUsageService:
@@ -377,21 +414,59 @@ class ModelGatewayUsageService:
             items=[self._search_row_to_schema(item) for item in results["items"]],
         )
 
+    def get_account_rate_limit_report(
+        self,
+        *,
+        account: Account,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        runtime_principal_id: Optional[str] = None,
+    ) -> AccountRateLimitReportResponse:
+        """Build the account rate-limit telemetry and headroom report (#136).
+
+        Aggregates observed upstream 429s (count, provider-advised blocked
+        time, subtype split, per-model and per-session breakdowns) over the
+        window, plus the most recent rate-limit header snapshot per
+        provider/model as observed on real upstream responses. Snapshots are
+        not window-filtered: the latest observation is the headroom signal
+        regardless of when it happened, and it carries its own timestamp.
+
+        Args:
+            account: The account whose gateway traffic is reported.
+            start_date: Inclusive window start; defaults to 30 days back.
+            end_date: Exclusive window end; defaults to now.
+            runtime_principal_id: Restrict the 429 aggregation to one
+                principal (snapshots stay account-wide).
+
+        Returns:
+            The report response.
+        """
+        start_date, end_date = self._normalize_period(start_date, end_date)
+        summary = crud_api_usage.get_rate_limit_summary(
+            self.db,
+            account_id=str(account.id),
+            start_date=start_date,
+            end_date=end_date,
+            runtime_principal_id=runtime_principal_id,
+        )
+        snapshots = crud_api_usage.get_latest_rate_limit_snapshots(
+            self.db,
+            account_id=str(account.id),
+        )
+        return AccountRateLimitReportResponse(
+            period_start=start_date,
+            period_end=end_date,
+            totals=RateLimitTotals(**summary["totals"]),
+            by_model=[RateLimitByModel(**row) for row in summary["by_model"]],
+            by_session=[RateLimitBySession(**row) for row in summary["by_session"]],
+            latest_snapshots=[RateLimitSnapshotItem(**row) for row in snapshots],
+        )
+
     @staticmethod
     def _normalize_period(
         start_date: Optional[datetime], end_date: Optional[datetime]
     ) -> tuple[datetime, datetime]:
-        if end_date is None:
-            end_date = datetime.now(timezone.utc)
-        elif end_date.tzinfo is None:
-            end_date = end_date.replace(tzinfo=timezone.utc)
-
-        if start_date is None:
-            start_date = end_date - timedelta(days=30)
-        elif start_date.tzinfo is None:
-            start_date = start_date.replace(tzinfo=timezone.utc)
-
-        return start_date, end_date
+        return normalize_usage_period(start_date, end_date)
 
     @staticmethod
     def _normalize_budget_config(config):
@@ -424,6 +499,9 @@ class ModelGatewayUsageService:
                 total_tokens=row["total_tokens"],
             ),
             estimated_cost=row["estimated_cost"],
+            unpriced_request_count=row.get("unpriced_request_count") or 0,
+            zero_priced_request_count=row.get("zero_priced_request_count") or 0,
+            failed_request_count=row.get("failed_request_count") or 0,
             last_request_at=row.get("last_request_at"),
         )
 

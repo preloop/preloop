@@ -52,10 +52,12 @@ class TestGenerateApprovalSummary:
 
     async def test_litellm_success_returns_summary(self, mock_db):
         model = SimpleNamespace(
+            id="model-1",
             provider_name="openai",
             model_identifier="gpt-4o-mini",
             api_key="sk-test",
             api_endpoint=None,
+            credentials_secret=None,
         )
         mock_response = MagicMock()
         mock_response.choices = [
@@ -88,10 +90,12 @@ class TestGenerateApprovalSummary:
 
     async def test_litellm_timeout_returns_none(self, mock_db):
         model = SimpleNamespace(
+            id="model-1",
             provider_name="openai",
             model_identifier="gpt-4o-mini",
             api_key="sk-test",
             api_endpoint=None,
+            credentials_secret=None,
         )
 
         async def _timeout_wait_for(awaitable, timeout):
@@ -121,10 +125,12 @@ class TestGenerateApprovalSummary:
 
     async def test_litellm_failure_returns_none(self, mock_db):
         model = SimpleNamespace(
+            id="model-1",
             provider_name="openai",
             model_identifier="gpt-4o-mini",
             api_key="sk-test",
             api_endpoint=None,
+            credentials_secret=None,
         )
 
         with (
@@ -142,3 +148,51 @@ class TestGenerateApprovalSummary:
             )
 
         assert summary is None
+
+    async def test_credentials_secret_id_resolves(self, mock_db):
+        """Model with credentials_secret_id (no plaintext api_key) resolves via secret service."""
+        from types import SimpleNamespace
+
+        # Model with credentials_secret (no plaintext api_key column)
+        model = SimpleNamespace(
+            provider_name="openai",
+            model_identifier="gpt-4o-mini",
+            api_endpoint=None,
+            credentials_secret_id="secret-uuid",
+        )
+
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(message=MagicMock(content="Allow force-push?"))
+        ]
+
+        with (
+            patch(
+                "preloop.services.approval_summary.crud_ai_model.get_default_active_model",
+                return_value=model,
+            ),
+            patch(
+                "preloop.services.model_credentials.get_secret_service"
+            ) as mock_secret_service,
+            patch("litellm.completion", return_value=mock_response) as mock_completion,
+        ):
+            # Mock the secret service to return resolved credentials
+            resolved_creds = SimpleNamespace(
+                credential_type="api_key",
+                backend_type="vault",
+                value="sk-resolved-from-vault",
+            )
+            mock_secret_service.return_value.resolve_ai_model_credentials.return_value = resolved_creds
+
+            summary = await generate_approval_summary(
+                mock_db,
+                account_id="acct-1",
+                tool_name="force_push",
+                tool_args={"branch": "main"},
+            )
+
+        assert summary == "Allow force-push?"
+
+        # Verify litellm.completion was called with the resolved key from vault
+        call_kwargs = mock_completion.call_args.kwargs
+        assert call_kwargs["api_key"] == "sk-resolved-from-vault"

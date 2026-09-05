@@ -6,6 +6,7 @@ import landingStyles from '../../styles/landing.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import './../../components/news-capsule';
 import './../../components/ide-setup-tabs';
+import './../../components/app-footer';
 import { trackGoal } from '../../services/web-analytics';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/carousel/carousel.js';
@@ -117,6 +118,7 @@ export class LandingView extends LitElement {
   ];
   @state() private _featureSlides: FeatureSlide[] = [];
   @state() private _faqs: Array<{ q: string; a: string }> = [];
+  @state() private _legalDisclaimer = '';
   @state() private _heroTitle = '';
   @state() private _heroLead = '';
   @state() private _ctaPrimary = '';
@@ -623,7 +625,7 @@ export class LandingView extends LitElement {
 
     // Read FAQs from light DOM slots
     const faqs: Array<{ q: string; a: string }> = [];
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40; i++) {
       const faqWrapper = children.find(
         (el) => el.getAttribute('slot') === `faq-${i}`
       ) as HTMLElement | undefined;
@@ -642,6 +644,13 @@ export class LandingView extends LitElement {
 
     if (faqs.length > 0) {
       this._faqs = faqs;
+    }
+
+    const legalDisclaimerSlot = children.find(
+      (el) => el.getAttribute('slot') === 'legal-disclaimer'
+    );
+    if (legalDisclaimerSlot?.textContent?.trim()) {
+      this._legalDisclaimer = legalDisclaimerSlot.textContent.trim();
     }
 
     // Read get-started content from light DOM slots
@@ -836,6 +845,7 @@ export class LandingView extends LitElement {
 
     // Load FAQs with safe defaults
     this._faqs = content.faqs || [];
+    this._legalDisclaimer = content.legal_disclaimer || '';
 
     // Load get-started content with safe defaults
     const getStarted = content.get_started || {};
@@ -1199,26 +1209,6 @@ export class LandingView extends LitElement {
                             : ''
                         }
                       </div>
-                      ${
-                        this._ctaSecondary
-                          ? html`<div class="hero-secondary-cta">
-                              <span class="hero-secondary-text"
-                                >Want a guided tour first?</span
-                              >
-                              <sl-button
-                                variant="default"
-                                size="large"
-                                href=${this._ctaSecondaryUrl}
-                                target=${
-                                  this._ctaSecondaryUrl.startsWith('http')
-                                    ? '_blank'
-                                    : '_self'
-                                }
-                                >${this._ctaSecondary}</sl-button
-                              >
-                            </div>`
-                          : ''
-                      }
                     `
                   : ''
               }
@@ -1294,6 +1284,28 @@ export class LandingView extends LitElement {
                   : ''
             }
           </div>
+          ${
+            this._heroInstall && this._ctaSecondary
+              ? html`<div class="section-container hero-secondary-cta">
+                  <span class="hero-secondary-text"
+                    >Want a guided tour first?</span
+                  >
+                  <sl-button
+                    variant="default"
+                    size="large"
+                    href=${this._ctaSecondaryUrl}
+                    target=${
+                      this._ctaSecondaryUrl.startsWith('http')
+                        ? '_blank'
+                        : '_self'
+                    }
+                    @click=${this._handleSecondaryCta}
+                    data-track="cta_demo_hero"
+                    >${this._ctaSecondary}</sl-button
+                  >
+                </div>`
+              : ''
+          }
         </section>
 
         <section
@@ -1843,7 +1855,7 @@ export class LandingView extends LitElement {
             : ''
         }
       </main>
-      <app-footer></app-footer>
+      <app-footer .legalDisclaimer=${this._legalDisclaimer}></app-footer>
 
       <sl-dialog
         class="lightbox-dialog"

@@ -13,13 +13,15 @@ import {
   getAllTools,
   getMCPServers,
   getAccountAgents,
+  previewFlowSchedule,
 } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import { parseUTCDate, formatLocalDateTime } from '../../utils/date';
+import { executionDurationText } from '../../utils/execution';
 import {
-  parseUTCDate,
-  formatLocalDateTime,
-  calculateDuration,
-} from '../../utils/date';
+  executionSubjectCss,
+  renderExecutionSubject,
+} from '../../utils/execution-subject';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
@@ -40,61 +42,8 @@ import '../../components/resource-actions.ts';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { getTrackerEventOptions } from '../../constants/tracker-event-types';
-
-interface GitCloneRepository {
-  tracker_id: string;
-  repository_url?: string;
-  clone_path: string;
-  branch?: string;
-}
-
-interface GitCloneConfig {
-  enabled: boolean;
-  repositories?: GitCloneRepository[];
-  git_user_name?: string;
-  git_user_email?: string;
-  source_branch?: string;
-  target_branch?: string;
-  create_pull_request?: boolean;
-  pull_request_title?: string;
-  pull_request_description?: string;
-}
-
-interface CustomCommands {
-  enabled: boolean;
-  commands?: string[];
-}
-
-interface WebhookConfig {
-  webhook_secret: string;
-}
-
-interface Flow {
-  id?: string;
-  name: string;
-  description?: string;
-  icon?: string;
-  trigger_event_source?: string;
-  // Event types that trigger this flow (e.g., ['pull_request_created', 'pull_request_updated'])
-  trigger_event_types?: string[];
-  trigger_organization_id?: string;
-  // Project IDs that can trigger this flow (empty = all projects in org)
-  trigger_project_ids?: string[];
-  trigger_config?: any;
-  webhook_config?: WebhookConfig;
-  ai_model_id?: string;
-  prompt_template?: string;
-  allowed_mcp_servers?: string[];
-  allowed_mcp_tools?: { server_name: string; tool_name: string }[];
-  git_clone_config?: GitCloneConfig;
-  custom_commands?: CustomCommands;
-  max_iterations?: number;
-  max_budget?: number;
-  is_preset?: boolean;
-  is_enabled?: boolean;
-  agent_type?: string;
-  agent_config?: any;
-}
+import type { Flow } from '../../types';
+import { consoleDialogStyles } from '../../styles/console-dialog';
 
 @customElement('flow-view')
 export class FlowView extends LitElement {
@@ -122,13 +71,27 @@ export class FlowView extends LitElement {
   }
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
+    unsafeCSS(executionSubjectCss),
     css`
       :host {
         display: block;
         padding: var(--sl-spacing-large);
         max-width: 80rem;
         margin: 0 auto;
+      }
+      /* The subject column takes the slack: fixed layout plus a zero max
+         width makes the cell shrink to its share and ellipsise inside it,
+         instead of a long repo name widening the whole table. */
+      .executions-table {
+        table-layout: fixed;
+      }
+      .executions-table .subject-cell {
+        max-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       /* Flow-specific styles */
       .form-grid {
@@ -241,7 +204,11 @@ export class FlowView extends LitElement {
   private isAdmin = false;
 
   @state()
-  private triggerType: 'webhook' | 'tracker' = 'webhook';
+  private triggerType: 'webhook' | 'tracker' | 'schedule' = 'webhook';
+
+  /** Next run times (ISO strings) for schedule-triggered flows. */
+  @state()
+  private scheduleNextRuns: string[] = [];
 
   @state()
   private isPollingOrganizations = false;
@@ -310,7 +277,13 @@ export class FlowView extends LitElement {
       this.flow = await getFlow(this.flowId);
 
       this.triggerType =
-        this.flow.trigger_event_source === 'webhook' ? 'webhook' : 'tracker';
+        this.flow.trigger_event_source === 'webhook'
+          ? 'webhook'
+          : this.flow.trigger_event_source === 'schedule'
+            ? 'schedule'
+            : 'tracker';
+
+      void this.loadScheduleNextRuns();
 
       const allExecutions = await import('../../api').then((m) =>
         m.getFlowExecutions({ flowId: this.flowId, limit: 10 })
@@ -629,13 +602,7 @@ export class FlowView extends LitElement {
               }
 
               <strong>Trigger:</strong>
-              <span>
-                ${
-                  this.flow.trigger_event_source === 'webhook'
-                    ? 'Webhook'
-                    : `${this.getTrackerName(this.flow.trigger_event_source)} - ${this.flow.trigger_event_types?.join(', ') || 'No events'}`
-                }
-              </span>
+              <span>${this.getTriggerSummary()}</span>
 
               ${
                 this.flow.trigger_organization_id
@@ -704,6 +671,7 @@ ${this.flow.prompt_template}</pre>
                 `
               : ''
           }
+          ${this.renderScheduleCard()}
           ${
             this.flow.trigger_event_source === 'webhook' &&
             this.flow.webhook_config
@@ -864,48 +832,38 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
               this.recentExecutions.length === 0
                 ? html`<p>No executions yet. Click "Test Run" to start one.</p>`
                 : html`
-                    <table style="width: 100%; border-collapse: collapse;">
+                    <table class="styled-table executions-table">
                       <thead>
                         <tr>
-                          <th style="text-align: left; padding: 8px;">
-                            Status
-                          </th>
-                          <th style="text-align: left; padding: 8px;">
-                            Started
-                          </th>
-                          <th style="text-align: left; padding: 8px;">
-                            Duration
-                          </th>
-                          <th style="text-align: left; padding: 8px;">
-                            Actions
-                          </th>
+                          <th>Subject</th>
+                          <th>Status</th>
+                          <th>Started</th>
+                          <th>Duration</th>
+                          <th>Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         ${this.recentExecutions.map(
                           (exec) => html`
                             <tr>
-                              <td style="padding: 8px;">
+                              <!-- Every row on this page is the same flow, so
+                                   the subject is the only column that says
+                                   which run is which. -->
+                              <td class="subject-cell">
+                                ${renderExecutionSubject(exec)}
+                              </td>
+                              <td>
                                 <sl-badge
+                                  class="chip"
+                                  pill
                                   variant=${this.getStatusVariant(exec.status)}
                                 >
                                   ${exec.status}
                                 </sl-badge>
                               </td>
-                              <td style="padding: 8px;">
-                                ${formatLocalDateTime(exec.start_time)}
-                              </td>
-                              <td style="padding: 8px;">
-                                ${
-                                  exec.end_time
-                                    ? calculateDuration(
-                                        exec.start_time,
-                                        exec.end_time
-                                      )
-                                    : 'Running...'
-                                }
-                              </td>
-                              <td style="padding: 8px;">
+                              <td>${formatLocalDateTime(exec.start_time)}</td>
+                              <td>${executionDurationText(exec) || 'n/a'}</td>
+                              <td>
                                 <sl-button
                                   size="small"
                                   href="/console/flows/executions/${exec.id}"
@@ -924,6 +882,124 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
           </sl-card>
         </div>
       </div>
+    `;
+  }
+
+  /** One-line trigger summary for the flow details grid. */
+  getTriggerSummary(): string {
+    if (this.flow.trigger_event_source === 'webhook') {
+      return 'Webhook';
+    }
+    if (this.flow.trigger_event_source === 'schedule') {
+      return this.flow.schedule_state?.description || 'Schedule';
+    }
+    return `${this.getTrackerName(this.flow.trigger_event_source)} - ${
+      this.flow.trigger_event_types?.join(', ') || 'No events'
+    }`;
+  }
+
+  /** Fetch the next few run times for a schedule-triggered flow. */
+  private async loadScheduleNextRuns() {
+    if (
+      this.flow?.trigger_event_source !== 'schedule' ||
+      !this.flow.schedule_config
+    ) {
+      this.scheduleNextRuns = [];
+      return;
+    }
+    try {
+      const preview = await previewFlowSchedule(this.flow.schedule_config);
+      this.scheduleNextRuns = preview.next_run_times.slice(0, 3);
+    } catch (error) {
+      console.error('Failed to preview flow schedule:', error);
+      this.scheduleNextRuns = [];
+    }
+  }
+
+  /**
+   * Schedule summary card for schedule-triggered flows: human-readable
+   * cadence, paused state (paused flow = schedule suspended), the next
+   * runs, and the status of the most recent run.
+   */
+  renderScheduleCard() {
+    if (
+      this.flow.trigger_event_source !== 'schedule' ||
+      !this.flow.schedule_config
+    ) {
+      return '';
+    }
+    const schedule = this.flow.schedule_state;
+    const paused = !this.flow.is_enabled;
+    const lastRun = this.recentExecutions[0];
+    return html`
+      <sl-card>
+        <div slot="header">
+          <sl-icon name="clock"></sl-icon>
+          Schedule
+        </div>
+        <div
+          style="display: grid; grid-template-columns: 150px 1fr; gap: var(--sl-spacing-medium);"
+        >
+          <strong>Runs:</strong>
+          <span>${schedule?.description || 'Schedule'}</span>
+
+          <strong>Status:</strong>
+          <span>
+            ${
+              paused
+                ? html`
+                    <sl-badge variant="warning">Paused</sl-badge>
+                    <span
+                      style="color: var(--sl-color-neutral-600); margin-left: var(--sl-spacing-x-small);"
+                    >
+                      Schedule suspended — enable the flow to resume runs.
+                    </span>
+                  `
+                : html`<sl-badge variant="success">Active</sl-badge>`
+            }
+          </span>
+
+          ${
+            !paused
+              ? html`
+                  <strong>Next runs:</strong>
+                  <span>
+                    ${
+                      this.scheduleNextRuns.length > 0
+                        ? html`
+                            <ol
+                              style="margin: 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small);"
+                            >
+                              ${this.scheduleNextRuns.map(
+                                (t) => html`<li>${formatLocalDateTime(t)}</li>`
+                              )}
+                            </ol>
+                          `
+                        : 'No upcoming runs'
+                    }
+                  </span>
+                `
+              : ''
+          }
+          ${
+            lastRun
+              ? html`
+                  <strong>Last run:</strong>
+                  <span>
+                    <sl-badge variant=${this.getStatusVariant(lastRun.status)}>
+                      ${lastRun.status}
+                    </sl-badge>
+                    <span
+                      style="color: var(--sl-color-neutral-600); margin-left: var(--sl-spacing-x-small);"
+                    >
+                      ${formatLocalDateTime(lastRun.start_time)}
+                    </span>
+                  </span>
+                `
+              : ''
+          }
+        </div>
+      </sl-card>
     `;
   }
 
@@ -983,14 +1059,16 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
       // Toggle the enabled state
       const newEnabledState = !this.flow.is_enabled;
 
-      // Update the flow on the backend
-      await updateFlow(this.flowId, {
+      // Update the flow on the backend; use the response so computed
+      // fields (e.g. schedule_state for scheduled flows) stay fresh.
+      const updated = await updateFlow(this.flowId, {
         is_enabled: newEnabledState,
       });
 
       // Update local state
       this.flow = {
         ...this.flow,
+        ...(updated && typeof updated === 'object' ? updated : {}),
         is_enabled: newEnabledState,
       };
 
@@ -1175,9 +1253,11 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
       'trigger_project_ids',
       'trigger_config',
       'webhook_config',
+      'schedule_config',
       'ai_model_id',
       'agent_type',
       'git_clone_config',
+      'notifications',
       'custom_commands',
       'max_iterations',
       'max_budget',
@@ -2056,7 +2136,11 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
                   <sl-input
                     label="Labels (comma-separated)"
                     placeholder="e.g., bug, critical, backend"
-                    .value=${this.flow.trigger_config?.labels?.join(', ') || ''}
+                    .value=${
+                      (
+                        this.flow.trigger_config?.labels as string[] | undefined
+                      )?.join(', ') || ''
+                    }
                     @sl-input=${(e: any) => {
                       if (!this.flow.trigger_config)
                         this.flow.trigger_config = {};

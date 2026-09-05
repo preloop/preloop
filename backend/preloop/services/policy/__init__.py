@@ -11,9 +11,13 @@ from preloop.services.policy.schema import (
     ApprovalWorkflowType,
     ConditionAction,
     DefaultsDefinition,
+    DetectorTimeoutFailMode,
     MCPServerAuthType,
     MCPServerDefinition,
     MCPServerTransport,
+    ModelIODetectors,
+    ModelIORule,
+    ModelIOTarget,
     PolicyDiffItem,
     PolicyDiffResult,
     PolicyDocument,
@@ -26,6 +30,7 @@ from preloop.services.policy.schema import (
     ToolDefinition,
     ToolSource,
     UnknownToolsPolicy,
+    is_known_tool_source,
 )
 from preloop.services.policy.loader import (
     PolicyApplier,
@@ -53,8 +58,14 @@ __all__ = [
     # Tools
     "ToolDefinition",
     "ToolSource",
+    "is_known_tool_source",
     "ToolCondition",
     "ConditionAction",
+    # Model I/O
+    "ModelIORule",
+    "ModelIOTarget",
+    "ModelIODetectors",
+    "DetectorTimeoutFailMode",
     # Defaults
     "DefaultsDefinition",
     "UnknownToolsPolicy",

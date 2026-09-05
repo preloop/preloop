@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from preloop.models.models.flow_execution_log import FlowExecutionLog
+from preloop.utils.secret_scrubbing import scrub_secrets, scrub_structure
 from .base import CRUDBase
 
 
@@ -64,6 +65,10 @@ class CRUDFlowExecutionLog(CRUDBase[FlowExecutionLog]):
         """Append a log entry.
 
         Moved from crud_flow_execution.append_log for better grouping.
+
+        Both the message and the metadata payload are scrubbed of known
+        credential formats here. This is the last gate before persistence, so
+        it also covers producers that did not scrub at the source (issue #173).
         """
         payload = log_data.get("payload") or {}
         message = (
@@ -74,8 +79,8 @@ class CRUDFlowExecutionLog(CRUDBase[FlowExecutionLog]):
         log_entry = FlowExecutionLog(
             execution_id=execution_id,
             log_type=log_data.get("type", "log"),
-            message=message,
-            metadata_=metadata if metadata else None,
+            message=scrub_secrets(message),
+            metadata_=scrub_structure(metadata) if metadata else None,
         )
         db.add(log_entry)
         if commit:

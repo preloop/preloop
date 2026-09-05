@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException, status
 
 from preloop.api.endpoints import tools
+from preloop.tools.native_defs import NATIVE_TOOLS
 from preloop.models.models.account import Account
 from preloop.models.models.mcp_server import MCPServer
 from preloop.models.models.mcp_tool import MCPTool
@@ -75,17 +76,27 @@ class TestListAllTools:
             account=mock_account, current_user=mock_user, db=mock_db
         )
 
-        # Should return all builtin tools with defaults
-        assert len(result) == len(tools.BUILTIN_TOOLS)
-        assert all(tool["source"] == "builtin" for tool in result)
+        builtin = [tool for tool in result if tool["source"] == "builtin"]
+        native = [tool for tool in result if tool["source"] == "agent"]
+        # Builtin defaults plus the native catalogue (no seen extras).
+        assert len(builtin) == len(tools.BUILTIN_TOOLS)
+        assert len(native) == len(NATIVE_TOOLS)
+        assert all(tool["source"] == "builtin" for tool in builtin)
         # Default-disabled tools report is_enabled=False without a config row
         default_disabled = {
             t["name"] for t in tools.BUILTIN_TOOLS if not t.get("default_enabled", True)
         }
-        assert default_disabled == {"estimate_compliance", "improve_compliance"}
+        assert default_disabled == {
+            "estimate_compliance",
+            "improve_compliance",
+            "permission_prompt",
+            "resolve_sbom_upstreams",
+        }
         for tool in result:
             expected = tool["name"] not in default_disabled
             assert tool["is_enabled"] is expected
+            assert isinstance(tool["schema_tokens_estimate"], int)
+            assert tool["schema_tokens_estimate"] > 0
 
     async def test_default_disabled_tool_enabled_by_config(
         self, mock_db, mock_user, mock_account, mocker
@@ -96,6 +107,7 @@ class TestListAllTools:
         config.tool_name = "estimate_compliance"
         config.tool_source = "builtin"
         config.mcp_server_id = None
+        config.managed_agent_id = None
         config.is_enabled = True
         config.approval_workflow_id = None
         config.justification_mode = None
@@ -118,6 +130,42 @@ class TestListAllTools:
         assert estimate["is_enabled"] is True
         assert improve["is_enabled"] is False
 
+    async def test_agent_scoped_enable_reported_without_flipping_account_state(
+        self, mock_db, mock_user, mock_account, mocker
+    ):
+        """An agent-scoped enable is surfaced via enabled_for_agents while the
+        account-wide is_enabled keeps reporting the default-disabled state."""
+        agent_id = uuid.uuid4()
+        agent_row = MagicMock(spec=ToolConfiguration)
+        agent_row.id = uuid.uuid4()
+        agent_row.tool_name = "permission_prompt"
+        agent_row.tool_source = "builtin"
+        agent_row.mcp_server_id = None
+        agent_row.managed_agent_id = agent_id
+        agent_row.is_enabled = True
+        agent_row.approval_workflow_id = None
+        agent_row.justification_mode = None
+
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
+            return_value=[agent_row],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_mcp_server.get_active_by_account",
+            return_value=[],
+        )
+
+        result = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
+
+        permission_prompt = next(t for t in result if t["name"] == "permission_prompt")
+        # The agent-scoped row must not read as an account-wide enable...
+        assert permission_prompt["is_enabled"] is False
+        assert permission_prompt["config_id"] is None
+        # ...but the UI can see exactly which agents opted in.
+        assert permission_prompt["enabled_for_agents"] == [str(agent_id)]
+
     async def test_list_tools_with_configs(
         self, mock_db, mock_user, mock_account, mocker
     ):
@@ -129,8 +177,10 @@ class TestListAllTools:
         config.tool_name = "get_issue"
         config.tool_source = "builtin"
         config.mcp_server_id = None
+        config.managed_agent_id = None
         config.is_enabled = False
         config.approval_workflow_id = workflow_id
+        config.justification_mode = None
 
         # Mock CRUD operations
         mocker.patch(
@@ -150,6 +200,51 @@ class TestListAllTools:
         get_issue_tool = next(t for t in result if t["name"] == "get_issue")
         assert get_issue_tool["is_enabled"] is False
         assert get_issue_tool["approval_workflow_id"] == str(workflow_id)
+
+    async def test_list_tools_schema_tokens_include_justification(
+        self, mock_db, mock_user, mock_account, mocker
+    ):
+        """Required justification increases the served schema token estimate."""
+        config = MagicMock(spec=ToolConfiguration)
+        config.id = uuid.uuid4()
+        config.tool_name = "get_issue"
+        config.tool_source = "builtin"
+        config.mcp_server_id = None
+        config.managed_agent_id = None
+        config.is_enabled = True
+        config.approval_workflow_id = None
+        config.justification_mode = "required"
+
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
+            return_value=[config],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_mcp_server.get_active_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_access_rule.get_multi_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tracker.get_for_account",
+            return_value=[],
+        )
+
+        with_justification = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
+        justified = next(t for t in with_justification if t["name"] == "get_issue")
+
+        config.justification_mode = None
+        without = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
+        plain = next(t for t in without if t["name"] == "get_issue")
+
+        assert justified["schema_tokens_estimate"] > plain["schema_tokens_estimate"]
+        assert justified["justification_mode"] == "required"
 
     async def test_list_tools_with_mcp_servers(
         self, mock_db, mock_user, mock_account, mocker
@@ -185,8 +280,8 @@ class TestListAllTools:
             account=mock_account, current_user=mock_user, db=mock_db
         )
 
-        # Should have builtin tools + MCP tool
-        assert len(result) == len(tools.BUILTIN_TOOLS) + 1
+        # Should have builtin tools + MCP tool + native catalogue
+        assert len(result) == len(tools.BUILTIN_TOOLS) + 1 + len(NATIVE_TOOLS)
 
         # Check MCP tool is included
         custom_tool = next(t for t in result if t["name"] == "custom_tool")
@@ -194,6 +289,153 @@ class TestListAllTools:
         assert custom_tool["source_id"] == str(server_id)
         assert custom_tool["source_name"] == "Test MCP Server"
         assert custom_tool["description"] == "A custom MCP tool"
+
+    async def test_list_tools_includes_native_catalogue_rows(
+        self, mock_db, mock_user, mock_account, mocker
+    ):
+        """The native catalogue is always listed, even with no configs."""
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_mcp_server.get_active_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_access_rule.get_multi_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tracker.get_for_account",
+            return_value=[],
+        )
+
+        result = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
+
+        native = [tool for tool in result if tool["source"] == "agent"]
+        assert {tool["name"] for tool in native} == {t["name"] for t in NATIVE_TOOLS}
+        bash = next(tool for tool in native if tool["name"] == "Bash")
+        assert bash["source_name"] == "Agent"
+        assert bash["source_id"] is None
+        assert bash["is_supported"] is True
+        assert "command" in bash["parameters"]
+        assert "Claude Code" in bash["adapters"]
+
+    async def test_list_tools_merges_seen_agent_configs_with_rules(
+        self, mock_db, mock_user, mock_account, mocker
+    ):
+        """Seen agent-source configs join the catalogue and carry their rules."""
+        catalogue_config = MagicMock(spec=ToolConfiguration)
+        catalogue_config.id = uuid.uuid4()
+        catalogue_config.tool_name = "Bash"
+        catalogue_config.tool_source = "agent"
+        catalogue_config.mcp_server_id = None
+        catalogue_config.managed_agent_id = None
+        catalogue_config.is_enabled = False
+        catalogue_config.approval_workflow_id = None
+        catalogue_config.justification_mode = None
+        catalogue_config.tool_schema = None
+        catalogue_config.tool_description = None
+
+        seen_config = MagicMock(spec=ToolConfiguration)
+        seen_config.id = uuid.uuid4()
+        seen_config.tool_name = "StrReplace"
+        seen_config.tool_source = "agent"
+        seen_config.mcp_server_id = None
+        seen_config.managed_agent_id = None
+        seen_config.is_enabled = True
+        seen_config.approval_workflow_id = None
+        seen_config.justification_mode = None
+        seen_config.tool_schema = {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+        }
+        seen_config.tool_description = "Cursor in-place replace"
+
+        rule = MagicMock()
+        rule.id = uuid.uuid4()
+        rule.tool_configuration_id = seen_config.id
+        rule.action = "deny"
+        rule.condition_expression = 'args.path.matches("(^|/)\\.github/")'
+        rule.condition_type = "simple"
+        rule.priority = 0
+        rule.description = "Block .github writes"
+        rule.is_enabled = True
+        rule.approval_workflow_id = None
+
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
+            return_value=[catalogue_config, seen_config],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_mcp_server.get_active_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_access_rule.get_multi_by_account",
+            return_value=[rule],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tracker.get_for_account",
+            return_value=[],
+        )
+
+        result = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
+
+        bash = next(tool for tool in result if tool["name"] == "Bash")
+        assert bash["source"] == "agent"
+        assert bash["is_enabled"] is False
+        assert bash["config_id"] == str(catalogue_config.id)
+
+        seen = next(tool for tool in result if tool["name"] == "StrReplace")
+        assert seen["source"] == "agent"
+        assert seen["source_id"] is None
+        assert seen["config_id"] == str(seen_config.id)
+        assert seen["has_condition"] is True
+        assert seen["access_rules"][0]["action"] == "deny"
+        assert seen["parameters"] == {"path": {"type": "string"}}
+
+    async def test_native_rows_have_no_server_id_and_carry_parameters(
+        self, mock_db, mock_user, mock_account, mocker
+    ):
+        """Native rows never point at an MCP server and expose hook fields."""
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_mcp_server.get_active_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_access_rule.get_multi_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tracker.get_for_account",
+            return_value=[],
+        )
+
+        result = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
+
+        native = [tool for tool in result if tool["source"] == "agent"]
+        assert native
+        for tool in native:
+            assert tool["source_id"] is None
+            assert tool["source_name"] == "Agent"
+            assert isinstance(tool["parameters"], dict)
+            assert tool["is_supported"] is True
+        write = next(tool for tool in native if tool["name"] == "Write")
+        assert set(write["parameters"]) == {"file_path", "content"}
+        shell = next(tool for tool in native if tool["name"] == "Shell")
+        assert set(shell["parameters"]) == {"command"}
 
 
 class TestToolConfigurationEndpoints:
@@ -237,6 +479,124 @@ class TestToolConfigurationEndpoints:
         mock_db.add.assert_called_once()
         mock_db.commit.assert_called_once()
 
+    async def test_create_agent_scoped_tool_configuration(
+        self, mock_db, mock_user, mock_account, mocker
+    ):
+        """An agent-scoped create validates the agent and persists the scope."""
+        agent_id = uuid.uuid4()
+        config_data = ToolConfigurationCreate(
+            tool_name="permission_prompt",
+            tool_source="builtin",
+            account_id=str(mock_account.id),
+            is_enabled=True,
+            managed_agent_id=str(agent_id),
+        )
+
+        mock_get_agent = mocker.patch(
+            "preloop.api.endpoints.tools.crud_managed_agent.get_for_account",
+            return_value=MagicMock(id=agent_id),
+        )
+        # An account-wide row for the same tool must not block the
+        # agent-scoped create: the scopes are distinct configurations.
+        account_row = MagicMock(spec=ToolConfiguration)
+        account_row.tool_name = "permission_prompt"
+        account_row.tool_source = "builtin"
+        account_row.mcp_server_id = None
+        account_row.managed_agent_id = None
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
+            return_value=[account_row],
+        )
+
+        def mock_refresh(obj):
+            obj.id = uuid.uuid4()
+            from datetime import datetime, UTC
+
+            obj.created_at = datetime.now(UTC)
+            obj.updated_at = datetime.now(UTC)
+
+        mock_db.refresh.side_effect = mock_refresh
+
+        result = await tools.create_tool_configuration(
+            config_data=config_data,
+            account=mock_account,
+            current_user=mock_user,
+            db=mock_db,
+        )
+
+        assert isinstance(result, ToolConfigurationResponse)
+        assert str(result.managed_agent_id) == str(agent_id)
+        mock_get_agent.assert_called_once_with(
+            mock_db, account_id=str(mock_account.id), agent_id=str(agent_id)
+        )
+        mock_db.add.assert_called_once()
+
+    async def test_create_agent_scoped_configuration_unknown_agent_rejected(
+        self, mock_db, mock_user, mock_account, mocker
+    ):
+        """An agent id outside the account is rejected with 404."""
+        config_data = ToolConfigurationCreate(
+            tool_name="permission_prompt",
+            tool_source="builtin",
+            account_id=str(mock_account.id),
+            is_enabled=True,
+            managed_agent_id=str(uuid.uuid4()),
+        )
+
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_managed_agent.get_for_account",
+            return_value=None,
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await tools.create_tool_configuration(
+                config_data=config_data,
+                account=mock_account,
+                current_user=mock_user,
+                db=mock_db,
+            )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+        mock_db.add.assert_not_called()
+
+    async def test_create_agent_scoped_duplicate_rejected(
+        self, mock_db, mock_user, mock_account, mocker
+    ):
+        """A second row for the same tool and agent scope is rejected."""
+        agent_id = uuid.uuid4()
+        config_data = ToolConfigurationCreate(
+            tool_name="permission_prompt",
+            tool_source="builtin",
+            account_id=str(mock_account.id),
+            is_enabled=True,
+            managed_agent_id=str(agent_id),
+        )
+
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_managed_agent.get_for_account",
+            return_value=MagicMock(id=agent_id),
+        )
+        existing_row = MagicMock(spec=ToolConfiguration)
+        existing_row.tool_name = "permission_prompt"
+        existing_row.tool_source = "builtin"
+        existing_row.mcp_server_id = None
+        existing_row.managed_agent_id = agent_id
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
+            return_value=[existing_row],
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await tools.create_tool_configuration(
+                config_data=config_data,
+                account=mock_account,
+                current_user=mock_user,
+                db=mock_db,
+            )
+
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert "already exists" in exc_info.value.detail
+
     async def test_create_tool_configuration_already_exists(
         self, mock_db, mock_user, mock_account, mocker
     ):
@@ -252,6 +612,7 @@ class TestToolConfigurationEndpoints:
         existing_config.tool_name = "get_issue"
         existing_config.tool_source = "builtin"
         existing_config.mcp_server_id = None
+        existing_config.managed_agent_id = None
 
         mocker.patch(
             "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
@@ -285,12 +646,6 @@ class TestToolConfigurationEndpoints:
             account_id=str(mock_account.id),
         )
 
-        # Mock no existing config in the pre-check
-        mocker.patch(
-            "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
-            return_value=[],
-        )
-
         # Create mock existing config that will be returned after IntegrityError
         mock_existing_config = MagicMock()
         mock_existing_config.id = uuid.uuid4()
@@ -300,21 +655,23 @@ class TestToolConfigurationEndpoints:
         mock_existing_config.is_enabled = True
         mock_existing_config.mcp_server_id = None
         mock_existing_config.http_endpoint_id = None
+        mock_existing_config.managed_agent_id = None
         mock_existing_config.approval_workflow_id = None
         mock_existing_config.tool_description = None
         mock_existing_config.tool_schema = None
         mock_existing_config.custom_config = None
         mock_existing_config.justification_mode = None
 
+        # No existing config in the pre-check; the same lookup runs again
+        # after the IntegrityError and must find the racing row.
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
+            side_effect=[[], [mock_existing_config]],
+        )
+
         # Mock IntegrityError on commit (race condition)
         mock_db.commit.side_effect = IntegrityError(
             "statement", "params", "orig", connection_invalidated=False
-        )
-
-        # Mock the fetch of existing config after IntegrityError
-        mocker.patch(
-            "preloop.api.endpoints.tools.crud_tool_configuration.get_by_tool_name_and_source",
-            return_value=mock_existing_config,
         )
 
         # Should succeed and return existing config (idempotent)
@@ -341,6 +698,7 @@ class TestToolConfigurationEndpoints:
         config.tool_source = "builtin"
         config.mcp_server_id = None
         config.http_endpoint_id = None
+        config.managed_agent_id = None
         config.approval_workflow_id = None
         config.is_enabled = True
         config.tool_description = None
@@ -399,6 +757,7 @@ class TestToolConfigurationEndpoints:
         config.tool_source = "builtin"
         config.mcp_server_id = None
         config.http_endpoint_id = None
+        config.managed_agent_id = None
         config.approval_workflow_id = None
         config.is_enabled = True
         config.tool_description = None

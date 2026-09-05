@@ -5,10 +5,11 @@ is executed, based on tool access rules. It supports allow/deny/require_approval
 actions with priority-based rule evaluation.
 """
 
+import functools
 import logging
 import re
 import uuid
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
@@ -27,12 +28,248 @@ from preloop.models.crud.tool_configuration import (
     get_tool_config_by_tool_name_async,
 )
 from preloop.models.crud.tool_access_rule import get_multi_by_config_async
+from preloop.services.approval_rule_context import (
+    SOURCE_RULE_EVALUATION_ERROR,
+    SOURCE_SUBJECT_SCOPED_RULE,
+    SOURCE_TOOL_ACCESS_RULE,
+    SOURCE_TOOL_DEFAULT_WORKFLOW,
+    build_rule_context,
+)
 from preloop.services.subject_governance import (
     get_scoped_tool_rules,
     is_tool_enabled_for_subject,
 )
 
 logger = logging.getLogger(__name__)
+
+# Cap on ``.matches()`` patterns in the simple evaluator. Python ``re`` has
+# no timeout; this bound and the compiled-pattern LRU cache are the ReDoS
+# mitigation (they limit compile cost and reuse compiled objects, they do
+# not bound match time on a hostile pattern that still fits the cap).
+SIMPLE_MATCHES_PATTERN_MAX_LEN = 512
+
+
+def _parse_simple_matches_call(expression: str) -> Optional[tuple[str, str]]:
+    """Parse ``field.matches("pattern")`` without nested backtracking.
+
+    Two linear alternatives (double-quoted, then single-quoted) replace a
+    backreference-plus-negative-lookahead matcher. A long run of ``\\\\a``
+    must stay O(n), not exponential.
+    """
+    for quote in ('"', "'"):
+        pattern = (
+            rf"^(\w+(?:\.\w+)*)\.matches\s*\(\s*{quote}"
+            rf"((?:[^{quote}\\]|\\.)*){quote}\s*\)$"
+        )
+        match = re.match(pattern, expression)
+        if match:
+            return match.group(1), match.group(2)
+    return None
+
+
+@functools.lru_cache(maxsize=128)
+def _compile_simple_matches_pattern(pattern: str) -> re.Pattern[str]:
+    """Compile a simple-evaluator ``matches()`` pattern (LRU-cached)."""
+    return re.compile(pattern)
+
+
+_SIMPLE_MATCHES_ESCAPES = frozenset({"\\", '"', "'"})
+
+
+def _decode_simple_matches_literal(text: str) -> str:
+    """Decode ``\\\\``, ``\\\"``, and ``\\\\'`` in a ``matches()`` literal.
+
+    CEL decodes those sequences in a quoted argument. The stored text must
+    mean the same in simple mode, so ``\\\\.github`` becomes ``\\.github``.
+    Other CEL escapes (``\\uXXXX``, ``\\xHH``, octal) are left unchanged
+    here; author those patterns in CEL mode if they need that decoding.
+    """
+    decoded: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if (
+            char == "\\"
+            and index + 1 < length
+            and text[index + 1] in _SIMPLE_MATCHES_ESCAPES
+        ):
+            decoded.append(text[index + 1])
+            index += 2
+            continue
+        decoded.append(char)
+        index += 1
+    return "".join(decoded)
+
+
+def _simple_matches(value: Any, pattern: str) -> bool:
+    """Return whether ``pattern`` occurs in ``value`` via ``re.search``.
+
+    Missing or non-string fields are a non-match. Patterns longer than
+    :data:`SIMPLE_MATCHES_PATTERN_MAX_LEN` raise ValueError.
+    """
+    if not isinstance(value, str):
+        return False
+    if len(pattern) > SIMPLE_MATCHES_PATTERN_MAX_LEN:
+        raise ValueError(
+            f"matches() pattern exceeds {SIMPLE_MATCHES_PATTERN_MAX_LEN} characters"
+        )
+    try:
+        compiled = _compile_simple_matches_pattern(pattern)
+    except re.error as exc:
+        raise ValueError(f"Invalid matches() pattern: {exc}") from exc
+    return compiled.search(value) is not None
+
+
+class PolicyDecision(tuple):
+    """A policy outcome that is still the historical 3-tuple.
+
+    Every caller unpacks ``action, approval_workflow_id, rule_description``,
+    and several tests patch the evaluator with a plain tuple, so widening the
+    return type would break them silently. This subclasses ``tuple`` with
+    exactly those three items and hangs the new ``rule_context`` off the side:
+    old unpacking keeps working unchanged, new callers read the attribute.
+
+    Read ``rule_context`` with ``getattr(decision, "rule_context", None)``:
+    a mocked evaluator returns a bare tuple, and a missing attribute must
+    degrade to "no rule context recorded" rather than raise on the approval
+    path.
+
+    Attributes:
+        rule_context: JSON-serialisable snapshot of the rule that produced a
+            ``require_approval`` decision, or None when nothing gated the call
+            (allow/deny) or no rule identity exists.
+        source: Why this decision was produced (``tool_access_rule``,
+            ``subject_scoped_rule``, ``rule_evaluation_error``, ...). Set
+            whenever a rule wins, including allow and deny, so callers do
+            not have to read ``rule_context``.
+        stored_source: For a scoped rule, the rule dict's own ``source``
+            field (``agent``, ``mcp``, ...), or None when absent.
+    """
+
+    # No __slots__: CPython rejects a nonempty __slots__ on a tuple subclass,
+    # so rule_context lives in the instance dict.
+
+    def __new__(
+        cls,
+        action: str,
+        approval_workflow_id: Optional[Any],
+        rule_description: Optional[str],
+        rule_context: Optional[Dict[str, Any]] = None,
+        *,
+        source: Optional[str] = None,
+        stored_source: Optional[str] = None,
+    ) -> "PolicyDecision":
+        """Build the 3-tuple and attach the rule context."""
+        decision = super().__new__(
+            cls, (action, approval_workflow_id, rule_description)
+        )
+        decision.rule_context = rule_context
+        if source is None and isinstance(rule_context, dict):
+            raw_source = rule_context.get("source")
+            source = raw_source if isinstance(raw_source, str) else None
+        decision.source = source
+        decision.stored_source = stored_source
+        return decision
+
+    @property
+    def action(self) -> str:
+        """'allow', 'deny', or 'require_approval'."""
+        return self[0]
+
+    @property
+    def approval_workflow_id(self) -> Optional[Any]:
+        """Workflow to raise the approval against, when gating."""
+        return self[1]
+
+    @property
+    def rule_description(self) -> Optional[str]:
+        """Human-readable description of what decided this."""
+        return self[2]
+
+
+def _also_matched_rule_ids(
+    rules: list[Any],
+    *,
+    start_index: int,
+    tool_args: Dict[str, Any],
+    context: Dict[str, Any],
+) -> list[str]:
+    """Ids of lower-priority rules that would also have matched.
+
+    Informational only: the winning rule already decided. Reviewers use this
+    to spot overlapping rules they did not intend. Errors are swallowed
+    because a broken lower-priority rule must not affect a decision that has
+    already been made by a higher-priority one.
+
+    Args:
+        rules: The full priority-ordered rule list.
+        start_index: Index just past the winning rule.
+        tool_args: Arguments the call was made with.
+        context: Evaluation context.
+
+    Returns:
+        Rule ids as strings, in priority order. Empty when none also matched.
+    """
+    also: list[str] = []
+    for rule in rules[start_index:]:
+        try:
+            if _evaluate_rule_condition(
+                expression=rule.condition_expression,
+                condition_type=rule.condition_type,
+                tool_args=tool_args,
+                context=context,
+            ):
+                also.append(str(rule.id))
+        except Exception:  # pragma: no cover - best effort annotation only
+            continue
+    return also
+
+
+def _matched_rule_context(
+    rule: Any,
+    *,
+    rules: list[Any],
+    index: int,
+    tool_config: Any,
+    tool_args: Dict[str, Any],
+    context: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Snapshot of the rule that gated a call, or None when it did not gate.
+
+    Shared by the sync and async evaluators so the two cannot drift into
+    recording different things about the same rule. Only ``require_approval``
+    produces a snapshot: allow and deny create no approval to attach one to.
+
+    Args:
+        rule: The winning rule.
+        rules: The full priority-ordered rule list.
+        index: Index of the winning rule within ``rules``.
+        tool_config: The tool configuration the rules belong to.
+        tool_args: Arguments the call was made with.
+        context: Evaluation context.
+
+    Returns:
+        The snapshot dict, or None when the action is not require_approval.
+    """
+    if rule.action != "require_approval":
+        return None
+    return build_rule_context(
+        source=SOURCE_TOOL_ACCESS_RULE,
+        decision=rule.action,
+        rule_id=rule.id,
+        rule_name=rule.description,
+        expression=rule.condition_expression,
+        expression_type=rule.condition_type,
+        priority=rule.priority,
+        tool_configuration_id=tool_config.id,
+        also_matched_rule_ids=_also_matched_rule_ids(
+            rules,
+            start_index=index + 1,
+            tool_args=tool_args,
+            context=context,
+        ),
+    )
 
 
 def _get_audit_service():
@@ -127,7 +364,7 @@ def _evaluate_rule_candidates(
     correlation_id: Optional[str] = None,
     extra_details: Optional[Dict[str, Any]] = None,
     default_approval_workflow_id: Optional[Any] = None,
-) -> Optional[Tuple[str, Optional[Any], Optional[str]]]:
+) -> Optional[PolicyDecision]:
     for index, rule in enumerate(rules):
         is_enabled = (
             rule.get("is_enabled", True) if isinstance(rule, dict) else rule.is_enabled
@@ -177,7 +414,38 @@ def _evaluate_rule_candidates(
                 correlation_id=correlation_id,
                 extra_details=extra_details,
             )
-            return action, approval_workflow_id, rule_desc
+            rule_context = None
+            if action == "require_approval":
+                rule_context = build_rule_context(
+                    source=SOURCE_SUBJECT_SCOPED_RULE,
+                    decision=action,
+                    rule_id=(
+                        rule.get("id")
+                        if isinstance(rule, dict)
+                        else getattr(rule, "id", None)
+                    ),
+                    rule_name=description,
+                    expression=condition_expression,
+                    expression_type=str(condition_type or "simple"),
+                    priority=(
+                        rule.get("priority")
+                        if isinstance(rule, dict)
+                        else getattr(rule, "priority", None)
+                    ),
+                )
+            stored_source = None
+            if isinstance(rule, dict):
+                raw_source = rule.get("source")
+                if isinstance(raw_source, str) and raw_source:
+                    stored_source = raw_source
+            return PolicyDecision(
+                action,
+                approval_workflow_id,
+                rule_desc,
+                rule_context,
+                source=SOURCE_SUBJECT_SCOPED_RULE,
+                stored_source=stored_source,
+            )
         except Exception as e:
             error_desc = f"Rule evaluation error: {e} (failing closed)"
             _log_policy_decision_async(
@@ -192,8 +460,202 @@ def _evaluate_rule_candidates(
                 correlation_id=correlation_id,
                 extra_details=extra_details,
             )
-            return "require_approval", approval_workflow_id, error_desc
+            return PolicyDecision(
+                "require_approval",
+                approval_workflow_id,
+                error_desc,
+                build_rule_context(
+                    source=SOURCE_RULE_EVALUATION_ERROR,
+                    decision="require_approval",
+                    rule_name=description or None,
+                    expression=condition_expression,
+                    expression_type=str(condition_type or "simple"),
+                    explanation=(
+                        "A scoped governance rule could not be evaluated, so "
+                        "Preloop failed closed and asked for approval instead "
+                        "of deciding on its own."
+                    ),
+                ),
+            )
     return None
+
+
+def _evaluate_loaded_access_rules(
+    *,
+    rules: list[Any],
+    tool_config: Any,
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    context: Dict[str, Any],
+    account_id: uuid.UUID,
+    user_id: Optional[uuid.UUID],
+    execution_id: Optional[uuid.UUID],
+    default_workflow_id_for_account: Optional[Any] = None,
+    correlation_id: Optional[str] = None,
+    extra_details: Optional[Dict[str, Any]] = None,
+) -> PolicyDecision:
+    """Evaluate already-loaded ToolAccessRule rows.
+
+    Shared by the sync and async evaluators so match order, fail-closed,
+    and the legacy no-rules path cannot drift. Callers keep their own I/O.
+    """
+    logger.info(
+        f"Policy evaluation for '{tool_name}': found {len(rules)} access rules, "
+        f"tool_config.approval_workflow_id={tool_config.approval_workflow_id}"
+    )
+
+    if not rules:
+        if tool_config.approval_workflow_id:
+            logger.warning(
+                f"LEGACY PATH: tool '{tool_name}' has approval_workflow_id="
+                f"{tool_config.approval_workflow_id} but no access rules. "
+                f"ALL calls will require approval regardless of arguments. "
+                f"Add access rules with conditions to enable conditional approval."
+            )
+            _log_policy_decision_async(
+                account_id=account_id,
+                tool_name=tool_name,
+                action="require_approval",
+                rule_description="Tool has approval workflow configured (legacy mode)",
+                tool_args=tool_args,
+                user_id=user_id,
+                execution_id=execution_id,
+                correlation_id=correlation_id,
+                extra_details=extra_details,
+            )
+            return PolicyDecision(
+                "require_approval",
+                tool_config.approval_workflow_id,
+                "Tool has approval workflow configured (legacy mode)",
+                build_rule_context(
+                    source=SOURCE_TOOL_DEFAULT_WORKFLOW,
+                    decision="require_approval",
+                    rule_name="Tool default policy",
+                    tool_configuration_id=tool_config.id,
+                ),
+            )
+        _log_policy_decision_async(
+            account_id=account_id,
+            tool_name=tool_name,
+            action="allow",
+            rule_description="No access rules defined",
+            tool_args=tool_args,
+            user_id=user_id,
+            execution_id=execution_id,
+            correlation_id=correlation_id,
+            extra_details=extra_details,
+        )
+        return PolicyDecision("allow", None, "No access rules defined")
+
+    for index, rule in enumerate(rules):
+        try:
+            logger.info(
+                f"Evaluating rule {rule.id} (priority={rule.priority}, "
+                f"action={rule.action}): condition_type={rule.condition_type}, "
+                f"expression={rule.condition_expression!r}, args={tool_args}"
+            )
+            matches = _evaluate_rule_condition(
+                expression=rule.condition_expression,
+                condition_type=rule.condition_type,
+                tool_args=tool_args,
+                context=context,
+            )
+            logger.info(f"Rule {rule.id} evaluated: matches={matches}")
+
+            if matches:
+                logger.info(
+                    f"Rule matched: {rule.description or rule.condition_expression} "
+                    f"-> action={rule.action}"
+                )
+
+                approval_workflow_id = None
+                if rule.action == "require_approval":
+                    approval_workflow_id = (
+                        rule.approval_workflow_id
+                        or tool_config.approval_workflow_id
+                        or default_workflow_id_for_account
+                    )
+
+                rule_desc = (
+                    rule.description or f"Rule matched: {rule.condition_expression}"
+                )
+
+                _log_policy_decision_async(
+                    account_id=account_id,
+                    tool_name=tool_name,
+                    action=rule.action,
+                    rule_description=rule_desc,
+                    condition_matched=rule.condition_expression,
+                    tool_args=tool_args,
+                    user_id=user_id,
+                    execution_id=execution_id,
+                    correlation_id=correlation_id,
+                    extra_details=extra_details,
+                )
+
+                rule_context = _matched_rule_context(
+                    rule,
+                    rules=rules,
+                    index=index,
+                    tool_config=tool_config,
+                    tool_args=tool_args,
+                    context=context,
+                )
+
+                return PolicyDecision(
+                    rule.action,
+                    approval_workflow_id,
+                    rule_desc,
+                    rule_context,
+                    source=SOURCE_TOOL_ACCESS_RULE,
+                )
+
+        except Exception as e:
+            logger.error(
+                f"Error evaluating rule {rule.id}: {e}. "
+                f"Failing closed with require_approval for security."
+            )
+            error_desc = f"Rule evaluation error: {e} (failing closed)"
+            _log_policy_decision_async(
+                account_id=account_id,
+                tool_name=tool_name,
+                action="require_approval",
+                rule_description=error_desc,
+                condition_matched=rule.condition_expression,
+                tool_args=tool_args,
+                user_id=user_id,
+                execution_id=execution_id,
+                correlation_id=correlation_id,
+                extra_details=extra_details,
+            )
+            return PolicyDecision(
+                "require_approval",
+                tool_config.approval_workflow_id or default_workflow_id_for_account,
+                error_desc,
+                build_rule_context(
+                    source=SOURCE_RULE_EVALUATION_ERROR,
+                    decision="require_approval",
+                    rule_id=rule.id,
+                    rule_name=rule.description,
+                    expression=rule.condition_expression,
+                    expression_type=rule.condition_type,
+                    priority=rule.priority,
+                    tool_configuration_id=tool_config.id,
+                ),
+            )
+
+    _log_policy_decision_async(
+        account_id=account_id,
+        tool_name=tool_name,
+        action="allow",
+        rule_description="No rules matched (default allow)",
+        tool_args=tool_args,
+        user_id=user_id,
+        execution_id=execution_id,
+        correlation_id=correlation_id,
+        extra_details=extra_details,
+    )
+    return PolicyDecision("allow", None, "No rules matched (default allow)")
 
 
 def evaluate_policy(
@@ -206,7 +668,7 @@ def evaluate_policy(
     execution_id: Optional[uuid.UUID] = None,
     trigger_event: Optional[Dict[str, Any]] = None,
     subject_context: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, Optional[uuid.UUID], Optional[str]]:
+) -> PolicyDecision:
     """Evaluate tool access policy and determine the action to take.
 
     This function implements the policy evaluation logic:
@@ -227,10 +689,15 @@ def evaluate_policy(
         trigger_event: Optional trigger event data (for condition evaluation context).
 
     Returns:
-        Tuple of (action, approval_workflow_id, matched_rule_description).
+        A :class:`PolicyDecision`, which unpacks as the historical 3-tuple
+        (action, approval_workflow_id, matched_rule_description) and also
+        carries ``.rule_context`` describing the rule that gated the call.
         - action: 'allow', 'deny', or 'require_approval'
         - approval_workflow_id: Policy ID to use if action is 'require_approval'
         - matched_rule_description: Description of the matched rule (or reason for default)
+        - rule_context: Snapshot of the winning rule for 'require_approval'
+          decisions, else None. Persisted on the approval request so the
+          approver can see WHICH rule fired and what its expression was.
     """
     account = crud_account.get(db, id=account_id)
     account_meta = (account.meta_data or {}) if account else {}
@@ -238,7 +705,9 @@ def evaluate_policy(
     if not is_tool_enabled_for_subject(
         account_meta, tool_name=tool_name, subject_context=subject_context or {}
     ):
-        return "deny", None, "Tool disabled by agent or API key configuration"
+        return PolicyDecision(
+            "deny", None, "Tool disabled by agent or API key configuration"
+        )
 
     scoped_rules = get_scoped_tool_rules(
         account_meta,
@@ -302,7 +771,9 @@ def evaluate_policy(
             user_id=user_id,
             execution_id=execution_id,
         )
-        return "allow", None, "No scoped rules matched (default allow for subject)"
+        return PolicyDecision(
+            "allow", None, "No scoped rules matched (default allow for subject)"
+        )
 
     if not tool_config:
         # No configuration found, default allow
@@ -316,7 +787,7 @@ def evaluate_policy(
             user_id=user_id,
             execution_id=execution_id,
         )
-        return "allow", None, "No tool configuration found"
+        return PolicyDecision("allow", None, "No tool configuration found")
 
     # Load all access rules for this tool, ordered by priority (lower first)
     rules = crud_tool_access_rule.get_multi_by_config(
@@ -326,141 +797,17 @@ def evaluate_policy(
         enabled_only=True,
     )
 
-    logger.info(
-        f"Policy evaluation for '{tool_name}': found {len(rules)} access rules, "
-        f"tool_config.approval_workflow_id={tool_config.approval_workflow_id}"
-    )
-
-    if not rules:
-        # No rules defined, check for legacy approval_workflow_id on tool config
-        if tool_config.approval_workflow_id:
-            # Legacy behavior: tool has approval workflow but no rules
-            logger.warning(
-                f"LEGACY PATH: tool '{tool_name}' has approval_workflow_id="
-                f"{tool_config.approval_workflow_id} but no access rules. "
-                f"ALL calls will require approval regardless of arguments. "
-                f"Add access rules with conditions to enable conditional approval."
-            )
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="require_approval",
-                rule_description="Tool has approval workflow configured (legacy mode)",
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-            )
-            return (
-                "require_approval",
-                tool_config.approval_workflow_id,
-                "Tool has approval workflow configured (legacy mode)",
-            )
-        _log_policy_decision_async(
-            account_id=account_id,
-            tool_name=tool_name,
-            action="allow",
-            rule_description="No access rules defined",
-            tool_args=tool_args,
-            user_id=user_id,
-            execution_id=execution_id,
-        )
-        return "allow", None, "No access rules defined"
-
-    # Evaluate rules in priority order
-    for rule in rules:
-        try:
-            logger.info(
-                f"Evaluating rule {rule.id} (priority={rule.priority}, "
-                f"action={rule.action}): condition_type={rule.condition_type}, "
-                f"expression={rule.condition_expression!r}, args={tool_args}"
-            )
-            matches = _evaluate_rule_condition(
-                expression=rule.condition_expression,
-                condition_type=rule.condition_type,
-                tool_args=tool_args,
-                context=context,
-            )
-            logger.info(f"Rule {rule.id} evaluated: matches={matches}")
-
-            if matches:
-                logger.info(
-                    f"Rule matched: {rule.description or rule.condition_expression} "
-                    f"-> action={rule.action}"
-                )
-
-                # Determine approval workflow ID for require_approval action
-                approval_workflow_id = None
-                if rule.action == "require_approval":
-                    # Prefer the rule-level policy; fall back to tool config
-                    # default; finally fall back to the account default so a
-                    # ``require_approval`` rule never silently auto-approves.
-                    approval_workflow_id = (
-                        rule.approval_workflow_id
-                        or tool_config.approval_workflow_id
-                        or default_workflow_id_for_account
-                    )
-
-                rule_desc = (
-                    rule.description or f"Rule matched: {rule.condition_expression}"
-                )
-
-                # Log the policy decision (fire-and-forget)
-                _log_policy_decision_async(
-                    account_id=account_id,
-                    tool_name=tool_name,
-                    action=rule.action,
-                    rule_description=rule_desc,
-                    condition_matched=rule.condition_expression,
-                    tool_args=tool_args,
-                    user_id=user_id,
-                    execution_id=execution_id,
-                )
-
-                return (
-                    rule.action,
-                    approval_workflow_id,
-                    rule_desc,
-                )
-
-        except Exception as e:
-            # SECURITY: Fail closed on evaluation errors
-            # Rather than skipping to the next rule (which could lead to default-allow),
-            # we require approval when rule evaluation fails. This ensures that:
-            # 1. Malformed rules don't silently get bypassed
-            # 2. Unexpected errors don't result in unauthorized access
-            # 3. The action is conservative (require human review) rather than permissive
-            logger.error(
-                f"Error evaluating rule {rule.id}: {e}. "
-                f"Failing closed with require_approval for security."
-            )
-            error_desc = f"Rule evaluation error: {e} (failing closed)"
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="require_approval",
-                rule_description=error_desc,
-                condition_matched=rule.condition_expression,
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-            )
-            return (
-                "require_approval",
-                tool_config.approval_workflow_id or default_workflow_id_for_account,
-                error_desc,
-            )
-
-    # No rules matched, default allow
-    _log_policy_decision_async(
-        account_id=account_id,
+    return _evaluate_loaded_access_rules(
+        rules=rules,
+        tool_config=tool_config,
         tool_name=tool_name,
-        action="allow",
-        rule_description="No rules matched (default allow)",
         tool_args=tool_args,
+        context=context,
+        account_id=account_id,
         user_id=user_id,
         execution_id=execution_id,
+        default_workflow_id_for_account=default_workflow_id_for_account,
     )
-    return "allow", None, "No rules matched (default allow)"
 
 
 def _evaluate_rule_condition(
@@ -503,6 +850,14 @@ def _evaluate_simple_condition(expression: str, tool_args: Dict[str, Any]) -> bo
         - args.field >= number
         - args.field <= number
         - args.field.contains('substring')
+        - args.field.matches('regex')
+
+    ``.matches()`` uses Python ``re.search``. Python's ``re`` has no
+    timeout. The 512-character pattern cap and the compiled-pattern LRU
+    cache are the ReDoS mitigation: they bound compile cost and reuse
+    compiled objects. They do not bound match time on a hostile pattern
+    that still fits the cap. Oversized patterns raise ValueError rather
+    than evaluating.
 
     Args:
         expression: Simple condition expression.
@@ -515,6 +870,15 @@ def _evaluate_simple_condition(expression: str, tool_args: Dict[str, Any]) -> bo
         ValueError: If expression is invalid or unsupported.
     """
     expression = expression.strip()
+
+    # Handle boolean literals before any normalisation. Users configure
+    # catch-all rules with a bare 'true' (or 'false'); prepending 'args.'
+    # would turn these into unparsable field references.
+    lowered = expression.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
 
     # Normalise: if the expression doesn't start with 'args.', prepend it.
     # Users often configure rules via the UI with just the field name, e.g.
@@ -536,6 +900,15 @@ def _evaluate_simple_condition(expression: str, tool_args: Dict[str, Any]) -> bo
         elif isinstance(value, list):
             return substring in value
         return False
+
+    matches_parsed = _parse_simple_matches_call(
+        expression[5:] if expression.startswith("args.") else expression
+    )
+    if matches_parsed:
+        field_path, raw_pattern = matches_parsed
+        pattern = _decode_simple_matches_literal(raw_pattern)
+        value = _get_nested_value(tool_args, field_path)
+        return _simple_matches(value, pattern)
 
     # Handle comparison operators
     # Order matters: >= and <= must be checked before > and <
@@ -690,6 +1063,101 @@ def _coerce_number(value: Any) -> Optional[float]:
     return None
 
 
+def evaluate_condition_against_bindings(
+    expression: str,
+    condition_type: str,
+    bindings: Dict[str, Any],
+) -> bool:
+    """Evaluate a simple or CEL condition against a named binding dict.
+
+    Used by model I/O rules so CEL can write ``pii.found`` and
+    ``injection.score`` instead of wrapping everything under ``args``.
+    Tool evaluation still uses ``_evaluate_simple_condition`` /
+    ``_evaluate_cel_condition`` and is unchanged.
+
+    Args:
+        expression: Condition expression.
+        condition_type: ``simple`` or ``cel``.
+        bindings: Root attributes (model, session, request, pii, ...).
+
+    Returns:
+        True when the condition matches.
+
+    Raises:
+        ValueError: If the expression or condition type is invalid.
+    """
+    if not expression or not expression.strip():
+        return True
+    if condition_type == "simple":
+        return _evaluate_simple_condition_on_bindings(expression, bindings)
+    if condition_type == "cel":
+        return _evaluate_cel_condition_on_bindings(expression, bindings)
+    raise ValueError(f"Unknown condition type: {condition_type}")
+
+
+def _evaluate_simple_condition_on_bindings(
+    expression: str, bindings: Dict[str, Any]
+) -> bool:
+    """Evaluate a simple comparison against a root binding dict."""
+    expression = expression.strip()
+    lowered = expression.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+
+    contains_pattern = r"^(\w+(?:\.\w+)*)\.contains\s*\(\s*['\"](.+?)['\"]\s*\)$"
+    contains_match = re.match(contains_pattern, expression)
+    if contains_match:
+        field_path = contains_match.group(1)
+        substring = contains_match.group(2)
+        value = _get_nested_value(bindings, field_path)
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return substring in value
+        if isinstance(value, list):
+            return substring in value
+        return False
+
+    matches_parsed = _parse_simple_matches_call(expression)
+    if matches_parsed:
+        field_path, raw_pattern = matches_parsed
+        pattern = _decode_simple_matches_literal(raw_pattern)
+        value = _get_nested_value(bindings, field_path)
+        return _simple_matches(value, pattern)
+
+    comparison_pattern = r"^(\w+(?:\.\w+)*)\s*(==|!=|>=|<=|>|<)\s*(.+)$"
+    comparison_match = re.match(comparison_pattern, expression)
+    if comparison_match:
+        field_path = comparison_match.group(1)
+        operator = comparison_match.group(2)
+        raw_value = comparison_match.group(3).strip()
+        rhs_value = _parse_value(raw_value)
+        lhs_value = _get_nested_value(bindings, field_path)
+        return _compare_values(lhs_value, operator, rhs_value)
+
+    raise ValueError(f"Unsupported simple expression format: {expression}")
+
+
+def _evaluate_cel_condition_on_bindings(
+    expression: str, bindings: Dict[str, Any]
+) -> bool:
+    """Evaluate a CEL expression against a root binding dict."""
+    try:
+        import celpy
+
+        env = celpy.Environment()
+        ast = env.compile(expression)
+        program = env.program(ast)
+        activation = celpy.json_to_cel(bindings)
+        result = program.evaluate(activation)
+        return bool(result)
+    except Exception as e:
+        logger.error(f"CEL evaluation error for expression '{expression}': {e}")
+        raise ValueError(f"CEL evaluation failed: {str(e)}")
+
+
 def _evaluate_cel_condition(
     expression: str,
     tool_args: Dict[str, Any],
@@ -779,7 +1247,7 @@ async def evaluate_policy_async(
     correlation_id: Optional[str] = None,
     extra_details: Optional[Dict[str, Any]] = None,
     subject_context: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, Optional[uuid.UUID], Optional[str]]:
+) -> PolicyDecision:
     """Async version of evaluate_policy.
 
     See evaluate_policy for full documentation.
@@ -789,7 +1257,9 @@ async def evaluate_policy_async(
     if not is_tool_enabled_for_subject(
         account_meta_data, tool_name=tool_name, subject_context=subject_context or {}
     ):
-        return "deny", None, "Tool disabled by agent or API key configuration"
+        return PolicyDecision(
+            "deny", None, "Tool disabled by agent or API key configuration"
+        )
 
     scoped_rules = get_scoped_tool_rules(
         account_meta_data,
@@ -860,7 +1330,9 @@ async def evaluate_policy_async(
             correlation_id=correlation_id,
             extra_details=extra_details,
         )
-        return "allow", None, "No scoped rules matched (default allow for subject)"
+        return PolicyDecision(
+            "allow", None, "No scoped rules matched (default allow for subject)"
+        )
 
     if not tool_config:
         # Log the policy decision (fire-and-forget)
@@ -875,7 +1347,7 @@ async def evaluate_policy_async(
             correlation_id=correlation_id,
             extra_details=extra_details,
         )
-        return "allow", None, "No tool configuration found"
+        return PolicyDecision("allow", None, "No tool configuration found")
 
     # Load all access rules for this tool, ordered by priority (lower first)
     rules = await get_multi_by_config_async(
@@ -885,125 +1357,16 @@ async def evaluate_policy_async(
         enabled_only=True,
     )
 
-    if not rules:
-        # No rules defined, check for legacy approval_workflow_id on tool config
-        if tool_config.approval_workflow_id:
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="require_approval",
-                rule_description="Tool has approval workflow configured (legacy mode)",
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-                correlation_id=correlation_id,
-                extra_details=extra_details,
-            )
-            return (
-                "require_approval",
-                tool_config.approval_workflow_id,
-                "Tool has approval workflow configured (legacy mode)",
-            )
-        _log_policy_decision_async(
-            account_id=account_id,
-            tool_name=tool_name,
-            action="allow",
-            rule_description="No access rules defined",
-            tool_args=tool_args,
-            user_id=user_id,
-            execution_id=execution_id,
-            correlation_id=correlation_id,
-            extra_details=extra_details,
-        )
-        return "allow", None, "No access rules defined"
-
-    # Evaluate rules in priority order
-    for rule in rules:
-        try:
-            matches = _evaluate_rule_condition(
-                expression=rule.condition_expression,
-                condition_type=rule.condition_type,
-                tool_args=tool_args,
-                context=context,
-            )
-
-            if matches:
-                logger.info(
-                    f"Rule matched: {rule.description or rule.condition_expression} "
-                    f"-> action={rule.action}"
-                )
-
-                approval_workflow_id = None
-                if rule.action == "require_approval":
-                    # Prefer the rule's own approval_workflow_id; fall back to
-                    # the tool config's legacy approval_workflow_id; finally fall
-                    # back to the account's default workflow so a bare
-                    # ``require_approval`` rule never silently auto-approves.
-                    approval_workflow_id = (
-                        rule.approval_workflow_id
-                        or tool_config.approval_workflow_id
-                        or default_workflow_id_for_account
-                    )
-
-                rule_desc = (
-                    rule.description or f"Rule matched: {rule.condition_expression}"
-                )
-
-                # Log the policy decision (fire-and-forget)
-                _log_policy_decision_async(
-                    account_id=account_id,
-                    tool_name=tool_name,
-                    action=rule.action,
-                    rule_description=rule_desc,
-                    condition_matched=rule.condition_expression,
-                    tool_args=tool_args,
-                    user_id=user_id,
-                    execution_id=execution_id,
-                    correlation_id=correlation_id,
-                    extra_details=extra_details,
-                )
-
-                return (
-                    rule.action,
-                    approval_workflow_id,
-                    rule_desc,
-                )
-
-        except Exception as e:
-            # SECURITY: Fail closed on evaluation errors
-            logger.error(
-                f"Error evaluating rule {rule.id}: {e}. "
-                f"Failing closed with require_approval for security."
-            )
-            error_desc = f"Rule evaluation error: {e} (failing closed)"
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="require_approval",
-                rule_description=error_desc,
-                condition_matched=rule.condition_expression,
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-                correlation_id=correlation_id,
-                extra_details=extra_details,
-            )
-            return (
-                "require_approval",
-                tool_config.approval_workflow_id or default_workflow_id_for_account,
-                error_desc,
-            )
-
-    # No rules matched, default allow
-    _log_policy_decision_async(
-        account_id=account_id,
+    return _evaluate_loaded_access_rules(
+        rules=rules,
+        tool_config=tool_config,
         tool_name=tool_name,
-        action="allow",
-        rule_description="No rules matched (default allow)",
         tool_args=tool_args,
+        context=context,
+        account_id=account_id,
         user_id=user_id,
         execution_id=execution_id,
+        default_workflow_id_for_account=default_workflow_id_for_account,
         correlation_id=correlation_id,
         extra_details=extra_details,
     )
-    return "allow", None, "No rules matched (default allow)"

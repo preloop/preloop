@@ -19,9 +19,12 @@ Usage:
     python scripts/sync_flow_presets.py --cleanup --dry-run
 
 Environment Variables:
-    PRELOOP_PRESETS_PATH: Path to the presets directory. Defaults to the
-                          open-source presets directory. Set to /app/presets
-                          in the EE Docker image.
+    PRELOOP_PRESETS_PATH: os.pathsep-separated list of preset directories,
+                          loaded in order (later dirs override earlier ones
+                          on slug collision; union otherwise). Defaults to
+                          the open-source presets directory. Set to
+                          "/app/backend/presets:/app/presets" in the EE
+                          Docker image to layer EE presets on top of OSS.
 """
 
 import argparse
@@ -37,9 +40,10 @@ from preloop.models.db.session import get_db_session
 from preloop.models.crud.flow import CRUDFlow
 from preloop.models.models.flow import Flow
 from preloop.models import schemas
-from preloop.flow_presets import FLOW_PRESETS, PRESETS_DIR
+from preloop.flow_presets import FLOW_PRESETS, PRESETS_DIRS
 from preloop.services.flow_presets_service import (
     compute_content_hash,
+    link_unlinked_flows_by_content,
     sync_preset_to_derived_flows,
     PresetSyncResult,
 )
@@ -51,7 +55,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-logger.info(f"Loading presets from: {PRESETS_DIR}")
+logger.info(f"Loading presets from: {[str(d) for d in PRESETS_DIRS]}")
 logger.info(f"Found {len(FLOW_PRESETS)} preset definitions")
 
 
@@ -109,6 +113,9 @@ def sync_global_presets(db: Session, dry_run: bool = False) -> int:
             if existing_flow.git_clone_config != preset_def.get("git_clone_config"):
                 needs_update = True
                 update_fields.append("git_clone_config")
+            if existing_flow.notifications != preset_def.get("notifications"):
+                needs_update = True
+                update_fields.append("notifications")
 
             # Check if preset incorrectly has an account_id (should be None)
             if existing_flow.account_id is not None:
@@ -136,6 +143,7 @@ def sync_global_presets(db: Session, dry_run: bool = False) -> int:
                         ),
                         "allowed_mcp_tools": preset_def.get("allowed_mcp_tools", []),
                         "git_clone_config": preset_def.get("git_clone_config"),
+                        "notifications": preset_def.get("notifications"),
                         "trigger_event_source": preset_def.get("trigger_event_source"),
                         "trigger_event_type": preset_def.get("trigger_event_type"),
                         "trigger_config": preset_def.get("trigger_config"),
@@ -344,6 +352,13 @@ def link_existing_flows_to_presets(db: Session, dry_run: bool = False) -> int:
     if not dry_run:
         db.commit()
 
+    logger.info(f"Linked {linked_count} existing flows by name pattern")
+
+    # Second pass: link renamed-but-unmodified clones by prompt content hash.
+    # The name pattern above misses flows that were renamed after cloning;
+    # a byte-identical prompt is proof of origin regardless of the name.
+    linked_count += link_unlinked_flows_by_content(db, dry_run=dry_run)
+
     logger.info(f"Linked {linked_count} existing flows to their source presets")
     return linked_count
 
@@ -363,6 +378,11 @@ def sync_derived_flows(db: Session, dry_run: bool = False) -> List[PresetSyncRes
         List of sync results per preset
     """
     results = []
+
+    # Before propagating, link any unlinked flows whose prompt is
+    # byte-identical to a preset (renamed clones that the name-based
+    # one-time migration missed). Safe: only exact-content matches.
+    link_unlinked_flows_by_content(db, dry_run=dry_run)
 
     # Get all global presets
     presets = (

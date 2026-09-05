@@ -1,4 +1,8 @@
-import type { BrandConfig, PricingPlan } from './brand-config';
+import type {
+  BrandConfig,
+  PricingPlan,
+  RegulationNavLink,
+} from './brand-config';
 import {
   BLOG_BASE_PATH,
   buildBlogBreadcrumbSchema,
@@ -124,38 +128,105 @@ export function get_vs_slugs(): string[] {
   return Object.keys(VS_PAGE_META);
 }
 
+/**
+ * Placeholder replaced with `config.name` when regulation metadata is
+ * rendered. The registry below is shared by every brand, so brand names are
+ * never baked into the strings: a white-label SaaS build must not ship
+ * "Preloop" in its own titles or og tags.
+ */
+export const BRAND_NAME_TOKEN = '{brand}';
+
+/**
+ * SaaS-only named-instrument pages (EU AI Act, CRA, DORA, NIS2). Adding a
+ * page is: drop `<brand>/<slug>.md`, add metadata here, and the vite plugin
+ * will pre-render it when the file exists.
+ */
+export type RegulationPageMeta = {
+  /** Short label used for footer and nav links. */
+  nav_label: string;
+  /** Page `<title>`. May contain `BRAND_NAME_TOKEN`. */
+  title: string;
+  /** Meta description. May contain `BRAND_NAME_TOKEN`. */
+  description: string;
+  keywords: string;
+  about: string[];
+  og_title?: string;
+  og_description?: string;
+};
+
+export const REGULATION_PAGE_META: Record<string, RegulationPageMeta> = {
+  'ai-act-readiness': {
+    nav_label: 'EU AI Act',
+    title: `EU AI Act readiness with ${BRAND_NAME_TOKEN}`,
+    description: `${BRAND_NAME_TOKEN} helps teams implement approvals, runtime visibility, policy enforcement, and audit trails that can support AI governance programs under Regulation (EU) 2024/1689. Not legal advice.`,
+    keywords:
+      'EU AI Act, Regulation (EU) 2024/1689, AI Act Art. 14, AI Act Art. 12, AI Act readiness, AI governance, AI approvals, AI audit trail, EUR-Lex',
+    about: ['EU AI Act', 'Regulation (EU) 2024/1689', 'AI agent approvals'],
+  },
+  'cra-readiness': {
+    nav_label: 'Cyber Resilience Act',
+    title: `Cyber Resilience Act evidence with ${BRAND_NAME_TOKEN}`,
+    description:
+      'Apache SBOM-verify and exploit-check presets write result.json for CRA-style reviews under Regulation (EU) 2024/2847. Art. 14 reporting from 11 Sep 2026. Not a conformity assessment.',
+    keywords:
+      'Cyber Resilience Act, CRA, Regulation (EU) 2024/2847, CRA Art. 14, SBOM verify, SBOM, CE marking, product security, EUR-Lex',
+    about: ['Cyber Resilience Act', 'Regulation (EU) 2024/2847', 'SBOM'],
+  },
+  dora: {
+    nav_label: 'DORA',
+    title: `DORA evidence with ${BRAND_NAME_TOKEN}`,
+    description:
+      'Operational evidence for ICT-using AI agents under Regulation (EU) 2022/2554 (DORA, applying since 17 January 2025). Not a DORA register of information. Not legal advice.',
+    keywords:
+      'DORA, Digital Operational Resilience Act, Regulation (EU) 2022/2554, ICT third-party risk, financial entities, AI agent audit trail, EUR-Lex',
+    about: ['DORA', 'Regulation (EU) 2022/2554', 'ICT third-party risk'],
+  },
+  nis2: {
+    nav_label: 'NIS2',
+    title: `NIS2 evidence with ${BRAND_NAME_TOKEN}`,
+    description:
+      'Supply-chain and vulnerability-handling evidence for AI agent runtimes under Directive (EU) 2022/2555 Art. 21(2). Not entity classification. Not legal advice.',
+    keywords:
+      'NIS2, Directive (EU) 2022/2555, NIS2 Art. 21, supply-chain security, vulnerability handling, AI agent governance, EUR-Lex',
+    about: ['NIS2', 'Directive (EU) 2022/2555', 'supply-chain security'],
+  },
+};
+
+export function get_regulation_slugs(): string[] {
+  return Object.keys(REGULATION_PAGE_META);
+}
+
+/** Substitute the brand-name placeholder in a regulation metadata string. */
+export function apply_brand_name(text: string, config: BrandConfig): string {
+  if (!text.includes(BRAND_NAME_TOKEN)) {
+    return text;
+  }
+  return text.split(BRAND_NAME_TOKEN).join(config.name || 'Preloop');
+}
+
+/**
+ * Footer/nav links for the regulation pages that actually shipped.
+ *
+ * `slugs` comes from build-time discovery (a page only exists when its
+ * markdown file does), so a brand missing `dora.md` never gets a `/dora`
+ * link that would silently fall back to the homepage.
+ */
+export function get_regulation_nav_links(slugs: string[]): RegulationNavLink[] {
+  return slugs
+    .filter((slug) => Boolean(REGULATION_PAGE_META[slug]))
+    .map((slug) => ({
+      href: `/${slug}`,
+      label: REGULATION_PAGE_META[slug].nav_label,
+    }));
+}
+
 export function get_route_from_filename(filename: string): string {
-  if (filename.includes('ai-act-readiness.html')) {
-    return '/ai-act-readiness';
-  }
-
-  if (filename.includes('about.html')) {
-    return '/about';
-  }
-
-  if (filename.includes('whatis-mcp.html')) {
-    return '/whatis-mcp';
-  }
-
-  if (filename.includes('terms.html')) {
-    return '/terms';
-  }
-
-  if (filename.includes('privacy.html')) {
-    return '/privacy';
-  }
-
-  if (filename.includes('pricing.html')) {
-    return '/pricing';
-  }
-
-  // Match any `/vs/<slug>.html` file (competitor comparison landing pages).
+  // Nested prerenders first so `dist/vs/foo.html` is `/vs/foo`, not `/foo`.
   const vsMatch = filename.match(/vs[\\/]([A-Za-z0-9_-]+)\.html$/);
   if (vsMatch) {
     return `/vs/${vsMatch[1]}`;
   }
 
-  // Match any `/resources/<slug>.html` file (long-form pillar articles).
   const resourcesMatch = filename.match(
     /resources[\\/]([A-Za-z0-9_-]+)\.html$/
   );
@@ -172,6 +243,13 @@ export function get_route_from_filename(filename: string): string {
   const blogMatch = filename.match(/blog[\\/]([a-z0-9][a-z0-9-]*)\.html$/);
   if (blogMatch) {
     return `${BLOG_BASE_PATH}/${blogMatch[1]}`;
+  }
+
+  // Any other dist/<slug>.html is `/<slug>`. EE adds a page by emitting the
+  // file; OSS does not keep an allowlist of those names.
+  const topLevel = filename.match(/(^|[/\\])([a-z0-9][a-z0-9-]*)\.html$/i);
+  if (topLevel && topLevel[2].toLowerCase() !== 'index') {
+    return `/${topLevel[2]}`;
   }
 
   return '/';
@@ -249,15 +327,6 @@ export function get_meta_for_route(
         og_title: `About - ${config.name}`,
         og_description: `Learn about ${config.name} and our mission to make AI automation governable, observable, and human-centered.`,
       };
-    case '/ai-act-readiness':
-      return {
-        title: `EU AI Act readiness with ${config.name}`,
-        description: `${config.name} helps teams implement approvals, runtime visibility, policy enforcement, and audit trails that can support AI governance programs and EU AI Act readiness work.`,
-        keywords: `${config.name}, EU AI Act, AI Act readiness, AI governance, AI approvals, AI audit trail, operational AI governance`,
-        og_image: default_og_image,
-        og_title: `EU AI Act readiness with ${config.name}`,
-        og_description: `${config.name} supports AI governance programs with approvals, policy enforcement, runtime visibility, and audit trails for AI Act readiness work.`,
-      };
     case '/resources/ai-agent-control-plane-2026':
       return {
         title: `The AI Agent Control Plane in 2026 — MCP Gateways, Model Gateways, and Human Approvals | ${config.name}`,
@@ -270,6 +339,31 @@ export function get_meta_for_route(
     case BLOG_BASE_PATH:
       return get_blog_index_meta(config);
     default: {
+      const regulation_slug = route.startsWith('/') ? route.slice(1) : route;
+      if (
+        REGULATION_PAGE_META[regulation_slug] &&
+        !route.slice(1).includes('/')
+      ) {
+        const page = REGULATION_PAGE_META[regulation_slug];
+        const merged_keywords = [page.keywords, default_keywords]
+          .filter((value) => value && value.trim().length > 0)
+          .join(', ');
+        const title = apply_brand_name(page.title, config);
+        const description = apply_brand_name(page.description, config);
+        return {
+          title,
+          description,
+          keywords: merged_keywords,
+          og_image: default_og_image,
+          og_title: page.og_title
+            ? apply_brand_name(page.og_title, config)
+            : title,
+          og_description: page.og_description
+            ? apply_brand_name(page.og_description, config)
+            : description,
+        };
+      }
+
       // Blog posts at `/blog/<slug>`. Metadata comes from the post's own
       // frontmatter, so an unknown slug falls through to the site defaults
       // rather than inventing a title.
@@ -311,22 +405,31 @@ export function get_meta_for_route(
   }
 }
 
-export function get_static_routes(config: BrandConfig): string[] {
-  return get_static_routes_with_options(config, true);
-}
-
 export function get_static_routes_with_options(
   config: BrandConfig,
-  include_ai_act_readiness: boolean,
+  regulation_slugs: string[] = [],
   vs_slugs: string[] = [],
-  posts: BlogPost[] = []
+  posts: BlogPost[] = [],
+  markdown_paths: string[] = []
 ): string[] {
   const routes = ['/', '/privacy', '/terms', '/whatis-mcp'];
 
   if ((config.edition || 'saas') === 'saas') {
-    routes.push('/pricing', '/about');
-    if (include_ai_act_readiness) {
-      routes.push('/ai-act-readiness');
+    routes.push('/pricing');
+    // Discovered markdown (about, regulation instruments, resources). EE
+    // ships extra files; OSS never hardcodes those paths here.
+    for (const markdown_path of markdown_paths) {
+      if (!routes.includes(markdown_path)) {
+        routes.push(markdown_path);
+      }
+    }
+    for (const slug of regulation_slugs) {
+      if (REGULATION_PAGE_META[slug]) {
+        const route = `/${slug}`;
+        if (!routes.includes(route)) {
+          routes.push(route);
+        }
+      }
     }
     // Include one /vs/<slug> entry per comparison page that has both a
     // metadata registration and a markdown file on disk. The list is
@@ -337,9 +440,6 @@ export function get_static_routes_with_options(
         routes.push(`/vs/${slug}`);
       }
     }
-    // Long-form pillar resources. Listed explicitly here so the sitemap and
-    // llms.txt stay in sync with the pages actually generated by the build.
-    routes.push('/resources/ai-agent-control-plane-2026');
 
     // Blog index plus one entry per published post. Supplied by the caller
     // for the same reason as `vs_slugs`: these helpers stay pure and the
@@ -866,13 +966,15 @@ export function get_structured_data_for_route(
     ];
   }
 
-  if (route === '/ai-act-readiness') {
+  const regulation_slug = route.startsWith('/') ? route.slice(1) : route;
+  if (REGULATION_PAGE_META[regulation_slug] && !route.slice(1).includes('/')) {
+    const page = REGULATION_PAGE_META[regulation_slug];
     const meta = get_meta_for_route(route, config);
     return [
       organization,
       website,
       buildArticleSchema(config, route, meta.title, meta.description, {
-        about: ['EU AI Act', 'AI governance', 'AI agent approvals'],
+        about: page.about,
       }),
     ];
   }

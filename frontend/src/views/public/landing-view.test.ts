@@ -341,3 +341,95 @@ describe('LandingView hero video', () => {
     expect(el.shadowRoot?.querySelector('iframe')).to.not.exist;
   });
 });
+
+describe('LandingView hero CTA row and footer disclaimer', () => {
+  let fetchStub: sinon.SinonStub;
+
+  const HERO_WITH_INSTALL_AND_LEGAL = {
+    hero: {
+      title: 'Hero',
+      lead: 'Lead',
+      install_command: 'curl -fsSL https://example.com/install | sh',
+      install_caption: 'macOS, Linux, and WSL.',
+      cta_secondary: 'Book a Demo',
+      cta_secondary_url: '/request-demo',
+      trust_tags: ['Apache-2.0', 'Self-hostable'],
+      image: '/img.png',
+      image_alt: 'Product screenshot',
+    },
+    features: [],
+    faqs: [{ q: 'Question?', a: 'Answer.' }],
+    legal_disclaimer:
+      'Preloop is not a law firm and does not provide legal advice.',
+  };
+
+  beforeEach(() => {
+    (window as any).BRAND_CONFIG = BRAND_CONFIG;
+  });
+
+  afterEach(() => {
+    fetchStub.restore();
+    delete (window as any).BRAND_CONFIG;
+  });
+
+  it('renders the secondary CTA below the hero grid, not in the copy column', async () => {
+    fetchStub = stubFetch(HERO_WITH_INSTALL_AND_LEGAL);
+    const el = (await fixture(
+      html`<landing-view></landing-view>`
+    )) as LandingView;
+    await tick();
+    await el.updateComplete;
+
+    const hero = el.shadowRoot?.querySelector('.hero');
+    const inner = hero?.querySelector('.hero-inner');
+    const cta = hero?.querySelector('.hero-secondary-cta');
+    expect(cta, 'secondary CTA container exists').to.exist;
+    expect(
+      cta?.classList.contains('section-container'),
+      'CTA row reuses the shared section width'
+    ).to.be.true;
+    expect(hero?.contains(cta as Node)).to.be.true;
+    expect(
+      inner?.contains(cta as Node),
+      'CTA is not inside the two-column grid'
+    ).to.be.false;
+    expect(
+      inner?.nextElementSibling,
+      'CTA is the row immediately below the grid'
+    ).to.equal(cta);
+    expect(el.shadowRoot?.querySelector('.hero-content .hero-secondary-cta')).to
+      .not.exist;
+    const demoBtn = cta?.querySelector('sl-button');
+    expect(demoBtn?.getAttribute('data-track')).to.equal('cta_demo_hero');
+    expect((cta?.textContent || '').replace(/\s+/g, ' ')).to.contain(
+      'Want a guided tour first?'
+    );
+  });
+
+  it('keeps the disclaimer out of the FAQ and renders it in the footer', async () => {
+    fetchStub = stubFetch(HERO_WITH_INSTALL_AND_LEGAL);
+    const el = (await fixture(
+      html`<landing-view></landing-view>`
+    )) as LandingView;
+    await tick();
+    await el.updateComplete;
+
+    const faq = el.shadowRoot?.querySelector('.faq-section');
+    expect(faq).to.exist;
+    expect(faq?.nextElementSibling?.classList.contains('legal-disclaimer')).to
+      .be.false;
+    expect(el.shadowRoot?.querySelector('main .legal-disclaimer')).to.not.exist;
+    expect(el.shadowRoot?.querySelector('.faq-section + p.legal-disclaimer')).to
+      .not.exist;
+
+    const footer = el.shadowRoot?.querySelector('app-footer');
+    expect(footer).to.exist;
+    await (footer as HTMLElement & { updateComplete: Promise<unknown> })
+      .updateComplete;
+    const disclaimer = footer?.shadowRoot?.querySelector('.legal-disclaimer');
+    expect(disclaimer, 'disclaimer present in the footer').to.exist;
+    expect((disclaimer?.textContent || '').trim()).to.equal(
+      HERO_WITH_INSTALL_AND_LEGAL.legal_disclaimer
+    );
+  });
+});

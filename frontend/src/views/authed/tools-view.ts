@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS, type TemplateResult } from 'lit';
+import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
   getTools,
@@ -25,20 +25,23 @@ import {
 } from '../../api';
 import type { AccountGovernanceDefaults } from '../../types';
 import '../../components/mcp-server-form';
-import '../../components/mcp-server-card';
 import '../../components/tools-editor-component';
 import '../../components/mcp-setup-dialog';
 import '../../components/approval-workflow-dialog';
+import '../../components/list-toolbar';
 import type { Tool, ApprovalWorkflow } from '../../components/tool-card';
 import type { MCPServer } from '../../components/mcp-server-card';
 import type { AccessRuleSummary } from '../../components/governance-rule-set-editor';
 import type { RuleFormData } from '../../components/tool-rule-editor';
+import {
+  loadViewMode,
+  saveViewMode,
+  type ListViewMode,
+} from '../../utils/view-mode';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
-import '@shoelace-style/shoelace/dist/components/badge/badge.js';
-import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
@@ -46,16 +49,69 @@ import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
 import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
+import '@shoelace-style/shoelace/dist/components/menu-label/menu-label.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
-import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '@shoelace-style/shoelace/dist/components/switch/switch.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
+import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
+import '@shoelace-style/shoelace/dist/components/tab/tab.js';
+import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
-import type { ToolWithRules } from '../../components/tools-editor-component';
+import {
+  NATIVE_ADAPTERS,
+  nativeAdapterGroupName,
+  SEEN_FROM_AGENTS_LABEL,
+  type ToolWithRules,
+} from '../../components/tools-editor-component';
 import type { GatewayUsageByTool } from '../../types';
+import { consoleDialogStyles } from '../../styles/console-dialog';
+
+type ToolsTab = 'mcp' | 'native';
+
+interface ToolsFilters {
+  query: string;
+  statuses: string[];
+  servers: string[];
+  rules: string[];
+  workflows: string[];
+}
+
+interface NativeFilters {
+  query: string;
+  agents: string[];
+  rules: string[];
+}
+
+const TAB_STORAGE_KEY = 'preloop.tools.tab';
+const VIEW_MODE_KEY = 'preloop.tools.view_mode';
+// Cards only until the flat table lands; a List/Cards toggle would persist
+// a choice that does not change the page.
+const TOOLS_VIEWS: ListViewMode[] = ['cards'];
+const EMPTY_FILTERS: ToolsFilters = {
+  query: '',
+  statuses: [],
+  servers: [],
+  rules: [],
+  workflows: [],
+};
+const EMPTY_NATIVE_FILTERS: NativeFilters = {
+  query: '',
+  agents: [],
+  rules: [],
+};
+
+function isToolsTab(value: string | null | undefined): value is ToolsTab {
+  return value === 'mcp' || value === 'native';
+}
+
+function selectValue(event: Event): string {
+  const select = event.target as HTMLElement & { value: string | string[] };
+  const value = Array.isArray(select.value) ? select.value[0] : select.value;
+  return value || '';
+}
 
 interface StarterPolicyDiffChange {
   path: string;
@@ -82,15 +138,19 @@ export class ToolsView extends LitElement {
   @state() private governanceOverrideAgents: {
     id: string;
     name: string;
-    setting: string;
   }[] = [];
   @state() private savingGovernanceDefaults = false;
+  @state() private governanceSaveError: string | null = null;
+  @state() private governanceLoadFailed = false;
   @state() private isAddingMCPServer = false;
   @state() private editingMCPServer: MCPServer | null = null;
   @state() private currentUser: { id?: string } | null = null;
   @state() private showSetupDialog = false;
   @state() private features: { [key: string]: boolean | string[] } = {};
-  @state() private filterText = '';
+  @state() private activeTab: ToolsTab = 'mcp';
+  @state() private viewMode: ListViewMode = loadViewMode(VIEW_MODE_KEY);
+  @state() private filters: ToolsFilters = { ...EMPTY_FILTERS };
+  @state() private nativeFilters: NativeFilters = { ...EMPTY_NATIVE_FILTERS };
   @state() private isExporting = false;
   @state() private oauthAlert: 'success' | 'error' | null = null;
   @state() private hasDefaultAIModel = false;
@@ -105,294 +165,132 @@ export class ToolsView extends LitElement {
   @state() private starterPolicyDiff: StarterPolicyDiff | null = null;
   @state() private starterPolicyReviewConfirmed = false;
   @state() private toolUsageStats: GatewayUsageByTool[] = [];
-  @state() private toolStatsLoading = false;
-
-  // Single active filter — only one at a time (besides text/policy)
-  @state() private activeFilter:
-    | 'all'
-    | 'available'
-    | 'enabled'
-    | 'disabled'
-    | 'unavailable'
-    | 'builtin'
-    | 'mcp'
-    | 'has_rules'
-    | 'no_rules'
-    | 'require_approval'
-    | 'no_approval' = 'available';
-  @state() private filterPolicyId: string | null = null;
 
   // Approval workflow dialog
   @state() private showPolicyDialog = false;
   @state() private editingPolicy: ApprovalWorkflow | null = null;
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       mcp-setup-dialog {
         display: contents;
       }
 
-      /* Top section: summary + MCP card side by side */
-      .top-section {
+      .tab-intro {
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
+        font-size: var(--console-text-meta, var(--sl-font-size-small));
+        margin: 0 0 var(--sl-spacing-small);
+      }
+
+      .summary-strip {
         display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: var(--sl-spacing-large);
-      }
-
-      @media (max-width: 900px) {
-        .top-section {
-          flex-direction: column;
-          margin-bottom: var(--sl-spacing-small);
-          gap: var(--sl-spacing-small);
-        }
-      }
-
-      /* MCP Server card */
-      .builtin-server-card {
-        flex: 0 1 400px;
-        max-width: 400px;
-      }
-
-      @media (max-width: 900px) {
-        .builtin-server-card {
-          max-width: none;
-          width: 100%;
-        }
-      }
-
-      .builtin-server-card::part(body) {
-        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
-      }
-
-      .builtin-server-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: var(--sl-spacing-2x-small);
-      }
-
-      .builtin-server-name {
-        font-size: var(--sl-font-size-medium);
-        font-weight: var(--sl-font-weight-semibold);
-        margin: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .info-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 0.15rem 0;
-        font-size: var(--sl-font-size-x-small);
-      }
-
-      .info-label {
-        font-weight: 600;
-        color: var(--sl-color-neutral-700);
-      }
-
-      .info-value-container {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-x-small);
-      }
-
-      .info-value {
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 8px 0;
+        padding: 12px 0;
+        border-top: 1px solid
+          var(--console-hairline, var(--sl-color-neutral-200));
+        border-bottom: 1px solid
+          var(--console-hairline, var(--sl-color-neutral-200));
+        margin-bottom: var(--sl-spacing-medium);
         color: var(--sl-color-neutral-900);
-        font-family: monospace;
-        background: var(--sl-color-neutral-50);
-        padding: 0.15rem 0.4rem;
-        border-radius: 4px;
-        font-size: var(--sl-font-size-x-small);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        max-width: 220px;
+        font-size: var(--console-text-body, var(--sl-font-size-small));
+        font-variant-numeric: tabular-nums;
       }
 
-      .info-link {
-        color: var(--sl-color-primary-600);
-        text-decoration: none;
-        font-size: var(--sl-font-size-x-small);
-        white-space: nowrap;
+      .strip-sep {
+        color: var(--console-meta-color, var(--sl-color-neutral-500));
+        margin: 0 8px;
       }
 
-      .info-link:hover {
-        text-decoration: underline;
-      }
-
-      sl-card::part(footer) {
-        padding: var(--sl-spacing-x-small) var(--sl-spacing-medium);
-        border-top: 1px solid var(--sl-color-neutral-200);
-      }
-
-      /* Summary table */
-      .summary-table-wrapper {
-        flex: 0 1 auto;
-      }
-
-      .summary-table {
-        border-collapse: collapse;
-        font-size: var(--sl-font-size-small);
-      }
-
-      .unavailable-note {
-        margin-top: var(--sl-spacing-x-small);
-        color: var(--sl-color-neutral-500);
-        font-size: var(--sl-font-size-small);
-      }
-
-      .summary-table td {
+      .strip-count {
+        background: none;
+        border: none;
         padding: 0;
-        vertical-align: middle;
-        white-space: nowrap;
-      }
-
-      .summary-stat {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--sl-spacing-medium);
-        color: var(--sl-color-neutral-700);
+        color: inherit;
+        font: inherit;
+        font-variant-numeric: tabular-nums;
         cursor: pointer;
-        padding: 4px 8px;
-        border-radius: var(--sl-border-radius-small);
-        transition: background 0.1s ease;
-        white-space: nowrap;
       }
 
-      .summary-stat:hover {
-        background: var(--sl-color-neutral-100);
-      }
-
-      .summary-stat.active {
-        background: var(--sl-color-primary-100);
+      .strip-count:hover {
         color: var(--sl-color-primary-700);
-        font-weight: var(--sl-font-weight-semibold);
       }
 
-      .summary-stat strong {
+      .strip-count.active {
+        font-weight: var(--sl-font-weight-semibold);
+        color: var(--sl-color-primary-700);
+      }
+
+      .context-tax {
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
+      }
+
+      .context-tax strong {
         font-variant-numeric: tabular-nums;
         color: var(--sl-color-neutral-900);
       }
 
-      .summary-stat.active strong {
-        color: var(--sl-color-primary-700);
-      }
-
-      .summary-stat.muted {
-        opacity: 0.4;
-        cursor: default;
-      }
-
-      .summary-stat.muted:hover {
-        background: none;
-      }
-
-      /* Filter area: policy row + search row */
-      .filter-area {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-x-small);
-        margin-bottom: var(--sl-spacing-large);
-      }
-
-      .policy-row {
-        display: flex;
-        justify-content: flex-end;
-        margin-bottom: 0.6em;
-      }
-
-      .filter-bar {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-small);
-        flex-wrap: wrap;
-      }
-
-      .filter-search {
-        flex: 1;
-        min-width: 200px;
-      }
-
-      .filter-buttons {
-        display: flex;
-        gap: var(--sl-spacing-2x-small);
-        flex-shrink: 0;
-        flex-wrap: wrap;
-      }
-
-      .filter-chip {
-        font-size: var(--sl-font-size-x-small);
-      }
-
-      .filter-chip[variant='primary']::part(base) {
-        font-weight: 600;
-      }
-
-      /* Section headers */
-      .section-header {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-small);
-        padding: var(--sl-spacing-small) 0;
-        margin-top: var(--sl-spacing-medium);
-        cursor: pointer;
-        user-select: none;
-      }
-
-      .section-header:first-of-type {
-        margin-top: 0;
-      }
-
-      .section-header:hover .section-title {
-        color: var(--sl-color-neutral-900);
-      }
-
-      .section-icon {
-        color: var(--sl-color-neutral-500);
-        transition: transform 0.2s ease;
-        flex-shrink: 0;
-      }
-
-      .section-icon.open {
-        transform: rotate(90deg);
-      }
-
-      .section-title {
-        font-size: var(--sl-font-size-small);
-        font-weight: var(--sl-font-weight-bold);
-        color: var(--sl-color-neutral-600);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-
-      .section-meta {
-        font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
-      }
-
-      .section-actions {
-        display: flex;
-        gap: var(--sl-spacing-2x-small);
-      }
-
-      .section-line {
-        flex: 1;
-        height: 1px;
-        background: var(--sl-color-neutral-200);
-      }
-
-      /* Tool list */
-      .tool-list {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-x-small);
+      .toolbar-wrap {
+        width: 100%;
         margin-bottom: var(--sl-spacing-medium);
+      }
+
+      sl-select::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .defaults-strip {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-x-small);
+        padding: 12px 0;
+        border-top: 1px solid
+          var(--console-hairline, var(--sl-color-neutral-200));
+        border-bottom: 1px solid
+          var(--console-hairline, var(--sl-color-neutral-200));
+        margin-bottom: var(--sl-spacing-medium);
+      }
+
+      .defaults-strip-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 12px;
+      }
+
+      .defaults-strip .meta-line {
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
+        font-size: var(--console-text-meta, var(--sl-font-size-small));
+      }
+
+      .defaults-strip .governance-notice {
+        color: var(--sl-color-warning-700);
+        font-size: var(--sl-font-size-small);
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+
+      .defaults-strip .governance-error {
+        color: var(--sl-color-danger-600);
+        font-size: var(--sl-font-size-small);
+      }
+
+      .native-empty {
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
+        font-size: var(--console-text-body, var(--sl-font-size-small));
+        padding: var(--sl-spacing-large) 0;
       }
 
       .loading-indicator {
@@ -406,130 +304,6 @@ export class ToolsView extends LitElement {
         text-align: center;
         padding: var(--sl-spacing-x-large);
         color: var(--sl-color-neutral-500);
-      }
-
-      /* Policy chip bar (above filter bar, right-aligned) */
-      .policy-chip-bar {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-x-small);
-        flex-wrap: wrap;
-        font-size: var(--sl-font-size-small);
-      }
-
-      .policy-chip-bar-label {
-        color: var(--sl-color-neutral-500);
-        font-size: var(--sl-font-size-x-small);
-        font-weight: var(--sl-font-weight-semibold);
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        white-space: nowrap;
-        padding-right: var(--sl-spacing-2x-small);
-      }
-
-      .policy-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        padding: 2px 4px 2px 10px;
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-pill);
-        font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-700);
-        cursor: pointer;
-        transition: all 0.15s ease;
-        white-space: nowrap;
-        background: var(--sl-color-neutral-0);
-      }
-
-      .policy-chip:hover {
-        border-color: var(--sl-color-neutral-400);
-        background: var(--sl-color-neutral-50);
-      }
-
-      .policy-chip.active {
-        border-color: var(--sl-color-primary-400);
-        background: var(--sl-color-primary-50);
-        color: var(--sl-color-primary-700);
-      }
-
-      .policy-chip .policy-chip-name {
-        max-width: 180px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      .policy-chip sl-icon-button {
-        font-size: 0.65rem;
-        color: var(--sl-color-neutral-500);
-      }
-
-      .policy-chip sl-icon-button:hover {
-        color: var(--sl-color-neutral-900);
-      }
-
-      .policy-chip .policy-chip-type {
-        font-size: 0.6rem;
-        padding: 1px 5px;
-        border-radius: var(--sl-border-radius-pill);
-        background: var(--sl-color-neutral-100);
-        color: var(--sl-color-neutral-500);
-      }
-
-      .policy-chip.active .policy-chip-type {
-        background: var(--sl-color-primary-100);
-        color: var(--sl-color-primary-600);
-      }
-
-      .policy-chip-add {
-        display: inline-flex;
-        align-items: center;
-        gap: 3px;
-        padding: 2px 10px;
-        border: 1px dashed var(--sl-color-neutral-300);
-        border-radius: var(--sl-border-radius-pill);
-        font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
-        cursor: pointer;
-        transition: all 0.15s ease;
-        background: none;
-        white-space: nowrap;
-      }
-
-      .policy-chip-add:hover {
-        border-color: var(--sl-color-primary-400);
-        color: var(--sl-color-primary-600);
-        background: var(--sl-color-primary-50);
-      }
-
-      .policy-chip-empty {
-        color: var(--sl-color-neutral-400);
-        font-size: var(--sl-font-size-x-small);
-        font-style: italic;
-      }
-
-      /* Active filter tags */
-      .active-filters {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-2x-small);
-        flex-wrap: wrap;
-      }
-
-      .active-filter-tag {
-        display: inline-flex;
-        align-items: center;
-        gap: var(--sl-spacing-2x-small);
-        padding: 2px 8px;
-        background: var(--sl-color-primary-100);
-        color: var(--sl-color-primary-700);
-        border-radius: var(--sl-border-radius-pill);
-        font-size: var(--sl-font-size-x-small);
-        font-weight: 500;
-      }
-
-      .active-filter-tag sl-icon-button {
-        font-size: 0.7rem;
       }
 
       .starter-policy-description {
@@ -690,58 +464,16 @@ export class ToolsView extends LitElement {
         justify-content: flex-end;
         gap: var(--sl-spacing-small);
       }
-
-      .tool-stats-panel {
-        margin-top: var(--sl-spacing-medium);
-        border-top: 1px solid var(--sl-color-neutral-200);
-        padding-top: var(--sl-spacing-medium);
-      }
-
-      .tool-stats-title {
-        font-size: var(--sl-font-size-x-small);
-        font-weight: var(--sl-font-weight-bold);
-        color: var(--sl-color-neutral-600);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin-bottom: var(--sl-spacing-x-small);
-      }
-
-      .tool-stats-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: var(--sl-font-size-x-small);
-      }
-
-      .tool-stats-table th,
-      .tool-stats-table td {
-        padding: 4px 8px;
-        text-align: left;
-        border-bottom: 1px solid var(--sl-color-neutral-100);
-      }
-
-      .tool-stats-table th {
-        color: var(--sl-color-neutral-500);
-        font-weight: 600;
-      }
-
-      .tool-stats-table td:last-child,
-      .tool-stats-table th:last-child {
-        text-align: right;
-      }
     `,
   ];
 
-  private static readonly _FILTER_STORAGE_KEY = 'preloop:tools-filter';
   private _pendingStarterPolicyServerId: string | null = null;
   private _pendingStarterPolicyFallbackToLatest = false;
   private _handledOauthStarterPolicy = false;
 
   connectedCallback() {
     super.connectedCallback();
-    const saved = localStorage.getItem(ToolsView._FILTER_STORAGE_KEY);
-    if (saved) {
-      this.activeFilter = saved as typeof this.activeFilter;
-    }
+    this.activeTab = this._resolveInitialTab();
 
     // Check for OAuth callback hash (#setup_mcp=success or #setup_mcp=error)
     if (window.location.hash) {
@@ -752,16 +484,59 @@ export class ToolsView extends LitElement {
       } else if (setupMcp === 'error') {
         this.oauthAlert = 'error';
       }
-      // Clean up the hash
-      window.history.replaceState({}, '', window.location.pathname);
+      // Arriving from an approval's "Review this rule" link. There is no
+      // per-tool route yet, so narrow the list to that tool instead of
+      // dropping the reviewer into the full catalogue.
+      const tool = hashParams.get('tool');
+      if (tool) {
+        this.filters = { ...this.filters, query: tool };
+      }
+      // Clean up the hash without dropping ?tab=.
+      const url = new URL(window.location.href);
+      url.hash = '';
+      window.history.replaceState({}, '', `${url.pathname}${url.search}`);
     }
 
+    this._rememberTab(this.activeTab);
     this.loadData();
   }
 
-  private _setFilter(filter: typeof this.activeFilter) {
-    this.activeFilter = filter;
-    localStorage.setItem(ToolsView._FILTER_STORAGE_KEY, filter);
+  private _resolveInitialTab(): ToolsTab {
+    const fromUrl = new URLSearchParams(window.location.search).get('tab');
+    if (isToolsTab(fromUrl)) {
+      return fromUrl;
+    }
+    try {
+      const remembered = window.localStorage.getItem(TAB_STORAGE_KEY);
+      if (isToolsTab(remembered)) {
+        return remembered;
+      }
+    } catch {
+      // Private-mode storage failures must not keep the page from rendering.
+    }
+    return 'mcp';
+  }
+
+  private _rememberTab(tab: ToolsTab) {
+    try {
+      window.localStorage.setItem(TAB_STORAGE_KEY, tab);
+    } catch {
+      // Remembering the tab is a convenience, not a requirement.
+    }
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('tab') !== tab) {
+      url.searchParams.set('tab', tab);
+      window.history.replaceState({}, '', `${url.pathname}${url.search}`);
+    }
+  }
+
+  private _handleTabShow(event: CustomEvent<{ name: string }>) {
+    const name = event.detail?.name;
+    if (!isToolsTab(name)) {
+      return;
+    }
+    this.activeTab = name;
+    this._rememberTab(name);
   }
 
   private async loadData() {
@@ -832,7 +607,6 @@ export class ToolsView extends LitElement {
   }
 
   private async _loadToolUsageStats() {
-    this.toolStatsLoading = true;
     try {
       const end = new Date();
       const start = new Date(end);
@@ -844,8 +618,6 @@ export class ToolsView extends LitElement {
       this.toolUsageStats = stats.tools || [];
     } catch {
       this.toolUsageStats = [];
-    } finally {
-      this.toolStatsLoading = false;
     }
   }
 
@@ -853,133 +625,189 @@ export class ToolsView extends LitElement {
     return new Map(this.toolUsageStats.map((row) => [row.tool_name, row]));
   }
 
-  private _formatCurrency(value?: number | null): string {
-    const amount = Number(value || 0);
-    if (amount === 0) return '$0.00';
-    return amount >= 0.01 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`;
+  private _isMcpTool(tool: ToolWithRules): boolean {
+    return tool.source !== 'agent';
+  }
+
+  private _mcpTools(): ToolWithRules[] {
+    return this.tools.filter((tool) => this._isMcpTool(tool));
+  }
+
+  private _nativeTools(): ToolWithRules[] {
+    return this.tools.filter((tool) => tool.source === 'agent');
+  }
+
+  private _toolHasRules(tool: ToolWithRules): boolean {
+    return Boolean(
+      (tool.access_rules && tool.access_rules.length > 0) ||
+      tool.approval_workflow_id ||
+      tool.has_approval_condition
+    );
+  }
+
+  private _toolRequiresApproval(tool: ToolWithRules): boolean {
+    return Boolean(
+      tool.access_rules?.some(
+        (rule) => rule.action === 'require_approval' && rule.is_enabled
+      ) || tool.approval_workflow_id
+    );
+  }
+
+  private _toolUsesWorkflow(tool: ToolWithRules, workflowId: string): boolean {
+    return (
+      tool.approval_workflow_id === workflowId ||
+      Boolean(
+        tool.access_rules?.some(
+          (rule) => rule.approval_workflow_id === workflowId
+        )
+      )
+    );
+  }
+
+  private _toolMatchesStatus(tool: ToolWithRules, status: string): boolean {
+    const available = tool.is_supported !== false;
+    if (status === 'enabled') {
+      return available && tool.is_enabled;
+    }
+    if (status === 'disabled') {
+      return available && !tool.is_enabled;
+    }
+    if (status === 'unavailable') {
+      return !available;
+    }
+    return true;
+  }
+
+  private _toolMatchesServer(tool: ToolWithRules, server: string): boolean {
+    if (server === 'preloop') {
+      return tool.source === 'builtin';
+    }
+    return tool.source === 'mcp' && tool.source_id === server;
+  }
+
+  private _toolMatchesRuleFilter(tool: ToolWithRules, rule: string): boolean {
+    if (rule === 'with_rules') {
+      return this._toolHasRules(tool);
+    }
+    if (rule === 'no_rules') {
+      return !this._toolHasRules(tool);
+    }
+    if (rule === 'require_approval') {
+      return this._toolRequiresApproval(tool);
+    }
+    return true;
   }
 
   // ─── Stats helpers ──────────────────────────────────
 
   private _getStats() {
-    const all = this.tools;
-    const available = all.filter((t) => t.is_supported !== false);
-    const unavailable = all.filter((t) => t.is_supported === false);
-    const enabled = available.filter((t) => t.is_enabled);
-    const disabled = available.filter((t) => !t.is_enabled);
-    const builtin = available.filter((t) => t.source === 'builtin');
-    const proxied = available.filter((t) => t.source === 'mcp');
-    const withRules = all.filter(
-      (t) =>
-        (t.access_rules && t.access_rules.length > 0) ||
-        t.approval_workflow_id ||
-        t.has_approval_condition
+    const all = this._mcpTools();
+    const available = all.filter((tool) => tool.is_supported !== false);
+    const unavailable = all.filter((tool) => tool.is_supported === false);
+    const enabled = available.filter((tool) => tool.is_enabled);
+    const withRules = all.filter((tool) => this._toolHasRules(tool));
+    const requireApproval = all.filter((tool) =>
+      this._toolRequiresApproval(tool)
     );
-    const withoutRules = all.length - withRules.length;
-    const requireApproval = all.filter(
-      (t) =>
-        t.access_rules?.some(
-          (r) => r.action === 'require_approval' && r.is_enabled
-        ) || t.approval_workflow_id
-    );
-    const noApproval = all.length - requireApproval.length;
+    const contextTaxTokens = enabled.reduce((sum, tool) => {
+      const tokens = tool.schema_tokens_estimate;
+      return sum + (typeof tokens === 'number' && tokens > 0 ? tokens : 0);
+    }, 0);
 
     return {
       total: all.length,
-      available: available.length,
       unavailable: unavailable.length,
       enabled: enabled.length,
-      disabled: disabled.length,
-      builtin: builtin.length,
-      proxied: proxied.length,
       withRules: withRules.length,
-      withoutRules,
       requireApproval: requireApproval.length,
-      noApproval,
+      contextTaxTokens,
       unavailableReasons: [
         ...new Set(
           unavailable
-            .map((t) => t.unsupported_reason)
-            .filter((r): r is string => !!r)
+            .map((tool) => tool.unsupported_reason)
+            .filter((reason): reason is string => !!reason)
         ),
       ],
     };
   }
 
   private _getFilteredTools(): ToolWithRules[] {
-    let tools = this.tools;
+    let tools = this._mcpTools();
+    const { query, statuses, servers, rules, workflows } = this.filters;
 
-    // Single active filter
-    switch (this.activeFilter) {
-      case 'all':
-        break;
-      case 'available':
-        tools = tools.filter((t) => t.is_supported !== false);
-        break;
-      case 'enabled':
-        tools = tools.filter((t) => t.is_supported !== false && t.is_enabled);
-        break;
-      case 'disabled':
-        tools = tools.filter((t) => t.is_supported !== false && !t.is_enabled);
-        break;
-      case 'unavailable':
-        tools = tools.filter((t) => t.is_supported === false);
-        break;
-      case 'builtin':
-        tools = tools.filter((t) => t.source === 'builtin');
-        break;
-      case 'mcp':
-        tools = tools.filter((t) => t.source === 'mcp');
-        break;
-      case 'has_rules':
-        tools = tools.filter(
-          (t) =>
-            (t.access_rules && t.access_rules.length > 0) ||
-            t.approval_workflow_id ||
-            t.has_approval_condition
-        );
-        break;
-      case 'no_rules':
-        tools = tools.filter(
-          (t) =>
-            (!t.access_rules || t.access_rules.length === 0) &&
-            !t.approval_workflow_id &&
-            !t.has_approval_condition
-        );
-        break;
-      case 'require_approval':
-        tools = tools.filter(
-          (t) =>
-            t.access_rules?.some(
-              (r) => r.action === 'require_approval' && r.is_enabled
-            ) || t.approval_workflow_id
-        );
-        break;
-      case 'no_approval':
-        tools = tools.filter(
-          (t) =>
-            !t.access_rules?.some(
-              (r) => r.action === 'require_approval' && r.is_enabled
-            ) && !t.approval_workflow_id
-        );
-        break;
+    if (statuses.length > 0) {
+      tools = tools.filter((tool) =>
+        statuses.some((status) => this._toolMatchesStatus(tool, status))
+      );
     }
-
-    // Text filter
-    if (this.filterText) {
-      const search = this.filterText.toLowerCase();
+    if (servers.length > 0) {
+      tools = tools.filter((tool) =>
+        servers.some((server) => this._toolMatchesServer(tool, server))
+      );
+    }
+    if (rules.length > 0) {
+      tools = tools.filter((tool) =>
+        rules.some((rule) => this._toolMatchesRuleFilter(tool, rule))
+      );
+    }
+    if (workflows.length > 0) {
+      tools = tools.filter((tool) =>
+        workflows.some((workflowId) => this._toolUsesWorkflow(tool, workflowId))
+      );
+    }
+    if (query) {
+      const search = query.toLowerCase();
       tools = tools.filter(
-        (t) =>
-          t.name.toLowerCase().includes(search) ||
-          t.description?.toLowerCase().includes(search) ||
-          t.source_name?.toLowerCase().includes(search)
+        (tool) =>
+          tool.name.toLowerCase().includes(search) ||
+          tool.description?.toLowerCase().includes(search) ||
+          tool.source_name?.toLowerCase().includes(search)
       );
     }
 
-    // Policy filter
-    if (this.filterPolicyId) {
+    return tools;
+  }
+
+  private _toolMatchesNativeRuleFilter(
+    tool: ToolWithRules,
+    rule: string
+  ): boolean {
+    if (rule === 'blocked') {
+      return !tool.is_enabled;
+    }
+    return this._toolMatchesRuleFilter(tool, rule);
+  }
+
+  private _getFilteredNativeTools(): ToolWithRules[] {
+    let tools = this._nativeTools();
+    const { query, agents, rules } = this.nativeFilters;
+
+    if (agents.length > 0) {
+      const wanted = new Set(
+        agents.map((agent) => nativeAdapterGroupName(agent))
+      );
+      tools = tools.filter((tool) => {
+        const names =
+          tool.adapters && tool.adapters.length > 0
+            ? tool.adapters.map((adapter) => nativeAdapterGroupName(adapter))
+            : [SEEN_FROM_AGENTS_LABEL];
+        return names.some((name) => wanted.has(name));
+      });
+    }
+    if (rules.length > 0) {
+      tools = tools.filter((tool) =>
+        rules.some((rule) => this._toolMatchesNativeRuleFilter(tool, rule))
+      );
+    }
+    if (query) {
+      const search = query.toLowerCase();
       tools = tools.filter(
-        (t) => t.approval_workflow_id === this.filterPolicyId
+        (tool) =>
+          tool.name.toLowerCase().includes(search) ||
+          tool.description?.toLowerCase().includes(search) ||
+          (tool.adapters || []).some((adapter) =>
+            adapter.toLowerCase().includes(search)
+          )
       );
     }
 
@@ -1199,6 +1027,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
       const result = await generatePolicy({
         prompt: this._buildStarterPolicyPrompt(server, tools),
         includeCurrentConfig: true,
+        scopeMcpServerName: server.name,
       });
       this.starterPolicyYaml = result.yaml;
       this.starterPolicyWarnings = result.warnings || [];
@@ -1475,7 +1304,6 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
 
   private async _handleScanMCPServer(serverId: string) {
     try {
-      this._queueStarterPolicySuggestion(serverId);
       await scanMCPServer(serverId);
       await this.loadData();
     } catch (err: any) {
@@ -1594,8 +1422,11 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     }
     try {
       await deleteApprovalWorkflow(policy.id);
-      if (this.filterPolicyId === policy.id) {
-        this.filterPolicyId = null;
+      if (this.filters.workflows.includes(policy.id)) {
+        this.filters = {
+          ...this.filters,
+          workflows: this.filters.workflows.filter((id) => id !== policy.id),
+        };
       }
       await this.loadData();
     } catch (err: any) {
@@ -1606,18 +1437,78 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   // ─── Render helpers ──────────────────────────────────
 
   private _clearFilters() {
-    this._setFilter('available');
-    this.filterPolicyId = null;
+    this.filters = { ...EMPTY_FILTERS };
+  }
+
+  private _setFilterValues(patch: Partial<ToolsFilters>) {
+    this.filters = { ...this.filters, ...patch };
+  }
+
+  private _toggleSingleFilter(
+    key: 'statuses' | 'servers' | 'rules' | 'workflows',
+    value: string
+  ) {
+    const current = this.filters[key];
+    const already = current.length === 1 && current[0] === value;
+    this._setFilterValues({ [key]: already ? [] : [value] });
+  }
+
+  private _handleSearchChange(event: CustomEvent<{ value: string }>) {
+    this._setFilterValues({ query: event.detail.value });
+  }
+
+  private _handleViewChange(event: CustomEvent<{ value: ListViewMode }>) {
+    this.viewMode = event.detail.value;
+    saveViewMode(VIEW_MODE_KEY, event.detail.value);
+  }
+
+  private _handleStatusFilterChange(event: Event) {
+    const value = selectValue(event);
+    this._setFilterValues({ statuses: value ? [value] : [] });
+  }
+
+  private _handleServerFilterChange(event: Event) {
+    const value = selectValue(event);
+    this._setFilterValues({ servers: value ? [value] : [] });
+  }
+
+  private _handleRulesFilterChange(event: Event) {
+    const value = selectValue(event);
+    this._setFilterValues({ rules: value ? [value] : [] });
+  }
+
+  private _handleWorkflowFilterChange(event: Event) {
+    const value = selectValue(event);
+    this._setFilterValues({ workflows: value ? [value] : [] });
+  }
+
+  private _setNativeFilterValues(patch: Partial<NativeFilters>) {
+    this.nativeFilters = { ...this.nativeFilters, ...patch };
+  }
+
+  private _handleNativeSearchChange(event: CustomEvent<{ value: string }>) {
+    this._setNativeFilterValues({ query: event.detail.value });
+  }
+
+  private _handleNativeAgentFilterChange(event: Event) {
+    const value = selectValue(event);
+    this._setNativeFilterValues({ agents: value ? [value] : [] });
+  }
+
+  private _handleNativeRulesFilterChange(event: Event) {
+    const value = selectValue(event);
+    this._setNativeFilterValues({ rules: value ? [value] : [] });
   }
 
   private async _loadGovernanceDefaults() {
     try {
       const response = await getAccountGovernanceDefaults();
       this.governanceDefaults = response.defaults;
+      this.governanceLoadFailed = false;
       if (response.override_agent_ids.length > 0) {
-        // Resolve override agent names for the "N agents override" line.
-        // One list call covers typical fleets; unknown ids degrade to
-        // showing the id so the link still works.
+        // Resolve override agent names for the override line. One list call
+        // covers typical fleets; unknown ids degrade to showing the id so
+        // the link still works.
         try {
           const agents = await getAccountAgents({ limit: 100 });
           const byId = new Map(
@@ -1627,12 +1518,11 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
             (id) => ({
               id,
               name: byId.get(id)?.display_name || id,
-              setting: '',
             })
           );
         } catch {
           this.governanceOverrideAgents = response.override_agent_ids.map(
-            (id) => ({ id, name: id, setting: '' })
+            (id) => ({ id, name: id })
           );
         }
       } else {
@@ -1641,12 +1531,13 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     } catch {
       // Card is additive; a load failure must not degrade the Tools page.
       this.governanceDefaults = null;
+      this.governanceLoadFailed = true;
     }
   }
 
   private async _saveGovernanceDefaults(
     patch: Partial<AccountGovernanceDefaults>
-  ) {
+  ): Promise<boolean> {
     const next: AccountGovernanceDefaults = {
       ...(this.governanceDefaults || {}),
       ...patch,
@@ -1655,445 +1546,523 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     try {
       const response = await updateAccountGovernanceDefaults(next);
       this.governanceDefaults = response.defaults;
+      this.governanceSaveError = null;
+      return true;
     } catch {
-      this.error = 'Failed to save native tool approval defaults';
+      this.governanceSaveError = 'Could not save. Try again.';
+      return false;
     } finally {
       this.savingGovernanceDefaults = false;
     }
   }
 
+  private _defaultWorkflowLabel(): string {
+    const name = this.approvalPolicies.find((p) => p.is_default)?.name;
+    return name ? `Default workflow (${name})` : 'Default workflow';
+  }
+
+  private _nativeWorkflowSelectValue(defaults: {
+    approval_workflow_id?: string | null;
+  }): string {
+    const selected = defaults.approval_workflow_id ?? '';
+    const defaultId = this.approvalPolicies.find((p) => p.is_default)?.id;
+    return selected && selected === defaultId ? '' : selected;
+  }
+
   /**
-   * Account-default card for native tool-call approvals (hook-based Bash /
-   * Edit / shell approvals), rendered above the MCP tool groups so both
-   * policy planes are visible — and distinguishable — on one page.
+   * Account-default strip for native tool-call approvals. Same three ids as
+   * the PR 382 card, flattened to one hairline row on the Native tab.
    */
   private _renderNativeApprovalDefaultsCard() {
+    if (this.governanceLoadFailed) {
+      return html`
+        <div class="defaults-strip" id="native-approvals-defaults-card">
+          <div class="governance-error">
+            Could not load this setting.
+            <a
+              href="#"
+              @click=${(e: Event) => {
+                e.preventDefault();
+                void this._loadGovernanceDefaults();
+              }}
+              >Retry</a
+            >
+          </div>
+        </div>
+      `;
+    }
     if (!this.governanceDefaults) {
       return html``;
     }
     const defaults = this.governanceDefaults;
     const enforced = defaults.native_tool_approvals !== 'off';
     const overrides = this.governanceOverrideAgents;
+    const shownOverrides = overrides.slice(0, 5);
+    const hiddenOverrideCount = overrides.length - shownOverrides.length;
     return html`
-      <div
-        class="stat-card"
-        id="native-approvals-defaults-card"
-        style="display: flex; flex-direction: column; gap: var(--sl-spacing-x-small); margin-bottom: var(--sl-spacing-medium);"
-      >
-        <div
-          style="display: flex; align-items: center; justify-content: space-between; gap: var(--sl-spacing-medium); flex-wrap: wrap;"
-        >
-          <div>
-            <div
-              class="stat-label"
-              style="display: flex; align-items: center; gap: 6px;"
-            >
-              <sl-icon name="shield-lock"></sl-icon>
-              Native tool approvals — account default
-            </div>
-            <div class="meta-line">
-              Native tool calls (shell commands, file edits) from agents
-              onboarded with approval hooks. Agents inherit this unless
-              overridden on their detail page. MCP tools are governed separately
-              by the access rules below.
-            </div>
-          </div>
-          <div
-            style="display: flex; align-items: center; gap: var(--sl-spacing-medium); flex-shrink: 0;"
+      <div class="defaults-strip" id="native-approvals-defaults-card">
+        <div class="defaults-strip-row">
+          <sl-switch
+            id="native-approvals-default-switch"
+            size="small"
+            ?checked=${enforced}
+            ?disabled=${this.savingGovernanceDefaults}
+            @sl-change=${async (e: Event) => {
+              const target = e.target as HTMLInputElement;
+              const saved = await this._saveGovernanceDefaults({
+                native_tool_approvals: target.checked ? 'enforce' : 'off',
+              });
+              if (!saved) {
+                target.checked = enforced;
+              }
+            }}
           >
-            <sl-switch
-              id="native-approvals-default-switch"
-              size="small"
-              ?checked=${enforced}
-              ?disabled=${this.savingGovernanceDefaults}
-              @sl-change=${(e: Event) =>
-                this._saveGovernanceDefaults({
-                  native_tool_approvals: (e.target as HTMLInputElement).checked
-                    ? 'enforce'
-                    : 'off',
-                })}
-            >
-              Require approval
-            </sl-switch>
-            <sl-select
-              id="native-approvals-default-workflow"
-              size="small"
-              hoist
-              style="min-width: 260px;${enforced ? '' : ' opacity: 0.5;'}"
-              ?disabled=${!enforced || this.savingGovernanceDefaults}
-              .value=${defaults.approval_workflow_id ?? ''}
-              @sl-change=${(e: Event) =>
-                this._saveGovernanceDefaults({
-                  approval_workflow_id:
-                    (e.target as HTMLSelectElement).value || null,
-                })}
-            >
-              <sl-option value="">Account default workflow</sl-option>
-              ${this.approvalPolicies.map(
-                (workflow) => html`
-                  <sl-option value=${workflow.id}>
-                    ${workflow.name}${
-                      workflow.is_default ? ' (account default)' : ''
-                    }
-                  </sl-option>
+            Ask a human before
+            running${this.savingGovernanceDefaults ? ' Saving...' : ''}
+          </sl-switch>
+          ${
+            enforced
+              ? html`
+                  <span class="strip-sep" aria-hidden="true">·</span>
+                  <sl-select
+                    id="native-approvals-default-workflow"
+                    size="small"
+                    hoist
+                    label="Send requests to"
+                    style="min-width: 260px;"
+                    ?disabled=${this.savingGovernanceDefaults}
+                    .value=${this._nativeWorkflowSelectValue(defaults)}
+                    @sl-change=${(e: Event) => {
+                      const select = e.target as HTMLSelectElement;
+                      const previous =
+                        this._nativeWorkflowSelectValue(defaults);
+                      void this._saveGovernanceDefaults({
+                        approval_workflow_id: select.value || null,
+                      }).then((saved) => {
+                        if (!saved) {
+                          select.value = previous;
+                        }
+                      });
+                    }}
+                  >
+                    <sl-option value=""
+                      >${this._defaultWorkflowLabel()}</sl-option
+                    >
+                    ${this.approvalPolicies
+                      .filter((workflow) => !workflow.is_default)
+                      .map(
+                        (workflow) => html`
+                          <sl-option value=${workflow.id}>
+                            ${workflow.name}
+                          </sl-option>
+                        `
+                      )}
+                  </sl-select>
                 `
-              )}
-            </sl-select>
-          </div>
+              : ''
+          }
+          ${
+            overrides.length > 0
+              ? html`
+                  <span class="strip-sep" aria-hidden="true">·</span>
+                  <div class="meta-line" id="native-approvals-override-list">
+                    ${
+                      overrides.length === 1
+                        ? '1 agent uses its own setting: '
+                        : `${overrides.length} agents use their own setting: `
+                    }
+                    ${shownOverrides.map(
+                      (agent, index) =>
+                        html`${index > 0 ? ', ' : ''}<a
+                            href="/console/agents/${agent.id}"
+                            >${agent.name}</a
+                          >`
+                    )}${
+                      hiddenOverrideCount > 0
+                        ? html`,
+                            <a href="/console/agents"
+                              >and ${hiddenOverrideCount} more</a
+                            >`
+                        : ''
+                    }
+                  </div>
+                `
+              : ''
+          }
         </div>
         ${
           !enforced
             ? html`
-                <sl-alert variant="warning" open>
-                  <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                  Approvals are bypassed account-wide: Preloop auto-approves
-                  escalated native tool calls without asking anyone (still
-                  recorded and audited). Agents with an explicit per-agent
-                  "enforce" keep asking.
-                </sl-alert>
-              `
-            : ''
-        }
-        ${
-          overrides.length > 0
-            ? html`
-                <div class="meta-line" id="native-approvals-override-list">
-                  ${overrides.length} agent${overrides.length === 1 ? '' : 's'}
-                  override${overrides.length === 1 ? 's' : ''} this default:
-                  ${overrides.map(
-                    (agent, index) =>
-                      html`${index > 0 ? ', ' : ''}<a
-                          href="/console/agents/${agent.id}"
-                          >${agent.name}</a
-                        >`
-                  )}
+                <div class="governance-notice" role="status">
+                  <sl-icon name="exclamation-triangle"></sl-icon>
+                  Native tool calls run without asking. Calls are still
+                  recorded. Agents set to always ask keep asking.
                 </div>
               `
             : ''
         }
+        ${
+          this.governanceSaveError
+            ? html`<div class="governance-error">
+                ${this.governanceSaveError}
+              </div>`
+            : ''
+        }
       </div>
     `;
   }
 
-  private _renderTopSection() {
-    const apiUrl = window.location.origin;
-    const mcpUrl = `${apiUrl}/mcp`;
+  private _resultsLabel(shown: number, total: number): string {
+    const noun = total === 1 ? 'tool' : 'tools';
+    if (shown === total) {
+      return `${shown} ${noun}`;
+    }
+    return `${shown} of ${total} ${noun}`;
+  }
+
+  private _renderStripCount(
+    count: number,
+    label: string,
+    options: {
+      active?: boolean;
+      tooltip?: string;
+      onClick?: () => void;
+    } = {}
+  ) {
+    const button = html`
+      <button
+        type="button"
+        class="strip-count${options.active ? ' active' : ''}"
+        aria-pressed=${String(Boolean(options.active))}
+        @click=${options.onClick}
+      >
+        ${count} ${label}
+      </button>
+    `;
+    if (options.tooltip) {
+      return html`<sl-tooltip content=${options.tooltip}
+        >${button}</sl-tooltip
+      >`;
+    }
+    return button;
+  }
+
+  private _renderSummaryStrip() {
     const stats = this._getStats();
+    const status = this.filters.statuses[0] || '';
+    const rule = this.filters.rules[0] || '';
+    const noFilters =
+      this.filters.statuses.length === 0 &&
+      this.filters.servers.length === 0 &&
+      this.filters.rules.length === 0 &&
+      this.filters.workflows.length === 0 &&
+      !this.filters.query;
+    const unavailableTooltip =
+      stats.unavailableReasons.length > 0
+        ? stats.unavailableReasons.join('; ')
+        : 'Some tools require trackers to be configured';
 
-    // Helper: renders a single table cell with label left, number right, full-cell hover
-    const statCell = (
-      label: string | TemplateResult,
-      value: number,
-      filterKey: typeof this.activeFilter | '__none__',
-      opts?: { muted?: boolean; tooltip?: string }
-    ) => {
-      const isActive =
-        filterKey !== '__none__' && this.activeFilter === filterKey;
-      const isMuted = opts?.muted || false;
-      const onClick =
-        filterKey === '__none__' || isMuted
-          ? undefined
-          : () => {
-              this._setFilter(
-                this.activeFilter === filterKey ? 'available' : filterKey
-              );
-              this.filterPolicyId = null;
-            };
-
-      const inner = html`
-        <span
-          class="summary-stat ${isActive ? 'active' : ''} ${
-            isMuted ? 'muted' : ''
-          }"
-          @click=${onClick}
-        >
-          <span>${label}</span>
-          <strong>${value}</strong>
-        </span>
-      `;
-
-      return html`<td>
+    return html`
+      <div class="summary-strip">
+        ${this._renderStripCount(stats.total, 'tools', {
+          active: noFilters,
+          onClick: () => this._clearFilters(),
+        })}
+        <span class="strip-sep" aria-hidden="true">·</span>
+        ${this._renderStripCount(stats.enabled, 'enabled', {
+          active: status === 'enabled',
+          onClick: () => this._toggleSingleFilter('statuses', 'enabled'),
+        })}
+        <span class="strip-sep" aria-hidden="true">·</span>
+        ${this._renderStripCount(stats.withRules, 'with rules', {
+          active: rule === 'with_rules',
+          onClick: () => this._toggleSingleFilter('rules', 'with_rules'),
+        })}
+        <span class="strip-sep" aria-hidden="true">·</span>
+        ${this._renderStripCount(stats.requireApproval, 'require approval', {
+          active: rule === 'require_approval',
+          onClick: () => this._toggleSingleFilter('rules', 'require_approval'),
+        })}
         ${
-          opts?.tooltip
-            ? html`<sl-tooltip content=${opts.tooltip}>${inner}</sl-tooltip>`
-            : inner
-        }
-      </td>`;
-    };
-
-    return html`
-      <div class="top-section">
-        <!-- Left: Summary table -->
-        <div class="summary-table-wrapper">
-          <table class="summary-table">
-            <tr>
-              ${statCell('Total tools', stats.total, 'all')}
-              ${statCell('Available', stats.available, 'available')}
-              ${statCell('Unavailable', stats.unavailable, 'unavailable', {
-                muted: stats.unavailable === 0,
-                tooltip:
-                  stats.unavailableReasons.length > 0
-                    ? stats.unavailableReasons.join('; ')
-                    : 'Some tools require trackers to be configured',
-              })}
-            </tr>
-            <tr>
-              <td></td>
-              ${statCell('Enabled', stats.enabled, 'enabled')}
-              ${statCell('Disabled', stats.disabled, 'disabled')}
-            </tr>
-            <tr>
-              <td></td>
-              ${statCell('Built-in', stats.builtin, 'builtin')}
-              ${statCell('Proxied', stats.proxied, 'mcp')}
-            </tr>
-            <tr>
-              <td></td>
-              ${statCell('With rules', stats.withRules, 'has_rules')}
-              ${statCell('No rules', stats.withoutRules, 'no_rules')}
-            </tr>
-            <tr>
-              <td></td>
-              ${statCell(
-                'Require approval',
-                stats.requireApproval,
-                'require_approval'
-              )}
-              ${statCell('No approval', stats.noApproval, 'no_approval')}
-            </tr>
-          </table>
-          ${
-            stats.unavailable > 0
-              ? html`<div class="unavailable-note">
-                  ${
-                    stats.unavailableReasons.length > 0
-                      ? stats.unavailableReasons.join('; ')
-                      : `${stats.unavailable} tool${stats.unavailable === 1 ? ' is' : 's are'} unavailable until a tracker is connected.`
-                  }
-                </div>`
-              : ''
-          }
-          ${0 ? this._renderToolUsageStatsPanel() : ''}
-        </div>
-
-        <!-- Right: MCP Server card -->
-        <sl-card class="builtin-server-card">
-          <div class="card-content">
-            <div class="builtin-server-header">
-              <h3 class="builtin-server-name">Preloop MCP Server</h3>
-              <sl-badge variant="primary" size="small">Built-in</sl-badge>
-            </div>
-            <div class="info-row">
-              <span class="info-label">URL:</span>
-              <code class="info-value" title=${mcpUrl}>${mcpUrl}</code>
-              <sl-tooltip content="Copy URL">
-                <sl-icon-button
-                  name="clipboard"
-                  style="font-size: 1rem;"
-                  @click=${() => {
-                    navigator.clipboard.writeText(mcpUrl);
-                    this.dispatchEvent(
-                      new CustomEvent('show-toast', {
-                        bubbles: true,
-                        composed: true,
-                        detail: { message: 'MCP URL copied!' },
-                      })
-                    );
-                  }}
-                ></sl-icon-button>
-              </sl-tooltip>
-            </div>
-            <div class="info-row">
-              <span class="info-label">Auth:</span>
-              <div class="info-value-container">
-                <code class="info-value">Bearer Token</code>
-                <a href="/console/settings/api-keys" class="info-link">
-                  Keys &rarr;
-                </a>
-              </div>
-            </div>
-          </div>
-          <div slot="footer">
-            <sl-button
-              size="small"
-              style="width: 100%;"
-              @click=${() => (this.showSetupDialog = true)}
-            >
-              <sl-icon slot="prefix" name="info-circle"></sl-icon>
-              Setup Instructions
-            </sl-button>
-          </div>
-        </sl-card>
-
-        <mcp-setup-dialog
-          ?open=${this.showSetupDialog}
-          @close=${() => (this.showSetupDialog = false)}
-        ></mcp-setup-dialog>
-      </div>
-    `;
-  }
-
-  private _renderToolUsageStatsPanel() {
-    const rows = this.toolUsageStats.slice(0, 8);
-    if (this.toolStatsLoading) {
-      return html`<div class="tool-stats-panel">
-        <div class="tool-stats-title">Tool activity (30 days)</div>
-        <sl-spinner style="font-size: 1rem;"></sl-spinner>
-      </div>`;
-    }
-    if (!rows.length) {
-      return html`<div class="tool-stats-panel">
-        <div class="tool-stats-title">Tool activity (30 days)</div>
-        <span
-          style="color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-x-small);"
-          >No tool invocations recorded yet.</span
-        >
-      </div>`;
-    }
-    return html`
-      <div class="tool-stats-panel">
-        <div class="tool-stats-title">Tool activity (30 days)</div>
-        <table class="tool-stats-table" aria-label="Tool activity stats">
-          <thead>
-            <tr>
-              <th scope="col">Tool</th>
-              <th scope="col">Calls</th>
-              <th scope="col">Schema cost</th>
-              <th scope="col">Avg / call</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.map(
-              (row) => html`
-                <tr>
-                  <td>${row.tool_name}</td>
-                  <td>${row.invocation_count.toLocaleString()}</td>
-                  <td>${this._formatCurrency(row.estimated_schema_cost)}</td>
-                  <td>${this._formatCurrency(row.avg_cost_per_invocation)}</td>
-                </tr>
-              `
-            )}
-          </tbody>
-        </table>
-      </div>
-    `;
-  }
-
-  private _renderFilterBar() {
-    const filteredPolicy = this.filterPolicyId
-      ? this.approvalPolicies.find((p) => p.id === this.filterPolicyId)
-      : null;
-
-    // Labels for the active filter tag display
-    const filterLabels: Record<string, string> = {
-      all: 'All tools',
-      available: 'Available',
-      enabled: 'Enabled',
-      disabled: 'Disabled',
-      unavailable: 'Unavailable',
-      builtin: 'Built-in',
-      mcp: 'Proxied',
-      has_rules: 'With rules',
-      no_rules: 'No rules',
-      require_approval: 'Require approval',
-      no_approval: 'No approval',
-    };
-
-    return html`
-      <div class="filter-area">
-        <div class="policy-row">${this._renderPolicyChipBar()}</div>
-        <div class="filter-bar">
-          <sl-input
-            class="filter-search"
-            size="small"
-            placeholder="Filter tools..."
-            clearable
-            @sl-input=${(e: Event) =>
-              (this.filterText = (e.target as any).value)}
-          >
-            <sl-icon slot="prefix" name="search"></sl-icon>
-          </sl-input>
-
-          <div class="active-filters">
-            ${
-              this.activeFilter !== 'all'
-                ? html`<span class="active-filter-tag">
-                    ${filterLabels[this.activeFilter] || this.activeFilter}
-                    <sl-icon-button
-                      name="x-lg"
-                      @click=${() => this._setFilter('available')}
-                    ></sl-icon-button>
-                  </span>`
-                : ''
-            }
-            ${
-              this.filterPolicyId && filteredPolicy
-                ? html`<span class="active-filter-tag">
-                    Policy: ${filteredPolicy.name}
-                    <sl-icon-button
-                      name="x-lg"
-                      @click=${() => (this.filterPolicyId = null)}
-                    ></sl-icon-button>
-                  </span>`
-                : ''
-            }
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  private _renderPolicyChipBar() {
-    const policies = this.approvalPolicies;
-
-    return html`
-      <div class="policy-chip-bar">
-        <span class="policy-chip-bar-label">Approval Workflows</span>
-        ${
-          policies.length === 0
-            ? html`<span class="policy-chip-empty">None defined</span>`
-            : policies.map((policy) => {
-                const isActive = this.filterPolicyId === policy.id;
-                const isAi = policy.approval_type === 'ai_driven';
-                return html`
-                  <span
-                    class="policy-chip ${isActive ? 'active' : ''}"
-                    @click=${() => {
-                      this.filterPolicyId = isActive ? null : policy.id;
-                    }}
+          stats.contextTaxTokens > 0
+            ? html`<span class="strip-sep" aria-hidden="true">·</span>
+                <span class="context-tax">
+                  Enabled tools add
+                  <strong
+                    >~${stats.contextTaxTokens.toLocaleString()} tokens</strong
                   >
-                    <span class="policy-chip-name">${policy.name}</span>
-                    <span class="policy-chip-type"
-                      >${isAi ? 'AI' : 'Human'}</span
-                    >
-                    <sl-icon-button
-                      name="pencil"
-                      label="Edit policy"
-                      @click=${(e: Event) => {
-                        e.stopPropagation();
-                        this._openPolicyDialog(policy);
-                      }}
-                    ></sl-icon-button>
-                    <sl-icon-button
-                      name="x-lg"
-                      label="Delete policy"
-                      @click=${(e: Event) => {
-                        e.stopPropagation();
-                        this._handleDeletePolicy(policy);
-                      }}
-                    ></sl-icon-button>
-                  </span>
-                `;
-              })
+                  to every request
+                </span>`
+            : ''
         }
-        <span
-          class="policy-chip-add"
-          @click=${() => this._openPolicyDialog(null)}
-        >
-          <sl-icon name="plus-lg" style="font-size: 0.7rem;"></sl-icon>
-          New
-        </span>
+        ${
+          stats.unavailable > 0
+            ? html`<span class="strip-sep" aria-hidden="true">·</span>
+                ${this._renderStripCount(stats.unavailable, 'unavailable', {
+                  active: status === 'unavailable',
+                  tooltip: unavailableTooltip,
+                  onClick: () =>
+                    this._toggleSingleFilter('statuses', 'unavailable'),
+                })}`
+            : ''
+        }
       </div>
+    `;
+  }
+
+  private _renderWorkflowsMenu() {
+    const count = this.approvalPolicies.length;
+    return html`
+      <sl-dropdown class="workflows-menu" hoist>
+        <sl-button slot="trigger" caret> Workflows (${count}) </sl-button>
+        <sl-menu>
+          ${this.approvalPolicies.map(
+            (policy) => html`
+              <sl-menu-label>${policy.name}</sl-menu-label>
+              <sl-menu-item
+                data-workflow-edit=${policy.id}
+                @click=${() => this._openPolicyDialog(policy)}
+                >Edit</sl-menu-item
+              >
+              <sl-menu-item
+                data-workflow-delete=${policy.id}
+                @click=${() => this._handleDeletePolicy(policy)}
+                >Delete</sl-menu-item
+              >
+            `
+          )}
+          <sl-menu-item
+            data-workflow-new
+            @click=${() => this._openPolicyDialog(null)}
+            >New workflow</sl-menu-item
+          >
+        </sl-menu>
+      </sl-dropdown>
+    `;
+  }
+
+  private _renderMcpToolbar() {
+    const filtered = this._getFilteredTools();
+    const total = this._mcpTools().length;
+    return html`
+      <div class="toolbar-wrap">
+        <list-toolbar
+          .search=${this.filters.query}
+          searchPlaceholder="Search tools"
+          toggleLabel="Tools view"
+          .view=${'cards'}
+          .views=${TOOLS_VIEWS}
+          @search-change=${this._handleSearchChange}
+          @view-change=${this._handleViewChange}
+        >
+          <sl-select
+            class="status-filter"
+            label="Status"
+            clearable
+            placeholder="Any status"
+            .value=${this.filters.statuses[0] || ''}
+            @sl-change=${this._handleStatusFilterChange}
+          >
+            <sl-option value="enabled">Enabled</sl-option>
+            <sl-option value="disabled">Disabled</sl-option>
+            <sl-option value="unavailable">Unavailable</sl-option>
+          </sl-select>
+          <sl-select
+            class="server-filter"
+            label="Server"
+            clearable
+            placeholder="Any server"
+            .value=${this.filters.servers[0] || ''}
+            @sl-change=${this._handleServerFilterChange}
+          >
+            <sl-option value="preloop">Preloop</sl-option>
+            ${this.mcpServers.map(
+              (server) =>
+                html`<sl-option value=${server.id}>${server.name}</sl-option>`
+            )}
+          </sl-select>
+          <sl-select
+            class="rules-filter"
+            label="Rules"
+            clearable
+            placeholder="Any rules"
+            .value=${this.filters.rules[0] || ''}
+            @sl-change=${this._handleRulesFilterChange}
+          >
+            <sl-option value="with_rules">With rules</sl-option>
+            <sl-option value="no_rules">No rules</sl-option>
+            <sl-option value="require_approval">Requires approval</sl-option>
+          </sl-select>
+          <sl-select
+            class="workflow-filter"
+            label="Workflow"
+            clearable
+            placeholder="Any workflow"
+            .value=${this.filters.workflows[0] || ''}
+            @sl-change=${this._handleWorkflowFilterChange}
+          >
+            ${this.approvalPolicies.map(
+              (policy) =>
+                html`<sl-option value=${policy.id}>${policy.name}</sl-option>`
+            )}
+          </sl-select>
+          ${this._renderWorkflowsMenu()}
+          <span slot="count"
+            >${this._resultsLabel(filtered.length, total)}</span
+          >
+        </list-toolbar>
+      </div>
+    `;
+  }
+
+  private _renderMcpEditor() {
+    return html`
+      <tools-editor-component
+        family="mcp"
+        .tools=${this._getFilteredTools()}
+        .toolStats=${Object.fromEntries(this._getToolStatsMap())}
+        .mcpServers=${this.mcpServers}
+        .approvalPolicies=${this.approvalPolicies}
+        .features=${this.features}
+        .hasDefaultAIModel=${this.hasDefaultAIModel}
+        mode="global"
+        @toggle-enabled=${this._handleToggleEnabled}
+        @save-rule=${this._handleSaveRule}
+        @delete-rule=${this._handleDeleteRule}
+        @policy-created=${this._handlePolicyCreated}
+        @reorder-rules=${this._handleReorderRules}
+        @tool-updated=${() => this.loadData()}
+        @scan-server=${(e: CustomEvent) => this._handleScanMCPServer(e.detail)}
+        @suggest-starter-policy=${(e: CustomEvent) =>
+          this._openStarterPolicySuggestion(e.detail, {
+            manual: true,
+          })}
+        @edit-server=${(e: CustomEvent) => (this.editingMCPServer = e.detail)}
+        @delete-server=${(e: CustomEvent) =>
+          this._handleDeleteMCPServer(e.detail)}
+      ></tools-editor-component>
+    `;
+  }
+
+  private _renderMcpTab() {
+    return html`
+      <p class="tab-intro">
+        Served through Preloop's MCP firewall: the Preloop server and any MCP
+        server you add.
+      </p>
+      ${this._renderSummaryStrip()} ${this._renderMcpToolbar()}
+      ${this._renderMcpEditor()}
+    `;
+  }
+
+  private _renderNativeToolbar() {
+    const filtered = this._getFilteredNativeTools();
+    const total = this._nativeTools().length;
+    return html`
+      <div class="toolbar-wrap native-toolbar">
+        <list-toolbar
+          .search=${this.nativeFilters.query}
+          searchPlaceholder="Search native tools"
+          toggleLabel="Native tools view"
+          .view=${'cards'}
+          .views=${TOOLS_VIEWS}
+          @search-change=${this._handleNativeSearchChange}
+          @view-change=${this._handleViewChange}
+        >
+          <sl-select
+            class="agent-filter"
+            label="Agent"
+            clearable
+            placeholder="Any agent"
+            .value=${this.nativeFilters.agents[0] || ''}
+            @sl-change=${this._handleNativeAgentFilterChange}
+          >
+            ${NATIVE_ADAPTERS.map(
+              (adapter) =>
+                html`<sl-option value=${adapter.value}
+                  >${adapter.label}</sl-option
+                >`
+            )}
+          </sl-select>
+          <sl-select
+            class="native-rules-filter"
+            label="Rules"
+            clearable
+            placeholder="Any rules"
+            .value=${this.nativeFilters.rules[0] || ''}
+            @sl-change=${this._handleNativeRulesFilterChange}
+          >
+            <sl-option value="with_rules">With rules</sl-option>
+            <sl-option value="no_rules">No rules</sl-option>
+            <sl-option value="require_approval">Requires approval</sl-option>
+            <sl-option value="blocked">Blocked</sl-option>
+          </sl-select>
+          <span slot="count"
+            >${this._resultsLabel(filtered.length, total)}</span
+          >
+        </list-toolbar>
+      </div>
+    `;
+  }
+
+  private _renderNativeEditor() {
+    return html`
+      <tools-editor-component
+        family="native"
+        .tools=${this._getFilteredNativeTools()}
+        .approvalPolicies=${this.approvalPolicies}
+        .features=${this.features}
+        mode="global"
+        @toggle-enabled=${this._handleToggleEnabled}
+        @save-rule=${this._handleSaveRule}
+        @delete-rule=${this._handleDeleteRule}
+        @policy-created=${this._handlePolicyCreated}
+        @reorder-rules=${this._handleReorderRules}
+        @tool-updated=${() => this.loadData()}
+      ></tools-editor-component>
+    `;
+  }
+
+  private _renderNativeTab() {
+    const nativeTools = this._nativeTools();
+    return html`
+      <p class="tab-intro">
+        Built into the agent itself, such as Bash, Edit and Write. Governed by
+        the Preloop hook that "preloop agents onboard --approvals" installs.
+      </p>
+      ${this._renderNativeApprovalDefaultsCard()}
+      ${
+        nativeTools.length === 0
+          ? html`
+              <p class="native-empty">
+                No native tool calls have reached Preloop yet. Onboard an agent
+                with "preloop agents onboard --approvals" and its Bash, Edit and
+                Write calls will show up here.
+              </p>
+            `
+          : html`${this._renderNativeToolbar()} ${this._renderNativeEditor()}`
+      }
+    `;
+  }
+
+  private _renderTabs() {
+    const mcpCount = this._mcpTools().length;
+    const nativeCount = this._nativeTools().length;
+    return html`
+      <sl-tab-group @sl-tab-show=${this._handleTabShow}>
+        <sl-tab slot="nav" panel="mcp" ?active=${this.activeTab === 'mcp'}
+          >MCP tools ${mcpCount}</sl-tab
+        >
+        <sl-tab slot="nav" panel="native" ?active=${this.activeTab === 'native'}
+          >Native tools ${nativeCount}</sl-tab
+        >
+        <sl-tab-panel name="mcp" ?active=${this.activeTab === 'mcp'}>
+          ${this._renderMcpTab()}
+        </sl-tab-panel>
+        <sl-tab-panel name="native" ?active=${this.activeTab === 'native'}>
+          ${this._renderNativeTab()}
+        </sl-tab-panel>
+      </sl-tab-group>
     `;
   }
 
@@ -2104,26 +2073,22 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     return html`
       <view-header
         headerText="Tools"
-        description="Every MCP tool your agents can call, routed through Preloop's firewall. Enable or disable tools, set policy rules, and require human approval for sensitive calls."
+        description="Tools your agents can call and the rules that govern them."
         width="extra-wide"
       >
         <div slot="main-column">
-          <sl-dropdown>
-            <sl-button slot="trigger" size="small" variant="primary" caret>
-              <sl-icon slot="prefix" name="plus-lg"></sl-icon>
-              Add Source
-            </sl-button>
-            <sl-menu>
-              <sl-menu-item @click=${() => (this.isAddingMCPServer = true)}>
-                <sl-icon slot="prefix" name="hdd-network"></sl-icon>
-                MCP Server
-              </sl-menu-item>
-              <sl-menu-item disabled>
-                <sl-icon slot="prefix" name="globe"></sl-icon>
-                HTTP Tool (coming soon)
-              </sl-menu-item>
-            </sl-menu>
-          </sl-dropdown>
+          <sl-button
+            size="small"
+            variant="primary"
+            @click=${() => (this.isAddingMCPServer = true)}
+          >
+            <sl-icon slot="prefix" name="plus-lg"></sl-icon>
+            Add MCP server
+          </sl-button>
+
+          <sl-button size="small" @click=${() => (this.showSetupDialog = true)}>
+            Connect an agent
+          </sl-button>
 
           <sl-tooltip content="Import configuration from YAML">
             <sl-button size="small" @click=${this._triggerImport}>
@@ -2187,8 +2152,8 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
                   @sl-after-hide=${() => (this.oauthAlert = null)}
                 >
                   <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                  <strong>OAuth Failed</strong> — Could not authenticate with
-                  the external MCP server. Please try again.
+                  <strong>OAuth failed.</strong> Could not authenticate with the
+                  external MCP server. Try again.
                 </sl-alert>`
               : ''
           }
@@ -2210,37 +2175,12 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
               ? html`<div class="loading-indicator">
                   <sl-spinner></sl-spinner>
                 </div>`
-              : html` ${this._renderTopSection()}
-                  ${this._renderNativeApprovalDefaultsCard()}
-                  <div class="tool-groups">
-                    ${this._renderFilterBar()}
-                    <tools-editor-component
-                      .tools=${this._getFilteredTools()}
-                      .toolStats=${Object.fromEntries(this._getToolStatsMap())}
-                      .mcpServers=${this.mcpServers}
-                      .approvalPolicies=${this.approvalPolicies}
-                      .features=${this.features}
-                      .hasDefaultAIModel=${this.hasDefaultAIModel}
-                      mode="global"
-                      @toggle-enabled=${this._handleToggleEnabled}
-                      @save-rule=${this._handleSaveRule}
-                      @delete-rule=${this._handleDeleteRule}
-                      @policy-created=${this._handlePolicyCreated}
-                      @reorder-rules=${this._handleReorderRules}
-                      @tool-updated=${() => this.loadData()}
-                      @scan-server=${(e: CustomEvent) =>
-                        this._handleScanMCPServer(e.detail)}
-                      @suggest-starter-policy=${(e: CustomEvent) =>
-                        this._openStarterPolicySuggestion(e.detail, {
-                          manual: true,
-                        })}
-                      @edit-server=${(e: CustomEvent) =>
-                        (this.editingMCPServer = e.detail)}
-                      @delete-server=${(e: CustomEvent) =>
-                        this._handleDeleteMCPServer(e.detail)}
-                    ></tools-editor-component>
-                  </div>`
+              : this._renderTabs()
           }
+          <mcp-setup-dialog
+            ?open=${this.showSetupDialog}
+            @close=${() => (this.showSetupDialog = false)}
+          ></mcp-setup-dialog>
         </div>
         <div class="side-column"></div>
       </div>

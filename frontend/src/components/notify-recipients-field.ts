@@ -89,14 +89,25 @@ export class NotifyRecipientsField extends LitElement {
   }
 
   private handleRecipientChange(event: Event) {
-    const select = event.target as HTMLSelectElement & { value: string[] };
-    const values = select.value || [];
+    const select = event.target as HTMLSelectElement & {
+      value: string | string[] | null;
+    };
+    const raw = select.value;
+    const values = Array.isArray(raw) ? raw : raw ? [raw] : [];
     this.userIds = values
-      .filter((value) => value.startsWith('user:'))
-      .map((value) => value.replace('user:', ''));
+      .filter(
+        (value): value is string =>
+          typeof value === 'string' && value.startsWith('user:')
+      )
+      .map((value) => value.slice('user:'.length))
+      .filter((id) => id.length > 0);
     this.teamIds = values
-      .filter((value) => value.startsWith('team:'))
-      .map((value) => value.replace('team:', ''));
+      .filter(
+        (value): value is string =>
+          typeof value === 'string' && value.startsWith('team:')
+      )
+      .map((value) => value.slice('team:'.length))
+      .filter((id) => id.length > 0);
     this.dispatchChange();
   }
 

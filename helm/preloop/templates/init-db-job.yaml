@@ -15,6 +15,10 @@ spec:
         {{- include "preloop.selectorLabels" . | nindent 8 }}
     spec:
       restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: init-db-runner
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -25,9 +29,21 @@ spec:
               cd /app && \
               python scripts/init_db.py --force
           env:
-            - name: DATABASE_URL
-              value: {{ include "preloop.databaseUrl" . }}
+            {{- include "preloop.databaseUrlEnv" . | nindent 12 }}
             - name: OPENAI_API_KEY
               value: {{ .Values.config.openai.apiKey }}
             - name: PRELOOP_URL
               value: {{ .Values.environment.preloopUrl | quote }}
+            {{- include "preloop.extraEnv" . | nindent 12 }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

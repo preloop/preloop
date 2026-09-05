@@ -15,7 +15,8 @@ class ToolConfigurationBase(BaseModel):
 
     tool_name: Optional[str] = Field(None, description="Name of the tool")
     tool_source: Optional[str] = Field(
-        "builtin", description="Source type: 'builtin', 'mcp', 'http'"
+        "builtin",
+        description="Source type: 'builtin', 'mcp', 'http', 'agent'",
     )
     mcp_server_id: Optional[str] = Field(
         None, description="Reference to MCP server (if tool_source='mcp')"
@@ -49,6 +50,13 @@ class ToolConfigurationCreate(ToolConfigurationBase):
     tool_name: str
     account_id: str
     tool_source: str = "builtin"
+    managed_agent_id: Optional[str] = Field(
+        None,
+        description=(
+            "Optional managed-agent scope. Null = account-wide (default); "
+            "set = the configuration applies only to that agent"
+        ),
+    )
 
 
 class ToolConfigurationUpdate(ToolConfigurationBase):
@@ -66,6 +74,7 @@ class ToolConfigurationResponse(ToolConfigurationBase):
     tool_source: str
     mcp_server_id: Optional[UUID] = None
     http_endpoint_id: Optional[UUID] = None
+    managed_agent_id: Optional[UUID] = None
     approval_workflow_id: Optional[UUID] = None
     is_enabled: bool
     justification_mode: Optional[str] = None
@@ -75,7 +84,12 @@ class ToolConfigurationResponse(ToolConfigurationBase):
     model_config = ConfigDict(from_attributes=True)
 
     @field_serializer(
-        "id", "account_id", "mcp_server_id", "http_endpoint_id", "approval_workflow_id"
+        "id",
+        "account_id",
+        "mcp_server_id",
+        "http_endpoint_id",
+        "managed_agent_id",
+        "approval_workflow_id",
     )
     def serialize_uuid(self, value: Optional[UUID]) -> Optional[str]:
         """Serialize UUID to string."""

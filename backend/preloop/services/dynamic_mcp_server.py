@@ -278,11 +278,14 @@ class DynamicMCPServer:
                     ]
 
                 # Evaluate policy rules to determine action (allow/deny/require_approval)
+                policy_decision = await self._evaluate_policy(
+                    user_context, name, arguments or {}
+                )
                 (
                     action,
                     approval_workflow_id,
                     rule_description,
-                ) = await self._evaluate_policy(user_context, name, arguments or {})
+                ) = policy_decision
 
                 logger.info(
                     f"Policy evaluation for tool '{name}': "
@@ -309,7 +312,14 @@ class DynamicMCPServer:
                     try:
                         # Wait for approval
                         await self._request_and_wait_for_approval(
-                            user_context, name, arguments or {}, approval_workflow_id
+                            user_context,
+                            name,
+                            arguments or {},
+                            approval_workflow_id,
+                            # getattr, not attribute access: tests patch
+                            # _evaluate_policy with a plain tuple and a missing
+                            # snapshot must read as "not recorded".
+                            rule_context=getattr(policy_decision, "rule_context", None),
                         )
                         logger.info(f"Tool {name} approved - proceeding with execution")
                     except TimeoutError as e:
@@ -488,17 +498,29 @@ class DynamicMCPServer:
             tool_args: Tool arguments for condition evaluation
 
         Returns:
-            Tuple of (action, approval_workflow_id, rule_description)
+            A ``PolicyDecision``, which unpacks as the 3-tuple
+            (action, approval_workflow_id, rule_description) and carries
+            ``.rule_context`` describing the rule that gated the call.
             - action: 'allow', 'deny', or 'require_approval'
             - approval_workflow_id: UUID of approval workflow (if require_approval)
             - rule_description: Description of the matched rule
         """
+        # Imported outside the try: the fail-closed branch below builds a
+        # PolicyDecision, and it must not itself blow up with a NameError.
+        from preloop.services.approval_rule_context import (
+            SOURCE_RULE_EVALUATION_ERROR,
+            build_rule_context,
+        )
+        from preloop.services.policy_evaluator import (
+            PolicyDecision,
+            evaluate_policy_async,
+        )
+
         try:
             from preloop.models.db.session import get_async_db_session
             from preloop.models.crud.tool_configuration import (
                 get_tool_config_by_name_and_source_async,
             )
-            from preloop.services.policy_evaluator import evaluate_policy_async
 
             logger.info(
                 f"Evaluating policy for tool '{tool_name}' "
@@ -526,11 +548,7 @@ class DynamicMCPServer:
                     )
 
                 # Evaluate policy rules
-                (
-                    action,
-                    approval_workflow_id,
-                    rule_description,
-                ) = await evaluate_policy_async(
+                decision = await evaluate_policy_async(
                     db=db,
                     tool_name=tool_name,
                     tool_args=tool_args,
@@ -574,18 +592,33 @@ class DynamicMCPServer:
                     },
                 )
 
+                action, approval_workflow_id, rule_description = decision
+
                 logger.info(
                     f"Policy evaluation result for '{tool_name}': "
                     f"action={action}, approval_workflow_id={approval_workflow_id}, "
                     f"rule='{rule_description}'"
                 )
 
-                return action, approval_workflow_id, rule_description
+                return decision
 
         except Exception as e:
             # SECURITY: Fail closed on errors
             logger.error(f"Error evaluating policy for {tool_name}: {e}", exc_info=True)
-            return "require_approval", None, f"Policy evaluation error: {e}"
+            return PolicyDecision(
+                "require_approval",
+                None,
+                f"Policy evaluation error: {e}",
+                build_rule_context(
+                    source=SOURCE_RULE_EVALUATION_ERROR,
+                    decision="require_approval",
+                    explanation=(
+                        "Preloop could not evaluate this tool call's access "
+                        "rules, so it failed closed and asked for approval "
+                        "instead of deciding on its own."
+                    ),
+                ),
+            )
 
     async def _request_and_wait_for_approval(
         self,
@@ -593,6 +626,7 @@ class DynamicMCPServer:
         tool_name: str,
         tool_args: dict,
         approval_workflow_id: Optional[str] = None,
+        rule_context: Optional[dict] = None,
     ):
         """Request approval and wait for user response.
 
@@ -600,6 +634,9 @@ class DynamicMCPServer:
             user_context: User context
             tool_name: Name of the tool
             tool_args: Tool arguments
+            approval_workflow_id: Workflow to raise the approval against
+            rule_context: Snapshot of the rule that gated the call, persisted
+                on the request so the approver can see why it was raised
 
         Raises:
             TimeoutError: If approval request times out
@@ -672,36 +709,40 @@ class DynamicMCPServer:
                     tool_args=tool_args,
                     agent_reasoning=None,  # Could be extracted from context if available
                     execution_id=None,  # Could be extracted from context if available
+                    rule_context=rule_context,
                 )
+                approval_request_id = approval_request.id
+            # The session closes HERE, before the wait: holding it across the
+            # human decision (up to the workflow timeout) pins one pooled
+            # connection per pending approval and exhausts the async pool
+            # under concurrent approvals. wait_for_approval polls with fresh
+            # short-lived sessions and does not use the session this service
+            # was constructed with.
 
-                logger.info(
-                    f"Approval request created: {approval_request.id}, waiting for response..."
+            logger.info(
+                f"Approval request created: {approval_request_id}, waiting for response..."
+            )
+
+            # Wait for approval with polling
+            final_request = await approval_service.wait_for_approval(
+                approval_request_id, poll_interval=2.0
+            )
+            final_status = final_request.status
+            final_comment = final_request.approver_comment
+
+            # Check final status
+            if final_status == "declined":
+                raise PermissionError(
+                    "Tool execution declined"
+                    + (f": {final_comment}" if final_comment else "")
                 )
+            elif final_status == "cancelled":
+                raise PermissionError("Tool execution cancelled")
+            elif final_status != "approved":
+                raise Exception(f"Unexpected approval status: {final_status}")
 
-                # Wait for approval with polling
-                final_request = await approval_service.wait_for_approval(
-                    approval_request.id, poll_interval=2.0
-                )
-
-                # Check final status
-                if final_request.status == "declined":
-                    raise PermissionError(
-                        "Tool execution declined"
-                        + (
-                            f": {final_request.approver_comment}"
-                            if final_request.approver_comment
-                            else ""
-                        )
-                    )
-                elif final_request.status == "cancelled":
-                    raise PermissionError("Tool execution cancelled")
-                elif final_request.status != "approved":
-                    raise Exception(
-                        f"Unexpected approval status: {final_request.status}"
-                    )
-
-                # Approval granted!
-                logger.info(f"Tool {tool_name} approved by user")
+            # Approval granted!
+            logger.info(f"Tool {tool_name} approved by user")
 
         except Exception as e:
             logger.error(f"Error in approval flow: {e}", exc_info=True)
@@ -920,7 +961,7 @@ def register_default_tools(server: DynamicMCPServer):
     # Tool 3: update_issue
     server.register_default_tool(
         name="update_issue",
-        description="Update an existing issue",
+        description="Update an existing issue. Pass add_reaction (e.g. eyes) to ack pickup on GitHub without changing other fields.",
         input_schema={
             "type": "object",
             "properties": {
@@ -952,6 +993,14 @@ def register_default_tools(server: DynamicMCPServer):
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "New labels list",
+                },
+                "add_reaction": {
+                    "type": "string",
+                    "description": "GitHub issue reaction to add (eyes, +1, heart, ...)",
+                },
+                "remove_reaction": {
+                    "type": "string",
+                    "description": "GitHub issue reaction to remove",
                 },
             },
             "required": ["issue"],

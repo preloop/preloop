@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Preloop API
   description: REST API for Preloop issue tracking management
-  version: 0.13.1
+  version: 0.15.0
 paths:
   /api/v1/auth/register:
     post:
@@ -1014,6 +1014,62 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/account/gateway-usage/rate-limits:
+    get:
+      tags:
+      - Account
+      summary: Get Account Rate Limit Report
+      description: 'Get observed rate-limit telemetry and subscription headroom (#136).
+
+
+        All figures are echoes of real upstream provider responses: 429 counts,
+
+        provider-advised blocked time, and the latest observed rate-limit header
+
+        snapshots per provider/model, each with its observation timestamp.'
+      operationId: get_account_rate_limit_report_api_v1_account_gateway_usage_rate_limits_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      - name: runtime_principal_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Principal Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountRateLimitReportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents:
     get:
       tags:
@@ -1112,15 +1168,19 @@ paths:
         \nCreates a durable ManagedAgent row under the reserved ``custom`` source\n\
         type with a generated ``session_source_id`` and ``lifecycle_state`` of\n``active``\
         \ so the operator can immediately mint a gateway credential for it\nvia ``POST\
-        \ /agents/{agent_id}/credentials``.\n\nDuplicate ``display_name`` values are\
-        \ allowed within an account: each custom\nagent is keyed by a unique generated\
-        \ ``session_source_id``, so two agents\nsharing a display name remain distinct\
-        \ registry entries. Operators may\nlegitimately run several copies of the\
-        \ same agent, so we do not reject this.\n\nArgs:\n    payload: Display name\
-        \ and optional description for the new agent.\n    account: Resolved account\
-        \ for the authenticated user.\n    current_user: Authenticated active user\
-        \ performing the registration.\n    db: Database session.\n\nReturns:\n  \
-        \  The managed-agent summary for the newly registered agent."
+        \ /agents/{agent_id}/credentials``.\n\nPass ``agent_kind`` (for example ``cursor``)\
+        \ to record which product the\nagent is; it defaults to ``custom``. The kind\
+        \ is what usage import resolves\na default attribution target by, so an API-created\
+        \ Cursor agent can now be\nthe implicit target of ``POST /usage/import``.\n\
+        \nDuplicate ``display_name`` values are allowed within an account: each custom\n\
+        agent is keyed by a unique generated ``session_source_id``, so two agents\n\
+        sharing a display name remain distinct registry entries. Operators may\nlegitimately\
+        \ run several copies of the same agent, so we do not reject this.\n\nArgs:\n\
+        \    payload: Display name and optional description for the new agent.\n \
+        \   account: Resolved account for the authenticated user.\n    current_user:\
+        \ Authenticated active user performing the registration.\n    db: Database\
+        \ session.\n\nReturns:\n    The managed-agent summary for the newly registered\
+        \ agent."
       operationId: create_account_managed_agent_api_v1_agents_post
       security:
       - bearerAuth: []
@@ -1758,6 +1818,77 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{agent_id}/rekey:
+    post:
+      tags:
+      - Account
+      summary: Rekey Account Managed Agent
+      description: Rewrite one managed agent's durable principal id and dependent
+        rows.
+      operationId: rekey_account_managed_agent_api_v1_agents__agent_id__rekey_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedAgentRekeyRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedAgentRekeyResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{survivor_id}/merge:
+    post:
+      tags:
+      - Account
+      summary: Merge Account Managed Agents
+      description: Merge a duplicate managed agent into a survivor (dry-run capable).
+      operationId: merge_account_managed_agents_api_v1_agents__survivor_id__merge_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: survivor_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Survivor Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedAgentMergeRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedAgentMergeResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/runtime-sessions:
     get:
       tags:
@@ -2282,6 +2413,163 @@ paths:
                 $ref: '#/components/schemas/DashboardTelemetryResponse'
       security:
       - bearerAuth: []
+  /api/v1/users/me/avatar:
+    put:
+      tags:
+      - Account
+      summary: Upload Avatar
+      description: 'Upload or replace the current user''s profile avatar.
+
+
+        Accepts PNG, JPEG, WebP, or GIF images up to 5 MB. The image is
+
+        validated, EXIF-stripped, cropped to a center square, and re-encoded as a
+
+        bounded PNG stored as a base64 data URI. Manual uploads always take
+
+        precedence over SSO-provided avatars.'
+      operationId: upload_avatar_api_v1_users_me_avatar_put
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_upload_avatar_api_v1_users_me_avatar_put'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+    delete:
+      tags:
+      - Account
+      summary: Delete Avatar
+      description: Remove the current user's avatar, falling back to the default.
+      operationId: delete_avatar_api_v1_users_me_avatar_delete
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvatarResponse'
+      security:
+      - bearerAuth: []
+  /api/v1/attention/dismissals:
+    get:
+      tags:
+      - Account
+      summary: List Attention Dismissals
+      description: 'List the console attention items this account has silenced.
+
+
+        Reading is open to any member of the account: the console needs this list
+
+        to render the inbox at all, and a member who cannot see it would be shown
+
+        items their colleagues have already dealt with.
+
+
+        Expired snoozes are excluded and garbage-collected here, so "hidden until"
+
+        never quietly becomes "hidden forever".'
+      operationId: list_attention_dismissals_api_v1_attention_dismissals_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttentionDismissalListResponse'
+      security:
+      - bearerAuth: []
+  /api/v1/attention/dismissals/{item_id}:
+    put:
+      tags:
+      - Account
+      summary: Upsert Attention Dismissal
+      description: 'Silence one attention item until its fingerprint changes.
+
+
+        ``item_id`` is the console''s stable id for the item (``<kind>:<entity
+
+        id>``), and the body''s ``fingerprint`` is why it was showing. Dismissing
+
+        an item that has already been dismissed replaces the row, which is how an
+
+        item that came back with a new fingerprint gets silenced again.
+
+
+        Writing takes ``manage_agents``: an operator who may reconfigure the fleet
+
+        may also declare that one of its states is expected.'
+      operationId: upsert_attention_dismissal_api_v1_attention_dismissals__item_id__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 255
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttentionDismissalUpsertRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttentionDismissalResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Account
+      summary: Delete Attention Dismissal
+      description: Restore a silenced item so it shows in the inbox again.
+      operationId: delete_attention_dismissal_api_v1_attention_dismissals__item_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 255
+          title: Item Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/account/deletion-request:
     post:
       tags:
@@ -2973,10 +3261,11 @@ paths:
       summary: List All Tools
       description: "List all available tools (builtin + external) with their configuration\
         \ status.\n\nReturns a comprehensive list of:\n- All builtin tools\n- All\
-        \ tools from active MCP servers\n- Configuration status for each tool (enabled/disabled,\
-        \ preloop)\n\nArgs:\n    account: Current user's account (from dependency)\n\
-        \    db: Database session\n\nReturns:\n    List of tool dictionaries with\
-        \ metadata and configuration"
+        \ tools from active MCP servers\n- Native agent tools from the catalogue,\
+        \ plus any seen agent-source\n  configurations that are not in the catalogue\n\
+        - Configuration status for each tool (enabled/disabled, preloop)\n\nArgs:\n\
+        \    account: Current user's account (from dependency)\n    db: Database session\n\
+        \nReturns:\n    List of tool dictionaries with metadata and configuration"
       operationId: list_all_tools_api_v1_tools_get
       responses:
         '200':
@@ -4660,6 +4949,69 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/projects/{project_id}/pull-requests:
+    get:
+      tags:
+      - Projects
+      summary: List Project Pull Requests
+      description: List open pull requests (GitHub) or merge requests (GitLab) for
+        a project.
+      operationId: list_project_pull_requests_api_v1_projects__project_id__pull_requests_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Project Id
+      - name: state
+        in: query
+        required: false
+        schema:
+          const: open
+          type: string
+          default: open
+          title: State
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 50
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: refresh
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Refresh
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PullRequestListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/issues/search:
     get:
       tags:
@@ -4842,12 +5194,14 @@ paths:
 
         - Slug (organization/project)'
       operationId: create_issue_api_v1_issues_post
+      security:
+      - bearerAuth: []
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/IssueCreate'
-        required: true
       responses:
         '201':
           description: Successful Response
@@ -4861,8 +5215,104 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Issues
+      summary: List Issues
+      description: List issues for a visible project (or tracker) newest updated first.
+      operationId: list_issues_api_v1_issues_get
       security:
       - bearerAuth: []
+      parameters:
+      - name: project_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Project ID (UUID). Required in v1 unless tracker_id is set.
+          title: Project Id
+        description: Project ID (UUID). Required in v1 unless tracker_id is set.
+      - name: tracker_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Optional tracker ID alternative to project_id.
+          title: Tracker Id
+        description: Optional tracker ID alternative to project_id.
+      - name: status
+        in: query
+        required: false
+        schema:
+          enum:
+          - open
+          - closed
+          - all
+          type: string
+          description: Filter by issue status
+          default: open
+          title: Status
+        description: Filter by issue status
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Optional ILIKE filter on key or title
+          title: Q
+        description: Optional ILIKE filter on key or title
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Number of issues to skip
+          default: 0
+          title: Skip
+        description: Number of issues to skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          description: Page size
+          default: 20
+          title: Limit
+        description: Page size
+      - name: sort
+        in: query
+        required: false
+        schema:
+          const: updated_desc
+          type: string
+          description: Sort order (updated_desc only)
+          default: updated_desc
+          title: Sort
+        description: Sort order (updated_desc only)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/issues/{issue_id}:
     get:
       tags:
@@ -5488,6 +5938,48 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/ai-models/overview:
+    get:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Get AI Models Overview
+      description: Return usage, active sessions and price source for every model.
+      operationId: get_ai_models_overview_api_v1_ai_models_overview_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelsOverviewResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/ai-models/{model_id}:
     get:
       tags:
@@ -5812,6 +6304,127 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/ai-models/{model_id}/pricing:
+    get:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Get AI Model Pricing
+      description: Return the effective price for one model and where it came from.
+      operationId: get_ai_model_pricing_api_v1_ai_models__model_id__pricing_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelPricingResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/ai-models/{model_id}/pricing/fetch:
+    post:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Fetch AI Model Pricing From Provider
+      description: 'Read this model''s published price from its provider, without
+        saving it.
+
+
+        A price decides what every past and future request cost, so it is never
+
+        written by a fetch: the numbers come back for a person to confirm, and
+
+        saving one stays with the price override endpoints.'
+      operationId: fetch_ai_model_pricing_api_v1_ai_models__model_id__pricing_fetch_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelPriceQuote'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/ai-models/sync:
+    post:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Sync Provider Model Catalogs
+      description: 'Discover newly released provider models and add them to the catalog.
+
+
+        Runs the existing live provider discovery against credentials the account
+
+        already stores (the same discovery the console model-add flow uses) and
+
+        creates one AI model per newly discovered identifier via the CRUD layer.
+
+        New rows share the seed model''s credential secret and inherit its gateway
+
+        exposure, so authorization semantics are unchanged: API-key models stay
+
+        account-wide, and principal-bound subscription-OAuth models (which cannot
+
+        authenticate server-side discovery) are never created or widened here.
+
+
+        Backing service: ``preloop.services.ai_model_catalog_sync``. Every added
+
+        model is recorded in the audit trail. Use ``dry_run`` to preview.'
+      operationId: sync_ai_model_catalog_api_v1_ai_models_sync_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/AIModelCatalogSyncRequest'
+              - type: 'null'
+              title: Request In
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelCatalogSyncResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/ai-models/{model_id}/credentials/export:
     post:
       tags:
@@ -5850,6 +6463,155 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AIModelCredentialExportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/ai-models/providers/{provider}/available-models:
+    post:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Get Available Models for Provider
+      description: 'Fetch available models from the specified AI provider, with provenance.
+
+
+        Every provider lists live when a key (and endpoint where applicable) is
+
+        present; the response reports ``source`` ("live" or "fallback") and a
+
+        short safe ``error`` reason when a live attempt failed or credentials
+
+        were missing. The reason comes from a fixed vocabulary and never contains
+
+        raw provider error text, endpoint URLs, or key material.
+
+
+        The provider API key travels in the request BODY, never the query string:
+
+        as a query parameter it was written to access logs in plaintext.
+
+
+        Edit-mode refresh should send ``ai_model_id`` instead of the stored key.
+
+        The server decrypts the stored secret via CRUD. A typed ``api_key`` in
+
+        the body always wins. Stored secrets are never returned to the client.'
+      operationId: list_provider_available_models_api_v1_ai_models_providers__provider__available_models_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Provider
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/AvailableModelsRequest'
+              - type: 'null'
+              title: Request In
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableModelsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Get Available Models for Provider (deprecated)
+      description: 'Deprecated GET form, kept for clients that have not moved to POST
+        yet.
+
+
+        Returns a BARE LIST of model ids, unlike the POST form, which reports
+
+        provenance as ``{models, source, error}``. The bare-list shape is kept
+
+        here on purpose so unknown external callers of the deprecated route do
+
+        not break; new clients should use POST and read the provenance.
+
+
+        The api_key query parameter this endpoint used to accept has been REMOVED,
+
+        not merely deprecated: it wrote live provider keys into access logs in
+
+        plaintext. Pass the key in the X-Provider-Api-Key header, or use the POST
+
+        form. A key sent as a query parameter is ignored.'
+      operationId: get_provider_available_models_api_v1_ai_models_providers__provider__available_models_get
+      deprecated: true
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Provider
+      - name: api_endpoint
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Base URL of an OpenAI-compatible endpoint, required for the
+            openai-compatible and custom providers.
+          title: Api Endpoint
+        description: Base URL of an OpenAI-compatible endpoint, required for the openai-compatible
+          and custom providers.
+      - name: model_kind
+        in: query
+        required: false
+        schema:
+          enum:
+          - llm
+          - stt
+          - tts
+          type: string
+          description: Model service kind to fetch
+          default: llm
+          title: Model Kind
+        description: Model service kind to fetch
+      - name: X-Provider-Api-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Provider API key. Headers are not written to access logs.
+          title: X-Provider-Api-Key
+        description: Provider API key. Headers are not written to access logs.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                title: Response Get Provider Available Models Api V1 Ai Models Providers  Provider  Available
+                  Models Get
         '422':
           description: Validation Error
           content:
@@ -6019,6 +6781,243 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cost/reprice:
+    post:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Reprice Account Gateway Usage
+      description: 'Re-price historical gateway usage synchronously and report real
+        counts.
+
+
+        Unlike the billing plugin''s ``/billing/cost/reprice`` (which dispatches
+
+        windows over 7 days to a background worker and acknowledges with empty
+
+        counters), this endpoint always scans in-request — keyset-paginated, so
+
+        an operator backfilling weeks of history gets actual examined/updated
+
+        numbers instead of an ambiguous async ack. Budget-spend buckets are never
+
+        rewritten; provider-side actuals (``provider``/``reconciled``/
+
+        ``imported``) and ``subscription`` rows are never touched.'
+      operationId: reprice_account_gateway_usage_api_v1_cost_reprice_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RepriceRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepriceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/cost/ledger-backfill/csv:
+    post:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Backfill From Provider Ledger Csv
+      description: 'Reconcile unpriced gateway rows against a provider daily-usage
+        export.
+
+
+        Distributes each (day x model) ledger total across this account''s
+
+        still-unpriced gateway rows for that day — pro-rata by tokens, equal
+
+        split when the bucket recorded no tokens — and tags them
+
+        ``cost_source=''reconciled''`` so provider actuals never mix with catalog
+
+        estimates. Only rows without a resolved cost are ever touched, which
+
+        also makes re-running the same export idempotent. The export''s "Other"
+
+        bucket is reported as an unallocatable residual, never distributed.
+
+
+        Defaults to a dry run that returns the full allocation plan; pass
+
+        ``apply=true`` to persist it.'
+      operationId: backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerBackfillResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/usage/import:
+    post:
+      tags:
+      - Usage Import
+      - Usage Import
+      summary: Import Usage Events
+      description: 'Ingest a batch of normalized usage events into the cost ledger.
+
+
+        Events are attributed to the given managed agent (default: the account''s
+
+        managed Cursor agent from onboarding) and recorded with
+
+        ``usage_source=''imported''``. Re-sending the same events is idempotent —
+
+        duplicates are counted in ``skipped_duplicates``, never double-billed.'
+      operationId: import_usage_events_api_v1_usage_import_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsageImportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageImportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/usage/ingest:
+    post:
+      tags:
+      - Usage Import
+      - Usage Import
+      summary: Ingest Usage Records
+      description: 'Push a batch of external usage records into the cost ledger.
+
+
+        The continuous-push evolution of ``POST /usage/import``: a harness
+
+        posts sanitized spend records — or hook-shaped lifecycle events
+
+        (``event_type``) — as they occur instead of batch CSV. Each record is
+
+        identified by (source, external_id) per account, so replaying a batch
+
+        — e.g. a retry after a network timeout — returns 200 with the
+
+        replayed records flagged ``deduplicated`` and never double-counts
+
+        spend; a replay whose payload differs from the stored record is
+
+        additionally flagged ``conflict`` (first write wins, never a 409).
+
+        Records carry ``conversation_id`` / ``parent_conversation_id`` so
+
+        subagent workers billed on separate conversations can be rolled up
+
+        under their parent thread, and ``cost_basis`` so reconciled
+
+        billing-export records supersede hook-derived estimates in cost
+
+        summaries. Attribution precedence: explicit ``agent_id`` (must belong
+
+        to the account) wins; otherwise the account''s single managed agent
+
+        whose kind equals ``source`` is used, and zero or multiple candidates
+
+        is a 422.'
+      operationId: ingest_usage_records_api_v1_usage_ingest_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsageIngestRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageIngestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/usage/import/csv:
+    post:
+      tags:
+      - Usage Import
+      - Usage Import
+      summary: Import Usage Csv
+      description: 'Import a Cursor dashboard Usage CSV export into the cost ledger.
+
+
+        Parses the export (Date / Kind / Model / Max Mode / Input (w/ Cache
+
+        Write) / Input (w/o Cache Write) / Cache Read / Output Tokens / Total
+
+        Tokens / Cost), normalizes each row, and ingests it through the same
+
+        pipeline as ``POST /usage/import``. Rows whose Cost is "Included" are
+
+        stored with tokens but no charged amount. Re-importing the same file is
+
+        idempotent.'
+      operationId: import_usage_csv_api_v1_usage_import_csv_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_import_usage_csv_api_v1_usage_import_csv_post'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageImportCsvResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/billing/cost/runtime-sessions/example/optimization:
     get:
       tags:
@@ -6290,75 +7289,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/ai-models/providers/{provider}/available-models:
-    get:
-      tags:
-      - AI Models
-      - AI Models
-      summary: Get Available Models for Provider
-      description: 'Fetch available models from the specified AI provider.
-
-
-        For OpenAI, this will fetch the latest available models from their API.
-
-        For Anthropic and Google, this returns a curated list of known models.
-
-
-        Note: This endpoint does not require authentication as it''s just fetching
-
-        publicly available model names. The api_key parameter is optional for
-
-        fetching live data from OpenAI.'
-      operationId: get_provider_available_models_api_v1_ai_models_providers__provider__available_models_get
-      parameters:
-      - name: provider
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Provider
-      - name: api_key
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Optional API key for fetching models
-          title: Api Key
-        description: Optional API key for fetching models
-      - name: model_kind
-        in: query
-        required: false
-        schema:
-          enum:
-          - llm
-          - stt
-          - tts
-          type: string
-          description: Model service kind to fetch
-          default: llm
-          title: Model Kind
-        description: Model service kind to fetch
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: string
-                title: Response Get Provider Available Models Api V1 Ai Models Providers  Provider  Available
-                  Models Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - bearerAuth: []
   /api/v1/private/webhooks/{tracker_type}/{organization_id}:
     post:
       tags:
@@ -6466,6 +7396,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/schedule/preview:
+    post:
+      tags:
+      - Flows
+      summary: Preview Flow Schedule
+      description: 'Preview a schedule trigger configuration.
+
+
+        Validates the schedule config (invalid configs are rejected with a
+
+        422 by the schema) and returns a human-readable description plus the
+
+        next few run times, for display in the flow editor.'
+      operationId: preview_flow_schedule_api_v1_flows_schedule_preview_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SchedulePreviewRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulePreviewResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/flows/presets:
     get:
       tags:
@@ -6525,6 +7490,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/run-preset:
+    post:
+      tags:
+      - Flows
+      summary: Run Preset
+      description: 'Run a catalog preset on an issue, creating the account flow on
+        first use.
+
+
+        ``confirm_create=false`` resolves only: 409 ``flow_missing`` when the
+
+        account has no clone, or 200 with flow metadata and no execution when
+
+        one exists. ``confirm_create=true`` creates if needed (requires
+
+        ``create_flows``) and starts the run.'
+      operationId: run_preset_api_v1_flows_run_preset_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunPresetRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunPresetResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/flows/executions:
     get:
       tags:
@@ -6584,6 +7587,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/batches/{batch_id}/executions:
+    get:
+      tags:
+      - Flows
+      summary: Read Batch Executions
+      description: 'List all executions of one matrix/batch trigger with a rollup.
+
+
+        The rollup aggregates status counts, tokens, tool calls and estimated
+
+        cost across the batch so an eval matrix can be observed as a unit.'
+      operationId: read_batch_executions_api_v1_flows_batches__batch_id__executions_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Batch Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchExecutionsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/flows/executions/{execution_id}:
     get:
       tags:
@@ -6608,6 +7646,124 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FlowExecutionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/executions/{execution_id}/result:
+    get:
+      tags:
+      - Flows
+      summary: Get Flow Execution Result
+      description: 'Get the structured result artifact reported by a flow execution.
+
+
+        Eval/observe flows write ``/workspace/result.json`` as their final
+
+        report; the runner captures it as a first-class execution artifact.
+
+        Returns 404 if the execution does not exist or reported no result.'
+      operationId: get_flow_execution_result_api_v1_flows_executions__execution_id__result_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Flow Execution Result Api V1 Flows Executions  Execution
+                  Id  Result Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/executions/{execution_id}/evidence:
+    get:
+      tags:
+      - Flows
+      summary: Get Flow Execution Evidence
+      description: 'Download the evidence pack captured for a flow execution.
+
+
+        Audit-style flows write an evidence pack under ``/workspace/evidence``;
+
+        the runner captures it as a tar.gz archive after the agent finishes.
+
+        Returns 404 if the execution does not exist or no evidence was captured.'
+      operationId: get_flow_execution_evidence_api_v1_flows_executions__execution_id__evidence_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/executions/{execution_id}/workspace:
+    get:
+      tags:
+      - Flows
+      summary: Get Flow Execution Workspace
+      description: 'Download the workspace snapshot captured for a flow execution.
+
+
+        Every hosted run leaves a size-capped tar.gz of ``/workspace`` (``.git``
+
+        included, so commits that were never pushed are in it) behind. Returns 404
+
+        if the execution does not exist, if the workspace was too large to keep,
+
+        or if the retention window has passed and the janitor reaped it.'
+      operationId: get_flow_execution_workspace_api_v1_flows_executions__execution_id__workspace_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      responses:
+        '200':
+          description: Size-capped tar.gz of /workspace from this execution.
+          content:
+            application/json:
+              schema: {}
+            application/gzip:
+              schema:
+                type: string
+                format: binary
         '422':
           description: Validation Error
           content:
@@ -6776,8 +7932,11 @@ paths:
         \nReturns:\n    Dictionary with:\n    - tool_calls: Number of MCP tool calls\
         \ made\n    - api_requests: Number of API requests made during execution\n\
         \    - token_usage: Token usage statistics\n    - estimated_cost: Estimated\
-        \ cost based on token usage (0.0 if no pricing)\n    - has_pricing: Whether\
-        \ pricing is configured in AI model metadata"
+        \ cost in USD, or null when no usage could\n      be priced (never a placeholder\
+        \ 0.0, which would misreport real\n      spend as free)\n    - has_pricing:\
+        \ Whether any request could be priced\n    - cost_is_partial: Whether estimated_cost\
+        \ excludes unpriced requests\n    - unpriced_requests: Requests that could\
+        \ not be priced\n    - unpriced_tokens: Token volume behind the unpriced requests"
       operationId: get_flow_execution_metrics_api_v1_flows_executions__execution_id__metrics_get
       security:
       - bearerAuth: []
@@ -6893,9 +8052,16 @@ paths:
       tags:
       - Flows
       summary: Trigger Flow Execution
-      description: "Trigger a test execution for a flow.\n\nArgs:\n    flow_id: Flow\
-        \ to trigger\n    trigger_event_data: Optional custom trigger event data for\
-        \ testing template variables\n\nReturns:\n    Execution details"
+      description: "Trigger a test execution for a flow.\n\nThe body is free-form\
+        \ trigger event data, except for the reserved key\n``matrix``: when present\
+        \ it must be a list of up to 25\n``{\"agent_type\"?, \"ai_model_id\"?}`` objects\
+        \ and the trigger fans out to\none execution per entry, all sharing a ``batch_id``\
+        \ (an empty object runs\nthe flow defaults). Without ``matrix`` the behaviour\
+        \ is unchanged.\n\nArgs:\n    flow_id: Flow to trigger\n    trigger_event_data:\
+        \ Optional custom trigger event data for testing\n        template variables,\
+        \ plus the optional reserved ``matrix`` key\n\nReturns:\n    Execution details,\
+        \ or batch details (``batch_id`` + per-cell\n    ``execution_id``) when a\
+        \ matrix was given"
       operationId: trigger_flow_execution_api_v1_flows__flow_id__trigger_post
       security:
       - bearerAuth: []
@@ -7139,7 +8305,31 @@ paths:
 
         This endpoint allows external services to trigger flows without authentication.
 
-        Security is provided by the unguessable webhook_secret in the URL.'
+        Security is provided by the unguessable webhook_secret in the URL.
+
+
+        Success responses carry a nested ``execution`` object with the same
+
+        ``{id, status, flow_id}`` shape as ``POST /flows/{flow_id}/trigger``, plus
+
+        flat ``execution_id``/``execution_status``/``execution_url`` fields and
+
+        ``"status": "triggered"`` for backwards compatibility.
+
+
+        Deduplication: redelivered payloads carrying the same commit SHA as a
+
+        still-running execution of this flow return that execution with
+
+        ``"deduplicated": true`` instead of creating a duplicate. Commit-less
+
+        payloads (e.g. GlitchTip alerts) are coalesced on a resource key derived
+
+        from ``webhook_config.dedupe_path`` or the default paths
+
+        ``attachments.0.title_link`` / ``data.issue.id``; payloads with neither
+
+        identity are never deduplicated.'
       operationId: trigger_flow_via_webhook_api_v1_webhooks_flows__flow_id___webhook_secret__post
       parameters:
       - name: flow_id
@@ -7157,10 +8347,124 @@ paths:
           title: Webhook Secret
       responses:
         '200':
-          description: Successful Response
+          description: Execution triggered (or deduplicated to an existing running
+            execution for the same repo + commit, see 'deduplicated').
           content:
             application/json:
               schema: {}
+        '202':
+          description: Execution row was created but dispatch failed; poll execution_url
+            or retry from the console. Do not re-send the webhook.
+        '422':
+          description: Payload does not match the flow's trigger_config; no execution
+            was created. Also returned for invalid request input (e.g. malformed flow_id).
+        '500':
+          description: No execution could be created (failure at/before the insert).
+  /api/v1/runners/register:
+    post:
+      tags:
+      - Runners
+      summary: Register Runner
+      description: Register a new runner or resume an existing one for this account.
+      operationId: register_runner_api_v1_runners_register_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunnerRegisterRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerRegisterResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/runners:
+    get:
+      tags:
+      - Runners
+      summary: List Runners
+      operationId: list_runners_api_v1_runners_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RunnerResponse'
+                title: Response List Runners Api V1 Runners Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runners/fleet-summary:
+    get:
+      tags:
+      - Runners
+      summary: Runner Fleet Summary
+      operationId: runner_fleet_summary_api_v1_runners_fleet_summary_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerFleetSummary'
+      security:
+      - bearerAuth: []
+  /api/v1/runners/{runner_id}:
+    get:
+      tags:
+      - Runners
+      summary: Get Runner
+      operationId: get_runner_api_v1_runners__runner_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerResponse'
         '422':
           description: Validation Error
           content:
@@ -7223,6 +8527,151 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/policies/model-io-rules:
+    get:
+      tags:
+      - Policies
+      summary: List model I/O content policy rules
+      description: Return model.request and model.response rules for the console.
+      operationId: list_model_io_rules_api_v1_policies_model_io_rules_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelIORuleListResponse'
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - Policies
+      summary: Create or replace a model I/O content policy rule
+      description: Save one model I/O rule from the Policies console form.
+      operationId: create_model_io_rule_api_v1_policies_model_io_rules_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelIORule'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Create Model Io Rule Api V1 Policies Model Io Rules
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/policies/model-io-rules/{rule_id}:
+    put:
+      tags:
+      - Policies
+      summary: Replace a model I/O content policy rule
+      description: Replace an existing model I/O rule. The path id wins.
+      operationId: update_model_io_rule_api_v1_policies_model_io_rules__rule_id__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: rule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Rule Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelIORule'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Update Model Io Rule Api V1 Policies Model Io Rules  Rule
+                  Id  Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      tags:
+      - Policies
+      summary: Enable or disable a model I/O content policy rule
+      description: Toggle enabled without rewriting the rest of the rule.
+      operationId: patch_model_io_rule_api_v1_policies_model_io_rules__rule_id__patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: rule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Rule Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelIORulePatchRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Patch Model Io Rule Api V1 Policies Model Io Rules  Rule
+                  Id  Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Policies
+      summary: Delete a model I/O content policy rule
+      description: Delete one model I/O rule.
+      operationId: remove_model_io_rule_api_v1_policies_model_io_rules__rule_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: rule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Rule Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/policies/export:
     get:
       tags:
@@ -7648,6 +9097,54 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/security-screen/score:
+    post:
+      tags:
+      - Security Screen
+      summary: Score screened content (QM security-screen proxy contract)
+      description: "Score one screened content chunk with the deterministic rule engine.\n\
+        \nArgs:\n    payload: Screened chunk (text, hook, opaque metadata).\n    auth_context:\
+        \ Authenticated request context.\n\nReturns:\n    The verdict in QM's expected\
+        \ shape; ``primary_outcome`` is omitted\n    for benign content."
+      operationId: score_screened_content_api_v1_security_screen_score_post
+      parameters:
+      - name: x-api-key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Api-Key
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecurityScreenRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityScreenResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/agents/{agent_id}/control/commands:
     post:
       tags:
@@ -7753,6 +9250,77 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{agent_id}/control/takeover:
+    post:
+      tags:
+      - Agent Control
+      summary: Request Managed Agent Takeover
+      description: Ask the sidecar to switch a local TUI session into remote SDK mode.
+      operationId: request_managed_agent_takeover_api_v1_agents__agent_id__control_takeover_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentControlSessionActionRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentControlCommandResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{agent_id}/control/release:
+    post:
+      tags:
+      - Agent Control
+      summary: Release Managed Agent Session
+      description: Release a remote SDK session back to the local `preloop claude`
+        TUI.
+      operationId: release_managed_agent_session_api_v1_agents__agent_id__control_release_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentControlSessionActionRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentControlCommandResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents/permission-check:
     post:
       tags:
@@ -7810,6 +9378,86 @@ paths:
       - bearerAuth: []
 components:
   schemas:
+    AIModelCatalogSyncProviderResult:
+      properties:
+        provider:
+          type: string
+          title: Provider
+          description: Provider name, e.g. 'anthropic'
+        source:
+          type: string
+          enum:
+          - live
+          - fallback
+          title: Source
+          description: '''live'' when the provider''s listing endpoint answered; ''fallback''
+            when discovery failed or was impossible'
+          default: fallback
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+          description: Short safe reason when nothing could be discovered (fixed vocabulary;
+            never raw provider error text)
+        discovered:
+          type: integer
+          title: Discovered
+          description: Total model identifiers the provider listed
+          default: 0
+        added:
+          items:
+            type: string
+          type: array
+          title: Added
+          description: Gateway aliases of newly added catalog models
+        skipped_existing:
+          type: integer
+          title: Skipped Existing
+          description: Discovered identifiers already present in the catalog
+          default: 0
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+          description: Human-readable context for skips and errors
+      type: object
+      required:
+      - provider
+      title: AIModelCatalogSyncProviderResult
+      description: Sync outcome for one provider.
+    AIModelCatalogSyncRequest:
+      properties:
+        provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider
+          description: Optional provider filter, e.g. 'anthropic'. When omitted, every
+            provider the account has credentialed models for is synced.
+        dry_run:
+          type: boolean
+          title: Dry Run
+          description: Report what would be added without creating any models
+          default: false
+      type: object
+      title: AIModelCatalogSyncRequest
+      description: Request body for the account model-catalog sync.
+    AIModelCatalogSyncResponse:
+      properties:
+        providers:
+          items:
+            $ref: '#/components/schemas/AIModelCatalogSyncProviderResult'
+          type: array
+          title: Providers
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      title: AIModelCatalogSyncResponse
+      description: Per-provider results of one model-catalog sync run.
     AIModelCreate:
       properties:
         name:
@@ -8019,6 +9667,228 @@ components:
       - token_usage
       title: AIModelGatewayUsageSummaryResponse
       description: Gateway usage summary for one durable AI model.
+    AIModelOverviewItem:
+      properties:
+        ai_model_id:
+          type: string
+          title: Ai Model Id
+        model_name:
+          type: string
+          title: Model Name
+        provider_name:
+          type: string
+          title: Provider Name
+        model_identifier:
+          type: string
+          title: Model Identifier
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+          description: Gateway alias clients call this model by, if configured
+        is_default:
+          type: boolean
+          title: Is Default
+          default: false
+        total_requests:
+          type: integer
+          title: Total Requests
+          default: 0
+        successful_requests:
+          type: integer
+          title: Successful Requests
+          default: 0
+        failed_requests:
+          type: integer
+          title: Failed Requests
+          default: 0
+        token_usage:
+          $ref: '#/components/schemas/GatewayTokenUsage'
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          default: 0.0
+        unpriced_request_count:
+          type: integer
+          title: Unpriced Request Count
+          description: Requests with tokens but no price to apply
+          default: 0
+        active_session_count:
+          type: integer
+          title: Active Session Count
+          description: Runtime sessions still open that used this model
+          default: 0
+        last_request_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Request At
+          description: Timestamp of the most recent gateway request
+        pricing_source:
+          type: string
+          enum:
+          - override
+          - model_config
+          - catalog
+          - none
+          title: Pricing Source
+          description: Where this model's effective price comes from
+          default: none
+      type: object
+      required:
+      - ai_model_id
+      - model_name
+      - provider_name
+      - model_identifier
+      title: AIModelOverviewItem
+      description: 'One row of the Models page: what this model did in the window.'
+    AIModelPrice:
+      properties:
+        input_per_1m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Input Per 1M
+          description: Price of a million input tokens, in USD.
+        output_per_1m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Output Per 1M
+          description: Price of a million output tokens, in USD.
+        cached_input_per_1m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cached Input Per 1M
+          description: Price of a million cached input tokens, in USD. Absent when
+            the source says nothing about caching, which is not the same as free.
+        blended_per_1m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Blended Per 1M
+          description: Single price applied to every token, in USD per million. Set
+            by overrides that do not separate input from output.
+        request_price:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Request Price
+          description: Flat price added per request, in USD.
+      type: object
+      title: AIModelPrice
+      description: One price, in USD per million tokens.
+    AIModelPriceQuote:
+      properties:
+        ai_model_id:
+          type: string
+          title: Ai Model Id
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        source_url:
+          type: string
+          title: Source Url
+        model_key:
+          type: string
+          title: Model Key
+          description: The provider's own identifier for the model.
+        price:
+          $ref: '#/components/schemas/AIModelPrice'
+        currency:
+          type: string
+          title: Currency
+          default: USD
+        fetched_at:
+          type: string
+          format: date-time
+          title: Fetched At
+      type: object
+      required:
+      - ai_model_id
+      - source_url
+      - model_key
+      - price
+      - fetched_at
+      title: AIModelPriceQuote
+      description: A price read from the provider, for confirmation. Nothing is saved.
+    AIModelPricingResponse:
+      properties:
+        ai_model_id:
+          type: string
+          title: Ai Model Id
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        source:
+          type: string
+          enum:
+          - override
+          - model_config
+          - catalog
+          - none
+          title: Source
+          description: 'override: an account price override. model_config: pricing
+            configured on the model itself. catalog: the bundled or live provider
+            price list. none: nothing prices this model, so its requests land unpriced.'
+        price:
+          $ref: '#/components/schemas/AIModelPrice'
+        currency:
+          type: string
+          title: Currency
+          default: USD
+        override_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Override Id
+        effective_from:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Effective From
+        effective_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Effective Until
+        catalog_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Catalog Key
+          description: The price list entry that matched, when the source is the catalog.
+        fetch_supported:
+          type: boolean
+          title: Fetch Supported
+          description: True when this provider publishes prices Preloop can read.
+          default: false
+        fetch_provider_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fetch Provider Label
+          description: Provider name to show when a price fetch is not offered.
+      type: object
+      required:
+      - ai_model_id
+      - source
+      title: AIModelPricingResponse
+      description: The price this account is actually charged for one model, and why.
     AIModelRead:
       properties:
         id:
@@ -8189,6 +10059,15 @@ components:
             type: object
           - type: 'null'
           title: Credentials Meta Data
+        credentials_secret_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Credentials Secret Id
+          description: Repoint this model at an existing SecretReference instead of
+            minting a new one. Used to keep several models on one provider key or
+            OAuth lineage. The secret must already belong to the caller's account.
         is_default:
           anyOf:
           - type: boolean
@@ -8209,6 +10088,34 @@ components:
       type: object
       title: AIModelUpdate
       description: Schema for updating an existing AIModel entry. All fields are optional.
+    AIModelsOverviewResponse:
+      properties:
+        period_start:
+          type: string
+          format: date-time
+          title: Period Start
+        period_end:
+          type: string
+          format: date-time
+          title: Period End
+        models:
+          items:
+            $ref: '#/components/schemas/AIModelOverviewItem'
+          type: array
+          title: Models
+      type: object
+      required:
+      - period_start
+      - period_end
+      title: AIModelsOverviewResponse
+      description: 'Batch answer for the Models page and the dashboard inventory tab.
+
+
+        Replaces one request per model per panel with a single response, so
+
+        opening the page costs a fixed number of queries no matter how many
+
+        models an account has configured.'
     AccessRuleCreate:
       properties:
         action:
@@ -8383,6 +10290,21 @@ components:
           - type: string
           - type: 'null'
           title: Organization Name
+        default_runner_pool:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Default Runner Pool
+          description: 'Account default runner pool: a runner id, name, or label;
+            the literal ''server'' for Preloop hosted; null for any online private
+            runner.'
+        hosted_minutes_remaining:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Hosted Minutes Remaining
+          description: Hosted runner minutes remaining for this account. Null when
+            quota is not configured.
         created_at:
           type: string
           title: Created At
@@ -8403,6 +10325,15 @@ components:
           - type: string
           - type: 'null'
           title: Organization Name
+        default_runner_pool:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Default Runner Pool
+          description: 'Account default runner pool: a runner id, name, or label;
+            the literal ''server'' for Preloop hosted; null for any online private
+            runner.'
       type: object
       title: AccountDetailsUpdate
       description: Account details update request.
@@ -8601,6 +10532,40 @@ components:
       type: object
       title: AccountManagedAgentListResponse
       description: Account-scoped managed-agent registry response.
+    AccountRateLimitReportResponse:
+      properties:
+        period_start:
+          type: string
+          format: date-time
+          title: Period Start
+        period_end:
+          type: string
+          format: date-time
+          title: Period End
+        totals:
+          $ref: '#/components/schemas/RateLimitTotals'
+        by_model:
+          items:
+            $ref: '#/components/schemas/RateLimitByModel'
+          type: array
+          title: By Model
+        by_session:
+          items:
+            $ref: '#/components/schemas/RateLimitBySession'
+          type: array
+          title: By Session
+        latest_snapshots:
+          items:
+            $ref: '#/components/schemas/RateLimitSnapshotItem'
+          type: array
+          title: Latest Snapshots
+      type: object
+      required:
+      - period_start
+      - period_end
+      - totals
+      title: AccountRateLimitReportResponse
+      description: Account-scoped rate-limit telemetry and observed headroom report.
     AccountRuntimeSessionDetailResponse:
       properties:
         period_start:
@@ -8696,6 +10661,16 @@ components:
             format: uuid
           - type: 'null'
           title: Target Session Id
+        session_source_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Source Id
+        session_reference:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Reference
         session_mode:
           type: string
           enum:
@@ -8830,11 +10805,42 @@ components:
           additionalProperties: true
           type: object
           title: Voice
+        spawn_worktree:
+          type: boolean
+          title: Spawn Worktree
+          default: false
+        interrupt:
+          type: boolean
+          title: Interrupt
+          default: false
       type: object
       required:
       - message
       title: AgentControlSendMessageRequest
       description: Operator request for routing a prompt to an online managed agent.
+    AgentControlSessionActionRequest:
+      properties:
+        target_session_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Target Session Id
+        start_new_session:
+          type: boolean
+          title: Start New Session
+          default: false
+        spawn_worktree:
+          type: boolean
+          title: Spawn Worktree
+          default: false
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+      type: object
+      title: AgentControlSessionActionRequest
+      description: Takeover or release a Claude Code (or other) session.
     AgentControlVoiceTranscriptRequest:
       properties:
         transcript:
@@ -9468,6 +11474,20 @@ components:
             format: uuid
           - type: 'null'
           title: Auto Approval Bypass Id
+        rule_context:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Rule Context
+        risk_level:
+          type: string
+          title: Risk Level
+          description: 'danger for destructive/spend tools, otherwise low.
+
+
+            Unknown is treated as danger so notification actions stay fail-closed.'
+          readOnly: true
         was_bypassed:
           type: boolean
           title: Was Bypassed
@@ -9528,6 +11548,7 @@ components:
       - approver_comment
       - webhook_posted_at
       - webhook_error
+      - risk_level
       - was_bypassed
       - decided_by_human
       - approval_policy_id
@@ -10083,6 +12104,97 @@ components:
       type: object
       title: ApprovalWorkflowUpdate
       description: Schema for updating approval workflow.
+    AttentionDismissalListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/AttentionDismissalResponse'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+          default: 0
+      type: object
+      title: AttentionDismissalListResponse
+      description: Every dismissal in force for the account.
+    AttentionDismissalResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        item_id:
+          type: string
+          title: Item Id
+        fingerprint:
+          type: string
+          title: Fingerprint
+        reason:
+          type: string
+          title: Reason
+        snooze_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Snooze Until
+        dismissed_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Dismissed By User Id
+        dismissed_by_username:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dismissed By Username
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - item_id
+      - fingerprint
+      - reason
+      - created_at
+      title: AttentionDismissalResponse
+      description: One dismissal that is still in force.
+    AttentionDismissalUpsertRequest:
+      properties:
+        fingerprint:
+          type: string
+          maxLength: 4096
+          title: Fingerprint
+          description: Why the item is showing (latest failed run id, unpriced model
+            aliases, agent onboarding and validation state). The item comes back when
+            this changes.
+        reason:
+          type: string
+          enum:
+          - expected
+          - snoozed
+          - fixed
+          title: Reason
+          description: 'expected: this is how the account is configured. snoozed:
+            hide it for snooze_days. fixed: it has been dealt with.'
+        snooze_days:
+          anyOf:
+          - type: integer
+            maximum: 90.0
+            minimum: 1.0
+          - type: 'null'
+          title: Snooze Days
+          description: Required for reason='snoozed'; ignored otherwise.
+      type: object
+      required:
+      - fingerprint
+      - reason
+      title: AttentionDismissalUpsertRequest
+      description: Body of ``PUT /attention/dismissals/{item_id}``.
     AuthUserCreate:
       properties:
         username:
@@ -10145,6 +12257,16 @@ components:
             type: array
           - type: 'null'
           title: Permissions
+        avatar_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Avatar Url
+        avatar_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Avatar Source
       type: object
       required:
       - username
@@ -10192,6 +12314,377 @@ components:
       - challenge_token
       title: AuthenticationVerifyRequest
       description: Authenticator response for the authentication ceremony.
+    AvailableModelsRequest:
+      properties:
+        api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Api Key
+          description: Provider API key used to list models. Never logged and never
+            persisted by this endpoint. When omitted, pass ai_model_id so the server
+            can decrypt the stored key; the stored key is never returned to the client.
+            A typed key always wins over the stored one.
+        ai_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Ai Model Id
+          description: Existing AI model id. When no typed api_key is sent, the server
+            decrypts the stored credentials via CRUD and lists live. The plaintext
+            key is never returned in the response.
+        api_endpoint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Api Endpoint
+          description: Base URL of an OpenAI-compatible endpoint, e.g. https://openrouter.ai/api/v1.
+            Required for the 'openai-compatible' and 'custom' providers, which have
+            no fixed model catalog.
+        model_kind:
+          type: string
+          enum:
+          - llm
+          - stt
+          - tts
+          title: Model Kind
+          description: Model service kind to fetch
+          default: llm
+        aws_access_key_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Aws Access Key Id
+          description: AWS access key id for the bedrock provider. Never logged and
+            never persisted by this endpoint.
+        aws_secret_access_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Aws Secret Access Key
+          description: AWS secret access key for the bedrock provider. Never logged
+            and never persisted by this endpoint.
+        aws_session_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Aws Session Token
+          description: Optional temporary-session token for the bedrock provider.
+            Never logged and never persisted by this endpoint.
+        aws_region_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Aws Region Name
+          description: AWS region for the bedrock provider, e.g. us-east-1. Falls
+            back to boto3's default region chain when omitted.
+      type: object
+      title: AvailableModelsRequest
+      description: 'Discovery request for a provider''s model catalog.
+
+
+        The API key is carried in the body rather than the query string on
+
+        purpose: as a query parameter it was written to access logs in plaintext
+
+        and leaked live provider keys.'
+    AvailableModelsResponse:
+      properties:
+        models:
+          items:
+            type: string
+          type: array
+          title: Models
+          description: Model identifiers to offer in the picker
+        source:
+          type: string
+          enum:
+          - live
+          - fallback
+          title: Source
+          description: '''live'' when the provider''s listing endpoint answered; ''fallback''
+            when an empty list was returned instead of a live catalog'
+          default: fallback
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+          description: Short safe reason for a fallback after a failed or impossible
+            live attempt (fixed vocabulary, never raw provider error text). None for
+            a clean live result.
+      type: object
+      title: AvailableModelsResponse
+      description: 'A provider''s model listing plus the provenance of the result.
+
+
+        ``source`` reports whether the ids came from the provider''s live listing
+
+        endpoint ("live") or an empty fallback ("fallback"). There is no bundled
+
+        picker catalog. ``error`` is a short machine-readable reason drawn from a
+
+        fixed vocabulary (e.g. "timeout", "network", "empty_response",
+
+        "unsupported", "missing_endpoint", "sdk_missing", "missing_key", "auth",
+
+        "unknown", "subscription_oauth") when a live attempt failed or was
+
+        impossible; it never carries raw exception text, which can embed endpoint
+
+        URLs or key material. "subscription_oauth" marks a stored principal-bound
+
+        subscription-OAuth credential (e.g. Claude Code): the server never
+
+        queries the provider with such a token, and the models list is the
+
+        account''s own catalog for the provider instead.'
+    AvatarResponse:
+      properties:
+        avatar_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Avatar Url
+        avatar_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Avatar Source
+      type: object
+      title: AvatarResponse
+      description: Response after avatar upload or deletion.
+    BatchExecutionListItem:
+      properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+          description: Alias of the model that served most of this execution's gateway
+            requests. Null when the execution has no attributable gateway usage.
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+          description: Provider behind ``model_alias``, when recorded
+        models_used:
+          items:
+            $ref: '#/components/schemas/ExecutionModelUsage'
+          type: array
+          title: Models Used
+          description: Every distinct model alias this execution used with its request
+            count, most used first.
+        id:
+          type: string
+          format: uuid
+          title: Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        status:
+          type: string
+          title: Status
+        start_time:
+          type: string
+          format: date-time
+          title: Start Time
+        end_time:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Time
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+        failure_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Failure Category
+          description: Coarse machine-readable failure class for terminal executions
+            (runner_conflict, model_transient, agent_error, ...). Null when the execution
+            succeeded, is still running, or predates the field.
+        retry_of_execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Retry Of Execution Id
+        batch_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Batch Id
+        tool_calls_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Tool Calls Count
+          default: 0
+        total_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Tokens
+          default: 0
+        estimated_cost:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimated Cost
+          default: 0.0
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Name
+        trigger_subject:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject
+          description: 'Short human-readable description of what triggered this execution,
+            e.g. ''preloop/preloop #78 · Pull Request Updated · 5167595c''. Null for
+            executions created before subjects were recorded, or where no identifying
+            detail could be derived.'
+        trigger_subject_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Url
+          description: Link to the resource that triggered this execution (e.g. the
+            pull request or merge request), when the trigger payload carries one.
+        runner:
+          $ref: '#/components/schemas/ExecutionRunnerSummary'
+          description: Where this execution ran. List rows carry kind and name; detail
+            adds id and pool.
+        matrix:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Matrix
+          description: Matrix cell overrides this execution was created with (index,
+            agent_type, ai_model_id)
+      type: object
+      required:
+      - id
+      - flow_id
+      - status
+      - start_time
+      - created_at
+      - updated_at
+      title: BatchExecutionListItem
+      description: Execution row in a batch listing, annotated with its matrix cell.
+    BatchExecutionsResponse:
+      properties:
+        batch_id:
+          type: string
+          format: uuid
+          title: Batch Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        rollup:
+          $ref: '#/components/schemas/BatchRollup'
+        executions:
+          items:
+            $ref: '#/components/schemas/BatchExecutionListItem'
+          type: array
+          title: Executions
+      type: object
+      required:
+      - batch_id
+      - flow_id
+      - rollup
+      - executions
+      title: BatchExecutionsResponse
+      description: Executions of one batch plus a status/cost/token rollup.
+    BatchRollup:
+      properties:
+        total:
+          type: integer
+          title: Total
+        by_status:
+          additionalProperties:
+            type: integer
+          type: object
+          title: By Status
+        completed:
+          type: integer
+          title: Completed
+          description: Executions in a terminal state (succeeded/failed/etc.)
+          default: 0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        total_estimated_cost:
+          type: number
+          title: Total Estimated Cost
+          default: 0.0
+        total_tool_calls:
+          type: integer
+          title: Total Tool Calls
+          default: 0
+      type: object
+      required:
+      - total
+      - by_status
+      title: BatchRollup
+      description: Aggregate metrics over the executions of one batch.
+    Body_backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post:
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+          description: 'OpenRouter Activity -> Explore daily export (columns: date__day,
+            model, total_usage)'
+        provider:
+          type: string
+          title: Provider
+          default: openrouter
+        start:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Start
+          description: 'First UTC day (inclusive); default: CSV min.'
+        end:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: End
+          description: 'Last UTC day (inclusive); default: CSV max.'
+        apply:
+          type: boolean
+          title: Apply
+          description: Persist the allocation. Default is a dry run.
+          default: false
+      type: object
+      required:
+      - file
+      title: Body_backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post
     Body_diff_policy_api_v1_policies_diff_post:
       properties:
         file:
@@ -10203,6 +12696,36 @@ components:
       required:
       - file
       title: Body_diff_policy_api_v1_policies_diff_post
+    Body_import_usage_csv_api_v1_usage_import_csv_post:
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+          description: Cursor dashboard Usage CSV export
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+        source:
+          type: string
+          title: Source
+          default: cursor
+        column_map:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Column Map
+          description: Optional JSON object mapping logical fields (date, model, cost,
+            kind, max_mode, input_with_cache_write, input_without_cache_write, cache_read,
+            output_tokens, total_tokens) to your export's exact column headers, for
+            CSV shapes the built-in matcher does not recognize.
+      type: object
+      required:
+      - file
+      title: Body_import_usage_csv_api_v1_usage_import_csv_post
     Body_login_form_api_v1_auth_token_post:
       properties:
         grant_type:
@@ -10254,6 +12777,16 @@ components:
       required:
       - audio
       title: Body_transcribe_audio_api_v1_audio_transcriptions_post
+    Body_upload_avatar_api_v1_users_me_avatar_put:
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+      type: object
+      required:
+      - file
+      title: Body_upload_avatar_api_v1_users_me_avatar_put
     Body_upload_policy_api_v1_policies_upload_post:
       properties:
         file:
@@ -10414,6 +12947,14 @@ components:
       - query
       title: CommentSearchResults
       description: Response model for comment search results.
+    ConditionAction:
+      type: string
+      enum:
+      - require_approval
+      - deny
+      - allow
+      title: ConditionAction
+      description: Actions to take when a condition matches.
     ConditionTestRequest:
       properties:
         expression:
@@ -10454,6 +12995,21 @@ components:
       - evaluation_context
       title: ConditionTestResponse
       description: Schema for condition test result.
+    ConditionType:
+      type: string
+      enum:
+      - simple
+      - cel
+      title: ConditionType
+      description: "Type of condition expression.\n\nThis enum supports the open core\
+        \ licensing model:\n\n- SIMPLE (open source): Basic comparisons using Python-like\
+        \ syntax.\n  Supports operators: ==, !=, >, <, >=, <=\n  Examples:\n    -\
+        \ \"args.amount > 500\"\n    - \"args.recipient == 'bob'\"\n    - \"args.priority\
+        \ != 'low'\"\n\n- CEL (enterprise): Full CEL (Common Expression Language)\
+        \ expressions\n  with advanced functions and capabilities.\n  Examples:\n\
+        \    - \"args.command.contains('rm -rf')\"\n    - \"args.path.startsWith('/etc/')\"\
+        \n    - \"args.tags.exists(t, t == 'production')\"\n    - \"args.amount >\
+        \ 1000 && args.approved == false\""
     CostAnalyticsSummaryResponse:
       properties:
         period_start:
@@ -10490,6 +13046,11 @@ components:
           type: integer
           title: Unpriced Tokens
           default: 0
+        unpriced_models:
+          items:
+            $ref: '#/components/schemas/UnpricedModelUsage'
+          type: array
+          title: Unpriced Models
         price_catalog:
           anyOf:
           - $ref: '#/components/schemas/PriceCatalogInfo'
@@ -10521,6 +13082,10 @@ components:
             $ref: '#/components/schemas/GatewayUsageByTool'
           type: array
           title: Usage By Tool
+        imported_usage:
+          anyOf:
+          - $ref: '#/components/schemas/ImportedUsageSummary'
+          - type: 'null'
       type: object
       required:
       - period_start
@@ -10585,6 +13150,27 @@ components:
       type: object
       title: CreateVersionRequest
       description: Request to create a new policy version.
+    CronSchedule:
+      properties:
+        timezone:
+          type: string
+          title: Timezone
+          description: IANA timezone name the schedule is evaluated in
+          default: UTC
+        type:
+          type: string
+          const: cron
+          title: Type
+          default: cron
+        expr:
+          type: string
+          title: Expr
+          description: 5-field crontab expression (minute hour day month day_of_week)
+      type: object
+      required:
+      - expr
+      title: CronSchedule
+      description: 'Advanced schedule form: a raw 5-field crontab expression.'
     CustomCommands:
       properties:
         enabled:
@@ -10601,6 +13187,27 @@ components:
       type: object
       title: CustomCommands
       description: Configuration for custom commands (admin-only).
+    DailySchedule:
+      properties:
+        timezone:
+          type: string
+          title: Timezone
+          description: IANA timezone name the schedule is evaluated in
+          default: UTC
+        type:
+          type: string
+          const: daily
+          title: Type
+          default: daily
+        at:
+          type: string
+          title: At
+          description: Time of day in 24h 'HH:MM' format
+      type: object
+      required:
+      - at
+      title: DailySchedule
+      description: 'Friendly schedule form: run once a day at a fixed local time.'
     DashboardTelemetryResponse:
       properties:
         active_agents:
@@ -10622,6 +13229,18 @@ components:
       type: object
       title: DashboardTelemetryResponse
       description: Aggregate high-level metrics for the global dashboard control plane.
+    DetectorTimeoutFailMode:
+      type: string
+      enum:
+      - allow
+      - deny
+      title: DetectorTimeoutFailMode
+      description: 'Fail mode when a detector exceeds its hard timeout.
+
+
+        Default is ``deny`` (fail closed). Set ``allow`` to skip the timed-out
+
+        rule and continue evaluation.'
     EmailVerificationRequest:
       properties:
         token:
@@ -10687,6 +13306,87 @@ components:
       - data
       title: EmbeddingRawResponse
       description: Response model for the raw embeddings endpoint.
+    ExecutionModelUsage:
+      properties:
+        model_alias:
+          type: string
+          title: Model Alias
+          description: Gateway model alias, e.g. 'openai/gpt-5'
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+          description: Provider that served the requests, when recorded
+        request_count:
+          type: integer
+          title: Request Count
+          description: Gateway requests this execution sent to that alias
+          default: 0
+      type: object
+      required:
+      - model_alias
+      title: ExecutionModelUsage
+      description: One model alias that served requests during an execution.
+    ExecutionRunner:
+      properties:
+        kind:
+          type: string
+          enum:
+          - private
+          - hosted
+          title: Kind
+          description: private when the run was leased to a self-hosted CLI runner;
+            hosted when it used the built-in Preloop executor
+        id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Id
+          description: FlowRunner id when kind is private and a runner was assigned
+        name:
+          type: string
+          title: Name
+          description: Display name. "Preloop hosted" when kind is hosted.
+        pool:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pool
+          description: Resolved runner pool string, when known
+      type: object
+      required:
+      - kind
+      - name
+      title: ExecutionRunner
+      description: 'Where an execution ran: a private CLI runner or Preloop hosted.
+
+
+        Derived at read time from ``FlowExecution.runner_id`` and
+
+        ``agent_session_reference`` ``runner:...`` forms. Hosted is the default
+
+        so the console can always name the executor.'
+    ExecutionRunnerSummary:
+      properties:
+        kind:
+          type: string
+          enum:
+          - private
+          - hosted
+          title: Kind
+          description: private for a self-hosted CLI runner; hosted otherwise
+        name:
+          type: string
+          title: Name
+          description: Display name. "Preloop hosted" when kind is hosted.
+      type: object
+      required:
+      - kind
+      - name
+      title: ExecutionRunnerSummary
+      description: 'List-row runner: kind and name only.'
     FlowCreate:
       properties:
         name:
@@ -10738,6 +13438,22 @@ components:
           anyOf:
           - $ref: '#/components/schemas/WebhookConfig'
           - type: 'null'
+        schedule_config:
+          anyOf:
+          - oneOf:
+            - $ref: '#/components/schemas/CronSchedule'
+            - $ref: '#/components/schemas/IntervalSchedule'
+            - $ref: '#/components/schemas/DailySchedule'
+            - $ref: '#/components/schemas/WeeklySchedule'
+            discriminator:
+              propertyName: type
+              mapping:
+                cron: '#/components/schemas/CronSchedule'
+                daily: '#/components/schemas/DailySchedule'
+                interval: '#/components/schemas/IntervalSchedule'
+                weekly: '#/components/schemas/WeeklySchedule'
+          - type: 'null'
+          title: Schedule Config
         prompt_template:
           type: string
           title: Prompt Template
@@ -10828,6 +13544,34 @@ components:
           - type: 'null'
           title: Preset Update Available
           default: false
+        runner_pool:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runner Pool
+          description: Runner pool for executions of this flow. Accepts a runner id,
+            name, or label; the literal 'auto' for any online private runner; or the
+            literal 'server' for the hosted executor. When unset, the account default_runner_pool
+            applies, then any online private runner, then the hosted executor. A trigger-time
+            `--runner` / `_runner` override takes precedence. If a chosen private
+            pool has no idle runner the job queues for 15 minutes then FAILS.
+        timeout_seconds:
+          anyOf:
+          - type: integer
+            maximum: 86400.0
+            minimum: 60.0
+          - type: 'null'
+          title: Timeout Seconds
+          description: Wall-clock budget for one execution of this flow, in seconds.
+            Leave unset to use the deployment default (3600). A run that exceeds the
+            budget is stopped and fails with the timeout category, and the failure
+            message names the budget that expired.
+        notifications:
+          anyOf:
+          - $ref: '#/components/schemas/FlowNotifications'
+          - type: 'null'
+          description: When to comment on the triggering issue and raise a console
+            attention item after a terminal execution. Leave unset for no notifications.
       type: object
       required:
       - name
@@ -10853,6 +13597,26 @@ components:
       title: FlowExecutionCommand
     FlowExecutionListResponse:
       properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+          description: Alias of the model that served most of this execution's gateway
+            requests. Null when the execution has no attributable gateway usage.
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+          description: Provider behind ``model_alias``, when recorded
+        models_used:
+          items:
+            $ref: '#/components/schemas/ExecutionModelUsage'
+          type: array
+          title: Models Used
+          description: Every distinct model alias this execution used with its request
+            count, most used first.
         id:
           type: string
           format: uuid
@@ -10879,12 +13643,26 @@ components:
           - type: string
           - type: 'null'
           title: Error Message
+        failure_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Failure Category
+          description: Coarse machine-readable failure class for terminal executions
+            (runner_conflict, model_transient, agent_error, ...). Null when the execution
+            succeeded, is still running, or predates the field.
         retry_of_execution_id:
           anyOf:
           - type: string
             format: uuid
           - type: 'null'
           title: Retry Of Execution Id
+        batch_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Batch Id
         tool_calls_count:
           anyOf:
           - type: integer
@@ -10932,6 +13710,10 @@ components:
           title: Trigger Subject Url
           description: Link to the resource that triggered this execution (e.g. the
             pull request or merge request), when the trigger payload carries one.
+        runner:
+          $ref: '#/components/schemas/ExecutionRunnerSummary'
+          description: Where this execution ran. List rows carry kind and name; detail
+            adds id and pool.
       type: object
       required:
       - id
@@ -10944,6 +13726,26 @@ components:
       description: Lightweight flow execution row for list views.
     FlowExecutionResponse:
       properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+          description: Alias of the model that served most of this execution's gateway
+            requests. Null when the execution has no attributable gateway usage.
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+          description: Provider behind ``model_alias``, when recorded
+        models_used:
+          items:
+            $ref: '#/components/schemas/ExecutionModelUsage'
+          type: array
+          title: Models Used
+          description: Every distinct model alias this execution used with its request
+            count, most used first.
         flow_id:
           type: string
           format: uuid
@@ -11010,6 +13812,14 @@ components:
           - type: 'null'
           title: Mcp Usage Logs
           description: Detailed log of each MCP tool call
+        result:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Result
+          description: Structured result artifact reported by the agent (parsed /workspace/result.json,
+            eval/observe runs)
         agent_session_reference:
           anyOf:
           - type: string
@@ -11023,6 +13833,16 @@ components:
           - type: 'null'
           title: Error Message
           description: Error message if the execution failed
+        failure_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Failure Category
+          description: 'Coarse machine-readable reason a terminal execution did not
+            succeed: one of runner_conflict, runner_error, model_transient, model_auth,
+            model_quota, model_config, no_confirmation, tool_error, agent_error, timeout,
+            cancelled, unknown. Null for successful or still-running executions, and
+            for executions that predate this field.'
         retry_of_execution_id:
           anyOf:
           - type: string
@@ -11030,6 +13850,13 @@ components:
           - type: 'null'
           title: Retry Of Execution Id
           description: ID of the original execution if this is a retry
+        batch_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Batch Id
+          description: Shared ID linking executions created by one matrix/batch trigger
         tool_calls_count:
           anyOf:
           - type: integer
@@ -11068,6 +13895,10 @@ components:
           - type: string
           - type: 'null'
           title: Flow Name
+        runner:
+          $ref: '#/components/schemas/ExecutionRunner'
+          description: Where this execution ran. Hosted when the built-in executor
+            ran it; private when a self-hosted CLI runner did.
       type: object
       required:
       - flow_id
@@ -11075,6 +13906,24 @@ components:
       - created_at
       - updated_at
       title: FlowExecutionResponse
+    FlowFailureNotifications:
+      properties:
+        comment_on_trigger_issue:
+          type: boolean
+          title: Comment On Trigger Issue
+          description: Post one comment on the triggering issue with status, execution
+            link, failure category, and the last 20 log lines.
+          default: false
+        attention_item:
+          type: boolean
+          title: Attention Item
+          description: Ignored. Failed executions always appear as console attention
+            items of kind ``flow`` on Overview and /console/attention. Kept so stored
+            JSON that set this flag still parses.
+          default: false
+      type: object
+      title: FlowFailureNotifications
+      description: What to do when an execution ends FAILED or TIMEOUT.
     FlowGatewayUsageSummaryResponse:
       properties:
         flow_id:
@@ -11132,6 +13981,17 @@ components:
       - budget
       title: FlowGatewayUsageSummaryResponse
       description: Flow-scoped gateway usage summary.
+    FlowNotifications:
+      properties:
+        on_failure:
+          $ref: '#/components/schemas/FlowFailureNotifications'
+          description: Actions to take when the execution fails or times out.
+        on_success:
+          $ref: '#/components/schemas/FlowSuccessNotifications'
+          description: Actions to take when the execution succeeds.
+      type: object
+      title: FlowNotifications
+      description: Per-flow terminal notifications. NULL on the row means none.
     FlowResponse:
       properties:
         name:
@@ -11183,6 +14043,22 @@ components:
           anyOf:
           - $ref: '#/components/schemas/WebhookConfig'
           - type: 'null'
+        schedule_config:
+          anyOf:
+          - oneOf:
+            - $ref: '#/components/schemas/CronSchedule'
+            - $ref: '#/components/schemas/IntervalSchedule'
+            - $ref: '#/components/schemas/DailySchedule'
+            - $ref: '#/components/schemas/WeeklySchedule'
+            discriminator:
+              propertyName: type
+              mapping:
+                cron: '#/components/schemas/CronSchedule'
+                daily: '#/components/schemas/DailySchedule'
+                interval: '#/components/schemas/IntervalSchedule'
+                weekly: '#/components/schemas/WeeklySchedule'
+          - type: 'null'
+          title: Schedule Config
         prompt_template:
           anyOf:
           - type: string
@@ -11272,6 +14148,34 @@ components:
           type: boolean
           title: Preset Update Available
           default: false
+        runner_pool:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runner Pool
+          description: Runner pool for executions of this flow. Accepts a runner id,
+            name, or label; the literal 'auto' for any online private runner; or the
+            literal 'server' for the hosted executor. When unset, the account default_runner_pool
+            applies, then any online private runner, then the hosted executor. A trigger-time
+            `--runner` / `_runner` override takes precedence. If a chosen private
+            pool has no idle runner the job queues for 15 minutes then FAILS.
+        timeout_seconds:
+          anyOf:
+          - type: integer
+            maximum: 86400.0
+            minimum: 60.0
+          - type: 'null'
+          title: Timeout Seconds
+          description: Wall-clock budget for one execution of this flow, in seconds.
+            Leave unset to use the deployment default (3600). A run that exceeds the
+            budget is stopped and fails with the timeout category, and the failure
+            message names the budget that expired.
+        notifications:
+          anyOf:
+          - $ref: '#/components/schemas/FlowNotifications'
+          - type: 'null'
+          description: When to comment on the triggering issue and raise a console
+            attention item after a terminal execution. Leave unset for no notifications.
         id:
           anyOf:
           - type: string
@@ -11291,12 +14195,29 @@ components:
             type: object
           - type: 'null'
           title: Execution Stats
+        schedule_state:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Schedule State
       type: object
       required:
       - id
       - created_at
       - updated_at
       title: FlowResponse
+    FlowSuccessNotifications:
+      properties:
+        comment_on_trigger_issue:
+          type: boolean
+          title: Comment On Trigger Issue
+          description: 'Post a short ''PR opened: <url>'' comment on the triggering
+            issue when the run recorded a pull request URL.'
+          default: false
+      type: object
+      title: FlowSuccessNotifications
+      description: What to do when an execution succeeds.
     FlowUpdate:
       properties:
         name:
@@ -11350,6 +14271,22 @@ components:
           anyOf:
           - $ref: '#/components/schemas/WebhookConfig'
           - type: 'null'
+        schedule_config:
+          anyOf:
+          - oneOf:
+            - $ref: '#/components/schemas/CronSchedule'
+            - $ref: '#/components/schemas/IntervalSchedule'
+            - $ref: '#/components/schemas/DailySchedule'
+            - $ref: '#/components/schemas/WeeklySchedule'
+            discriminator:
+              propertyName: type
+              mapping:
+                cron: '#/components/schemas/CronSchedule'
+                daily: '#/components/schemas/DailySchedule'
+                interval: '#/components/schemas/IntervalSchedule'
+                weekly: '#/components/schemas/WeeklySchedule'
+          - type: 'null'
+          title: Schedule Config
         prompt_template:
           anyOf:
           - type: string
@@ -11448,6 +14385,34 @@ components:
           - type: 'null'
           title: Preset Update Available
           default: false
+        runner_pool:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runner Pool
+          description: Runner pool for executions of this flow. Accepts a runner id,
+            name, or label; the literal 'auto' for any online private runner; or the
+            literal 'server' for the hosted executor. When unset, the account default_runner_pool
+            applies, then any online private runner, then the hosted executor. A trigger-time
+            `--runner` / `_runner` override takes precedence. If a chosen private
+            pool has no idle runner the job queues for 15 minutes then FAILS.
+        timeout_seconds:
+          anyOf:
+          - type: integer
+            maximum: 86400.0
+            minimum: 60.0
+          - type: 'null'
+          title: Timeout Seconds
+          description: Wall-clock budget for one execution of this flow, in seconds.
+            Leave unset to use the deployment default (3600). A run that exceeds the
+            budget is stopped and fails with the timeout category, and the failure
+            message names the budget that expired.
+        notifications:
+          anyOf:
+          - $ref: '#/components/schemas/FlowNotifications'
+          - type: 'null'
+          description: When to comment on the triggering issue and raise a console
+            attention item after a terminal execution. Leave unset for no notifications.
       type: object
       title: FlowUpdate
     GatewayBudgetSummary:
@@ -11631,6 +14596,24 @@ components:
           type: number
           title: Estimated Cost
           default: 0.0
+        unpriced_request_count:
+          type: integer
+          title: Unpriced Request Count
+          description: Requests that consumed tokens and carried no price at all,
+            so their cost is missing from every total.
+          default: 0
+        zero_priced_request_count:
+          type: integer
+          title: Zero Priced Request Count
+          description: Requests a price was applied to and the price was exactly zero.
+            Free tier, a promotion, or a price entered wrongly; unlike an unpriced
+            request, nothing is missing from the total.
+          default: 0
+        failed_request_count:
+          type: integer
+          title: Failed Request Count
+          description: Requests the gateway answered with a 4xx or 5xx status.
+          default: 0
         last_request_at:
           anyOf:
           - type: string
@@ -11973,6 +14956,15 @@ components:
           description: Include the account's current MCP servers and tools as context
             for the LLM (recommended for more accurate generation)
           default: true
+        scope_mcp_server_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Scope Mcp Server Name
+          description: When set, starter-policy generation scopes LLM context and
+            raw model output to this MCP server. The merge still restores all current
+            tools so the diff preview only shows this server's changes. Older clients
+            that omit the field fall back to matching the prompt text.
       type: object
       required:
       - prompt
@@ -12035,6 +15027,15 @@ components:
           - type: 'null'
           title: Target Branch
           description: Branch to create for commits (auto-generated if empty)
+        setup_commands:
+          items:
+            type: string
+          type: array
+          title: Setup Commands
+          description: Shell commands run inside the container after clone/restore
+            and before the agent starts (dependency install, service bring-up). Output
+            is captured to /workspace/evidence/setup.log; a failure fails the execution
+            with failure_category 'setup_failed'.
         create_pull_request:
           anyOf:
           - type: boolean
@@ -12097,6 +15098,15 @@ components:
           - type: 'null'
           title: Target Branch
           description: Branch to create for commits (auto-generated if empty)
+        setup_commands:
+          items:
+            type: string
+          type: array
+          title: Setup Commands
+          description: Shell commands run inside the container after clone/restore
+            and before the agent starts (dependency install, service bring-up). Output
+            is captured to /workspace/evidence/setup.log; a failure fails the execution
+            with failure_category 'setup_failed'.
         create_pull_request:
           anyOf:
           - type: boolean
@@ -12204,6 +15214,162 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    ImportedUsageByConversation:
+      properties:
+        conversation_id:
+          type: string
+          title: Conversation Id
+        parent_conversation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Conversation Id
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+        event_count:
+          type: integer
+          title: Event Count
+          default: 0
+        total_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Tokens
+        estimated_cost:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimated Cost
+        reconciled_cost:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Reconciled Cost
+        last_event_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Event At
+      type: object
+      required:
+      - conversation_id
+      title: ImportedUsageByConversation
+      description: 'Imported usage rolled up by source-side conversation.
+
+
+        ``estimated_cost`` (hook/transcript-derived) and ``reconciled_cost``
+
+        (billing export) are reported as SEPARATE fields and must never be
+
+        summed into one number by any consumer. ``None`` means the source
+
+        reported nothing for that quantity ("not reported") — it is not zero.
+
+        Entries whose ``parent_conversation_id`` matches another entry''s
+
+        ``conversation_id`` are subagent workers of that parent thread.'
+    ImportedUsageByModel:
+      properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+        request_count:
+          type: integer
+          title: Request Count
+          default: 0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        imported_cost:
+          type: number
+          title: Imported Cost
+          default: 0.0
+        last_event_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Event At
+      type: object
+      title: ImportedUsageByModel
+      description: Imported (observed) usage aggregate grouped by source model.
+    ImportedUsageSummary:
+      properties:
+        event_count:
+          type: integer
+          title: Event Count
+          default: 0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        imported_cost:
+          type: number
+          title: Imported Cost
+          default: 0.0
+        usage_by_model:
+          items:
+            $ref: '#/components/schemas/ImportedUsageByModel'
+          type: array
+          title: Usage By Model
+        usage_by_conversation:
+          items:
+            $ref: '#/components/schemas/ImportedUsageByConversation'
+          type: array
+          title: Usage By Conversation
+      type: object
+      title: ImportedUsageSummary
+      description: 'Spend ingested from outside the gateway (``usage_source=''imported''``).
+
+
+        Kept as a separate block — never merged into ``estimated_cost`` or the
+
+        budget figures — so gateway-metered and imported spend cannot be
+
+        silently mixed.'
+    IntervalSchedule:
+      properties:
+        timezone:
+          type: string
+          title: Timezone
+          description: IANA timezone name the schedule is evaluated in
+          default: UTC
+        type:
+          type: string
+          const: interval
+          title: Type
+          default: interval
+        every:
+          type: integer
+          minimum: 1.0
+          title: Every
+          description: Run every N units
+        unit:
+          type: string
+          enum:
+          - minutes
+          - hours
+          - days
+          title: Unit
+          description: Unit of the interval
+      type: object
+      required:
+      - every
+      - unit
+      title: IntervalSchedule
+      description: 'Friendly schedule form: run every N minutes/hours/days.'
     IssueCreate:
       properties:
         title:
@@ -12290,6 +15456,34 @@ components:
       - title
       title: IssueCreate
       description: Model for creating a new issue.
+    IssueListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/IssueResponse'
+          type: array
+          title: Items
+          description: Issue list items
+        total:
+          type: integer
+          title: Total
+          description: Total number of matching issues
+        skip:
+          type: integer
+          title: Skip
+          description: Number of issues skipped
+        limit:
+          type: integer
+          title: Limit
+          description: Page size
+      type: object
+      required:
+      - items
+      - total
+      - skip
+      - limit
+      title: IssueListResponse
+      description: Paginated list of issues for a project or tracker.
     IssueResponse:
       properties:
         title:
@@ -12473,6 +15667,156 @@ components:
       type: object
       title: IssueUpdate
       description: Model for updating an issue.
+    LedgerBackfillBucket:
+      properties:
+        day:
+          type: string
+          format: date
+          title: Day
+        family:
+          type: string
+          title: Family
+        ledger_total:
+          type: number
+          title: Ledger Total
+        row_count:
+          type: integer
+          title: Row Count
+        allocated_total:
+          type: number
+          title: Allocated Total
+        ledger_models:
+          items:
+            type: string
+          type: array
+          title: Ledger Models
+      type: object
+      required:
+      - day
+      - family
+      - ledger_total
+      - row_count
+      - allocated_total
+      title: LedgerBackfillBucket
+      description: One (day x model family) allocation bucket of a ledger backfill.
+    LedgerBackfillResidual:
+      properties:
+        day:
+          type: string
+          format: date
+          title: Day
+        family:
+          type: string
+          title: Family
+        amount_usd:
+          type: number
+          title: Amount Usd
+      type: object
+      required:
+      - day
+      - family
+      - amount_usd
+      title: LedgerBackfillResidual
+      description: Ledger spend with no eligible usage rows to receive it.
+    LedgerBackfillResponse:
+      properties:
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: true
+        provider:
+          type: string
+          title: Provider
+        start:
+          type: string
+          format: date
+          title: Start
+        end:
+          type: string
+          format: date
+          title: End
+        ledger_entries:
+          type: integer
+          title: Ledger Entries
+          default: 0
+        eligible_rows:
+          type: integer
+          title: Eligible Rows
+          default: 0
+        rows_to_reconcile:
+          type: integer
+          title: Rows To Reconcile
+          default: 0
+        total_allocated:
+          type: number
+          title: Total Allocated
+          default: 0.0
+        rows_updated:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Rows Updated
+        other_residual_usd:
+          type: number
+          title: Other Residual Usd
+          default: 0.0
+        buckets:
+          items:
+            $ref: '#/components/schemas/LedgerBackfillBucket'
+          type: array
+          title: Buckets
+        unallocated_ledger:
+          items:
+            $ref: '#/components/schemas/LedgerBackfillResidual'
+          type: array
+          title: Unallocated Ledger
+        unmatched_rows:
+          items:
+            $ref: '#/components/schemas/LedgerBackfillUnmatched'
+          type: array
+          title: Unmatched Rows
+        skipped_csv_rows:
+          items:
+            type: string
+          type: array
+          title: Skipped Csv Rows
+      type: object
+      required:
+      - provider
+      - start
+      - end
+      title: LedgerBackfillResponse
+      description: 'Outcome (or dry-run preview) of a provider daily-ledger backfill.
+
+
+        ``rows_updated`` is ``None`` on a dry run — nothing was written, which is
+
+        different from "wrote 0 rows". ``other_residual_usd`` is the export''s
+
+        "Other" bucket inside the window: the provider does not say which models
+
+        it covers, so that spend is reported but never allocated and the matching
+
+        rows stay unpriced.'
+    LedgerBackfillUnmatched:
+      properties:
+        day:
+          type: string
+          format: date
+          title: Day
+        family:
+          type: string
+          title: Family
+        row_count:
+          type: integer
+          title: Row Count
+      type: object
+      required:
+      - day
+      - family
+      - row_count
+      title: LedgerBackfillUnmatched
+      description: Unpriced usage rows whose family had no ledger spend that day.
     LoginRequest:
       properties:
         username:
@@ -13048,6 +16392,87 @@ components:
       type: object
       title: ManagedAgentEnrollmentValidateRequest
       description: Request to update validation state for one enrollment.
+    ManagedAgentIdentityMutationCounts:
+      properties:
+        usage_moved:
+          type: integer
+          title: Usage Moved
+          default: 0
+        usage_deleted:
+          type: integer
+          title: Usage Deleted
+          default: 0
+        runtime_sessions_moved:
+          type: integer
+          title: Runtime Sessions Moved
+          default: 0
+        budget_spend_moved:
+          type: integer
+          title: Budget Spend Moved
+          default: 0
+        budget_spend_merged:
+          type: integer
+          title: Budget Spend Merged
+          default: 0
+        budget_policies_moved:
+          type: integer
+          title: Budget Policies Moved
+          default: 0
+        budget_policies_dropped:
+          type: integer
+          title: Budget Policies Dropped
+          default: 0
+        approvals_moved:
+          type: integer
+          title: Approvals Moved
+          default: 0
+        keys_deactivated:
+          type: integer
+          title: Keys Deactivated
+          default: 0
+        dropped_budget_policies:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Dropped Budget Policies
+      type: object
+      title: ManagedAgentIdentityMutationCounts
+      description: Row counts returned by rekey/merge dry-run and execute responses.
+    ManagedAgentMergeRequest:
+      properties:
+        duplicate_agent_id:
+          type: string
+          minLength: 1
+          title: Duplicate Agent Id
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      required:
+      - duplicate_agent_id
+      title: ManagedAgentMergeRequest
+      description: Request body for merging a duplicate managed agent into a survivor.
+    ManagedAgentMergeResponse:
+      properties:
+        survivor:
+          $ref: '#/components/schemas/ManagedAgentSummary'
+        duplicate:
+          $ref: '#/components/schemas/ManagedAgentSummary'
+        dry_run:
+          type: boolean
+          title: Dry Run
+        counts:
+          $ref: '#/components/schemas/ManagedAgentIdentityMutationCounts'
+      type: object
+      required:
+      - survivor
+      - duplicate
+      - dry_run
+      - counts
+      title: ManagedAgentMergeResponse
+      description: Response for a merge dry-run or execute.
     ManagedAgentModelBindingSummary:
       properties:
         id:
@@ -13162,6 +16587,16 @@ components:
           - type: string
           - type: 'null'
           title: Description
+        agent_kind:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Agent Kind
+          description: Product kind for the agent, for example 'cursor' or 'windsurf'.
+            Defaults to 'custom' when omitted. This records what the agent is; it
+            does not change how it connects.
       type: object
       required:
       - display_name
@@ -13174,6 +16609,35 @@ components:
         LangGraph agent) that has never connected through a runtime session, so a
 
         gateway credential can subsequently be minted for it.'
+    ManagedAgentRekeyRequest:
+      properties:
+        new_session_source_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: New Session Source Id
+        principal_identity:
+          anyOf:
+          - $ref: '#/components/schemas/PrincipalIdentityLite'
+          - type: 'null'
+      type: object
+      required:
+      - new_session_source_id
+      title: ManagedAgentRekeyRequest
+      description: Request body for rewriting a managed agent's durable principal
+        id.
+    ManagedAgentRekeyResponse:
+      properties:
+        agent:
+          $ref: '#/components/schemas/ManagedAgentSummary'
+        counts:
+          $ref: '#/components/schemas/ManagedAgentIdentityMutationCounts'
+      type: object
+      required:
+      - agent
+      - counts
+      title: ManagedAgentRekeyResponse
+      description: Response for a successful rekey.
     ManagedAgentServerActivitySummary:
       properties:
         server_name:
@@ -13247,6 +16711,16 @@ components:
           - type: string
           - type: 'null'
           title: Session Reference
+        enrollment_hostname:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Enrollment Hostname
+        identity_derivation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Identity Derivation
         enrolled_via:
           type: string
           title: Enrolled Via
@@ -13420,6 +16894,10 @@ components:
           type: boolean
           title: Supports Interrupt
           default: false
+        control_session_mode:
+          type: string
+          title: Control Session Mode
+          default: offline
         supported_input_modes:
           items:
             type: string
@@ -13616,6 +17094,151 @@ components:
       - api_key_id
       title: MobileDeviceRegistrationResponse
       description: Schema for mobile device registration response with API key.
+    ModelIODetectors:
+      properties:
+        pii:
+          anyOf:
+          - type: boolean
+          - $ref: '#/components/schemas/PIIDetectorConfig'
+          - type: 'null'
+          title: Pii
+          description: Enable PII scan, optionally with entity types
+        injection:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Injection
+          description: Enable prompt-injection heuristics
+        moderation:
+          anyOf:
+          - type: boolean
+          - $ref: '#/components/schemas/ModerationDetectorConfig'
+          - type: 'null'
+          title: Moderation
+          description: Enable moderation check
+      type: object
+      title: ModelIODetectors
+      description: 'Detectors enabled for one model I/O rule.
+
+
+        A detector runs only when this block enables it or when a condition
+
+        expression references its attributes (pii., injection., moderation.).'
+    ModelIORule:
+      properties:
+        id:
+          type: string
+          minLength: 1
+          title: Id
+          description: Stable rule identifier
+        target:
+          $ref: '#/components/schemas/ModelIOTarget'
+          description: model.request or model.response
+        enabled:
+          type: boolean
+          title: Enabled
+          description: Whether this rule is evaluated
+          default: true
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+          description: Human-readable description
+        approval_workflow:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approval Workflow
+          description: Approval workflow name for require_approval
+        detectors:
+          anyOf:
+          - $ref: '#/components/schemas/ModelIODetectors'
+          - type: 'null'
+          description: Detectors to run for this rule
+        detector_timeout_ms:
+          type: integer
+          maximum: 30000.0
+          minimum: 50.0
+          title: Detector Timeout Ms
+          description: Hard timeout for detectors on this rule
+          default: 500
+        on_detector_timeout:
+          $ref: '#/components/schemas/DetectorTimeoutFailMode'
+          description: Fail mode when detectors time out (default deny)
+          default: deny
+        conditions:
+          items:
+            $ref: '#/components/schemas/ToolCondition'
+          type: array
+          minItems: 1
+          title: Conditions
+          description: First matching condition wins, same as tools
+      type: object
+      required:
+      - id
+      - target
+      - conditions
+      title: ModelIORule
+      description: 'Content policy rule targeting model.request or model.response.
+
+
+        Conditions use the same simple/CEL style as tool rules. Documented
+
+        attributes include model.id, model.provider, model.name, session.id,
+
+        request.text, response.text, pii.found, pii.types_found,
+
+        injection.score, injection.matched_patterns, moderation.flagged,
+
+        and moderation.categories.'
+    ModelIORuleListResponse:
+      properties:
+        rules:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Rules
+      type: object
+      required:
+      - rules
+      title: ModelIORuleListResponse
+      description: List of model I/O content policy rules.
+    ModelIORulePatchRequest:
+      properties:
+        enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enabled
+      type: object
+      title: ModelIORulePatchRequest
+      description: Partial update for enable/disable.
+    ModelIOTarget:
+      type: string
+      enum:
+      - model.request
+      - model.response
+      title: ModelIOTarget
+      description: Stable rule targets for model request and response payloads.
+    ModerationDetectorConfig:
+      properties:
+        backend:
+          type: string
+          title: Backend
+          description: 'Registered moderation backend name (default: local)'
+          default: local
+      type: object
+      title: ModerationDetectorConfig
+      description: 'Moderation detector configuration.
+
+
+        ``backend`` names a registered checker. The built-in ``local`` backend
+
+        is a keyword ruleset and works without a live provider. Tests register
+
+        a ``fake`` backend.'
     NotificationPreferencesResponse:
       properties:
         preferred_channel:
@@ -13633,6 +17256,17 @@ components:
           title: Enable Mobile Push
           description: Whether mobile push notifications are enabled
           default: false
+        stagger_email:
+          type: boolean
+          title: Stagger Email
+          description: When True and push is enabled, delay approval email until the
+            request is still pending after one minute
+          default: true
+        notify_when_needed:
+          type: boolean
+          title: Notify When Needed
+          description: Push when the agent needs the operator (approvals, ask_user)
+          default: true
         id:
           type: string
           format: uuid
@@ -13685,6 +17319,19 @@ components:
           - type: 'null'
           title: Enable Mobile Push
           description: Enable mobile push notifications
+        stagger_email:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Stagger Email
+          description: Delay approval email when push is also enabled and the request
+            is still pending
+        notify_when_needed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Notify When Needed
+          description: Push when the agent needs the operator (approvals, ask_user)
       type: object
       title: NotificationPreferencesUpdate
       description: Schema for updating notification preferences.
@@ -13841,6 +17488,24 @@ components:
       type: object
       title: OrganizationUpdate
       description: Model for updating an organization.
+    PIIDetectorConfig:
+      properties:
+        types:
+          items:
+            type: string
+          type: array
+          title: Types
+          description: PII entity types to scan (email, phone, credit_card)
+      type: object
+      title: PIIDetectorConfig
+      description: 'Deterministic PII detector configuration.
+
+
+        ``types`` selects which entity recognizers run. Unknown types are
+
+        rejected at schema validation. Third-party recognizers are out of
+
+        scope and must stay off by default.'
     PasskeySummary:
       properties:
         id:
@@ -14007,6 +17672,11 @@ components:
           title: Tools Skipped
           description: Number of tools skipped due to missing server references (when
             skip_missing_servers=true)
+          default: 0
+        model_io_rules_applied:
+          type: integer
+          title: Model Io Rules Applied
+          description: Number of model I/O content rules applied
           default: 0
         warnings:
           items:
@@ -14215,6 +17885,64 @@ components:
       type: object
       title: PriceCatalogInfo
       description: Provenance of the vendored model-price catalog.
+    PrincipalIdentity:
+      properties:
+        hostname:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Hostname
+        config_path:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Config Path
+        source_type:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Source Type
+        derivation:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Derivation
+      type: object
+      title: PrincipalIdentity
+      description: Optional CLI-supplied identity metadata for a runtime principal.
+    PrincipalIdentityLite:
+      properties:
+        hostname:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Hostname
+        config_path:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Config Path
+        source_type:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Source Type
+        derivation:
+          anyOf:
+          - type: string
+            maxLength: 16
+          - type: 'null'
+          title: Derivation
+      type: object
+      title: PrincipalIdentityLite
+      description: Identity metadata accepted on rekey/token flows.
     ProjectCreate:
       properties:
         name:
@@ -14394,6 +18122,99 @@ components:
       - deleted_count
       title: PruneResponse
       description: Response from a prune operation.
+    PullRequestItem:
+      properties:
+        number:
+          type: integer
+          title: Number
+        iid:
+          type: integer
+          title: Iid
+        title:
+          type: string
+          title: Title
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        url:
+          type: string
+          title: Url
+        author:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Author
+        source_branch:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Branch
+        target_branch:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Branch
+        state:
+          type: string
+          title: State
+        draft:
+          type: boolean
+          title: Draft
+          default: false
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - number
+      - iid
+      - title
+      - url
+      - state
+      title: PullRequestItem
+      description: One open pull request or merge request from the tracker.
+    PullRequestListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/PullRequestItem'
+          type: array
+          title: Items
+        page:
+          type: integer
+          title: Page
+        limit:
+          type: integer
+          title: Limit
+        has_more:
+          type: boolean
+          title: Has More
+        supported:
+          type: boolean
+          title: Supported
+        fetched_at:
+          type: string
+          title: Fetched At
+          description: ISO timestamp of the fetch
+      type: object
+      required:
+      - items
+      - page
+      - limit
+      - has_more
+      - supported
+      - fetched_at
+      title: PullRequestListResponse
+      description: Paginated live list of open pull/merge requests.
     QRCodeResponse:
       properties:
         token:
@@ -14420,6 +18241,145 @@ components:
       - expires_in_seconds
       title: QRCodeResponse
       description: Schema for QR code registration response.
+    RateLimitByModel:
+      properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        rate_limited_requests:
+          type: integer
+          title: Rate Limited Requests
+          default: 0
+        blocked_ms:
+          type: integer
+          title: Blocked Ms
+          default: 0
+        last_rate_limited_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Rate Limited At
+      type: object
+      title: RateLimitByModel
+      description: 429 telemetry grouped by model.
+    RateLimitBySession:
+      properties:
+        runtime_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Session Id
+        runtime_principal_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Principal Name
+        rate_limited_requests:
+          type: integer
+          title: Rate Limited Requests
+          default: 0
+        blocked_ms:
+          type: integer
+          title: Blocked Ms
+          default: 0
+        last_rate_limited_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Rate Limited At
+      type: object
+      title: RateLimitBySession
+      description: 429 telemetry grouped by runtime session (agent run).
+    RateLimitSnapshotItem:
+      properties:
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        observed_at:
+          type: string
+          format: date-time
+          title: Observed At
+        status_code:
+          type: integer
+          title: Status Code
+        upstream_credential_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Upstream Credential Type
+        rate_limit:
+          additionalProperties: true
+          type: object
+          title: Rate Limit
+      type: object
+      required:
+      - observed_at
+      - status_code
+      title: RateLimitSnapshotItem
+      description: 'Latest observed rate-limit headers for one provider/model pair.
+
+
+        ``rate_limit`` echoes the snapshot persisted from a real upstream
+
+        response (normalized fields plus the verbatim ``headers`` map);
+
+        ``observed_at`` timestamps that observation so consumers can label
+
+        staleness. Nothing here is inferred.'
+    RateLimitTotals:
+      properties:
+        rate_limited_requests:
+          type: integer
+          title: Rate Limited Requests
+          default: 0
+        blocked_ms:
+          type: integer
+          title: Blocked Ms
+          default: 0
+        last_rate_limited_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Rate Limited At
+        quota_exhausted_count:
+          type: integer
+          title: Quota Exhausted Count
+          default: 0
+        transient_count:
+          type: integer
+          title: Transient Count
+          default: 0
+      type: object
+      title: RateLimitTotals
+      description: 'Aggregate 429 telemetry for the report window.
+
+
+        ``blocked_ms`` sums the provider-advised ``Retry-After`` values observed
+
+        on 429 responses: a lower bound on real wall-clock stall, taken directly
+
+        from provider responses (never estimated). Subtype counts come from the
+
+        per-row classification recorded at capture time; rows recorded before
+
+        this feature carry no subtype and appear in neither count.'
     RefreshRequest:
       properties:
         refresh_token:
@@ -14465,6 +18425,79 @@ components:
       - challenge_token
       title: RegistrationVerifyRequest
       description: Authenticator response for the registration ceremony.
+    RepriceRequest:
+      properties:
+        start_date:
+          type: string
+          format: date-time
+          title: Start Date
+        end_date:
+          type: string
+          format: date-time
+          title: End Date
+        only_unpriced:
+          type: boolean
+          title: Only Unpriced
+          default: true
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      required:
+      - start_date
+      - end_date
+      title: RepriceRequest
+      description: Request body for re-pricing historical gateway usage.
+    RepriceResponse:
+      properties:
+        submitted_async:
+          type: boolean
+          title: Submitted Async
+          default: false
+        rows_examined:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Rows Examined
+        rows_updated:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Rows Updated
+        rows_skipped:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Rows Skipped
+        cost_before:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cost Before
+        cost_after:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cost After
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      title: RepriceResponse
+      description: 'Result of a repricing run (or async submission).
+
+
+        The counters are ``None`` — not ``0`` — when the run was dispatched to a
+
+        background worker (``submitted_async=True``): nothing has been scanned in
+
+        this request, so reporting zeros would be indistinguishable from "the
+
+        window really contained no rows" (the exact confusion behind "reprice
+
+        examined 0 rows" on large windows).'
     RollbackRequest:
       properties:
         preview_only:
@@ -14501,6 +18534,313 @@ components:
       - EXCLUDE
       title: RuleType
       description: Enum for rule types.
+    RunPresetRequest:
+      properties:
+        preset_slug:
+          type: string
+          title: Preset Slug
+        target:
+          $ref: '#/components/schemas/RunPresetTarget'
+        confirm_create:
+          type: boolean
+          title: Confirm Create
+          default: false
+      type: object
+      required:
+      - preset_slug
+      - target
+      title: RunPresetRequest
+      description: Body for POST /flows/run-preset.
+    RunPresetResponse:
+      properties:
+        execution_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Execution Id
+        flow_id:
+          type: string
+          title: Flow Id
+        flow_name:
+          type: string
+          title: Flow Name
+        flow_created:
+          type: boolean
+          title: Flow Created
+        execution_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Execution Url
+      type: object
+      required:
+      - flow_id
+      - flow_name
+      - flow_created
+      title: RunPresetResponse
+      description: Result of resolving (and optionally starting) a preset run.
+    RunPresetTarget:
+      properties:
+        kind:
+          type: string
+          enum:
+          - issue
+          - pull_request
+          title: Kind
+        issue_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Issue Id
+        project_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Project Id
+        number:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Number
+      type: object
+      required:
+      - kind
+      title: RunPresetTarget
+      description: Issue or pull-request target for an ad hoc preset run.
+    RunnerFleetSummary:
+      properties:
+        runner_count:
+          type: integer
+          title: Runner Count
+        online_runner_count:
+          type: integer
+          title: Online Runner Count
+        last_runner_heartbeat:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Runner Heartbeat
+      type: object
+      required:
+      - runner_count
+      - online_runner_count
+      title: RunnerFleetSummary
+    RunnerRegisterRequest:
+      properties:
+        name:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Name
+        hostname:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Hostname
+        os:
+          anyOf:
+          - type: string
+            maxLength: 30
+          - type: 'null'
+          title: Os
+        arch:
+          anyOf:
+          - type: string
+            maxLength: 30
+          - type: 'null'
+          title: Arch
+        labels:
+          items:
+            type: string
+          type: array
+          title: Labels
+        runner_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Runner Id
+        instance_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Instance Id
+      type: object
+      title: RunnerRegisterRequest
+      description: Register or resume a runner for the logged-in account.
+    RunnerRegisterResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        account_id:
+          type: string
+          format: uuid
+          title: Account Id
+        registered_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Registered By User Id
+        instance_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Instance Id
+        name:
+          type: string
+          title: Name
+        hostname:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Hostname
+        os:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Os
+        arch:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Arch
+        labels:
+          items:
+            type: string
+          type: array
+          title: Labels
+        status:
+          type: string
+          title: Status
+        last_heartbeat:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Heartbeat
+        current_execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Current Execution Id
+        registered_by_email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Registered By Email
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        token:
+          type: string
+          title: Token
+      type: object
+      required:
+      - id
+      - account_id
+      - name
+      - status
+      - created_at
+      - updated_at
+      - token
+      title: RunnerRegisterResponse
+    RunnerResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        account_id:
+          type: string
+          format: uuid
+          title: Account Id
+        registered_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Registered By User Id
+        instance_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Instance Id
+        name:
+          type: string
+          title: Name
+        hostname:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Hostname
+        os:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Os
+        arch:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Arch
+        labels:
+          items:
+            type: string
+          type: array
+          title: Labels
+        status:
+          type: string
+          title: Status
+        last_heartbeat:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Heartbeat
+        current_execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Current Execution Id
+        registered_by_email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Registered By Email
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - id
+      - account_id
+      - name
+      - status
+      - created_at
+      - updated_at
+      title: RunnerResponse
     RuntimeSessionActivityItem:
       properties:
         activity_type:
@@ -14603,6 +18943,152 @@ components:
       type: object
       title: RuntimeSessionActivityListResponse
       description: List of activity items for a runtime session.
+    RuntimeSessionCacheModelGroup:
+      properties:
+        model_alias:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Alias
+        provider_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Name
+        requests:
+          type: integer
+          title: Requests
+          default: 0
+        cache_read_tokens:
+          type: integer
+          title: Cache Read Tokens
+          default: 0
+        cache_creation_tokens:
+          type: integer
+          title: Cache Creation Tokens
+          default: 0
+        prompt_tokens:
+          type: integer
+          title: Prompt Tokens
+          default: 0
+        requests_with_unknown_prompt_tokens:
+          type: integer
+          title: Requests With Unknown Prompt Tokens
+          default: 0
+        write_reported:
+          type: boolean
+          title: Write Reported
+          default: false
+      type: object
+      title: RuntimeSessionCacheModelGroup
+      description: 'Per-(model, provider) breakdown inside the session cache rollup.
+
+
+        ``requests_with_unknown_prompt_tokens`` counts this group''s rows whose
+
+        provider reported no prompt total; their tokens are excluded from
+
+        ``prompt_tokens`` rather than counted as zero.'
+    RuntimeSessionCacheSummary:
+      properties:
+        requests_total:
+          type: integer
+          title: Requests Total
+          default: 0
+        requests_with_cache_data:
+          type: integer
+          title: Requests With Cache Data
+          default: 0
+        requests_without_cache_data:
+          type: integer
+          title: Requests Without Cache Data
+          default: 0
+        covered_prompt_tokens:
+          type: integer
+          title: Covered Prompt Tokens
+          default: 0
+        uncovered_prompt_tokens:
+          type: integer
+          title: Uncovered Prompt Tokens
+          default: 0
+        cached_prompt_tokens:
+          type: integer
+          title: Cached Prompt Tokens
+          default: 0
+        uncached_prompt_tokens:
+          type: integer
+          title: Uncached Prompt Tokens
+          default: 0
+        cache_write_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Write Tokens
+        cache_hit_ratio:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cache Hit Ratio
+        estimated_cache_savings_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimated Cache Savings Usd
+        savings_basis:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Savings Basis
+        savings_omitted_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Savings Omitted Reason
+        requests_with_unknown_prompt_tokens:
+          type: integer
+          title: Requests With Unknown Prompt Tokens
+          default: 0
+        models:
+          items:
+            $ref: '#/components/schemas/RuntimeSessionCacheModelGroup'
+          type: array
+          title: Models
+      type: object
+      title: RuntimeSessionCacheSummary
+      description: 'Whole-session prompt-cache rollup.
+
+
+        The ratio''s denominator is the *covered* traffic only: requests whose
+
+        provider actually reported a cache split. ``uncovered_prompt_tokens`` is
+
+        surfaced next to it so the UI can state coverage instead of folding blind
+
+        rows in as misses. ``requests_with_unknown_prompt_tokens`` counts rows
+
+        whose provider reported no prompt total at all; their tokens are excluded
+
+        from both sums rather than counted as zero.
+
+
+        ``cache_write_tokens`` is ``None`` when no provider in this session has a
+
+        billable cache-write concept at all (OpenAI, Gemini, DeepSeek), which is
+
+        not the same statement as zero rewritten tokens.
+
+
+        ``estimated_cache_savings_usd`` is computed only from explicit catalog
+
+        input AND cache-read prices — never a multiplier-based approximation.
+
+        ``savings_basis`` is ``catalog_exact`` when every model that contributed
+
+        cache reads was priced, ``catalog_exact_partial`` when the figure is a
+
+        lower bound covering only the priced models. When no contributing model is
+
+        priced the figure is ``None`` and ``savings_omitted_reason`` says why.'
     RuntimeSessionInteractionSummary:
       properties:
         event_id:
@@ -15087,6 +19573,55 @@ components:
       - n_runs
       title: RuntimeSessionReplayResponse
       description: 'Outcome of a replay: the exact input delta plus the banded end-to-end.'
+    RuntimeSessionRequestCache:
+      properties:
+        cache_read_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Read Tokens
+        cache_creation_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Creation Tokens
+        cache_miss_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Miss Tokens
+        cache_miss_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cache Miss Source
+        has_cache_data:
+          type: boolean
+          title: Has Cache Data
+          default: false
+        usage_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Usage Source
+      type: object
+      title: RuntimeSessionRequestCache
+      description: 'Prompt-cache accounting for one gateway request.
+
+
+        Every token field is ``Optional`` on purpose: ``None`` means *the provider
+
+        did not report this*, and clients MUST render it as "not reported" rather
+
+        than as zero. A ``0`` here is a real, provider-reported zero.
+
+
+        ``cache_miss_source`` distinguishes a miss count the provider sent us
+
+        (``reported`` — today only DeepSeek''s ``prompt_cache_miss_tokens``) from
+        one
+
+        we derived arithmetically as ``prompt - read - write`` (``derived``).'
     RuntimeSessionRequestItem:
       properties:
         id:
@@ -15116,6 +19651,11 @@ components:
           type: boolean
           title: Is Error
           default: false
+        error_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Class
         finish_reason:
           anyOf:
           - type: string
@@ -15155,6 +19695,8 @@ components:
           type: integer
           title: Tools Total Schema Tokens
           default: 0
+        cache:
+          $ref: '#/components/schemas/RuntimeSessionRequestCache'
       type: object
       required:
       - id
@@ -15192,7 +19734,11 @@ components:
           type: boolean
           title: Has More
           default: false
+        cache_summary:
+          $ref: '#/components/schemas/RuntimeSessionCacheSummary'
       type: object
+      required:
+      - cache_summary
       title: RuntimeSessionRequestListResponse
       description: Paginated per-request rows for one runtime session.
     RuntimeSessionRequestTool:
@@ -15433,6 +19979,12 @@ components:
             maxLength: 255
           - type: 'null'
           title: Runtime Principal Name
+        agent_kind:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Agent Kind
         expires_in_minutes:
           type: integer
           maximum: 1440.0
@@ -15453,6 +20005,10 @@ components:
             type: string
           type: array
           title: Allowed Mcp Servers
+        principal_identity:
+          anyOf:
+          - $ref: '#/components/schemas/PrincipalIdentity'
+          - type: 'null'
       type: object
       required:
       - session_source_type
@@ -15508,6 +20064,53 @@ components:
       - action
       title: RuntimeSessionUpdateRequest
       description: Operator-driven updates for one runtime session.
+    SchedulePreviewRequest:
+      properties:
+        schedule_config:
+          oneOf:
+          - $ref: '#/components/schemas/CronSchedule'
+          - $ref: '#/components/schemas/IntervalSchedule'
+          - $ref: '#/components/schemas/DailySchedule'
+          - $ref: '#/components/schemas/WeeklySchedule'
+          title: Schedule Config
+          discriminator:
+            propertyName: type
+            mapping:
+              cron: '#/components/schemas/CronSchedule'
+              daily: '#/components/schemas/DailySchedule'
+              interval: '#/components/schemas/IntervalSchedule'
+              weekly: '#/components/schemas/WeeklySchedule'
+      type: object
+      required:
+      - schedule_config
+      title: SchedulePreviewRequest
+      description: Request body for previewing a schedule trigger configuration.
+    SchedulePreviewResponse:
+      properties:
+        type:
+          type: string
+          title: Type
+        description:
+          type: string
+          title: Description
+        timezone:
+          type: string
+          title: Timezone
+        next_run_times:
+          items:
+            type: string
+            format: date-time
+          type: array
+          title: Next Run Times
+          description: The next run times (UTC) the schedule would fire at
+      type: object
+      required:
+      - type
+      - description
+      - timezone
+      - next_run_times
+      title: SchedulePreviewResponse
+      description: Computed preview of a schedule trigger configuration.
     ScopeType:
       type: string
       enum:
@@ -15551,6 +20154,68 @@ components:
       - item
       - similarity
       title: SearchResultItem
+    SecurityScreenRequest:
+      properties:
+        text:
+          type: string
+          maxLength: 64000
+          title: Text
+          description: Untrusted content to score
+        hook:
+          type: string
+          maxLength: 100
+          title: Hook
+          description: 'Screening hook: user_input or tool_response'
+          default: user_input
+        metadata:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Metadata
+          description: Opaque caller metadata (chunk coordinates, surface)
+      type: object
+      required:
+      - text
+      title: SecurityScreenRequest
+      description: "One screened content chunk POSTed by a QM deployment.\n\nAttributes:\n\
+        \    text: Untrusted content to score. QM sends overlapping chunks of at\n\
+        \        most 1,600 characters; the cap here is a defensive bound only.\n\
+        \    hook: Screening hook, ``user_input`` or ``tool_response``. Unknown\n\
+        \        values are accepted for forward compatibility.\n    metadata: Optional\
+        \ caller metadata (surface, origin, and chunk\n        coordinates under the\
+        \ ``qm`` and provider-label namespaces).\n        Treated as opaque."
+    SecurityScreenResponse:
+      properties:
+        score:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Score
+          description: Score in [0, 1]
+        threshold:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Threshold
+          description: Strictness threshold in [0, 1]
+        primary_outcome:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Primary Outcome
+          description: Lowercase label of the dominant rule category
+      type: object
+      required:
+      - score
+      - threshold
+      title: SecurityScreenResponse
+      description: "Screening verdict in the shape QM's proxy contract expects.\n\n\
+        Attributes:\n    score: Finite score in [0, 1]; the chunk resolves to Strict\
+        \ on the\n        caller side when the score is at or above the threshold.\n\
+        \    threshold: Finite threshold in [0, 1] this deployment screens at.\n \
+        \   primary_outcome: Optional lowercase label naming the dominant rule\n \
+        \       category; omitted for benign content."
     SpeechToTextResponse:
       properties:
         text:
@@ -15966,6 +20631,45 @@ components:
       - updated_at
       title: ToolApprovalConditionResponse
       description: Schema for tool approval condition response.
+    ToolCondition:
+      properties:
+        expression:
+          type: string
+          title: Expression
+          description: Expression to evaluate against tool args
+        action:
+          $ref: '#/components/schemas/ConditionAction'
+          description: Action when condition matches
+          default: require_approval
+        condition_type:
+          $ref: '#/components/schemas/ConditionType'
+          description: 'Expression type: ''simple'' (open source) or ''cel'' (enterprise)'
+          default: simple
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+          description: Human-readable description of this condition
+      type: object
+      required:
+      - expression
+      title: ToolCondition
+      description: "Condition for when to apply actions to tool invocations.\n\nSupports\
+        \ two types of conditions for the open core model:\n\nSimple conditions (open\
+        \ source):\n    Basic comparisons using Python-like syntax. These are evaluated\n\
+        \    using a lightweight parser that supports basic operators.\n\n    Supported\
+        \ operators: ==, !=, >, <, >=, <=\n\n    Examples:\n        - \"args.amount\
+        \ > 500\"\n        - \"args.recipient == 'bob'\"\n        - \"args.count <=\
+        \ 10\"\n\nCEL conditions (enterprise):\n    Full CEL (Common Expression Language)\
+        \ expressions with advanced\n    functions like contains(), startsWith(),\
+        \ endsWith(), exists(), etc.\n\n    Examples:\n        - \"args.command.contains('rm\
+        \ -rf')\"\n        - \"args.path.startsWith('/etc/')\"\n        - \"args.environment\
+        \ == 'production' && args.force == true\"\n        - \"args.tags.exists(t,\
+        \ t == 'sensitive')\"\n\nAttributes:\n    expression: Expression to evaluate\
+        \ against tool arguments.\n    action: Action to take when condition matches.\n\
+        \    condition_type: Type of expression - 'simple' (open source) or 'cel'\
+        \ (enterprise).\n    description: Optional human-readable description."
     ToolConfigurationCreate:
       properties:
         tool_name:
@@ -16035,6 +20739,13 @@ components:
         account_id:
           type: string
           title: Account Id
+        managed_agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Id
+          description: Optional managed-agent scope. Null = account-wide (default);
+            set = the configuration applies only to that agent
       type: object
       required:
       - tool_name
@@ -16102,6 +20813,11 @@ components:
           - type: string
           - type: 'null'
           title: Account Id
+        managed_agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Id
         created_at:
           type: string
           format: date-time
@@ -16134,7 +20850,7 @@ components:
           - type: string
           - type: 'null'
           title: Tool Source
-          description: 'Source type: ''builtin'', ''mcp'', ''http'''
+          description: 'Source type: ''builtin'', ''mcp'', ''http'', ''agent'''
           default: builtin
         mcp_server_id:
           anyOf:
@@ -16229,6 +20945,11 @@ components:
             type: array
           - type: 'null'
           title: Warnings
+        unlocked_tool_names:
+          items:
+            type: string
+          type: array
+          title: Unlocked Tool Names
       type: object
       required:
       - id
@@ -16330,6 +21051,24 @@ components:
           type: array
           title: Scope Rules
           description: List of scope rules for the tracker
+        degraded_projects:
+          items:
+            type: string
+          type: array
+          title: Degraded Projects
+          description: 'Project identifiers seen on webhooks that never resolved.
+
+
+            These are repositories/projects the tracker receives webhooks for but
+
+            which repeated syncs could not import -- almost always because the
+
+            integration''s scope excludes them (GitHub App installed on selected
+
+            repositories only, or an EXCLUDE scope rule). Surfaced so the user can
+
+            fix the scope instead of the sync retrying forever.'
+          readOnly: true
       type: object
       required:
       - name
@@ -16338,6 +21077,7 @@ components:
       - account_id
       - created
       - last_updated
+      - degraded_projects
       title: TrackerResponse
       description: Response model for tracker data (excluding sensitive info like
         api_key).
@@ -16527,6 +21267,31 @@ components:
       type: object
       title: TrackerUpdate
       description: Model for updating an existing tracker.
+    UnpricedModelUsage:
+      properties:
+        model:
+          type: string
+          title: Model
+        requests:
+          type: integer
+          title: Requests
+          default: 0
+        tokens:
+          type: integer
+          title: Tokens
+          default: 0
+      type: object
+      required:
+      - model
+      title: UnpricedModelUsage
+      description: 'One model''s share of the window''s unpriced gateway usage.
+
+
+        Names the models behind ``unpriced_requests``/``unpriced_tokens`` so the
+
+        console can say WHICH models are missing from the price catalog instead
+
+        of only how many requests are affected.'
     UpdateTagRequest:
       properties:
         tag:
@@ -16538,6 +21303,416 @@ components:
       - tag
       title: UpdateTagRequest
       description: Request to update a version's tag.
+    UsageImportCsvResponse:
+      properties:
+        imported:
+          type: integer
+          title: Imported
+          default: 0
+        skipped_duplicates:
+          type: integer
+          title: Skipped Duplicates
+          default: 0
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+        agent_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Display Name
+        source:
+          type: string
+          title: Source
+          default: cursor
+        parsed_rows:
+          type: integer
+          title: Parsed Rows
+          default: 0
+        skipped_rows:
+          type: integer
+          title: Skipped Rows
+          default: 0
+        skipped_row_reasons:
+          items:
+            type: string
+          type: array
+          title: Skipped Row Reasons
+      type: object
+      title: UsageImportCsvResponse
+      description: Result of a CSV import, including rows the parser could not use.
+    UsageImportEvent:
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+        model:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Model
+        prompt_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Prompt Tokens
+        completion_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Completion Tokens
+        total_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Total Tokens
+        cache_read_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Cache Read Tokens
+        cache_creation_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Cache Creation Tokens
+        charged_cents:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Charged Cents
+          description: Amount charged by the source vendor, in cents (USD).
+        cost_usd:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Cost Usd
+          description: Amount charged in USD. Mutually exclusive with charged_cents.
+        session_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Session Id
+        kind:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Kind
+          description: Source billing category (e.g. 'Usage-based', 'Included').
+        max_mode:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Max Mode
+        meta:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Meta
+      type: object
+      required:
+      - timestamp
+      - model
+      title: UsageImportEvent
+      description: One normalized usage event observed outside the model gateway.
+    UsageImportRequest:
+      properties:
+        events:
+          items:
+            $ref: '#/components/schemas/UsageImportEvent'
+          type: array
+          maxItems: 5000
+          minItems: 1
+          title: Events
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+          description: Managed agent to attribute the events to. When omitted, the
+            account's managed Cursor agent (from `preloop agents onboard cursor`)
+            is used if exactly resolvable.
+        source:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Source
+          description: Origin label stored on each row (e.g. 'cursor').
+          default: cursor
+      type: object
+      required:
+      - events
+      title: UsageImportRequest
+      description: Batch of normalized usage events to ingest.
+    UsageImportResponse:
+      properties:
+        imported:
+          type: integer
+          title: Imported
+          default: 0
+        skipped_duplicates:
+          type: integer
+          title: Skipped Duplicates
+          default: 0
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+        agent_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Display Name
+        source:
+          type: string
+          title: Source
+          default: cursor
+      type: object
+      title: UsageImportResponse
+      description: Result of an ingest request.
+    UsageIngestRecord:
+      properties:
+        external_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: External Id
+          description: Source-side record/turn id; dedupe key with `source`.
+        conversation_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Conversation Id
+        parent_conversation_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Parent Conversation Id
+          description: Conversation this record's conversation was spawned from (e.g.
+            a subagent worker's parent thread), for cost rollup.
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+        event_type:
+          type: string
+          enum:
+          - session_start
+          - session_end
+          - subagent_start
+          - subagent_stop
+          - response
+          - compaction
+          - usage
+          title: Event Type
+          description: Hook-shaped lifecycle marker. 'usage' (default) requires a
+            model and at least one measurement; lifecycle events (session/subagent
+            start/stop, response, compaction) may carry zero token/cost data and no
+            model.
+          default: usage
+        model:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Model
+          description: Source-reported model name. Required for event_type='usage'.
+        charged_cost:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Charged Cost
+          description: Amount the source vendor charged, in USD. The billing truth;
+            never derived from tokens. Stored as a float on the ledger (estimated_cost
+            is a Float column), matching the CSV import path.
+        cost_basis:
+          type: string
+          enum:
+          - estimated
+          - reconciled
+          title: Cost Basis
+          description: '''estimated'' (hook/transcript-derived) or ''reconciled''
+            (billing export). Reconciled records supersede estimated records with
+            the same (source, conversation_id) in cost summaries; the two are never
+            summed together.'
+          default: estimated
+        input_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Input Tokens
+        output_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Output Tokens
+        cache_read_tokens:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Cache Read Tokens
+          description: Cache-read tokens, reported distinctly; never summed into charged
+            spend or total tokens.
+        message_count:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Message Count
+          description: Messages in the conversation so far (growth tripwire).
+        tool_call_count:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Tool Call Count
+          description: Tool calls in the conversation so far (growth tripwire).
+        metadata:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Metadata
+      type: object
+      required:
+      - external_id
+      - timestamp
+      title: UsageIngestRecord
+      description: 'One usage record pushed continuously by an external harness.
+
+
+        Unlike ``UsageImportEvent`` (batch CSV/JSON import, content-hash
+
+        dedupe), a pushed record carries a caller-supplied ``external_id`` so
+
+        replays after network timeouts are idempotent, plus conversation ids so
+
+        subagent workers billed on separate conversations can be rolled up
+
+        under their parent thread in Cost analytics.'
+    UsageIngestRecordResult:
+      properties:
+        external_id:
+          type: string
+          title: External Id
+        deduplicated:
+          type: boolean
+          title: Deduplicated
+          default: false
+        conflict:
+          type: boolean
+          title: Conflict
+          description: True when a deduplicated replay carried a DIFFERENT payload
+            than the stored record (first write wins; the batch still returns 200
+            so shippers can retry blindly).
+          default: false
+      type: object
+      required:
+      - external_id
+      title: UsageIngestRecordResult
+      description: Per-record outcome of a push-ingest request.
+    UsageIngestRequest:
+      properties:
+        records:
+          items:
+            $ref: '#/components/schemas/UsageIngestRecord'
+          type: array
+          maxItems: 1000
+          minItems: 1
+          title: Records
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+          description: Managed agent to attribute the records to. When omitted, the
+            account's single managed agent whose kind matches `source` is used if
+            exactly resolvable.
+        source:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Source
+          description: Origin label stored on each row (e.g. 'cursor').
+      type: object
+      required:
+      - records
+      - source
+      title: UsageIngestRequest
+      description: Batch of pushed usage records to ingest.
+    UsageIngestResponse:
+      properties:
+        source:
+          type: string
+          title: Source
+        agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+        agent_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Display Name
+        accepted:
+          type: integer
+          title: Accepted
+          default: 0
+        deduplicated:
+          type: integer
+          title: Deduplicated
+          default: 0
+        conflicts:
+          type: integer
+          title: Conflicts
+          default: 0
+        results:
+          items:
+            $ref: '#/components/schemas/UsageIngestRecordResult'
+          type: array
+          title: Results
+      type: object
+      required:
+      - source
+      title: UsageIngestResponse
+      description: 'Result of a push-ingest request.
+
+
+        Replays return 200 with the replayed records flagged
+
+        ``deduplicated`` — spend is never double-counted. Replays whose
+
+        payload differs from the stored record are additionally flagged
+
+        ``conflict`` (first write wins; never a 409).'
     ValidationError:
       properties:
         loc:
@@ -16570,11 +21745,56 @@ components:
           type: string
           title: Webhook Secret
           description: Secure token for authenticating webhook requests (auto-generated)
+        dedupe_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dedupe Path
+          description: Dotted JSON path into the webhook body used to build a deduplication
+            key (e.g. 'data.issue.id'). When unset, defaults to 'attachments.0.title_link'
+            then 'data.issue.id'.
       type: object
       required:
       - webhook_secret
       title: WebhookConfig
       description: Configuration for webhook triggers.
+    WeeklySchedule:
+      properties:
+        timezone:
+          type: string
+          title: Timezone
+          description: IANA timezone name the schedule is evaluated in
+          default: UTC
+        type:
+          type: string
+          const: weekly
+          title: Type
+          default: weekly
+        days:
+          items:
+            type: string
+            enum:
+            - mon
+            - tue
+            - wed
+            - thu
+            - fri
+            - sat
+            - sun
+          type: array
+          minItems: 1
+          title: Days
+          description: Weekdays the schedule fires on (mon..sun)
+        at:
+          type: string
+          title: At
+          description: Time of day in 24h 'HH:MM' format
+      type: object
+      required:
+      - days
+      - at
+      title: WeeklySchedule
+      description: 'Friendly schedule form: run on selected weekdays at a fixed time.'
   securitySchemes:
     bearerAuth:
       type: http

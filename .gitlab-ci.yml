@@ -432,6 +432,31 @@ test:unit:cli:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   variables:
     CGO_ENABLED: "1"
+    # Match GitHub CLI CI and EE GitLab. Login tests POST events/batch
+    # unless telemetry is off.
+    PRELOOP_DISABLE_TELEMETRY: "true"
+
+# Install script + e2e-rig pure-python logic. The installer's shell helpers
+# (architecture detection, the already-signed-in check) and the rig helpers
+# shared with the CI onboarding job are the pieces most likely to break
+# silently, since neither the Go nor the backend suites cover them.
+test:unit:scripts:
+  stage: test
+  needs: []
+  image: python:3.12-alpine
+  before_script:
+    - apk add --no-cache bash
+    - pip install -U pip pytest
+  script:
+    - sh scripts/test_install_cli_detect_arch.sh
+    - sh scripts/test_install_cli_login_skip.sh
+    - pytest -v scripts/e2e-rig/tests
+  rules:
+    - changes:
+        - scripts/install-cli.sh
+        - scripts/test_install_cli_*.sh
+        - scripts/e2e-rig/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 # Standalone runtime plugins (Hermes Python + OpenClaw npm). Lightweight —
 # no postgres / backend image required.
@@ -769,7 +794,7 @@ test:integration:ui:
   extends: .test:integration:template
   image: python:3.12-alpine
   before_script:
-    - pip install pytest httpx certifi dotenv mcp
+    - pip install pytest httpx certifi dotenv "mcp>=1.0.0,<2"
     - cd backend
 
 test:integration:api:github:
@@ -790,7 +815,7 @@ test:integration:api:jira:
 test:integration:api:mcp:
   extends: .test:integration:api:template
   before_script:
-    - pip install pytest pytest-asyncio httpx certifi dotenv mcp
+    - pip install pytest pytest-asyncio httpx certifi dotenv "mcp>=1.0.0,<2"
     - cd backend
   script:
     - pytest --confcutdir=tests/integration tests/integration/test_mcp.py -v -s
@@ -798,10 +823,56 @@ test:integration:api:mcp:
 test:integration:api:hermes:
   extends: .test:integration:api:template
   before_script:
-    - pip install pytest pytest-asyncio httpx certifi dotenv mcp
+    - pip install pytest pytest-asyncio httpx certifi dotenv "mcp>=1.0.0,<2"
     - cd backend
   script:
     - pytest --confcutdir=tests/integration tests/integration/test_hermes_onboarding.py -v -s
+
+# Manual end-to-end CLI onboarding check against the deployed test environment.
+# Builds the CLI from this ref, logs in, onboards a planted Claude Code install
+# in API-key mode, and asserts that the enrollment routes through the gateway
+# and that a request made with the minted credential is metered.
+#
+# The assertions live in scripts/e2e-rig/ci_cli_onboard.py, which shares its
+# onboarding semantics with the recorded rig module
+# scripts/e2e-rig/modules/08-cli-onboard.py through
+# scripts/e2e-rig/lib/cli_onboard.py. Module 08 itself cannot run here: it
+# needs a VM, an ssh transport and the pexpect+agg recording toolchain. Only
+# the transport differs; what "onboarded" means is defined in one place.
+#
+# Manual, not automatic, for the same reason deploy:test is manual — it needs a
+# live review deployment and drives real gateway traffic.
+#
+# CI variables (both already defined in the global `variables:` block above):
+#   PRELOOP_TEST_API_KEY  - API key for an account in the deployed test env,
+#                           seeded by deploy:test with SEED_ENABLED=true.
+#   PRELOOP_TEST_URL      - set per-job below, as in .test:integration:template.
+# No new secret variables are required. If this job ever needs its own key,
+# name it PRELOOP_TEST_CLI_ONBOARD_API_KEY and define it in the GitLab CI/CD
+# settings — never hardcode a value here.
+test:integration:cli-onboard:
+  stage: integration
+  when: manual
+  needs:
+    - deploy:test
+  image: golang:1.26-alpine
+  variables:
+    # Telemetry opt-out is mandatory for every test run.
+    PRELOOP_DISABLE_TELEMETRY: "true"
+    PRELOOP_TEST_URL: "https://oss-$CI_COMMIT_REF_SLUG.test.preloop.ai"
+    # Pure-Go build: no cgo toolchain needed for the CLI in this image.
+    CGO_ENABLED: "0"
+    CLI_ONBOARD_ARTIFACTS: "$CI_PROJECT_DIR/cli-onboard-artifacts"
+  before_script:
+    - apk add --no-cache python3 ca-certificates
+    - cd cli && go build -o /usr/local/bin/preloop ./cmd/preloop && cd ..
+  script:
+    - python3 scripts/e2e-rig/ci_cli_onboard.py
+  artifacts:
+    when: always
+    paths:
+      - cli-onboard-artifacts/
+    expire_in: 7 days
 
 # =============================================================================
 # CLEANUP STAGE

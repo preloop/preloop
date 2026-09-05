@@ -2,6 +2,7 @@
 
 import json
 import os
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,7 @@ from preloop.models.crud import (
     crud_runtime_session,
 )
 from preloop.models.crud import crud_api_key
+from preloop.services.litellm_routing import preloop_user_agent
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.openai_gateway import OpenAIGatewayService
@@ -60,6 +62,8 @@ def test_call_litellm_uses_injected_upstream_backend():
         api_key="provider-secret",
         timeout=600,
         temperature=0.2,
+        drop_params=True,
+        extra_headers={"User-Agent": preloop_user_agent()},
     )
 
 
@@ -97,6 +101,8 @@ def test_call_litellm_allows_bedrock_ambient_credentials():
         messages=[{"role": "user", "content": "Hello"}],
         timeout=600,
         aws_region_name="us-east-1",
+        drop_params=True,
+        extra_headers={"User-Agent": preloop_user_agent()},
     )
 
 
@@ -147,6 +153,8 @@ def test_call_litellm_passes_imported_bedrock_credentials():
         aws_secret_access_key="secret-test",
         aws_session_token="session-test",
         aws_region_name="eu-central-1",
+        drop_params=True,
+        extra_headers={"User-Agent": preloop_user_agent()},
     )
 
 
@@ -194,8 +202,10 @@ def test_call_litellm_uses_claude_code_oauth_headers():
         extra_headers={
             "anthropic-beta": "oauth-2025-04-20",
             "anthropic-client-platform": "claude-code",
+            "User-Agent": preloop_user_agent(),
         },
         max_tokens=1,
+        drop_params=True,
     )
 
 
@@ -703,6 +713,10 @@ def test_create_response_normalizes_and_calls_litellm(db_session, test_user):
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 },
                 "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
             },
@@ -811,6 +825,10 @@ def test_create_response_uses_litellm_pricing_when_metadata_missing(
                     "enabled": True,
                     "model_alias": "openai/gpt-5.4",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -893,6 +911,10 @@ def test_create_response_forwards_tools_and_returns_function_call_output(
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -981,6 +1003,10 @@ def test_create_response_preserves_responses_tool_history_in_chat_messages(
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -1063,6 +1089,10 @@ def test_create_response_coalesces_multi_tool_turns_for_upstream(db_session, tes
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -1211,8 +1241,17 @@ def test_create_response_rejects_incomplete_tool_history(db_session, test_user):
     mock_completion.assert_not_called()
 
 
-def test_create_response_wraps_flat_custom_tools_for_upstream(db_session, test_user):
-    """Flat Responses custom tools should be wrapped in the nested custom block."""
+def test_create_response_downgrades_custom_tools_to_functions(db_session, test_user):
+    """Codex freeform `custom` tools must be downgraded to plain functions.
+
+    Regression test for the prod failure on flow execution `0792099a`
+    (`api_usage` `dcf29ac5`): this previously wrapped the tool into the nested
+    chat-completions `custom` block, which deletes the top-level `name`. For
+    any model litellm routes to `/v1/responses` (e.g. `gpt-5.2-codex`) that
+    yields `400 Missing required parameter: 'tools[N].name'`, and DeepSeek
+    rejects non-`function` tool types outright. A plain function tool is the
+    only shape both routes and all providers accept.
+    """
     crud_ai_model.create_with_account(
         db=db_session,
         obj_in={
@@ -1225,6 +1264,10 @@ def test_create_response_wraps_flat_custom_tools_for_upstream(db_session, test_u
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -1262,20 +1305,36 @@ def test_create_response_wraps_flat_custom_tools_for_upstream(db_session, test_u
     kwargs = mock_completion.call_args.kwargs
     assert kwargs["tools"] == [
         {
-            "type": "custom",
-            "custom": {
+            "type": "function",
+            "function": {
                 "name": "get_pull_request",
                 "description": "Fetch one pull request",
-                "input_schema": {"type": "object"},
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "input": {
+                            "type": "string",
+                            "description": (
+                                "The complete, raw tool payload as plain text."
+                            ),
+                        }
+                    },
+                    "required": ["input"],
+                    "additionalProperties": False,
+                },
             },
         }
     ]
 
 
-def test_create_response_maps_custom_grammar_definition_for_upstream(
+def test_create_response_inlines_custom_tool_grammar_into_description(
     db_session, test_user
 ):
-    """Grammar custom tools should nest grammar details under format.grammar."""
+    """A downgraded grammar tool must carry its grammar in the description.
+
+    The lark grammar is the only place the payload syntax is written down, so
+    dropping it would leave the model unable to produce a valid payload.
+    """
     crud_ai_model.create_with_account(
         db=db_session,
         obj_in={
@@ -1288,6 +1347,10 @@ def test_create_response_maps_custom_grammar_definition_for_upstream(
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -1327,14 +1390,13 @@ def test_create_response_maps_custom_grammar_definition_for_upstream(
         )
 
     kwargs = mock_completion.call_args.kwargs
-    assert kwargs["tools"][0]["type"] == "custom"
-    assert kwargs["tools"][0]["custom"]["format"]["type"] == "grammar"
-    assert kwargs["tools"][0]["custom"]["format"]["grammar"] == {
-        "syntax": "lark",
-        "definition": 'start: "hello"',
-    }
-    assert "syntax" not in kwargs["tools"][0]["custom"]["format"]
-    assert "definition" not in kwargs["tools"][0]["custom"]["format"]
+    tool = kwargs["tools"][0]
+    assert tool["type"] == "function"
+    assert tool["function"]["name"] == "code_exec"
+    # The grammar survives, inlined where a plain-function model can read it.
+    assert 'start: "hello"' in tool["function"]["description"]
+    assert "lark grammar" in tool["function"]["description"]
+    assert tool["function"]["parameters"]["required"] == ["input"]
 
 
 def test_create_response_drops_unsupported_hosted_tools_for_upstream(
@@ -1353,6 +1415,10 @@ def test_create_response_drops_unsupported_hosted_tools_for_upstream(
                     "enabled": True,
                     "model_alias": "openai/gpt-5",
                     "provider_adapter": "preloop",
+                    # Asserted against the chat-completions transcode, which is
+                    # still the path for upstreams with no Responses endpoint;
+                    # the native passthrough has its own suite (issue #159).
+                    "responses_api": "transcode",
                 }
             },
             "is_default": True,
@@ -1501,6 +1567,7 @@ def test_stream_chat_completion_emits_codex_chunks_for_oauth_models():
                 }
             )
         )
+        service.flush_deferred_stream_record()
 
     mock_create_codex.assert_called_once()
     mock_call_litellm.assert_not_called()
@@ -2230,10 +2297,14 @@ def test_stream_message_passthrough_sends_sanitized_body():
     upstream_response = MagicMock()
     upstream_response.iter_text.return_value = iter(
         [
-            'data: {"type":"message_start","message":{"id":"msg_1",'
-            '"usage":{"input_tokens":1}}}\n\n',
-            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
-            '"usage":{"output_tokens":1}}\n\n',
+            (
+                'data: {"type":"message_start","message":{"id":"msg_1",'
+                '"usage":{"input_tokens":1}}}\n\n'
+            ),
+            (
+                'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
+                '"usage":{"output_tokens":1}}\n\n'
+            ),
         ]
     )
     upstream_client = MagicMock()
@@ -2639,3 +2710,1541 @@ def test_resolve_requested_model_unknown_model_still_404s():
         service._resolve_requested_model("gpt-5", provider="anthropic")
 
     assert excinfo.value.status_code == 404
+
+
+def _codex_freeform_service() -> OpenAIGatewayService:
+    """A service whose current request declared a freeform `apply_patch`."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(MagicMock(), auth_context)
+    service._codex_freeform_tool_names = {"apply_patch"}
+    return service
+
+
+def _codex_namespace_service() -> OpenAIGatewayService:
+    """A service whose current request declared the mcp__preloop ask_user tool."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(MagicMock(), auth_context)
+    service._codex_namespace_tool_aliases = {
+        "mcp__preloop__ask_user": ("mcp__preloop", "ask_user"),
+        "ask_user": ("mcp__preloop", "ask_user"),
+    }
+    return service
+
+
+def test_stream_response_emits_freeform_tool_call_as_custom_tool_call():
+    """Codex aborts the run if its freeform tool is answered as a function_call.
+
+    Verified live against `codex-cli`: a `function_call` reply produces
+    `Fatal error: tool apply_patch invoked with incompatible payload` and no
+    file is written, while a `custom_tool_call` carrying the raw patch text
+    applies cleanly. Both prod failures were on this streaming path
+    (`endpoint_kind: responses_stream`), so it is the path that must be right.
+    """
+    service = _codex_freeform_service()
+    ai_model = SimpleNamespace(id="model-1", provider_name="openai")
+    upstream_stream = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "apply_patch"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "arguments": '{"input": "*** Begin Patch"}'
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+    )
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_call_litellm", return_value=upstream_stream),
+        patch.object(service, "_record_gateway_request"),
+    ):
+        events = [
+            _parse_sse_payload(event)
+            for event in service.stream_response(
+                {"model": "openai/gpt-5", "input": "Edit the file"}
+            )
+        ]
+
+    added = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("type") == "response.output_item.added"
+    ]
+    # The item is announced as custom_tool_call from the very first event: a
+    # client that saw `function_call` first would already have rejected it.
+    assert len(added) == 1
+    assert added[0]["item"]["type"] == "custom_tool_call"
+    assert added[0]["item"]["name"] == "apply_patch"
+
+    completed = events[-2]
+    output_item = completed["response"]["output"][0]
+    assert output_item["type"] == "custom_tool_call"
+    assert output_item["call_id"] == "call_1"
+    # Raw patch text, not the JSON envelope the model was asked to produce.
+    assert output_item["input"] == "*** Begin Patch"
+    assert "arguments" not in output_item
+
+    # No function-call argument deltas may leak for a freeform tool.
+    assert not [
+        event
+        for event in events
+        if isinstance(event, dict)
+        and event.get("type", "").startswith("response.function_call_arguments")
+    ]
+
+
+def test_stream_response_emits_namespace_tool_call_with_short_name():
+    """Codex's router rejects a flat function_call whether short or qualified.
+
+    The streaming path must announce the item as namespace plus SHORT name
+    and keep that rewrite even if a later chunk re-sends the qualified
+    function.name the model was declared.
+    """
+    service = _codex_namespace_service()
+    ai_model = SimpleNamespace(id="model-1", provider_name="openai")
+    upstream_stream = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "mcp__preloop__ask_user"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "name": "mcp__preloop__ask_user",
+                                        "arguments": '{"question":',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": ' "Ready?"}'}}
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+    )
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_call_litellm", return_value=upstream_stream),
+        patch.object(service, "_record_gateway_request"),
+    ):
+        events = [
+            _parse_sse_payload(event)
+            for event in service.stream_response(
+                {"model": "openai/gpt-5", "input": "Ask a question"}
+            )
+        ]
+
+    added = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("type") == "response.output_item.added"
+    ]
+    assert len(added) == 1
+    assert added[0]["item"]["namespace"] == "mcp__preloop"
+    assert added[0]["item"]["name"] == "ask_user"
+
+    completed = events[-2]
+    output_item = completed["response"]["output"][0]
+    assert output_item["namespace"] == "mcp__preloop"
+    assert output_item["name"] == "ask_user"
+    assert output_item["type"] == "function_call"
+    assert output_item["call_id"] == "call_1"
+
+
+def test_stream_response_emits_namespace_tool_call_from_bare_alias():
+    """A first chunk that names the bare alias still announces namespace + short."""
+    service = _codex_namespace_service()
+    ai_model = SimpleNamespace(id="model-1", provider_name="openai")
+    upstream_stream = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "ask_user"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "name": "mcp__preloop__ask_user",
+                                        "arguments": '{"question": "Ready?"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+    )
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_call_litellm", return_value=upstream_stream),
+        patch.object(service, "_record_gateway_request"),
+    ):
+        events = [
+            _parse_sse_payload(event)
+            for event in service.stream_response(
+                {"model": "openai/gpt-5", "input": "Ask a question"}
+            )
+        ]
+
+    added = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("type") == "response.output_item.added"
+    ]
+    assert len(added) == 1
+    assert added[0]["item"]["namespace"] == "mcp__preloop"
+    assert added[0]["item"]["name"] == "ask_user"
+
+    completed = events[-2]
+    output_item = completed["response"]["output"][0]
+    assert output_item["namespace"] == "mcp__preloop"
+    assert output_item["name"] == "ask_user"
+
+
+def test_stream_response_still_emits_plain_function_calls_normally():
+    """A non-freeform tool keeps the ordinary function_call event sequence."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(MagicMock(), auth_context)
+    ai_model = SimpleNamespace(id="model-1", provider_name="openai")
+    upstream_stream = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "exec_command",
+                                        "arguments": '{"cmd":',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": ' "ls"}'}}
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+    )
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_call_litellm", return_value=upstream_stream),
+        patch.object(service, "_record_gateway_request"),
+    ):
+        events = [
+            _parse_sse_payload(event)
+            for event in service.stream_response(
+                {"model": "openai/gpt-5", "input": "List files"}
+            )
+        ]
+
+    types = [
+        event["type"] for event in events if isinstance(event, dict) and "type" in event
+    ]
+    assert "response.function_call_arguments.delta" in types
+    assert "response.function_call_arguments.done" in types
+    assert "response.custom_tool_call_input.done" not in types
+
+    output_item = events[-2]["response"]["output"][0]
+    assert output_item["type"] == "function_call"
+    assert output_item["arguments"] == '{"cmd": "ls"}'
+
+
+def test_responses_input_accepts_echoed_custom_tool_call_history():
+    """Turn 2 of every Codex session replays these items; they must not 400."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(MagicMock(), auth_context)
+
+    messages = service._normalize_responses_input(
+        {
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": "Edit the file",
+                },
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_1",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch",
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_1",
+                    "output": "Success. Updated: hello.txt",
+                },
+            ]
+        }
+    )
+
+    assert messages[0]["role"] == "user"
+    assert messages[1]["role"] == "assistant"
+    assert messages[1]["tool_calls"][0]["id"] == "call_1"
+    assert messages[1]["tool_calls"][0]["function"]["name"] == "apply_patch"
+    assert messages[2] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "Success. Updated: hello.txt",
+    }
+
+
+def test_create_response_round_trips_a_freeform_tool_call():
+    """Full request->response symmetry on the non-streaming path."""
+    service = _codex_freeform_service()
+    ai_model = SimpleNamespace(id="model-1", provider_name="openai")
+
+    upstream = {
+        "id": "chatcmpl_1",
+        "created": 1710000000,
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "apply_patch",
+                                "arguments": '{"input": "*** Begin Patch"}',
+                            },
+                        }
+                    ],
+                }
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_call_litellm", return_value=upstream),
+        patch.object(service, "_record_gateway_request"),
+        patch.object(service, "_emit_gateway_request_started"),
+    ):
+        response = service.create_response(
+            {
+                "model": "openai/gpt-5",
+                "input": "Edit the file",
+                "tools": [
+                    {
+                        "type": "custom",
+                        "name": "apply_patch",
+                        "description": "Apply a patch",
+                    }
+                ],
+            }
+        )
+
+    output_item = response["output"][0]
+    assert output_item["type"] == "custom_tool_call"
+    assert output_item["name"] == "apply_patch"
+    assert output_item["input"] == "*** Begin Patch"
+
+
+def _openrouter_service_and_model(**model_overrides):
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    upstream_backend = MagicMock()
+    service = OpenAIGatewayService(
+        MagicMock(), auth_context, upstream_backend=upstream_backend
+    )
+    model_kwargs = {
+        "provider_name": "openrouter",
+        "model_identifier": "openrouter/auto-beta",
+        "api_endpoint": "https://openrouter.ai/api/v1",
+        "meta_data": {},
+    }
+    model_kwargs.update(model_overrides)
+    return service, SimpleNamespace(**model_kwargs), upstream_backend
+
+
+def _call_with_api_key(service, ai_model, *, payload=None, stream=False):
+    with patch(
+        "preloop.services.openai_gateway.get_secret_service"
+    ) as mock_secret_service:
+        mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
+            SimpleNamespace(credential_type="api_key", value="sk-or-key")
+        )
+        service._call_litellm(
+            ai_model,
+            messages=[{"role": "user", "content": "Hello"}],
+            payload=payload or {},
+            stream=stream,
+            provider="openai",
+        )
+
+
+def test_openrouter_upstream_requests_usage_accounting():
+    """OpenRouter (direct provider) gets usage: {"include": true} so every
+    response carries the authoritative cost (Auto Router has no catalog
+    price; without this flag its usage stays unpriced)."""
+    service, ai_model, backend = _openrouter_service_and_model()
+    _call_with_api_key(service, ai_model)
+    kwargs = backend.completion.call_args.kwargs
+    assert kwargs["extra_body"]["usage"] == {"include": True}
+
+
+def test_openai_compatible_openrouter_base_url_requests_usage_accounting():
+    """OpenRouter reached via an openai-compatible base_url is still OpenRouter."""
+    service, ai_model, backend = _openrouter_service_and_model(
+        provider_name="openai-compatible",
+    )
+    _call_with_api_key(service, ai_model)
+    kwargs = backend.completion.call_args.kwargs
+    assert kwargs["extra_body"]["usage"] == {"include": True}
+
+
+def test_openrouter_usage_accounting_applies_to_streaming_requests():
+    """The flag rides on streamed requests too (final usage chunk carries cost)."""
+    service, ai_model, backend = _openrouter_service_and_model()
+    _call_with_api_key(service, ai_model, stream=True)
+    kwargs = backend.completion.call_args.kwargs
+    assert kwargs["stream"] is True
+    assert kwargs["extra_body"]["usage"] == {"include": True}
+
+
+def test_non_openrouter_upstreams_never_get_usage_accounting_flag():
+    """The OpenRouter-only knob must not leak to other upstreams."""
+    service, ai_model, backend = _openrouter_service_and_model(
+        provider_name="openai",
+        model_identifier="gpt-5",
+        api_endpoint=None,
+    )
+    _call_with_api_key(service, ai_model)
+    kwargs = backend.completion.call_args.kwargs
+    assert "extra_body" not in kwargs
+
+
+def test_openrouter_usage_accounting_config_gate(monkeypatch):
+    """OPENROUTER_USAGE_ACCOUNTING=false disables the outbound flag."""
+    monkeypatch.setenv("OPENROUTER_USAGE_ACCOUNTING", "false")
+    service, ai_model, backend = _openrouter_service_and_model()
+    _call_with_api_key(service, ai_model)
+    kwargs = backend.completion.call_args.kwargs
+    assert "extra_body" not in kwargs
+
+
+def test_gateway_records_provider_reported_cost_as_authoritative(db_session, test_user):
+    """An OpenRouter usage-accounting response prices the row from the
+    provider ledger (cost_source='provider') and budget spend consumes it.
+
+    The Auto Router (openrouter/auto-beta) has catalog price -1 by design, so
+    without the provider-reported figure this row would land unpriced with
+    zero spend.
+    """
+    from preloop.models.models.budget import BudgetSpendActivity
+
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "OpenRouter Auto",
+            "provider_name": "openrouter",
+            "model_identifier": "openrouter/auto-beta",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openrouter/auto-beta",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=test_user.account_id,
+    )
+    service = OpenAIGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+    litellm_response = {
+        "id": "gen-abc",
+        "created": 1710000000,
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "routed answer"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 973,
+            "completion_tokens": 15,
+            "total_tokens": 988,
+            "cost_details": {
+                "upstream_inference_cost": 0.00001946,
+                "upstream_inference_prompt_cost": 0.00001,
+                "upstream_inference_completions_cost": 0.00000946,
+            },
+        },
+    }
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=litellm_response,
+    ) as mock_completion:
+        service.create_chat_completion(
+            {
+                "model": "openrouter/auto-beta",
+                "messages": [{"role": "user", "content": "Hello"}],
+            }
+        )
+
+    # The outbound request asked OpenRouter for usage accounting.
+    assert mock_completion.call_args.kwargs["extra_body"]["usage"] == {"include": True}
+
+    usage_row = (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/openai/v1/chat/completions")
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+    assert usage_row is not None
+    assert usage_row.cost_source == "provider"
+    assert usage_row.estimated_cost == pytest.approx(0.00001946)
+    # No unpriced marker; the provider figure priced the row.
+    assert usage_row.prompt_tokens == 973
+
+    spend = (
+        db_session.query(BudgetSpendActivity)
+        .filter(
+            BudgetSpendActivity.account_id == test_user.account_id,
+            BudgetSpendActivity.subject_type == "account",
+            BudgetSpendActivity.model_alias == "openrouter/auto-beta",
+        )
+        .first()
+    )
+    assert spend is not None
+    assert float(spend.spend_usd) == pytest.approx(0.00001946)
+
+
+def _openrouter_auto_gateway(db_session, test_user):
+    """Provision Auto Router and return a gateway service for recording tests."""
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "OpenRouter Auto",
+            "provider_name": "openrouter",
+            "model_identifier": "openrouter/auto-beta",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openrouter/auto-beta",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=test_user.account_id,
+    )
+    return OpenAIGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+
+
+def _auto_beta_chat_response(usage):
+    return {
+        "id": "gen-abc",
+        "created": 1710000000,
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "routed answer"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": usage,
+    }
+
+
+@contextmanager
+def _patch_gateway_secrets():
+    """Stub credential resolution so recording tests do not need a live key."""
+    creds = SimpleNamespace(
+        credential_type="api_key",
+        value="sk-or-key",
+        backend_type="local_encrypted",
+        payload=None,
+    )
+    secret_service = SimpleNamespace(
+        resolve_ai_model_credentials=lambda *_args, **_kwargs: creds
+    )
+    with (
+        patch(
+            "preloop.services.model_runtime_resolver.get_secret_service",
+            return_value=secret_service,
+        ),
+        patch(
+            "preloop.services.openai_gateway.get_secret_service",
+            return_value=secret_service,
+        ),
+    ):
+        yield
+
+
+def test_gateway_records_explicit_zero_cost_as_provider(db_session, test_user):
+    """usage.cost=0 with accounting on records provider $0 and does not alert."""
+    service = _openrouter_auto_gateway(db_session, test_user)
+    litellm_response = _auto_beta_chat_response(
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "cost": 0,
+            "cost_details": {
+                "upstream_inference_cost": 0,
+                "upstream_inference_prompt_cost": 0,
+                "upstream_inference_completions_cost": 0,
+            },
+        }
+    )
+
+    with (
+        _patch_gateway_secrets(),
+        patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            return_value=litellm_response,
+        ),
+        patch("preloop.services.openai_gateway.notify_unpriced_model") as mock_notify,
+    ):
+        service.create_chat_completion(
+            {
+                "model": "openrouter/auto-beta",
+                "messages": [{"role": "user", "content": "Hello"}],
+            }
+        )
+
+    usage_row = (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/openai/v1/chat/completions")
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+    assert usage_row is not None
+    assert usage_row.cost_source == "provider"
+    assert usage_row.estimated_cost == 0.0
+    mock_notify.assert_not_called()
+
+
+def test_gateway_empty_completion_without_cost_skips_unpriced_alert(
+    db_session, test_user
+):
+    """0 completion and no cost fields: row may stay unpriced, no admin page."""
+    service = _openrouter_auto_gateway(db_session, test_user)
+    litellm_response = _auto_beta_chat_response(
+        {
+            "prompt_tokens": 4800,
+            "completion_tokens": 0,
+            "total_tokens": 4800,
+        }
+    )
+
+    with (
+        _patch_gateway_secrets(),
+        patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            return_value=litellm_response,
+        ),
+        patch("preloop.services.openai_gateway.notify_unpriced_model") as mock_notify,
+    ):
+        service.create_chat_completion(
+            {
+                "model": "openrouter/auto-beta",
+                "messages": [{"role": "user", "content": "Hello"}],
+            }
+        )
+
+    usage_row = (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/openai/v1/chat/completions")
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+    assert usage_row is not None
+    assert usage_row.cost_source == "unpriced"
+    assert usage_row.completion_tokens == 0
+    mock_notify.assert_not_called()
+
+
+def test_gateway_unpriced_prompt_and_completion_still_alerts(db_session, test_user):
+    """Prompt+completion, no cost, no catalog: still notify admins."""
+    service = _openrouter_auto_gateway(db_session, test_user)
+    litellm_response = _auto_beta_chat_response(
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+        }
+    )
+
+    with (
+        _patch_gateway_secrets(),
+        patch(
+            "preloop.services.openai_gateway.litellm.completion",
+            return_value=litellm_response,
+        ),
+        patch("preloop.services.openai_gateway.notify_unpriced_model") as mock_notify,
+    ):
+        service.create_chat_completion(
+            {
+                "model": "openrouter/auto-beta",
+                "messages": [{"role": "user", "content": "Hello"}],
+            }
+        )
+
+    usage_row = (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/openai/v1/chat/completions")
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+    assert usage_row is not None
+    assert usage_row.cost_source == "unpriced"
+    mock_notify.assert_called_once()
+
+
+def test_gateway_without_provider_cost_keeps_catalog_pricing(db_session, test_user):
+    """No cost fields in usage -> catalog pricing exactly as before."""
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Gateway Model",
+            "provider_name": "openai",
+            "model_identifier": "gpt-4o",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openai/gpt-4o",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=test_user.account_id,
+    )
+    service = OpenAIGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+    litellm_response = {
+        "id": "chatcmpl_1",
+        "created": 1710000000,
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "hi"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+    }
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=litellm_response,
+    ):
+        service.create_chat_completion(
+            {
+                "model": "openai/gpt-4o",
+                "messages": [{"role": "user", "content": "Hello"}],
+            }
+        )
+
+    usage_row = (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/openai/v1/chat/completions")
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+    assert usage_row is not None
+    assert usage_row.cost_source == "catalog"
+    assert usage_row.estimated_cost is not None and usage_row.estimated_cost > 0
+
+
+def test_responses_endpoint_records_provider_cost_and_requests_accounting(
+    db_session, test_user
+):
+    """The /responses path shares the flag injection and provider pricing.
+
+    Both endpoint kinds build upstream kwargs via ``_build_completion_kwargs``,
+    so this pins that the usage-accounting flag and provider-cost ingestion
+    hold on the Responses API path too, not only chat completions.
+    """
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "OpenRouter Auto",
+            "provider_name": "openai-compatible",
+            "model_identifier": "openrouter/auto-beta",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openrouter/auto-beta",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=test_user.account_id,
+    )
+    service = OpenAIGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+    litellm_response = {
+        "id": "gen-resp",
+        "created": 1710000000,
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "routed"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 42,
+            "completion_tokens": 7,
+            "total_tokens": 49,
+            "cost": 0.0000305,
+        },
+    }
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=litellm_response,
+    ) as mock_completion:
+        service.create_response(
+            {
+                "model": "openrouter/auto-beta",
+                "input": "Hello",
+            }
+        )
+
+    assert mock_completion.call_args.kwargs["extra_body"]["usage"] == {"include": True}
+
+    usage_row = (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == "/openai/v1/responses")
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+    assert usage_row is not None
+    assert usage_row.cost_source == "provider"
+    assert usage_row.estimated_cost == pytest.approx(0.0000305)
+
+
+# ---------------------------------------------------------------------------
+# #219: provider-reported cost must survive litellm's STREAMING transcode.
+#
+# litellm's CustomStreamWrapper rebuilds the final usage chunk from token
+# counts only (stream_chunk_builder.calculate_usage), so OpenRouter's
+# usage-accounting fields (usage.cost / usage.cost_details) are dropped from
+# the transcoded stream even though the raw provider chunk carried them. The
+# tests below drive the REAL litellm streaming pipeline (mocked HTTP
+# transport, no network) so the transcode is exercised as in production --
+# the #208 tests mocked litellm.completion with plain dicts and missed this.
+# ---------------------------------------------------------------------------
+
+_OPENROUTER_STREAM_USAGE = {
+    "prompt_tokens": 973,
+    "completion_tokens": 15,
+    "total_tokens": 988,
+    "prompt_tokens_details": {"cached_tokens": 100},
+    "cost": 0.0000305,
+    "cost_details": {"upstream_inference_cost": 0.00001946},
+}
+
+# cost >= upstream_inference_cost is the credits shape: usage.cost is the
+# full charge and cost_details is informational, so provider_reported_cost
+# takes cost alone -- summing would double-count (#224).
+_OPENROUTER_EXPECTED_TOTAL = 0.0000305
+
+
+def _real_litellm_openrouter_stream(raw_usage):
+    """Build a real litellm CustomStreamWrapper over raw OpenRouter SSE chunks.
+
+    Uses litellm's own HTTP handler with a mocked httpx transport, so the
+    chunks flow through the genuine OpenRouter chunk parser and streaming
+    transcode -- exactly what the gateway consumes in production.
+    """
+    import httpx
+    import litellm
+    from litellm.llms.custom_httpx.http_handler import HTTPHandler
+
+    def sse(data):
+        return f"data: {json.dumps(data)}\n\n".encode()
+
+    body = b"".join(
+        [
+            sse(
+                {
+                    "id": "gen-stream-1",
+                    "object": "chat.completion.chunk",
+                    "created": 1710000000,
+                    "model": "openrouter/auto-beta",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": "Hel"},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            ),
+            sse(
+                {
+                    "id": "gen-stream-1",
+                    "object": "chat.completion.chunk",
+                    "created": 1710000000,
+                    "model": "openrouter/auto-beta",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "lo"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+            ),
+            # OpenRouter's final usage-accounting chunk: empty choices, usage
+            # with cost + cost_details (per their usage accounting docs).
+            sse(
+                {
+                    "id": "gen-stream-1",
+                    "object": "chat.completion.chunk",
+                    "created": 1710000000,
+                    "model": "openrouter/auto-beta",
+                    "choices": [],
+                    "usage": raw_usage,
+                }
+            ),
+            b"data: [DONE]\n\n",
+        ]
+    )
+
+    def handler(request: "httpx.Request") -> "httpx.Response":
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body,
+        )
+
+    client = HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    return litellm.completion(
+        model="openrouter/openrouter/auto-beta",
+        messages=[{"role": "user", "content": "Hello"}],
+        api_key="sk-or-test",
+        stream=True,
+        stream_options={"include_usage": True},
+        extra_body={"usage": {"include": True}},
+        client=client,
+    )
+
+
+def _create_openrouter_gateway_model(db_session, test_user):
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "OpenRouter Auto",
+            "provider_name": "openrouter",
+            "model_identifier": "openrouter/auto-beta",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "openrouter/auto-beta",
+                    "provider_adapter": "preloop",
+                }
+            },
+            "is_default": True,
+        },
+        account_id=test_user.account_id,
+    )
+
+
+def _latest_usage_row(db_session, endpoint):
+    return (
+        db_session.query(ApiUsage)
+        .filter(ApiUsage.endpoint == endpoint)
+        .order_by(ApiUsage.timestamp.desc())
+        .first()
+    )
+
+
+def test_responses_stream_persists_openrouter_provider_cost(db_session, test_user):
+    """Streaming /responses via OpenRouter prices the row from usage.cost.
+
+    Regression for #219: all post-#208 prod rows (streaming /responses) stayed
+    unpriced because litellm's synthetic final usage chunk drops the cost
+    fields.
+    """
+    _create_openrouter_gateway_model(db_session, test_user)
+    service = OpenAIGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+    stream = _real_litellm_openrouter_stream(dict(_OPENROUTER_STREAM_USAGE))
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=stream,
+    ):
+        events = list(
+            service.stream_response(
+                {"model": "openrouter/auto-beta", "input": "Hello", "stream": True}
+            )
+        )
+        service.flush_deferred_stream_record()
+    assert any('"response.completed"' in event for event in events)
+
+    usage_row = _latest_usage_row(db_session, "/openai/v1/responses")
+    assert usage_row is not None
+    usage_details = (usage_row.meta_data or {}).get("usage_details") or {}
+    # Token detail must be intact...
+    assert usage_details.get("prompt_tokens") == 973
+    assert usage_details.get("prompt_tokens_details", {}).get("cached_tokens") == 100
+    # ...AND the provider-reported cost fields must survive persistence.
+    assert usage_details.get("cost") == pytest.approx(0.0000305)
+    assert usage_details.get("cost_details", {}).get(
+        "upstream_inference_cost"
+    ) == pytest.approx(0.00001946)
+    assert usage_row.cost_source == "provider"
+    assert usage_row.estimated_cost == pytest.approx(_OPENROUTER_EXPECTED_TOTAL)
+
+
+def test_chat_completions_stream_persists_openrouter_provider_cost(
+    db_session, test_user
+):
+    """Streaming /chat/completions shares the same recovery path."""
+    _create_openrouter_gateway_model(db_session, test_user)
+    service = OpenAIGatewayService(
+        db_session, ModelGatewayAuthContext(token="t", user=test_user)
+    )
+    stream = _real_litellm_openrouter_stream(dict(_OPENROUTER_STREAM_USAGE))
+
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value=stream,
+    ):
+        events = list(
+            service.stream_chat_completion(
+                {
+                    "model": "openrouter/auto-beta",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "stream": True,
+                }
+            )
+        )
+        service.flush_deferred_stream_record()
+    assert events  # stream produced output
+
+    usage_row = _latest_usage_row(db_session, "/openai/v1/chat/completions")
+    assert usage_row is not None
+    usage_details = (usage_row.meta_data or {}).get("usage_details") or {}
+    assert usage_details.get("cost") == pytest.approx(0.0000305)
+    assert usage_details.get("cost_details", {}).get(
+        "upstream_inference_cost"
+    ) == pytest.approx(0.00001946)
+    assert usage_row.cost_source == "provider"
+    assert usage_row.estimated_cost == pytest.approx(_OPENROUTER_EXPECTED_TOTAL)
+
+
+def test_provider_cost_fields_recovery_is_fail_open():
+    """Absent litellm internals must never break the stream accounting."""
+    assert OpenAIGatewayService._provider_cost_fields(iter([])) == {}
+    assert OpenAIGatewayService._provider_cost_fields(None) == {}
+    assert (
+        OpenAIGatewayService._provider_cost_fields(SimpleNamespace(chunks="nope")) == {}
+    )
+
+
+# ---------------------------------------------------------------------------
+# Codex turn-1 round-trip with MCP namespace tools declared (#289 follow-up).
+#
+# Staging executions 1ded95c8 / ffb122bd (flow fd6de770, codex + ox-alpha)
+# died on their FIRST model call after the #289 deploy: the upstream returned
+# a 200 stream with zero output items (18,268 prompt / 0 completion tokens)
+# and the gateway folded it into a successful EMPTY `response.completed`,
+# which Codex treats as a completed no-op turn and exits 0 silently. These
+# tests pin the full turn-1 path (real tools normalization, no preset alias
+# maps): plain text and tool calls pass through untouched, and an empty or
+# error-carrying upstream stream fails LOUDLY instead of succeeding empty.
+# ---------------------------------------------------------------------------
+
+
+_CODEX_NAMESPACE_REQUEST_TOOLS = [
+    {
+        "type": "function",
+        "name": "exec_command",
+        "description": "Run a command.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        # The shape the Codex CLI actually sends for an MCP server entry
+        # (captured from codex-cli 0.149.0 against a live [mcp_servers.preloop]).
+        "type": "namespace",
+        "name": "mcp__preloop",
+        "description": "Tools in the mcp__preloop namespace.",
+        "tools": [
+            {
+                "type": "function",
+                "name": "ask_user",
+                "description": "Ask the human a question and wait for their answer.",
+                "strict": False,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"question": {"type": "string"}},
+                    "required": ["question"],
+                    "additionalProperties": False,
+                },
+            }
+        ],
+    },
+]
+
+
+def _run_full_turn1_stream(upstream_chunks):
+    """Run stream_response through the REAL tools normalization path.
+
+    Unlike `_codex_namespace_service`, nothing is preset on the service: the
+    namespace alias map is captured by `_normalize_openai_tools` from the
+    request's own `tools`, exactly as in production. Only the litellm
+    boundary is stubbed.
+    """
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    upstream_backend = MagicMock()
+    upstream_backend.completion.return_value = iter(upstream_chunks)
+    service = OpenAIGatewayService(
+        MagicMock(), auth_context, upstream_backend=upstream_backend
+    )
+    ai_model = SimpleNamespace(
+        id="model-1",
+        provider_name="openai",
+        model_identifier="ox-alpha",
+        api_endpoint=None,
+        # Pinned to the chat-completions transcode: these cases exist to
+        # cover the transcode's namespace-alias restoration, which is the
+        # path taken for every upstream that has no Responses endpoint
+        # (issue #159). The native passthrough is covered separately in
+        # tests/services/test_openai_responses_passthrough.py.
+        meta_data={"gateway": {"responses_api": "transcode"}},
+        credentials_secret=None,
+        model_gateway_model_alias="ox-alpha",
+    )
+    record = MagicMock()
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_record_gateway_request", record),
+        patch.object(
+            service,
+            "_optimize_request_context",
+            side_effect=lambda messages, payload: (messages, payload),
+        ),
+        patch(
+            "preloop.services.openai_gateway.get_secret_service"
+        ) as mock_secret_service,
+    ):
+        mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
+            SimpleNamespace(credential_type="api_key", value="provider-secret")
+        )
+        events = [
+            _parse_sse_payload(event)
+            for event in service.stream_response(
+                {
+                    "model": "ox-alpha",
+                    "input": "Run the audit",
+                    "tools": _CODEX_NAMESPACE_REQUEST_TOOLS,
+                    "stream": True,
+                }
+            )
+        ]
+    return events, record
+
+
+def test_stream_turn1_text_with_namespace_tools_passes_through():
+    """A plain first-turn text response is untouched by the namespace map."""
+    events, _ = _run_full_turn1_stream(
+        [
+            {"choices": [{"delta": {"role": "assistant", "content": None}}]},
+            # ox-alpha-style empty delta ahead of the visible text.
+            {"choices": [{"delta": {"content": ""}}]},
+            {"choices": [{"delta": {"content": "Plan ready."}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 3,
+                    "total_tokens": 103,
+                },
+            },
+        ]
+    )
+
+    assert not [e for e in events if isinstance(e, dict) and e.get("type") == "error"]
+    completed = events[-2]
+    assert completed["type"] == "response.completed"
+    output = completed["response"]["output"]
+    assert len(output) == 1
+    assert output[0]["type"] == "message"
+    assert output[0]["content"] == [{"type": "output_text", "text": "Plan ready."}]
+
+
+def test_stream_turn1_namespace_tool_call_routes_via_captured_aliases():
+    """A first-turn ask_user call is rewritten to namespace + SHORT name.
+
+    The alias map here is captured from the request's own namespace
+    container by `_normalize_openai_tools`, not preset on the service: this
+    is the original mcp__preloop__ask_user routing case end to end.
+    """
+    events, _ = _run_full_turn1_stream(
+        [
+            {"choices": [{"delta": {"role": "assistant", "content": None}}]},
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "mcp__preloop__ask_user"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "arguments": '{"question": "Proceed?"}'
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "total_tokens": 120,
+                },
+            },
+        ]
+    )
+
+    assert not [e for e in events if isinstance(e, dict) and e.get("type") == "error"]
+    added = [
+        e
+        for e in events
+        if isinstance(e, dict) and e.get("type") == "response.output_item.added"
+    ]
+    assert len(added) == 1
+    assert added[0]["item"]["namespace"] == "mcp__preloop"
+    assert added[0]["item"]["name"] == "ask_user"
+    completed = events[-2]
+    output_item = completed["response"]["output"][0]
+    assert output_item["type"] == "function_call"
+    assert output_item["namespace"] == "mcp__preloop"
+    assert output_item["name"] == "ask_user"
+    assert output_item["call_id"] == "call_1"
+
+
+def test_stream_turn1_empty_upstream_stream_fails_loudly():
+    """An upstream stream with zero output items must NOT complete empty.
+
+    This is the staging 1ded95c8 / ffb122bd signature: role/finish/usage
+    chunks only, 0 completion tokens. Folding it into a successful empty
+    `response.completed` makes Codex exit 0 without printing anything.
+    """
+    events, record = _run_full_turn1_stream(
+        [
+            {"choices": [{"delta": {"role": "assistant", "content": None}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 18268,
+                    "completion_tokens": 0,
+                    "total_tokens": 18268,
+                },
+            },
+        ]
+    )
+
+    errors = [e for e in events if isinstance(e, dict) and e.get("type") == "error"]
+    assert len(errors) == 1
+    assert "without any output" in errors[0]["message"]
+    assert not [
+        e
+        for e in events
+        if isinstance(e, dict) and e.get("type") == "response.completed"
+    ]
+    assert events[-1] == "[DONE]"
+    # The interaction is recorded as a failure, not a 200 success.
+    assert record.call_args.kwargs["status_code"] == 502
+
+
+def test_stream_turn1_upstream_error_chunk_surfaces_as_stream_error():
+    """An in-band upstream `error` chunk must not be swallowed silently."""
+    events, record = _run_full_turn1_stream(
+        [
+            {"choices": [{"delta": {"role": "assistant", "content": None}}]},
+            {"error": {"message": "Provider returned error", "code": 502}},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 18268,
+                    "completion_tokens": 0,
+                    "total_tokens": 18268,
+                },
+            },
+        ]
+    )
+
+    errors = [e for e in events if isinstance(e, dict) and e.get("type") == "error"]
+    assert len(errors) == 1
+    assert "Provider returned error" in errors[0]["message"]
+    assert not [
+        e
+        for e in events
+        if isinstance(e, dict) and e.get("type") == "response.completed"
+    ]
+    assert record.call_args.kwargs["status_code"] == 502
+
+
+def test_stream_turn1_text_without_tools_still_passes():
+    """Control: the empty-stream guard never fires for a normal text turn."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(MagicMock(), auth_context)
+    ai_model = SimpleNamespace(id="model-1", provider_name="openai")
+    upstream_stream = iter(
+        [
+            {"choices": [{"delta": {"content": "Hello."}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ]
+    )
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=ai_model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_call_litellm", return_value=upstream_stream),
+        patch.object(service, "_record_gateway_request"),
+    ):
+        events = [
+            _parse_sse_payload(event)
+            for event in service.stream_response({"model": "gpt-5", "input": "Hi"})
+        ]
+    assert not [e for e in events if isinstance(e, dict) and e.get("type") == "error"]
+    completed = events[-2]
+    assert completed["response"]["output"][0]["content"] == [
+        {"type": "output_text", "text": "Hello."}
+    ]
+
+
+def test_create_response_turn1_with_namespace_tools_nonstreaming():
+    """Non-streaming: turn-1 text and tool call shapes with namespace tools."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    upstream_backend = MagicMock()
+    service = OpenAIGatewayService(
+        MagicMock(), auth_context, upstream_backend=upstream_backend
+    )
+    ai_model = SimpleNamespace(
+        id="model-1",
+        provider_name="openai",
+        model_identifier="ox-alpha",
+        api_endpoint=None,
+        # Pinned to the chat-completions transcode: these cases exist to
+        # cover the transcode's namespace-alias restoration, which is the
+        # path taken for every upstream that has no Responses endpoint
+        # (issue #159). The native passthrough is covered separately in
+        # tests/services/test_openai_responses_passthrough.py.
+        meta_data={"gateway": {"responses_api": "transcode"}},
+        credentials_secret=None,
+        model_gateway_model_alias="ox-alpha",
+    )
+
+    def _one_call(message):
+        upstream_backend.completion.return_value = {
+            "id": "chatcmpl-1",
+            "choices": [{"message": message, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+            },
+        }
+        with (
+            patch.object(service, "_resolve_requested_model", return_value=ai_model),
+            patch.object(service, "_check_budget", return_value=None),
+            patch.object(service, "_record_gateway_request"),
+            patch.object(
+                service,
+                "_optimize_request_context",
+                side_effect=lambda messages, payload: (messages, payload),
+            ),
+            patch(
+                "preloop.services.openai_gateway.get_secret_service"
+            ) as mock_secret_service,
+        ):
+            mock_secret_service.return_value.resolve_ai_model_credentials.return_value = SimpleNamespace(
+                credential_type="api_key", value="provider-secret"
+            )
+            return service.create_response(
+                {
+                    "model": "ox-alpha",
+                    "input": "Run the audit",
+                    "tools": _CODEX_NAMESPACE_REQUEST_TOOLS,
+                }
+            )
+
+    # Turn-1 text response passes through untouched.
+    text_response = _one_call({"role": "assistant", "content": "Plan ready."})
+    assert [item["type"] for item in text_response["output"]] == ["message"]
+    assert text_response["output_text"] == "Plan ready."
+
+    # Turn-1 tool call is restored to namespace + SHORT name.
+    tool_response = _one_call(
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "mcp__preloop__ask_user",
+                        "arguments": '{"question": "Proceed?"}',
+                    },
+                }
+            ],
+        }
+    )
+    calls = [i for i in tool_response["output"] if i["type"] == "function_call"]
+    assert len(calls) == 1
+    assert calls[0]["namespace"] == "mcp__preloop"
+    assert calls[0]["name"] == "ask_user"

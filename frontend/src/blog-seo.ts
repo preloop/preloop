@@ -184,6 +184,68 @@ export function estimate_reading_minutes(markdown_body: string): number {
   return Math.max(1, Math.round(words.length / 200));
 }
 
+/**
+ * Compare headings without markup. Walks the string so an unclosed `<`
+ * cannot leave a residual `<script` the way a single `/<[^>]+>/` replace
+ * would. The result is only compared, never written back into HTML.
+ */
+function normalize_heading_text(value: string): string {
+  let out = '';
+  let in_tag = false;
+  for (const ch of value) {
+    if (ch === '<') {
+      in_tag = true;
+      continue;
+    }
+    if (ch === '>') {
+      in_tag = false;
+      continue;
+    }
+    if (!in_tag) {
+      out += ch;
+    }
+  }
+  return out.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * Drop a leading `# Title` that repeats frontmatter `title`. Authors keep a
+ * standalone markdown heading; the page template already emits `<h1>`.
+ */
+export function strip_leading_markdown_title(
+  markdown: string,
+  title: string
+): string {
+  const match = /^(?:\uFEFF)?(?:[ \t]*\r?\n)*#\s+(.+?)\s*(?:\r?\n)+/.exec(
+    markdown || ''
+  );
+  if (!match) {
+    return markdown;
+  }
+  if (normalize_heading_text(match[1]) !== normalize_heading_text(title)) {
+    return markdown;
+  }
+  return (markdown || '').slice(match[0].length);
+}
+
+/**
+ * Drop a leading `<h1>` from rendered markdown when it repeats `title`.
+ */
+export function strip_duplicate_title_heading(
+  html: string,
+  title: string
+): string {
+  const source = html || '';
+  const match = /^\s*<h1(?:\s[^>]*)?>([\s\S]*?)<\/h1>\s*/i.exec(source);
+  if (!match) {
+    return source;
+  }
+  if (normalize_heading_text(match[1]) !== normalize_heading_text(title)) {
+    return source;
+  }
+  return source.slice(match[0].length);
+}
+
 function get_origin(config: BrandConfig): string {
   return `https://${config.domain}`;
 }
@@ -453,6 +515,27 @@ export const BLOG_ARTICLE_STYLES = `
       .blog-backlink:hover {
         color: #e6edf3;
       }
+      .blog-hero {
+        margin: 0 0 2rem;
+        padding: 0;
+        border: none;
+      }
+      .blog-hero img {
+        display: block;
+        width: 100%;
+        height: auto;
+        border-radius: 4px;
+      }
+      .blog-index-hero {
+        display: block;
+        margin: 0.75rem 0 0;
+      }
+      .blog-index-hero img {
+        display: block;
+        width: 100%;
+        height: auto;
+        border-radius: 4px;
+      }
       .blog-index-list {
         list-style: none;
         margin: 2.5rem 0 0;
@@ -503,6 +586,9 @@ export function get_internal_link_label(route: string): string {
   if (route === '/about') return 'About';
   if (route === '/whatis-mcp') return 'What is MCP?';
   if (route === '/ai-act-readiness') return 'EU AI Act readiness';
+  if (route === '/cra-readiness') return 'Cyber Resilience Act';
+  if (route === '/dora') return 'DORA';
+  if (route === '/nis2') return 'NIS2';
   if (route.startsWith('/vs/')) {
     const slug = route.slice('/vs/'.length);
     const name = slug
@@ -577,6 +663,15 @@ export function render_blog_post_html(
   const reading_html = post.reading_minutes
     ? `<span class="blog-sep">·</span><span>${post.reading_minutes} min read</span>`
     : '';
+  const hero_html = post.og_image
+    ? `<figure class="blog-hero"><img src="${escape_html(
+        post.og_image
+      )}" alt=""></figure>`
+    : '';
+  const body_html = strip_duplicate_title_heading(
+    post.body_html || '',
+    post.title
+  );
 
   return `<article class="container py-5 blog-post">
     <style>${article_styles}${BLOG_ARTICLE_STYLES}</style>
@@ -592,7 +687,8 @@ export function render_blog_post_html(
       ${reading_html}
     </div>
     ${tags_html}
-    ${post.body_html || ''}
+    ${hero_html}
+    ${body_html}
     ${render_related_block(post)}
   </article>`;
 }
@@ -616,11 +712,17 @@ export function render_blog_index_html(
             const reading = post.reading_minutes
               ? ` · ${post.reading_minutes} min read`
               : '';
+            const hero = post.og_image
+              ? `<a class="blog-index-hero" href="${escape_html(
+                  route
+                )}"><img src="${escape_html(post.og_image)}" alt=""></a>`
+              : '';
             return `      <li>
         <p class="blog-index-dateline"><time datetime="${escape_html(
           post.date
         )}">${escape_html(format_display_date(post.date))}</time>${reading}</p>
         <h2><a href="${escape_html(route)}">${escape_html(post.title)}</a></h2>
+        ${hero}
         <p>${escape_html(post.description)}</p>
       </li>`;
           })

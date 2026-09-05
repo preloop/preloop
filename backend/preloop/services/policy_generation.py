@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import litellm
 import yaml
@@ -26,9 +27,19 @@ from sqlalchemy.orm import Session
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.crud.audit_log import crud_audit_log
 from preloop.models.models.ai_model import AIModel
+from preloop.services.aux_model_retry import call_with_aux_retry
 from preloop.services.litellm_routing import to_litellm_model
+from preloop.services.model_credentials import (
+    build_aux_kwargs,
+    check_reasoning_model_empty_content,
+    resolve_model_call_credentials,
+)
 from preloop.services.policy import export_current_policy
-from preloop.services.policy.schema import PolicyDocument
+from preloop.services.policy.schema import (
+    PolicyDocument,
+    ToolDefinition,
+    is_known_tool_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +67,7 @@ class PolicyGenerationService:
         prompt: str,
         *,
         include_current_config: bool = True,
+        scope_mcp_server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a policy YAML from a natural-language description.
 
@@ -63,6 +75,8 @@ class PolicyGenerationService:
             prompt: User's description of the desired policy.
             include_current_config: If True, include the account's current
                 MCP servers and tools as context for the LLM.
+            scope_mcp_server_name: When set, starter-policy generation
+                scopes LLM context and raw output to this MCP server.
 
         Returns:
             ``{"yaml": "<valid policy YAML>", "warnings": [...]}``
@@ -76,11 +90,19 @@ class PolicyGenerationService:
 
         context_block = ""
         if include_current_config:
-            context_block = self._build_context_block()
+            context_block = self._build_context_block(
+                prompt, scope_mcp_server_name=scope_mcp_server_name
+            )
 
         system_prompt = self._build_system_prompt(schema_json, context_block)
 
         yaml_output = self._call_llm(model, system_prompt, prompt)
+        if include_current_config:
+            yaml_output = self._merge_preserving_unrelated(
+                yaml_output,
+                prompt,
+                scope_mcp_server_name=scope_mcp_server_name,
+            )
         warnings = self._validate_output(yaml_output)
 
         return {"yaml": yaml_output, "warnings": warnings}
@@ -161,19 +183,240 @@ class PolicyGenerationService:
         if not all_models:
             raise PolicyGenerationError(
                 "No AI models configured on your account. "
-                "Add at least one model in Settings → AI Models before "
+                "Add a default model at /console/ai-models before "
                 "generating policies."
             )
 
         # Most recently created
         return sorted(all_models, key=lambda m: m.created_at, reverse=True)[0]
 
-    def _build_context_block(self) -> str:
+    _REMOVAL_RE = re.compile(r"\b(remove|delete|drop|without)\b", re.IGNORECASE)
+    _STARTER_POLICY_SERVER_RE = re.compile(
+        r'starter policy(?: update)? for the MCP server ["\']([^"\']+)["\']',
+        re.IGNORECASE,
+    )
+
+    def _starter_policy_server_name(
+        self,
+        prompt: str,
+        scope_mcp_server_name: Optional[str] = None,
+    ) -> Optional[str]:
+        """Return the MCP server a starter-policy request targets, if any.
+
+        Prefers an explicit ``scope_mcp_server_name`` from the API. Falls
+        back to sniffing the prompt text so older clients still work.
+        """
+        if scope_mcp_server_name and scope_mcp_server_name.strip():
+            return scope_mcp_server_name.strip()
+        if not prompt:
+            return None
+        match = self._STARTER_POLICY_SERVER_RE.search(prompt)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _source_belongs_to_mcp_server(source: str, server_name: str) -> bool:
+        """True when a tool source is the named MCP server, not a native type."""
+        source_lower = (source or "").lower()
+        if is_known_tool_source(source_lower):
+            return False
+        return source_lower == server_name.lower()
+
+    @classmethod
+    def _raw_tool_belongs_to_mcp_server(
+        cls, tool: Dict[str, Any], server_name: str
+    ) -> bool:
+        """True when a raw YAML tool mapping belongs to the named MCP server."""
+        return cls._source_belongs_to_mcp_server(
+            str(tool.get("source") or ""), server_name
+        )
+
+    @classmethod
+    def _tool_belongs_to_mcp_server(
+        cls, tool: ToolDefinition, server_name: str
+    ) -> bool:
+        """True when a policy tool is scoped to the named MCP server.
+
+        Exported MCP tools use the server name as ``source``. Known ToolSource
+        values (builtin, mcp, http, agent) are never a specific server.
+        """
+        return cls._source_belongs_to_mcp_server(tool.source or "", server_name)
+
+    def _scope_tools_to_starter_server(
+        self,
+        tools: Optional[Sequence[ToolDefinition]],
+        prompt: str,
+        scope_mcp_server_name: Optional[str] = None,
+    ) -> Optional[List[ToolDefinition]]:
+        """Keep only the target MCP server's tools for a starter-policy prompt."""
+        server_name = self._starter_policy_server_name(prompt, scope_mcp_server_name)
+        if not server_name:
+            return list(tools) if tools else None
+        scoped = [
+            tool
+            for tool in (tools or [])
+            if self._tool_belongs_to_mcp_server(tool, server_name)
+        ]
+        return scoped or None
+
+    def _prompt_asks_to_drop(self, prompt: str, name: str) -> bool:
+        """True when the prompt names this item and asks to remove it."""
+        if not name:
+            return False
+        lowered = prompt.lower()
+        if name.lower() not in lowered:
+            return False
+        return bool(self._REMOVAL_RE.search(lowered))
+
+    def _merge_preserving_unrelated(
+        self,
+        generated_yaml: str,
+        prompt: str,
+        scope_mcp_server_name: Optional[str] = None,
+    ) -> str:
+        """Restore current items the model omitted unless the prompt drops them.
+
+        The LLM is asked to emit a complete document. When it drops unrelated
+        tools, workflows, MCP servers, or model_io rules, put them back so an
+        edit cannot silently wipe the rest of the policy.
+
+        Starter-policy generation still filters the raw LLM tools list to the
+        target MCP server so ``source: agent`` rows never land in the parsed
+        document. The merge then restores *all* current tools so
+        ``/policies/diff`` only reports the target server's changes.
+        """
+        try:
+            generated_data = yaml.safe_load(generated_yaml)
+            if not isinstance(generated_data, dict):
+                return generated_yaml
+        except yaml.YAMLError:
+            return generated_yaml
+
+        starter_server = self._starter_policy_server_name(prompt, scope_mcp_server_name)
+        scoped_generated_yaml = False
+        if starter_server and isinstance(generated_data.get("tools"), list):
+            original_tools = generated_data["tools"]
+            generated_data["tools"] = [
+                tool
+                for tool in original_tools
+                if isinstance(tool, dict)
+                and self._raw_tool_belongs_to_mcp_server(tool, starter_server)
+            ] or None
+            scoped_generated_yaml = generated_data["tools"] != original_tools
+
+        try:
+            generated = PolicyDocument(**generated_data)
+        except Exception:
+            return generated_yaml
+
+        try:
+            current = export_current_policy(
+                self.db,
+                account_id=self.account_id,
+                policy_name="(current configuration)",
+            )
+        except Exception as exc:
+            logger.warning("Could not export current policy for merge: %s", exc)
+            if not starter_server:
+                return generated_yaml
+            generated.tools = self._scope_tools_to_starter_server(
+                generated.tools, prompt, scope_mcp_server_name
+            )
+            return yaml.dump(
+                generated.model_dump(mode="json", exclude_none=True),
+                default_flow_style=False,
+                sort_keys=False,
+            )
+
+        restored = False
+
+        def _restore(
+            current_items: Optional[Sequence[Any]],
+            generated_items: Optional[List[Any]],
+            key_fn,
+        ) -> List[Any]:
+            nonlocal restored
+            merged = list(generated_items or [])
+            seen = {key_fn(item) for item in merged}
+            for item in current_items or []:
+                key = key_fn(item)
+                if key in seen:
+                    continue
+                label = key[-1] if isinstance(key, tuple) else key
+                if self._prompt_asks_to_drop(prompt, str(label)):
+                    continue
+                merged.append(item)
+                restored = True
+            return merged
+
+        generated.mcp_servers = (
+            _restore(
+                current.mcp_servers,
+                generated.mcp_servers,
+                lambda item: item.name,
+            )
+            or None
+        )
+        generated.approval_workflows = (
+            _restore(
+                current.approval_workflows,
+                generated.approval_workflows,
+                lambda item: item.name,
+            )
+            or None
+        )
+        if starter_server:
+            filtered_generated = self._scope_tools_to_starter_server(
+                generated.tools, prompt, scope_mcp_server_name
+            )
+            generated.tools = (
+                _restore(
+                    current.tools,
+                    filtered_generated,
+                    lambda item: (item.source, item.name),
+                )
+                or None
+            )
+        else:
+            generated.tools = (
+                _restore(
+                    current.tools,
+                    generated.tools,
+                    lambda item: (item.source, item.name),
+                )
+                or None
+            )
+        generated.model_io = (
+            _restore(
+                current.model_io,
+                generated.model_io,
+                lambda item: item.id,
+            )
+            or None
+        )
+
+        if not restored and not scoped_generated_yaml:
+            return generated_yaml
+
+        return yaml.dump(
+            generated.model_dump(mode="json", exclude_none=True),
+            default_flow_style=False,
+            sort_keys=False,
+        )
+
+    def _build_context_block(
+        self,
+        prompt: str = "",
+        scope_mcp_server_name: Optional[str] = None,
+    ) -> str:
         """Export the account's current policy config as YAML context.
 
         The output is structured so the LLM knows it should preserve
         existing items (MCP servers, approval workflows, tools with rules)
         and only add or modify what the user's prompt requests.
+
+        A starter-policy prompt for one MCP server only includes that
+        server's tools so native (agent) tools and other servers are not
+        copied into the suggestion.
         """
         try:
             current = export_current_policy(
@@ -181,8 +424,12 @@ class PolicyGenerationService:
                 account_id=self.account_id,
                 policy_name="(current configuration)",
             )
+            if self._starter_policy_server_name(prompt, scope_mcp_server_name):
+                current.tools = self._scope_tools_to_starter_server(
+                    current.tools, prompt, scope_mcp_server_name
+                )
             current_yaml = yaml.dump(
-                current.model_dump(exclude_none=True),
+                current.model_dump(mode="json", exclude_none=True),
                 default_flow_style=False,
                 sort_keys=False,
             )
@@ -191,21 +438,24 @@ class PolicyGenerationService:
             n_servers = len(current.mcp_servers or [])
             n_policies = len(current.approval_workflows or [])
             n_tools = len(current.tools or [])
+            n_model_io = len(current.model_io or [])
 
             header_lines = [
                 "\n\n--- CURRENT ACCOUNT CONFIGURATION ---",
                 (
                     f"The account currently has {n_servers} MCP server(s), "
-                    f"{n_policies} approval workflow/ies, and {n_tools} tool "
-                    f"configuration(s) with their access rules."
+                    f"{n_policies} approval workflow/ies, {n_tools} tool "
+                    f"configuration(s), and {n_model_io} model I/O rule(s)."
                 ),
                 "",
                 (
-                    "IMPORTANT: You MUST keep the items below unless the "
-                    "user's prompt explicitly contradicts them. Reference "
-                    "existing approval_workflows by name instead of creating "
-                    "duplicates. Carry forward existing tool conditions/rules "
-                    "that are compatible with the user's request."
+                    "IMPORTANT: This is an edit of the current policy. You MUST "
+                    "keep the items below unless the user's prompt explicitly "
+                    "asks to remove them. Reference existing "
+                    "approval_workflows by name instead of creating "
+                    "duplicates. Carry forward existing tool conditions, "
+                    "model_io rules, MCP servers, and workflows that are "
+                    "compatible with the user's request."
                 ),
                 "",
             ]
@@ -224,14 +474,14 @@ class PolicyGenerationService:
 You are an expert at generating Preloop access-policy YAML files.
 
 Given the JSON schema below and the user's description, produce a
-**complete, valid** policy YAML document.  Output ONLY the raw YAML —
-no markdown fences, no explanation.
+complete, valid policy YAML document. Output ONLY the raw YAML.
+No markdown fences, no explanation.
 
 ### RULES
 - The YAML MUST conform to the following JSON Schema.
 - Use `version: "1.0"`.
-- Every `approval_workflow` referenced by a tool MUST be defined in
-  `approval_workflows`.
+- Every `approval_workflow` referenced by a tool or model_io rule MUST
+  be defined in `approval_workflows`.
 - Prefer `condition_type: simple` unless the description clearly
   requires CEL capabilities (contains, startsWith, regex, etc.).
 - If the user mentions specific people or teams, include them in
@@ -241,22 +491,28 @@ no markdown fences, no explanation.
 - Fill in sensible `timeout_seconds` (default 300).
 - For `defaults`, set `unknown_tools` appropriately based on the user's
   security posture (allow / deny / require_approval).
+- Model input/output rules live under `model_io` with target
+  `model.request` or `model.response`. Actions are allow, deny, or
+  require_approval. Detector attributes include pii.found,
+  injection.score, and moderation.flagged.
 
 ### REUSE EXISTING CONFIGURATION
 If a "CURRENT ACCOUNT CONFIGURATION" block is provided below, you MUST
 follow these rules:
-1. **Preserve existing MCP servers** — include them unchanged in the
-   `mcp_servers` section unless the user says to remove or replace one.
-2. **Reuse existing approval workflows** — if the account already has
-   suitable approval workflows (e.g. for human review or AI triage),
-   reference them by name in tool configs instead of creating new ones.
-   Only create a new policy when no existing one satisfies the request.
-3. **Keep existing tool rules** — for tools already configured with
-   access rules or conditions, carry those rules forward unless they
+1. Preserve existing MCP servers. Include them unchanged in
+   `mcp_servers` unless the user says to remove or replace one.
+2. Reuse existing approval workflows. If the account already has
+   suitable approval workflows, reference them by name instead of
+   creating new ones. Only create a new workflow when no existing one
+   satisfies the request.
+3. Keep existing tool rules. For tools already configured with access
+   rules or conditions, carry those rules forward unless they
    directly conflict with the user's prompt.
-4. **Merge, don't replace** — add new tool entries or rules for tools
-   not yet covered, but do not drop existing tool configurations.
-5. **Preserve enabled/disabled state** — if an existing tool is
+4. Keep existing model_io rules. Add or edit only what the user asked
+   for. Do not drop unrelated model I/O rules.
+5. Merge, do not replace. Add new tool or model_io entries for items
+   not yet covered, but do not drop existing configurations.
+6. Preserve enabled/disabled state. If an existing tool or rule is
    disabled, keep it disabled unless the user asks otherwise.
 
 ### JSON SCHEMA
@@ -282,7 +538,7 @@ is to produce a policy that:
    maximum observed payment amount was $500, require approval for
    amounts > $500).
 
-Output ONLY the raw YAML — no fences, no explanation.
+Output ONLY the raw YAML. No fences, no explanation.
 
 ### RULES
 - The YAML MUST conform to the following JSON Schema.
@@ -315,10 +571,9 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
         errors from the first.
         """
         litellm_model = self._to_litellm_model(model)
-        api_key = model.api_key
-        api_base = model.api_endpoint
+        creds_kwargs = resolve_model_call_credentials(model, db=self.db)
 
-        kwargs: Dict[str, Any] = {
+        call_site_kwargs: Dict[str, Any] = {
             "model": litellm_model,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -327,14 +582,18 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
             "temperature": 0.2,
             "max_tokens": 8192,
         }
-        if api_key:
-            kwargs["api_key"] = api_key
-        if api_base:
-            kwargs["api_base"] = api_base
+        kwargs = build_aux_kwargs(
+            model, creds_kwargs, call_site_kwargs=call_site_kwargs
+        )
 
         for attempt in range(2):
             try:
-                response = litellm.completion(**kwargs)
+                response = call_with_aux_retry(
+                    lambda: litellm.completion(**kwargs),
+                    operation_name="policy_generation",
+                    provider=getattr(model, "provider_name", None),
+                )
+                check_reasoning_model_empty_content(response)
                 raw = response.choices[0].message.content or ""
                 yaml_text = self._extract_yaml(raw)
 

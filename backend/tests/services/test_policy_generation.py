@@ -285,6 +285,362 @@ class TestGenerateFromPrompt:
             service.generate_from_prompt("test", include_current_config=False)
             mock_ctx.assert_not_called()
 
+    def test_no_model_message_points_at_console_ai_models(self, service):
+        with patch("preloop.services.policy_generation.crud_ai_model") as crud:
+            crud.get_default_active_model.return_value = None
+            crud.get_by_account.return_value = []
+            with pytest.raises(PolicyGenerationError, match="/console/ai-models"):
+                service._resolve_model()
+
+    def test_edit_preserves_unrelated_tool_rules(self, service, mock_ai_model):
+        from preloop.services.policy.schema import (
+            PolicyDocument,
+            PolicyMetadata,
+            PolicyVersion,
+            ToolDefinition,
+        )
+
+        current = PolicyDocument(
+            version=PolicyVersion.V1_0,
+            metadata=PolicyMetadata(name="current"),
+            tools=[
+                ToolDefinition(name="tool_a", source="builtin", enabled=True),
+                ToolDefinition(name="tool_b", source="builtin", enabled=True),
+            ],
+        )
+        dropped_tools_yaml = """\
+version: "1.0"
+metadata:
+  name: "Edited"
+model_io:
+  - id: deny-pii
+    target: model.request
+    detectors:
+      pii:
+        types: [email]
+    conditions:
+      - expression: "pii.found == true"
+        action: deny
+"""
+        with (
+            patch.object(service, "_resolve_model", return_value=mock_ai_model),
+            patch.object(service, "_call_llm", return_value=dropped_tools_yaml),
+            patch.object(service, "_build_context_block", return_value="ctx"),
+            patch(
+                "preloop.services.policy_generation.export_current_policy",
+                return_value=current,
+            ),
+        ):
+            result = service.generate_from_prompt(
+                "Deny model requests when PII is found"
+            )
+
+        document = PolicyDocument(**__import__("yaml").safe_load(result["yaml"]))
+        tool_names = {tool.name for tool in (document.tools or [])}
+        assert tool_names == {"tool_a", "tool_b"}
+        assert document.model_io
+        assert document.model_io[0].id == "deny-pii"
+        assert document.model_io[0].target == "model.request"
+
+    def test_starter_policy_with_native_bash_does_not_raise(
+        self, service, mock_ai_model
+    ):
+        from preloop.services.policy.schema import (
+            MCPServerDefinition,
+            PolicyDocument,
+            PolicyMetadata,
+            PolicyVersion,
+            ToolDefinition,
+        )
+
+        current = PolicyDocument(
+            version=PolicyVersion.V1_0,
+            metadata=PolicyMetadata(name="current"),
+            mcp_servers=[
+                MCPServerDefinition(
+                    name="Example MCP Server",
+                    url="https://example.com/mcp",
+                ),
+                MCPServerDefinition(
+                    name="Other Server",
+                    url="https://other.example.com/mcp",
+                ),
+            ],
+            tools=[
+                ToolDefinition(name="Bash", source="agent", enabled=True),
+                ToolDefinition(
+                    name="list_issues",
+                    source="Example MCP Server",
+                    enabled=True,
+                ),
+                ToolDefinition(
+                    name="other_search",
+                    source="Other Server",
+                    enabled=True,
+                ),
+            ],
+        )
+        llm_yaml = """\
+version: "1.0"
+metadata:
+  name: "Starter"
+mcp_servers:
+  - name: "Example MCP Server"
+    url: "https://example.com/mcp"
+approval_workflows:
+  - name: "review"
+    timeout_seconds: 300
+tools:
+  - name: "Bash"
+    source: "agent"
+    enabled: true
+  - name: "list_issues"
+    source: "Example MCP Server"
+    enabled: true
+    approval_workflow: "review"
+  - name: "other_search"
+    source: "Other Server"
+    enabled: true
+"""
+        prompt = (
+            "Generate a conservative starter policy update for the MCP server "
+            '"Example MCP Server" (https://example.com/mcp).'
+        )
+        with (
+            patch.object(service, "_resolve_model", return_value=mock_ai_model),
+            patch.object(service, "_call_llm", return_value=llm_yaml),
+            patch.object(service, "_build_context_block", return_value="ctx"),
+            patch(
+                "preloop.services.policy_generation.export_current_policy",
+                return_value=current,
+            ),
+        ):
+            result = service.generate_from_prompt(prompt)
+
+        document = PolicyDocument(**__import__("yaml").safe_load(result["yaml"]))
+        tools_by_name = {tool.name: tool for tool in (document.tools or [])}
+        assert set(tools_by_name) == {"Bash", "list_issues", "other_search"}
+        bash = tools_by_name["Bash"]
+        assert bash.source == "agent"
+        assert bash.enabled is True
+        assert bash.approval_workflow is None
+        other = tools_by_name["other_search"]
+        assert other.source == "Other Server"
+        assert other.enabled is True
+        assert other.approval_workflow is None
+        issues = tools_by_name["list_issues"]
+        assert issues.source == "Example MCP Server"
+        assert issues.approval_workflow == "review"
+
+    def test_explicit_scope_mcp_server_name_without_prompt_match(
+        self, service, mock_ai_model
+    ):
+        from preloop.services.policy.schema import (
+            MCPServerDefinition,
+            PolicyDocument,
+            PolicyMetadata,
+            PolicyVersion,
+            ToolDefinition,
+        )
+
+        current = PolicyDocument(
+            version=PolicyVersion.V1_0,
+            metadata=PolicyMetadata(name="current"),
+            mcp_servers=[
+                MCPServerDefinition(
+                    name="Example MCP Server",
+                    url="https://example.com/mcp",
+                ),
+                MCPServerDefinition(
+                    name="Other Server",
+                    url="https://other.example.com/mcp",
+                ),
+            ],
+            tools=[
+                ToolDefinition(name="Bash", source="agent", enabled=True),
+                ToolDefinition(
+                    name="list_issues",
+                    source="Example MCP Server",
+                    enabled=True,
+                ),
+                ToolDefinition(
+                    name="other_search",
+                    source="Other Server",
+                    enabled=True,
+                ),
+            ],
+        )
+        llm_yaml = """\
+version: "1.0"
+metadata:
+  name: "Starter"
+mcp_servers:
+  - name: "Example MCP Server"
+    url: "https://example.com/mcp"
+approval_workflows:
+  - name: "review"
+    timeout_seconds: 300
+tools:
+  - name: "Bash"
+    source: "agent"
+    enabled: true
+  - name: "list_issues"
+    source: "Example MCP Server"
+    enabled: true
+    approval_workflow: "review"
+"""
+        with (
+            patch.object(service, "_resolve_model", return_value=mock_ai_model),
+            patch.object(service, "_call_llm", return_value=llm_yaml),
+            patch.object(service, "_build_context_block", return_value="ctx"),
+            patch(
+                "preloop.services.policy_generation.export_current_policy",
+                return_value=current,
+            ),
+        ):
+            result = service.generate_from_prompt(
+                "Tighten rules for this server",
+                scope_mcp_server_name="Example MCP Server",
+            )
+
+        document = PolicyDocument(**__import__("yaml").safe_load(result["yaml"]))
+        tools_by_name = {tool.name: tool for tool in (document.tools or [])}
+        assert set(tools_by_name) == {"Bash", "list_issues", "other_search"}
+        assert tools_by_name["Bash"].approval_workflow is None
+        assert tools_by_name["other_search"].approval_workflow is None
+        assert tools_by_name["list_issues"].approval_workflow == "review"
+
+    def test_starter_policy_context_block_scopes_to_target_server(self, service):
+        from preloop.services.policy.schema import (
+            MCPServerDefinition,
+            PolicyDocument,
+            PolicyMetadata,
+            PolicyVersion,
+            ToolDefinition,
+        )
+
+        current = PolicyDocument(
+            version=PolicyVersion.V1_0,
+            metadata=PolicyMetadata(name="current"),
+            mcp_servers=[
+                MCPServerDefinition(
+                    name="Example MCP Server",
+                    url="https://example.com/mcp",
+                ),
+                MCPServerDefinition(
+                    name="Other Server",
+                    url="https://other.example.com/mcp",
+                ),
+            ],
+            tools=[
+                ToolDefinition(name="Bash", source="agent", enabled=True),
+                ToolDefinition(
+                    name="list_issues",
+                    source="Example MCP Server",
+                    enabled=True,
+                ),
+                ToolDefinition(
+                    name="other_search",
+                    source="Other Server",
+                    enabled=True,
+                ),
+            ],
+        )
+        prompt = (
+            "Generate a conservative starter policy update for the MCP server "
+            '"Example MCP Server" (https://example.com/mcp).'
+        )
+        with patch(
+            "preloop.services.policy_generation.export_current_policy",
+            return_value=current,
+        ):
+            context = service._build_context_block(prompt)
+
+        assert "list_issues" in context
+        assert "Bash" not in context
+        assert "other_search" not in context
+
+    def test_explicit_scope_mcp_server_name_scopes_context_block(self, service):
+        from preloop.services.policy.schema import (
+            MCPServerDefinition,
+            PolicyDocument,
+            PolicyMetadata,
+            PolicyVersion,
+            ToolDefinition,
+        )
+
+        current = PolicyDocument(
+            version=PolicyVersion.V1_0,
+            metadata=PolicyMetadata(name="current"),
+            mcp_servers=[
+                MCPServerDefinition(
+                    name="Example MCP Server",
+                    url="https://example.com/mcp",
+                ),
+            ],
+            tools=[
+                ToolDefinition(name="Bash", source="agent", enabled=True),
+                ToolDefinition(
+                    name="list_issues",
+                    source="Example MCP Server",
+                    enabled=True,
+                ),
+            ],
+        )
+        with patch(
+            "preloop.services.policy_generation.export_current_policy",
+            return_value=current,
+        ):
+            context = service._build_context_block(
+                "Tighten rules for this server",
+                scope_mcp_server_name="Example MCP Server",
+            )
+
+        assert "list_issues" in context
+        assert "Bash" not in context
+
+    def test_generated_model_io_round_trips_schema(self, service, mock_ai_model):
+        from preloop.services.policy.schema import PolicyDocument
+
+        yaml_with_model_io = """\
+version: "1.0"
+metadata:
+  name: "Content"
+model_io:
+  - id: deny-injection
+    target: model.request
+    detectors:
+      injection: true
+    conditions:
+      - expression: "injection.score > 0.7"
+        action: deny
+"""
+        with (
+            patch.object(service, "_resolve_model", return_value=mock_ai_model),
+            patch.object(service, "_call_llm", return_value=yaml_with_model_io),
+            patch.object(service, "_build_context_block", return_value=""),
+            patch(
+                "preloop.services.policy_generation.export_current_policy",
+                side_effect=RuntimeError("empty account"),
+            ),
+        ):
+            result = service.generate_from_prompt(
+                "Deny prompts with injection.score > 0.7",
+                include_current_config=False,
+            )
+
+        document = PolicyDocument(**__import__("yaml").safe_load(result["yaml"]))
+        assert document.model_io[0].id == "deny-injection"
+
+    def test_invalid_llm_output_raises(self, service, mock_ai_model):
+        with (
+            patch.object(service, "_resolve_model", return_value=mock_ai_model),
+            patch.object(service, "_call_llm", return_value="not: [valid"),
+            patch.object(service, "_build_context_block", return_value=""),
+        ):
+            with pytest.raises(PolicyGenerationError, match="not valid YAML"):
+                service.generate_from_prompt("anything", include_current_config=False)
+
 
 # ---------------------------------------------------------------------------
 # PolicyGenerationService.generate_from_audit_logs
@@ -398,6 +754,9 @@ class TestGeneratePolicyEndpoint:
             instance._build_context_block.return_value = ""
             instance._build_system_prompt.return_value = "system"
             instance._call_llm.return_value = VALID_POLICY_YAML
+            instance._merge_preserving_unrelated.side_effect = (
+                lambda yaml_text, _prompt, **_kwargs: yaml_text
+            )
             instance._validate_output.return_value = []
             result = await generate_policy(
                 request,
@@ -408,6 +767,47 @@ class TestGeneratePolicyEndpoint:
 
         assert result.yaml == VALID_POLICY_YAML
         assert result.warnings == []
+
+    async def test_forwards_scope_mcp_server_name(
+        self, mock_account, mock_db, mock_user
+    ):
+        from preloop.api.endpoints.policies import (
+            GeneratePolicyRequest,
+            generate_policy,
+        )
+
+        request = GeneratePolicyRequest(
+            prompt="require approval for bash",
+            scope_mcp_server_name="Example MCP Server",
+        )
+
+        with patch(PATCH_SERVICE) as mock_svc:
+            instance = mock_svc.return_value
+            instance._resolve_model.return_value = MagicMock()
+            instance._build_context_block.return_value = ""
+            instance._build_system_prompt.return_value = "system"
+            instance._call_llm.return_value = VALID_POLICY_YAML
+            instance._merge_preserving_unrelated.side_effect = (
+                lambda yaml_text, _prompt, **_kwargs: yaml_text
+            )
+            instance._validate_output.return_value = []
+            result = await generate_policy(
+                request,
+                account=mock_account,
+                current_user=mock_user,
+                db=mock_db,
+            )
+
+        assert result.yaml == VALID_POLICY_YAML
+        instance._build_context_block.assert_called_once_with(
+            request.prompt,
+            scope_mcp_server_name="Example MCP Server",
+        )
+        instance._merge_preserving_unrelated.assert_called_once_with(
+            VALID_POLICY_YAML,
+            request.prompt,
+            scope_mcp_server_name="Example MCP Server",
+        )
 
     async def test_no_model_returns_400(self, mock_account, mock_db, mock_user):
         from fastapi import HTTPException

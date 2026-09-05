@@ -58,11 +58,15 @@ suppressed too, as they depend on the check-in response.`,
 		// dump the full usage/flags help after the error message.
 		silenceUsageForRuntimeErrors(cmd)
 
-		// Check for updates on each invocation (cached daily)
-		if err := version.CheckForUpdate(); err != nil {
-			// Silently ignore update check errors
-			if verbose {
-				fmt.Fprintf(os.Stderr, "Warning: failed to check for updates: %v\n", err)
+		// Check for updates on each invocation (cached daily). Skip the
+		// daily prompt on `preloop update` itself so the command owns the
+		// confirmation and we do not ask twice.
+		if cmd.Name() != "update" {
+			if err := version.CheckForUpdate(); err != nil {
+				// Silently ignore update check errors
+				if verbose {
+					fmt.Fprintf(os.Stderr, "Warning: failed to check for updates: %v\n", err)
+				}
 			}
 		}
 	},
@@ -82,6 +86,10 @@ func topLevelCommandName(cmd *cobra.Command) string {
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
+//
+// A non-nil error is turned into a process status by ProcessExitCode in
+// main: launchers that wrap an external binary return a typed exit-code
+// error so the child's status (not 1) reaches the caller.
 func Execute() error {
 	return rootCmd.Execute()
 }
@@ -110,5 +118,10 @@ func init() {
 	rootCmd.AddCommand(toolsCmd)
 	rootCmd.AddCommand(approvalsCmd)
 	rootCmd.AddCommand(agentsCmd)
+	rootCmd.AddCommand(modelsCmd)
+	rootCmd.AddCommand(usageCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(flowCmd)
+	rootCmd.AddCommand(runnerCmd)
 }

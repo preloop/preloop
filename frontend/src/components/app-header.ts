@@ -213,7 +213,16 @@ export class AppHeader extends LitElement {
             ${
               isSaaS()
                 ? html`
-                    <sl-button href="/about" variant="text">About</sl-button>
+                    ${
+                      (getBrandConfig().static_markdown_pages ?? []).some(
+                        (page) => page.path === '/about'
+                      )
+                        ? html`<sl-button href="/about" variant="text"
+                            >About</sl-button
+                          >`
+                        : ''
+                    }
+                    <sl-button href="/blog" variant="text">Blog</sl-button>
                     <sl-button href="/pricing" variant="text"
                       >Pricing</sl-button
                     >

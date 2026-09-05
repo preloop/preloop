@@ -12,16 +12,6 @@ from sqlalchemy.orm import Session
 from preloop.models.models.api_key import ApiKey
 from preloop.models.models.user import User
 from preloop.models.models.account import Account
-from preloop.models.db.session import get_db_session
-
-
-@pytest.fixture
-def db_session():
-    """Get a real database session."""
-    session_generator = get_db_session()
-    session = next(session_generator)
-    yield session
-    session.close()
 
 
 def test_api_key_creation_with_user_id(db_session: Session):
@@ -30,9 +20,10 @@ def test_api_key_creation_with_user_id(db_session: Session):
     This test would have immediately failed if the code tried to use
     'created_by' instead of 'user_id', catching the bug before deployment.
     """
+    suffix = uuid.uuid4().hex[:8]
     # Create a test account
     test_account = Account(
-        organization_name="Test Organization",
+        organization_name=f"Test Organization {suffix}",
         email_verified=True,
         is_active=True,
         is_superuser=False,
@@ -42,8 +33,8 @@ def test_api_key_creation_with_user_id(db_session: Session):
 
     # Create a test user
     test_user = User(
-        username=f"testuser_{uuid.uuid4().hex[:8]}",
-        email="test_user@example.com",
+        username=f"testuser_{suffix}",
+        email=f"test_user_{suffix}@example.com",
         hashed_password="hashed_password",
         account_id=test_account.id,
         is_active=True,
@@ -64,7 +55,7 @@ def test_api_key_creation_with_user_id(db_session: Session):
             is_active=True,
         )
         db_session.add(api_key)
-        db_session.commit()
+        db_session.flush()
 
         # Verify the key was created with the correct user_id
         assert api_key.id is not None
@@ -88,9 +79,6 @@ def test_api_key_creation_with_user_id(db_session: Session):
                 f"This indicates the created_by vs user_id bug: {e}"
             )
         raise
-    finally:
-        # Clean up
-        db_session.rollback()
 
 
 def test_api_key_creation_fails_with_created_by(db_session: Session):
@@ -98,9 +86,10 @@ def test_api_key_creation_fails_with_created_by(db_session: Session):
 
     This explicitly tests that the old field name is no longer accepted.
     """
+    suffix = uuid.uuid4().hex[:8]
     # Create a test account
     test_account = Account(
-        organization_name="Test Organization 2",
+        organization_name=f"Test Organization 2 {suffix}",
         email_verified=True,
         is_active=True,
         is_superuser=False,
@@ -110,8 +99,8 @@ def test_api_key_creation_fails_with_created_by(db_session: Session):
 
     # Create a test user
     test_user = User(
-        username=f"testuser2_{uuid.uuid4().hex[:8]}",
-        email="test_user2@example.com",
+        username=f"testuser2_{suffix}",
+        email=f"test_user2_{suffix}@example.com",
         hashed_password="hashed_password",
         account_id=test_account.id,
         is_active=True,
@@ -134,8 +123,6 @@ def test_api_key_creation_fails_with_created_by(db_session: Session):
 
     # Verify the error message mentions the invalid parameter
     assert "created_by" in str(exc_info.value).lower()
-
-    db_session.rollback()
 
 
 def test_api_key_response_schema_compatibility():

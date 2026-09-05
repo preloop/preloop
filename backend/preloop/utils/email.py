@@ -75,7 +75,13 @@ def send_email(
             "Email not sent: SMTP credentials not configured. "
             f"Would have sent email to {to_email} with subject '{subject}'"
         )
-        logger.debug(f"Email body: {body_text}")
+        # The body is NOT logged. Several senders put single-use credentials in
+        # it: send_verification_email and send_password_reset_email embed an
+        # auth token in a link, and send_invitation_email does the same. Logging
+        # the body would write those tokens to the log in clear text, where they
+        # stay valid and readable by anyone with log access. The length is
+        # enough to tell an operator that a body was composed.
+        logger.debug("Email body suppressed from logs (%d chars)", len(body_text))
         # Don't raise error - just return gracefully to avoid HTTP 500 in dev/CI environments
         return
 

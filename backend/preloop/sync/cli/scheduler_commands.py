@@ -8,6 +8,7 @@ import asyncio
 from preloop.config import settings
 from preloop.models.db.session import get_db_session
 from ..services.manager import sync_scheduled_jobs
+from ..services.flow_schedules import sync_flow_schedule_jobs
 from ..services.event_bus import event_bus_service
 
 
@@ -78,6 +79,20 @@ async def run_scheduler_async(
         f"Scheduled tracker job synchronization every {reload_interval} seconds."
     )
 
+    scheduler.add_job(
+        sync_flow_schedule_jobs,
+        trigger=IntervalTrigger(seconds=reload_interval),
+        args=[scheduler],
+        id="flow_schedule_sync_job",
+        name="Sync Scheduled Flow Jobs",
+        replace_existing=True,
+        misfire_grace_time=60,
+        next_run_time=datetime.now(pytz.utc),
+    )
+    logger.info(
+        f"Scheduled flow schedule synchronization every {reload_interval} seconds."
+    )
+
     # Daily provider-billing ingestion (cost reconciliation). The worker-side
     # task no-ops unless the Enterprise billing plugin (and at least one
     # provider connection) is present.
@@ -99,6 +114,59 @@ async def run_scheduler_async(
             next_run_time=datetime.now(pytz.utc) + timedelta(minutes=5),
         )
         logger.info("Scheduled daily provider billing ingestion.")
+
+    # Scheduled model-catalog sync (the automatic 'preloop models sync').
+    # Default OFF: self-hosted catalogs must never change on upgrade without
+    # an explicit opt-in (MODEL_CATALOG_SYNC_SCHEDULED_ENABLED=true). The
+    # worker-side task re-checks the setting, so a queued task after a
+    # disable still no-ops. Principal-bound subscription-OAuth credentials
+    # are never used for discovery.
+    if getattr(settings, "model_catalog_sync_scheduled_enabled", False):
+        catalog_sync_interval_hours = max(
+            1, int(getattr(settings, "model_catalog_sync_interval_hours", 24) or 24)
+        )
+
+        async def _publish_model_catalog_sync() -> None:
+            try:
+                await event_bus_service.publish_task("sync_model_catalog")
+            except Exception:
+                logger.exception("Failed to publish model catalog sync task")
+
+        scheduler.add_job(
+            _publish_model_catalog_sync,
+            trigger=IntervalTrigger(hours=catalog_sync_interval_hours),
+            id="model_catalog_sync_job",
+            name="Sync Provider Model Catalogs",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            next_run_time=datetime.now(pytz.utc) + timedelta(minutes=15),
+        )
+        logger.info(
+            "Scheduled model catalog sync every %d hour(s).",
+            catalog_sync_interval_hours,
+        )
+
+    # Hourly workspace retention pass: delete captured workspace snapshots
+    # and Docker agent-workspace-* volumes older than the retention window.
+    async def _publish_workspace_cleanup() -> None:
+        try:
+            await event_bus_service.publish_task("cleanup_flow_workspaces")
+        except Exception:
+            logger.exception("Failed to publish workspace cleanup task")
+
+    scheduler.add_job(
+        _publish_workspace_cleanup,
+        trigger=IntervalTrigger(hours=1),
+        id="workspace_cleanup_job",
+        name="Reap Expired Flow Workspaces",
+        replace_existing=True,
+        misfire_grace_time=600,
+        next_run_time=datetime.now(pytz.utc) + timedelta(minutes=2),
+    )
+    logger.info(
+        "Scheduled hourly workspace retention (ttl=%s hours).",
+        getattr(settings, "workspace_snapshot_ttl_hours", 24),
+    )
 
     # Weekly cost optimization & savings digest. The worker-side task no-ops
     # unless the Enterprise billing plugin is present.

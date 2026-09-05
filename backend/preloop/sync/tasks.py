@@ -19,12 +19,15 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "poll_tracker",
     "notify_admins",
     "process_webhook_event",
+    "run_scheduled_flow",
     "cleanup_tracker_webhooks",
     "reprice_gateway_usage_task",
     "ingest_provider_billing",
     "send_optimization_digest",
+    "sync_model_catalog",
     "execute_flow",
     "resume_flow_execution",
+    "cleanup_flow_workspaces",
 )
 
 
@@ -212,6 +215,27 @@ async def process_webhook_event(
         db.close()
 
 
+async def run_scheduled_flow(flow_id: str) -> None:
+    """
+    Handle one tick of a schedule (cron) flow trigger.
+
+    Published by the scheduler service for flows with
+    ``trigger_event_source == 'schedule'``. Delegates to
+    ``FlowTriggerService.run_scheduled_tick`` which enforces the overlap
+    (skip-if-previous-running) and pause-suppression policies.
+    """
+    logger.info("Processing scheduled tick for flow %s", flow_id)
+    db = next(get_db_session())
+    try:
+        from preloop.services.flow_trigger_service import FlowTriggerService
+
+        trigger_service = FlowTriggerService(db)
+        outcome = await trigger_service.run_scheduled_tick(flow_id)
+        logger.info("Scheduled tick for flow %s -> %s", flow_id, outcome)
+    finally:
+        db.close()
+
+
 def reprice_gateway_usage_task(
     account_id: str,
     start: str,
@@ -280,6 +304,65 @@ def ingest_provider_billing(account_id: str | None = None) -> object | None:
         return service.ingest(db, account_id=account_id)
     except Exception as e:
         logger.error("Provider billing ingestion failed: %s", e, exc_info=True)
+        return None
+    finally:
+        db.close()
+
+
+async def sync_model_catalog(account_id: str | None = None) -> dict[str, int] | None:
+    """Scheduled model-catalog sync: pull newly released provider models.
+
+    Runs the same sync logic as POST /api/v1/ai-models/sync for every account
+    (or one account when ``account_id`` is given), attributed to the
+    ``model-catalog-sync`` system actor. Principal-bound subscription-OAuth
+    credentials are hard-excluded, identically to the manual sync.
+
+    Guarded by ``model_catalog_sync_scheduled_enabled`` (default off) on the
+    worker side too, so a stale queued task after the setting is turned off
+    still no-ops.
+    """
+    from preloop.config import settings
+    from preloop.services.ai_model_catalog_sync import (
+        CatalogSyncActor,
+        sync_account_model_catalog,
+        sync_all_account_model_catalogs,
+    )
+
+    if not getattr(settings, "model_catalog_sync_scheduled_enabled", False):
+        logger.debug("Scheduled model catalog sync is disabled; skipping")
+        return None
+    db = next(get_db_session())
+    try:
+        if account_id:
+            summary = await sync_account_model_catalog(
+                db, actor=CatalogSyncActor.system(account_id)
+            )
+            total = sum(len(result.added) for result in summary.providers)
+            return {account_id: total} if total else {}
+        return await sync_all_account_model_catalogs(db)
+    except Exception as e:
+        logger.error("Scheduled model catalog sync failed: %s", e, exc_info=True)
+        return None
+    finally:
+        db.close()
+
+
+async def cleanup_flow_workspaces() -> dict[str, int] | None:
+    """Retention pass over workspace snapshots and Docker workspace volumes.
+
+    Deletes snapshots (and ``agent-workspace-*`` Docker volumes) older than
+    ``WORKSPACE_SNAPSHOT_TTL_HOURS``. Scheduled hourly; safe to run anywhere,
+    since the volume half no-ops without a Docker socket.
+    """
+    from preloop.services.workspace_snapshot_cleanup import (
+        cleanup_workspace_artifacts,
+    )
+
+    db = next(get_db_session())
+    try:
+        return await cleanup_workspace_artifacts(db)
+    except Exception as e:
+        logger.error("Workspace retention pass failed: %s", e, exc_info=True)
         return None
     finally:
         db.close()

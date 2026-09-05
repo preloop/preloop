@@ -23,7 +23,10 @@ from preloop.services.account_realtime import (
     encode_realtime_event_for_nats,
     emit_account_event,
 )
+from preloop.services.cache_accounting import reported_cache_miss_tokens
+from preloop.services.model_allowlist import is_model_not_allowed_detail
 from preloop.sync.services.event_bus import get_nats_client
+from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
 from preloop.utils.request_fingerprint import public_request_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -251,22 +254,43 @@ class ModelGatewayEventEmitter:
                 "gateway_attempt": meta_data.get("gateway_attempt"),
                 "is_retry": meta_data.get("is_retry"),
                 "retry_of_api_usage_id": meta_data.get("retry_of_api_usage_id"),
+                # Retries the gateway itself made against the provider inside
+                # this single request (mid-stream disconnect, 5xx, 429).
+                # 0 = the call succeeded first time. Lets the console show
+                # "recovered after N retries" instead of only a longer
+                # duration, and makes provider flakiness countable.
+                "retried": int(meta_data.get("upstream_retries") or 0),
                 "finish_reason": meta_data.get("finish_reason"),
                 "prompt_tokens": usage.prompt_tokens,
                 "completion_tokens": usage.completion_tokens,
                 "total_tokens": usage.total_tokens,
                 "estimated_cost": usage.estimated_cost,
-                # Surface the prompt-cache breakdown so the session chat can show
-                # how many input tokens were cache reads (a large share of real
-                # cost). Persisted into usage_details by the gateway's
-                # _normalize_usage. OpenAI nests it under
-                # prompt_tokens_details.cached_tokens; Anthropic reports
-                # cache_read_input_tokens at the top level.
+                # Prefer authoritative ApiUsage cache columns; fall back to the
+                # raw usage_details snapshot for older rows or nested OpenAI
+                # shapes still useful in prompt_tokens_details.
                 "prompt_tokens_details": (meta_data.get("usage_details") or {}).get(
                     "prompt_tokens_details"
                 ),
-                "cache_read_input_tokens": (meta_data.get("usage_details") or {}).get(
-                    "cache_read_input_tokens"
+                "cache_read_input_tokens": (
+                    usage.cache_read_tokens
+                    if usage.cache_read_tokens is not None
+                    else (meta_data.get("usage_details") or {}).get(
+                        "cache_read_input_tokens"
+                    )
+                ),
+                "cache_creation_input_tokens": (
+                    usage.cache_creation_tokens
+                    if usage.cache_creation_tokens is not None
+                    else (meta_data.get("usage_details") or {}).get(
+                        "cache_creation_input_tokens"
+                    )
+                ),
+                # A cache-MISS count the provider reported outright (today only
+                # DeepSeek's prompt_cache_miss_tokens, which litellm drops on the
+                # floor). None means "no provider miss count" — consumers must
+                # not read that as zero misses.
+                "cache_miss_input_tokens_reported": reported_cache_miss_tokens(
+                    meta_data
                 ),
                 "runtime_session_id": str(usage.runtime_session_id)
                 if usage.runtime_session_id
@@ -284,8 +308,16 @@ class ModelGatewayEventEmitter:
                 "error_detail": error_detail,
                 "capture_policy": self._build_capture_policy(conversation_preview),
                 "conversation_preview": conversation_preview,
-                "request": self._sanitize_payload(request_payload),
-                "response": self._sanitize_payload(response_payload),
+                # These two bodies are the ones that carried 533KB of binary
+                # content in the 2026-08-05 incident. Cap them here, at the
+                # point they enter the activity payload, so the JSONB row stays
+                # a bounded size regardless of what the upstream returned.
+                "request": self._cap_activity_body(
+                    self._sanitize_payload(request_payload)
+                ),
+                "response": self._cap_activity_body(
+                    self._sanitize_payload(response_payload)
+                ),
             },
         }
 
@@ -316,15 +348,33 @@ class ModelGatewayEventEmitter:
 
     @staticmethod
     def _derive_outcome(status_code: int, error_detail: Optional[str]) -> str:
+        # Allowlist denials reuse budget_denied: it is the only denial outcome
+        # the transcript, replay, and audit surfaces know how to render.
         if (
             status_code == 403
             and error_detail
-            and "budget exceeded" in error_detail.lower()
+            and (
+                "budget exceeded" in error_detail.lower()
+                or is_model_not_allowed_detail(error_detail)
+            )
         ):
             return "budget_denied"
         if status_code >= 400:
             return "error"
         return "success"
+
+    @staticmethod
+    def _cap_activity_body(value: Any) -> Any:
+        """Bound one request/response body before it is stored as JSONB.
+
+        Separate from the preview cap on purpose. Previews feed the transcript
+        UI and are tuned for readability; these bodies are archival and are
+        never rendered in full, so they get the tighter activity cap.
+        """
+        return sanitize_for_jsonb(
+            value,
+            max_string_chars=settings.model_gateway_activity_max_body_chars,
+        )
 
     def _sanitize_payload(self, value: Any) -> Any:
         if value is None:

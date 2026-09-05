@@ -17,6 +17,7 @@ import './governance-rule-set-editor';
 import type { Tool, ApprovalWorkflow } from './tool-card';
 import type { AccessRuleSummary } from './governance-rule-set-editor';
 import type { GatewayUsageByTool } from '../types';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 @customElement('tool-list-item')
 export class ToolListItem extends LitElement {
@@ -33,137 +34,153 @@ export class ToolListItem extends LitElement {
   @state() private _showJustificationDialog = false;
   @state() private _justificationMode: string = 'disabled';
 
-  static styles = css`
-    :host {
-      display: block;
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      :host {
+        display: block;
+      }
 
-    .tool-row {
-      border-radius: var(--sl-border-radius-medium);
-      overflow: hidden;
-      transition: background 0.15s ease;
-    }
+      .tool-row {
+        border-radius: var(--sl-border-radius-medium);
+        overflow: hidden;
+        transition: background 0.15s ease;
+      }
 
-    .tool-row.expanded {
-      background: var(--sl-color-neutral-50);
-    }
+      .tool-row.expanded {
+        background: var(--sl-color-neutral-50);
+      }
 
-    .tool-row.disabled {
-      opacity: 0.65;
-    }
+      .tool-row.disabled {
+        opacity: 0.65;
+      }
 
-    .tool-header {
-      display: flex;
-      align-items: center;
-      padding: var(--sl-spacing-2x-small) var(--sl-spacing-medium);
-      cursor: pointer;
-      user-select: none;
-      gap: var(--sl-spacing-small);
-      min-height: 36px;
-    }
+      .tool-header {
+        display: flex;
+        align-items: center;
+        padding: var(--sl-spacing-2x-small) var(--sl-spacing-medium);
+        cursor: pointer;
+        user-select: none;
+        gap: var(--sl-spacing-small);
+        min-height: 36px;
+      }
 
-    .tool-header:hover {
-      background: var(--sl-color-neutral-50);
-    }
+      .tool-header:hover {
+        background: var(--sl-color-neutral-50);
+      }
 
-    .expand-icon {
-      color: var(--sl-color-neutral-500);
-      transition: transform 0.2s ease;
-      flex-shrink: 0;
-    }
+      .expand-icon {
+        color: var(--sl-color-neutral-500);
+        transition: transform 0.2s ease;
+        flex-shrink: 0;
+      }
 
-    .expand-icon.open {
-      transform: rotate(90deg);
-    }
+      .expand-icon.open {
+        transform: rotate(90deg);
+      }
 
-    .tool-name {
-      font-weight: var(--sl-font-weight-semibold);
-      font-size: var(--sl-font-size-small);
-      color: var(--sl-color-neutral-900);
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
+      .tool-name {
+        font-weight: var(--sl-font-weight-semibold);
+        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-900);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
 
-    .tool-description {
-      font-size: var(--sl-font-size-x-small);
-      color: var(--sl-color-neutral-500);
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      flex: 1;
-    }
+      .tool-description {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-500);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+      }
 
-    .tool-badges {
-      display: flex;
-      align-items: center;
-      gap: var(--sl-spacing-2x-small);
-      flex-shrink: 0;
-    }
+      .tool-badges {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-2x-small);
+        flex-shrink: 0;
+      }
 
-    .usage-stat {
-      color: var(--sl-color-neutral-500);
-      font-size: var(--sl-font-size-x-small);
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
+      .usage-stat {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-x-small);
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
 
-    .rule-summary {
-      display: flex;
-      align-items: center;
-      gap: var(--sl-spacing-2x-small);
-      flex-shrink: 0;
-      font-size: var(--sl-font-size-x-small);
-    }
+      .schema-tokens {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-x-small);
+        white-space: nowrap;
+        flex-shrink: 0;
+        font-variant-numeric: tabular-nums;
+      }
 
-    .rule-summary .rule-count {
-      display: inline-flex;
-      align-items: center;
-      gap: 3px;
-      padding: 2px 8px;
-      border-radius: var(--sl-border-radius-pill);
-      font-weight: 500;
-    }
+      .rule-summary {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-2x-small);
+        flex-shrink: 0;
+        font-size: var(--sl-font-size-x-small);
+      }
 
-    .rule-count.deny {
-      background: var(--sl-color-danger-100);
-      color: var(--sl-color-danger-700);
-    }
+      .rule-summary .rule-count {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 2px 8px;
+        border-radius: var(--sl-border-radius-pill);
+        font-weight: 500;
+      }
 
-    .rule-count.approval {
-      background: var(--sl-color-primary-100);
-      color: var(--sl-color-primary-700);
-    }
+      .rule-count.deny {
+        background: var(--sl-color-danger-100);
+        color: var(--sl-color-danger-700);
+      }
 
-    .rule-count.allow {
-      background: var(--sl-color-success-100);
-      color: var(--sl-color-success-700);
-    }
+      .rule-count.approval {
+        background: var(--sl-color-primary-100);
+        color: var(--sl-color-primary-700);
+      }
 
-    .no-rules {
-      color: var(--sl-color-neutral-400);
-      font-size: var(--sl-font-size-x-small);
-    }
+      .rule-count.allow {
+        background: var(--sl-color-success-100);
+        color: var(--sl-color-success-700);
+      }
 
-    .tool-toggle {
-      flex-shrink: 0;
-      margin-top: -3px;
-    }
+      .no-rules {
+        color: var(--sl-color-neutral-400);
+        font-size: var(--sl-font-size-x-small);
+      }
 
-    /* Expanded content */
-    .tool-content {
-      padding: var(--sl-spacing-small) var(--sl-spacing-medium)
-        var(--sl-spacing-medium);
-    }
+      .tool-toggle {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-shrink: 0;
+        margin-top: -3px;
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-600);
+      }
 
-    .unsupported-overlay {
-      color: var(--sl-color-neutral-500);
-      font-size: var(--sl-font-size-x-small);
-      font-style: italic;
-    }
-  `;
+      /* Expanded content */
+      .tool-content {
+        padding: var(--sl-spacing-small) var(--sl-spacing-medium)
+          var(--sl-spacing-medium);
+      }
+
+      .unsupported-overlay {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-x-small);
+        font-style: italic;
+      }
+    `,
+  ];
 
   private _getRuleSummary() {
     const rules = this.accessRules.filter((r) => r.is_enabled);
@@ -185,9 +202,26 @@ export class ToolListItem extends LitElement {
     );
   }
 
+  private _isNativeTool(): boolean {
+    return this.tool.source === 'agent';
+  }
+
+  private _toolSchema(): Record<string, unknown> | null {
+    const schema = this.tool.schema;
+    if (schema && typeof schema === 'object' && schema.properties) {
+      return schema;
+    }
+    if (this.tool.parameters) {
+      return { type: 'object', properties: this.tool.parameters };
+    }
+    return schema || null;
+  }
+
   private _handleToggleEnabled(e: Event) {
     e.stopPropagation();
-    const isEnabled = (e.target as HTMLInputElement).checked;
+    const checked = (e.target as HTMLInputElement).checked;
+    // Native rows use a Blocked switch (inverse of is_enabled).
+    const isEnabled = this._isNativeTool() ? !checked : checked;
     this.dispatchEvent(
       new CustomEvent('toggle-enabled', {
         detail: { tool: this.tool, isEnabled },
@@ -378,7 +412,7 @@ export class ToolListItem extends LitElement {
 
         <governance-rule-set-editor
           .toolName=${this.tool.name}
-          .toolSchema=${this.tool.schema}
+          .toolSchema=${this._toolSchema()}
           .rules=${this.accessRules}
           .workflows=${this.policies}
           .features=${this.features}
@@ -423,6 +457,29 @@ export class ToolListItem extends LitElement {
           <span class="tool-name">${this.tool.name}</span>
 
           <div class="tool-badges">
+            ${
+              this._isNativeTool()
+                ? (this.tool.adapters || []).map(
+                    (adapter) =>
+                      html`<sl-badge variant="neutral" pill
+                        >${adapter}</sl-badge
+                      >`
+                  )
+                : ''
+            }
+            ${
+              typeof this.tool.schema_tokens_estimate === 'number' &&
+              this.tool.schema_tokens_estimate > 0
+                ? html`<sl-tooltip
+                    content="Estimated schema tokens added to every agent request that advertises this tool (includes justification parameters when configured)"
+                  >
+                    <span class="schema-tokens"
+                      >~${this.tool.schema_tokens_estimate.toLocaleString()}
+                      tokens/request</span
+                    >
+                  </sl-tooltip>`
+                : ''
+            }
             ${
               this.usageStat &&
               (this.usageStat.invocation_count > 0 ||
@@ -469,28 +526,41 @@ export class ToolListItem extends LitElement {
           <div class="tool-toggle" @click=${(e: Event) => e.stopPropagation()}>
             <sl-switch
               size="small"
-              ?checked=${this.tool.is_enabled}
+              ?checked=${
+                this._isNativeTool()
+                  ? !this.tool.is_enabled
+                  : this.tool.is_enabled
+              }
               ?disabled=${isUnsupported}
               @sl-change=${this._handleToggleEnabled}
-            ></sl-switch>
+              >${this._isNativeTool() ? 'Blocked' : ''}</sl-switch
+            >
           </div>
 
-          <div @click=${(e: Event) => e.stopPropagation()}>
-            <sl-dropdown>
-              <sl-icon-button
-                slot="trigger"
-                name="three-dots-vertical"
-                label="Tool settings"
-                style="font-size: 1.2rem;"
-              ></sl-icon-button>
-              <sl-menu>
-                <sl-menu-item @click=${() => this._openJustificationDialog()}>
-                  <sl-icon slot="prefix" name="shield-shaded"></sl-icon>
-                  Justification settings
-                </sl-menu-item>
-              </sl-menu>
-            </sl-dropdown>
-          </div>
+          ${
+            this._isNativeTool()
+              ? ''
+              : html`
+                  <div @click=${(e: Event) => e.stopPropagation()}>
+                    <sl-dropdown>
+                      <sl-icon-button
+                        slot="trigger"
+                        name="three-dots-vertical"
+                        label="Tool settings"
+                        style="font-size: 1.2rem;"
+                      ></sl-icon-button>
+                      <sl-menu>
+                        <sl-menu-item
+                          @click=${() => this._openJustificationDialog()}
+                        >
+                          <sl-icon slot="prefix" name="shield-shaded"></sl-icon>
+                          Justification settings
+                        </sl-menu-item>
+                      </sl-menu>
+                    </sl-dropdown>
+                  </div>
+                `
+          }
         </div>
 
         ${this.expanded ? this._renderExpandedContent() : ''}

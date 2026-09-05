@@ -2,7 +2,11 @@
 
 from .base import AgentExecutor, AgentExecutionResult, AgentStatus
 from .container import ContainerAgentExecutor
-from .factory import create_agent_executor
+from .factory import (
+    create_agent_executor,
+    create_executor_for_execution,
+    SUPPORTED_AGENT_TYPES,
+)
 from .openhands import OpenHandsAgent
 from .aider import AiderAgent
 from .codex import CodexAgent
@@ -20,4 +24,6 @@ __all__ = [
     "GeminiAgent",
     "OpenCodeAgent",
     "create_agent_executor",
+    "create_executor_for_execution",
+    "SUPPORTED_AGENT_TYPES",
 ]

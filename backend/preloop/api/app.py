@@ -7,19 +7,21 @@ of issue tracking systems.
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Any
+from urllib.parse import quote
+from uuid import UUID
 from fastapi import Depends, FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pyinstrument import Profiler
 from pyinstrument.renderers import SpeedscopeRenderer
+from sqlalchemy.exc import TimeoutError as SQLAlchemyPoolTimeout
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from preloop import __version__
@@ -45,15 +47,19 @@ from preloop.api.endpoints import (
     policies,
     projects,
     public_approval,
+    pull_requests,
     roles,
     search as search_router,
+    security_screen,
     session_optimization,
     tools,
     trackers,
+    usage_import,
     version,
     embedding as embedding_router,
     webhooks,
     flows,
+    runners,
     ai_models,
     openai_gateway,
     websockets,
@@ -65,18 +71,17 @@ from preloop.api.endpoints import (
 from preloop.services.mcp_http import setup_mcp_routes
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.models.sentry import init_sentry
-from preloop.models.db.session import get_db_session, get_session_factory
+from preloop.models.db.session import get_db_session
 from preloop.models.db.setup import setup_database
-from preloop.models.models.api_usage import ApiUsage
+from preloop.services.api_usage_recorder import (
+    ApiUsageRecord,
+    record_api_usage,
+    shutdown_api_usage_recorder,
+)
 from preloop.sync.services.event_bus import connect_nats, close_nats  # NATS integration
 
 
 logger = logging.getLogger(__name__)
-
-_api_usage_executor = ThreadPoolExecutor(
-    max_workers=4,
-    thread_name_prefix="api_usage_",
-)
 
 
 class PyinstrumentMiddleware(BaseHTTPMiddleware):
@@ -200,31 +205,21 @@ class ApiUsageMiddleware(BaseHTTPMiddleware):
                 # Ignore errors in token decoding
                 pass
 
-        # Log usage in database on a shared executor to avoid pool starvation
+        # Usage rows go to a bounded background queue that drops (and counts)
+        # rather than queueing behind a slow or saturated database. Telemetry
+        # about requests must never be able to hurt the requests themselves.
         if user_id and status_code < 500:  # Only log successful API calls
-
-            def log_usage_sync() -> None:
-                session_factory = get_session_factory()
-                session = session_factory()
-                try:
-                    usage_entry = ApiUsage(
-                        user_id=user_id,
-                        endpoint=path,
-                        method=method,
-                        status_code=status_code,
-                        duration=duration,
-                        action_type=action_type,
-                        timestamp=start_time,
-                    )
-                    session.add(usage_entry)
-                    session.commit()
-                except Exception as e:
-                    session.rollback()
-                    logger.error(f"Error logging API usage: {str(e)}")
-                finally:
-                    session.close()
-
-            _api_usage_executor.submit(log_usage_sync)
+            record_api_usage(
+                ApiUsageRecord(
+                    user_id=user_id,
+                    endpoint=path,
+                    method=method,
+                    status_code=status_code,
+                    duration=duration,
+                    action_type=action_type,
+                    timestamp=start_time,
+                )
+            )
 
         return response
 
@@ -240,6 +235,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Initialize Sentry if DSN is configured
     init_sentry()
+
+    # Stamp LiteLLM env defaults before any httpx client is cached so
+    # provider dashboards do not attribute traffic to LiteLLM.
+    from preloop.services.litellm_routing import ensure_preloop_client_identity
+
+    ensure_preloop_client_identity()
 
     # Register the vendored model-price catalog so gateway cost estimates are
     # deterministic per release (independent of the installed litellm version).
@@ -324,6 +325,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Execution monitor started.")
     else:
         logger.info("Skipping execution monitor for %s role.", service_role)
+
+    # Start the DB pool monitor (skip in testing mode): pool gauges plus a
+    # WARNING log when either engine's checked-out connections near the
+    # ceiling, so pool saturation is visible before requests start timing
+    # out. Runs on every role; gated by DB_MONITORING_ENABLED.
+    db_pool_monitor = None
+    if not is_testing:
+        from preloop.services.db_pool_monitor import (
+            db_monitoring_enabled,
+            get_db_pool_monitor,
+        )
+
+        if db_monitoring_enabled():
+            db_pool_monitor = get_db_pool_monitor()
+            await db_pool_monitor.start()
+            logger.info("DB pool monitor started.")
+        else:
+            logger.info("DB pool monitor disabled via DB_MONITORING_ENABLED.")
 
     # Start the optimization-job recovery sweeper (skip in testing mode). It
     # runs one sweep immediately, recovering jobs abandoned by the previous
@@ -555,6 +574,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("Skipping execution monitor shutdown for %s role.", service_role)
 
+    # Stop the DB pool monitor
+    if db_pool_monitor:
+        try:
+            await db_pool_monitor.stop()
+            logger.info("DB pool monitor stopped.")
+        except Exception as e:
+            logger.error(f"Error stopping DB pool monitor: {e}", exc_info=True)
+
     # Cancel the NATS consumer task (skip in testing mode)
     if not is_testing and getattr(app.state, "nats_connected", False):
         if hasattr(app.state, "nats_consumer_task"):
@@ -571,8 +598,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Skipping NATS shutdown for %s role.", service_role)
 
     logger.info("Shutting down application...")
-    logger.info("Shutting down API usage executor...")
-    _api_usage_executor.shutdown(wait=False, cancel_futures=True)
+    logger.info("Shutting down API usage recorder...")
+    try:
+        from preloop.services.otel_export import shutdown_otel
+
+        shutdown_otel()
+    except Exception:
+        logger.debug("OTLP shutdown failed", exc_info=True)
+
+    shutdown_api_usage_recorder()
     # Restore the original jsonable_encoder
     import fastapi.encoders
 
@@ -617,7 +651,35 @@ def create_app() -> FastAPI:
             request.url.path,
             exc.message,
         )
-        return JSONResponse(status_code=exc.status_code, content=exc.to_payload())
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=exc.to_payload(),
+            headers=exc.response_headers(),
+        )
+
+    @app.exception_handler(SQLAlchemyPoolTimeout)
+    async def pool_timeout_exception_handler(
+        request: Request, exc: SQLAlchemyPoolTimeout
+    ) -> JSONResponse:
+        """Turn a connection-pool timeout into a fast, honest 503.
+
+        A saturated pool is a capacity problem, not a server bug. Reporting it
+        as 503 with ``Retry-After`` lets clients and load balancers back off,
+        and keeps it out of the 500 rate that pages someone.
+        """
+        logger.warning(
+            "Database pool exhausted serving %s %s: %s",
+            request.method,
+            request.url.path,
+            exc,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": ("Database connections are saturated. Please retry shortly.")
+            },
+            headers={"Retry-After": "1"},
+        )
 
     @app.exception_handler(Exception)
     async def global_exception_handler(
@@ -926,6 +988,12 @@ def create_app() -> FastAPI:
             dependencies=[Depends(get_current_active_user)],
         )
         app.include_router(
+            pull_requests.router,
+            prefix="/api/v1",
+            tags=["Projects"],
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
             issues.router,
             prefix="/api/v1",
             tags=["Issues"],
@@ -969,18 +1037,17 @@ def create_app() -> FastAPI:
             dependencies=[Depends(get_current_active_user)],
         )
         app.include_router(
+            usage_import.router,
+            prefix="/api/v1",
+            tags=["Usage Import"],
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
             session_optimization.router,
             prefix="/api/v1",
             tags=["Session Optimization"],
             dependencies=[Depends(get_current_active_user)],
         )
-        # Public AI models endpoints (no auth required)
-        app.include_router(
-            ai_models.public_router,
-            prefix="/api/v1",
-            tags=["AI Models"],
-        )
-
     # AI Model Gateway routers
     if is_gateway_role:
         app.include_router(
@@ -1011,6 +1078,11 @@ def create_app() -> FastAPI:
             tags=["Flows"],
             # dependencies=[Depends(get_current_active_user)],
         )
+        app.include_router(
+            runners.router,
+            prefix="/api/v1",
+            tags=["Runners"],
+        )
 
         # Policies router for policy-as-code YAML import/export
         app.include_router(
@@ -1018,6 +1090,14 @@ def create_app() -> FastAPI:
             prefix="/api/v1",
             tags=["Policies"],
             dependencies=[Depends(get_current_active_user)],
+        )
+
+        # Security-screen scoring endpoint (QM external proxy contract).
+        # Auth is handled in-endpoint: callers send an API key in x-api-key.
+        app.include_router(
+            security_screen.router,
+            prefix="/api/v1",
+            tags=["Security Screen"],
         )
 
         # WebSocket router
@@ -1044,9 +1124,27 @@ def create_app() -> FastAPI:
         )
 
         # --- Public Approval Page ---
-        @app.get("/approval/{request_id}", include_in_schema=False)
-        async def serve_approval_page(request_id: str) -> FileResponse:
-            """Serve the public approval page."""
+        @app.get("/approval/{request_id}", include_in_schema=False, response_model=None)
+        async def serve_approval_page(
+            request: Request, request_id: str
+        ) -> FileResponse | RedirectResponse:
+            """Serve the tokenized public page, or send bare links to console.
+
+            Email/Slack links include ``?token=`` and must keep working
+            without a login. MCP and in-session notices are token-free and
+            used to hit this path; without a token the HTML page always
+            404s on ``/data``. Redirect those to the authed SPA route.
+            """
+            token = (request.query_params.get("token") or "").strip()
+            if not token:
+                try:
+                    approval_id = str(UUID(request_id))
+                except ValueError:
+                    raise HTTPException(status_code=404, detail="Not found") from None
+                return RedirectResponse(
+                    url=f"/console/approval/{quote(approval_id, safe='')}",
+                    status_code=302,
+                )
             approval_html_path = base_dir / "preloop" / "templates" / "approval.html"
             return FileResponse(str(approval_html_path), media_type="text/html")
 

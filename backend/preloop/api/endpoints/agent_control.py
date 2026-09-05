@@ -41,6 +41,7 @@ from preloop.schemas.agent_control import (
     AgentControlEnvelopeType,
     AgentControlInboundEnvelope,
     AgentControlSendMessageRequest,
+    AgentControlSessionActionRequest,
     AgentControlSessionMode,
     AgentControlVoiceTranscriptRequest,
 )
@@ -53,6 +54,12 @@ from preloop.sync.services.event_bus import get_nats_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Close code sent to an evicted WebSocket so clients can distinguish eviction
+# from other closures and skip immediate reconnection.  The Python client
+# already defines the same value as ``EVICTION_CLOSE_CODE`` in
+# ``integrations/agent_control/core.py``; keep them in sync.
+EVICTION_CLOSE_CODE: int = 4000
 
 # Operational failures on the delivery path (NATS / DB / WS). Catch these
 # instead of bare ``Exception`` so programming bugs (AttributeError, TypeError,
@@ -85,7 +92,7 @@ _SERIALIZATION_ERRORS = (
 )
 
 HEARTBEAT_TOUCH_INTERVAL = timedelta(seconds=15)
-SUPPORTED_CONTROL_AGENT_KINDS = {"hermes", "openclaw"}
+SUPPORTED_CONTROL_AGENT_KINDS = {"hermes", "openclaw", "claude_code"}
 
 
 @dataclass(frozen=True)
@@ -170,19 +177,48 @@ class AgentControlConnectionManager:
         self._connections: dict[str, WebSocket] = {}
         self._agent_connections: dict[str, str] = {}
         self._connection_agents: dict[str, str] = {}
+        self._presence: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
     async def connect(self, *, managed_agent_id: str, websocket: WebSocket) -> str:
-        """Register one accepted managed-agent WebSocket."""
+        """Register one accepted managed-agent WebSocket.
+
+        If another connection is already registered for the same agent,
+        the previous connection is evicted: it receives a close frame
+        with code EVICTION_CLOSE_CODE so the client can distinguish eviction from other
+        closures and avoid an immediate reconnect storm.
+        """
         connection_id = str(uuid.uuid4())
+        evicted_ws: WebSocket | None = None
+        evicted_id: str | None = None
         async with self._lock:
             previous_connection_id = self._agent_connections.get(managed_agent_id)
             if previous_connection_id:
-                self._connections.pop(previous_connection_id, None)
+                evicted_ws = self._connections.pop(previous_connection_id, None)
+                evicted_id = previous_connection_id
                 self._connection_agents.pop(previous_connection_id, None)
             self._connections[connection_id] = websocket
             self._agent_connections[managed_agent_id] = connection_id
             self._connection_agents[connection_id] = managed_agent_id
+        if evicted_ws is not None:
+            logger.warning(
+                "Evicting agent-control connection for managed_agent_id=%s: "
+                "connection %s superseded by %s",
+                managed_agent_id,
+                evicted_id,
+                connection_id,
+            )
+            try:
+                await evicted_ws.close(
+                    code=EVICTION_CLOSE_CODE,
+                    reason="Superseded by a newer connection for this agent",
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to send close frame to evicted WebSocket for agent %s",
+                    managed_agent_id,
+                    exc_info=True,
+                )
         return connection_id
 
     async def disconnect(self, connection_id: str) -> bool:
@@ -194,8 +230,42 @@ class AgentControlConnectionManager:
                 return False
             if self._agent_connections.get(managed_agent_id) == connection_id:
                 self._agent_connections.pop(managed_agent_id, None)
+                self._presence.pop(managed_agent_id, None)
                 return True
             return False
+
+    def snapshot(self, managed_agent_id: str) -> dict[str, Any]:
+        """Return WS liveness and last advertised capabilities for one agent."""
+        online = managed_agent_id in self._agent_connections
+        presence = self._presence.get(managed_agent_id, {})
+        capabilities = presence.get("capabilities")
+        if not isinstance(capabilities, dict):
+            capabilities = {}
+        session_mode = presence.get("session_mode")
+        if not online:
+            session_mode = "offline"
+        elif session_mode not in {"local", "remote", "queued"}:
+            session_mode = "remote"
+        queued_count = presence.get("queued_count") or 0
+        try:
+            queued_count = int(queued_count)
+        except (TypeError, ValueError):
+            queued_count = 0
+        if queued_count > 0:
+            session_mode = "queued"
+        return {
+            "online": online,
+            "supports_interrupt": bool(capabilities.get("interrupt")),
+            "session_mode": session_mode,
+            "capabilities": capabilities,
+            "queued_count": queued_count,
+        }
+
+    def record_presence(
+        self, managed_agent_id: str, payload: dict[str, Any] | None
+    ) -> None:
+        """Remember the last capabilities/session_mode envelope from the plugin."""
+        self._presence[managed_agent_id] = payload or {}
 
     async def send_to_agent(
         self, *, managed_agent_id: str, envelope: AgentControlEnvelope
@@ -233,6 +303,11 @@ class AgentControlConnectionManager:
 
 
 agent_control_manager = AgentControlConnectionManager()
+
+
+def agent_control_snapshot(managed_agent_id: str) -> dict[str, Any]:
+    """Process-local Agent Control WS snapshot for account enrichment."""
+    return agent_control_manager.snapshot(managed_agent_id)
 
 
 def _extract_bearer_token(websocket: WebSocket) -> Optional[str]:
@@ -318,6 +393,7 @@ def _touch_presence(
     context: RuntimeBearerAuthContext,
     *,
     observed_at: datetime,
+    session_mode: Optional[str] = None,
     commit: bool = True,
 ) -> None:
     crud_runtime_session.touch_activity(
@@ -335,6 +411,7 @@ def _touch_presence(
         session_source_id=context.managed_agent.session_source_id,
         runtime_session_id=context.runtime_session.id,
         observed_at=observed_at,
+        control_session_mode=session_mode,
         commit=False,
     )
     if commit:
@@ -830,8 +907,20 @@ async def managed_agent_control_websocket(
                 break
 
             try:
-                _touch_presence(db, context, observed_at=datetime.now(UTC))
+                inbound_mode = inbound.payload.get("session_mode")
+                if inbound_mode not in {"local", "remote", "queued"}:
+                    inbound_mode = None
+                _touch_presence(
+                    db,
+                    context,
+                    observed_at=datetime.now(UTC),
+                    session_mode=inbound_mode,
+                )
                 _mark_control_verified_from_capabilities(db, context, inbound)
+                if inbound.type in {"presence", "heartbeat", "status"}:
+                    agent_control_manager.record_presence(
+                        connection.managed_agent_id, inbound.payload
+                    )
             except _AGENT_GONE_ERRORS:
                 logger.info(
                     "Managed agent %s deleted during control websocket; closing",
@@ -899,11 +988,11 @@ def _resolve_session_mode(
     account_id: str,
     agent: Any,
     request: AgentControlSendMessageRequest,
-) -> AgentControlSessionMode:
+) -> tuple[AgentControlSessionMode, Optional[models.RuntimeSession]]:
     if request.start_new_session:
-        return "new"
+        return "new", None
     if request.target_session_id is None:
-        return "current"
+        return "current", None
 
     target_session = crud_runtime_session.get_account_session(
         db,
@@ -928,7 +1017,24 @@ def _resolve_session_mode(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Target runtime session does not belong to this managed agent",
         )
-    return "existing"
+    return "existing", target_session
+
+
+def _existing_session_identity(
+    target_session: Optional[models.RuntimeSession],
+) -> dict[str, Any]:
+    """Native resume fields for a targeted existing session.
+
+    Clients address sessions by Preloop UUID. Sidecars such as Claude Code
+    resume by ``session_source_id``. Attach the stored identity so plugins
+    do not have to map UUIDs themselves.
+    """
+    if target_session is None:
+        return {}
+    return {
+        "session_source_id": target_session.session_source_id,
+        "session_reference": target_session.session_reference,
+    }
 
 
 def _command_history_session(
@@ -998,26 +1104,30 @@ async def _route_managed_agent_prompt(
             detail="Managed agent does not have an Agent Control plugin configured",
         )
 
-    session_mode = _resolve_session_mode(
+    session_mode, target_session = _resolve_session_mode(
         db,
         account_id=str(current_user.account_id),
         agent=agent,
         request=request,
     )
+    payload: dict[str, Any] = {
+        "text": request.message,
+        "metadata": request.metadata,
+        "input_mode": request.input_mode,
+        "session_mode": session_mode,
+        "target_session_id": str(request.target_session_id)
+        if request.target_session_id
+        else None,
+        "start_new_session": request.start_new_session,
+        "voice": request.voice,
+        "spawn_worktree": request.spawn_worktree,
+        "interrupt": request.interrupt,
+    }
+    payload.update(_existing_session_identity(target_session))
     envelope = _operator_command_envelope(
         agent,
         name="send_message",
-        payload={
-            "text": request.message,
-            "metadata": request.metadata,
-            "input_mode": request.input_mode,
-            "session_mode": session_mode,
-            "target_session_id": str(request.target_session_id)
-            if request.target_session_id
-            else None,
-            "start_new_session": request.start_new_session,
-            "voice": request.voice,
-        },
+        payload=payload,
     )
     # Persist the command durably BEFORE any delivery attempt so agents that
     # reconnect after downtime can recover missed instructions.
@@ -1116,6 +1226,9 @@ async def _route_managed_agent_prompt(
             else None,
         )
     )
+    identity_session = target_session
+    if identity_session is None and request.start_new_session:
+        identity_session = history_session
     return AgentControlCommandResponse(
         command_id=envelope.message_id,
         managed_agent_id=agent.id,
@@ -1124,6 +1237,12 @@ async def _route_managed_agent_prompt(
             history_session.id
             if request.start_new_session and history_session is not None
             else request.target_session_id
+        ),
+        session_source_id=(
+            identity_session.session_source_id if identity_session is not None else None
+        ),
+        session_reference=(
+            identity_session.session_reference if identity_session is not None else None
         ),
         session_mode=session_mode,
         subject=subject,
@@ -1202,6 +1321,189 @@ async def send_managed_agent_voice_transcript(
     return await _route_managed_agent_prompt(
         agent_id=agent_id,
         request=prompt_request,
+        current_user=current_user,
+        db=db,
+    )
+
+
+async def _route_session_action(
+    *,
+    agent_id: str,
+    name: str,
+    request: AgentControlSessionActionRequest,
+    current_user: models.User,
+    db: Session,
+) -> AgentControlCommandResponse:
+    """Persist and deliver request_takeover or release."""
+    prompt = AgentControlSendMessageRequest(
+        message=name,
+        metadata={**request.metadata, "command": name},
+        target_session_id=request.target_session_id,
+        start_new_session=request.start_new_session,
+        spawn_worktree=request.spawn_worktree,
+    )
+    agent = crud_managed_agent.get_for_account(
+        db,
+        account_id=str(current_user.account_id),
+        agent_id=agent_id,
+    )
+    if agent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Managed agent not found",
+        )
+    if agent.lifecycle_state != "active":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Managed agent is not active",
+        )
+    if not _agent_has_control_config(
+        db, account_id=str(current_user.account_id), agent=agent
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Managed agent does not have an Agent Control plugin configured",
+        )
+    session_mode, target_session = _resolve_session_mode(
+        db,
+        account_id=str(current_user.account_id),
+        agent=agent,
+        request=prompt,
+    )
+    payload: dict[str, Any] = {
+        "metadata": prompt.metadata,
+        "session_mode": session_mode,
+        "target_session_id": (
+            str(request.target_session_id) if request.target_session_id else None
+        ),
+        "spawn_worktree": request.spawn_worktree,
+    }
+    payload.update(_existing_session_identity(target_session))
+    envelope = _operator_command_envelope(agent, name=name, payload=payload)
+    now = datetime.now(UTC)
+    command_ttl_seconds = int(settings.agent_control_command_ttl_seconds)
+    expires_at = now + timedelta(seconds=command_ttl_seconds)
+    crud_agent_control_command.create_command(
+        db,
+        account_id=agent.account_id,
+        managed_agent_id=agent.id,
+        runtime_session_id=agent.runtime_session_id,
+        command_id=envelope.message_id,
+        envelope=envelope.model_dump(mode="json"),
+        source=_command_source(prompt.metadata),
+        created_by_user_id=current_user.id,
+        expires_at=expires_at,
+    )
+    command_status = "pending"
+    local_delivery = await agent_control_manager.send_to_agent(
+        managed_agent_id=str(agent.id),
+        envelope=envelope,
+    )
+    if local_delivery:
+        _safe_mark_command_delivered(
+            db,
+            account_id=str(agent.account_id),
+            command_id=envelope.message_id,
+            managed_agent_id=str(agent.id),
+        )
+        command_status = "delivered"
+    subject = None
+    if not local_delivery:
+        subject = await _publish_command(envelope)
+        if subject is None:
+            try:
+                with db.begin_nested():
+                    crud_agent_control_command.mark_failed(
+                        db,
+                        account_id=str(agent.account_id),
+                        managed_agent_id=str(agent.id),
+                        command_id=envelope.message_id,
+                        error="Managed agent command channel is unavailable",
+                        commit=False,
+                    )
+                db.commit()
+            except _DB_DELIVERY_ERRORS:
+                logger.exception(
+                    "Failed to mark Agent Control command %s failed",
+                    envelope.message_id,
+                )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Managed agent command channel is unavailable",
+            )
+    emit_account_event(
+        build_account_event(
+            account_id=str(current_user.account_id),
+            topic=ACCOUNT_TOPIC_AGENT_CONTROL,
+            event_type=f"managed_agent_{name}",
+            payload=envelope.model_dump(mode="json"),
+            managed_agent_id=str(agent.id),
+            runtime_session_id=str(agent.runtime_session_id)
+            if agent.runtime_session_id
+            else None,
+        )
+    )
+    return AgentControlCommandResponse(
+        command_id=envelope.message_id,
+        managed_agent_id=agent.id,
+        runtime_session_id=envelope.runtime_session_id,
+        target_session_id=request.target_session_id,
+        session_source_id=(
+            target_session.session_source_id if target_session is not None else None
+        ),
+        session_reference=(
+            target_session.session_reference if target_session is not None else None
+        ),
+        session_mode=session_mode,
+        subject=subject,
+        local_delivery=local_delivery,
+        published=subject is not None,
+        command_status=command_status,
+        expires_at=expires_at,
+        command_ttl_seconds=command_ttl_seconds,
+        command_envelope=envelope,
+    )
+
+
+@router.post(
+    "/agents/{agent_id}/control/takeover",
+    response_model=AgentControlCommandResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@require_permission("control_managed_agent")
+async def request_managed_agent_takeover(
+    agent_id: str,
+    request: AgentControlSessionActionRequest,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AgentControlCommandResponse:
+    """Ask the sidecar to switch a local TUI session into remote SDK mode."""
+    return await _route_session_action(
+        agent_id=agent_id,
+        name="request_takeover",
+        request=request,
+        current_user=current_user,
+        db=db,
+    )
+
+
+@router.post(
+    "/agents/{agent_id}/control/release",
+    response_model=AgentControlCommandResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@require_permission("control_managed_agent")
+async def release_managed_agent_session(
+    agent_id: str,
+    request: AgentControlSessionActionRequest,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AgentControlCommandResponse:
+    """Release a remote SDK session back to the local `preloop claude` TUI."""
+    return await _route_session_action(
+        agent_id=agent_id,
+        name="release",
+        request=request,
         current_user=current_user,
         db=db,
     )

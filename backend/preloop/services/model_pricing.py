@@ -30,6 +30,78 @@ _DATE_SUFFIX_PATTERNS = (
     re.compile(r"@\d+$"),
 )
 
+# Provider labels that describe HOW Preloop reaches an endpoint rather than a
+# namespace in any price map. Left on a candidate they guarantee a miss, so
+# they are stripped before catalog lookup (issue: OpenRouter usage priced $0).
+_SYNTHETIC_PROVIDER_PREFIXES = ("openai-compatible/", "custom/", "preloop/")
+
+# Hosts that front a model marketplace whose catalog keys litellm namespaces
+# under a provider prefix (e.g. ``openrouter/deepseek/deepseek-chat``).
+_ENDPOINT_HOST_PREFIXES = (
+    ("openrouter.ai", "openrouter"),
+    ("dashscope.aliyuncs.com", "dashscope"),
+    ("dashscope-intl.aliyuncs.com", "dashscope"),
+    ("dashscope-us.aliyuncs.com", "dashscope"),
+    ("maas.aliyuncs.com", "dashscope"),
+)
+
+# OpenRouter (and some OpenAI-compatible configs) use the vendor's org slug
+# as the first path segment. LiteLLM's price map uses the provider namespace.
+# ``moonshotai/kimi-k3`` is the same SKU as ``moonshot/kimi-k3``; without this
+# rewrite the vendored Moonshot prices never match and the row stays unpriced.
+_VENDOR_NAMESPACE_ALIASES = {
+    "moonshotai": "moonshot",
+}
+
+
+def _strip_synthetic_prefix(candidate: str) -> str:
+    """Remove Preloop's routing-only provider prefixes from a model name.
+
+    ``openai-compatible``/``custom`` are transport labels, not price-map
+    namespaces, so they must not participate in catalog matching.
+
+    Args:
+        candidate: A raw model alias or identifier.
+
+    Returns:
+        The candidate without a leading synthetic provider prefix.
+    """
+    lowered = candidate.lower()
+    for prefix in _SYNTHETIC_PROVIDER_PREFIXES:
+        if lowered.startswith(prefix):
+            return candidate[len(prefix) :].strip()
+    return candidate
+
+
+def _pricing_provider_prefix(provider: str) -> str:
+    """Return the price-catalog namespace for a configured provider.
+
+    Gateway routing maps ``qwen`` to ``openai`` (DashScope compatible-mode).
+    Vendored prices live under ``dashscope/<id>``, so pricing lookup must not
+    reuse the routing prefix.
+    """
+    if provider == "qwen":
+        return "dashscope"
+    return _PROVIDER_PREFIX.get(provider, provider)
+
+
+def _endpoint_prefix(api_endpoint: Optional[str]) -> Optional[str]:
+    """Return the price-map provider prefix implied by a model's endpoint.
+
+    Args:
+        api_endpoint: The configured base URL for the model, if any.
+
+    Returns:
+        The provider prefix (e.g. ``openrouter``) or None when unknown.
+    """
+    if not isinstance(api_endpoint, str) or not api_endpoint.strip():
+        return None
+    lowered = api_endpoint.lower()
+    for host, prefix in _ENDPOINT_HOST_PREFIXES:
+        if host in lowered:
+            return prefix
+    return None
+
 
 def normalize_gateway_model_alias(alias: Optional[str]) -> Optional[str]:
     """Normalize a gateway/client model alias for pricing and matching.
@@ -47,15 +119,45 @@ def normalize_gateway_model_alias(alias: Optional[str]) -> Optional[str]:
     return trimmed or None
 
 
-def _expand_candidate(candidate: str, provider: str) -> Iterable[str]:
+def _expand_candidate(
+    candidate: str, provider: str, endpoint_prefix: Optional[str] = None
+) -> Iterable[str]:
     """Yield normalized fallback forms of one candidate model name.
 
-    Ordered from most to least specific: the raw name first, then with the
-    Bedrock region prefix stripped, then with trailing date/version stamps
-    removed (litellm aliases the undated name for most models).
+    Ordered from most to least specific. Preloop's routing-only provider
+    prefixes are stripped first, then the marketplace form implied by the
+    model's endpoint is offered (``openrouter/vendor/model``, which is how
+    litellm prices marketplace-routed traffic), then the bare name, then the
+    Bedrock region-stripped form, then the undated form.
+
+    Date suffixes are deliberately NOT stripped from ``vendor/model`` names:
+    on model marketplaces a dated snapshot is a separately priced product
+    (``deepseek-v4-flash-0731`` is $0.09/$0.18 per Mtok while the undated
+    ``deepseek-v4-flash`` is $0.14/$0.28), so aliasing them would invent a
+    price that is wrong by ~55%.
+
+    Args:
+        candidate: Raw model alias or identifier.
+        provider: Configured provider name for the model.
+        endpoint_prefix: Price-map prefix implied by the model's endpoint.
+
+    Yields:
+        Candidate keys to try against the price catalog, most specific first.
     """
     normalized = normalize_gateway_model_alias(candidate) or candidate
+    normalized = _strip_synthetic_prefix(normalized) or normalized
+
+    if endpoint_prefix and not normalized.lower().startswith(f"{endpoint_prefix}/"):
+        yield f"{endpoint_prefix}/{normalized}"
     yield normalized
+
+    vendor, separator, rest = normalized.partition("/")
+    if separator and rest:
+        canonical_vendor = _VENDOR_NAMESPACE_ALIASES.get(vendor.lower())
+        if canonical_vendor:
+            aliased = f"{canonical_vendor}/{rest}"
+            if aliased.lower() != normalized.lower():
+                yield aliased
 
     stripped = normalized
     for region_prefix in _BEDROCK_REGION_PREFIXES:
@@ -66,11 +168,18 @@ def _expand_candidate(candidate: str, provider: str) -> Iterable[str]:
                 yield f"bedrock/{stripped}"
             break
 
+    # Marketplace ids carry the vendor in the name (``deepseek/...``). For
+    # those, a date stamp identifies a distinct SKU with its own price, so
+    # falling back to the undated entry would report a confidently wrong
+    # number. Only undate flat, single-segment vendor model names.
+    if "/" in stripped:
+        return
+
     for pattern in _DATE_SUFFIX_PATTERNS:
         undated = pattern.sub("", stripped)
         if undated != stripped and undated:
             yield undated
-            prefix = _PROVIDER_PREFIX.get(provider, provider)
+            prefix = _pricing_provider_prefix(provider)
             if "/" not in undated:
                 yield f"{prefix}/{undated}"
             break
@@ -81,14 +190,107 @@ class CostEstimate:
     """A cost estimate with its pricing provenance.
 
     ``source`` values: ``override`` (account price override), ``model_config``
-    (pricing stored on the AIModel), ``catalog`` (Preloop's vendored price
-    snapshot, which may fall back to litellm's bundled map for models absent
-    from the snapshot), ``unpriced`` (no price could be resolved; ``cost`` is
-    None).
+    (pricing stored on the AIModel), ``provider`` (the upstream reported the
+    request's actual cost in its usage payload; authoritative over any
+    catalog estimate), ``catalog`` (Preloop's vendored price snapshot, which
+    may fall back to litellm's bundled map for models absent from the
+    snapshot), ``unpriced`` (no price could be resolved; ``cost`` is None).
     """
 
     cost: Optional[float]
     source: str
+
+
+def provider_reported_cost(
+    usage_details: Optional[Dict[str, Any]],
+) -> Optional[float]:
+    """Extract the upstream-reported request cost from a usage payload.
+
+    OpenRouter (with usage accounting enabled) returns the request's actual
+    charge inside the response ``usage`` object:
+
+    - ``usage.cost``: credits charged by OpenRouter for the request. On BYOK
+      requests this is only OpenRouter's fee.
+    - ``usage.cost_details.upstream_inference_cost``: what the upstream vendor
+      charged. On BYOK requests ``cost`` excludes it, so the customer pays
+      both and their sum is the authoritative total. On credits-based
+      requests it is informational and duplicates ``cost`` (live-verified,
+      issue #224), so summing would double-count.
+
+    Shape discrimination: when the payload carries an explicit ``is_byok``
+    flag (top-level or inside ``cost_details``) it is authoritative — sum
+    for BYOK, ``cost`` alone otherwise. Without the flag, fall back to the
+    magnitude heuristic: sum only when ``cost < upstream_inference_cost``
+    (BYOK: a small fee next to the vendor charge); otherwise ``cost`` alone
+    is the total. An explicit ``usage.cost`` of ``0`` (key present) is a
+    real provider $0 charge. Negative values (the Auto Router catalog
+    sentinel ``-1``) still mean "not accounted" and are treated as absent.
+    A zero ``upstream_inference_cost`` alone is also treated as absent.
+
+    Args:
+        usage_details: Raw provider usage dict from the response, if any.
+
+    Returns:
+        The provider-reported USD cost, or None when the payload carries no
+        usable cost information.
+    """
+    if not isinstance(usage_details, dict):
+        return None
+
+    def _positive_number(value: Any) -> Optional[float]:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if value > 0 else None
+
+    def _accounted_cost(value: Any) -> Optional[float]:
+        # Explicit 0 is a real $0 charge. Negative is the catalog
+        # sentinel (Auto Router list price is -1), not a charge.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if value < 0:
+            return None
+        return float(value)
+
+    cost_details = usage_details.get("cost_details")
+    upstream_cost = (
+        _positive_number(cost_details.get("upstream_inference_cost"))
+        if isinstance(cost_details, dict)
+        else None
+    )
+    gateway_cost = (
+        _accounted_cost(usage_details["cost"]) if "cost" in usage_details else None
+    )
+
+    if upstream_cost is None and gateway_cost is None:
+        return None
+    if gateway_cost is not None and upstream_cost is not None:
+        # BYOK shape: cost is OpenRouter's fee, strictly below the vendor
+        # charge it excludes -> the customer pays the sum. Credits shape:
+        # cost already includes the upstream charge (cost_details merely
+        # echoes it) -> cost alone is the total (#224). An explicit
+        # is_byok flag from the provider is authoritative over the
+        # magnitude heuristic (covers the rare BYOK request whose fee
+        # meets or exceeds the vendor charge).
+        is_byok = usage_details.get("is_byok")
+        if not isinstance(is_byok, bool):
+            is_byok = (
+                cost_details.get("is_byok") if isinstance(cost_details, dict) else None
+            )
+        if isinstance(is_byok, bool):
+            total = gateway_cost + upstream_cost if is_byok else gateway_cost
+        else:
+            total = (
+                gateway_cost + upstream_cost
+                if gateway_cost < upstream_cost
+                else gateway_cost
+            )
+    else:
+        total = gateway_cost if gateway_cost is not None else upstream_cost
+    # Keep more precision than the catalog's round(6): provider-reported
+    # micro-costs (e.g. 1.946e-05) would otherwise collapse to one digit,
+    # and live OpenRouter charges carry 12 decimal places (#224:
+    # 0.000001979964 must round-trip, not flatten to 0.00000198).
+    return round(total, 12)
 
 
 def estimate_ai_model_usage_cost(
@@ -120,7 +322,17 @@ def estimate_ai_model_usage_cost_detailed(
     usage_details: Optional[Dict[str, Any]] = None,
     pricing_override: Optional[Dict[str, Any]] = None,
 ) -> CostEstimate:
-    """Estimate usage cost and report which pricing source produced it."""
+    """Estimate usage cost and report which pricing source produced it.
+
+    Resolution order: an operator's explicit pricing (account override or
+    pricing configured on the model) wins first — it is a deliberate human
+    decision (e.g. amortizing a subscription). Next the provider-reported
+    cost from the response usage payload wins over any catalog estimate: it
+    is the upstream's own ledger figure, exact where the catalog can only
+    approximate (and the Auto Router has no catalog price at all). The
+    catalog is the fallback, and ``unpriced`` means nothing could price the
+    request.
+    """
     configured_pricing = pricing_override or _get_configured_pricing(ai_model)
     if configured_pricing:
         configured_cost = _estimate_cost_from_pricing(
@@ -135,6 +347,10 @@ def estimate_ai_model_usage_cost_detailed(
                 cost=configured_cost,
                 source="override" if pricing_override else "model_config",
             )
+
+    reported_cost = provider_reported_cost(usage_details)
+    if reported_cost is not None:
+        return CostEstimate(cost=reported_cost, source="provider")
 
     if prompt_tokens <= 0 and completion_tokens <= 0:
         return CostEstimate(cost=None, source="unpriced")
@@ -319,6 +535,7 @@ def _iter_litellm_model_candidates(ai_model: AIModel) -> Iterable[str]:
     gateway_config = (
         meta_data.get("gateway") if isinstance(meta_data.get("gateway"), dict) else {}
     )
+    endpoint_prefix = _endpoint_prefix(getattr(ai_model, "api_endpoint", None))
 
     candidates = []
     gateway_alias = gateway_config.get("model_alias")
@@ -327,15 +544,16 @@ def _iter_litellm_model_candidates(ai_model: AIModel) -> Iterable[str]:
 
     if model_identifier:
         candidates.append(model_identifier)
-        prefix = _PROVIDER_PREFIX.get(provider, provider)
-        if "/" not in model_identifier and not model_identifier.lower().startswith(
-            "preloop/"
-        ):
-            candidates.append(f"{prefix}/{model_identifier}")
+        # Routing maps qwen -> openai (DashScope compatible-mode). Pricing
+        # keys live under dashscope/<id> in the vendored catalog.
+        prefix = _pricing_provider_prefix(provider)
+        bare_identifier = _strip_synthetic_prefix(model_identifier)
+        if "/" not in bare_identifier and prefix not in _SYNTHETIC_PROVIDER_PREFIXES:
+            candidates.append(f"{prefix}/{bare_identifier}")
 
     seen = set()
     for candidate in candidates:
-        for expanded in _expand_candidate(candidate.strip(), provider):
+        for expanded in _expand_candidate(candidate.strip(), provider, endpoint_prefix):
             normalized = normalize_gateway_model_alias(expanded) or expanded.strip()
             if not normalized or normalized in seen:
                 continue

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from preloop.agents.base import AgentExecutionResult, AgentStatus
-from preloop.agents.container import ContainerAgentExecutor
+from preloop.agents.container import ContainerAgentExecutor, _validated_git_ref
 
 pytestmark = pytest.mark.asyncio
 
@@ -740,6 +740,69 @@ class TestPrepareInitCommands:
         assert "npm run build" in result
 
 
+class TestWorkspaceSeedCommands:
+    """Tests for trigger-payload workspace_files materialization."""
+
+    @staticmethod
+    def _context(workspace_files):
+        return {
+            "flow_id": "123",
+            "execution_id": "456",
+            "trigger_event_data": {
+                "source": "webhook",
+                "payload": {"workspace_files": workspace_files},
+            },
+        }
+
+    def test_no_workspace_files_returns_empty(self, container_executor):
+        """No workspace_files in the payload adds no commands."""
+        context = {
+            "flow_id": "123",
+            "execution_id": "456",
+            "trigger_event_data": {"payload": {"x": 1}},
+        }
+        assert container_executor._prepare_init_commands(context) == ""
+
+    def test_seed_commands_write_files(self, container_executor):
+        """workspace_files become base64-decode writes under /workspace."""
+        import base64
+
+        content = base64.b64encode(b'{"fixture": true}').decode("ascii")
+        context = self._context(
+            [{"path": "fixtures/input.json", "content_base64": content}]
+        )
+        result = container_executor._prepare_init_commands(context)
+        assert "w0=/workspace" in result
+        assert "__pl_seed fixtures/input.json" in result
+        assert "base64 -d" in result
+        assert content in result
+        # Runtime symlink-containment guard travels with the block.
+        assert "cd -P" in result
+
+    def test_seed_commands_run_after_custom_setup_ordering(self, container_executor):
+        """Seeds are written before custom commands so they can be consumed."""
+        import base64
+
+        content = base64.b64encode(b"data").decode("ascii")
+        context = self._context([{"path": "seed.txt", "content_base64": content}])
+        context["custom_commands"] = {
+            "enabled": True,
+            "commands": ["cat seed.txt"],
+        }
+        result = container_executor._prepare_init_commands(context)
+        assert result.index("__pl_seed seed.txt") < result.index("cat seed.txt")
+
+    def test_traversal_path_raises_before_any_command(self, container_executor):
+        """Defense-in-depth: unvalidated traversal paths must raise, not run."""
+        from preloop.utils.workspace_seed import WorkspaceSeedError
+
+        context = self._context(
+            [{"path": "../../etc/cron.d/evil", "content_base64": "eA=="}]
+        )
+        with pytest.raises(WorkspaceSeedError):
+            container_executor._prepare_init_commands(context)
+
+
 class TestExtractBranchFromTrigger:
     """Tests for branch extraction helpers used during git clone."""
 
@@ -870,6 +933,10 @@ class TestExtractBranchFromTrigger:
 
         assert "refs/merge-requests/2/head:preloop-mr-head" in command
         assert "FATAL ERROR: Could not checkout commit" in command
+        # On failure we must re-run git WITH stderr so the log shows why.
+        assert "--- diagnostics ---" in command
+        assert "git fetch origin" in command
+        assert "git for-each-ref" in command
 
 
 class TestGitShellQuoting:
@@ -1077,3 +1144,675 @@ class TestKubernetesPodWaitMessage:
 
         assert "ImagePullBackOff" in message
         assert "Back-off pulling image" in message
+
+
+class TestGitCloneCredentialsNotInUrl:
+    """Regression tests for issue #173: the tracker PAT leaked into flow logs
+    because it was embedded in the clone URL, which made it part of the cloned
+    repository's ``origin`` remote and therefore visible in ``git remote -v``.
+    """
+
+    PAT = "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+    def _context(self, repo_url="https://github.com/acme/private.git", **overrides):
+        context = {
+            "flow_id": "flow-1",
+            "execution_id": "exec-1",
+            "git_clone_config": {
+                "enabled": True,
+                "repositories": [
+                    {
+                        "repository_url": repo_url,
+                        "clone_path": "/workspace",
+                        "tracker_id": "tracker-1",
+                    }
+                ],
+            },
+            "git_credentials_map": {
+                "tracker-1": {"token": self.PAT, "tracker_type": "github"}
+            },
+        }
+        context.update(overrides)
+        return context
+
+    def test_clone_command_contains_no_token(self, container_executor):
+        command = container_executor._prepare_git_clone_command(self._context())
+        assert self.PAT not in command
+
+    def test_clone_url_is_credential_free(self, container_executor):
+        """The URL handed to ``git clone`` becomes the origin remote verbatim."""
+        command = container_executor._prepare_git_clone_command(self._context())
+        assert "https://github.com/acme/private.git" in command
+        assert "@github.com" not in command
+
+    def test_clone_url_is_stripped_when_config_already_has_a_token(
+        self, container_executor
+    ):
+        """A token pasted into the configured URL must not survive either."""
+        context = self._context(
+            repo_url=f"https://{self.PAT}@github.com/acme/private.git"
+        )
+        command = container_executor._prepare_git_clone_command(context)
+        assert self.PAT not in command
+        assert "@github.com" not in command
+
+    def test_credential_helper_is_configured(self, container_executor):
+        command = container_executor._prepare_git_clone_command(self._context())
+        assert "credential.helper" in command
+        assert "PRELOOP_GIT_CREDENTIALS" in command
+
+    def test_token_is_passed_through_the_environment(self, container_executor):
+        """The secret travels as an env var, never inside the shell script."""
+        context = self._context()
+        container_executor._prepare_git_clone_command(context)
+
+        env = container_executor._git_credential_env(context)
+        assert self.PAT in env["PRELOOP_GIT_CREDENTIALS"]
+        assert "x-access-token" in env["PRELOOP_GIT_CREDENTIALS"]
+
+    def test_gitlab_uses_its_credential_username(self, container_executor):
+        context = self._context(repo_url="https://gitlab.com/acme/repo.git")
+        context["git_credentials_map"]["tracker-1"]["tracker_type"] = "gitlab"
+        container_executor._prepare_git_clone_command(context)
+
+        env = container_executor._git_credential_env(context)
+        assert "gitlab-ci-token" in env["PRELOOP_GIT_CREDENTIALS"]
+
+    def test_no_credential_env_without_a_token(self, container_executor):
+        context = self._context()
+        context["git_credentials_map"] = {}
+        with patch.object(
+            container_executor, "_get_token_from_project", return_value=(None, None)
+        ):
+            command = container_executor._prepare_git_clone_command(context)
+
+        assert "git clone" in command
+        assert container_executor._git_credential_env(context) == {}
+
+    def test_multiple_repos_each_get_a_credential(self, container_executor):
+        context = self._context()
+        context["git_clone_config"]["repositories"].append(
+            {
+                "repository_url": "https://gitlab.com/acme/other.git",
+                "clone_path": "/workspace-2",
+                "tracker_id": "tracker-2",
+            }
+        )
+        context["git_credentials_map"]["tracker-2"] = {
+            "token": "glpat-aBcDeFgHiJkLmNoPqRs",
+            "tracker_type": "gitlab",
+        }
+
+        command = container_executor._prepare_git_clone_command(context)
+        assert self.PAT not in command
+        assert "glpat-aBcDeFgHiJkLmNoPqRs" not in command
+
+        credentials = context[container_executor.GIT_CREDENTIALS_CONTEXT_KEY]
+        assert len(credentials) == 2
+
+    def test_credentials_are_keyed_by_repository_index(self, container_executor):
+        """A skipped repository must not shift the remaining tokens' indices,
+        which would give repo #2 the API token belonging to repo #1.
+        """
+        context = self._context()
+        context["git_clone_config"]["repositories"].insert(
+            0, {"clone_path": "/workspace-0"}
+        )  # no repository_url: this one is skipped
+
+        container_executor._prepare_git_clone_command(context)
+
+        credentials = context[container_executor.GIT_CREDENTIALS_CONTEXT_KEY]
+        assert list(credentials) == [1]
+
+    def test_setup_runs_before_any_clone(self, container_executor):
+        """Otherwise the first clone would prompt for credentials and hang."""
+        command = container_executor._prepare_git_clone_command(self._context())
+        assert command.index("credential.helper") < command.index("git clone")
+
+
+class TestValidatedGitRef:
+    """Branch names interpolated into origin/<ref>..HEAD must match git rules."""
+
+    @pytest.mark.parametrize(
+        "name",
+        ["main", "preloop/fix", "preloop/issue-353", "feat/foo-bar_1.2"],
+    )
+    def test_accepts_normal_names(self, name):
+        assert _validated_git_ref(name) == name
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "foo..bar",
+            "-d",
+            "preloop/fix.",
+            "foo~1",
+            "foo^2",
+            "foo:bar",
+            ".hidden",
+            "feat/.dot",
+            "heads/foo.lock",
+            "/abs",
+            "trailing/",
+            "a//b",
+        ],
+    )
+    def test_rejects_git_forbidden_names(self, name):
+        assert _validated_git_ref(name) is None
+
+
+class TestGitApiTokensNotInScript:
+    """The PR/MR creation curls used to interpolate the raw token into the
+    generated shell script (issue #173).
+    """
+
+    PAT = "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+    def _context(self):
+        return {
+            "flow_id": "flow-1",
+            "execution_id": "exec-1",
+            "flow_name": "PR Reviewer",
+            "_git_target_branch": "preloop/fix",
+            "_git_source_branch": "main",
+            "git_clone_config": {
+                "enabled": True,
+                "create_pull_request": True,
+                "repositories": [
+                    {
+                        "repository_url": "https://github.com/acme/private.git",
+                        "clone_path": "/workspace",
+                        "tracker_id": "tracker-1",
+                    }
+                ],
+            },
+            "git_credentials_map": {
+                "tracker-1": {"token": self.PAT, "tracker_type": "github"}
+            },
+            "trigger_event_data": {
+                "repository": {"clone_url": "https://github.com/acme/private.git"},
+            },
+        }
+
+    def test_post_execution_commands_contain_no_token(self, container_executor):
+        context = self._context()
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert self.PAT not in commands
+
+    def test_post_execution_uses_an_env_var_reference(self, container_executor):
+        context = self._context()
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "${PRELOOP_GIT_TOKEN_1}" in commands
+
+    def test_token_reaches_the_container_environment(self, container_executor):
+        context = self._context()
+        container_executor._prepare_git_post_execution_commands(context)
+        env = container_executor._apply_git_credential_env({}, context)
+        assert env["PRELOOP_GIT_TOKEN_1"] == self.PAT
+
+    def test_post_execution_reinstalls_credential_helper(self, container_executor):
+        context = self._context()
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "credential.helper" in commands
+        assert "git credential approve" in commands
+        helper_at = commands.index("credential.helper")
+        push_at = commands.index("git push origin")
+        assert helper_at < push_at
+
+    def test_post_execution_writes_recovery_artifacts_before_push(
+        self, container_executor
+    ):
+        context = self._context()
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "/workspace/evidence/branch.bundle" in commands
+        assert "/workspace/evidence/branch.patch" in commands
+        assert commands.index("branch.bundle") < commands.index("git push origin")
+
+    def test_post_execution_username_follows_host_kind(self, container_executor):
+        """Clone uses host_kind when tracker_type is missing; push must match."""
+        context = self._context()
+        context["git_credentials_map"]["tracker-1"]["tracker_type"] = None
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "username=x-access-token" in commands
+        assert "username=oauth2" not in commands
+
+    def test_resume_commit_count_uses_origin_target_head(self, container_executor):
+        context = self._context()
+        context["_git_source_branch"] = "preloop/issue-353"
+        context["_git_target_branch"] = "preloop/issue-353"
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "origin/preloop/issue-353..HEAD" in commands
+        assert "origin/'preloop" not in commands
+
+    def test_normal_commit_count_falls_back_to_source_target(self, container_executor):
+        context = self._context()
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "origin/preloop/fix..HEAD" in commands
+        assert "main..preloop/fix" in commands
+        assert "origin/'preloop" not in commands
+
+    def test_unsafe_target_branch_skips_post_execution(self, container_executor):
+        context = self._context()
+        context["_git_target_branch"] = "feat/x; rm -rf /"
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert commands == ""
+
+    @pytest.mark.parametrize(
+        "unsafe",
+        ["foo..bar", "-d", "preloop/fix.", "foo~1", "foo^2", "foo:bar"],
+    )
+    def test_git_forbidden_target_ref_skips_post_execution(
+        self, container_executor, unsafe
+    ):
+        context = self._context()
+        context["_git_target_branch"] = unsafe
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert commands == ""
+        assert f"origin/{unsafe}" not in commands
+
+    def test_unsafe_source_branch_skips_post_execution(self, container_executor):
+        context = self._context()
+        context["_git_source_branch"] = "foo..bar"
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert commands == ""
+        assert "origin/preloop/fix" not in commands
+
+
+class TestPushCredentialsWithoutRepositoryTracker:
+    """Reproduces the post-execution push that had no credentials.
+
+    Production execution 85b67a24: the repository entry declared no
+    ``tracker_id`` and the triggering project's tracker was a GitHub App
+    installation, which stores no API key. Both the clone credential and the
+    push token resolved empty, the public repository still cloned, and the push
+    printed "WARNING: no git credentials available for push" followed by
+    "could not read Username for 'https://github.com'".
+
+    The orchestrator now resolves that tracker (minting an installation token
+    when needed) and passes it as ``trigger_tracker_id``.
+    """
+
+    APP_TOKEN = "ghs_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+    def _context(self, *, with_trigger_tracker=True):
+        context = {
+            "flow_id": "flow-1",
+            "execution_id": "exec-1",
+            "flow_name": "Automated Issue Implementation (GitHub)",
+            "account_id": "account-1",
+            "_git_target_branch": "preloop/automated-issue-implementation-85b67a24",
+            "_git_source_branch": "main",
+            "trigger_project_id": "daa4a88a-0dfa-4fd6-95bc-664f363ad033",
+            "git_clone_config": {
+                "enabled": True,
+                "repositories": [
+                    {
+                        "repository_url": "https://github.com/preloop/preloop.git",
+                        "clone_path": "workspace",
+                    }
+                ],
+            },
+            "trigger_event_data": {},
+        }
+        if with_trigger_tracker:
+            context["trigger_tracker_id"] = "tracker-app"
+            context["git_credentials_map"] = {
+                "tracker-app": {
+                    "token": self.APP_TOKEN,
+                    "tracker_type": "github",
+                }
+            }
+        return context
+
+    def test_push_token_reaches_the_container_environment(self, container_executor):
+        context = self._context()
+        with patch.object(
+            container_executor, "_get_token_from_project", return_value=(None, None)
+        ):
+            commands = container_executor._prepare_git_post_execution_commands(context)
+
+        assert "${PRELOOP_GIT_TOKEN_1}" in commands
+        assert self.APP_TOKEN not in commands
+        env = container_executor._apply_git_credential_env({}, context)
+        assert env["PRELOOP_GIT_TOKEN_1"] == self.APP_TOKEN
+
+    def test_clone_installs_the_credential_helper(self, container_executor):
+        context = self._context()
+        with patch.object(
+            container_executor, "_get_token_from_project", return_value=(None, None)
+        ):
+            command = container_executor._prepare_git_clone_command(context)
+
+        assert self.APP_TOKEN not in command
+        env = container_executor._git_credential_env(context)
+        assert self.APP_TOKEN in env["PRELOOP_GIT_CREDENTIALS"]
+        assert "x-access-token" in env["PRELOOP_GIT_CREDENTIALS"]
+
+    def test_without_the_trigger_tracker_the_push_has_no_token(
+        self, container_executor
+    ):
+        """The pre-fix behaviour, kept as the contrast case."""
+        context = self._context(with_trigger_tracker=False)
+        with patch.object(
+            container_executor, "_get_token_from_project", return_value=(None, None)
+        ):
+            commands = container_executor._prepare_git_post_execution_commands(context)
+
+        assert "${PRELOOP_GIT_TOKEN_1}" not in commands
+        assert "no git credentials available for push" in commands
+        assert container_executor._apply_git_credential_env({}, context) == {}
+
+    def test_repository_tracker_still_wins(self, container_executor):
+        """A repository with its own tracker keeps using that tracker's token."""
+        context = self._context()
+        context["git_clone_config"]["repositories"][0]["tracker_id"] = "tracker-repo"
+        context["git_credentials_map"]["tracker-repo"] = {
+            "token": "github_pat_repo_specific_token",
+            "tracker_type": "github",
+        }
+        container_executor._prepare_git_post_execution_commands(context)
+
+        env = container_executor._apply_git_credential_env({}, context)
+        assert env["PRELOOP_GIT_TOKEN_1"] == "github_pat_repo_specific_token"
+
+    def test_empty_map_entry_falls_through_to_the_project_lookup(
+        self, container_executor
+    ):
+        """A tracker recorded without a token must not shadow other sources."""
+        context = self._context()
+        context["git_credentials_map"]["tracker-app"]["token"] = ""
+        with patch.object(
+            container_executor,
+            "_get_token_from_project",
+            return_value=("github_pat_from_project", "github"),
+        ):
+            container_executor._prepare_git_post_execution_commands(context)
+
+        env = container_executor._apply_git_credential_env({}, context)
+        assert env["PRELOOP_GIT_TOKEN_1"] == "github_pat_from_project"
+
+
+class TestProjectRepoUrlForAppTrackers:
+    """An app-installed tracker stores no API key.
+
+    The project lookup used to refuse to build a clone URL in that case, so a
+    flow relying on the trigger project (rather than an explicit
+    repository_url) could not clone at all.
+    """
+
+    def _db(self, tracker):
+        project = MagicMock()
+        project.id = "project-1"
+        project.slug = "preloop/preloop"
+        project.organization = MagicMock(tracker_id="tracker-app")
+        db = MagicMock()
+        return project, tracker, db
+
+    def _lookup(self, container_executor, tracker):
+        project, tracker, db = self._db(tracker)
+        with (
+            patch("preloop.models.db.session.get_db_session", return_value=iter([db])),
+            patch("preloop.models.crud.crud_project.get", return_value=project),
+            patch("preloop.models.crud.crud_tracker.get", return_value=tracker),
+        ):
+            return container_executor._get_repo_url_from_project(
+                "project-1", "account-1"
+            )
+
+    def test_app_tracker_without_a_key_still_yields_a_url(self, container_executor):
+        tracker = MagicMock(
+            id="tracker-app",
+            resolved_api_key="",
+            auth_type="github_app",
+            tracker_type="github",
+        )
+        assert (
+            self._lookup(container_executor, tracker)
+            == "https://github.com/preloop/preloop.git"
+        )
+
+    def test_pat_tracker_without_a_key_is_still_refused(self, container_executor):
+        tracker = MagicMock(
+            id="tracker-pat",
+            resolved_api_key="",
+            auth_type="api_token",
+            tracker_type="github",
+        )
+        assert self._lookup(container_executor, tracker) is None
+
+
+class TestLogScrubbing:
+    """Logs are scrubbed on read as well, so a token already present in a
+    running container's output never reaches the API or the console (#173).
+    """
+
+    PAT = "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+
+    @patch.object(ContainerAgentExecutor, "_get_docker_client")
+    async def test_get_logs_scrubs_leaked_remote(
+        self, mock_get_client, container_executor
+    ):
+        leak = f"origin\thttps://{self.PAT}@github.com/acme/private.git (fetch)"
+        mock_docker = AsyncMock()
+        mock_container = AsyncMock()
+        mock_container.log.return_value = ["Cloning...", leak]
+        mock_docker.containers.get.return_value = mock_container
+        mock_get_client.return_value = mock_docker
+
+        logs = await container_executor.get_logs("container-123")
+
+        assert not any(self.PAT in line for line in logs)
+        assert any("[REDACTED]" in line for line in logs)
+        assert logs[0] == "Cloning...", "clean lines pass through unchanged"
+
+    @patch.object(ContainerAgentExecutor, "_stream_docker_logs")
+    async def test_stream_logs_scrubs_leaked_remote(
+        self, mock_stream, container_executor
+    ):
+        leak = f"origin\thttps://{self.PAT}@github.com/acme/private.git (push)"
+
+        async def _lines(_session_reference):
+            yield leak
+
+        mock_stream.side_effect = _lines
+
+        streamed = [
+            line async for line in container_executor.stream_logs("container-123")
+        ]
+
+        assert streamed == [
+            "origin\thttps://[REDACTED]@github.com/acme/private.git (push)"
+        ]
+
+
+class TestResumeRebaseShell:
+    """Resume rebase is present only on resume; force-with-lease only after rebase."""
+
+    def _clone_context(self, **overrides):
+        context = {
+            "flow_id": "flow-1",
+            "execution_id": "exec-1",
+            "flow_name": "Automated Issue Implementation",
+            "git_clone_config": {
+                "enabled": True,
+                "source_branch": "main",
+                "repositories": [
+                    {
+                        "repository_url": "https://github.com/acme/private.git",
+                        "clone_path": "/workspace",
+                    }
+                ],
+            },
+            "trigger_event_data": {},
+        }
+        context.update(overrides)
+        return context
+
+    def _post_context(self, **overrides):
+        context = {
+            "flow_id": "flow-1",
+            "execution_id": "exec-1",
+            "flow_name": "PR Reviewer",
+            "_git_target_branch": "preloop/issue-353",
+            "_git_source_branch": "preloop/issue-353",
+            "git_clone_config": {
+                "enabled": True,
+                "source_branch": "main",
+                "repositories": [
+                    {
+                        "repository_url": "https://github.com/acme/private.git",
+                        "clone_path": "/workspace",
+                    }
+                ],
+            },
+            "trigger_event_data": {},
+        }
+        context.update(overrides)
+        return context
+
+    def test_clone_omits_rebase_when_not_resuming(self, container_executor):
+        command = container_executor._prepare_git_clone_command(self._clone_context())
+        assert "git rebase" not in command
+        assert "PRELOOP_RESUME_REBASE_CONFLICT" not in command
+
+    def test_clone_rebases_when_resume_from_set(self, container_executor):
+        context = self._clone_context(resume_from="prior-exec")
+        command = container_executor._prepare_git_clone_command(context)
+        assert "git fetch origin main" in command
+        assert "git rebase origin/main" in command
+        assert "/workspace/evidence/rebase-conflict.txt" in command
+        assert "git rebase --abort" in command
+        assert "export PRELOOP_RESUME_REBASE_CONFLICT=1" in command
+        assert context.get("_git_resume_rebase") is True
+
+    def test_clone_rebases_when_resume_metadata_present(self, container_executor):
+        context = self._clone_context(
+            trigger_event_data={
+                "_resume": {
+                    "execution_id": "prior-exec",
+                    "source_branch": "preloop/issue-353",
+                }
+            }
+        )
+        command = container_executor._prepare_git_clone_command(context)
+        assert "git rebase origin/main" in command
+        assert context.get("resume_from") == "prior-exec"
+
+    def test_clone_rebases_onto_repo_branch(self, container_executor):
+        context = self._clone_context()
+        context["git_clone_config"]["repositories"][0]["branch"] = "develop"
+        context["resume_from"] = "prior-exec"
+        command = container_executor._prepare_git_clone_command(context)
+        assert "git fetch origin develop" in command
+        assert "git rebase origin/develop" in command
+        assert "git rebase origin/main" not in command
+
+    def test_clone_rebases_onto_config_branch(self, container_executor):
+        context = self._clone_context(resume_from="prior-exec")
+        context["git_clone_config"]["branch"] = "release"
+        command = container_executor._prepare_git_clone_command(context)
+        assert "git rebase origin/release" in command
+
+    def test_unsafe_base_branch_skips_rebase(self, container_executor):
+        context = self._clone_context(resume_from="prior-exec")
+        context["git_clone_config"]["source_branch"] = "main; echo pwned"
+        command = container_executor._prepare_git_clone_command(context)
+        assert "git rebase" not in command
+        assert "origin/main; echo pwned" not in command
+
+    def test_post_exec_omits_force_with_lease_when_not_resuming(
+        self, container_executor
+    ):
+        commands = container_executor._prepare_git_post_execution_commands(
+            self._post_context(
+                _git_target_branch="preloop/fix",
+                _git_source_branch="main",
+            )
+        )
+        assert "--force-with-lease" not in commands
+        assert "git push origin preloop/fix" in commands
+
+    def test_post_exec_force_with_lease_only_after_rebase(self, container_executor):
+        commands = container_executor._prepare_git_post_execution_commands(
+            self._post_context(resume_from="prior-exec")
+        )
+        assert "git push --force-with-lease origin preloop/issue-353" in commands
+        assert "/workspace/evidence/resume-rebased" in commands
+        assert "PRELOOP_RESUME_REBASED" in commands
+        force_at = commands.index("git push --force-with-lease origin")
+        plain_at = commands.index("git push origin preloop/issue-353")
+        assert force_at < plain_at
+
+    def test_resume_rebase_shell_records_conflict_and_aborts(self, container_executor):
+        shell = container_executor._build_git_resume_rebase_shell(
+            full_path="/workspace", base_branch="main"
+        )
+        assert "git fetch origin main" in shell
+        assert "git rebase origin/main" in shell
+        assert "git rebase --abort" in shell
+        assert "/workspace/evidence/rebase-conflict.txt" in shell
+        assert "Resolve these paths before continuing:" in shell
+        assert "export PRELOOP_RESUME_REBASE_CONFLICT=1" in shell
+        assert "export PRELOOP_RESUME_REBASED=1" in shell
+
+
+class TestResolveGitBranchPlan:
+    def test_resume_overrides_config_source_branch(self, container_executor):
+        source, target, _, _, _ = container_executor._resolve_git_branch_plan(
+            {
+                "flow_name": "Automated Issue Implementation",
+                "execution_id": "83021dcc-4658-45a3-814c-0e67d07642f6",
+                "trigger_event_data": {
+                    "_resume": {
+                        "execution_id": "prior",
+                        "source_branch": "preloop/issue-353",
+                    }
+                },
+            },
+            {"source_branch": "main", "target_branch": None},
+        )
+        assert source == "preloop/issue-353"
+        assert target == "preloop/issue-353"
+
+    def test_default_target_when_not_resuming(self, container_executor):
+        source, target, _, _, _ = container_executor._resolve_git_branch_plan(
+            {
+                "flow_name": "Automated Issue Implementation",
+                "execution_id": "83021dcc-4658-45a3-814c-0e67d07642f6",
+                "trigger_event_data": {},
+            },
+            {"source_branch": None, "target_branch": None},
+        )
+        assert source == "main"
+        assert target == "preloop/automated-issue-implementation-83021dcc"
+
+
+class TestExtractMergeRequestRef:
+    def test_github_pr_comment_issue_stub(self, container_executor):
+        ref = container_executor._extract_merge_request_ref_from_trigger(
+            {
+                "payload": {
+                    "issue": {
+                        "number": 353,
+                        "pull_request": {
+                            "html_url": "https://github.com/preloop/preloop/pull/353"
+                        },
+                    }
+                }
+            }
+        )
+        assert ref == "pull/353/head"
+
+    def test_gitlab_mr_note(self, container_executor):
+        ref = container_executor._extract_merge_request_ref_from_trigger(
+            {"payload": {"merge_request": {"iid": 10}}}
+        )
+        assert ref == "refs/merge-requests/10/head"
+
+
+class TestExtractSourceBranch:
+    def test_gitlab_mr_note_source_branch(self, container_executor):
+        branch = container_executor._extract_source_branch_from_trigger(
+            {"payload": {"merge_request": {"source_branch": "feat/x"}}}
+        )
+        assert branch == "feat/x"

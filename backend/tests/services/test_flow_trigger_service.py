@@ -304,6 +304,54 @@ class TestMatchesTriggerConfig:
 
         assert result is True
 
+    def test_github_issue_labels_objects_match_filter(
+        self, flow_trigger_service, sample_flow
+    ):
+        """Raw GitHub ``issue.labels[].name`` objects satisfy labels filters."""
+        from preloop.sync.webhook_payloads import GITHUB_ISSUE_OPENED
+
+        sample_flow.trigger_config = {"filter_conditions": {"labels": ["bug"]}}
+        event_data = {"payload": GITHUB_ISSUE_OPENED}
+
+        assert (
+            flow_trigger_service._matches_trigger_config(sample_flow, event_data)
+            is True
+        )
+
+    def test_gitlab_issue_labels_objects_match_filter(
+        self, flow_trigger_service, sample_flow
+    ):
+        """Raw GitLab ``labels[].title`` objects satisfy labels filters."""
+        from preloop.sync.webhook_payloads import GITLAB_ISSUE_OPENED
+
+        sample_flow.trigger_config = {"filter_conditions": {"labels": ["API"]}}
+        event_data = {"payload": GITLAB_ISSUE_OPENED}
+
+        assert (
+            flow_trigger_service._matches_trigger_config(sample_flow, event_data)
+            is True
+        )
+
+    def test_enriched_filter_fields_labels_still_match(
+        self, flow_trigger_service, sample_flow
+    ):
+        """Webhook path merges extract_filter_fields strings into the payload."""
+        from preloop.sync.event_normalizer import extract_filter_fields
+        from preloop.sync.webhook_payloads import GITHUB_ISSUE_OPENED
+
+        sample_flow.trigger_config = {"filter_conditions": {"labels": ["bug"]}}
+        event_data = {
+            "payload": {
+                **GITHUB_ISSUE_OPENED,
+                **extract_filter_fields("github", "issues", GITHUB_ISSUE_OPENED),
+            }
+        }
+
+        assert (
+            flow_trigger_service._matches_trigger_config(sample_flow, event_data)
+            is True
+        )
+
 
 class TestHasRunningExecution:
     """Tests for _has_running_execution method."""
@@ -499,7 +547,7 @@ class TestProcessEvent:
     @patch("preloop.services.flow_trigger_service.asyncio.create_task")
     @patch("preloop.services.flow_trigger_service.get_nats_client")
     @patch("preloop.services.flow_trigger_service.crud_flow")
-    @patch.object(FlowTriggerService, "_has_execution_for_commit")
+    @patch.object(FlowTriggerService, "_find_running_execution_for_commit")
     async def test_process_event_skips_duplicate_execution(
         self,
         mock_has_commit,
@@ -511,7 +559,7 @@ class TestProcessEvent:
         sample_flow,
     ):
         """Test that duplicate executions are skipped when same repo+commit."""
-        mock_has_commit.return_value = True
+        mock_has_commit.return_value = MagicMock()  # an existing execution
         mock_nats.return_value = AsyncMock()
         mock_crud.get_by_trigger.return_value = [sample_flow]
 
@@ -523,6 +571,226 @@ class TestProcessEvent:
         await flow_trigger_service.process_event(sample_github_pr_event)
 
         mock_create_task.assert_not_called()
+
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    @patch("preloop.services.flow_pr_binding.bind_resume_or_skip")
+    async def test_comment_on_opened_pr_resumes(
+        self,
+        mock_bind,
+        mock_crud,
+        mock_nats,
+        mock_create_task,
+        flow_trigger_service,
+        sample_flow,
+    ):
+        sample_flow.trigger_event_types = ["issue_labeled", "comment_created"]
+        mock_bind.return_value = {
+            "execution_id": "prior",
+            "pr_url": "https://github.com/preloop/preloop/pull/353",
+            "source_branch": "feat/x",
+        }
+        mock_nats.return_value = AsyncMock()
+        mock_crud.get_by_trigger.return_value = [sample_flow]
+        event = {
+            "source": "github",
+            "type": "comment_created",
+            "account_id": str(uuid.uuid4()),
+            "payload": {
+                "issue": {
+                    "pull_request": {
+                        "html_url": "https://github.com/preloop/preloop/pull/353"
+                    }
+                }
+            },
+        }
+
+        await flow_trigger_service.process_event(event)
+
+        mock_bind.assert_called_once()
+        mock_create_task.assert_called_once()
+
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    async def test_unmatched_pr_comment_does_not_start_run(
+        self,
+        mock_crud,
+        mock_nats,
+        mock_create_task,
+        flow_trigger_service,
+        sample_flow,
+    ):
+        sample_flow.trigger_event_types = ["issue_labeled", "comment_created"]
+        mock_nats.return_value = AsyncMock()
+        mock_crud.get_by_trigger.return_value = [sample_flow]
+        event = {
+            "source": "github",
+            "type": "comment_created",
+            "account_id": str(uuid.uuid4()),
+            "payload": {
+                "issue": {
+                    "number": 1,
+                    "html_url": "https://github.com/preloop/preloop/issues/1",
+                }
+            },
+        }
+
+        await flow_trigger_service.process_event(event)
+
+        mock_create_task.assert_not_called()
+
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    @patch("preloop.services.flow_trigger_service.bind_ci_failure_resume_or_skip")
+    @patch.object(FlowTriggerService, "_find_running_execution_for_commit")
+    async def test_failed_check_run_on_bound_pr_resumes(
+        self,
+        mock_running,
+        mock_bind,
+        mock_crud,
+        mock_nats,
+        mock_create_task,
+        flow_trigger_service,
+        sample_flow,
+    ):
+        sample_flow.trigger_event_types = ["issue_labeled", "check_run"]
+        mock_running.return_value = None
+        mock_bind.return_value = {
+            "execution_id": "prior",
+            "pr_url": "https://github.com/preloop/preloop/pull/353",
+            "source_branch": "feat/x",
+        }
+        mock_nats.return_value = AsyncMock()
+        mock_crud.get_by_trigger.return_value = [sample_flow]
+        event = {
+            "source": "github",
+            "type": "check_run",
+            "account_id": str(uuid.uuid4()),
+            "payload": {
+                "action": "completed",
+                "check_run": {
+                    "name": "backend-tests",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "head_sha": "abc123def456",
+                    "html_url": "https://github.com/preloop/preloop/runs/9",
+                    "check_suite": {"head_branch": "feat/x"},
+                },
+            },
+        }
+
+        await flow_trigger_service.process_event(event)
+
+        mock_bind.assert_called_once()
+        mock_create_task.assert_called_once()
+
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    @patch.object(FlowTriggerService, "_find_running_execution_for_commit")
+    async def test_failed_pipeline_on_issue_flow_starts_a_normal_run(
+        self,
+        mock_running,
+        mock_crud,
+        mock_nats,
+        mock_create_task,
+        flow_trigger_service,
+        sample_flow,
+    ):
+        sample_flow.trigger_event_types = ["issue_labeled", "pipeline"]
+        mock_running.return_value = None
+        mock_nats.return_value = AsyncMock()
+        mock_crud.get_by_trigger.return_value = [sample_flow]
+        event = {
+            "source": "gitlab",
+            "type": "pipeline",
+            "account_id": str(uuid.uuid4()),
+            "payload": {
+                "object_kind": "pipeline",
+                "project": {"web_url": "https://gitlab.com/acme/backend"},
+                "object_attributes": {
+                    "id": 4242,
+                    "status": "failed",
+                    "ref": "preloop/issue-42",
+                    "sha": "abc123def456",
+                },
+            },
+        }
+
+        await flow_trigger_service.process_event(event)
+
+        mock_create_task.assert_called_once()
+
+
+class TestProcessEventReleaseDedupe:
+    """process_event must coalesce duplicate release events (issue #241).
+
+    Release events reach process_event via /private/webhooks -> NATS with no
+    commit SHA, so only the fallback resource-key dedup can catch retries.
+    """
+
+    @staticmethod
+    def _release_event(tag: str) -> dict:
+        return {
+            "source": "github",
+            "type": "release",
+            "account_id": str(uuid.uuid4()),
+            "payload": {
+                "action": "published",
+                "release": {"tag_name": tag},
+                "repository": {"full_name": "owner/repo"},
+            },
+        }
+
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    @patch.object(FlowTriggerService, "_find_running_execution_for_resource_key")
+    async def test_duplicate_release_event_is_skipped(
+        self,
+        mock_find_resource,
+        mock_crud,
+        mock_nats,
+        mock_create_task,
+        flow_trigger_service,
+        sample_flow,
+    ):
+        """A running execution for the same release tag must not retrigger."""
+        mock_find_resource.return_value = MagicMock()  # existing execution
+        mock_nats.return_value = AsyncMock()
+        mock_crud.get_by_trigger.return_value = [sample_flow]
+
+        await flow_trigger_service.process_event(self._release_event("v1.2.3"))
+
+        mock_create_task.assert_not_called()
+        assert mock_find_resource.call_count == 1
+        assert mock_find_resource.call_args[0][1] == "github:owner/repo:release:v1.2.3"
+
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    @patch.object(FlowTriggerService, "_find_running_execution_for_resource_key")
+    async def test_different_release_tag_still_triggers(
+        self,
+        mock_find_resource,
+        mock_crud,
+        mock_nats,
+        mock_create_task,
+        flow_trigger_service,
+        sample_flow,
+    ):
+        """A new release tag must trigger a fresh execution."""
+        mock_find_resource.return_value = None
+        mock_nats.return_value = AsyncMock()
+        mock_crud.get_by_trigger.return_value = [sample_flow]
+
+        await flow_trigger_service.process_event(self._release_event("v2.0.0"))
+
+        mock_create_task.assert_called_once()
+        assert mock_find_resource.call_args[0][1] == "github:owner/repo:release:v2.0.0"
 
 
 class TestTriggerFlow:
@@ -1069,3 +1337,403 @@ class TestProcessEventEdgeCases:
 
         # Both flows should have been attempted
         assert mock_create_task.call_count == 2
+
+
+class TestIsPreloopTriggeredEvent:
+    """Bot-loop guard: reaction events from Preloop bots are dropped,
+    but intentional PR/MR opens, label hops, and human events pass."""
+
+    # -- Bot reaction events: MUST be blocked --
+
+    def test_github_bot_comment_is_ignored(self, flow_trigger_service):
+        """Bot-posted comments are side-effects and must be dropped."""
+        event = {
+            "source": "github",
+            "type": "comment_created",
+            "payload": {"sender": {"login": "preloop[bot]"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is True
+
+    def test_gitlab_bot_issue_updated_is_ignored(self, flow_trigger_service):
+        """Bot-edited issue bodies are side-effects and must be dropped."""
+        event = {
+            "source": "gitlab",
+            "type": "issue_updated",
+            "payload": {"user": {"username": "preloop"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is True
+
+    def test_github_bot_pr_updated_is_ignored(self, flow_trigger_service):
+        """Bot pushing status/body edits on an existing PR: drop."""
+        event = {
+            "source": "github",
+            "type": "pull_request_updated",
+            "payload": {"sender": {"login": "preloop[bot]"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is True
+
+    # -- Bot-opened PR events: MUST pass (the fix for #306/#307) --
+
+    def test_github_bot_pr_opened_passes(self, flow_trigger_service):
+        """PR opened by the Preloop App is an intentional action, not a
+        loop vector.  This is the core fix for PRs #306 and #307."""
+        event = {
+            "source": "github",
+            "type": "pull_request_opened",
+            "payload": {"sender": {"login": "preloop[bot]"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_github_bot_pr_reopened_passes(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "type": "pull_request_reopened",
+            "payload": {"sender": {"login": "preloop[bot]"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_gitlab_bot_mr_opened_passes(self, flow_trigger_service):
+        event = {
+            "source": "gitlab",
+            "type": "merge_request_opened",
+            "payload": {"user": {"username": "preloop"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_loop_guard_exempt_types_are_underscore_forms(self, flow_trigger_service):
+        """Dotted GitHub-style names never match; keep only normalized forms."""
+        exempt = flow_trigger_service._LOOP_GUARD_EXEMPT_EVENT_TYPES
+        assert "pull_request.opened" not in exempt
+        assert "pull_request.reopened" not in exempt
+        assert "merge_request.opened" not in exempt
+        assert "merge_request.reopened" not in exempt
+        assert exempt == frozenset(
+            {
+                "pull_request_opened",
+                "pull_request_reopened",
+                "merge_request_opened",
+                "merge_request_reopened",
+            }
+        )
+
+    # -- Label hop events: MUST pass --
+
+    def test_github_bot_issue_labeled_is_not_ignored(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "type": "issue_labeled",
+            "payload": {
+                "sender": {"login": "preloop[bot]"},
+                "label": {"name": "agent-ready"},
+            },
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_gitlab_bot_issue_labeled_is_not_ignored(self, flow_trigger_service):
+        event = {
+            "source": "gitlab",
+            "type": "issue_labeled",
+            "payload": {"user": {"username": "preloop"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    # -- Human events: MUST always pass --
+
+    def test_human_issue_labeled_is_not_ignored(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "type": "issue_labeled",
+            "payload": {"sender": {"login": "dimitris"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_human_comment_passes(self, flow_trigger_service):
+        """Human comments must never be blocked."""
+        event = {
+            "source": "github",
+            "type": "comment_created",
+            "payload": {"sender": {"login": "dimitris"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_human_pr_opened_passes(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "type": "pull_request.opened",
+            "payload": {"sender": {"login": "dimitris"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    # -- Lookalike usernames: MUST pass (no prefix matching) --
+
+    def test_lookalike_username_preloop_fan_passes(self, flow_trigger_service):
+        """A human named 'preloop-fan' must not be caught by the guard.
+        The old startswith('preloop') check would incorrectly drop this."""
+        event = {
+            "source": "github",
+            "type": "comment_created",
+            "payload": {"sender": {"login": "preloop-fan"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_lookalike_username_prelooper_passes(self, flow_trigger_service):
+        """Username 'prelooper' must not be caught."""
+        event = {
+            "source": "github",
+            "type": "pull_request_updated",
+            "payload": {"sender": {"login": "prelooper"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+    def test_lookalike_gitlab_username_passes(self, flow_trigger_service):
+        """GitLab user 'preloop-contributor' must not be caught."""
+        event = {
+            "source": "gitlab",
+            "type": "issue_updated",
+            "payload": {"user": {"username": "preloop-contributor"}},
+        }
+        assert flow_trigger_service._is_preloop_triggered_event(event) is False
+
+
+class TestExtractResourceKeyRelease:
+    """Release events must produce a resource key (issue #241)."""
+
+    def test_github_release_resource_key(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "type": "release",
+            "payload": {
+                "action": "published",
+                "release": {"tag_name": "v1.2.3"},
+                "repository": {"full_name": "owner/repo"},
+            },
+        }
+        result = flow_trigger_service._extract_resource_key(event)
+        assert result == "github:owner/repo:release:v1.2.3"
+
+    def test_github_release_missing_tag_returns_none(self, flow_trigger_service):
+        event = {
+            "source": "github",
+            "payload": {
+                "release": {},
+                "repository": {"full_name": "owner/repo"},
+            },
+        }
+        assert flow_trigger_service._extract_resource_key(event) is None
+
+    def test_gitlab_release_resource_key(self, flow_trigger_service):
+        """Real GitLab Release Hook shape: tag is a top-level field."""
+        event = {
+            "source": "gitlab",
+            "object_kind": "release",
+            "payload": {
+                "object_kind": "release",
+                "tag": "v2.0.0",
+                "commit": {"id": "abcdef1234567890"},
+                "project": {"path_with_namespace": "group/project"},
+            },
+        }
+        result = flow_trigger_service._extract_resource_key(event)
+        assert result == "gitlab:group/project:release:v2.0.0"
+
+    def test_gitlab_release_missing_project_path_returns_none(
+        self, flow_trigger_service
+    ):
+        event = {
+            "source": "gitlab",
+            "payload": {
+                "object_kind": "release",
+                "tag": "v2.0.0",
+            },
+        }
+        assert flow_trigger_service._extract_resource_key(event) is None
+
+
+class TestResolveJsonPath:
+    """Tests for the dotted-path resolver used by webhook dedupe."""
+
+    def test_simple_dict_path(self, flow_trigger_service):
+        assert flow_trigger_service._resolve_json_path({"a": {"b": 1}}, "a.b") == 1
+
+    def test_numeric_index_into_list(self, flow_trigger_service):
+        payload = {"attachments": [{"title_link": "https://example.com/x"}]}
+        assert (
+            flow_trigger_service._resolve_json_path(payload, "attachments.0.title_link")
+            == "https://example.com/x"
+        )
+
+    def test_missing_key_returns_none(self, flow_trigger_service):
+        assert flow_trigger_service._resolve_json_path({"a": {}}, "a.b") is None
+
+    def test_out_of_range_index_returns_none(self, flow_trigger_service):
+        assert flow_trigger_service._resolve_json_path([], "0.x") is None
+
+    def test_non_numeric_index_into_list_returns_none(self, flow_trigger_service):
+        assert flow_trigger_service._resolve_json_path({"a": [1]}, "a.b") is None
+
+    def test_scalar_traversal_returns_none(self, flow_trigger_service):
+        assert flow_trigger_service._resolve_json_path({"a": "str"}, "a.b") is None
+
+
+class TestExtractWebhookResourceKey:
+    """Webhook dedupe key extraction (issue #241)."""
+
+    def _flow(self, webhook_config=None):
+        flow = MagicMock()
+        flow.webhook_config = webhook_config or {}
+        return flow
+
+    def test_default_glitchtip_title_link(self, flow_trigger_service):
+        flow = self._flow()
+        payload = {
+            "text": "alert",
+            "attachments": [{"title_link": "https://glitchtip/issues/42"}],
+        }
+        result = flow_trigger_service._extract_webhook_resource_key(flow, payload)
+        assert result == "webhook:attachments.0.title_link=https://glitchtip/issues/42"
+
+    def test_default_falls_back_to_sentry_issue_id(self, flow_trigger_service):
+        flow = self._flow()
+        payload = {"data": {"issue": {"id": 99}}}
+        result = flow_trigger_service._extract_webhook_resource_key(flow, payload)
+        assert result == "webhook:data.issue.id=99"
+
+    def test_custom_dedupe_path_overrides_defaults(self, flow_trigger_service):
+        flow = self._flow(webhook_config={"dedupe_path": "event_id"})
+        payload = {
+            "event_id": "abc-123",
+            "attachments": [{"title_link": "https://x"}],
+        }
+        result = flow_trigger_service._extract_webhook_resource_key(flow, payload)
+        assert result == "webhook:event_id=abc-123"
+
+    def test_custom_dedupe_path_no_match_returns_none(self, flow_trigger_service):
+        flow = self._flow(webhook_config={"dedupe_path": "missing.path"})
+        assert (
+            flow_trigger_service._extract_webhook_resource_key(flow, {"a": 1}) is None
+        )
+
+    def test_no_defaults_match_returns_none(self, flow_trigger_service):
+        flow = self._flow()
+        assert flow_trigger_service._extract_webhook_resource_key(flow, {}) is None
+
+    def test_empty_string_value_is_skipped(self, flow_trigger_service):
+        flow = self._flow()
+        payload = {"data": {"issue": {"id": ""}}, "other": "v"}
+        assert flow_trigger_service._extract_webhook_resource_key(flow, payload) is None
+
+    def test_non_dict_webhook_config_is_tolerated(self, flow_trigger_service):
+        flow = self._flow()
+        flow.webhook_config = None
+        payload = {"attachments": [{"title_link": "https://x"}]}
+        result = flow_trigger_service._extract_webhook_resource_key(flow, payload)
+        assert result == "webhook:attachments.0.title_link=https://x"
+
+
+class TestFallbackDedupeResourceKey:
+    """The fallback key must apply to webhooks and releases only."""
+
+    @patch("preloop.services.flow_trigger_service.crud_flow_execution")
+    def test_webhook_event_gets_key(self, mock_crud, flow_trigger_service):
+        flow = MagicMock()
+        flow.webhook_config = {}
+        event = {
+            "source": "webhook",
+            "payload": {"data": {"issue": {"id": 7}}},
+        }
+        result = flow_trigger_service._fallback_dedupe_resource_key(flow, event)
+        assert result == "webhook:data.issue.id=7"
+
+    def test_github_issue_event_gets_no_fallback_key(self, flow_trigger_service):
+        """Issue/PR dedup behavior must remain commit-SHA-only."""
+        flow = MagicMock()
+        flow.webhook_config = {}
+        event = {
+            "source": "github",
+            "payload": {
+                "issue": {"number": 5},
+                "repository": {"full_name": "owner/repo"},
+            },
+        }
+        assert flow_trigger_service._fallback_dedupe_resource_key(flow, event) is None
+
+    def test_gitlab_mr_event_gets_no_fallback_key(self, flow_trigger_service):
+        flow = MagicMock()
+        flow.webhook_config = {}
+        event = {
+            "source": "gitlab",
+            "payload": {
+                "object_attributes": {"iid": 9},
+                "project": {"path_with_namespace": "g/p"},
+            },
+        }
+        assert flow_trigger_service._fallback_dedupe_resource_key(flow, event) is None
+
+
+class TestFindDuplicateExecutionResourceKey:
+    """find_duplicate_execution falls back to resource keys when no SHA."""
+
+    def _flow(self):
+        flow = MagicMock()
+        flow.id = uuid.uuid4()
+        flow.account_id = uuid.uuid4()
+        flow.webhook_config = {}
+        return flow
+
+    def _running_execution(self, payload):
+        execution = MagicMock()
+        execution.id = uuid.uuid4()
+        execution.status = "PENDING"
+        execution.trigger_event_details = {
+            "source": "webhook",
+            "type": "webhook",
+            "payload": payload,
+        }
+        return execution
+
+    @patch("preloop.services.flow_trigger_service.crud_flow_execution")
+    def test_commitless_identical_payload_deduplicates(
+        self, mock_crud, flow_trigger_service
+    ):
+        flow = self._flow()
+        payload = {"attachments": [{"title_link": "https://gt/issues/1"}]}
+        mock_crud.get_running_by_flow.return_value = [self._running_execution(payload)]
+
+        duplicate = flow_trigger_service.find_duplicate_execution(
+            flow,
+            {"source": "webhook", "type": "webhook", "payload": dict(payload)},
+        )
+        assert duplicate is not None
+
+    @patch("preloop.services.flow_trigger_service.crud_flow_execution")
+    def test_commitless_different_payload_not_deduplicated(
+        self, mock_crud, flow_trigger_service
+    ):
+        flow = self._flow()
+        mock_crud.get_running_by_flow.return_value = [
+            self._running_execution(
+                {"attachments": [{"title_link": "https://gt/issues/1"}]}
+            )
+        ]
+
+        duplicate = flow_trigger_service.find_duplicate_execution(
+            flow,
+            {
+                "source": "webhook",
+                "type": "webhook",
+                "payload": {"data": {"issue": {"id": 55}}},
+            },
+        )
+        assert duplicate is None
+
+    @patch("preloop.services.flow_trigger_service.crud_flow_execution")
+    def test_payload_without_any_identity_returns_none(
+        self, mock_crud, flow_trigger_service
+    ):
+        flow = self._flow()
+        duplicate = flow_trigger_service.find_duplicate_execution(
+            flow,
+            {"source": "webhook", "type": "webhook", "payload": {"foo": "bar"}},
+        )
+        assert duplicate is None
+        mock_crud.get_running_by_flow.assert_not_called()

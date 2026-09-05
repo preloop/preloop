@@ -31,6 +31,7 @@ def create(
     preferred_channel: str = "email",
     enable_email: bool = True,
     enable_mobile_push: bool = False,
+    stagger_email: bool = True,
     mobile_device_tokens: Optional[List[Dict]] = None,
 ) -> NotificationPreferences:
     """Create notification preferences for a user.
@@ -41,6 +42,7 @@ def create(
         preferred_channel: Preferred notification channel.
         enable_email: Whether email notifications are enabled.
         enable_mobile_push: Whether mobile push notifications are enabled.
+        stagger_email: Whether to delay email when push is also enabled.
         mobile_device_tokens: List of mobile device tokens.
 
     Returns:
@@ -51,6 +53,7 @@ def create(
         preferred_channel=preferred_channel,
         enable_email=enable_email,
         enable_mobile_push=enable_mobile_push,
+        stagger_email=stagger_email,
         mobile_device_tokens=mobile_device_tokens or [],
     )
     db.add(prefs)
@@ -64,6 +67,7 @@ def update(
     preferred_channel: Optional[str] = None,
     enable_email: Optional[bool] = None,
     enable_mobile_push: Optional[bool] = None,
+    stagger_email: Optional[bool] = None,
     mobile_device_tokens: Optional[List[Dict]] = None,
 ) -> NotificationPreferences:
     """Update notification preferences.
@@ -74,6 +78,7 @@ def update(
         preferred_channel: Preferred notification channel.
         enable_email: Whether email notifications are enabled.
         enable_mobile_push: Whether mobile push notifications are enabled.
+        stagger_email: Whether to delay email when push is also enabled.
         mobile_device_tokens: List of mobile device tokens.
 
     Returns:
@@ -85,6 +90,8 @@ def update(
         prefs.enable_email = enable_email
     if enable_mobile_push is not None:
         prefs.enable_mobile_push = enable_mobile_push
+    if stagger_email is not None:
+        prefs.stagger_email = stagger_email
     if mobile_device_tokens is not None:
         prefs.mobile_device_tokens = mobile_device_tokens
 
@@ -98,6 +105,7 @@ def get_or_create(
     preferred_channel: str = "email",
     enable_email: bool = True,
     enable_mobile_push: bool = False,
+    stagger_email: bool = True,
 ) -> NotificationPreferences:
     """Get or create notification preferences for a user.
 
@@ -107,6 +115,7 @@ def get_or_create(
         preferred_channel: Preferred notification channel (for creation).
         enable_email: Whether email is enabled (for creation).
         enable_mobile_push: Whether mobile push is enabled (for creation).
+        stagger_email: Whether to delay email when push is also enabled.
 
     Returns:
         Existing or newly created NotificationPreferences.
@@ -121,6 +130,7 @@ def get_or_create(
         preferred_channel=preferred_channel,
         enable_email=enable_email,
         enable_mobile_push=enable_mobile_push,
+        stagger_email=stagger_email,
     )
 
 

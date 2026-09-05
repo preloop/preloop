@@ -44,6 +44,7 @@ from .embedding import CRUDEmbeddingModel, CRUDIssueEmbedding
 from .flow import CRUDFlow  # Import CRUDFlow class
 from .flow_execution import CRUDFlowExecution
 from .flow_execution_log import CRUDFlowExecutionLog
+from .flow_runner import CRUDFlowRunner, crud_flow_runner
 from .issue import CRUDIssue
 from .organization import CRUDOrganization  # Removed create_organization import
 from .project import CRUDProject
@@ -109,6 +110,10 @@ from .event import CRUDEvent, crud_event
 from .visitor import CRUDVisitor, crud_visitor
 from .identity_link import CRUDIdentityLink, crud_identity_link
 from .account_milestone import CRUDAccountMilestone, crud_account_milestone
+from .attention_dismissal import (
+    CRUDAttentionDismissal,
+    crud_attention_dismissal,
+)
 from .oauth_app_installation import (
     CRUDOAuthAppInstallation,
     crud_oauth_app_installation,
@@ -210,6 +215,8 @@ __all__ = [
     "CRUDFlow",
     "CRUDFlowExecution",
     "CRUDFlowExecutionLog",
+    "CRUDFlowRunner",
+    "crud_flow_runner",
     "CRUDIssueComplianceResult",
     "CRUDIssueSet",
     "CRUDGatewayUsageSearchDocument",
@@ -300,6 +307,8 @@ __all__ = [
     "crud_identity_link",
     "CRUDAccountMilestone",
     "crud_account_milestone",
+    "CRUDAttentionDismissal",
+    "crud_attention_dismissal",
     "CRUDOAuthAppInstallation",
     "crud_oauth_app_installation",
     "CRUDOAuthToken",

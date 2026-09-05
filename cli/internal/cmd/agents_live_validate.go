@@ -1291,7 +1291,7 @@ func runDeferredLiveValidationsParallel(
 
 	fmt.Fprintf(
 		output,
-		"\nRunning live validation for %d agent(s) in parallel...\n",
+		"\nSending test prompts through gateway for %d agent(s) in parallel...\n",
 		len(supported),
 	)
 
@@ -1341,16 +1341,10 @@ func recoverDeferredGatewayValidationFailure(
 	output interface{ Write(p []byte) (int, error) },
 	result deferredLiveValidationResult,
 ) {
-	if result.Err == nil {
-		return
-	}
-func recoverDeferredGatewayValidationFailure(
-	output interface{ Write(p []byte) (int, error) },
-	result deferredLiveValidationResult,
-) {
 	if result.Err == nil || result.Outcome == nil {
 		return
 	}
+	if liveValidationStatusKeepsGatewayConfig(result.Outcome.ValidationResult) {
 		note := liveValidationUpstreamNote(result.Outcome.ValidationResult)
 		if note == "" {
 			note = "the live validation probe failed"
@@ -1510,33 +1504,34 @@ func printDeferredLiveValidationLine(
 		return
 	}
 	if result.Outcome.Passed {
-		fmt.Fprintf(
-			output,
-			"  ✓ %s: live validation passed (%dms)\n",
-			name,
-			result.Duration.Milliseconds(),
-		)
+		fmt.Fprint(output, formatDeferredLiveValidationRoundTrip(result)) //nolint:errcheck
 		return
 	}
 	if result.Err != nil {
 		status, _ := result.Outcome.ValidationResult["live_validation_status"].(string)
-		label := "failed"
 		switch status {
-		case "throttled":
-			label = "throttled"
-		case "upstream_unavailable":
-			label = "inconclusive (upstream provider refused)"
-		case "upstream_transient":
-			label = "failed (transient upstream error after retries)"
+		case "throttled", "upstream_unavailable", "upstream_transient":
+			// Keep the nuanced status wording for inconclusive upstream outcomes.
+			label := "failed"
+			switch status {
+			case "throttled":
+				label = "throttled"
+			case "upstream_unavailable":
+				label = "inconclusive (upstream provider refused)"
+			case "upstream_transient":
+				label = "failed (transient upstream error after retries)"
+			}
+			fmt.Fprint(output, formatCLIError(fmt.Sprintf(
+				"  ✗ %s: round-trip FAILED (%s), model=%s, latency=%.1fs: %v\n",
+				name,
+				label,
+				deferredLiveValidationModelAlias(result),
+				result.Duration.Seconds(),
+				result.Err,
+			))) //nolint:errcheck
+		default:
+			fmt.Fprint(output, formatDeferredLiveValidationRoundTrip(result)) //nolint:errcheck
 		}
-		fmt.Fprintf(
-			output,
-			"  ✗ %s: live validation %s (%dms): %v\n",
-			name,
-			label,
-			result.Duration.Milliseconds(),
-			result.Err,
-		)
 		if liveValidationGatewayRolledBack(result.Outcome.ValidationResult) {
 			// The gateway config was reverted: ``validate --live`` can no
 			// longer succeed, so the only useful recovery is a re-onboard.
@@ -1554,12 +1549,17 @@ func printDeferredLiveValidationLine(
 		}
 		return
 	}
-	fmt.Fprintf(
-		output,
-		"  ✗ %s: live validation failed (%dms)\n",
-		name,
-		result.Duration.Milliseconds(),
-	)
+	fmt.Fprint(output, formatDeferredLiveValidationRoundTrip(result)) //nolint:errcheck
+}
+
+func deferredLiveValidationModelAlias(result deferredLiveValidationResult) string {
+	if result.Outcome == nil {
+		return "unknown"
+	}
+	if alias, _ := result.Outcome.ValidationResult["live_validation_model_alias"].(string); strings.TrimSpace(alias) != "" {
+		return strings.TrimSpace(alias)
+	}
+	return "unknown"
 }
 
 // applyLiveValidationOutcomesToSummary folds deferred live-validation

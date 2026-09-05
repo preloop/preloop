@@ -34,6 +34,48 @@ from preloop.services.ai_approval_service import get_ai_approval_service
 
 logger = logging.getLogger(__name__)
 
+_LOCAL_PRESENCE_WINDOW = timedelta(seconds=20)
+
+
+def _operator_present_at_machine(db, approval_request: ApprovalRequest) -> bool:
+    """True only when the operator is at the local TTY.
+
+    Sidecar WebSocket heartbeats stamp ``last_seen_at`` in both local and
+    remote mode, so recency alone is not presence. Skip the approval push
+    only when the last advertised session mode is ``local`` *and* that
+    heartbeat is inside a 20s window. Unknown or remote mode fail open:
+    send the push rather than hide an approval from a phone/web operator.
+    """
+    agent_id = getattr(approval_request, "managed_agent_id", None)
+    if agent_id is None:
+        return False
+    from preloop.models.crud import crud_managed_agent
+
+    agent = crud_managed_agent.get(db, id=agent_id)
+    if agent is None:
+        return False
+    mode = getattr(agent, "control_session_mode", None)
+    if mode != "local":
+        snapshot: dict = {}
+        try:
+            from preloop.api.endpoints.agent_control import agent_control_snapshot
+
+            snapshot = agent_control_snapshot(str(agent_id))
+        except (ImportError, AttributeError, RuntimeError):
+            snapshot = {}
+        if snapshot.get("session_mode") != "local":
+            return False
+    seen = getattr(agent, "last_seen_at", None)
+    if seen is None:
+        return False
+    if seen.tzinfo is None:
+        from datetime import UTC as _UTC
+
+        seen = seen.replace(tzinfo=_UTC)
+    from datetime import UTC
+
+    return datetime.now(UTC) - seen <= _LOCAL_PRESENCE_WINDOW
+
 
 def _get_audit_service():
     """Get the audit service instance (lazy import to avoid circular deps)."""
@@ -220,6 +262,185 @@ def _log_approval_tool_executed_async(
 # Thread pool for running sync database operations
 _sync_db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
+# Push first; email dual-channel users only if still pending after this delay.
+APPROVAL_EMAIL_STAGGER_SECONDS = 60
+
+# Retain strong references to delayed-email tasks so they are not GC'd mid-sleep.
+# Cap prevents unbounded growth if completions stall under load.
+_MAX_DELAYED_EMAIL_TASKS = 500
+_delayed_email_tasks: Set["asyncio.Task[Any]"] = set()
+
+
+def _retain_delayed_email_task(task: "asyncio.Task[Any]") -> None:
+    """Keep a strong reference to a delayed-email task until it completes.
+
+    Evicts done tasks first. If the set is still at capacity, cancels the
+    oldest retained task so a stuck completion callback cannot grow forever.
+    """
+    done = {t for t in _delayed_email_tasks if t.done()}
+    if done:
+        _delayed_email_tasks.difference_update(done)
+
+    if len(_delayed_email_tasks) >= _MAX_DELAYED_EMAIL_TASKS:
+        # Prefer cancelling an unfinished task over dropping the new one:
+        # the new schedule is the live approval; oldest may be orphaned.
+        oldest = next(iter(_delayed_email_tasks))
+        logger.warning(
+            "Delayed-email task set at cap (%s); cancelling oldest task",
+            _MAX_DELAYED_EMAIL_TASKS,
+        )
+        oldest.cancel()
+        _delayed_email_tasks.discard(oldest)
+
+    _delayed_email_tasks.add(task)
+
+    def _discard(finished: "asyncio.Task[Any]") -> None:
+        _delayed_email_tasks.discard(finished)
+
+    task.add_done_callback(_discard)
+
+
+async def _send_delayed_approval_email(
+    *,
+    request_id: uuid.UUID,
+    user_ids: List[uuid.UUID],
+    delay_seconds: int,
+    base_url: str,
+    correlation_id: Optional[str],
+    account_id: str,
+    tool_name: Optional[str],
+) -> None:
+    """Send staggered approval emails after a delay if still pending.
+
+    Opens a fresh DB session at fire time so status reflects commits from
+    other sessions. Never raises into the event loop.
+
+    Args:
+        request_id: Approval request to re-check.
+        user_ids: Dual-channel users waiting for delayed email.
+        delay_seconds: Seconds to wait before the status re-check.
+        base_url: Application base URL for approval links.
+        correlation_id: Optional audit correlation id.
+        account_id: Account id for audit logging.
+        tool_name: Tool name for audit logging.
+    """
+    try:
+        await asyncio.sleep(delay_seconds)
+
+        from preloop.models.db.session import get_async_db_session
+
+        async with get_async_db_session() as db:
+            current_request = await get_approval_request_async(db, request_id)
+            # Only "pending" should receive delayed email; any other status
+            # (terminal or unexpected) skips. Checking terminal separately
+            # was redundant with the pending equality check.
+            if not current_request or current_request.status != "pending":
+                reason = (
+                    f"status_{current_request.status}"
+                    if current_request
+                    else "not_found"
+                )
+                logger.info(
+                    "Skipping delayed email for approval %s: %s",
+                    request_id,
+                    reason,
+                )
+                _log_approval_notification_async(
+                    account_id=account_id,
+                    approval_id=request_id,
+                    channel="email",
+                    status="skipped",
+                    tool_name=tool_name,
+                    recipient_user_ids=list(user_ids),
+                    skipped_count=len(user_ids),
+                    error="resolved_before_email",
+                    correlation_id=correlation_id,
+                )
+                return
+
+            if (
+                current_request.expires_at
+                and datetime.utcnow() > current_request.expires_at
+            ):
+                logger.info(
+                    "Skipping delayed email for approval %s: expired",
+                    request_id,
+                )
+                _log_approval_notification_async(
+                    account_id=account_id,
+                    approval_id=request_id,
+                    channel="email",
+                    status="skipped",
+                    tool_name=tool_name,
+                    recipient_user_ids=list(user_ids),
+                    skipped_count=len(user_ids),
+                    error="resolved_before_email",
+                    correlation_id=correlation_id,
+                )
+                return
+
+            service = ApprovalService(db, base_url)
+            workflow = current_request.approval_workflow
+            if workflow is None:
+                logger.warning(
+                    "Delayed email for %s missing workflow; skipping send",
+                    request_id,
+                )
+                _log_approval_notification_async(
+                    account_id=account_id,
+                    approval_id=request_id,
+                    channel="email",
+                    status="skipped",
+                    tool_name=tool_name,
+                    recipient_user_ids=list(user_ids),
+                    skipped_count=len(user_ids),
+                    error="missing_workflow",
+                    correlation_id=correlation_id,
+                )
+                return
+
+            result = await service._send_email_notification(
+                current_request, workflow, user_ids=user_ids
+            )
+            sent_raw = result.get("sent")
+            failed_raw = result.get("failed")
+            sent_count = sent_raw if isinstance(sent_raw, int) else 0
+            failed_count = failed_raw if isinstance(failed_raw, int) else 0
+            if sent_count > 0 and failed_count == 0:
+                status = "sent"
+            elif sent_count > 0:
+                status = "partial"
+            elif result.get("success") is False:
+                status = "failed"
+            else:
+                status = "sent"
+            _log_approval_notification_async(
+                account_id=account_id,
+                approval_id=request_id,
+                channel="email",
+                status=status,
+                tool_name=tool_name or current_request.tool_name,
+                recipient_user_ids=list(user_ids),
+                sent_count=sent_count,
+                failed_count=failed_count,
+                error=str(result.get("error")) if result.get("error") else None,
+                correlation_id=correlation_id,
+            )
+            logger.info(
+                "Delayed email for approval %s: %s",
+                request_id,
+                result,
+            )
+    except asyncio.CancelledError:
+        logger.info("Delayed email task cancelled for approval %s", request_id)
+    except Exception as exc:
+        logger.error(
+            "Failed delayed email for approval %s: %s",
+            request_id,
+            exc,
+            exc_info=True,
+        )
+
 
 async def _send_android_push_transport(
     *,
@@ -317,6 +538,10 @@ class ApprovalService:
                 "tool_args": redact_dict(approval_request.tool_args or {}),
                 "agent_reasoning": approval_request.agent_reasoning,
                 "managed_agent_name": approval_request.managed_agent_name,
+                # Why the call was gated. Rule names and expressions are
+                # operator-authored policy text, not call arguments, so they
+                # are not redacted; tool_args above still are.
+                "rule_context": approval_request.rule_context,
                 "status": approval_request.status,
                 "requested_at": approval_request.requested_at.isoformat(),
                 "resolved_at": (
@@ -362,6 +587,7 @@ class ApprovalService:
         managed_agent_id: Optional[uuid.UUID] = None,
         runtime_session_id: Optional[uuid.UUID] = None,
         managed_agent_name: Optional[str] = None,
+        rule_context: Optional[Dict[str, Any]] = None,
     ) -> ApprovalRequest:
         """Create a new approval request.
 
@@ -374,6 +600,12 @@ class ApprovalService:
             agent_reasoning: Agent's reasoning for the tool call
             execution_id: Flow execution ID (if applicable)
             timeout_seconds: How long to wait for approval (default: 5 minutes)
+            rule_context: Snapshot of the policy rule that required this
+                approval (see services/approval_rule_context.py). Stored as
+                given so a later edit to the rule cannot rewrite the reason a
+                past approval was asked for. None when no rule was evaluated
+                (e.g. the request_approval builtin), in which case surfaces
+                omit the explanation rather than invent one.
 
         Returns:
             Created approval request
@@ -395,6 +627,7 @@ class ApprovalService:
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
             managed_agent_name=managed_agent_name,
+            rule_context=rule_context,
             status="pending",
             requested_at=datetime.utcnow(),
             expires_at=expires_at,
@@ -430,6 +663,7 @@ class ApprovalService:
                 "approval_workflow_id": str(approval_workflow_id),
                 "tool_args": redact_dict(tool_args),
                 "timeout_seconds": timeout,
+                **({"rule_context": rule_context} if rule_context else {}),
             },
         )
 
@@ -1477,6 +1711,7 @@ class ApprovalService:
         runtime_session_id: Optional[uuid.UUID] = None,
         managed_agent_name: Optional[str] = None,
         standing_bypass_reason: Optional[str] = None,
+        rule_context: Optional[Dict[str, Any]] = None,
     ) -> ApprovalRequest:
         """Create approval request and send notifications through configured channels.
 
@@ -1498,12 +1733,15 @@ class ApprovalService:
                 request is still created and recorded, then immediately
                 auto-approved without notifying anyone. Must be an
                 :class:`AutoApprovedReason` value.
+            rule_context: Snapshot of the policy rule that required this
+                approval, built by services/approval_rule_context.py. Passed
+                straight through to the row; None when no rule was evaluated.
 
         Returns:
             Created approval request (may be already resolved if AI-driven)
         """
         # Store raw tool_args for execution; redact only for logging/notifications
-        # (see ARCHITECTURE.md Redaction Policy)
+        # (see docs/architecture/security.md Redaction Policy)
         # Create approval request first
         approval_request = await self.create_approval_request(
             account_id=account_id,
@@ -1517,6 +1755,7 @@ class ApprovalService:
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
             managed_agent_name=managed_agent_name,
+            rule_context=rule_context,
         )
 
         # Generate user-facing summary before any notifications fire.
@@ -1730,13 +1969,16 @@ class ApprovalService:
     ) -> Dict[str, Any]:
         """Send notifications for an approval request based on user preferences.
 
-        Notification channels are determined by each user's notification preferences,
-        not by the workflow. Each approver will be notified via their preferred channels:
-        - Email if they have enable_email=True
-        - Push notification if they have enable_mobile_push=True and registered devices
+        Notification channels are determined by each user's notification
+        preferences, not by the workflow. Push goes out immediately. Email
+        for dual-channel users with ``stagger_email`` enabled is delayed
+        until the request is still pending after
+        ``APPROVAL_EMAIL_STAGGER_SECONDS``. Email-only users and users with
+        stagger off still get email immediately. If push is unavailable,
+        email falls back to immediate for every email-enabled approver.
 
-        For webhook-based policies (slack, mattermost, webhook), those are sent
-        as configured in the workflow since they're not per-user.
+        For webhook-based policies (slack, mattermost, webhook), those are
+        sent as configured in the workflow since they are not per-user.
 
         Args:
             approval_request: The approval request to notify about
@@ -1745,7 +1987,7 @@ class ApprovalService:
         Returns:
             Dict with results per notification channel
         """
-        results = {}
+        results: Dict[str, Any] = {}
 
         # Guard against duplicate notifications - check if request is too old to be new
         # If request was created more than 30 seconds ago, skip notifications
@@ -1808,25 +2050,9 @@ class ApprovalService:
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug(f"Failed to resolve approver list for audit: {exc}")
 
-        # Send email notifications to users who have email enabled
-        try:
-            email_result = await self._send_email_notification(
-                approval_request, approval_workflow
-            )
-            results["email"] = email_result
-        except Exception as e:
-            logger.error(f"Failed to send email notifications: {str(e)}")
-            results["email"] = {"success": False, "error": str(e)}
+        partition = await self._partition_approvers_for_stagger(approver_user_ids)
 
-        self._audit_notification_result(
-            approval_request=approval_request,
-            channel="email",
-            channel_result=results["email"],
-            recipient_user_ids=approver_user_ids,
-            correlation_id=correlation_id,
-        )
-
-        # Send push notifications to users who have push enabled
+        # Push first so watch/mobile get the head start.
         try:
             push_result = await self._send_push_notification(
                 approval_request, approval_workflow
@@ -1840,9 +2066,80 @@ class ApprovalService:
             approval_request=approval_request,
             channel="mobile_push",
             channel_result=results["mobile_push"],
-            recipient_user_ids=approver_user_ids,
+            recipient_user_ids=partition["push_capable"] or approver_user_ids,
             correlation_id=correlation_id,
         )
+
+        push_unavailable = results["mobile_push"].get("success") is False or bool(
+            results["mobile_push"].get("no_devices")
+        )
+
+        if push_unavailable:
+            # Never degrade delivery when push cannot work.
+            immediate_email_ids = list(partition["all_email"])
+            delayed_email_ids: List[uuid.UUID] = []
+        else:
+            immediate_email_ids = list(partition["email_only"]) + list(
+                partition["both_immediate"]
+            )
+            delayed_email_ids = list(partition["both_stagger"])
+
+        # Immediate email: recipients from the partition, or a no-op/legacy
+        # call when nothing is staggered (empty workflow / push-only).
+        send_immediate_email = bool(immediate_email_ids) or not delayed_email_ids
+        if send_immediate_email:
+            if immediate_email_ids:
+                email_user_ids: Optional[List[uuid.UUID]] = immediate_email_ids
+            elif approver_user_ids:
+                # Approvers exist but none are due immediate email (e.g. push-only).
+                email_user_ids = []
+            else:
+                # Preserve legacy "no approvers configured" reporting.
+                email_user_ids = None
+            try:
+                email_result = await self._send_email_notification(
+                    approval_request,
+                    approval_workflow,
+                    user_ids=email_user_ids,
+                )
+                results["email"] = email_result
+            except Exception as e:
+                logger.error(f"Failed to send email notifications: {str(e)}")
+                results["email"] = {"success": False, "error": str(e)}
+
+            self._audit_notification_result(
+                approval_request=approval_request,
+                channel="email",
+                channel_result=results["email"],
+                recipient_user_ids=immediate_email_ids or approver_user_ids,
+                correlation_id=correlation_id,
+            )
+
+        if delayed_email_ids:
+            delay_seconds = APPROVAL_EMAIL_STAGGER_SECONDS
+            task = asyncio.create_task(
+                _send_delayed_approval_email(
+                    request_id=approval_request.id,
+                    user_ids=delayed_email_ids,
+                    delay_seconds=delay_seconds,
+                    base_url=self.base_url,
+                    correlation_id=correlation_id,
+                    account_id=str(approval_request.account_id),
+                    tool_name=approval_request.tool_name,
+                )
+            )
+            _retain_delayed_email_task(task)
+            results["email_delayed"] = {
+                "scheduled": len(delayed_email_ids),
+                "delay_seconds": delay_seconds,
+            }
+            self._audit_notification_result(
+                approval_request=approval_request,
+                channel="email",
+                channel_result=results["email_delayed"],
+                recipient_user_ids=delayed_email_ids,
+                correlation_id=correlation_id,
+            )
 
         # Handle webhook-based notifications (these are workflow-level, not per-user)
         # Derive notification channels from approval_type (the model field)
@@ -1870,6 +2167,75 @@ class ApprovalService:
 
         return results
 
+    async def _partition_approvers_for_stagger(
+        self, approver_user_ids: List[uuid.UUID]
+    ) -> Dict[str, List[uuid.UUID]]:
+        """Partition approvers by email/push eligibility and stagger preference.
+
+        Args:
+            approver_user_ids: Approver user IDs to classify.
+
+        Returns:
+            Dict with keys ``push_capable``, ``email_only``, ``both_stagger``,
+            ``both_immediate``, and ``all_email``.
+        """
+
+        def _partition() -> Dict[str, List[uuid.UUID]]:
+            from preloop.models.crud import notification_preferences
+            from preloop.models.db.session import get_db_session
+
+            push_capable: List[uuid.UUID] = []
+            email_only: List[uuid.UUID] = []
+            both_stagger: List[uuid.UUID] = []
+            both_immediate: List[uuid.UUID] = []
+            all_email: List[uuid.UUID] = []
+
+            sync_db = next(get_db_session())
+            try:
+                for user_id in approver_user_ids:
+                    prefs = notification_preferences.get_by_user(sync_db, user_id)
+                    if not prefs:
+                        continue
+
+                    has_email = bool(prefs.enable_email)
+                    has_tokens = bool(prefs.get_device_tokens())
+                    has_push = bool(prefs.enable_mobile_push and has_tokens)
+                    stagger_on = bool(getattr(prefs, "stagger_email", True))
+
+                    if has_push:
+                        push_capable.append(user_id)
+                    if has_email:
+                        all_email.append(user_id)
+                        if has_push:
+                            if stagger_on:
+                                both_stagger.append(user_id)
+                            else:
+                                both_immediate.append(user_id)
+                        else:
+                            email_only.append(user_id)
+            finally:
+                sync_db.close()
+
+            logger.info(
+                "Partitioned %s approvers: %s push-capable, %s email-only, "
+                "%s both-stagger, %s both-immediate",
+                len(approver_user_ids),
+                len(push_capable),
+                len(email_only),
+                len(both_stagger),
+                len(both_immediate),
+            )
+            return {
+                "push_capable": push_capable,
+                "email_only": email_only,
+                "both_stagger": both_stagger,
+                "both_immediate": both_immediate,
+                "all_email": all_email,
+            }
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_sync_db_executor, _partition)
+
     def _audit_notification_result(
         self,
         approval_request: ApprovalRequest,
@@ -1881,8 +2247,8 @@ class ApprovalService:
         """Persist a single channel fan-out result to the audit log.
 
         Translates the heterogeneous per-channel result dicts into a normalised
-        ``status`` (sent / partial / failed / skipped / no_devices) and forwards
-        the structured counts to ``_log_approval_notification_async``.
+        ``status`` (sent / partial / failed / skipped / no_devices / scheduled)
+        and forwards the structured counts to ``_log_approval_notification_async``.
         """
         try:
             sent = channel_result.get("sent")
@@ -1890,8 +2256,11 @@ class ApprovalService:
             skipped = channel_result.get("skipped")
             error = channel_result.get("error")
             success = channel_result.get("success")
+            scheduled = channel_result.get("scheduled")
 
-            if channel_result.get("no_devices"):
+            if scheduled is not None:
+                status = "scheduled"
+            elif channel_result.get("no_devices"):
                 status = "no_devices"
             elif success is False and (sent or 0) == 0:
                 status = "failed"
@@ -1918,6 +2287,11 @@ class ApprovalService:
                 skipped_count=skipped if isinstance(skipped, int) else None,
                 error=str(error) if error else None,
                 correlation_id=correlation_id,
+                extra_details=(
+                    {"delay_seconds": channel_result.get("delay_seconds")}
+                    if scheduled is not None
+                    else None
+                ),
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug(f"Failed to persist notification audit for {channel}: {exc}")
@@ -1959,12 +2333,15 @@ class ApprovalService:
         self,
         approval_request: ApprovalRequest,
         approval_workflow: ApprovalWorkflow,
+        user_ids: Optional[List[uuid.UUID]] = None,
     ) -> Dict[str, Any]:
         """Send email notification for approval request.
 
         Args:
             approval_request: The approval request
             approval_workflow: The approval workflow
+            user_ids: Optional explicit recipient set. When None, all
+                workflow approvers are considered.
 
         Returns:
             Dict with send result
@@ -1973,14 +2350,20 @@ class ApprovalService:
         from preloop.models.models.user import User
         from sqlalchemy import select
 
-        # Get all approver user IDs (including team members)
-        approver_user_ids = await self._get_all_approver_user_ids(approval_workflow)
-
-        if not approver_user_ids:
-            logger.warning(
-                f"No approvers configured for approval workflow {approval_workflow.id}"
-            )
-            return {"success": False, "error": "No approvers configured"}
+        # Get all approver user IDs (including team members) unless a subset
+        # was provided by the stagger partitioner.
+        if user_ids is not None:
+            approver_user_ids = list(user_ids)
+            if not approver_user_ids:
+                return {"success": True, "sent": 0, "failed": 0, "skipped": 0}
+        else:
+            approver_user_ids = await self._get_all_approver_user_ids(approval_workflow)
+            if not approver_user_ids:
+                logger.warning(
+                    f"No approvers configured for approval workflow "
+                    f"{approval_workflow.id}"
+                )
+                return {"success": False, "error": "No approvers configured"}
 
         # Send email to each approver who has email notifications enabled
         from preloop.models.crud import notification_preferences
@@ -2158,6 +2541,8 @@ class ApprovalService:
                     prefs = notification_preferences.get_by_user(sync_db, user_id)
                     if not prefs or not prefs.enable_mobile_push:
                         continue
+                    if getattr(prefs, "notify_when_needed", True) is False:
+                        continue
 
                     ios_tokens = prefs.get_device_tokens(platform="ios")
                     if ios_tokens:
@@ -2168,6 +2553,14 @@ class ApprovalService:
                     if android_tokens:
                         for token in android_tokens:
                             android_tokens_list.append((user_id, token))
+
+                if _operator_present_at_machine(sync_db, approval_request):
+                    logger.info(
+                        "Skipping approval push for %s: operator is present "
+                        "at the machine",
+                        approval_request.id,
+                    )
+                    return approver_user_ids, [], []
 
                 return approver_user_ids, ios_tokens_list, android_tokens_list
             finally:
@@ -2204,6 +2597,7 @@ class ApprovalService:
             agent_reasoning=approval_request.agent_reasoning,
             tool_args=redact_dict(approval_request.tool_args or {}),
             summary=approval_request.summary,
+            rule_context=approval_request.rule_context,
         )
 
         apns_priority = 10 if priority_str in ["urgent", "high"] else 5
@@ -2569,116 +2963,131 @@ class ApprovalService:
         expired, or cancelled. If escalation is configured and the request
         expires, escalation will be triggered and the timeout extended.
 
+        Every poll runs in its own short-lived session; ``self.db`` is never
+        touched while waiting. A session held across the human decision (up
+        to the workflow timeout) pins one pooled connection per pending
+        approval and exhausts the async pool under concurrent approvals, so
+        callers may release the session this service was constructed with
+        before awaiting this method.
+
         Args:
             request_id: Approval request ID
             poll_interval: How often to poll (seconds)
 
         Returns:
-            Final approval request
+            Final approval request. The instance is detached from the
+            per-poll session that loaded it; callers may read preloaded
+            scalar columns only. Accessing lazy relationships raises
+            DetachedInstanceError.
 
         Raises:
             TimeoutError: If request expires before being resolved (after escalation if configured)
         """
+        from preloop.models.db.session import get_async_db_session
+
         while True:
-            approval_request = await self.get_approval_request(request_id)
-            if not approval_request:
-                raise ValueError(f"Approval request {request_id} not found")
+            async with get_async_db_session() as poll_db:
+                poll_service = ApprovalService(poll_db, self.base_url)
+                approval_request = await poll_service.get_approval_request(request_id)
+                if not approval_request:
+                    raise ValueError(f"Approval request {request_id} not found")
 
-            # Check if resolved
-            if approval_request.status in ["approved", "declined", "cancelled"]:
-                return approval_request
+                # Check if resolved
+                if approval_request.status in ["approved", "declined", "cancelled"]:
+                    return approval_request
 
-            # Check if expired
-            if (
-                approval_request.expires_at
-                and datetime.utcnow() > approval_request.expires_at
-            ):
-                # Get the approval workflow to check for escalation configuration
-                approval_workflow = approval_request.approval_workflow
+                # Check if expired
+                if (
+                    approval_request.expires_at
+                    and datetime.utcnow() > approval_request.expires_at
+                ):
+                    # Get the approval workflow to check for escalation configuration
+                    approval_workflow = approval_request.approval_workflow
 
-                # Debug logging for escalation check
-                logger.info(
-                    f"Checking escalation for request {request_id}: "
-                    f"approval_workflow={approval_workflow}, "
-                    f"approval_workflow_id={approval_request.approval_workflow_id}, "
-                    f"escalation_user_ids={getattr(approval_workflow, 'escalation_user_ids', None) if approval_workflow else None}, "
-                    f"escalation_team_ids={getattr(approval_workflow, 'escalation_team_ids', None) if approval_workflow else None}, "
-                    f"escalation_triggered_at={approval_request.escalation_triggered_at}"
-                )
-
-                # Check if escalation is configured and hasn't been triggered yet
-                has_escalation = approval_workflow and (
-                    approval_workflow.escalation_user_ids
-                    or approval_workflow.escalation_team_ids
-                )
-                escalation_already_triggered = (
-                    approval_request.escalation_triggered_at is not None
-                )
-
-                logger.info(
-                    f"Escalation decision for request {request_id}: "
-                    f"has_escalation={has_escalation}, "
-                    f"escalation_already_triggered={escalation_already_triggered}"
-                )
-
-                if has_escalation and not escalation_already_triggered:
-                    # Trigger escalation
+                    # Debug logging for escalation check
                     logger.info(
-                        f"Triggering escalation for approval request {request_id}"
+                        f"Checking escalation for request {request_id}: "
+                        f"approval_workflow={approval_workflow}, "
+                        f"approval_workflow_id={approval_request.approval_workflow_id}, "
+                        f"escalation_user_ids={getattr(approval_workflow, 'escalation_user_ids', None) if approval_workflow else None}, "
+                        f"escalation_team_ids={getattr(approval_workflow, 'escalation_team_ids', None) if approval_workflow else None}, "
+                        f"escalation_triggered_at={approval_request.escalation_triggered_at}"
                     )
 
-                    # Mark escalation as triggered
-                    approval_request.escalation_triggered_at = datetime.utcnow()
-
-                    # Extend the timeout - give escalation recipients the same amount of time
-                    original_timeout = approval_workflow.timeout_seconds or 300
-                    new_expires_at = datetime.utcnow() + timedelta(
-                        seconds=original_timeout
+                    # Check if escalation is configured and hasn't been triggered yet
+                    has_escalation = approval_workflow and (
+                        approval_workflow.escalation_user_ids
+                        or approval_workflow.escalation_team_ids
                     )
-                    approval_request.expires_at = new_expires_at
-
-                    await self.db.commit()
-                    await self.db.refresh(approval_request)
-
-                    # Send escalation notifications
-                    await self._send_escalation_notifications(
-                        approval_request, approval_workflow
+                    escalation_already_triggered = (
+                        approval_request.escalation_triggered_at is not None
                     )
 
-                    # Broadcast escalation event
-                    await self._broadcast_approval_update(
-                        approval_request,
-                        "escalated",
-                        extra_data={"new_expires_at": new_expires_at.isoformat()},
+                    logger.info(
+                        f"Escalation decision for request {request_id}: "
+                        f"has_escalation={has_escalation}, "
+                        f"escalation_already_triggered={escalation_already_triggered}"
                     )
 
-                    # Continue polling - don't expire yet
-                    await asyncio.sleep(poll_interval)
-                    continue
+                    if has_escalation and not escalation_already_triggered:
+                        # Trigger escalation
+                        logger.info(
+                            f"Triggering escalation for approval request {request_id}"
+                        )
 
-                # No escalation configured or already escalated - expire the request
-                expired_request = await self.update_approval_request(
-                    request_id, ApprovalRequestUpdate(status="expired")
-                )
-                # Broadcast expiration event
-                if expired_request:
-                    await self._broadcast_approval_update(expired_request, "expired")
+                        # Mark escalation as triggered
+                        approval_request.escalation_triggered_at = datetime.utcnow()
 
-                    # Log to audit trail (fire-and-forget)
-                    _log_approval_lifecycle_async(
-                        account_id=str(expired_request.account_id),
-                        approval_id=expired_request.id,
-                        event="expired",
-                        tool_name=expired_request.tool_name,
-                        reason="Request timed out without response",
-                        execution_id=expired_request.execution_id,
-                    )
+                        # Extend the timeout - give escalation recipients the same amount of time
+                        original_timeout = approval_workflow.timeout_seconds or 300
+                        new_expires_at = datetime.utcnow() + timedelta(
+                            seconds=original_timeout
+                        )
+                        approval_request.expires_at = new_expires_at
 
-                raise TimeoutError(
-                    f"Approval request {request_id} expired without response"
-                )
+                        await poll_db.commit()
+                        await poll_db.refresh(approval_request)
 
-            # Wait before polling again
+                        # Send escalation notifications
+                        await poll_service._send_escalation_notifications(
+                            approval_request, approval_workflow
+                        )
+
+                        # Broadcast escalation event
+                        await poll_service._broadcast_approval_update(
+                            approval_request,
+                            "escalated",
+                            extra_data={"new_expires_at": new_expires_at.isoformat()},
+                        )
+
+                        # Continue polling - don't expire yet (the shared
+                        # sleep below runs with the session already closed)
+                    else:
+                        # No escalation configured or already escalated - expire the request
+                        expired_request = await poll_service.update_approval_request(
+                            request_id, ApprovalRequestUpdate(status="expired")
+                        )
+                        # Broadcast expiration event
+                        if expired_request:
+                            await poll_service._broadcast_approval_update(
+                                expired_request, "expired"
+                            )
+
+                            # Log to audit trail (fire-and-forget)
+                            _log_approval_lifecycle_async(
+                                account_id=str(expired_request.account_id),
+                                approval_id=expired_request.id,
+                                event="expired",
+                                tool_name=expired_request.tool_name,
+                                reason="Request timed out without response",
+                                execution_id=expired_request.execution_id,
+                            )
+
+                        raise TimeoutError(
+                            f"Approval request {request_id} expired without response"
+                        )
+
+            # Wait before polling again with no session checked out
             await asyncio.sleep(poll_interval)
 
     async def _send_escalation_notifications(
@@ -2822,6 +3231,7 @@ class ApprovalService:
             agent_reasoning=f"ESCALATED: {approval_request.agent_reasoning or 'Original approvers did not respond'}",
             tool_args=redact_dict(approval_request.tool_args or {}),
             summary=approval_request.summary,
+            rule_context=approval_request.rule_context,
         )
 
         sent_count = 0

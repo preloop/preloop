@@ -13,6 +13,9 @@ import type {
   Project,
   Organization,
   Issue,
+  IssueListItem,
+  IssueListResponse,
+  PullRequestListResponse,
   DuplicatePair,
   DuplicatesResponse,
   IssueComplianceResult,
@@ -54,18 +57,21 @@ import type {
   ToolOutputFilterListResponse,
   ToolOutputFilterCreateRequest,
   AccountGatewayUsageSummaryResponse,
+  AccountRateLimitReportResponse,
   FlowGatewayUsageSummaryResponse,
   AIModelGatewayUsageSummaryResponse,
+  AIModelsOverviewResponse,
   ApiKeyGatewayUsageSummaryResponse,
   AIModelRuntimeSessionListResponse,
   AIModelGatewayUsageSearchResponse,
   AIModel,
-  DashboardTelemetryResponse,
   CostAnalyticsSummaryResponse,
   CostReconciliationResponse,
   ProviderBillingConnection,
   RepriceResponse,
   ToolUsageStatsResponse,
+  AIModelPriceQuote,
+  AIModelPricingResponse,
   ModelPriceOverride,
   ModelPriceOverrideCreate,
   ModelPriceOverrideUpdate,
@@ -142,6 +148,26 @@ export function extractErrorMessage(
   errorData: any,
   defaultMessage: string
 ): string {
+  // OpenAI-error-shaped bodies from the gateway:
+  // { "error": { "message": ..., "type": ..., "code": ..., "provider_detail"?: ... } }
+  // The message is already scrubbed server-side; prefer it so upstream provider
+  // failures (e.g. "No allowed providers are available...") reach the user
+  // instead of a generic fallback.
+  const gatewayError = errorData?.error;
+  if (gatewayError && typeof gatewayError === 'object') {
+    if (
+      typeof gatewayError.message === 'string' &&
+      gatewayError.message.trim()
+    ) {
+      return gatewayError.message;
+    }
+    if (
+      typeof gatewayError.provider_detail === 'string' &&
+      gatewayError.provider_detail.trim()
+    ) {
+      return gatewayError.provider_detail;
+    }
+  }
   if (errorData && errorData.detail) {
     if (Array.isArray(errorData.detail)) {
       return errorData.detail
@@ -260,7 +286,72 @@ async function refreshToken(): Promise<RefreshResult> {
   return refreshPromise;
 }
 
+/**
+ * GETs that are in the air right now, keyed by URL.
+ *
+ * Two components asking the same endpoint for the same thing in the same
+ * moment (the Overview and the activity feed both wanting `/api/v1/users`,
+ * a card and the attention loader both wanting the budget policies) is one
+ * question, not two. The second caller joins the first request and gets a
+ * clone of its response; nothing is remembered once it settles, so this is a
+ * coalescer, not a cache, and no caller can ever read a stale body.
+ */
+const inFlightGets = new Map<string, Promise<Response>>();
+
+export async function fetchWithTimeout(
+  input: string,
+  init: RequestInit = {},
+  ms = 45000
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetchWithAuth(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    const aborted =
+      (error instanceof DOMException && error.name === 'AbortError') ||
+      (error instanceof Error && error.name === 'AbortError');
+    if (aborted) {
+      const timeoutError = new Error('Request timed out');
+      timeoutError.name = 'TimeoutError';
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 export async function fetchWithAuth(
+  url: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  const method = (options.method || 'GET').toUpperCase();
+  // Only plain reads: a body, a signal or a custom header makes the call the
+  // caller's own, and anything that is not a GET may change something.
+  const coalescable =
+    method === 'GET' &&
+    !options.body &&
+    !options.signal &&
+    !options.headers &&
+    options.cache !== 'reload' &&
+    options.cache !== 'no-store';
+  if (coalescable) {
+    const pending = inFlightGets.get(url);
+    if (pending) {
+      return (await pending).clone();
+    }
+    const request = performFetchWithAuth(url, options).finally(() => {
+      inFlightGets.delete(url);
+    });
+    inFlightGets.set(url, request);
+    // The first caller gets a clone too, so every caller reads its own body.
+    return (await request).clone();
+  }
+  return performFetchWithAuth(url, options);
+}
+
+async function performFetchWithAuth(
   url: string,
   options: RequestInit = {}
 ): Promise<Response> {
@@ -652,6 +743,89 @@ export async function getAccountGatewayUsageSummary(
   return response.json();
 }
 
+export async function getAccountRateLimitReport(
+  params: GatewayUsageSummaryParams = {}
+): Promise<AccountRateLimitReportResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/account/gateway-usage/rate-limits${buildGatewayUsageQuery(params)}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch rate limit report');
+  }
+  return response.json();
+}
+
+/**
+ * A console attention item the account has silenced.
+ *
+ * `fingerprint` is why the item was showing when it was dismissed; the item
+ * comes back by itself when the reason changes.
+ */
+export interface AttentionDismissal {
+  id: string;
+  item_id: string;
+  fingerprint: string;
+  reason: 'expected' | 'snoozed' | 'fixed';
+  snooze_until: string | null;
+  dismissed_by_user_id: string | null;
+  dismissed_by_username: string | null;
+  created_at: string;
+}
+
+/** Distinguishes "nothing is dismissed" from "this backend has no such API". */
+export const DISMISSALS_UNSUPPORTED = 'unsupported' as const;
+
+/**
+ * Active dismissals, or `DISMISSALS_UNSUPPORTED` when the backend predates
+ * the endpoint. A console pointed at an older instance must show its inbox
+ * without dismiss controls rather than an error.
+ */
+export async function getAttentionDismissals(): Promise<
+  AttentionDismissal[] | typeof DISMISSALS_UNSUPPORTED
+> {
+  const response = await fetchWithAuth('/api/v1/attention/dismissals');
+  if (response.status === 404 || response.status === 405) {
+    return DISMISSALS_UNSUPPORTED;
+  }
+  if (!response.ok) {
+    throw new Error('Failed to fetch attention dismissals');
+  }
+  const body = await response.json();
+  return (body?.items || []) as AttentionDismissal[];
+}
+
+export async function dismissAttentionItem(
+  itemId: string,
+  body: {
+    fingerprint: string;
+    reason: 'expected' | 'snoozed' | 'fixed';
+    snooze_days?: number;
+  }
+): Promise<AttentionDismissal> {
+  const response = await fetchWithAuth(
+    `/api/v1/attention/dismissals/${encodeURIComponent(itemId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to dismiss item');
+  }
+  return response.json();
+}
+
+export async function restoreAttentionItem(itemId: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/attention/dismissals/${encodeURIComponent(itemId)}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to restore item');
+  }
+}
+
 export async function getCostAnalyticsSummary(
   params: GatewayUsageSummaryParams = {}
 ): Promise<CostAnalyticsSummaryResponse> {
@@ -672,6 +846,39 @@ export async function getToolUsageStats(
   );
   if (!response.ok) {
     throw new Error('Failed to fetch tool usage stats');
+  }
+  return response.json();
+}
+
+export async function getAIModelPricing(
+  modelId: string
+): Promise<AIModelPricingResponse> {
+  const response = await fetchWithAuth(`/api/v1/ai-models/${modelId}/pricing`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch model pricing');
+  }
+  return response.json();
+}
+
+/**
+ * Read the provider's published price for a model. Returns numbers to confirm;
+ * nothing is stored until somebody saves an override.
+ */
+export async function fetchAIModelPricingFromProvider(
+  modelId: string
+): Promise<AIModelPriceQuote> {
+  const response = await fetchWithAuth(
+    `/api/v1/ai-models/${modelId}/pricing/fetch`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(
+        errorData,
+        'Failed to fetch a price from the provider'
+      )
+    );
   }
   return response.json();
 }
@@ -921,14 +1128,6 @@ export async function refreshToolCostFlags(): Promise<ToolCostFlag[]> {
     return data.flags as ToolCostFlag[];
   }
   return Array.isArray(data) ? (data as ToolCostFlag[]) : [];
-}
-
-export async function getDashboardTelemetry(): Promise<DashboardTelemetryResponse> {
-  const response = await fetchWithAuth('/api/v1/account/telemetry/dashboard');
-  if (!response.ok) {
-    throw new Error('Failed to fetch dashboard telemetry');
-  }
-  return response.json();
 }
 
 export async function getFlowGatewayUsageSummary(
@@ -1246,6 +1445,52 @@ export async function sendAgentControlVoiceTranscript(
       errorData,
       'Failed to send Agent Control voice transcript'
     )
+  );
+}
+
+export async function sendAgentControlTakeover(
+  agentId: string,
+  payload: {
+    target_session_id?: string | null;
+    start_new_session?: boolean;
+    spawn_worktree?: boolean;
+  } = {}
+): Promise<AgentControlCommandResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/agents/${agentId}/control/takeover`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (response.ok) {
+    return response.json().catch(() => ({}));
+  }
+  const errorData = await response.json().catch(() => ({}));
+  throw new Error(
+    extractErrorMessage(errorData, 'Failed to take over this session')
+  );
+}
+
+export async function sendAgentControlRelease(
+  agentId: string,
+  payload: { target_session_id?: string | null } = {}
+): Promise<AgentControlCommandResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/agents/${agentId}/control/release`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (response.ok) {
+    return response.json().catch(() => ({}));
+  }
+  const errorData = await response.json().catch(() => ({}));
+  throw new Error(
+    extractErrorMessage(errorData, 'Failed to release this session')
   );
 }
 
@@ -1863,6 +2108,74 @@ export async function getIssueCount(): Promise<{ total_issues: number }> {
   return response.json();
 }
 
+export async function listIssues(params: {
+  project_id?: string;
+  tracker_id?: string;
+  status?: 'open' | 'closed' | 'all';
+  q?: string;
+  skip?: number;
+  limit?: number;
+  sort?: 'updated_desc';
+}): Promise<IssueListResponse> {
+  const query = new URLSearchParams();
+  if (params.project_id) query.set('project_id', params.project_id);
+  if (params.tracker_id) query.set('tracker_id', params.tracker_id);
+  if (params.status) query.set('status', params.status);
+  if (params.q) query.set('q', params.q);
+  if (params.skip !== undefined) query.set('skip', String(params.skip));
+  if (params.limit !== undefined) query.set('limit', String(params.limit));
+  if (params.sort) query.set('sort', params.sort);
+  const response = await fetchWithAuth(`/api/v1/issues?${query.toString()}`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch issues');
+  }
+  return response.json();
+}
+
+export async function listProjectPullRequests(
+  projectId: string,
+  params?: {
+    state?: 'open';
+    limit?: number;
+    page?: number;
+    refresh?: boolean;
+  }
+): Promise<PullRequestListResponse> {
+  const query = new URLSearchParams();
+  query.set('state', params?.state || 'open');
+  if (params?.limit !== undefined) query.set('limit', String(params.limit));
+  if (params?.page !== undefined) query.set('page', String(params.page));
+  if (params?.refresh) query.set('refresh', '1');
+  const response = await fetchWithAuth(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/pull-requests?${query.toString()}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch pull requests');
+  }
+  return response.json();
+}
+
+export async function getIssue(issueId: string): Promise<IssueListItem> {
+  const response = await fetchWithAuth(
+    `/api/v1/issues/${encodeURIComponent(issueId)}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch issue');
+  }
+  return response.json();
+}
+
+export async function getIssueDuplicateAiStatus(): Promise<{
+  configured: boolean;
+  model_name: string | null;
+}> {
+  const response = await fetchWithAuth('/api/v1/issue-duplicates/ai-status');
+  if (!response.ok) {
+    throw new Error('Failed to fetch AI status');
+  }
+  return response.json();
+}
+
 export async function searchIssues(
   params: FetchIssuesListParams
 ): Promise<any[]> {
@@ -1991,6 +2304,46 @@ export interface UserProfile {
   is_superuser?: boolean;
   /** null/undefined = RBAC inactive (OSS); array = allow-list */
   permissions?: string[] | null;
+  avatar_url?: string | null;
+  avatar_source?: string | null;
+}
+
+export interface AvatarResponse {
+  avatar_url: string | null;
+  avatar_source: string | null;
+}
+
+export async function uploadAvatar(file: File): Promise<AvatarResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await fetchWithAuth('/api/v1/users/me/avatar', {
+    method: 'PUT',
+    body: formData,
+  });
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    if (typeof detail.detail === 'string') {
+      throw new Error(detail.detail);
+    }
+    if (response.status === 413) {
+      throw new Error('Image too large to upload.');
+    }
+    throw new Error(`Failed to upload avatar (${response.status})`);
+  }
+  // Profile changed -- drop cached /me so the next reader gets fresh data.
+  userProfileCache = null;
+  return response.json();
+}
+
+export async function deleteAvatar(): Promise<AvatarResponse> {
+  const response = await fetchWithAuth('/api/v1/users/me/avatar', {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error('Failed to delete avatar');
+  }
+  userProfileCache = null;
+  return response.json();
 }
 
 // Account
@@ -2270,23 +2623,130 @@ export async function deleteAIModel(modelId: string) {
   }
 }
 
+/**
+ * How a provider model list was obtained. "live" means the provider's own
+ * catalog answered; "fallback" means a static known-models list stood in and
+ * `error` carries a short safe reason code (never raw provider text).
+ */
+/**
+ * Short, safe reasons the server reports for a fallback model list.
+ *
+ * This vocabulary mirrors the server's fixed set (see
+ * `preloop.services.ai_model_provider`). Raw exception text is deliberately
+ * never sent, because it can embed endpoint URLs or key material. An
+ * authentication failure that the provider rejected as a bad key still
+ * raises a 401 instead of returning a fallback list; `auth` is reserved
+ * for provenance-only auth failures.
+ */
+export type AvailableModelsFallbackReason =
+  | 'timeout'
+  | 'network'
+  | 'empty_response'
+  | 'unsupported'
+  | 'missing_endpoint'
+  | 'sdk_missing'
+  | 'missing_key'
+  | 'auth'
+  | 'subscription_oauth'
+  | 'unknown';
+
+export interface AvailableModelsResult {
+  models: string[];
+  source: 'live' | 'fallback';
+  error?: AvailableModelsFallbackReason;
+}
+
+/**
+ * AWS credential fields for the bedrock provider's model listing.
+ * Carried in the POST body for the same reason as `apiKey`.
+ */
+export interface AwsDiscoveryAuth {
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  sessionToken?: string;
+  region?: string;
+}
+
+/**
+ * List the models a provider offers, for the model picker.
+ *
+ * The API key goes in the POST body, never the query string: as a query
+ * parameter it was written to server access logs in plaintext.
+ *
+ * `apiEndpoint` is required for the openai-compatible and custom providers,
+ * which have no fixed catalog and are listed from the endpoint's own
+ * OpenAI-compatible GET /models.
+ *
+ * `aiModelId` is the existing model row when editing. The server decrypts
+ * the stored key and lists live; the stored key is never returned. A typed
+ * `apiKey` still wins.
+ *
+ * `awsAuth` carries explicit AWS credentials for the bedrock provider.
+ *
+ * Tolerates the old bare string[] response (pre-provenance servers) by
+ * mapping it to { models, source: 'live' }.
+ */
 export async function getAvailableModelsForProvider(
   provider: string,
   apiKey?: string,
-  modelKind: 'llm' | 'stt' | 'tts' = 'llm'
-): Promise<string[]> {
-  const params = new URLSearchParams({ model_kind: modelKind });
-  if (apiKey) {
-    params.set('api_key', apiKey);
-  }
-  const url = `/api/v1/ai-models/providers/${provider}/available-models?${params.toString()}`;
-  // Use fetch instead of fetchWithAuth since this endpoint doesn't require authentication
-  const response = await fetch(url);
+  modelKind: 'llm' | 'stt' | 'tts' = 'llm',
+  apiEndpoint?: string,
+  awsAuth?: AwsDiscoveryAuth,
+  aiModelId?: string
+): Promise<AvailableModelsResult> {
+  const url = `/api/v1/ai-models/providers/${provider}/available-models`;
+  const response = await fetchWithAuth(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model_kind: modelKind,
+      ...(apiKey ? { api_key: apiKey } : {}),
+      ...(apiEndpoint ? { api_endpoint: apiEndpoint } : {}),
+      ...(aiModelId ? { ai_model_id: aiModelId } : {}),
+      ...(awsAuth?.accessKeyId
+        ? { aws_access_key_id: awsAuth.accessKeyId }
+        : {}),
+      ...(awsAuth?.secretAccessKey
+        ? { aws_secret_access_key: awsAuth.secretAccessKey }
+        : {}),
+      ...(awsAuth?.sessionToken
+        ? { aws_session_token: awsAuth.sessionToken }
+        : {}),
+      ...(awsAuth?.region ? { aws_region_name: awsAuth.region } : {}),
+    }),
+  });
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
       extractErrorMessage(errorData, 'Failed to fetch available models')
     );
+  }
+  const data = await response.json();
+  if (Array.isArray(data)) {
+    return { models: data as string[], source: 'live' };
+  }
+  return {
+    models: Array.isArray(data?.models) ? (data.models as string[]) : [],
+    source: data?.source === 'fallback' ? 'fallback' : 'live',
+    ...(data?.error ? { error: data.error } : {}),
+  };
+}
+
+/**
+ * Fetch one row per configured model: usage, active sessions, price source.
+ *
+ * One request for the whole page. Asking per model instead is what emptied
+ * the API connection pool on 2026-09-03; the per-model endpoints are for the
+ * detail page, where a person is looking at exactly one model.
+ */
+export async function getAIModelsOverview(
+  params: GatewayUsageSummaryParams = {}
+): Promise<AIModelsOverviewResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/ai-models/overview${buildGatewayUsageQuery(params)}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch AI models overview');
   }
   return response.json();
 }
@@ -2378,8 +2838,62 @@ export async function deleteFlow(flowId: string) {
     method: 'DELETE',
   });
   if (!response.ok) {
-    throw new Error('Failed to delete flow');
+    // Surface the server's reason (e.g. 409: stop active executions first).
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to delete flow');
   }
+}
+
+export interface SchedulePreview {
+  type: string;
+  description: string;
+  timezone: string;
+  next_run_times: string[];
+}
+
+/**
+ * Preview a flow schedule trigger configuration.
+ *
+ * Returns a human-readable description and the next few run times.
+ * Invalid configurations (bad cron, below the minimum interval, unknown
+ * timezone) are rejected by the backend with a 422; the validation
+ * message is surfaced as the thrown Error's message so callers can show
+ * it inline.
+ */
+export async function previewFlowSchedule(
+  scheduleConfig: unknown
+): Promise<SchedulePreview> {
+  const response = await fetchWithAuth('/api/v1/flows/schedule/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ schedule_config: scheduleConfig }),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(extractValidationMessage(errorData));
+  }
+  return response.json();
+}
+
+/**
+ * Extract a readable message from a FastAPI error body.
+ *
+ * 422 validation errors carry `detail` as a list of {loc, msg, ...};
+ * other errors carry `detail` as a string.
+ */
+function extractValidationMessage(errorData: any): string {
+  const detail = errorData?.detail;
+  if (typeof detail === 'string') {
+    return detail;
+  }
+  if (Array.isArray(detail) && detail.length > 0) {
+    return detail
+      .map((item: any) =>
+        String(item?.msg || 'Invalid value').replace(/^Value error,\s*/, '')
+      )
+      .join('; ');
+  }
+  return 'Invalid schedule configuration';
 }
 
 export async function getFlowPresets(): Promise<any[]> {
@@ -2526,6 +3040,104 @@ export async function triggerFlowExecution(
     throw new Error('Failed to trigger flow execution');
   }
   return response.json();
+}
+
+export type RunPresetSlug =
+  'automated-issue-implementation' | 'pull-request-reviewer';
+
+export interface RunPresetTarget {
+  kind: 'issue' | 'pull_request';
+  issue_id?: string;
+  project_id?: string;
+  number?: number;
+}
+
+export interface RunPresetResponse {
+  execution_id: string | null;
+  flow_id: string;
+  flow_name: string;
+  flow_created: boolean;
+  execution_url: string | null;
+}
+
+export class RunPresetError extends Error {
+  status: number;
+  code?: string;
+  flowName?: string;
+  flowId?: string;
+
+  constructor(
+    message: string,
+    status: number,
+    extras?: { code?: string; flowName?: string; flowId?: string }
+  ) {
+    super(message);
+    this.name = 'RunPresetError';
+    this.status = status;
+    this.code = extras?.code;
+    this.flowName = extras?.flowName;
+    this.flowId = extras?.flowId;
+  }
+}
+
+export async function runPresetOnTarget(body: {
+  preset_slug: RunPresetSlug;
+  target: RunPresetTarget;
+  confirm_create?: boolean;
+}): Promise<RunPresetResponse> {
+  const response = await fetchWithAuth('/api/v1/flows/run-preset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      preset_slug: body.preset_slug,
+      target: body.target,
+      confirm_create: body.confirm_create ?? false,
+    }),
+  });
+  if (response.ok) {
+    return response.json();
+  }
+  const errorData = await response.json().catch(() => ({}));
+  const detail = errorData?.detail;
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    throw new RunPresetError(
+      detail.message ||
+        detail.code ||
+        extractErrorMessage(errorData, 'Run failed'),
+      response.status,
+      {
+        code: detail.code,
+        flowName: detail.flow_name,
+        flowId: detail.flow_id,
+      }
+    );
+  }
+  throw new RunPresetError(
+    extractErrorMessage(errorData, 'Failed to run preset'),
+    response.status
+  );
+}
+
+export async function getRunners(): Promise<RunnerRecord[]> {
+  const response = await fetchWithAuth('/api/v1/runners');
+  if (!response.ok) {
+    throw new Error('Failed to fetch runners');
+  }
+  return response.json();
+}
+
+export interface RunnerRecord {
+  id: string;
+  name: string;
+  hostname?: string | null;
+  os?: string | null;
+  arch?: string | null;
+  labels?: string[];
+  status: string;
+  last_heartbeat?: string | null;
+  current_execution_id?: string | null;
+  registered_by_email?: string | null;
+  registered_by_user_id?: string | null;
 }
 
 export async function sendCommandToExecution(
@@ -2700,12 +3312,56 @@ export async function listIssueDuplicates(
   return response.json();
 }
 
+export type VerdictErrorCode = 'no_default_ai_model' | 'timeout' | 'failed';
+
+export class VerdictError extends Error {
+  code: VerdictErrorCode;
+  status: number;
+
+  constructor(code: VerdictErrorCode, status: number, message?: string) {
+    super(message ?? code);
+    this.name = 'VerdictError';
+    this.code = code;
+    this.status = status;
+  }
+}
+
+function verdictErrorFromBody(status: number, body: unknown): VerdictError {
+  const detail =
+    body && typeof body === 'object' && 'detail' in body
+      ? (body as { detail: unknown }).detail
+      : undefined;
+  if (
+    detail &&
+    typeof detail === 'object' &&
+    'code' in detail &&
+    (detail as { code: unknown }).code === 'no_default_ai_model'
+  ) {
+    return new VerdictError('no_default_ai_model', status);
+  }
+  return new VerdictError('failed', status);
+}
+
 export async function checkAIVerdict(issue1_id: string, issue2_id: string) {
-  const response = await fetchWithAuth(
-    `/api/v1/issue-duplicates/check?issue1_id=${issue1_id}&issue2_id=${issue2_id}`
-  );
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(
+      `/api/v1/issue-duplicates/check?issue1_id=${issue1_id}&issue2_id=${issue2_id}`
+    );
+  } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      throw new VerdictError('timeout', 0);
+    }
+    throw error;
+  }
   if (!response.ok) {
-    throw new Error('Failed to fetch AI verdict');
+    let body: unknown = null;
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+    throw verdictErrorFromBody(response.status, body);
   }
   return response.json();
 }
@@ -3080,6 +3736,109 @@ export async function deleteAccessRule(ruleId: string): Promise<void> {
   });
   if (!response.ok) {
     throw new Error('Failed to delete access rule');
+  }
+}
+
+export interface ModelIOCondition {
+  expression: string;
+  action: 'allow' | 'deny' | 'require_approval';
+  condition_type?: 'simple' | 'cel';
+  description?: string | null;
+}
+
+export interface ModelIODetectors {
+  pii?: boolean | { types?: string[] };
+  injection?: boolean;
+  moderation?: boolean | { backend?: string };
+}
+
+export interface ModelIORule {
+  id: string;
+  target: 'model.request' | 'model.response';
+  enabled?: boolean;
+  description?: string | null;
+  approval_workflow?: string | null;
+  detectors?: ModelIODetectors | null;
+  detector_timeout_ms?: number;
+  on_detector_timeout?: 'allow' | 'deny';
+  conditions: ModelIOCondition[];
+}
+
+export async function listModelIORules(): Promise<ModelIORule[]> {
+  const response = await fetchWithAuth('/api/v1/policies/model-io-rules');
+  if (!response.ok) {
+    throw new Error('Failed to fetch model I/O rules');
+  }
+  const data = await response.json();
+  return data.rules || [];
+}
+
+export async function createModelIORule(
+  rule: ModelIORule
+): Promise<ModelIORule> {
+  const response = await fetchWithAuth('/api/v1/policies/model-io-rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rule),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to save model I/O rule')
+    );
+  }
+  return response.json();
+}
+
+export async function updateModelIORule(
+  ruleId: string,
+  rule: ModelIORule
+): Promise<ModelIORule> {
+  const response = await fetchWithAuth(
+    `/api/v1/policies/model-io-rules/${encodeURIComponent(ruleId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rule),
+    }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to update model I/O rule')
+    );
+  }
+  return response.json();
+}
+
+export async function patchModelIORule(
+  ruleId: string,
+  patch: { enabled: boolean }
+): Promise<ModelIORule> {
+  const response = await fetchWithAuth(
+    `/api/v1/policies/model-io-rules/${encodeURIComponent(ruleId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to update model I/O rule')
+    );
+  }
+  return response.json();
+}
+
+export async function deleteModelIORule(ruleId: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/policies/model-io-rules/${encodeURIComponent(ruleId)}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to delete model I/O rule');
   }
 }
 
@@ -3739,6 +4498,8 @@ export async function getFeatures(): Promise<FeaturesResponse> {
 export interface AccountOrganization {
   id: string;
   organization_name: string | null;
+  default_runner_pool?: string | null;
+  hosted_minutes_remaining?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -3871,6 +4632,7 @@ export async function completeGitHubInstallation(
 export async function generatePolicy(options: {
   prompt: string;
   includeCurrentConfig?: boolean;
+  scopeMcpServerName?: string;
 }): Promise<{ yaml: string; warnings: string[] }> {
   const response = await fetchWithAuth('/api/v1/policies/generate', {
     method: 'POST',
@@ -3878,6 +4640,9 @@ export async function generatePolicy(options: {
     body: JSON.stringify({
       prompt: options.prompt,
       include_current_config: options.includeCurrentConfig ?? true,
+      ...(options.scopeMcpServerName
+        ? { scope_mcp_server_name: options.scopeMcpServerName }
+        : {}),
     }),
   });
   if (!response.ok) {

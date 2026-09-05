@@ -8,6 +8,54 @@ from .base import PromptResolver, ResolverContext
 logger = logging.getLogger(__name__)
 
 
+def _alias_object_attribute_ids(attrs: Dict[str, Any]) -> None:
+    """Expose both GitHub ``number`` and GitLab ``iid`` on object_attributes.
+
+    Presets (including Automated Issue Implementation) use
+    ``object_attributes.number`` so ``Closes #N`` resolves. GitHub issue and
+    pull-request payloads already set both keys when mapped into
+    object_attributes. GitLab native object_attributes only have ``iid``.
+    """
+    if not isinstance(attrs, dict):
+        return
+    number = attrs.get("number")
+    iid = attrs.get("iid")
+    if number is None and iid is not None:
+        attrs["number"] = iid
+    if iid is None and number is not None:
+        attrs["iid"] = number
+
+
+def _lift_gitlab_noteable_ids(payload: Dict[str, Any], attrs: Dict[str, Any]) -> None:
+    """Copy the issue/MR iid off a GitLab Note hook onto object_attributes.
+
+    Note hooks put the note in ``object_attributes`` (no iid) and the
+    issue or merge request beside it. Without this, resume prompts leave
+    ``{{trigger_event.payload.object_attributes.number}}`` unresolved.
+    """
+    if attrs.get("number") is not None or attrs.get("iid") is not None:
+        return
+    for key in ("issue", "merge_request"):
+        nested = payload.get(key)
+        if not isinstance(nested, dict):
+            continue
+        iid = nested.get("iid")
+        if iid is None:
+            continue
+        attrs["number"] = iid
+        attrs["iid"] = iid
+        if not attrs.get("title") and nested.get("title"):
+            attrs["title"] = nested["title"]
+        if not attrs.get("description") and nested.get("description"):
+            attrs["description"] = nested["description"]
+        # Do not copy nested url. Real GitLab Note hooks already set
+        # object_attributes.url to the note's own anchor, so a missing-url
+        # guard never fires and overwriting would hide the comment that
+        # triggered resume. The issue/MR URL stays on payload.issue.url or
+        # payload.merge_request.url.
+        break
+
+
 class TriggerEventResolver(PromptResolver):
     """
     Resolver for trigger event data.
@@ -41,8 +89,14 @@ class TriggerEventResolver(PromptResolver):
         payload = normalized.get("payload", {})
         source = normalized.get("source", "").lower()
 
-        # If object_attributes already exists (GitLab), keep it
+        # GitLab (and other trackers that already ship object_attributes):
+        # keep the native object but alias number/iid and lift Note-hook
+        # issue/MR identifiers so the same placeholders resolve everywhere.
         if "object_attributes" in payload:
+            attrs = payload.get("object_attributes")
+            if isinstance(attrs, dict):
+                _lift_gitlab_noteable_ids(payload, attrs)
+                _alias_object_attribute_ids(attrs)
             return normalized
 
         # For GitHub, create object_attributes from pull_request or issue
@@ -89,6 +143,34 @@ class TriggerEventResolver(PromptResolver):
 
         return normalized
 
+    @staticmethod
+    def _redact_workspace_files(event_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Replace inline ``workspace_files`` blobs in full-event dumps.
+
+        Those files are materialized under ``/workspace`` before the agent
+        starts; embedding their base64 into the prompt is exactly what the
+        feature exists to avoid. Applied to every resolution (full-event and
+        payload embeds alike); paths and other entry fields still resolve.
+        """
+        payload = event_data.get("payload")
+        if not isinstance(payload, dict):
+            return event_data
+        files = payload.get("workspace_files")
+        if not isinstance(files, list):
+            return event_data
+        redacted_files = []
+        for entry in files:
+            if isinstance(entry, dict) and isinstance(entry.get("content_base64"), str):
+                entry = dict(entry)
+                entry["content_base64"] = (
+                    f"<{len(entry['content_base64'])} base64 chars "
+                    "omitted; file is written under /workspace>"
+                )
+            redacted_files.append(entry)
+        # event_data is already a deep copy made by _normalize_event_data.
+        payload["workspace_files"] = redacted_files
+        return event_data
+
     async def resolve(self, path: str, context: ResolverContext) -> Optional[str]:
         """
         Resolve trigger event placeholders.
@@ -105,8 +187,11 @@ class TriggerEventResolver(PromptResolver):
             self.logger.warning("No trigger event data available")
             return None
 
-        # Normalize event data to provide consistent structure
-        normalized_data = self._normalize_event_data(context.trigger_event_data)
+        # Normalize event data to provide consistent structure, then strip
+        # inline workspace_files blobs so they cannot be embedded in prompts.
+        normalized_data = self._redact_workspace_files(
+            self._normalize_event_data(context.trigger_event_data)
+        )
 
         # If no path specified, return entire event as JSON
         if not path or path.strip() == "":

@@ -1,0 +1,6 @@
+# Regenerate with: uv pip compile --universal --generate-hashes --python-version 3.11 requirements/docker-build.in -o requirements/docker-build.txt
+build
+setuptools
+pip
+wheel
+ipdb

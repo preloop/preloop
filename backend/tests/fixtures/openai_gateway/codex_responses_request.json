@@ -28,6 +28,33 @@
         "syntax": "lark",
         "definition": "start: \"*** Begin Patch\""
       }
+    },
+    {
+      "type": "tool_search"
+    },
+    {
+      "type": "namespace",
+      "name": "mcp__preloop",
+      "tools": [
+        {
+          "type": "function",
+          "name": "preloop_get_goal",
+          "description": "Fetch a goal",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "type": "function",
+          "name": "preloop_update_goal",
+          "description": "Update a goal",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      ]
     }
   ],
   "tool_choice": "auto"

@@ -38,6 +38,7 @@ import {
   serializeScopedToolRules,
   type ScopedToolRules,
 } from '../../../utils/scoped-governance';
+import { consoleDialogStyles } from '../../../styles/console-dialog';
 
 interface GovernanceToolDefinition {
   name: string;
@@ -579,12 +580,23 @@ export class ApiKeysView extends LitElement {
                 (key) => html`
                   <tr>
                     <td>
-                      <a
-                        href="/console/settings/api-keys/${key.id}"
-                        style="font-weight: 600; text-decoration: none; color: var(--sl-color-primary-600);"
+                      <div
+                        style="display: flex; align-items: center; gap: var(--sl-spacing-2x-small); flex-wrap: wrap;"
                       >
-                        ${key.name}
-                      </a>
+                        <a
+                          href="/console/settings/api-keys/${key.id}"
+                          style="font-weight: 600; text-decoration: none; color: var(--sl-color-primary-600);"
+                        >
+                          ${key.name}
+                        </a>
+                        ${
+                          key.managed_agent_id
+                            ? html`<sl-badge variant="neutral" size="small"
+                                >Agent</sl-badge
+                              >`
+                            : ''
+                        }
+                      </div>
                     </td>
                     <td>
                       <sl-badge variant=${this.getActivityVariant(key)}>
@@ -748,6 +760,7 @@ export class ApiKeysView extends LitElement {
   }
 
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       .loading-indicator {

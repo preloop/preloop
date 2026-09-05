@@ -8,8 +8,16 @@ import os
 import json
 from datetime import datetime, UTC
 
+from preloop.services.aux_model_retry import call_with_aux_retry
+from preloop.services.model_credentials import (
+    get_aux_openai_sdk_extra_kwargs,
+    resolve_model_call_credentials,
+)
+from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.schemas.issue_duplicate import (
     IssueDuplicate as IssueDuplicateSchema,
+    IssueDuplicateAiStatus,
+    IssueDuplicateAiError,
     IssueDuplicateSuggestionRequest,
     IssueDuplicateSuggestionResponse,
     IssueDuplicateResolutionRequest,
@@ -82,9 +90,46 @@ def get_duplicate_issues(
 
 
 @router.get(
+    "/issue-duplicates/ai-status",
+    response_model=IssueDuplicateAiStatus,
+    tags=["Issue Duplicates"],
+)
+def get_issue_duplicate_ai_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> IssueDuplicateAiStatus:
+    """Report whether a default AI model is configured for verdicts."""
+    default_model = crud_ai_model.get_default_active_model(
+        db, account_id=current_user.account_id
+    )
+    if not default_model:
+        return IssueDuplicateAiStatus(configured=False, model_name=None)
+    return IssueDuplicateAiStatus(
+        configured=True,
+        model_name=default_model.name or default_model.model_identifier,
+    )
+
+
+@router.get(
     "/issue-duplicates/check",
     response_model=IssueDuplicateSchema,
     tags=["Issue Duplicates"],
+    responses={
+        422: {
+            "model": IssueDuplicateAiError,
+            "description": (
+                "No default AI model. `detail.code` is `no_default_ai_model`. "
+                "`detail` is this object, not a string."
+            ),
+        },
+        500: {
+            "model": IssueDuplicateAiError,
+            "description": (
+                "The model call failed. `detail.code` is `ai_model_error`. "
+                "`detail` is this object, not a string."
+            ),
+        },
+    },
 )
 def check_or_create_issue_duplicate(
     *,
@@ -129,7 +174,11 @@ def check_or_create_issue_duplicate(
     if not default_model:
         logger.error("No default active AI model configured.")
         raise HTTPException(
-            status_code=500, detail="No default active AI model configured."
+            status_code=422,
+            detail={
+                "code": "no_default_ai_model",
+                "message": "No default AI model configured. Set one under Models.",
+            },
         )
 
     logger.info(f"Using AI model '{default_model.model_identifier}'.")
@@ -160,7 +209,8 @@ def check_or_create_issue_duplicate(
 
     llm_response_text = ""
     try:
-        api_key = default_model.api_key
+        creds_kwargs = resolve_model_call_credentials(default_model, db=db)
+        api_key = creds_kwargs.get("api_key")
         if not api_key:
             logger.warning(
                 f"API key not found in credentials for model {default_model.model_identifier}. Trying OPENAI_API_KEY env var."
@@ -175,12 +225,25 @@ def check_or_create_issue_duplicate(
                 status_code=500, detail="OpenAI API key not configured."
             )
 
-        client = openai.OpenAI(api_key=api_key)
+        client = openai.OpenAI(api_key=api_key, timeout=30.0, max_retries=0)
+        aux_extras = get_aux_openai_sdk_extra_kwargs(
+            default_model,
+            call_site_kwargs={
+                "model": default_model.model_identifier,
+                "messages": messages,
+                "response_format": {"type": "json_object"},
+            },
+        )
 
-        response = client.chat.completions.create(
-            model=default_model.model_identifier,
-            messages=messages,
-            response_format={"type": "json_object"},
+        response = call_with_aux_retry(
+            lambda: client.chat.completions.create(
+                model=default_model.model_identifier,
+                messages=messages,
+                response_format={"type": "json_object"},
+                **aux_extras,
+            ),
+            operation_name="issue_duplicate_check",
+            provider=getattr(default_model, "provider_name", None),
         )
         llm_response_text = response.choices[0].message.content.strip()
         logger.info(
@@ -228,13 +291,29 @@ def check_or_create_issue_duplicate(
         logger.exception(
             f"OpenAI API call for model '{default_model.model_identifier}' failed: {e}"
         )
-        raise HTTPException(status_code=500, detail="AI model API error")
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "ai_model_error", "message": "AI model API error"},
+        )
+    except ModelGatewayAPIError as exc:
+        logger.warning(
+            "AI model call for issue duplicate check did not recover: %s", exc
+        )
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail="AI model is rate limited; retry later.",
+            headers=exc.response_headers(),
+        )
     except Exception as e:
         logger.exception(
             f"An unexpected error occurred during AI model invocation for model '{default_model.model_identifier}': {e}"
         )
         raise HTTPException(
-            status_code=500, detail=f"AI model processing error: {str(e)}"
+            status_code=500,
+            detail={
+                "code": "ai_model_error",
+                "message": f"AI model processing error: {str(e)}",
+            },
         )
 
 
@@ -829,7 +908,26 @@ def get_projects_duplicate_stats(
     return IssueDuplicateStats(projects=stats)
 
 
-@router.post("/ai-suggestion", response_model=IssueDuplicateSuggestionResponse)
+@router.post(
+    "/ai-suggestion",
+    response_model=IssueDuplicateSuggestionResponse,
+    responses={
+        422: {
+            "model": IssueDuplicateAiError,
+            "description": (
+                "No default AI model. `detail.code` is `no_default_ai_model`. "
+                "`detail` is this object, not a string."
+            ),
+        },
+        500: {
+            "model": IssueDuplicateAiError,
+            "description": (
+                "The model call failed. `detail.code` is `ai_model_error`. "
+                "`detail` is this object, not a string."
+            ),
+        },
+    },
+)
 def get_resolution_suggestion(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
@@ -859,7 +957,11 @@ def get_resolution_suggestion(
     )
     if not default_model:
         raise HTTPException(
-            status_code=500, detail="No default active AI model configured."
+            status_code=422,
+            detail={
+                "code": "no_default_ai_model",
+                "message": "No default AI model configured. Set one under Models.",
+            },
         )
 
     logger.info(f"Using AI model '{default_model.model_identifier}'.")
@@ -890,16 +992,49 @@ def get_resolution_suggestion(
         description2=issue2.description,
     )
 
-    client = openai.OpenAI()
+    creds_kwargs = resolve_model_call_credentials(default_model, db=db)
+    api_key = creds_kwargs.get("api_key")
+    if not api_key:
+        logger.warning(
+            f"API key not found in credentials for model {default_model.model_identifier}. Trying OPENAI_API_KEY env var."
+        )
+        api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        logger.error(
+            f"OpenAI API key not found for model {default_model.model_identifier} or environment variable."
+        )
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
+
+    client = openai.OpenAI(
+        api_key=api_key,
+        base_url=creds_kwargs.get("api_base"),
+        timeout=30.0,
+        max_retries=0,
+    )
+    dup_messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt_text},
+    ]
+    aux_extras = get_aux_openai_sdk_extra_kwargs(
+        default_model,
+        call_site_kwargs={
+            "model": default_model.model_identifier,
+            "messages": dup_messages,
+            "response_format": {"type": "json_object"},
+        },
+    )
 
     try:
-        llm_response = client.chat.completions.create(
-            model=default_model.model_identifier,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt_text},
-            ],
-            response_format={"type": "json_object"},
+        llm_response = call_with_aux_retry(
+            lambda: client.chat.completions.create(
+                model=default_model.model_identifier,
+                messages=dup_messages,
+                response_format={"type": "json_object"},
+                **aux_extras,
+            ),
+            operation_name="issue_duplicate_resolution_suggestion",
+            provider=getattr(default_model, "provider_name", None),
         )
         suggestion_data = json.loads(llm_response.choices[0].message.content)
 
@@ -914,5 +1049,16 @@ def get_resolution_suggestion(
     except openai.APIError as e:
         logger.error(f"OpenAI API call failed: {e}")
         raise HTTPException(
-            status_code=500, detail="Failed to get suggestion from AI model."
+            status_code=500,
+            detail={
+                "code": "ai_model_error",
+                "message": "Failed to get suggestion from AI model.",
+            },
+        )
+    except ModelGatewayAPIError as exc:
+        logger.warning("AI suggestion call did not recover: %s", exc)
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail="AI model is rate limited; retry later.",
+            headers=exc.response_headers(),
         )

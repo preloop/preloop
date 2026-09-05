@@ -1,6 +1,7 @@
 """Endpoint tests for managed-agent registry surfaces."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 from uuid import uuid4
 
 from preloop.api.endpoints.account import (
@@ -16,6 +17,7 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_runtime_session_activity,
 )
+from preloop.models.models.api_usage import ApiUsage
 from preloop.models.models.mcp_server import MCPServer
 from preloop.models.models.mcp_tool import MCPTool
 
@@ -81,6 +83,7 @@ def test_managed_agent_control_fields_merge_runtime_plugin_evidence():
     """A later CLI enrollment must not hide a live runtime control connection."""
     fields = _managed_agent_control_fields(
         {
+            "id": "agent-openclaw",
             "agent_kind": "openclaw",
             "session_source_type": "openclaw",
             "lifecycle_state": "active",
@@ -113,12 +116,153 @@ def test_managed_agent_control_fields_merge_runtime_plugin_evidence():
             },
             "managed_config": {},
         },
+        ws_connected=True,
     )
 
     assert fields["control_state"] == "plugin_connected"
     assert fields["control_enabled"] is True
     assert fields["control_online"] is True
     assert fields["control_capabilities"]
+
+
+def test_managed_agent_control_fields_enable_claude_code_with_sidecar_flags():
+    """claude_code is a supported kind; control_enabled still needs sidecar flags."""
+    connected = _managed_agent_control_fields(
+        {
+            "agent_kind": "claude_code",
+            "session_source_type": "claude_code",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-claude",
+            "ended_at": None,
+        },
+        {
+            "validation_result": {
+                "control_channel_configured": True,
+                "control_plugin_verified": True,
+                "control_ws_url_ok": True,
+                "control_bearer_token_ok": True,
+            },
+            "managed_config": {},
+        },
+        ws_connected=True,
+    )
+
+    assert connected["control_enabled"] is True
+    assert connected["control_online"] is True
+    assert connected["control_state"] == "plugin_connected"
+    assert connected["control_capabilities"]
+    assert connected["control_session_mode"] == "remote"
+
+    no_sidecar = _managed_agent_control_fields(
+        {
+            "agent_kind": "claude_code",
+            "session_source_type": "claude_code",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-claude",
+            "ended_at": None,
+        },
+        None,
+    )
+
+    assert no_sidecar["control_enabled"] is False
+    assert no_sidecar["control_online"] is False
+    assert no_sidecar["control_state"] == "unsupported"
+    assert no_sidecar["control_capabilities"] == []
+
+
+def test_managed_agent_control_online_uses_persisted_last_seen():
+    """REST on another worker still reports online from the sidecar heartbeat."""
+    fields = _managed_agent_control_fields(
+        {
+            "id": "agent-from-db",
+            "agent_kind": "claude_code",
+            "session_source_type": "claude_code",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-claude",
+            "ended_at": None,
+            "last_seen_at": datetime.now(UTC) - timedelta(seconds=10),
+            "control_session_mode": "local",
+        },
+        {
+            "validation_result": {
+                "control_channel_configured": True,
+                "control_plugin_verified": True,
+                "control_ws_url_ok": True,
+                "control_bearer_token_ok": True,
+            },
+            "managed_config": {},
+        },
+    )
+
+    assert fields["control_online"] is True
+    assert fields["control_session_mode"] == "local"
+
+
+def test_managed_agent_control_online_ignores_enrollment_last_seen():
+    """Token mint stamps last_seen_at; that is not a sidecar heartbeat."""
+    fields = _managed_agent_control_fields(
+        {
+            "id": "agent-from-db",
+            "agent_kind": "claude_code",
+            "session_source_type": "claude_code",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-claude",
+            "ended_at": None,
+            "last_seen_at": datetime.now(UTC) - timedelta(seconds=10),
+        },
+        {
+            "validation_result": {
+                "control_channel_configured": True,
+                "control_plugin_verified": True,
+                "control_ws_url_ok": True,
+                "control_bearer_token_ok": True,
+            },
+            "managed_config": {},
+        },
+    )
+
+    assert fields["control_online"] is False
+    assert fields["control_session_mode"] == "offline"
+
+
+def test_managed_agent_summary_coerces_null_session_mode():
+    from preloop.schemas.gateway_usage import ManagedAgentSummary
+
+    summary = ManagedAgentSummary(
+        id="agent-1",
+        display_name="Claude",
+        session_source_type="claude_code",
+        session_source_id="src",
+        enrolled_via="cli",
+        last_seen_at=datetime.now(UTC),
+        control_session_mode=None,
+    )
+    assert summary.control_session_mode == "offline"
+
+
+def test_managed_agent_control_fields_keep_unknown_kinds_unsupported():
+    """Sidecar flags must not enable Agent Control for an unsupported kind."""
+    fields = _managed_agent_control_fields(
+        {
+            "agent_kind": "cursor",
+            "session_source_type": "cursor",
+            "lifecycle_state": "active",
+            "runtime_session_id": "runtime-cursor",
+            "ended_at": None,
+        },
+        {
+            "validation_result": {
+                "control_channel_configured": True,
+                "control_plugin_verified": True,
+                "control_ws_url_ok": True,
+                "control_bearer_token_ok": True,
+            },
+            "managed_config": {},
+        },
+    )
+
+    assert fields["control_enabled"] is False
+    assert fields["control_state"] == "unsupported"
 
 
 def test_onboarding_flags_downgrade_failed_live_gateway_to_mcp_only():
@@ -1176,6 +1320,379 @@ def test_account_agent_update_endpoint_controls_lifecycle_and_owner(
     )
     assert reenroll_response.status_code == 200
     assert reenroll_response.json()["lifecycle_state"] == "active"
+
+
+def _seed_pauseable_agent(client, db_session, test_user, *, source_id: str):
+    """Onboard one managed agent and return ``(agent_id, durable_token)``.
+
+    Mirrors the CLI onboarding shape: a runtime-session token mints the
+    registry entry, then a durable credential is created and written into the
+    local agent config as ``ANTHROPIC_API_KEY``.
+
+    Args:
+        client: FastAPI test client.
+        db_session: Active database session.
+        test_user: Authenticated account owner.
+        source_id: Durable principal id for the simulated local agent.
+
+    Returns:
+        Tuple of the managed-agent id and its durable credential token.
+    """
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": source_id,
+            "runtime_principal_name": "Claude Code",
+        },
+    )
+    assert token_response.status_code == 201
+
+    agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="claude_code",
+        session_source_id=source_id,
+    )
+    assert agent is not None
+    agent_id = str(agent.id)
+
+    credential_response = client.post(
+        f"/api/v1/agents/{agent_id}/credentials",
+        json={
+            "name": "durable-gateway-credential",
+            "expires_in_days": 365,
+            "scopes": ["mcp:read", "mcp:write"],
+        },
+    )
+    assert credential_response.status_code == 201
+    return agent_id, credential_response.json()["token"]
+
+
+def _post_anthropic_message(client, token: str):
+    """Drive one gateway request with a durable agent credential."""
+    with patch(
+        "preloop.services.openai_gateway.litellm.completion",
+        return_value={
+            "id": "msg_pause_resume",
+            "created": 1710000000,
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "pong"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
+        },
+    ):
+        return client.post(
+            "/anthropic/v1/messages",
+            headers={"x-api-key": token, "anthropic-version": "2023-06-01"},
+            json={
+                "model": "anthropic/claude-pause-resume",
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 64,
+            },
+        )
+
+
+def _seed_anthropic_gateway_model(db_session, account_id) -> None:
+    """Create the gateway-enabled model the pause/resume tests dispatch to."""
+    crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Claude Pause Resume Model",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-sonnet-4-5",
+            "api_key": "provider-secret",
+            "meta_data": {
+                "gateway": {
+                    "enabled": True,
+                    "model_alias": "anthropic/claude-pause-resume",
+                    "provider_adapter": "preloop",
+                }
+            },
+        },
+        account_id=account_id,
+    )
+
+
+def _usage_count(db_session, account_id) -> int:
+    """Count persisted Anthropic-gateway usage rows for one account."""
+    return (
+        db_session.query(ApiUsage)
+        .filter(
+            ApiUsage.account_id == account_id,
+            ApiUsage.endpoint == "/anthropic/v1/messages",
+        )
+        .count()
+    )
+
+
+def test_account_agent_pause_then_resume_restores_gateway_traffic(
+    client, db_session, test_user
+):
+    """Pause must block gateway traffic and resume must restore it.
+
+    Regression for the halt/resume asymmetry: suspend deactivated every
+    runtime API key while resume only flipped the lifecycle flag back, so a
+    resumed agent 401'd forever with no usage row ever written.
+    """
+    _seed_anthropic_gateway_model(db_session, test_user.account_id)
+    agent_id, durable_token = _seed_pauseable_agent(
+        client, db_session, test_user, source_id="pause-resume-host"
+    )
+
+    before = _post_anthropic_message(client, durable_token)
+    assert before.status_code == 200, before.text
+    assert _usage_count(db_session, test_user.account_id) == 1
+
+    pause_response = client.patch(
+        f"/api/v1/agents/{agent_id}",
+        json={"lifecycle_action": "suspend", "reason": "paused by admin"},
+    )
+    assert pause_response.status_code == 200
+    assert pause_response.json()["lifecycle_state"] == "suspended"
+
+    paused = _post_anthropic_message(client, durable_token)
+    assert paused.status_code == 401
+    assert _usage_count(db_session, test_user.account_id) == 1
+
+    resume_response = client.patch(
+        f"/api/v1/agents/{agent_id}",
+        json={"lifecycle_action": "resume", "reason": "resumed by admin"},
+    )
+    assert resume_response.status_code == 200
+    assert resume_response.json()["lifecycle_state"] == "active"
+
+    after = _post_anthropic_message(client, durable_token)
+    assert after.status_code == 200, after.text
+    assert _usage_count(db_session, test_user.account_id) == 2
+
+
+def test_account_agent_pause_then_reenroll_restores_gateway_traffic(
+    client, db_session, test_user
+):
+    """The CLI's reenroll action must also restore gateway function."""
+    _seed_anthropic_gateway_model(db_session, test_user.account_id)
+    agent_id, durable_token = _seed_pauseable_agent(
+        client, db_session, test_user, source_id="pause-reenroll-host"
+    )
+
+    pause_response = client.patch(
+        f"/api/v1/agents/{agent_id}",
+        json={"lifecycle_action": "suspend", "reason": "paused by admin"},
+    )
+    assert pause_response.status_code == 200
+    assert _post_anthropic_message(client, durable_token).status_code == 401
+
+    reenroll_response = client.patch(
+        f"/api/v1/agents/{agent_id}",
+        json={"lifecycle_action": "reenroll"},
+    )
+    assert reenroll_response.status_code == 200
+    assert reenroll_response.json()["lifecycle_state"] == "active"
+
+    after = _post_anthropic_message(client, durable_token)
+    assert after.status_code == 200, after.text
+    assert _usage_count(db_session, test_user.account_id) == 1
+
+
+def test_account_agent_resume_heals_legacy_revoked_credentials(
+    client, db_session, test_user
+):
+    """Resume must revive agents left dead by the old revoke-on-suspend release.
+
+    Reproduces the state a shipped release leaves behind: lifecycle
+    ``suspended``, durable key ``is_active = False`` and the bound session
+    stamped ``ended_at``. Resume has to undo all three or the agent stays
+    silently dead in production.
+    """
+    from preloop.models.crud import crud_api_key
+
+    _seed_anthropic_gateway_model(db_session, test_user.account_id)
+    agent_id, durable_token = _seed_pauseable_agent(
+        client, db_session, test_user, source_id="legacy-halted-host"
+    )
+    agent = crud_managed_agent.get_for_account(
+        db_session, account_id=str(test_user.account_id), agent_id=agent_id
+    )
+    assert agent is not None
+    runtime_session_id = str(agent.runtime_session_id)
+
+    # Recreate the pre-fix suspension exactly.
+    agent.lifecycle_state = "suspended"
+    agent.lifecycle_reason = "halted by the previous release"
+    agent.runtime_session_id = None
+    db_session.add(agent)
+    crud_api_key.deactivate_runtime_keys_for_managed_agent(
+        db_session,
+        account_id=test_user.account_id,
+        managed_agent_id=agent_id,
+        commit=False,
+    )
+    crud_runtime_session.update_operator_state(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=runtime_session_id,
+        ended_at=datetime.now(UTC),
+        commit=False,
+    )
+    db_session.flush()
+    assert _post_anthropic_message(client, durable_token).status_code == 401
+
+    resume_response = client.patch(
+        f"/api/v1/agents/{agent_id}",
+        json={"lifecycle_action": "resume"},
+    )
+    assert resume_response.status_code == 200
+
+    durable_key = crud_api_key.get_by_key(db_session, key=durable_token)
+    assert durable_key is not None
+    db_session.refresh(durable_key)
+    assert durable_key.is_active is True
+
+    runtime_session = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=runtime_session_id,
+    )
+    assert runtime_session is not None
+    assert runtime_session.ended_at is None
+
+    after = _post_anthropic_message(client, durable_token)
+    assert after.status_code == 200, after.text
+    assert _usage_count(db_session, test_user.account_id) == 1
+
+
+def test_account_agent_resume_does_not_revive_operator_revoked_credentials(
+    client, db_session, test_user
+):
+    """Healing on resume must never resurrect a deliberately revoked credential."""
+    from preloop.models.crud import crud_api_key
+
+    agent_id, durable_token = _seed_pauseable_agent(
+        client, db_session, test_user, source_id="revoked-credential-host"
+    )
+    detail_response = client.get(f"/api/v1/agents/{agent_id}")
+    assert detail_response.status_code == 200
+    credential_id = detail_response.json()["credentials"][0]["id"]
+
+    revoke_response = client.delete(
+        f"/api/v1/agents/{agent_id}/credentials/{credential_id}"
+    )
+    assert revoke_response.status_code == 200
+
+    pause_response = client.patch(
+        f"/api/v1/agents/{agent_id}",
+        json={"lifecycle_action": "suspend", "reason": "paused by admin"},
+    )
+    assert pause_response.status_code == 200
+    resume_response = client.patch(
+        f"/api/v1/agents/{agent_id}",
+        json={"lifecycle_action": "resume"},
+    )
+    assert resume_response.status_code == 200
+
+    durable_key = crud_api_key.get_by_key(db_session, key=durable_token)
+    assert durable_key is not None
+    db_session.refresh(durable_key)
+    assert durable_key.is_active is False
+
+
+def test_account_agent_resume_does_not_revive_expired_credentials(
+    client, db_session, test_user
+):
+    """Healing on resume must never reactivate a key that has expired.
+
+    The expiry filter runs in SQL, so this also guards against the filter
+    silently not matching the column's naive-UTC storage.
+    """
+    from datetime import timedelta
+
+    from preloop.models.crud import crud_api_key
+
+    agent_id, durable_token = _seed_pauseable_agent(
+        client, db_session, test_user, source_id="expired-credential-host"
+    )
+    agent = crud_managed_agent.get_for_account(
+        db_session, account_id=str(test_user.account_id), agent_id=agent_id
+    )
+    assert agent is not None
+
+    # Recreate a legacy-bricked agent (the only state that has keys to heal)
+    # whose durable key has since expired.
+    agent.lifecycle_state = "suspended"
+    db_session.add(agent)
+    crud_api_key.deactivate_runtime_keys_for_managed_agent(
+        db_session,
+        account_id=test_user.account_id,
+        managed_agent_id=agent_id,
+        commit=False,
+    )
+    durable_key = crud_api_key.get_by_key(db_session, key=durable_token)
+    assert durable_key is not None
+    durable_key.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1)
+    db_session.add(durable_key)
+    db_session.flush()
+    assert durable_key.is_active is False
+
+    resume_response = client.patch(
+        f"/api/v1/agents/{agent_id}",
+        json={"lifecycle_action": "resume"},
+    )
+    assert resume_response.status_code == 200
+
+    db_session.refresh(durable_key)
+    assert durable_key.is_expired is True
+    assert durable_key.is_active is False
+
+
+def test_managed_agent_update_operator_state_rejects_unknown_lifecycle_state(
+    db_session, test_user
+):
+    """The CRUD layer refuses a lifecycle state the rest of the system cannot read."""
+    import pytest as _pytest
+
+    from preloop.models.crud import crud_managed_agent
+
+    with _pytest.raises(ValueError, match="Invalid managed agent lifecycle_state"):
+        crud_managed_agent.update_operator_state(
+            db_session,
+            account_id=str(test_user.account_id),
+            agent_id=str(uuid4()),
+            lifecycle_state="bypass",
+            commit=False,
+        )
+
+
+def test_account_agent_decommission_still_revokes_credentials(
+    client, db_session, test_user
+):
+    """Decommission keeps hard credential revocation (offboard semantics)."""
+    from preloop.models.crud import crud_api_key
+
+    _agent_id, durable_token = _seed_pauseable_agent(
+        client, db_session, test_user, source_id="decommission-revokes-host"
+    )
+    agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="claude_code",
+        session_source_id="decommission-revokes-host",
+    )
+    assert agent is not None
+
+    decommission_response = client.patch(
+        f"/api/v1/agents/{agent.id}",
+        json={"lifecycle_action": "decommission", "reason": "offboarded"},
+    )
+    assert decommission_response.status_code == 200
+
+    durable_key = crud_api_key.get_by_key(db_session, key=durable_token)
+    assert durable_key is not None
+    db_session.refresh(durable_key)
+    assert durable_key.is_active is False
 
 
 def test_account_agent_detail_includes_credentials_and_enrollments(

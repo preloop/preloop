@@ -1,0 +1,26 @@
+{{- /*
+Scheduled base backups for the CNPG cluster. Requires
+database.cnpg.backup.enabled (which configures the barmanObjectStore on the
+Cluster) — a Backup/ScheduledBackup without an object store target fails.
+WAL archiving is continuous; this CR only controls periodic base backups
+which bound restore (WAL replay) time and anchor the retention policy.
+*/ -}}
+{{- if and .Values.database.enabled (not .Values.database.external) }}
+{{- $backup := .Values.database.cnpg.backup }}
+{{- if and $backup.enabled $backup.scheduled.enabled }}
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: {{ .Values.database.cnpg.name | default (printf "%s-db" (include "preloop.fullname" .)) }}-scheduled-backup
+  labels:
+    {{- include "preloop.labels" . | nindent 4 }}
+spec:
+  # CNPG cron format: SIX fields, seconds first ("sec min hour dom mon dow")
+  schedule: {{ $backup.scheduled.schedule | quote }}
+  backupOwnerReference: {{ $backup.scheduled.backupOwnerReference | default "none" }}
+  immediate: {{ $backup.scheduled.immediate | default false }}
+  suspend: {{ $backup.scheduled.suspend | default false }}
+  cluster:
+    name: {{ .Values.database.cnpg.name | default (printf "%s-db" (include "preloop.fullname" .)) }}
+{{- end }}
+{{- end }}

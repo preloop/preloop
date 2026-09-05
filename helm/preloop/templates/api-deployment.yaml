@@ -30,7 +30,13 @@ spec:
       labels:
         {{- include "preloop.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
+        app: api
     spec:
+      # Long-lived MCP sessions/long-polls and websockets must be allowed to
+      # drain before kubelet SIGKILLs the pod; the k8s default of 30s cuts
+      # them off ~20s after preStop. See api.terminationGracePeriodSeconds
+      # in values.yaml.
+      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -55,8 +61,7 @@ spec:
               value: {{ .Values.environment.debug | quote }}
             - name: MODEL_GATEWAY_CAPTURE_CONTENT
               value: {{ .Values.environment.modelGatewayCaptureContent | quote }}
-            - name: DATABASE_URL
-              value: {{ include "preloop.databaseUrl" . }}
+            {{- include "preloop.databaseUrlEnv" . | nindent 12 }}
             - name: DATABASE_POOL_SIZE
               value: {{ .Values.database.pool.api.size | quote }}
             - name: DATABASE_MAX_OVERFLOW
@@ -84,19 +89,27 @@ spec:
             - name: SECRET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: jwt-secret
             {{- if .Values.security.encryptionKey }}
             - name: SECURITY__ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: encryption-key
             {{- end }}
             - name: JWT_ALGORITHM
               value: {{ .Values.environment.jwtAlgorithm | quote }}
             - name: ACCESS_TOKEN_EXPIRE_MINUTES
               value: {{ .Values.environment.jwtExpireMinutes | quote }}
+            {{- if hasKey .Values.environment "refreshTokenExpireDays" }}
+            - name: REFRESH_TOKEN_EXPIRE_DAYS
+              value: {{ .Values.environment.refreshTokenExpireDays | quote }}
+            {{- end }}
+            {{- if hasKey .Values.environment "maxSessionDays" }}
+            - name: MAX_SESSION_DAYS
+              value: {{ .Values.environment.maxSessionDays | quote }}
+            {{- end }}
             - name: LOG_LEVEL
               value: "INFO"
             - name: LOG_FORMAT
@@ -105,14 +118,14 @@ spec:
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: openai-api-key
             {{- end }}
             {{- if .Values.config.anthropic.apiKey }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: anthropic-api-key
             {{- end }}
             {{- if .Values.config.smtp.host }}
@@ -135,11 +148,21 @@ spec:
               value: {{ .Values.flowExecution.workerEnabled | default false | quote }}
             - name: FLOW_EXECUTION_CLAIM_STALE_SECONDS
               value: {{ .Values.flowExecution.claimStaleSeconds | default 120 | quote }}
+            - name: FLOW_EXECUTION_MAX_WAIT_SECONDS
+              value: {{ .Values.flowExecution.maxWaitSeconds | default 3600 | quote }}
+            - name: FLOW_COMPLETION_NUDGE_ENABLED
+              value: {{ .Values.flowExecution.completionNudge.enabled | default true | quote }}
+            - name: FLOW_COMPLETION_NUDGE_TIMEOUT_SECONDS
+              value: {{ .Values.flowExecution.completionNudge.timeoutSeconds | default 300 | quote }}
+            - name: AGENT_JOB_CREATE_MAX_ATTEMPTS
+              value: {{ .Values.flowExecution.agentJobCreate.maxAttempts | default 3 | quote }}
+            - name: AGENT_JOB_CREATE_RETRY_BASE_SECONDS
+              value: {{ .Values.flowExecution.agentJobCreate.retryBaseSeconds | default 0.5 | quote }}
             {{- if $.Values.sentry.enabled }}
             - name: SENTRY_DSN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: sentry-dsn
             {{- end }}
             - name: PROFILING_ENABLED
@@ -169,7 +192,7 @@ spec:
             - name: APNS_AUTH_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: apns-auth-key
             - name: APNS_BUNDLE_ID
               value: {{ .Values.apns.bundleId | quote }}
@@ -212,7 +235,7 @@ spec:
             - name: AWS_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: aws-secret-access-key
             {{- end }}
             {{- if .Values.computeBackend.aws.defaultRegion }}
@@ -247,7 +270,7 @@ spec:
             - name: FCM_CREDENTIALS_JSON
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: fcm-credentials-json
             {{- end }}
             {{- if .Values.githubApp.enabled }}
@@ -258,17 +281,17 @@ spec:
             - name: GITHUB_APP_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: github-app-client-secret
             - name: GITHUB_APP_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: github-app-private-key
             - name: GITHUB_APP_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: github-app-webhook-secret
             - name: GITHUB_APP_SLUG
               value: {{ .Values.githubApp.slug | quote }}
@@ -279,7 +302,7 @@ spec:
             - name: GOOGLE_OAUTH_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: google-oauth-client-secret
             {{- end }}
             {{- if .Values.gitlabOauth.enabled }}
@@ -288,11 +311,19 @@ spec:
             - name: GITLAB_OAUTH_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" . }}
+                  name: {{ include "preloop.secretName" . }}
                   key: gitlab-oauth-client-secret
             - name: GITLAB_OAUTH_BASE_URL
               value: {{ .Values.gitlabOauth.baseUrl | quote }}
             {{- end }}
+            {{- include "preloop.extraEnv" . | nindent 12 }}
+            {{- with include "preloop.otlpEnv" . }}
+            {{- . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: 8000
@@ -305,6 +336,9 @@ spec:
             {{- if .Values.geoip.enabled }}
             - name: geoip-storage
               mountPath: {{ dir .Values.geoip.dbPath }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
@@ -346,6 +380,9 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+      {{- end }}
+      {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

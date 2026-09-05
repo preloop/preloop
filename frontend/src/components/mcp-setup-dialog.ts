@@ -2,23 +2,27 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import './ide-setup-tabs';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 @customElement('mcp-setup-dialog')
 export class MCPSetupDialog extends LitElement {
-  static styles = css`
-    sl-dialog::part(panel) {
-      background: transparent;
-      box-shadow: none;
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      sl-dialog::part(panel) {
+        background: transparent;
+        box-shadow: none;
+      }
 
-    sl-dialog::part(body) {
-      padding: 0;
-    }
+      sl-dialog::part(body) {
+        padding: 0;
+      }
 
-    sl-dialog::part(overlay) {
-      backdrop-filter: blur(4px);
-    }
-  `;
+      sl-dialog::part(overlay) {
+        backdrop-filter: blur(4px);
+      }
+    `,
+  ];
 
   @property({ type: Boolean })
   open = false;

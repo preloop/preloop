@@ -88,6 +88,8 @@ class AuthUserResponse(BaseModel):
     email_verified: bool
     is_superuser: bool = False
     permissions: Optional[List[str]] = None
+    avatar_url: Optional[str] = None
+    avatar_source: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
@@ -169,6 +171,15 @@ class ApiKeySummary(BaseModel):
     recent_tool_calls: int = 0
 
 
+class PrincipalIdentity(BaseModel):
+    """Optional CLI-supplied identity metadata for a runtime principal."""
+
+    hostname: Optional[str] = Field(None, max_length=255)
+    config_path: Optional[str] = Field(None, max_length=1024)
+    source_type: Optional[str] = Field(None, max_length=64)
+    derivation: Optional[str] = Field(None, max_length=16)
+
+
 class RuntimeSessionTokenCreate(BaseModel):
     """Request model for minting a runtime-scoped session token."""
 
@@ -177,10 +188,15 @@ class RuntimeSessionTokenCreate(BaseModel):
     session_reference: Optional[str] = Field(None, max_length=255)
     runtime_principal_id: Optional[str] = Field(None, max_length=255)
     runtime_principal_name: Optional[str] = Field(None, max_length=255)
+    #: Durable product kind (``cursor``). Distinct from ``session_source_type``,
+    #: which is the transport and is part of the v2 principal fingerprint.
+    #: Older CLIs omit this; the server then keeps the stored kind. See #123.
+    agent_kind: Optional[str] = Field(None, max_length=64)
     expires_in_minutes: int = Field(default=120, ge=1, le=1440)
     scopes: List[str] = Field(default_factory=lambda: ["mcp:read", "mcp:write"])
     allowed_mcp_tools: List[Any] = Field(default_factory=list)
     allowed_mcp_servers: List[str] = Field(default_factory=list)
+    principal_identity: Optional[PrincipalIdentity] = None
 
 
 class RuntimeSessionTokenResponse(BaseModel):

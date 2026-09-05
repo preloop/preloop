@@ -54,6 +54,12 @@ class ManagedAgent(Base):
     session_source_type: Mapped[str] = mapped_column(String(64), nullable=False)
     session_source_id: Mapped[str] = mapped_column(String(255), nullable=False)
     session_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    enrollment_hostname: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+    identity_derivation: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     enrolled_via: Mapped[str] = mapped_column(
         String(64), nullable=False, default="runtime_session_token"
@@ -68,6 +74,9 @@ class ManagedAgent(Base):
     lifecycle_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     lifecycle_updated_at: Mapped[datetime] = mapped_column(nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(nullable=False)
+    control_session_mode: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
 
     account: Mapped["Account"] = relationship(
         "Account", back_populates="managed_agents"

@@ -92,7 +92,22 @@ Significant progress has been made in increasing unit test coverage for the back
 
 ### CI/CD Integration
 
-All backend unit tests are organized into separate jobs in the `.gitlab-ci.yml` pipeline. This allows for parallel execution and clear reporting on the test status of each component, such as `test:unit:spacemodels`, `test:unit:preloop-sync`, and individual endpoint tests like `test:unit:preloop-endpoints-mcp`.
+GitHub Actions (`.github/workflows/ci.yml`) shards backend unit tests
+(`pytest -m "not integration"`) across eight jobs with
+[pytest-split](https://pypi.org/project/pytest-split/). Each shard has
+its own Postgres service. Coverage data is combined in a follow-up
+**Backend Coverage** job before the 60% floor is applied; a single shard
+only exercises part of the tree, so `--cov-fail-under` cannot run there.
+Pull requests skip backend, frontend, CLI, plugin, and Helm jobs when
+those trees did not change; `main` always runs every suite. The
+required check is the **CI** aggregator (a skipped suite is success; a
+failed suite is not). A new push to the same PR cancels the in-progress
+run. Docker image builds run on `main` and tags, not on pull requests.
+
+GitLab CI (`.gitlab-ci.yml`) splits the same suite into per-component
+jobs for parallel execution and reporting, such as
+`test:unit:preloop-sync` and individual endpoint tests like
+`test:unit:preloop-endpoints-mcp`.
 
 ### Mutation Testing
 

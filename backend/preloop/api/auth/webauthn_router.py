@@ -22,8 +22,9 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import List, Optional
 
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from jose import JWTError, jwt
+from jwt import PyJWTError
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from webauthn import (
@@ -167,7 +168,7 @@ def _read_challenge_token(token: str, purpose: str) -> dict:
     """Validate a challenge token and return its payload."""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError:
+    except PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired passkey challenge",

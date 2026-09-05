@@ -178,6 +178,13 @@ func NewGatewayProbeClient(baseURL, token string) *Client {
 	return client
 }
 
+// SetTimeout overrides the HTTP client timeout. Callers on interactive
+// paths (e.g. editor hooks that block the UI until the process exits) use
+// this to bound a request well below DefaultTimeout.
+func (c *Client) SetTimeout(timeout time.Duration) {
+	c.httpClient.Timeout = timeout
+}
+
 // Get performs a GET request to the specified path.
 func (c *Client) Get(path string, result interface{}) error {
 	return c.do(http.MethodGet, path, nil, result)

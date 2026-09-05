@@ -15,7 +15,9 @@ from preloop.services.flow_execution_dispatcher import (
     dispatch_resume,
     get_orchestrator_worker_id,
 )
+from preloop.services.flow_failure_category import derive_failure_category
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+from preloop.services.flow_pr_binding import merge_result_preserving_pr_binding
 from preloop.sync.services.event_bus import get_nats_client
 
 logger = logging.getLogger(__name__)
@@ -63,22 +65,50 @@ async def resume_existing_execution(
     if flow is None:
         raise ValueError("Flow not found for resumed execution")
 
+    # Matrix-aware: _get_flow_details() above resolved any per-cell agent_type
+    # override into orchestrator.agent_type; a resumed matrix cell must be
+    # monitored with its own harness, never the flow default.
     agent_executor = create_agent_executor(
-        flow.agent_type, {"agent_config": flow.agent_config or {}}
+        orchestrator.agent_type or flow.agent_type,
+        {"agent_config": flow.agent_config or {}},
     )
     try:
         agent_result = await orchestrator._monitor_agent_execution(
             session_reference, agent_executor
         )
         final_status = agent_result.get("status", "FAILED")
+        resume_category = derive_failure_category(
+            status=final_status,
+            error_message=agent_result.get("error_message"),
+            failure_analysis=agent_result.get("failure_analysis"),
+        )
+        merged_result = merge_result_preserving_pr_binding(
+            getattr(orchestrator.execution_log, "result", None),
+            agent_result.get("result"),
+        )
         await orchestrator._update_execution_log(
             status=final_status,
             model_output_summary=agent_result.get("output_summary"),
             error_message=agent_result.get("error_message"),
+            # Same reasoning as the initial-run terminal update: the executor's
+            # verdict over the full logs beats re-deriving from the summary.
+            failure_category=resume_category,
             actions_taken_summary=agent_result.get("actions_taken"),
             mcp_usage_logs=agent_result.get("mcp_usage_logs"),
+            result=merged_result,
             end_time=datetime.now(timezone.utc),
         )
+        await orchestrator._notify_terminal(
+            status=final_status,
+            failure_category=resume_category,
+            result=merged_result,
+        )
+        # The worker that finishes a run owns its teardown, even though it did
+        # not mint the credential: close the runtime session and revoke every
+        # runtime token of this execution. The worker that started the run left
+        # both alive on purpose, because the agent was still using them.
+        orchestrator._sync_runtime_session(ended_at=datetime.now(timezone.utc))
+        orchestrator._revoke_execution_runtime_tokens()
         logger.info(
             "Resumed execution %s completed with status %s",
             orchestrator.execution_log.id,

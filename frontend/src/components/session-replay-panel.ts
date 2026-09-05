@@ -20,6 +20,7 @@ import type {
   RuntimeSessionInteractionSummary,
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
+  SessionCacheIdleExpiryEvent,
 } from '../types';
 import type {
   ObservedSession,
@@ -27,6 +28,7 @@ import type {
   SessionReplayMode,
 } from '../utils/session-observer';
 import {
+  SESSION_EVENTS_PAGE_REQUESTED_EVENT,
   formatCost,
   formatNumber,
   getGatewayEventPreviewMessages,
@@ -104,6 +106,12 @@ type ChatTurnMessage = FlowGatewayConversationPreviewMessage & {
 // One turn = one gateway request (with only its delta messages) OR a standalone
 // supporting-activity message (e.g. an operator/agent-control message) shown
 // inline in the chat flow.
+type ChatTurnIdleExpiry = {
+  idleSeconds: number;
+  extraCostUsd: number | null;
+  rewrittenTokens: number;
+};
+
 type ChatTurn = {
   id: string;
   index: number;
@@ -123,6 +131,8 @@ type ChatTurn = {
   // Activity (operator/talk) turns are NOT gateway requests: they carry no real
   // token/cost/tool stats, so the header suppresses those meaningless zeros.
   isActivity: boolean;
+  // Measured idle-TTL cache expiry for this turn (from optimize context profile).
+  idleExpiry: ChatTurnIdleExpiry | null;
 };
 
 const CHAT_SORTS: Array<{ id: ChatSort; label: string }> = [
@@ -257,6 +267,12 @@ export class SessionReplayPanel extends LitElement {
 
   /** Set once a fetch has been attempted, so a failure is not retried in a loop. */
   private exampleOptimizationRequested = false;
+
+  /** Memoized idle-expiry map keyed by the current optimizationResult reference. */
+  private idleExpiryByEventIdCache: {
+    source: RuntimeSessionOptimizationResponse | null;
+    map: Map<string, ChatTurnIdleExpiry>;
+  } | null = null;
 
   @state()
   private visibleActivityCount = 20;
@@ -1093,6 +1109,21 @@ export class SessionReplayPanel extends LitElement {
       white-space: nowrap;
     }
 
+    .chat-turn-idle-expiry {
+      align-items: center;
+      background: var(--sl-color-warning-50);
+      border: 1px solid var(--sl-color-warning-200);
+      border-radius: var(--sl-border-radius-medium);
+      color: var(--sl-color-warning-800);
+      display: flex;
+      flex-wrap: wrap;
+      font-size: var(--sl-font-size-x-small);
+      gap: var(--sl-spacing-2x-small);
+      line-height: 1.4;
+      margin-top: var(--sl-spacing-x-small);
+      padding: var(--sl-spacing-2x-small) var(--sl-spacing-small);
+    }
+
     .chat-turn-header {
       align-items: center;
       display: flex;
@@ -1615,7 +1646,7 @@ export class SessionReplayPanel extends LitElement {
   private requestMoreEvents(): void {
     if (!this.hasMoreEvents || this.loadingMoreEvents) return;
     this.dispatchEvent(
-      new CustomEvent('session-events-page-requested', {
+      new CustomEvent(SESSION_EVENTS_PAGE_REQUESTED_EVENT, {
         bubbles: true,
         composed: true,
       })
@@ -4234,10 +4265,67 @@ export class SessionReplayPanel extends LitElement {
   // Build turns: one per request, each holding only the messages it added
   // relative to the previous request (the growing-prefix delta) plus this
   // request's assistant response.
+  /**
+   * Idle-TTL expiry annotations keyed by activity/event id, from the latest
+   * optimize context profile (measured ApiUsage-backed detector output).
+   * Memoized against the current ``optimizationResult`` object identity.
+   */
+  private getIdleExpiryByEventId(): Map<string, ChatTurnIdleExpiry> {
+    if (
+      this.idleExpiryByEventIdCache &&
+      this.idleExpiryByEventIdCache.source === this.optimizationResult
+    ) {
+      return this.idleExpiryByEventIdCache.map;
+    }
+    const byId = new Map<string, ChatTurnIdleExpiry>();
+    const events: SessionCacheIdleExpiryEvent[] = Array.isArray(
+      this.optimizationResult?.context_profile?.cache_profile
+        ?.idle_expiry_events
+    )
+      ? this.optimizationResult!.context_profile!.cache_profile!
+          .idle_expiry_events!
+      : [];
+    for (const event of events) {
+      if (!event || typeof event.event_id !== 'string') continue;
+      const idleSeconds = Number(event.idle_seconds ?? 0);
+      const rewrittenTokens = Number(event.rewritten_tokens ?? 0);
+      const extraRaw = event.measured_extra_cost_usd;
+      const extraCostUsd =
+        typeof extraRaw === 'number' && Number.isFinite(extraRaw)
+          ? extraRaw
+          : null;
+      byId.set(event.event_id, {
+        idleSeconds,
+        extraCostUsd,
+        rewrittenTokens,
+      });
+    }
+    this.idleExpiryByEventIdCache = {
+      source: this.optimizationResult,
+      map: byId,
+    };
+    return byId;
+  }
+
+  private formatIdleDuration(seconds: number): string {
+    if (!Number.isFinite(seconds) || seconds <= 0) return 'idle';
+    if (seconds < 60) return `idle ${Math.round(seconds)}s`;
+    const minutes = seconds / 60;
+    if (minutes < 60) {
+      const rounded =
+        minutes >= 10 ? Math.round(minutes) : Number(minutes.toFixed(1));
+      return `idle ${rounded}m`;
+    }
+    const hours = minutes / 60;
+    const rounded = hours >= 10 ? Math.round(hours) : Number(hours.toFixed(1));
+    return `idle ${rounded}h`;
+  }
+
   private getChatTurns(): ChatTurn[] {
     const events = this.getChatEvents();
     const seenSignatures = new Set<string>();
     const eventTurns: ChatTurn[] = [];
+    const idleExpiryById = this.getIdleExpiryByEventId();
 
     events.forEach((event) => {
       const previewMessages = getGatewayEventPreviewMessages(event);
@@ -4278,6 +4366,7 @@ export class SessionReplayPanel extends LitElement {
         toolCallCount,
         failed: this.eventIsFailure(event),
         isActivity: false,
+        idleExpiry: idleExpiryById.get(event.id) || null,
       });
     });
 
@@ -4309,6 +4398,7 @@ export class SessionReplayPanel extends LitElement {
         failed: false,
         // Suppress the meaningless 0 tok / $0 / 0 tools stats for activity turns.
         isActivity: true,
+        idleExpiry: null,
       }));
 
     const turns = [...eventTurns, ...activityTurns].sort(
@@ -4648,6 +4738,11 @@ export class SessionReplayPanel extends LitElement {
   }
 
   private renderChatTurnHeader(turn: ChatTurn, isMostExpensive = false) {
+    const idle = turn.idleExpiry;
+    const idleCostLabel =
+      idle && idle.extraCostUsd != null && idle.extraCostUsd > 0
+        ? `this turn cost ${formatCost(idle.extraCostUsd)} extra`
+        : 'cache expired (write premium unpriced)';
     return html`
       <div class="chat-turn-header">
         <div class="chat-turn-header-main">
@@ -4702,6 +4797,29 @@ export class SessionReplayPanel extends LitElement {
           }
         </div>
       </div>
+      ${
+        idle
+          ? html`
+              <div
+                class="chat-turn-idle-expiry"
+                data-testid="idle-cache-expiry"
+                title="Measured idle TTL cache expiry on a stable prefix"
+              >
+                <sl-icon name="hourglass-split"></sl-icon>
+                <span>
+                  ${this.formatIdleDuration(idle.idleSeconds)}, cache expired,
+                  ${idleCostLabel}
+                  ${
+                    idle.rewrittenTokens > 0
+                      ? html` · ${formatNumber(idle.rewrittenTokens)} tokens
+                        re-written`
+                      : nothing
+                  }
+                </span>
+              </div>
+            `
+          : nothing
+      }
     `;
   }
 

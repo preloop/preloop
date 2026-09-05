@@ -10,6 +10,7 @@ from preloop.services.policy.schema import (
     MCPServerAuthType,
     MCPServerDefinition,
     MCPServerTransport,
+    ModelIORule,
     PolicyDocument,
     PolicyMetadata,
     PolicyVersion,
@@ -353,3 +354,106 @@ class TestPolicyDocument:
             ],
         )
         assert policy.tools[0].source == "builtin"
+
+
+class TestModelIORule:
+    """Schema validation for model.request / model.response targets."""
+
+    def test_valid_request_rule(self):
+        rule = ModelIORule(
+            id="deny-pii",
+            target="model.request",
+            detectors={"pii": {"types": ["email"]}},
+            conditions=[
+                ToolCondition(expression="pii.found == true", action="deny"),
+            ],
+        )
+        assert rule.target == "model.request"
+        assert rule.on_detector_timeout == "deny"
+        assert rule.conditions[0].action == "deny"
+
+    def test_valid_response_rule(self):
+        rule = ModelIORule(
+            id="approve-flagged",
+            target="model.response",
+            approval_workflow="high-risk",
+            detectors={"moderation": True},
+            conditions=[
+                ToolCondition(
+                    expression="moderation.flagged == true",
+                    action="require_approval",
+                ),
+            ],
+        )
+        assert rule.target == "model.response"
+
+    def test_invalid_target_rejected(self):
+        with pytest.raises(ValidationError):
+            ModelIORule(
+                id="bad",
+                target="model.other",
+                conditions=[ToolCondition(expression="true", action="allow")],
+            )
+
+    def test_unknown_pii_type_rejected(self):
+        with pytest.raises(ValidationError):
+            ModelIORule(
+                id="bad-pii",
+                target="model.request",
+                detectors={"pii": {"types": ["ssn"]}},
+                conditions=[ToolCondition(expression="pii.found == true")],
+            )
+
+    def test_document_round_trips_model_io(self):
+        policy = PolicyDocument(
+            metadata=PolicyMetadata(name="Content"),
+            approval_workflows=[ApprovalWorkflowDefinition(name="high-risk")],
+            model_io=[
+                ModelIORule(
+                    id="deny-pii",
+                    target="model.request",
+                    approval_workflow="high-risk",
+                    conditions=[
+                        ToolCondition(expression="pii.found == true", action="deny"),
+                    ],
+                )
+            ],
+        )
+        dumped = policy.model_dump(mode="json")
+        again = PolicyDocument.model_validate(dumped)
+        assert again.model_io[0].id == "deny-pii"
+        assert again.model_io[0].target == "model.request"
+
+    def test_duplicate_rule_ids_rejected(self):
+        with pytest.raises(ValidationError):
+            PolicyDocument(
+                metadata=PolicyMetadata(name="Dup"),
+                model_io=[
+                    ModelIORule(
+                        id="same",
+                        target="model.request",
+                        conditions=[ToolCondition(expression="true")],
+                    ),
+                    ModelIORule(
+                        id="same",
+                        target="model.response",
+                        conditions=[ToolCondition(expression="true")],
+                    ),
+                ],
+            )
+
+    def test_unknown_approval_workflow_rejected(self):
+        with pytest.raises(ValidationError):
+            PolicyDocument(
+                metadata=PolicyMetadata(name="Missing wf"),
+                model_io=[
+                    ModelIORule(
+                        id="needs-wf",
+                        target="model.response",
+                        approval_workflow="missing",
+                        conditions=[
+                            ToolCondition(expression="true", action="require_approval")
+                        ],
+                    )
+                ],
+            )

@@ -16,7 +16,12 @@ from preloop.models.crud import (
     crud_issue_set,
     crud_issue_relationship,
 )
-from preloop.services.secret_service import get_secret_service
+from preloop.services.aux_model_retry import call_with_aux_retry
+from preloop.services.model_credentials import (
+    get_aux_openai_sdk_extra_kwargs,
+    resolve_model_call_credentials,
+)
+from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.issue import Issue
 from preloop.api.auth import get_current_active_user
@@ -165,18 +170,31 @@ def detect_issue_dependencies(
 
     # 5. Call the AI model
     try:
-        resolved_secret = get_secret_service().resolve_ai_model_api_key(ai_model)
-        client = openai.OpenAI(
-            api_key=resolved_secret.value if resolved_secret else openai.api_key
+        creds_kwargs = resolve_model_call_credentials(ai_model, db=db)
+        api_key = creds_kwargs.get("api_key") or openai.api_key
+        client = openai.OpenAI(api_key=api_key, base_url=creds_kwargs.get("api_base"))
+        dep_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        aux_extras = get_aux_openai_sdk_extra_kwargs(
+            ai_model,
+            call_site_kwargs={
+                "model": ai_model.model_identifier,
+                "messages": dep_messages,
+                "response_format": {"type": "json_object"},
+            },
         )
 
-        response = client.chat.completions.create(
-            model=ai_model.model_identifier,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={"type": "json_object"},
+        response = call_with_aux_retry(
+            lambda: client.chat.completions.create(
+                model=ai_model.model_identifier,
+                messages=dep_messages,
+                response_format={"type": "json_object"},
+                **aux_extras,
+            ),
+            operation_name="issue_dependency_detection",
+            provider=getattr(ai_model, "provider_name", None),
         )
 
         response_content = response.choices[0].message.content
@@ -235,6 +253,13 @@ def detect_issue_dependencies(
         logger.error(f"OpenAI API call failed: {e}")
         raise HTTPException(
             status_code=502, detail="Failed to get dependency analysis from AI model."
+        )
+    except ModelGatewayAPIError as exc:
+        logger.warning("AI dependency analysis did not recover: %s", exc)
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail="AI model is rate limited; retry later.",
+            headers=exc.response_headers(),
         )
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         logger.error(f"Error parsing AI model response: {e}")
@@ -458,14 +483,30 @@ def extend_dependency_scan(
     system_prompt = prompt_data["system"]
 
     try:
-        client = openai.OpenAI(api_key=ai_model.api_key or openai.api_key)
-        response = client.chat.completions.create(
-            model=ai_model.model_identifier,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={"type": "json_object"},
+        creds_kwargs = resolve_model_call_credentials(ai_model, db=db)
+        api_key = creds_kwargs.get("api_key") or openai.api_key
+        client = openai.OpenAI(api_key=api_key)
+        dep_messages2 = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        aux_extras = get_aux_openai_sdk_extra_kwargs(
+            ai_model,
+            call_site_kwargs={
+                "model": ai_model.model_identifier,
+                "messages": dep_messages2,
+                "response_format": {"type": "json_object"},
+            },
+        )
+        response = call_with_aux_retry(
+            lambda: client.chat.completions.create(
+                model=ai_model.model_identifier,
+                messages=dep_messages2,
+                response_format={"type": "json_object"},
+                **aux_extras,
+            ),
+            operation_name="issue_dependency_extend_scan",
+            provider=getattr(ai_model, "provider_name", None),
         )
         response_content = response.choices[0].message.content
         dependencies_from_ai = json.loads(response_content).get("dependencies", [])
@@ -528,6 +569,13 @@ def extend_dependency_scan(
         logger.error(f"OpenAI API call failed: {e}")
         raise HTTPException(
             status_code=502, detail="Failed to get dependency analysis from AI model."
+        )
+    except ModelGatewayAPIError as exc:
+        logger.warning("AI dependency analysis did not recover: %s", exc)
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail="AI model is rate limited; retry later.",
+            headers=exc.response_headers(),
         )
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         logger.error(f"Error parsing AI model response: {e}")

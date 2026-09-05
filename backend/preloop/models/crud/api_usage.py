@@ -1,11 +1,13 @@
 """CRUD operations for ApiUsage model."""
 
 from datetime import datetime, timedelta, timezone
+import logging
+from types import SimpleNamespace
 import uuid
 from typing import Any, Dict, List, Optional, Sequence, Union
-from sqlalchemy import Float, String, and_, case, cast, func, or_
+from sqlalchemy import Float, String, and_, case, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..models.api_usage import ApiUsage
 from ..models.flow import Flow
@@ -13,7 +15,10 @@ from ..models.flow_execution import FlowExecution
 from ..models.managed_agent import ManagedAgent
 from ..models.runtime_session import RuntimeSession
 from ..models.user import User
+from ...utils.jsonb_sanitize import sanitize_for_jsonb
 from .base import CRUDBase
+
+logger = logging.getLogger(__name__)
 
 # Known ``meta_data.purpose`` tags for internal model-gateway usage rows.
 GATEWAY_USAGE_PURPOSES = frozenset(
@@ -46,8 +51,56 @@ def exclude_replay_usage_condition():
     )
 
 
+# Cap for :meth:`CRUDApiUsage.get_by_ids` so a pathological caller cannot
+# build an unbounded ``IN`` clause. Matches the gateway-activity payload
+# load cap used by context analysis.
+_MAX_GET_BY_IDS = 100
+
+
 class CRUDApiUsage(CRUDBase[ApiUsage]):
     """CRUD operations for API usage tracking."""
+
+    def get_by_ids(
+        self,
+        db: Session,
+        *,
+        ids: Sequence[Union[uuid.UUID, str]],
+        account_id: Optional[Union[uuid.UUID, str]] = None,
+    ) -> List[ApiUsage]:
+        """Fetch ApiUsage rows by id, optionally scoped to an account.
+
+        Invalid UUID strings are skipped. At most ``_MAX_GET_BY_IDS`` unique
+        ids are queried.
+
+        Args:
+            db: Database session.
+            ids: ApiUsage primary keys to load.
+            account_id: When set, restrict to this account's rows.
+
+        Returns:
+            Matching rows (order not guaranteed).
+        """
+        if not ids:
+            return []
+        parsed: list[uuid.UUID] = []
+        seen: set[uuid.UUID] = set()
+        for raw in ids:
+            try:
+                value = raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if value in seen:
+                continue
+            seen.add(value)
+            parsed.append(value)
+            if len(parsed) >= _MAX_GET_BY_IDS:
+                break
+        if not parsed:
+            return []
+        query = db.query(self.model).filter(self.model.id.in_(parsed))
+        if account_id is not None:
+            query = query.filter(self.model.account_id == account_id)
+        return query.all()
 
     def log_request(
         self,
@@ -139,10 +192,12 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         cost_source: Optional[str] = None,
         usage_source: Optional[str] = None,
         is_retry: Optional[bool] = None,
+        error_class: Optional[str] = None,
         runtime_principal_type: Optional[str] = None,
         runtime_principal_id: Optional[str] = None,
         runtime_principal_name: Optional[str] = None,
         managed_agent_id: Optional[str] = None,
+        rate_limit_retry_after_ms: Optional[int] = None,
         meta_data: Optional[Dict[str, Any]] = None,
     ) -> ApiUsage:
         """Log a model gateway request with usage and attribution fields."""
@@ -174,10 +229,14 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             cost_source=cost_source,
             usage_source=usage_source,
             is_retry=is_retry,
+            error_class=error_class,
             runtime_principal_type=runtime_principal_type,
             runtime_principal_id=runtime_principal_id,
             runtime_principal_name=runtime_principal_name,
-            meta_data=meta_data,
+            rate_limit_retry_after_ms=rate_limit_retry_after_ms,
+            # error_detail here can carry raw upstream body text, which for a
+            # binary response contains NUL and would be rejected by JSONB.
+            meta_data=sanitize_for_jsonb(meta_data),
             timestamp=datetime.now(timezone.utc),
         )
 
@@ -301,7 +360,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             account_id: Account scope.
             start: Window start (inclusive).
             end: Window end (exclusive).
-            only_unpriced: Restrict to rows without a stored cost.
+            only_unpriced: Restrict to rows without a resolved cost: NULL
+                ``estimated_cost`` (however tagged) plus rows explicitly
+                tagged ``cost_source='unpriced'`` that carry a stray numeric
+                cost (legacy $0 writes), so those anomalies heal too.
             batch_size: Rows fetched per query.
 
         Yields:
@@ -316,7 +378,12 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 ApiUsage.timestamp < end,
             )
             if only_unpriced:
-                query = query.filter(ApiUsage.estimated_cost.is_(None))
+                query = query.filter(
+                    or_(
+                        ApiUsage.estimated_cost.is_(None),
+                        ApiUsage.cost_source == "unpriced",
+                    )
+                )
             if last_id is not None:
                 query = query.filter(ApiUsage.id > last_id)
             batch = query.order_by(ApiUsage.id).limit(batch_size).all()
@@ -324,6 +391,97 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 return
             yield from batch
             last_id = batch[-1].id
+
+    def iter_unpriced_provider_rows(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        provider_name: str,
+        start: datetime,
+        end: datetime,
+        batch_size: int = 500,
+    ):
+        """Yield unpriced gateway rows for one provider, keyset-paginated.
+
+        Deliberately narrower than :meth:`iter_gateway_rows_for_repricing`:
+        only rows explicitly tagged ``cost_source='unpriced'`` — plus legacy
+        rows recorded before provenance existed (``cost_source IS NULL`` with
+        a NULL cost, i.e. before the 20260712 accuracy-columns migration) —
+        are eligible for the given provider, so a ledger backfill can never
+        touch rows the catalog (or the provider itself) already priced.
+
+        Args:
+            db: Database session.
+            account_id: Account scope (required; no default).
+            provider_name: Recorded provider name (e.g. ``openrouter``).
+            start: Window start (inclusive).
+            end: Window end (exclusive).
+            batch_size: Rows fetched per query.
+
+        Yields:
+            ApiUsage rows ordered by id.
+        """
+        last_id: Optional[uuid.UUID] = None
+        while True:
+            query = db.query(ApiUsage).filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.provider_name == provider_name,
+                or_(
+                    ApiUsage.cost_source == "unpriced",
+                    and_(
+                        ApiUsage.cost_source.is_(None),
+                        ApiUsage.estimated_cost.is_(None),
+                    ),
+                ),
+                ApiUsage.timestamp >= start,
+                ApiUsage.timestamp < end,
+            )
+            if last_id is not None:
+                query = query.filter(ApiUsage.id > last_id)
+            batch = query.order_by(ApiUsage.id).limit(batch_size).all()
+            if not batch:
+                return
+            yield from batch
+            last_id = batch[-1].id
+
+    def list_execution_ids_with_gateway_usage(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        start: datetime,
+        end: datetime,
+    ) -> List[uuid.UUID]:
+        """List distinct flow execution ids with gateway usage in a window.
+
+        Used after a repricing pass to know which stored per-execution cost
+        rollups may have gone stale (issue #209). The window is half-open:
+        ``start <= timestamp < end``.
+
+        Args:
+            db: Database session.
+            account_id: Account scope.
+            start: Window start (inclusive).
+            end: Window end (exclusive).
+
+        Returns:
+            Distinct ``flow_execution_id`` values (order not guaranteed).
+        """
+        rows = (
+            db.query(ApiUsage.flow_execution_id)
+            .filter(
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.account_id == account_id,
+                ApiUsage.flow_execution_id.isnot(None),
+                ApiUsage.timestamp >= start,
+                ApiUsage.timestamp < end,
+            )
+            .distinct()
+            .all()
+        )
+        return [row.flow_execution_id for row in rows]
 
     def update_cost_fields(
         self,
@@ -764,6 +922,264 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             "unpriced_tokens": int(row.unpriced_tokens or 0),
         }
 
+    def get_unpriced_model_breakdown(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        runtime_principal_id: Optional[str] = None,
+        exclude_retries: bool = False,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Group still-unpriced gateway rows by model for the cost banner.
+
+        Uses the exact ``unpriced`` predicate of
+        :meth:`get_gateway_usage_summary` (``estimated_cost IS NULL AND
+        total_tokens > 0``) so the per-model rows explain the aggregate
+        ``unpriced_requests``/``unpriced_tokens`` counts shown next to them.
+
+        Args:
+            db: Database session.
+            account_id: Account whose gateway usage is aggregated.
+            start_date: Inclusive lower bound on usage timestamp.
+            end_date: Exclusive upper bound on usage timestamp.
+            runtime_principal_id: Restrict to a single runtime principal.
+            exclude_retries: When True, rows marked as retries of an earlier
+                identical request are excluded. Mirrors the predicate in
+                :meth:`get_gateway_usage_summary` exactly, so with
+                ``exclude_retries=True`` the per-model rows cannot sum above
+                the headline counts.
+            limit: Maximum number of models returned, ordered by unpriced
+                tokens descending so the biggest offenders name themselves
+                first.
+
+        Returns:
+            One dict per model with ``model``, ``requests`` and ``tokens``,
+            ordered by tokens descending.
+        """
+        model_label = func.coalesce(ApiUsage.model_alias, "unknown")
+        query = db.query(
+            model_label.label("model"),
+            func.count(ApiUsage.id).label("requests"),
+            func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("tokens"),
+        ).filter(
+            ApiUsage.action_type == "model_gateway",
+            ApiUsage.account_id == account_id,
+            exclude_replay_usage_condition(),
+            ApiUsage.timestamp >= start_date,
+            ApiUsage.timestamp < end_date,
+            ApiUsage.estimated_cost.is_(None),
+            ApiUsage.total_tokens > 0,
+        )
+        if runtime_principal_id:
+            query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
+        if exclude_retries:
+            query = query.filter(
+                or_(ApiUsage.is_retry.is_(None), ApiUsage.is_retry.is_(False))
+            )
+        query = (
+            query.group_by(model_label)
+            .order_by(func.coalesce(func.sum(ApiUsage.total_tokens), 0).desc())
+            .limit(limit)
+        )
+        return [
+            {
+                "model": str(row.model),
+                "requests": int(row.requests or 0),
+                "tokens": int(row.tokens or 0),
+            }
+            for row in query.all()
+        ]
+
+    def get_rate_limit_summary(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        runtime_principal_id: Optional[str] = None,
+        breakdown_limit: int = 25,
+    ) -> Dict[str, Any]:
+        """Aggregate upstream 429 telemetry for an account window (#136).
+
+        "Blocked" time is the sum of provider-advised ``Retry-After`` values
+        observed on 429 responses (``rate_limit_retry_after_ms``): a lower
+        bound on real wall-clock stall, never an estimate. Subtype counts
+        come from ``meta_data["rate_limit"]["subtype"]`` recorded at capture
+        time.
+
+        Args:
+            db: Database session.
+            account_id: Account whose gateway traffic is aggregated.
+            start_date: Inclusive lower bound on usage timestamp.
+            end_date: Exclusive upper bound on usage timestamp.
+            runtime_principal_id: Restrict to a single runtime principal.
+            breakdown_limit: Max rows per breakdown, ordered by 429 count.
+
+        Returns:
+            Dict with ``totals`` (429 count, blocked ms, last-hit timestamp,
+            subtype counts) plus ``by_model`` and ``by_session`` breakdowns.
+        """
+        base_filters = [
+            ApiUsage.action_type == "model_gateway",
+            ApiUsage.account_id == account_id,
+            ApiUsage.status_code == 429,
+            exclude_replay_usage_condition(),
+            ApiUsage.timestamp >= start_date,
+            ApiUsage.timestamp < end_date,
+        ]
+        if runtime_principal_id:
+            base_filters.append(ApiUsage.runtime_principal_id == runtime_principal_id)
+
+        subtype_expr = ApiUsage.meta_data["rate_limit"]["subtype"].astext
+        totals_row = (
+            db.query(
+                func.count(ApiUsage.id).label("rate_limited_requests"),
+                func.coalesce(func.sum(ApiUsage.rate_limit_retry_after_ms), 0).label(
+                    "blocked_ms"
+                ),
+                func.max(ApiUsage.timestamp).label("last_rate_limited_at"),
+                func.coalesce(
+                    func.sum(case((subtype_expr == "quota_exhausted", 1), else_=0)),
+                    0,
+                ).label("quota_exhausted_count"),
+                func.coalesce(
+                    func.sum(case((subtype_expr == "transient", 1), else_=0)), 0
+                ).label("transient_count"),
+            )
+            .filter(*base_filters)
+            .one()
+        )
+
+        by_model_rows = (
+            db.query(
+                ApiUsage.model_alias,
+                ApiUsage.provider_name,
+                func.count(ApiUsage.id).label("rate_limited_requests"),
+                func.coalesce(func.sum(ApiUsage.rate_limit_retry_after_ms), 0).label(
+                    "blocked_ms"
+                ),
+                func.max(ApiUsage.timestamp).label("last_rate_limited_at"),
+            )
+            .filter(*base_filters)
+            .group_by(ApiUsage.model_alias, ApiUsage.provider_name)
+            .order_by(func.count(ApiUsage.id).desc())
+            .limit(breakdown_limit)
+            .all()
+        )
+
+        by_session_rows = (
+            db.query(
+                ApiUsage.runtime_session_id,
+                func.max(ApiUsage.runtime_principal_name).label(
+                    "runtime_principal_name"
+                ),
+                func.count(ApiUsage.id).label("rate_limited_requests"),
+                func.coalesce(func.sum(ApiUsage.rate_limit_retry_after_ms), 0).label(
+                    "blocked_ms"
+                ),
+                func.max(ApiUsage.timestamp).label("last_rate_limited_at"),
+            )
+            .filter(*base_filters)
+            .group_by(ApiUsage.runtime_session_id)
+            .order_by(func.count(ApiUsage.id).desc())
+            .limit(breakdown_limit)
+            .all()
+        )
+
+        return {
+            "totals": {
+                "rate_limited_requests": int(totals_row.rate_limited_requests or 0),
+                "blocked_ms": int(totals_row.blocked_ms or 0),
+                "last_rate_limited_at": totals_row.last_rate_limited_at,
+                "quota_exhausted_count": int(totals_row.quota_exhausted_count or 0),
+                "transient_count": int(totals_row.transient_count or 0),
+            },
+            "by_model": [
+                {
+                    "model_alias": row.model_alias,
+                    "provider_name": row.provider_name,
+                    "rate_limited_requests": int(row.rate_limited_requests or 0),
+                    "blocked_ms": int(row.blocked_ms or 0),
+                    "last_rate_limited_at": row.last_rate_limited_at,
+                }
+                for row in by_model_rows
+            ],
+            "by_session": [
+                {
+                    "runtime_session_id": (
+                        str(row.runtime_session_id) if row.runtime_session_id else None
+                    ),
+                    "runtime_principal_name": row.runtime_principal_name,
+                    "rate_limited_requests": int(row.rate_limited_requests or 0),
+                    "blocked_ms": int(row.blocked_ms or 0),
+                    "last_rate_limited_at": row.last_rate_limited_at,
+                }
+                for row in by_session_rows
+            ],
+        }
+
+    def get_latest_rate_limit_snapshots(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Latest observed rate-limit header snapshot per provider/model.
+
+        Returns the most recent usage row carrying a
+        ``meta_data["rate_limit"]`` snapshot for each (provider, model alias)
+        pair: the headroom signal as last observed from real provider
+        responses, with its observation timestamp so callers can label
+        staleness honestly.
+
+        Args:
+            db: Database session.
+            account_id: Account whose snapshots are returned.
+            limit: Maximum number of (provider, model) groups.
+
+        Returns:
+            One dict per group with the snapshot, observation timestamp,
+            status code, and upstream credential type.
+        """
+        rows = (
+            db.query(ApiUsage)
+            .filter(
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.account_id == account_id,
+                # JSON null (the common "no snapshot" case) must not match,
+                # so test the value rather than key presence.
+                ApiUsage.meta_data["rate_limit"].astext.isnot(None),
+                exclude_replay_usage_condition(),
+            )
+            .distinct(ApiUsage.provider_name, ApiUsage.model_alias)
+            .order_by(
+                ApiUsage.provider_name,
+                ApiUsage.model_alias,
+                ApiUsage.timestamp.desc(),
+            )
+            .limit(limit)
+            .all()
+        )
+        snapshots: List[Dict[str, Any]] = []
+        for row in rows:
+            meta = row.meta_data or {}
+            snapshots.append(
+                {
+                    "provider_name": row.provider_name,
+                    "model_alias": row.model_alias,
+                    "observed_at": row.timestamp,
+                    "status_code": row.status_code,
+                    "upstream_credential_type": meta.get("upstream_credential_type"),
+                    "rate_limit": meta.get("rate_limit") or {},
+                }
+            )
+        return snapshots
+
     def get_gateway_usage_by_model(
         self,
         db: Session,
@@ -803,8 +1219,26 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
 
         Returns:
             One dict per (model, alias, provider) group with request counts,
-            token totals, and estimated cost.
+            token totals, estimated cost, how many of those requests carried no
+            price, how many were priced at exactly zero, how many failed, and
+            when the model was last called.
         """
+        # A request with no price and a request priced at zero look identical
+        # in a cost total and mean opposite things: the first is a hole in the
+        # price list, the second is a deliberate (or mistaken) $0. They are
+        # counted apart so the console can say which one it is.
+        #
+        # ``unpriced`` matches ``get_gateway_usage_summary`` exactly, so the
+        # per-model counts sum to the account total the same page shows.
+        unpriced_condition = and_(
+            ApiUsage.estimated_cost.is_(None),
+            ApiUsage.total_tokens > 0,
+        )
+        zero_priced_condition = and_(
+            ApiUsage.estimated_cost.isnot(None),
+            ApiUsage.estimated_cost == 0,
+            ApiUsage.total_tokens > 0,
+        )
         query = db.query(
             ApiUsage.ai_model_id,
             ApiUsage.model_alias,
@@ -818,6 +1252,16 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
                 "estimated_cost"
             ),
+            func.coalesce(func.sum(case((unpriced_condition, 1), else_=0)), 0).label(
+                "unpriced_request_count"
+            ),
+            func.coalesce(func.sum(case((zero_priced_condition, 1), else_=0)), 0).label(
+                "zero_priced_request_count"
+            ),
+            func.coalesce(
+                func.sum(case((ApiUsage.status_code >= 400, 1), else_=0)), 0
+            ).label("failed_request_count"),
+            func.max(ApiUsage.timestamp).label("last_request_at"),
         ).filter(
             # Aggregate by model identity; aliases that share ai_model_id still
             # appear as separate groups when model_alias differs (intentional —
@@ -869,6 +1313,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "completion_tokens": int(row.completion_tokens or 0),
                 "total_tokens": int(row.total_tokens or 0),
                 "estimated_cost": float(row.estimated_cost or 0.0),
+                "unpriced_request_count": int(row.unpriced_request_count or 0),
+                "zero_priced_request_count": int(row.zero_priced_request_count or 0),
+                "failed_request_count": int(row.failed_request_count or 0),
+                "last_request_at": row.last_request_at,
             }
             for row in rows
         ]
@@ -1251,12 +1699,121 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             for row in rows
         ]
 
+    def get_models_used_for_executions(
+        self,
+        db: Session,
+        execution_ids: Sequence[Any],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Return the model aliases that served each execution, most used first.
+
+        The console shows "which model ran this" on the executions list and on
+        the execution page. The answer lives in the gateway usage rows, which
+        attach to an execution two ways, both of which must be counted:
+
+        * ``api_usage.flow_execution_id`` — the direct attribution the metrics
+          endpoint and the cost rollup already use.
+        * ``api_usage.runtime_session_id`` pointing at the runtime session the
+          execution owns (``session_source_type='flow_execution'`` and
+          ``session_source_id`` = the execution id). Agents that call the
+          gateway through a session reference that way, and those rows carry
+          no ``flow_execution_id``.
+
+        One query for the whole page (never one per row): callers pass every
+        execution id they are about to render and index the result by id.
+        Replay-validation traffic is excluded exactly as everywhere else, and
+        rows with no ``model_alias`` are skipped rather than reported as an
+        unnamed model.
+
+        Args:
+            db: Database session.
+            execution_ids: Execution ids to aggregate (str or UUID).
+
+        Returns:
+            ``{execution_id: [{"model_alias", "provider_name",
+            "request_count"}, ...]}`` ordered by request count descending then
+            alias, for the executions that have any named gateway usage.
+            Executions with none are absent from the mapping.
+        """
+        ids = [str(execution_id) for execution_id in execution_ids if execution_id]
+        if not ids:
+            return {}
+
+        # The execution an attributed row belongs to: its own
+        # flow_execution_id when set, else the execution id its runtime
+        # session was created for.
+        session_execution_id = case(
+            (
+                and_(
+                    RuntimeSession.session_source_type == "flow_execution",
+                    RuntimeSession.session_source_id.isnot(None),
+                ),
+                RuntimeSession.session_source_id,
+            ),
+            else_=None,
+        )
+        execution_key = func.coalesce(
+            cast(ApiUsage.flow_execution_id, String), session_execution_id
+        )
+
+        rows = (
+            db.query(
+                execution_key.label("execution_id"),
+                ApiUsage.model_alias.label("model_alias"),
+                func.max(ApiUsage.provider_name).label("provider_name"),
+                func.count(ApiUsage.id).label("request_count"),
+            )
+            .outerjoin(RuntimeSession, ApiUsage.runtime_session_id == RuntimeSession.id)
+            .filter(
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.model_alias.isnot(None),
+                execution_key.in_(ids),
+                exclude_replay_usage_condition(),
+            )
+            .group_by(execution_key, ApiUsage.model_alias)
+            .order_by(
+                execution_key,
+                func.count(ApiUsage.id).desc(),
+                ApiUsage.model_alias.asc(),
+            )
+            .all()
+        )
+
+        models_by_execution: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            models_by_execution.setdefault(str(row.execution_id), []).append(
+                {
+                    "model_alias": row.model_alias,
+                    "provider_name": row.provider_name,
+                    "request_count": int(row.request_count or 0),
+                }
+            )
+        return models_by_execution
+
     def get_gateway_usage_for_execution(
         self,
         db: Session,
         execution_id: str,
     ) -> Dict[str, Any]:
-        """Return explicit gateway usage totals for an execution when available."""
+        """Return explicit gateway usage totals for an execution when available.
+
+        ``estimated_cost`` is deliberately NOT coalesced to ``0.0``: a NULL
+        cost means "we could not price this", which is different from "this
+        was free". When no request could be priced the cost stays ``None`` and
+        callers render the token volume instead (see ``unpriced_tokens``).
+
+        Args:
+            db: Database session.
+            execution_id: Owning flow execution id.
+
+        Returns:
+            Usage totals including ``estimated_cost`` (``None`` when nothing
+            was priceable), ``cost_is_partial`` when priced and unpriced rows
+            are mixed, and the unpriced request/token volume.
+        """
+        unpriced_condition = and_(
+            ApiUsage.estimated_cost.is_(None),
+            func.coalesce(ApiUsage.cost_source, "") != "subscription",
+        )
         row = (
             db.query(
                 func.count(ApiUsage.id).label("api_requests"),
@@ -1267,10 +1824,21 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                     "completion_tokens"
                 ),
                 func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-                func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
-                    "estimated_cost"
-                ),
+                # Left un-coalesced on purpose: NULL means "unknown", not zero.
+                func.sum(ApiUsage.estimated_cost).label("estimated_cost"),
                 func.count(ApiUsage.estimated_cost).label("priced_requests"),
+                func.count(ApiUsage.id)
+                .filter(unpriced_condition)
+                .label("unpriced_requests"),
+                func.coalesce(
+                    func.sum(ApiUsage.total_tokens).filter(unpriced_condition), 0
+                ).label("unpriced_tokens"),
+                func.coalesce(
+                    func.sum(ApiUsage.prompt_tokens).filter(unpriced_condition), 0
+                ).label("unpriced_prompt_tokens"),
+                func.coalesce(
+                    func.sum(ApiUsage.completion_tokens).filter(unpriced_condition), 0
+                ).label("unpriced_completion_tokens"),
             )
             .filter(
                 ApiUsage.action_type == "model_gateway",
@@ -1289,8 +1857,16 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 },
                 "estimated_cost": 0.0,
                 "has_pricing": False,
+                "cost_is_partial": False,
+                "unpriced_requests": 0,
+                "unpriced_tokens": 0,
+                "unpriced_prompt_tokens": 0,
+                "unpriced_completion_tokens": 0,
             }
 
+        priced_requests = int(row.priced_requests or 0)
+        unpriced_requests = int(row.unpriced_requests or 0)
+        raw_cost = row.estimated_cost
         return {
             "api_requests": int(row.api_requests or 0),
             "token_usage": {
@@ -1298,8 +1874,17 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 "input_tokens": int(row.prompt_tokens or 0),
                 "output_tokens": int(row.completion_tokens or 0),
             },
-            "estimated_cost": round(float(row.estimated_cost or 0.0), 6),
-            "has_pricing": int(row.priced_requests or 0) > 0,
+            "estimated_cost": (
+                round(float(raw_cost), 6) if raw_cost is not None else None
+            ),
+            "has_pricing": priced_requests > 0,
+            # True when a real cost exists but excludes unpriced traffic, so
+            # callers can label the number as incomplete rather than final.
+            "cost_is_partial": priced_requests > 0 and unpriced_requests > 0,
+            "unpriced_requests": unpriced_requests,
+            "unpriced_tokens": int(row.unpriced_tokens or 0),
+            "unpriced_prompt_tokens": int(row.unpriced_prompt_tokens or 0),
+            "unpriced_completion_tokens": int(row.unpriced_completion_tokens or 0),
         }
 
     def count_by_execution_timeframe(
@@ -1489,6 +2074,82 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .offset(offset)
             .all()
         )
+
+    # Hard cap on cache-rollup rows per session. Even a very long-lived agent
+    # session stays well under this; the cap only guards against a pathological
+    # session flooding the API pod's memory. Hitting it is logged because the
+    # resulting summary silently under-counts the session.
+    SESSION_CACHE_ROWS_LIMIT = 50_000
+
+    def list_session_cache_rows(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
+    ) -> List[SimpleNamespace]:
+        """List the cache-accounting columns for every request in a session.
+
+        Deliberately column-projected rather than a full ORM load: the session
+        cache rollup covers ALL requests (it must not change as the UI pages),
+        and full rows carry ``meta_data`` with capped-but-still-large request
+        and response bodies. Only ``meta_data['usage_details']`` is pulled from
+        the JSONB, which is the sole part cache accounting reads.
+
+        Rows are capped at :attr:`SESSION_CACHE_ROWS_LIMIT` as a memory guard;
+        exceeding it logs a warning because the rollup then under-counts.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_id: Runtime session to summarize.
+
+        Returns:
+            Lightweight namespaces shaped like ``ApiUsage`` rows for the fields
+            :mod:`preloop.services.cache_accounting` consumes.
+        """
+        rows = (
+            db.query(
+                self.model.prompt_tokens,
+                self.model.cache_read_tokens,
+                self.model.cache_creation_tokens,
+                self.model.model_alias,
+                self.model.provider_name,
+                self.model.usage_source,
+                self.model.meta_data["usage_details"].label("usage_details"),
+            )
+            .filter(
+                exclude_replay_usage_condition(),
+                self.model.action_type == "model_gateway",
+                self.model.account_id == account_id,
+                self.model.runtime_session_id == runtime_session_id,
+            )
+            .limit(self.SESSION_CACHE_ROWS_LIMIT + 1)
+            .all()
+        )
+        if len(rows) > self.SESSION_CACHE_ROWS_LIMIT:
+            rows = rows[: self.SESSION_CACHE_ROWS_LIMIT]
+            logger.warning(
+                "Session cache rollup truncated at %d rows for runtime session "
+                "%s (account %s); the cache summary under-counts this session.",
+                self.SESSION_CACHE_ROWS_LIMIT,
+                runtime_session_id,
+                account_id,
+            )
+        return [
+            SimpleNamespace(
+                prompt_tokens=row.prompt_tokens,
+                cache_read_tokens=row.cache_read_tokens,
+                cache_creation_tokens=row.cache_creation_tokens,
+                model_alias=row.model_alias,
+                provider_name=row.provider_name,
+                usage_source=row.usage_source,
+                meta_data={"usage_details": row.usage_details}
+                if row.usage_details is not None
+                else None,
+            )
+            for row in rows
+        ]
 
     def count_session_request_rows(
         self,
@@ -1825,6 +2486,502 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .scalar()
         )
         return float(value or 0.0)
+
+    # ------------------------------------------------------------------
+    # Imported (observed) usage — spend the gateway cannot see (issue #123)
+    # ------------------------------------------------------------------
+    #
+    # Imported rows use ``action_type='imported_usage'`` so every gateway
+    # aggregation above (summaries, budgets, spend caps, accounting health),
+    # which filters on ``action_type == 'model_gateway'``, is structurally
+    # unable to mix imported spend into gateway-metered spend. Budget-bucket
+    # accumulation is deliberately NOT performed for imported rows.
+
+    IMPORTED_USAGE_ACTION_TYPE = "imported_usage"
+
+    #: Unique partial index enforcing per-account fingerprint dedupe in the DB.
+    IMPORTED_FINGERPRINT_INDEX = "ix_api_usage_imported_fingerprint_uniq"
+
+    def _imported_fingerprint_exists(
+        self, db: Session, *, account_id: str, import_fingerprint: str
+    ) -> bool:
+        """Return True when the account already has a row with this fingerprint.
+
+        This is a fast-path check only; the authoritative guard is the
+        unique partial index ``ix_api_usage_imported_fingerprint_uniq``,
+        which closes the check-then-insert race under concurrent imports.
+        """
+        exists = (
+            db.query(ApiUsage.id)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                ApiUsage.meta_data["import_fingerprint"].astext == import_fingerprint,
+            )
+            .first()
+        )
+        return exists is not None
+
+    def get_imported_row_by_fingerprint(
+        self, db: Session, *, account_id: str, import_fingerprint: str
+    ) -> Optional[ApiUsage]:
+        """Return the account's imported row with this fingerprint, if any.
+
+        Used by the push-ingest path to flag conflicting replays: the
+        stored row's ``meta_data.ingest_content_hash`` is compared with the
+        incoming record's payload hash (first write wins either way).
+        """
+        return (
+            db.query(ApiUsage)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                ApiUsage.meta_data["import_fingerprint"].astext == import_fingerprint,
+            )
+            .first()
+        )
+
+    def get_imported_rows_by_fingerprints(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        fingerprints: Sequence[str],
+    ) -> Dict[str, ApiUsage]:
+        """Return imported rows keyed by fingerprint for a batch lookup.
+
+        Used by push-ingest to replace per-record existence SELECTs with one
+        ``IN`` query. Missing fingerprints are omitted from the result.
+        """
+        unique = list(dict.fromkeys(fp for fp in fingerprints if fp))
+        if not unique:
+            return {}
+        rows = (
+            db.query(ApiUsage)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                ApiUsage.meta_data["import_fingerprint"].astext.in_(unique),
+            )
+            .all()
+        )
+        found: Dict[str, ApiUsage] = {}
+        for row in rows:
+            fingerprint = (row.meta_data or {}).get("import_fingerprint")
+            if isinstance(fingerprint, str):
+                found[fingerprint] = row
+        return found
+
+    def log_imported_usage_event(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        user_id: Optional[str] = None,
+        timestamp: datetime,
+        model_alias: Optional[str],
+        source: str,
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
+        total_tokens: Optional[int] = None,
+        cache_read_tokens: Optional[int] = None,
+        cache_creation_tokens: Optional[int] = None,
+        cost_usd: Optional[float] = None,
+        cost_basis: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        parent_conversation_id: Optional[str] = None,
+        message_count: Optional[int] = None,
+        tool_call_count: Optional[int] = None,
+        runtime_principal_type: Optional[str] = None,
+        runtime_principal_id: Optional[str] = None,
+        runtime_principal_name: Optional[str] = None,
+        import_fingerprint: Optional[str] = None,
+        meta_data: Optional[Dict[str, Any]] = None,
+        endpoint: Optional[str] = None,
+        skip_fingerprint_lookup: bool = False,
+        commit: bool = True,
+    ) -> Optional[ApiUsage]:
+        """Record one imported usage event in the cost ledger.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            user_id: Importing user's id, for audit.
+            timestamp: When the usage occurred at the source vendor.
+            model_alias: Source-reported model name (e.g. ``composer``);
+                NULL for lifecycle events pushed without one.
+            source: Origin label (e.g. ``cursor``); stored in
+                ``meta_data.import_source``.
+            prompt_tokens: Input tokens reported by the source.
+            completion_tokens: Output tokens reported by the source.
+            total_tokens: Total tokens; derived from prompt+completion when
+                absent.
+            cache_read_tokens: Cache-read tokens reported by the source.
+            cache_creation_tokens: Cache-write tokens reported by the source.
+            cost_usd: Amount the source vendor charged, in USD. Stored in
+                ``estimated_cost`` with ``cost_source='imported'``.
+            cost_basis: ``estimated`` or ``reconciled``; reconciled rows
+                supersede estimated rows with the same (account, source,
+                conversation_id) in imported-cost sums. NULL rows never
+                participate in supersession.
+            conversation_id: Source-side conversation the record belongs to.
+            parent_conversation_id: Conversation it was spawned from, for
+                worker->parent rollup.
+            message_count: Conversation message count (growth tripwire).
+            tool_call_count: Conversation tool-call count (growth tripwire).
+            runtime_principal_type: Managed-agent principal type attribution.
+            runtime_principal_id: Managed-agent principal id attribution.
+            runtime_principal_name: Managed-agent display name attribution.
+            import_fingerprint: Stable dedupe key; when a row with the same
+                fingerprint already exists for the account, the event is
+                skipped and ``None`` is returned (re-importing the same CSV
+                must not double-count spend). Enforced by the unique partial
+                index ``ix_api_usage_imported_fingerprint_uniq``, so two
+                concurrent imports of the same event cannot both land.
+            meta_data: Extra keys merged into the stored ``meta_data``.
+            endpoint: Ledger endpoint label. Defaults to
+                ``/usage/import/{source}`` (CSV/JSON import). Push-ingest
+                passes ``/usage/ingest/{source}``.
+            skip_fingerprint_lookup: When True, skip the fast-path SELECT
+                (the caller already bulk-loaded existing fingerprints). The
+                unique index remains the concurrent-insert guard.
+            commit: When False, flush only so callers can batch commits.
+
+        Returns:
+            The created row, or ``None`` when skipped as a duplicate.
+        """
+        if (
+            import_fingerprint
+            and not skip_fingerprint_lookup
+            and self._imported_fingerprint_exists(
+                db, account_id=account_id, import_fingerprint=import_fingerprint
+            )
+        ):
+            return None
+
+        if total_tokens is None and (
+            prompt_tokens is not None or completion_tokens is not None
+        ):
+            total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+
+        merged_meta: Dict[str, Any] = dict(meta_data or {})
+        merged_meta["import_source"] = source
+        if import_fingerprint:
+            merged_meta["import_fingerprint"] = import_fingerprint
+
+        db_obj = ApiUsage(
+            user_id=user_id,
+            account_id=account_id,
+            endpoint=endpoint or f"/usage/import/{source}",
+            method="POST",
+            status_code=200,
+            duration=0.0,
+            action_type=self.IMPORTED_USAGE_ACTION_TYPE,
+            model_alias=model_alias,
+            provider_name=source,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            estimated_cost=cost_usd,
+            currency="USD" if cost_usd is not None else None,
+            cost_source="imported" if cost_usd is not None else None,
+            cost_basis=cost_basis,
+            conversation_id=conversation_id,
+            parent_conversation_id=parent_conversation_id,
+            message_count=message_count,
+            tool_call_count=tool_call_count,
+            usage_source="imported",
+            runtime_principal_type=runtime_principal_type,
+            runtime_principal_id=runtime_principal_id,
+            runtime_principal_name=runtime_principal_name,
+            meta_data=merged_meta,
+            timestamp=timestamp,
+        )
+        # Insert inside a savepoint so a unique-index violation (a concurrent
+        # import of the same event committed between the fast-path check and
+        # this insert) skips just this row and leaves the batch usable.
+        try:
+            with db.begin_nested():
+                db.add(db_obj)
+                db.flush()
+        except IntegrityError as exc:
+            if self.IMPORTED_FINGERPRINT_INDEX not in str(exc.orig):
+                raise
+            return None
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        return db_obj
+
+    def _imported_cost_sum(self, *, start_date: datetime, end_date: datetime):
+        """SUM of imported cost with reconciled-over-estimated precedence.
+
+        A ``cost_basis='reconciled'`` row (billing export) supersedes ALL
+        ``cost_basis='estimated'`` rows (hook/transcript-derived) with the
+        same (account, provider_name, conversation_id) **in the queried
+        window**: superseded rows contribute $0, so the two bases are never
+        summed for one scope. The EXISTS is bounded to
+        ``start_date <= timestamp < end_date`` so a reconciled row outside
+        the window cannot zero in-window estimates while contributing $0
+        itself. Rows without a conversation_id or with a NULL cost_basis
+        (legacy/CSV imports) never participate.
+        """
+        reconciled = aliased(ApiUsage)
+        superseded = and_(
+            ApiUsage.cost_basis == "estimated",
+            ApiUsage.conversation_id.isnot(None),
+            select(reconciled.id)
+            .where(
+                reconciled.account_id == ApiUsage.account_id,
+                reconciled.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                reconciled.cost_basis == "reconciled",
+                reconciled.provider_name == ApiUsage.provider_name,
+                reconciled.conversation_id == ApiUsage.conversation_id,
+                reconciled.timestamp >= start_date,
+                reconciled.timestamp < end_date,
+            )
+            .exists(),
+        )
+        return func.coalesce(
+            func.sum(
+                case(
+                    (superseded, 0.0),
+                    else_=func.coalesce(ApiUsage.estimated_cost, 0.0),
+                )
+            ),
+            0.0,
+        )
+
+    def get_imported_usage_summary(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        runtime_principal_id: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Aggregate imported usage totals for an account in a window.
+
+        ``imported_cost`` applies reconciled-over-estimated precedence (see
+        :meth:`_imported_cost_sum`); event/token totals count all rows.
+        Supersession is bounded to this same window.
+
+        Args:
+            db: Database session.
+            account_id: Account whose imported usage is aggregated.
+            start_date: Inclusive lower bound on event timestamp.
+            end_date: Exclusive upper bound on event timestamp.
+            runtime_principal_id: Restrict to one managed-agent principal.
+            source: Restrict to one import source label (e.g. ``cursor``).
+
+        Returns:
+            Dict with ``event_count``, ``total_tokens``, ``imported_cost``.
+        """
+        query = db.query(
+            func.count(ApiUsage.id).label("event_count"),
+            func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+            self._imported_cost_sum(start_date=start_date, end_date=end_date).label(
+                "imported_cost"
+            ),
+        ).filter(
+            ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+            ApiUsage.account_id == account_id,
+            ApiUsage.timestamp >= start_date,
+            ApiUsage.timestamp < end_date,
+        )
+        if runtime_principal_id:
+            query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
+        if source:
+            query = query.filter(ApiUsage.meta_data["import_source"].astext == source)
+        row = query.one()
+        return {
+            "event_count": int(row.event_count or 0),
+            "total_tokens": int(row.total_tokens or 0),
+            "imported_cost": float(row.imported_cost or 0.0),
+        }
+
+    def get_imported_usage_by_model(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        runtime_principal_id: Optional[str] = None,
+        source: Optional[str] = None,
+        limit: Optional[int] = 20,
+    ) -> List[Dict[str, Any]]:
+        """Group imported usage by source-reported model.
+
+        ``imported_cost`` applies reconciled-over-estimated precedence (see
+        :meth:`_imported_cost_sum`); event/token totals count all rows.
+        Supersession is bounded to this same window.
+
+        Args:
+            db: Database session.
+            account_id: Account whose imported usage is aggregated.
+            start_date: Inclusive lower bound on event timestamp.
+            end_date: Exclusive upper bound on event timestamp.
+            runtime_principal_id: Restrict to one managed-agent principal.
+            source: Restrict to one import source label.
+            limit: Maximum grouped rows, ordered by event count descending.
+
+        Returns:
+            One dict per (model, source) group with counts, tokens, cost.
+        """
+        import_source = ApiUsage.meta_data["import_source"].astext
+        query = db.query(
+            ApiUsage.model_alias,
+            import_source.label("source"),
+            func.count(ApiUsage.id).label("request_count"),
+            func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+            self._imported_cost_sum(start_date=start_date, end_date=end_date).label(
+                "imported_cost"
+            ),
+            func.max(ApiUsage.timestamp).label("last_event_at"),
+        ).filter(
+            ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+            ApiUsage.account_id == account_id,
+            ApiUsage.timestamp >= start_date,
+            ApiUsage.timestamp < end_date,
+        )
+        if runtime_principal_id:
+            query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
+        if source:
+            query = query.filter(import_source == source)
+        query = query.group_by(ApiUsage.model_alias, import_source).order_by(
+            func.count(ApiUsage.id).desc()
+        )
+        if limit is not None:
+            query = query.limit(limit)
+        return [
+            {
+                "model_alias": row.model_alias,
+                "source": row.source,
+                "request_count": int(row.request_count or 0),
+                "total_tokens": int(row.total_tokens or 0),
+                "imported_cost": float(row.imported_cost or 0.0),
+                "last_event_at": row.last_event_at,
+            }
+            for row in query.all()
+        ]
+
+    def get_imported_usage_by_conversation(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        runtime_principal_id: Optional[str] = None,
+        source: Optional[str] = None,
+        limit: Optional[int] = 200,
+    ) -> List[Dict[str, Any]]:
+        """Group imported usage by source-side conversation for thread rollup.
+
+        Powers the console's per-conversation rollup: rows sharing a
+        ``conversation_id`` collapse to one entry, and the caller nests
+        entries whose ``parent_conversation_id`` matches another entry
+        (subagent workers billed on separate conversations under their
+        parent thread).
+
+        Honesty contract (design-partner rail):
+          * ``estimated_cost`` sums ONLY ``cost_basis='estimated'`` rows and
+            ``reconciled_cost`` sums ONLY ``cost_basis='reconciled'`` rows.
+            The two bases are never combined into one number here; display
+            layers must keep them separate too. No supersession is applied:
+            both bases are surfaced side by side per conversation.
+          * A sum with no contributing rows is ``None`` ("not reported"),
+            never coerced to 0/0.0. Same for ``total_tokens``.
+          * Rows with a NULL ``cost_basis`` cannot occur with a
+            conversation_id today (only push-ingest writes conversation ids
+            and it always sets a basis); defensively, such cost would be
+            excluded from both sums rather than silently classified.
+
+        Rows without a ``conversation_id`` (CSV/JSON batch imports) are not
+        part of any conversation and are excluded.
+
+        Args:
+            db: Database session.
+            account_id: Account whose imported usage is aggregated.
+            start_date: Inclusive lower bound on event timestamp.
+            end_date: Exclusive upper bound on event timestamp.
+            runtime_principal_id: Restrict to one managed-agent principal.
+            source: Restrict to one import source label.
+            limit: Maximum grouped rows, newest activity first.
+
+        Returns:
+            One dict per (conversation_id, source) group, ordered by last
+            event descending. ``parent_conversation_id`` is the group's
+            maximum non-null value (records of one conversation are expected
+            to agree on their parent; MAX is a deterministic tie-break).
+        """
+        import_source = ApiUsage.meta_data["import_source"].astext
+        estimated_sum = func.sum(
+            case(
+                (ApiUsage.cost_basis == "estimated", ApiUsage.estimated_cost),
+                else_=None,
+            )
+        )
+        reconciled_sum = func.sum(
+            case(
+                (ApiUsage.cost_basis == "reconciled", ApiUsage.estimated_cost),
+                else_=None,
+            )
+        )
+        query = db.query(
+            ApiUsage.conversation_id,
+            func.max(ApiUsage.parent_conversation_id).label("parent_conversation_id"),
+            import_source.label("source"),
+            func.count(ApiUsage.id).label("event_count"),
+            # No COALESCE on purpose: NULL means "not reported", not zero.
+            func.sum(ApiUsage.total_tokens).label("total_tokens"),
+            estimated_sum.label("estimated_cost"),
+            reconciled_sum.label("reconciled_cost"),
+            func.max(ApiUsage.timestamp).label("last_event_at"),
+        ).filter(
+            ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+            ApiUsage.account_id == account_id,
+            ApiUsage.conversation_id.isnot(None),
+            ApiUsage.timestamp >= start_date,
+            ApiUsage.timestamp < end_date,
+        )
+        if runtime_principal_id:
+            query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
+        if source:
+            query = query.filter(import_source == source)
+        query = query.group_by(ApiUsage.conversation_id, import_source).order_by(
+            func.max(ApiUsage.timestamp).desc()
+        )
+        if limit is not None:
+            query = query.limit(limit)
+        return [
+            {
+                "conversation_id": row.conversation_id,
+                "parent_conversation_id": row.parent_conversation_id,
+                "source": row.source,
+                "event_count": int(row.event_count or 0),
+                "total_tokens": (
+                    int(row.total_tokens) if row.total_tokens is not None else None
+                ),
+                "estimated_cost": (
+                    float(row.estimated_cost)
+                    if row.estimated_cost is not None
+                    else None
+                ),
+                "reconciled_cost": (
+                    float(row.reconciled_cost)
+                    if row.reconciled_cost is not None
+                    else None
+                ),
+                "last_event_at": row.last_event_at,
+            }
+            for row in query.all()
+        ]
 
 
 crud_api_usage = CRUDApiUsage(ApiUsage)

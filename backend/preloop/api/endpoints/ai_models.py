@@ -1,26 +1,43 @@
+import json
 import logging
 import uuid
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    status,
+    Query,
+    Request,
+    Response,
+)
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.models.crud import crud_account
 from preloop.schemas.ai_model import (
+    AIModelCatalogSyncProviderResult,
+    AIModelCatalogSyncRequest,
+    AIModelCatalogSyncResponse,
     AIModelCreate,
     AIModelCredentialExportResponse,
     AIModelGatewayUsageSummaryResponse,
+    AIModelOverviewItem,
     AIModelRead,
+    AIModelsOverviewResponse,
     AIModelUpdate,
+    AvailableModelsRequest,
+    AvailableModelsResponse,
 )
 from preloop.services.secret_service import (
     PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES,
     CredentialRefreshError,
     get_secret_service,
 )
-from preloop.models.crud import crud_ai_model
+from preloop.models.crud import crud_ai_model, crud_api_usage, crud_runtime_session
 from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.user import User
@@ -28,15 +45,35 @@ from preloop.models.models.ai_model import AIModel
 from preloop.schemas.gateway_usage import (
     AccountGatewayUsageSearchResponse,
     AccountRuntimeSessionListResponse,
+    GatewayTokenUsage,
 )
-from preloop.services.model_gateway_usage import ModelGatewayUsageService
+from preloop.schemas.ai_model_pricing import (
+    AIModelPriceQuote,
+    AIModelPricingResponse,
+)
+from preloop.services.ai_model_pricing import (
+    PriceFetchUnavailableError,
+    PriceFetchUnsupportedError,
+    fetch_provider_pricing,
+    get_effective_pricing,
+    get_effective_pricing_bulk,
+)
+from preloop.services.model_gateway_usage import (
+    ModelGatewayUsageService,
+    normalize_usage_period,
+)
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 from preloop.utils.permissions import require_permission
-from preloop.services.ai_model_provider import get_available_models_for_provider
+from preloop.services.ai_model_provider import (
+    ERROR_SUBSCRIPTION_OAUTH,
+    ProviderAuthError,
+    ProviderValidationError,
+    get_available_models_for_provider,
+)
+from preloop.services.ai_model_catalog_sync import sync_account_model_catalog
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-public_router = APIRouter()  # Router for endpoints that don't require authentication
 
 
 def _get_account_ai_model(
@@ -52,6 +89,68 @@ def _get_account_ai_model(
             status_code=status.HTTP_404_NOT_FOUND, detail="AI Model not found"
         )
     return db_model
+
+
+def _gateway_alias(ai_model: AIModel) -> Optional[str]:
+    """Return the gateway alias clients call this model by, if configured."""
+    meta_data = ai_model.meta_data if isinstance(ai_model.meta_data, dict) else {}
+    gateway = meta_data.get("gateway")
+    if isinstance(gateway, dict):
+        alias = gateway.get("model_alias")
+        if isinstance(alias, str) and alias.strip():
+            return alias.strip()
+    return None
+
+
+def _collapse_usage_by_model(usage_rows: List[Dict]) -> Dict[str, Dict]:
+    """Sum the per-alias usage groups into one total per model.
+
+    ``get_gateway_usage_by_model`` groups by (model, alias, provider), so a
+    model renamed at the gateway comes back as several rows. The Models page
+    shows one row per configured model, so the aliases are added together.
+
+    Args:
+        usage_rows: Grouped rows as returned by the usage CRUD.
+
+    Returns:
+        Mapping of model id to summed counters, with the latest
+        ``last_request_at`` across that model's aliases.
+    """
+    totals: Dict[str, Dict] = {}
+    for row in usage_rows:
+        model_id = row.get("ai_model_id")
+        if not model_id:
+            continue
+        total = totals.setdefault(
+            model_id,
+            {
+                "request_count": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "estimated_cost": 0.0,
+                "unpriced_request_count": 0,
+                "failed_request_count": 0,
+                "last_request_at": None,
+            },
+        )
+        for key in (
+            "request_count",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "estimated_cost",
+            "unpriced_request_count",
+            "failed_request_count",
+        ):
+            total[key] += row.get(key) or 0
+        last_request_at = row.get("last_request_at")
+        if last_request_at is not None and (
+            total["last_request_at"] is None
+            or last_request_at > total["last_request_at"]
+        ):
+            total["last_request_at"] = last_request_at
+    return totals
 
 
 def _get_current_account(*, db: Session, current_user: User) -> Account:
@@ -106,6 +205,96 @@ def list_ai_models(
     """List all AI Models associated with the authenticated user's account."""
     models = crud_ai_model.get_by_account(db=db, account_id=current_user.account_id)
     return models
+
+
+@router.get(
+    "/ai-models/overview",
+    response_model=AIModelsOverviewResponse,
+    summary="Get AI Models Overview",
+    tags=["AI Models"],
+)
+@require_permission("view_ai_models")
+def get_ai_models_overview(
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelsOverviewResponse:
+    """Return usage, active sessions and price source for every model."""
+    # Declared before ``/ai-models/{model_id}`` so the literal path wins the
+    # route match.
+    #
+    # Answers the whole page in a fixed number of queries: the models, one
+    # grouped usage aggregate, one grouped active-session count and one read
+    # of the account's price overrides. The per-model summary, runtime-session,
+    # interaction and pricing endpoints stay for the detail page, where they
+    # are asked for one model at a time.
+    period_start, period_end = normalize_usage_period(start_date, end_date)
+    account_id = str(current_user.account_id)
+    models = crud_ai_model.get_by_account(db=db, account_id=current_user.account_id)
+    if not models:
+        return AIModelsOverviewResponse(
+            period_start=period_start, period_end=period_end, models=[]
+        )
+
+    model_ids = [str(model.id) for model in models]
+    # ``limit=None``: this is a total per model, and a request-count-ordered
+    # truncation would silently zero the quietest models on the page.
+    usage_rows = crud_api_usage.get_gateway_usage_by_model(
+        db,
+        account_id=account_id,
+        start_date=period_start,
+        end_date=period_end,
+        ai_model_ids=model_ids,
+        limit=None,
+    )
+    usage_by_model = _collapse_usage_by_model(usage_rows)
+    active_sessions = crud_runtime_session.count_active_sessions_by_model(
+        db,
+        account_id=account_id,
+        ai_model_ids=model_ids,
+        start_date=period_start,
+        end_date=period_end,
+    )
+    pricing = get_effective_pricing_bulk(
+        db, account_id=current_user.account_id, ai_models=models
+    )
+
+    items: List[AIModelOverviewItem] = []
+    for model in models:
+        model_id = str(model.id)
+        usage = usage_by_model.get(model_id)
+        requests = usage["request_count"] if usage else 0
+        failed = usage["failed_request_count"] if usage else 0
+        items.append(
+            AIModelOverviewItem(
+                ai_model_id=model_id,
+                model_name=model.name,
+                provider_name=model.provider_name,
+                model_identifier=model.model_identifier,
+                model_alias=_gateway_alias(model),
+                is_default=bool(model.is_default),
+                total_requests=requests,
+                successful_requests=max(requests - failed, 0),
+                failed_requests=failed,
+                token_usage=GatewayTokenUsage(
+                    prompt_tokens=usage["prompt_tokens"] if usage else 0,
+                    completion_tokens=usage["completion_tokens"] if usage else 0,
+                    total_tokens=usage["total_tokens"] if usage else 0,
+                ),
+                estimated_cost=usage["estimated_cost"] if usage else 0.0,
+                unpriced_request_count=usage["unpriced_request_count"] if usage else 0,
+                active_session_count=active_sessions.get(model_id, 0),
+                last_request_at=usage["last_request_at"] if usage else None,
+                pricing_source=(
+                    pricing[model_id].source if model_id in pricing else "none"
+                ),
+            )
+        )
+
+    return AIModelsOverviewResponse(
+        period_start=period_start, period_end=period_end, models=items
+    )
 
 
 @router.get(
@@ -276,6 +465,110 @@ def delete_ai_model(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.get(
+    "/ai-models/{model_id}/pricing",
+    response_model=AIModelPricingResponse,
+    summary="Get AI Model Pricing",
+    tags=["AI Models"],
+)
+@require_permission("view_ai_models")
+def get_ai_model_pricing(
+    model_id: uuid.UUID,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelPricingResponse:
+    """Return the effective price for one model and where it came from."""
+    db_model = _get_account_ai_model(
+        db=db, model_id=model_id, current_user=current_user
+    )
+    return get_effective_pricing(
+        db, account_id=current_user.account_id, ai_model=db_model
+    )
+
+
+@router.post(
+    "/ai-models/{model_id}/pricing/fetch",
+    response_model=AIModelPriceQuote,
+    summary="Fetch AI Model Pricing From Provider",
+    tags=["AI Models"],
+)
+@require_permission("edit_ai_models")
+def fetch_ai_model_pricing(
+    model_id: uuid.UUID,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelPriceQuote:
+    """Read this model's published price from its provider, without saving it.
+
+    A price decides what every past and future request cost, so it is never
+    written by a fetch: the numbers come back for a person to confirm, and
+    saving one stays with the price override endpoints.
+    """
+    db_model = _get_account_ai_model(
+        db=db, model_id=model_id, current_user=current_user
+    )
+    try:
+        return fetch_provider_pricing(db_model)
+    except PriceFetchUnsupportedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except PriceFetchUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+        ) from exc
+
+
+@router.post(
+    "/ai-models/sync",
+    response_model=AIModelCatalogSyncResponse,
+    summary="Sync Provider Model Catalogs",
+    tags=["AI Models"],
+)
+@require_permission("create_ai_models")
+async def sync_ai_model_catalog(
+    request: Request,
+    request_in: Optional[AIModelCatalogSyncRequest] = None,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelCatalogSyncResponse:
+    """Discover newly released provider models and add them to the catalog.
+
+    Runs the existing live provider discovery against credentials the account
+    already stores (the same discovery the console model-add flow uses) and
+    creates one AI model per newly discovered identifier via the CRUD layer.
+    New rows share the seed model's credential secret and inherit its gateway
+    exposure, so authorization semantics are unchanged: API-key models stay
+    account-wide, and principal-bound subscription-OAuth models (which cannot
+    authenticate server-side discovery) are never created or widened here.
+
+    Backing service: ``preloop.services.ai_model_catalog_sync``. Every added
+    model is recorded in the audit trail. Use ``dry_run`` to preview.
+    """
+    summary = await sync_account_model_catalog(
+        db,
+        user=current_user,
+        provider=request_in.provider if request_in else None,
+        dry_run=bool(request_in.dry_run) if request_in else False,
+        request=request,
+    )
+    return AIModelCatalogSyncResponse(
+        providers=[
+            AIModelCatalogSyncProviderResult(
+                provider=result.provider,
+                source=result.source,
+                error=result.error,
+                discovered=result.discovered,
+                added=result.added,
+                skipped_existing=result.skipped_existing,
+                note=result.note,
+            )
+            for result in summary.providers
+        ],
+        dry_run=summary.dry_run,
+    )
+
+
 @router.post(
     "/ai-models/{model_id}/credentials/export",
     response_model=AIModelCredentialExportResponse,
@@ -347,16 +640,89 @@ def export_ai_model_credentials(
     )
 
 
-@public_router.get(
+@router.post(
     "/ai-models/providers/{provider}/available-models",
-    response_model=List[str],
+    response_model=AvailableModelsResponse,
     summary="Get Available Models for Provider",
     tags=["AI Models"],
 )
+async def list_provider_available_models(
+    provider: str,
+    request_in: Optional[AvailableModelsRequest] = None,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AvailableModelsResponse:
+    """
+    Fetch available models from the specified AI provider, with provenance.
+
+    Every provider lists live when a key (and endpoint where applicable) is
+    present; the response reports ``source`` ("live" or "fallback") and a
+    short safe ``error`` reason when a live attempt failed or credentials
+    were missing. The reason comes from a fixed vocabulary and never contains
+    raw provider error text, endpoint URLs, or key material.
+
+    The provider API key travels in the request BODY, never the query string:
+    as a query parameter it was written to access logs in plaintext.
+
+    Edit-mode refresh should send ``ai_model_id`` instead of the stored key.
+    The server decrypts the stored secret via CRUD. A typed ``api_key`` in
+    the body always wins. Stored secrets are never returned to the client.
+    """
+    (
+        api_key,
+        api_endpoint,
+        aws_auth,
+        model_kind,
+        stored_subscription_oauth,
+    ) = _resolve_listing_inputs(
+        provider=provider,
+        request_in=request_in,
+        db=db,
+        current_user=current_user,
+    )
+    if stored_subscription_oauth and not api_key:
+        # The stored credential is a principal-bound subscription-OAuth bundle
+        # (e.g. Claude Code). HARD CONSTRAINT: the server never initiates its
+        # own provider API calls with such a token; Anthropic fingerprints
+        # Claude Code OAuth traffic and can invalidate the subscription (see
+        # the error-code-1010 note in secret_service.py). Answer from the
+        # account's own catalog instead of returning an API-key auth error.
+        return AvailableModelsResponse(
+            models=_account_catalog_identifiers(
+                db=db, current_user=current_user, provider=provider
+            ),
+            source="fallback",
+            error=ERROR_SUBSCRIPTION_OAUTH,
+        )
+    return await _fetch_provider_models(
+        provider=provider,
+        api_key=api_key,
+        model_kind=model_kind,
+        api_endpoint=api_endpoint,
+        aws_auth=aws_auth,
+    )
+
+
+@router.get(
+    "/ai-models/providers/{provider}/available-models",
+    response_model=List[str],
+    summary="Get Available Models for Provider (deprecated)",
+    tags=["AI Models"],
+    deprecated=True,
+)
 async def get_provider_available_models(
     provider: str,
-    api_key: Optional[str] = Query(
-        None, description="Optional API key for fetching models"
+    x_provider_api_key: Optional[str] = Header(
+        None,
+        alias="X-Provider-Api-Key",
+        description="Provider API key. Headers are not written to access logs.",
+    ),
+    api_endpoint: Optional[str] = Query(
+        None,
+        description=(
+            "Base URL of an OpenAI-compatible endpoint, required for the "
+            "openai-compatible and custom providers."
+        ),
     ),
     model_kind: Literal["llm", "stt", "tts"] = Query(
         "llm",
@@ -365,28 +731,269 @@ async def get_provider_available_models(
     ),
 ) -> List[str]:
     """
-    Fetch available models from the specified AI provider.
+    Deprecated GET form, kept for clients that have not moved to POST yet.
 
-    For OpenAI, this will fetch the latest available models from their API.
-    For Anthropic and Google, this returns a curated list of known models.
+    Returns a BARE LIST of model ids, unlike the POST form, which reports
+    provenance as ``{models, source, error}``. The bare-list shape is kept
+    here on purpose so unknown external callers of the deprecated route do
+    not break; new clients should use POST and read the provenance.
 
-    Note: This endpoint does not require authentication as it's just fetching
-    publicly available model names. The api_key parameter is optional for
-    fetching live data from OpenAI.
+    The api_key query parameter this endpoint used to accept has been REMOVED,
+    not merely deprecated: it wrote live provider keys into access logs in
+    plaintext. Pass the key in the X-Provider-Api-Key header, or use the POST
+    form. A key sent as a query parameter is ignored.
+    """
+    result = await _fetch_provider_models(
+        provider=provider,
+        api_key=x_provider_api_key,
+        model_kind=model_kind,
+        api_endpoint=api_endpoint,
+    )
+    return result.models
+
+
+def _aws_auth_from_stored_bedrock_secret(
+    secret_value: str,
+    ai_model: AIModel,
+) -> Optional[Dict[str, str]]:
+    """Parse a stored Bedrock JSON blob plus routing region into aws_auth.
+
+    The stored secret is the same JSON shape the add-model modal writes
+    (``aws_access_key_id``, ``aws_secret_access_key``, optional session
+    token). Region lives on ``meta_data.provider_runtime.region``.
     """
     try:
-        models = await get_available_models_for_provider(provider, api_key, model_kind)
-        return models
-    except ValueError as e:
-        # ValueError is raised for authentication errors
-        logger.warning(f"Authentication failed for provider {provider}: {e}")
+        payload = json.loads(secret_value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    auth: Dict[str, str] = {}
+    for key in (
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_session_token",
+        "aws_region_name",
+    ):
+        value = payload.get(key)
+        if value:
+            auth[key] = str(value).strip()
+    meta = ai_model.meta_data if isinstance(ai_model.meta_data, dict) else {}
+    runtime_raw = meta.get("provider_runtime")
+    runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
+    region = runtime.get("region") if isinstance(runtime, dict) else None
+    if isinstance(region, str) and region.strip() and "aws_region_name" not in auth:
+        auth["aws_region_name"] = region.strip()
+    if not auth.get("aws_access_key_id") or not auth.get("aws_secret_access_key"):
+        return None
+    return auth
+
+
+def _resolve_listing_inputs(
+    *,
+    provider: str,
+    request_in: Optional[AvailableModelsRequest],
+    db: Optional[Session],
+    current_user: Optional[User],
+) -> Tuple[
+    Optional[str],
+    Optional[str],
+    Optional[dict],
+    Literal["llm", "stt", "tts"],
+    bool,
+]:
+    """Typed credentials win; otherwise decrypt the stored model secret.
+
+    The stored plaintext is used only for the live list call and is never
+    copied into the response.
+
+    The final tuple element reports whether the stored model carries a
+    principal-bound subscription-OAuth credential (Claude Code / Codex). Such
+    secrets are never decrypted here: the caller must not contact the
+    provider with them at all, so there is nothing to resolve.
+
+    A stored secret is only ever used for the provider it was stored for. The
+    edit form leaves the provider dropdown enabled, so without that check a
+    caller could pair one model's ``ai_model_id`` with a different ``provider``
+    plus an attacker-chosen ``api_endpoint`` and have the server forward the
+    decrypted key there. ``validate_discovery_endpoint`` blocks private hosts
+    but not public ones, so the mismatch is rejected before decryption.
+    """
+    typed_key = (request_in.api_key or "").strip() if request_in else ""
+    typed_endpoint = (request_in.api_endpoint or "").strip() if request_in else ""
+    typed_aws = _aws_auth_from_request(request_in)
+    model_kind: Literal["llm", "stt", "tts"] = (
+        request_in.model_kind if request_in else "llm"
+    )
+
+    stored_key: Optional[str] = None
+    stored_endpoint: Optional[str] = None
+    stored_aws: Optional[Dict[str, str]] = None
+    stored_subscription_oauth = False
+    model_id = request_in.ai_model_id if request_in else None
+    if model_id is not None:
+        if (
+            db is None
+            or current_user is None
+            or not getattr(current_user, "account_id", None)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to list with a stored model",
+            )
+        db_model = crud_ai_model.get_for_account(
+            db, id=model_id, account_id=current_user.account_id
+        )
+        if db_model is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="AI Model not found"
+            )
+        if (db_model.provider_name or "").strip().lower() != (
+            provider or ""
+        ).strip().lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Stored model provider does not match the requested provider",
+            )
+        if bool(getattr(db_model, "is_principal_bound_oauth", False)):
+            # Never decrypt or use a principal-bound subscription-OAuth token
+            # for server-initiated listing; the caller answers from the
+            # catalog instead (see list_provider_available_models).
+            return (
+                (typed_key or None),
+                typed_endpoint or (db_model.api_endpoint or "").strip() or None,
+                typed_aws,
+                model_kind,
+                True,
+            )
+        try:
+            stored_key = crud_ai_model.resolve_listing_secret(db_model)
+        except ValueError:
+            # Every expected failure below resolve_listing_secret normalizes to
+            # ValueError: decrypt_value re-raises InvalidToken, the vault
+            # backend re-raises transport/lookup errors, credential payload
+            # parsing raises on bad JSON, and CredentialRefreshError subclasses
+            # ValueError. Anything else is a real bug and must stay loud rather
+            # than degrade to "missing_key".
+            logger.warning(
+                "Failed to decrypt stored listing credentials for model %s",
+                model_id,
+            )
+            stored_key = None
+        stored_endpoint = (db_model.api_endpoint or "").strip() or None
+        if (db_model.provider_name or "").lower() == "bedrock" and stored_key:
+            stored_aws = _aws_auth_from_stored_bedrock_secret(stored_key, db_model)
+            stored_key = None
+
+    api_key = typed_key or stored_key
+    api_endpoint = typed_endpoint or stored_endpoint
+    aws_auth = typed_aws or stored_aws
+    return api_key, api_endpoint, aws_auth, model_kind, stored_subscription_oauth
+
+
+def _account_catalog_identifiers(
+    *,
+    db: Session,
+    current_user: User,
+    provider: str,
+) -> List[str]:
+    """The account's own model identifiers for one provider.
+
+    Used as the honest picker fallback for subscription-OAuth credentials:
+    there is no bundled provider catalog and no server-initiated listing, so
+    what the account already knows (from onboarding imports, `models sync`,
+    and gateway traffic-observed auto-registration) is the curated list.
+
+    Sorted reverse-lexicographic. That is roughly newest-first for
+    date-suffixed ids, but not a chronological sort: ``model-5-20260415``
+    sorts ahead of ``model-5-1-20260901``. Display order only.
+    """
+    provider_name = (provider or "").strip().lower()
+    identifiers = {
+        (model.model_identifier or "").strip()
+        for model in crud_ai_model.get_by_account(
+            db=db, account_id=current_user.account_id
+        )
+        if (model.provider_name or "").strip().lower() == provider_name
+        and (model.model_identifier or "").strip()
+    }
+    return sorted(identifiers, reverse=True)
+
+
+def _aws_auth_from_request(
+    request_in: Optional[AvailableModelsRequest],
+) -> Optional[dict]:
+    """Collect AWS credential fields into a service-layer mapping, or None.
+
+    Only present fields are forwarded, so boto3's default credential chain
+    stays in play for the bedrock provider when the user supplied nothing.
+    """
+    if request_in is None:
+        return None
+    auth = {
+        key: getattr(request_in, key)
+        for key in (
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_session_token",
+            "aws_region_name",
+        )
+        if getattr(request_in, key) is not None
+    }
+    return auth or None
+
+
+async def _fetch_provider_models(
+    *,
+    provider: str,
+    api_key: Optional[str],
+    model_kind: Literal["llm", "stt", "tts"],
+    api_endpoint: Optional[str],
+    aws_auth: Optional[dict] = None,
+) -> AvailableModelsResponse:
+    """Shared body of the GET and POST available-models endpoints."""
+    try:
+        result = await get_available_models_for_provider(
+            provider,
+            api_key,
+            model_kind,
+            api_endpoint,
+            aws_auth=aws_auth,
+        )
+        return AvailableModelsResponse(
+            models=result.models,
+            source=result.source,
+            error=result.error,
+        )
+    except ProviderAuthError as e:
+        # The provider rejected the caller's API key. The message is our own
+        # fixed text, never the key.
+        logger.warning("Cannot list models for provider %s: %s", provider, e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(e),
         )
+    except ProviderValidationError as e:
+        # The request was invalid before any provider was contacted (bad
+        # model_kind, rejected or SSRF-blocked endpoint).
+        logger.warning("Cannot list models for provider %s: %s", provider, e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except ValueError as e:
+        # An unexpected internal ValueError. Treat it as a bad request:
+        # calling it "unauthorized" would mislabel non-auth failures.
+        logger.warning("Cannot list models for provider %s: %s", provider, e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
     except Exception as e:
-        logger.error(f"Failed to fetch models for provider {provider}: {e}")
+        logger.error(
+            "Failed to fetch models for provider %s: %s", provider, type(e).__name__
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch available models: {str(e)}",
+            detail="Failed to fetch available models. Check server logs for details.",
         )

@@ -1,12 +1,19 @@
 import asyncio
 import json
 import logging
+import threading
+import time
 import uuid
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from fastapi import WebSocket
 from nats.aio.client import Client
 from nats.aio.msg import Msg
+from sqlalchemy.exc import (
+    IntegrityError,
+    OperationalError,
+    TimeoutError as SQLAlchemyTimeoutError,
+)
 
 from preloop.sync.services.event_bus import get_task_publisher
 from preloop.models.db.session import get_db_session as get_db
@@ -19,6 +26,61 @@ logger = logging.getLogger(__name__)
 # Dictionary to hold loop-specific queues to prevent test runner cross-loop panics
 _log_queues: dict[asyncio.AbstractEventLoop, asyncio.Queue] = {}
 
+# Background log persistence must never starve request-serving connections.
+# Only this many threads may hold a pooled DB connection for log writes at a
+# time, so a burst of NATS logs cannot consume the whole QueuePool.
+LOG_PERSIST_MAX_CONCURRENCY = 1
+_log_persist_semaphore = threading.BoundedSemaphore(LOG_PERSIST_MAX_CONCURRENCY)
+
+# Bounded retry for transient pool/connection failures before dropping data.
+LOG_PERSIST_MAX_ATTEMPTS = 3
+LOG_PERSIST_BASE_BACKOFF_SECONDS = 0.5
+
+# Transient errors worth retrying: pool checkout timeouts (QueuePool limit
+# reached) and dropped/failed connections. Anything else is a real bug and is
+# not retried.
+_RETRYABLE_DB_ERRORS = (SQLAlchemyTimeoutError, OperationalError)
+
+# PostgreSQL SQLSTATE for foreign_key_violation. Logs can legitimately arrive
+# for an execution row that no longer exists (e.g. the flow was deleted while
+# an agent was still shutting down); those inserts fail this FK and must not
+# be retried or escalated as data-loss alerts.
+_FK_VIOLATION_PGCODE = "23503"
+
+
+def _is_execution_fk_violation(exc: BaseException) -> bool:
+    """Return True if ``exc`` is a foreign-key violation on a log insert."""
+    if not isinstance(exc, IntegrityError):
+        return False
+    return getattr(exc.orig, "pgcode", None) == _FK_VIOLATION_PGCODE
+
+
+def _strip_orphaned_logs(
+    batch: List[Tuple[str, dict]],
+) -> Tuple[List[Tuple[str, dict]], Dict[str, int]]:
+    """Split a batch into entries with a live execution row and orphans.
+
+    Checks execution existence once via the CRUD layer. Returns the surviving
+    entries and a ``{execution_id: dropped_count}`` map for the orphans.
+    """
+    from preloop.models.crud import crud_flow_execution
+
+    ids = {execution_id for execution_id, _ in batch}
+    db = next(get_db())
+    try:
+        existing = crud_flow_execution.existing_ids(db, list(ids))
+    finally:
+        db.close()
+
+    surviving: List[Tuple[str, dict]] = []
+    orphaned: Dict[str, int] = {}
+    for execution_id, log_data in batch:
+        if execution_id in existing:
+            surviving.append((execution_id, log_data))
+        else:
+            orphaned[execution_id] = orphaned.get(execution_id, 0) + 1
+    return surviving, orphaned
+
 
 def get_log_queue() -> asyncio.Queue:
     """Returns the logging queue associated with the current running event loop."""
@@ -28,35 +90,149 @@ def get_log_queue() -> asyncio.Queue:
     return _log_queues[loop]
 
 
-def _sync_batch_insert_logs(batch: list):
-    """
-    Synchronously insert a batch of log records into the database.
-    """
-    try:
-        from preloop.models.crud import crud_flow_execution
+def _write_log_batch(batch: List[Tuple[str, dict]]) -> None:
+    """Write one batch of log records in a single transaction.
 
-        db = next(get_db())
+    Raises whatever the database layer raises; retry policy lives in the
+    caller. DB access stays behind ``preloop.models.crud``.
+    """
+    from preloop.models.crud import crud_flow_execution
+
+    db = next(get_db())
+    try:
+        for execution_id, log_data in batch:
+            crud_flow_execution.append_log(
+                db, execution_id=execution_id, log_data=log_data, commit=False
+            )
+        db.commit()
+    except Exception:
+        # Never leave a half-applied transaction on a pooled connection.
         try:
-            for execution_id, log_data in batch:
-                crud_flow_execution.append_log(
-                    db, execution_id=execution_id, log_data=log_data, commit=False
+            db.rollback()
+        except Exception:  # pragma: no cover - rollback failure is best-effort
+            logger.warning("Rollback failed while aborting log batch", exc_info=True)
+        raise
+    finally:
+        db.close()
+
+
+def _sync_batch_insert_logs(batch: list) -> bool:
+    """Insert a batch of log records, retrying transient database failures.
+
+    Pool exhaustion (``QueuePool limit ... reached``) and dropped connections
+    are transient: the previous implementation dropped the whole batch on the
+    first error, silently losing execution logs during load spikes. We now
+    retry with exponential backoff and only drop as a last resort.
+
+    A semaphore bounds how many threads may hold a pooled connection for log
+    persistence, so background writes cannot exhaust the pool that serves user
+    requests and health checks.
+
+    Args:
+        batch: Sequence of ``(execution_id, log_data)`` pairs.
+
+    Returns:
+        True if the batch was persisted (entries for since-deleted executions
+        are dropped by design and still count as handled), False if data was
+        dropped due to an unexpected error.
+    """
+    if not batch:
+        return True
+
+    last_error: Optional[BaseException] = None
+    attempts_made = 0
+    fk_checked = False
+
+    with _log_persist_semaphore:
+        for attempt in range(1, LOG_PERSIST_MAX_ATTEMPTS + 1):
+            attempts_made = attempt
+            try:
+                _write_log_batch(batch)
+                if attempt > 1:
+                    logger.info(
+                        "Persisted batch of %d logs on attempt %d/%d",
+                        len(batch),
+                        attempt,
+                        LOG_PERSIST_MAX_ATTEMPTS,
+                    )
+                return True
+            except _RETRYABLE_DB_ERRORS as exc:
+                last_error = exc
+                if attempt == LOG_PERSIST_MAX_ATTEMPTS:
+                    break
+                backoff = LOG_PERSIST_BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                logger.warning(
+                    "Transient DB error persisting %d logs "
+                    "(attempt %d/%d), retrying in %.1fs: %s",
+                    len(batch),
+                    attempt,
+                    LOG_PERSIST_MAX_ATTEMPTS,
+                    backoff,
+                    exc,
                 )
-            db.commit()
-        finally:
-            db.close()
-    except Exception as e:
-        logger.error(
-            f"Failed to persist batch of {len(batch)} logs: {e}", exc_info=True
+                time.sleep(backoff)
+            except IntegrityError as exc:
+                last_error = exc
+                # An FK violation usually means logs arrived for an execution
+                # row that no longer exists (e.g. flow deleted while the agent
+                # was shutting down). That is a known-orphan situation, not
+                # data loss: check existence ONCE, drop the orphans with a
+                # single structured warning, and persist whatever remains.
+                if not _is_execution_fk_violation(exc) or fk_checked:
+                    break
+                fk_checked = True
+                try:
+                    batch, orphaned = _strip_orphaned_logs(batch)
+                except Exception as check_error:
+                    last_error = check_error
+                    break
+                if not orphaned:
+                    # FK violation but every execution exists: not the orphan
+                    # case — fall through to the loud drop path.
+                    break
+                logger.warning(
+                    "Dropping %d log(s) for execution(s) no longer in "
+                    "flow_execution (deleted while logs were in flight): %s",
+                    sum(orphaned.values()),
+                    ", ".join(
+                        f"{execution_id} ({count} log(s))"
+                        for execution_id, count in sorted(orphaned.items())
+                    ),
+                )
+                if not batch:
+                    return True
+                # Retry immediately with the surviving entries only.
+                continue
+            except Exception as exc:  # non-retryable: fail fast
+                last_error = exc
+                logger.error(
+                    "Non-retryable error persisting batch of %d logs: %s",
+                    len(batch),
+                    exc,
+                    exc_info=True,
+                )
+                break
+
+    # Exhausted retries (or hit a non-retryable error): drop, but loudly.
+    logger.error(
+        "Dropping batch of %d logs after %d attempt(s): %s",
+        len(batch),
+        attempts_made,
+        last_error,
+        exc_info=last_error,
+    )
+    try:
+        notify_admins(
+            subject="[Preloop Alert] NATS Log Persistence Failed",
+            message=(
+                f"A batch of {len(batch)} logs failed to persist to the database "
+                f"after {attempts_made} attempt(s) and were dropped. "
+                f"Error: {last_error}"
+            ),
         )
-        try:
-            notify_admins(
-                subject="[Preloop Alert] NATS Log Persistence Failed",
-                message=f"A batch of {len(batch)} logs failed to persist to the database and were dropped. Error: {str(e)}",
-            )
-        except Exception as alert_err:
-            logger.error(
-                f"Failed to send admin notification for dropped logs: {alert_err}"
-            )
+    except Exception as alert_err:
+        logger.error(f"Failed to send admin notification for dropped logs: {alert_err}")
+    return False
 
 
 async def _log_writer_worker():
@@ -197,6 +373,8 @@ class WebSocketManager:
             return None
         if message_type.startswith("approval_"):
             return "approvals"
+        if message_type.startswith("runner_"):
+            return "runners"
         if message_type == "activity_update":
             return "activity"
         if message_type in {
@@ -270,6 +448,17 @@ class WebSocketManager:
                 f"Broadcast complete: sent to {sent_count} connection(s) for account {account_id}"
             )
 
+    def _count_account_connections(self, account_id: str) -> int:
+        """Count connections currently bound to one account.
+
+        Args:
+            account_id: Account whose listeners should be counted.
+
+        Returns:
+            Number of active connections registered to ``account_id``.
+        """
+        return sum(1 for acc in self.connection_accounts.values() if acc == account_id)
+
     async def broadcast_json(self, data: dict, account_id: str = None):
         """
         Broadcasts a JSON message to connected clients, optionally filtered by account_id.
@@ -284,23 +473,35 @@ class WebSocketManager:
         high_freq_types = {"agent_log_line", "token_usage_update", "tool_calls_update"}
 
         if account_id:
-            matching_count = sum(
-                1 for acc in self.connection_accounts.values() if acc == account_id
-            )
-            # Only log high-frequency messages at debug level, or when someone is listening
+            # The matching count only ever feeds a log line, so it is computed
+            # lazily. Counting every connection on each broadcast was pure
+            # overhead on the hottest path (agent_log_line), where the result is
+            # discarded whenever DEBUG is off.
             if msg_type in high_freq_types:
-                if matching_count > 0:
-                    logger.debug(
-                        f"Broadcasting {msg_type} to {matching_count} connection(s) "
-                        f"for account {account_id}"
-                    )
-                # Skip logging entirely when no one is listening for high-freq messages
+                # High-frequency messages only ever log at DEBUG, so skip the
+                # scan entirely when that line would be discarded anyway.
+                if logger.isEnabledFor(logging.DEBUG):
+                    matching_count = self._count_account_connections(account_id)
+                    if matching_count > 0:
+                        logger.debug(
+                            f"Broadcasting {msg_type} to {matching_count} "
+                            f"connection(s) for account {account_id}"
+                        )
             else:
-                # Non-high-frequency messages (status updates, etc.) always log at INFO
-                logger.info(
-                    f"Broadcasting {msg_type} to account_id={account_id}, "
-                    f"matching_connections={matching_count}"
-                )
+                # Low-volume messages: one scan feeds either the INFO line (when
+                # someone is listening) or the DEBUG "no listeners" line, which
+                # was ~69% of all gateway log volume in production.
+                matching_count = self._count_account_connections(account_id)
+                if matching_count > 0:
+                    logger.info(
+                        f"Broadcasting {msg_type} to account_id={account_id}, "
+                        f"matching_connections={matching_count}"
+                    )
+                else:
+                    logger.debug(
+                        f"Broadcasting {msg_type} to account_id={account_id}, "
+                        f"matching_connections=0"
+                    )
         else:
             logger.info(
                 f"Broadcasting {msg_type} to all {len(self.active_connections)} connections"

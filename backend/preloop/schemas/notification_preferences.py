@@ -19,6 +19,17 @@ class NotificationPreferencesBase(BaseModel):
     enable_mobile_push: bool = Field(
         False, description="Whether mobile push notifications are enabled"
     )
+    stagger_email: bool = Field(
+        True,
+        description=(
+            "When True and push is enabled, delay approval email until the "
+            "request is still pending after one minute"
+        ),
+    )
+    notify_when_needed: bool = Field(
+        True,
+        description="Push when the agent needs the operator (approvals, ask_user)",
+    )
 
 
 class NotificationPreferencesUpdate(NotificationPreferencesBase):
@@ -30,6 +41,17 @@ class NotificationPreferencesUpdate(NotificationPreferencesBase):
     enable_email: Optional[bool] = Field(None, description="Enable email notifications")
     enable_mobile_push: Optional[bool] = Field(
         None, description="Enable mobile push notifications"
+    )
+    stagger_email: Optional[bool] = Field(
+        None,
+        description=(
+            "Delay approval email when push is also enabled and the request "
+            "is still pending"
+        ),
+    )
+    notify_when_needed: Optional[bool] = Field(
+        None,
+        description="Push when the agent needs the operator (approvals, ask_user)",
     )
 
 

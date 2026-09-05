@@ -11,6 +11,7 @@ from preloop.models.crud.runtime_session import (
     _summary_columns_cache,
     crud_runtime_session,
 )
+from preloop.models.models.ai_model import AIModel
 from preloop.models.models.api_usage import ApiUsage
 from preloop.models.models.runtime_session import RuntimeSession
 
@@ -177,3 +178,165 @@ def test_summary_columns_available_caches_per_bind(db_session) -> None:
     inspect_mock.assert_called_once_with(bind)
     assert inspector.get_columns.call_count == 1
     assert id(bind) in _summary_columns_cache
+
+
+def _create_ai_model(db_session, account_id, name):
+    """Create one account-owned model configuration for usage rows to point at."""
+    ai_model = AIModel(
+        name=name,
+        provider_name="openai",
+        model_identifier="gpt-4o",
+        account_id=account_id,
+    )
+    db_session.add(ai_model)
+    db_session.flush()
+    return ai_model
+
+
+def test_count_active_sessions_by_model_matches_the_per_model_list(
+    db_session, create_account
+) -> None:
+    """The grouped count must equal what the per-model list would total.
+
+    The Models page reads this instead of calling the runtime-session list
+    endpoint once per model, so the two have to agree.
+    """
+    account = create_account()
+    account_id = str(account.id)
+    model_a = _create_ai_model(db_session, account_id, "model-a").id
+    model_b = _create_ai_model(db_session, account_id, "model-b").id
+    now = datetime.now(UTC)
+
+    open_a = uuid4()
+    open_a_second = uuid4()
+    ended_a = uuid4()
+    open_b = uuid4()
+    db_session.add_all(
+        [
+            RuntimeSession(
+                id=session_id,
+                account_id=account_id,
+                session_source_type="openclaw",
+                session_source_id=str(session_id),
+                session_reference=str(session_id),
+                runtime_principal_type="openclaw",
+                runtime_principal_id=str(session_id),
+                started_at=now - timedelta(hours=1),
+                last_activity_at=now,
+                ended_at=now if session_id == ended_a else None,
+            )
+            for session_id in (open_a, open_a_second, ended_a, open_b)
+        ]
+    )
+
+    def usage(session_id, model_id, minutes_ago=5):
+        return ApiUsage(
+            id=uuid4(),
+            account_id=account_id,
+            endpoint="/api/v1/gateway/chat/completions",
+            method="POST",
+            status_code=200,
+            duration=0.1,
+            action_type="model_gateway",
+            ai_model_id=model_id,
+            runtime_session_id=session_id,
+            timestamp=now - timedelta(minutes=minutes_ago),
+        )
+
+    db_session.add_all(
+        [
+            usage(open_a, model_a),
+            # Two requests from one session must count as one session.
+            usage(open_a, model_a, minutes_ago=4),
+            usage(open_a_second, model_a),
+            usage(ended_a, model_a),
+            usage(open_b, model_b),
+            # Outside the window, so it must not count.
+            usage(open_b, model_b, minutes_ago=60 * 24 * 40),
+        ]
+    )
+    db_session.commit()
+
+    counts = crud_runtime_session.count_active_sessions_by_model(
+        db_session,
+        account_id=account_id,
+        ai_model_ids=[str(model_a), str(model_b)],
+        start_date=now - timedelta(days=7),
+        end_date=now + timedelta(minutes=1),
+    )
+
+    for model_id in (model_a, model_b):
+        listed = crud_runtime_session.list_account_sessions(
+            db_session,
+            account_id=account_id,
+            ai_model_id=str(model_id),
+            status="active",
+            start_date=now - timedelta(days=7),
+            end_date=now + timedelta(minutes=1),
+        )
+        assert counts.get(str(model_id), 0) == listed["total"], model_id
+
+    assert counts[str(model_a)] == 2
+    assert counts[str(model_b)] == 1
+
+
+def test_count_active_sessions_by_model_scopes_to_the_account(
+    db_session, create_account
+) -> None:
+    """Another account's open session never lands in these counts."""
+    account = create_account()
+    other_account = create_account()
+    model_id = _create_ai_model(db_session, str(other_account.id), "other-model").id
+    now = datetime.now(UTC)
+
+    other_session = uuid4()
+    db_session.add(
+        RuntimeSession(
+            id=other_session,
+            account_id=str(other_account.id),
+            session_source_type="openclaw",
+            session_source_id="other",
+            session_reference="other",
+            runtime_principal_type="openclaw",
+            runtime_principal_id="other",
+            started_at=now,
+            last_activity_at=now,
+        )
+    )
+    db_session.add(
+        ApiUsage(
+            id=uuid4(),
+            account_id=str(other_account.id),
+            endpoint="/api/v1/gateway/chat/completions",
+            method="POST",
+            status_code=200,
+            duration=0.1,
+            action_type="model_gateway",
+            ai_model_id=model_id,
+            runtime_session_id=other_session,
+            timestamp=now,
+        )
+    )
+    db_session.commit()
+
+    counts = crud_runtime_session.count_active_sessions_by_model(
+        db_session, account_id=str(account.id), ai_model_ids=[str(model_id)]
+    )
+
+    assert counts == {}
+
+
+def test_count_active_sessions_by_model_without_models_skips_the_query(
+    db_session, create_account
+) -> None:
+    """No models on the page means no query at all."""
+    account = create_account()
+    db = MagicMock()
+
+    assert (
+        crud_runtime_session.count_active_sessions_by_model(
+            db, account_id=str(account.id), ai_model_ids=[]
+        )
+        == {}
+    )
+    db.query.assert_not_called()

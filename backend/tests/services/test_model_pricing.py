@@ -1,12 +1,36 @@
 """Tests for model pricing estimation."""
 
+import importlib.util
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import pytest
+
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.model_price_override import ModelPriceOverride
+from preloop.services.model_price_catalog import CATALOG_PATH, load_catalog
 from preloop.services.model_pricing import (
     _iter_litellm_model_candidates,
     estimate_ai_model_usage_cost,
     estimate_ai_model_usage_cost_detailed,
 )
+
+_ZAI_PRICING_FIXTURE = (
+    Path(__file__).resolve().parent / "fixtures" / "zai_text_models_pricing.md"
+)
+
+
+def _load_update_model_prices() -> Any:
+    """Load scripts/update_model_prices.py by path (not the shared install)."""
+    script = Path(__file__).resolve().parents[3] / "scripts" / "update_model_prices.py"
+    spec = importlib.util.spec_from_file_location("update_model_prices", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_candidates_normalize_bedrock_region_prefix() -> None:
@@ -213,6 +237,241 @@ def test_discount_only_override_applies_to_litellm_list_price(monkeypatch) -> No
     assert cost == 0.03
 
 
+class TestNewProviderPricing:
+    """moonshot, zai and mistral fallback ids must resolve to a price.
+
+    moonshot ids are priced from Preloop's bundled snapshot (official
+    Moonshot prices; the pinned litellm map lacks kimi-k3 and the k2.7-code
+    family). glm-5.3 is likewise bundled from docs.z.ai pricing (litellm
+    has no zai/glm-5.3 key). Other zai and mistral ids are priced from
+    the pinned litellm map.
+    """
+
+    def test_candidates_include_moonshot_prefix(self) -> None:
+        ai_model = AIModel(provider_name="moonshot", model_identifier="kimi-k3")
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "kimi-k3" in candidates
+        assert "moonshot/kimi-k3" in candidates
+
+    def test_candidates_include_zai_prefix(self) -> None:
+        ai_model = AIModel(provider_name="zai", model_identifier="glm-5")
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "zai/glm-5" in candidates
+
+    def test_candidates_include_zai_glm_53(self) -> None:
+        ai_model = AIModel(provider_name="zai", model_identifier="glm-5.3")
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "zai/glm-5.3" in candidates
+
+    def test_glm_53_official_prices_in_bundled_table(self) -> None:
+        """Official prices from docs.z.ai/guides/overview/pricing.md
+        (fetched 2026-08-24): input $1.4, cached input $0.26, output $4.4
+        per 1M. Context/output limits from docs.z.ai/guides/llm/glm-5.3
+        (1M context, 128K max output)."""
+        prices = json.loads(CATALOG_PATH.read_text())
+        entry = prices["zai/glm-5.3"]
+        assert entry["litellm_provider"] == "zai"
+        assert entry["mode"] == "chat"
+        assert entry["input_cost_per_token"] == 1.4e-06
+        assert entry["output_cost_per_token"] == 4.4e-06
+        assert entry["cache_read_input_token_cost"] == 2.6e-07
+        assert entry["max_input_tokens"] == 1_000_000
+        assert entry["max_output_tokens"] == 128_000
+        assert "cache_creation_input_token_cost" not in entry
+
+    def test_glm_53_cost_resolves_through_estimator(self) -> None:
+        """An AIModel row for glm-5.3 produces a catalog price."""
+        load_catalog(force=True)
+        ai_model = AIModel(provider_name="zai", model_identifier="glm-5.3")
+        estimate = estimate_ai_model_usage_cost_detailed(
+            ai_model,
+            prompt_tokens=1_000_000,
+            completion_tokens=1_000_000,
+            total_tokens=2_000_000,
+        )
+        assert estimate.source == "catalog"
+        # 1M input at $1.4/M plus 1M output at $4.4/M.
+        assert estimate.cost == pytest.approx(5.8, rel=1e-6)
+
+    def test_candidates_include_mistral_prefix(self) -> None:
+        ai_model = AIModel(
+            provider_name="mistral", model_identifier="mistral-large-latest"
+        )
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "mistral/mistral-large-latest" in candidates
+
+    def test_bundled_table_prices_every_moonshot_fallback_id(self) -> None:
+        prices = json.loads(CATALOG_PATH.read_text())
+        for model_id in (
+            "kimi-k3",
+            "kimi-k2.7-code",
+            "kimi-k2.7-code-highspeed",
+            "kimi-k2.6",
+        ):
+            key = f"moonshot/{model_id}"
+            assert key in prices, f"{key} missing from model_prices.json"
+            entry = prices[key]
+            assert entry["litellm_provider"] == "moonshot"
+            assert entry["mode"] == "chat"
+            assert entry["input_cost_per_token"] > 0
+            assert entry["output_cost_per_token"] > 0
+            # No official max_output_tokens is published; do not invent one.
+            assert "max_output_tokens" not in entry
+            assert "max_tokens" not in entry
+
+    def test_kimi_k3_official_prices_in_bundled_table(self) -> None:
+        """Official prices from platform.moonshot.ai/docs/pricing/chat-k3.md:
+        cache-hit input 0.30, cache-miss input 3.00, output 15.00 per 1M."""
+        prices = json.loads(CATALOG_PATH.read_text())
+        entry = prices["moonshot/kimi-k3"]
+        assert entry["input_cost_per_token"] == 3e-06
+        assert entry["output_cost_per_token"] == 1.5e-05
+        assert entry["cache_read_input_token_cost"] == 3e-07
+        assert entry["max_input_tokens"] == 1048576
+
+    def test_kimi_k3_cost_resolves_through_estimator(self) -> None:
+        """End to end: an AIModel row for kimi-k3 produces a catalog price."""
+        load_catalog(force=True)
+        ai_model = AIModel(provider_name="moonshot", model_identifier="kimi-k3")
+        estimate = estimate_ai_model_usage_cost_detailed(
+            ai_model,
+            prompt_tokens=1_000_000,
+            completion_tokens=1_000_000,
+            total_tokens=2_000_000,
+        )
+        assert estimate.source == "catalog"
+        # 1M input at $3/M plus 1M output at $15/M.
+        assert estimate.cost == pytest.approx(18.0, rel=1e-6)
+
+    @pytest.mark.parametrize(
+        "model_id", ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"]
+    )
+    def test_other_moonshot_fallback_ids_resolve(self, model_id: str) -> None:
+        load_catalog(force=True)
+        ai_model = AIModel(provider_name="moonshot", model_identifier=model_id)
+        estimate = estimate_ai_model_usage_cost_detailed(
+            ai_model, prompt_tokens=1000, completion_tokens=1000, total_tokens=2000
+        )
+        assert estimate.source == "catalog"
+        assert estimate.cost is not None and estimate.cost > 0
+
+    def test_zai_fallback_ids_resolve_via_litellm_map(self) -> None:
+        # glm-5.3 is in the vendored snapshot, not litellm's published map.
+        load_catalog(force=True)
+        for model_id in (
+            "glm-5.3",
+            "glm-5.1",
+            "glm-5",
+            "glm-4.7",
+            "glm-4.7-flash",
+        ):
+            ai_model = AIModel(provider_name="zai", model_identifier=model_id)
+            estimate = estimate_ai_model_usage_cost_detailed(
+                ai_model,
+                prompt_tokens=1000,
+                completion_tokens=1000,
+                total_tokens=2000,
+            )
+            assert estimate.source == "catalog", f"{model_id} is unpriced"
+            # glm-4.7-flash is free in litellm's map, so cost can be 0.0;
+            # what matters is that a price RESOLVED (source above).
+            assert estimate.cost is not None, f"{model_id} has no cost"
+
+    def test_mistral_fallback_ids_resolve_via_litellm_map(self) -> None:
+        for model_id in (
+            "mistral-large-latest",
+            "mistral-medium-latest",
+            "mistral-small-latest",
+            "codestral-latest",
+            "devstral-latest",
+            "ministral-8b-latest",
+        ):
+            ai_model = AIModel(provider_name="mistral", model_identifier=model_id)
+            estimate = estimate_ai_model_usage_cost_detailed(
+                ai_model,
+                prompt_tokens=1000,
+                completion_tokens=1000,
+                total_tokens=2000,
+            )
+            assert estimate.source == "catalog", f"{model_id} is unpriced"
+            assert estimate.cost is not None and estimate.cost > 0, (
+                f"{model_id} has no cost"
+            )
+
+
+class TestQwenProviderPricing:
+    """Qwen / Model Studio fallback ids must resolve to dashscope catalog prices.
+
+    International USD list prices from Model Studio docs (fetched 2026-08-17).
+    Plus/flash families are tiered; we store the lower published tier.
+    """
+
+    def test_candidates_include_dashscope_prefix(self) -> None:
+        ai_model = AIModel(provider_name="qwen", model_identifier="qwen3.8-max")
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "qwen3.8-max" in candidates
+        assert "dashscope/qwen3.8-max" in candidates
+
+    def test_dated_qwen_id_expands_to_dashscope_undated(self) -> None:
+        """Date-stamped Qwen ids must undate under dashscope, not openai."""
+        ai_model = AIModel(provider_name="qwen", model_identifier="qwen-plus-20250101")
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "dashscope/qwen-plus" in candidates
+        assert "openai/qwen-plus" not in candidates
+
+    def test_intl_endpoint_still_prices_as_dashscope(self) -> None:
+        ai_model = AIModel(
+            provider_name="qwen",
+            model_identifier="qwen3.8-max",
+            api_endpoint="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        )
+        candidates = list(_iter_litellm_model_candidates(ai_model))
+        assert "dashscope/qwen3.8-max" in candidates
+
+    def test_bundled_table_prices_every_qwen_fallback_id(self) -> None:
+        prices = json.loads(CATALOG_PATH.read_text())
+        for model_id in (
+            "qwen3.8-max",
+            "qwen3.7-max",
+            "qwen3.7-plus",
+            "qwen3.6-flash",
+            "qwen3.5-plus",
+            "qwen3-max",
+            "qwen3-coder-plus",
+            "qwen-plus",
+            "qwen-flash",
+        ):
+            key = f"dashscope/{model_id}"
+            assert key in prices, f"{key} missing from model_prices.json"
+            entry = prices[key]
+            assert entry["litellm_provider"] == "dashscope"
+            assert entry["mode"] == "chat"
+            assert entry["input_cost_per_token"] > 0
+            assert entry["output_cost_per_token"] > 0
+
+    def test_qwen38_max_list_prices_in_bundled_table(self) -> None:
+        """modelstudio.alibabacloud.com launch card (2026-08-03): $2 / $6 per 1M."""
+        prices = json.loads(CATALOG_PATH.read_text())
+        entry = prices["dashscope/qwen3.8-max"]
+        assert entry["input_cost_per_token"] == 2e-06
+        assert entry["output_cost_per_token"] == 6e-06
+        assert entry["max_input_tokens"] == 991808
+        assert entry["max_output_tokens"] == 131072
+
+    def test_qwen38_max_cost_resolves_through_estimator(self) -> None:
+        load_catalog(force=True)
+        ai_model = AIModel(provider_name="qwen", model_identifier="qwen3.8-max")
+        estimate = estimate_ai_model_usage_cost_detailed(
+            ai_model,
+            prompt_tokens=1_000_000,
+            completion_tokens=1_000_000,
+            total_tokens=2_000_000,
+        )
+        assert estimate.source == "catalog"
+        # 1M input at $2/M plus 1M output at $6/M.
+        assert estimate.cost == pytest.approx(8.0, rel=1e-6)
+
+
 def test_model_price_override_serializes_adjustment_terms() -> None:
     """Persisted overrides should expose all adjustment terms to estimators."""
     override = ModelPriceOverride(
@@ -229,3 +488,542 @@ def test_model_price_override_serializes_adjustment_terms() -> None:
     assert pricing["discount_percent"] == 10.0
     assert pricing["prepaid_token_balance"] == 2000
     assert pricing["prepaid_credit_balance_usd"] == 5.0
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter / openai-compatible routed models (customer-reported $0.00 bug)
+# ---------------------------------------------------------------------------
+
+
+def test_candidates_strip_openai_compatible_provider_prefix() -> None:
+    """The synthetic ``openai-compatible/`` prefix is not a price-map namespace.
+
+    The affected models are recorded as
+    ``openai-compatible/deepseek/deepseek-v4-flash-0731``. ``openai-compatible``
+    is a Preloop routing label, not a litellm provider, so the prefixed form can
+    never match the catalog and must be reduced to the bare vendor/model id.
+    """
+    ai_model = AIModel(
+        provider_name="openai-compatible",
+        model_identifier="deepseek/deepseek-v4-flash-0731",
+        api_endpoint="https://openrouter.ai/api/v1",
+        meta_data={
+            "gateway": {
+                "model_alias": "openai-compatible/deepseek/deepseek-v4-flash-0731"
+            }
+        },
+    )
+    candidates = list(_iter_litellm_model_candidates(ai_model))
+    assert "deepseek/deepseek-v4-flash-0731" in candidates
+    assert "openai-compatible/deepseek/deepseek-v4-flash-0731" not in candidates
+
+
+def test_moonshotai_slug_maps_to_moonshot_catalog_key() -> None:
+    """OpenRouter's moonshotai/ org slug must hit the vendored moonshot/ prices.
+
+    The unpriced-model alert fired for provider=openai, alias=moonshotai/kimi-k3
+    because candidates never included moonshot/kimi-k3, which is the bundled
+    key. Same SKU, same $3/$15 per million.
+    """
+    ai_model = AIModel(
+        provider_name="openai",
+        model_identifier="moonshotai/kimi-k3",
+        meta_data={"gateway": {"model_alias": "moonshotai/kimi-k3"}},
+    )
+    candidates = list(_iter_litellm_model_candidates(ai_model))
+    assert "moonshotai/kimi-k3" in candidates
+    assert "moonshot/kimi-k3" in candidates
+
+    load_catalog(force=True)
+    estimate = estimate_ai_model_usage_cost_detailed(
+        ai_model,
+        prompt_tokens=1_000_000,
+        completion_tokens=1_000_000,
+        total_tokens=2_000_000,
+    )
+    assert estimate.source == "catalog"
+    assert estimate.cost == pytest.approx(18.0, rel=1e-6)
+
+
+def test_candidates_add_openrouter_prefix_for_openrouter_endpoint() -> None:
+    """A model served via openrouter.ai gains ``openrouter/`` catalog keys.
+
+    litellm prices OpenRouter-routed models under ``openrouter/vendor/model``,
+    so the endpoint must contribute that candidate form.
+    """
+    ai_model = AIModel(
+        provider_name="openai-compatible",
+        model_identifier="deepseek/deepseek-chat",
+        api_endpoint="https://openrouter.ai/api/v1",
+    )
+    candidates = list(_iter_litellm_model_candidates(ai_model))
+    assert "openrouter/deepseek/deepseek-chat" in candidates
+
+
+def test_dated_openrouter_variant_never_falls_back_to_undated_price() -> None:
+    """A dated OpenRouter snapshot must not inherit the undated model's price.
+
+    ``deepseek-v4-flash-0731`` really costs $0.09/$0.18 per million tokens while
+    the undated ``deepseek-v4-flash`` costs $0.14/$0.28. Silently stripping the
+    ``-0731`` suffix would overstate the bill by ~55%, which is a worse
+    failure than reporting the usage as unpriced.
+    """
+    ai_model = AIModel(
+        provider_name="openai-compatible",
+        model_identifier="deepseek/deepseek-v4-flash-0731",
+        api_endpoint="https://openrouter.ai/api/v1",
+    )
+    candidates = list(_iter_litellm_model_candidates(ai_model))
+    assert "deepseek/deepseek-v4-flash" not in candidates
+    assert "openrouter/deepseek/deepseek-v4-flash" not in candidates
+
+
+# ---------------------------------------------------------------------------
+# Provider-reported cost (OpenRouter usage accounting; Auto Router has no
+# catalog price by design, so the provider's own ledger figure is the only
+# accurate source)
+# ---------------------------------------------------------------------------
+
+
+def _openrouter_auto_model() -> AIModel:
+    return AIModel(
+        provider_name="openrouter",
+        model_identifier="openrouter/auto-beta",
+        api_endpoint="https://openrouter.ai/api/v1",
+        meta_data={"gateway": {"enabled": True, "model_alias": "openrouter/auto-beta"}},
+    )
+
+
+def test_provider_reported_cost_wins_over_catalog() -> None:
+    """usage.cost_details.upstream_inference_cost is authoritative over catalog."""
+    ai_model = AIModel(provider_name="openai", model_identifier="gpt-4o")
+    estimate = estimate_ai_model_usage_cost_detailed(
+        ai_model,
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+        usage_details={
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "cost_details": {"upstream_inference_cost": 0.00001946},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.00001946)
+
+
+def test_provider_reported_cost_from_top_level_usage_cost() -> None:
+    """OpenRouter's usage.cost (credits charged) alone is authoritative."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0000205},
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.0000205)
+
+
+def test_provider_reported_cost_sums_byok_fee_and_upstream_charge() -> None:
+    """BYOK: usage.cost is OpenRouter's fee, upstream_inference_cost the vendor
+    charge; the customer pays both, so the authoritative total is their sum."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "cost": 0.000001,
+            "cost_details": {"upstream_inference_cost": 0.00002},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.000021)
+
+
+def test_byok_shape_small_fee_plus_upstream_is_summed() -> None:
+    """cost < upstream_inference_cost is the BYOK shape (fee + vendor charge):
+    the customer pays both, so the total is their sum (#224)."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "cost": 0.00000099,
+            "cost_details": {"upstream_inference_cost": 0.0000198},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.00000099 + 0.0000198)
+
+
+def test_explicit_is_byok_true_wins_over_magnitude_heuristic() -> None:
+    """A BYOK request whose OpenRouter fee meets/exceeds the vendor charge
+    would be mis-read as credits by the magnitude heuristic; an explicit
+    is_byok flag from the provider is authoritative (#225 review)."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "cost": 0.00003,
+            "is_byok": True,
+            "cost_details": {"upstream_inference_cost": 0.00002},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.00003 + 0.00002)
+
+
+def test_explicit_is_byok_false_never_sums() -> None:
+    """is_byok=False forces the credits interpretation even when the
+    magnitude heuristic (cost < upstream) would have summed."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "cost": 0.00000099,
+            "is_byok": False,
+            "cost_details": {"upstream_inference_cost": 0.0000198},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.00000099)
+
+
+def test_credits_shape_duplicate_cost_details_not_double_counted() -> None:
+    """Credits-based OpenRouter usage returns cost AND an IDENTICAL
+    cost_details.upstream_inference_cost (live-verified, #224). cost is the
+    total charge; summing would record exactly 2x."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "cost": 0.000001979964,
+            "cost_details": {"upstream_inference_cost": 0.000001979964},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.000001979964)
+
+
+def test_credits_shape_cost_above_upstream_uses_cost_alone() -> None:
+    """When cost >= upstream_inference_cost, cost already includes the
+    upstream charge (credits shape); cost_details is informational (#224)."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "cost": 0.0000305,
+            "cost_details": {"upstream_inference_cost": 0.00001946},
+        },
+    )
+    assert estimate.source == "provider"
+    assert estimate.cost == pytest.approx(0.0000305)
+
+
+def test_absent_provider_cost_falls_back_to_catalog_unchanged() -> None:
+    """No cost fields in usage -> exactly today's catalog behavior."""
+    ai_model = AIModel(provider_name="openai", model_identifier="gpt-4o")
+    estimate = estimate_ai_model_usage_cost_detailed(
+        ai_model,
+        prompt_tokens=1000,
+        completion_tokens=100,
+        total_tokens=1100,
+        usage_details={"prompt_tokens": 1000, "completion_tokens": 100},
+    )
+    assert estimate.source == "catalog"
+    assert estimate.cost is not None and estimate.cost > 0
+
+
+def test_absent_provider_cost_still_unpriced_for_uncatalogued_model() -> None:
+    """Auto Router without usage accounting stays unpriced (no invented price)."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={"prompt_tokens": 10, "completion_tokens": 5},
+    )
+    assert estimate.source == "unpriced"
+    assert estimate.cost is None
+
+
+def test_explicit_zero_provider_cost_is_accounted() -> None:
+    """usage.cost=0 (key present) is a real provider $0 charge."""
+    for usage_details in (
+        {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0},
+        {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0},
+        {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cost": 0,
+            "cost_details": {
+                "upstream_inference_cost": 0,
+                "upstream_inference_prompt_cost": 0,
+                "upstream_inference_completions_cost": 0,
+            },
+        },
+    ):
+        estimate = estimate_ai_model_usage_cost_detailed(
+            _openrouter_auto_model(),
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            usage_details=usage_details,
+        )
+        assert estimate.source == "provider", usage_details
+        assert estimate.cost == 0.0, usage_details
+
+
+def test_negative_provider_cost_is_ignored() -> None:
+    """cost=-1 is the catalog sentinel, not an accounted charge."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={"prompt_tokens": 10, "completion_tokens": 5, "cost": -1},
+    )
+    assert estimate.source == "unpriced"
+    assert estimate.cost is None
+
+
+def test_zero_upstream_inference_cost_alone_is_ignored() -> None:
+    """A zero upstream_inference_cost without usage.cost is not accounted."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        usage_details={
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cost_details": {"upstream_inference_cost": 0},
+        },
+    )
+    assert estimate.source == "unpriced"
+    assert estimate.cost is None
+
+
+def test_explicit_price_override_still_wins_over_provider_cost() -> None:
+    """An operator's explicit override outranks even the provider ledger."""
+    estimate = estimate_ai_model_usage_cost_detailed(
+        _openrouter_auto_model(),
+        prompt_tokens=1000,
+        completion_tokens=0,
+        total_tokens=1000,
+        usage_details={"cost": 0.5},
+        pricing_override={"input_price_per_1k": 0.01},
+    )
+    assert estimate.source == "override"
+    assert estimate.cost == pytest.approx(0.01)
+
+
+class TestUpdateModelPriceOverlays:
+    """update_model_prices.py overlay parser and merge (no network)."""
+
+    def test_update_model_parser_reads_text_models_fixture(self) -> None:
+        script = _load_update_model_prices()
+        rows = script.parse_zai_text_models(_ZAI_PRICING_FIXTURE.read_text())
+        assert "glm-5.3" in rows
+        assert rows["glm-5.3"]["input_cost_per_token"] == 1.4e-06
+        assert rows["glm-5.3"]["output_cost_per_token"] == 4.4e-06
+        assert rows["glm-5.3"]["cache_read_input_token_cost"] == 2.6e-07
+        assert "glm-5-turbo" in rows
+        assert rows["glm-5-turbo"]["input_cost_per_token"] == 1.2e-06
+        assert rows["glm-4.7-flash"]["input_cost_per_token"] == 0.0
+        assert rows["glm-4.7-flash"]["output_cost_per_token"] == 0.0
+        # Cached input was "-": field omitted, row kept.
+        assert "glm-4-32b-0414-128k" in rows
+        assert "cache_read_input_token_cost" not in rows["glm-4-32b-0414-128k"]
+        # Dash input/output: skip the row.
+        assert "glm-skip-me" not in rows
+        # Vision table must not leak into the overlay.
+        assert "glm-5v-turbo" not in rows
+
+    def test_update_model_moonshot_keys_survive_stub_litellm_merge(self) -> None:
+        script = _load_update_model_prices()
+        current = {
+            "gpt-4o": {
+                "litellm_provider": "openai",
+                "mode": "chat",
+                "input_cost_per_token": 2.5e-06,
+                "output_cost_per_token": 1.0e-05,
+            },
+            "moonshot/kimi-k3": {
+                "litellm_provider": "moonshot",
+                "mode": "chat",
+                "input_cost_per_token": 3e-06,
+                "output_cost_per_token": 1.5e-05,
+                "cache_read_input_token_cost": 3e-07,
+            },
+            "zai/glm-5-turbo": {
+                "litellm_provider": "zai",
+                "mode": "chat",
+                "input_cost_per_token": 9.9e-06,
+                "output_cost_per_token": 9.9e-06,
+                "max_input_tokens": 200000,
+            },
+        }
+        stub_litellm = {
+            "gpt-4o": {
+                "litellm_provider": "openai",
+                "mode": "chat",
+                "input_cost_per_token": 1.0e-06,
+                "output_cost_per_token": 4.0e-06,
+            }
+        }
+        zai_rows = script.parse_zai_text_models(_ZAI_PRICING_FIXTURE.read_text())
+        merged = script.apply_overlays(stub_litellm, current, zai_rows)
+        assert merged["moonshot/kimi-k3"]["input_cost_per_token"] == 3e-06
+        assert merged["zai/glm-5.3"]["input_cost_per_token"] == 1.4e-06
+        assert merged["zai/glm-5.3"]["max_input_tokens"] == 1_000_000
+        assert merged["zai/glm-5.3"]["max_output_tokens"] == 128_000
+        # Other z.ai rows keep existing max_* and do not invent new ones.
+        assert merged["zai/glm-5-turbo"]["input_cost_per_token"] == 1.2e-06
+        assert merged["zai/glm-5-turbo"]["max_input_tokens"] == 200000
+        assert "max_output_tokens" not in merged["zai/glm-5.2"]
+        assert "zai/glm-5v-turbo" not in merged
+
+    def test_update_model_compare_remote_excludes_overlay_prefixes(self) -> None:
+        script = _load_update_model_prices()
+        current = {
+            "_preloop_meta": {"source_url": "https://example.com/litellm.json"},
+            "gpt-4o": {
+                "litellm_provider": "openai",
+                "mode": "chat",
+                "input_cost_per_token": 1.0e-06,
+            },
+            "moonshot/kimi-k3": {
+                "litellm_provider": "moonshot",
+                "mode": "chat",
+                "input_cost_per_token": 3e-06,
+            },
+            "zai/glm-5.3": {
+                "litellm_provider": "zai",
+                "mode": "chat",
+                "input_cost_per_token": 1.4e-06,
+            },
+        }
+        upstream = {
+            "gpt-4o": {
+                "litellm_provider": "openai",
+                "mode": "chat",
+                "input_cost_per_token": 1.0e-06,
+            }
+        }
+        sourced = script.litellm_sourced_catalog(current)
+        assert "moonshot/kimi-k3" not in sourced
+        assert "zai/glm-5.3" not in sourced
+        assert "gpt-4o" in sourced
+        assert script.diff_catalogs(sourced, upstream) == []
+
+    def test_update_model_zai_fetch_failure_still_merges_litellm(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """docs.z.ai 404 or parse failure must not abort the litellm write."""
+        script = _load_update_model_prices()
+        previous_overlay = {
+            "url": script.ZAI_PRICING_URL,
+            "fetched_at": "2026-01-15T00:00:00+00:00",
+            "section": "Text Models",
+        }
+        current = {
+            "_preloop_meta": {
+                "source_url": "https://example.com/litellm.json",
+                "fetched_at": "2026-01-15T00:00:00+00:00",
+                "overlay_sources": [previous_overlay],
+            },
+            "gpt-4o": {
+                "litellm_provider": "openai",
+                "mode": "chat",
+                "input_cost_per_token": 2.5e-06,
+                "output_cost_per_token": 1.0e-05,
+            },
+            "moonshot/kimi-k3": {
+                "litellm_provider": "moonshot",
+                "mode": "chat",
+                "input_cost_per_token": 3e-06,
+                "output_cost_per_token": 1.5e-05,
+            },
+            "zai/glm-5.3": {
+                "litellm_provider": "zai",
+                "mode": "chat",
+                "input_cost_per_token": 1.4e-06,
+                "output_cost_per_token": 4.4e-06,
+            },
+        }
+        written: dict[str, Any] = {}
+
+        def fake_fetch_remote(url: str = script.SOURCE_URL) -> dict[str, Any]:
+            return {
+                "gpt-4o": {
+                    "litellm_provider": "openai",
+                    "mode": "chat",
+                    "input_cost_per_token": 1.0e-06,
+                    "output_cost_per_token": 4.0e-06,
+                }
+            }
+
+        def fake_fetch_text(url: str) -> str:
+            raise OSError("HTTP Error 404: Not Found")
+
+        def fake_write_catalog(
+            filtered: dict[str, Any],
+            source_url: str,
+            overlay_sources: list[dict[str, Any]] | None = None,
+        ) -> None:
+            written["filtered"] = filtered
+            written["source_url"] = source_url
+            written["overlay_sources"] = overlay_sources
+
+        monkeypatch.setattr(script, "fetch_remote", fake_fetch_remote)
+        monkeypatch.setattr(script, "fetch_text", fake_fetch_text)
+        monkeypatch.setattr(script, "load_current", lambda: current)
+        monkeypatch.setattr(script, "write_catalog", fake_write_catalog)
+        monkeypatch.setattr(sys, "argv", ["update_model_prices.py"])
+
+        assert script.main() == 0
+        merged = written["filtered"]
+        assert merged["gpt-4o"]["input_cost_per_token"] == 1.0e-06
+        assert merged["moonshot/kimi-k3"]["input_cost_per_token"] == 3e-06
+        assert merged["zai/glm-5.3"]["input_cost_per_token"] == 1.4e-06
+        assert written["overlay_sources"] == [previous_overlay]
+
+    def test_check_overlay_ages_uses_fixture_meta(self) -> None:
+        """--check ages overlay_sources from meta without fetching docs.z.ai."""
+        script = _load_update_model_prices()
+        now = datetime(2026, 8, 24, tzinfo=timezone.utc)
+        fresh_meta = {
+            "overlay_sources": [
+                {
+                    "url": "https://docs.z.ai/guides/overview/pricing.md",
+                    "fetched_at": "2026-08-20T00:00:00+00:00",
+                    "section": "Text Models",
+                }
+            ]
+        }
+        stale_meta = {
+            "overlay_sources": [
+                {
+                    "url": "https://docs.z.ai/guides/overview/pricing.md",
+                    "fetched_at": "2026-01-01T00:00:00+00:00",
+                    "section": "Text Models",
+                }
+            ]
+        }
+        assert script.overlay_sources_over_max_age(fresh_meta, 30, now=now) == []
+        stale = script.overlay_sources_over_max_age(stale_meta, 30, now=now)
+        assert len(stale) == 1
+        assert "older than 30 days" in stale[0]
+        assert script.overlay_sources_over_max_age({}, 30, now=now) == []

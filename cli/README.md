@@ -33,6 +33,11 @@ cd preloop/cli
 make install   # or: make build && ./build/preloop --help
 ```
 
+To run a checkout as your everyday `preloop` (for example at
+`~/.local/bin/preloop`), use `make install-local`; see
+[Installing a dev build](#installing-a-dev-build) below. Never `cp` a build
+onto an existing binary.
+
 ### Pre-built Binaries
 
 Download the latest release from [GitHub Releases](https://github.com/preloop/preloop/releases)
@@ -119,6 +124,46 @@ preloop tools exec <tool-name> --args-file ./input.json
 
 `preloop tools` talks directly to the MCP endpoint, so the visible and executable tools are automatically filtered by the current token's policy. Agent tokens only see the tools they are allowed to use.
 
+### Cursor Agent CLI
+
+```bash
+preloop cursor                         # interactive TTY passthrough
+preloop cursor run "summarize this repo"   # headless capture + estimated usage
+```
+
+`preloop cursor` spawns `cursor-agent` with the user's TTY. Interactive
+sessions are unchanged and are not captured: Cursor only emits structured
+output in `--print` mode. `preloop cursor run` injects
+`--print --output-format stream-json`, tees stdout, and POSTs estimated
+usage to `/api/v1/usage/ingest`. Runs bill the user's own Cursor account;
+Preloop records estimates, not Cursor billing. See
+[docs/guide/cursor-cli.md](../docs/guide/cursor-cli.md).
+
+### Usage
+
+```bash
+preloop usage import cursor-usage.csv                # Cursor dashboard Usage export
+preloop usage import events.json                     # Normalized usage events
+preloop usage import cursor-usage.csv --agent-id <id>
+preloop usage import export.csv --column-map '{"cost":"Cost to You"}'
+
+# Live / harness events (generic NDJSON, Cursor hooks, or Codex rollouts)
+preloop usage hook                                   # stdin; auto-detects format
+preloop usage hook --from generic --source my-harness
+preloop usage hook --from codex --file ~/.codex/sessions/2026/08/31/rollout-....jsonl
+```
+
+`preloop usage import` loads a CSV or JSON file of already-observed spend.
+`preloop usage hook` streams or imports conversation events into
+`POST /api/v1/usage/ingest`. See
+[docs/guide/usage-hooks.md](../docs/guide/usage-hooks.md).
+
+Imported records are labeled as imported, so they are reported separately
+from gateway-metered spend and never count against gateway budgets.
+Re-importing the same file is safe: duplicates are detected and reported
+as skipped. Without `--agent-id`, the account's onboarded agent matching
+`--source` is used.
+
 ### Approvals
 
 ```bash
@@ -153,6 +198,8 @@ preloop agents offboard openclaw       # Offboard and restore the local backup
 preloop agents offboard hermes
 preloop agents offboard openclaw --yes --remove-model no --remove-mcp-servers no
 preloop agents offboard openclaw --yes --remove-model yes
+preloop agents refresh                  # Rewrite managed model sections from the catalog
+preloop agents sync                     # Alias for agents refresh
 ```
 
 `preloop agents discover` is the starting point for agent onboarding. In interactive terminals it can prompt to onboard newly discovered agents one by one. Use `--no-onboard-prompt` to keep discovery read-only in scripts/CI, or `--yes` to auto-onboard all new candidates. `preloop agents enroll openclaw` remains the explicit mutating command.
@@ -172,12 +219,70 @@ Both flags default to `ask`. With `--yes` alone, the CLI skips the main offboard
 - MCP servers are kept if they are still referenced by another managed agent
 - Recently active shared resources are also skipped
 
+`preloop agents refresh` (alias `sync`) re-fetches the authorized model list and rewrites only the managed model sections of onboarded agent configs. Selection, credentials, MCP config, and local backups are preserved.
+
+### Models
+
+```bash
+preloop models sync                     # Pull newly released provider models into the catalog
+preloop models sync --provider anthropic
+preloop models sync --dry-run           # Report what would be added without writing
+```
+
+`preloop models sync` calls `POST /api/v1/ai-models/sync` so newly released provider models enter the account catalog from credentials already stored on existing models. Then run `preloop agents refresh` to push those models into onboarded agent configs.
+
+### Flows
+
+```bash
+preloop flow trigger <flow-id-or-name>
+preloop flow trigger nightly-review --payload '{"ref":"main"}'
+cat event.json | preloop flow trigger nightly-review --payload -
+preloop flow trigger nightly-review --wait --timeout 30m
+preloop flow trigger nightly-review --runner local
+```
+
+In CI (stdin is not a TTY) the command waits by default and streams
+execution logs to stdout. The same logs remain in the console execution
+view. Exit status is non-zero on FAILED, STOPPED, or TIMEOUT. Auth is
+`--token`, `PRELOOP_TOKEN`, or the saved login. See
+[docs/guide/flows/ci-trigger.md](../docs/guide/flows/ci-trigger.md).
+
 ### Version
 
 ```bash
 preloop version                        # Show version info
 preloop version --check                # Check for updates
+preloop update                         # Install the latest CLI release
+preloop update --check                 # Print current vs latest and exit
+preloop update --yes                   # Install without prompting
 ```
+
+`preloop update` downloads the GitHub release asset for this OS/architecture
+(the same URL as `scripts/install-cli.sh`) and replaces the current binary
+in place. The daily update notice asks whether to upgrade when stdin is a
+TTY and the binary is writable; otherwise it stays silent. Version lookup
+is skipped when `PRELOOP_DISABLE_TELEMETRY` is set.
+
+A dev build made with `make build` reports the `git describe` form
+(`v0.15.0-678-g5c9e8bc3`, N commits past the last tag). That counts as newer
+than the `0.15.0` release: `preloop update --check` prints
+`newer than latest release` and the daily notice stays quiet. Real
+prereleases (`0.15.0-beta.1`, `0.15.0-rc1`) still count as older than the
+release.
+
+### Self-hosted runner
+
+```bash
+preloop runner fg --labels local     # Foreground: register, heartbeat, lease jobs
+preloop runner enable                # Install launchd / systemd / scheduled task
+preloop runner disable
+preloop runner start|stop|restart|status
+```
+
+`preloop runner fg` opens a durable WebSocket to the configured server,
+leases executions whose runner pool matches this runner's id, name, or
+labels, streams logs, and honors halt. Ctrl-C unregisters. Persist the
+runner id and token in `~/.preloop/runner.json`.
 
 ## Configuration
 
@@ -235,6 +340,40 @@ make fmt
 make lint
 ```
 
+### Installing a dev build
+
+The only sanctioned way to update a local dev CLI is:
+
+```bash
+make install-local                      # build, then install(1) to ~/.local/bin/preloop
+make install-local BINDIR=/opt/bin      # or PREFIX=... ; INSTALL_MODE=555 for a read-only file
+```
+
+Never `cp build/preloop ~/.local/bin/preloop`. `cp` writes into the existing
+file's inode, and on macOS the next exec of that binary is killed with
+`SIGKILL (Code Signature Invalid)` because the kernel's cached signature no
+longer matches the bytes. `install(1)` unlinks the target and creates a new
+file, which is what keeps the signature cache valid.
+
+Never `go build -o ~/.local/bin/preloop` either. It skips the version
+ldflags, so the binary reports the compiled-in fallback version (`0.15.0`
+today) and is indistinguishable from the release to the update check, and it
+replaces the file even when the target is read-only.
+
+On macOS dev machines, guard the installed binary:
+
+```bash
+chmod a-w ~/.local/bin/preloop          # or: make install-local INSTALL_MODE=555
+```
+
+A read-only target still installs (unlinking needs directory write access,
+not file write access), a stray `cp` fails with "Permission denied" instead
+of corrupting it, and `preloop update` honours the guard: it checks whether
+the binary is writable and stays silent (or, when invoked directly, refuses)
+rather than replacing a dev build with the release. `make install-local`
+recreates the file with `INSTALL_MODE` (default 755), so re-apply the
+`chmod` afterwards or install with `INSTALL_MODE=555`.
+
 ### Project Structure
 
 ```
@@ -253,11 +392,16 @@ cli/
 │   │   ├── policy.go        # policy validate/apply/diff/export/list
 │   │   ├── tools.go         # tools list/describe/exec
 │   │   ├── approvals.go     # approvals list/pending/approve/deny
-│   │   └── version.go       # version command
+│   │   ├── cursor.go        # cursor-agent launcher + usage capture
+│   │   ├── version.go       # version command
+│   │   ├── update.go        # update command
+│   │   ├── flow.go          # flow trigger
+│   │   └── runner.go        # self-hosted runner daemon
 │   ├── mcpclient/
 │   │   └── client.go        # Minimal MCP HTTP client
 │   └── version/
-│       └── check.go         # Daily version check logic
+│       ├── check.go         # Daily version check logic
+│       └── update.go        # In-place GitHub release installer
 ├── go.mod
 ├── go.sum
 ├── Makefile

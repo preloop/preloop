@@ -14,10 +14,12 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 
 import './single-issue-detail-view.ts';
 import consoleStyles from '../styles/console-styles.css?inline';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 @customElement('improve-compliance-modal')
 export class ImproveComplianceModal extends LitElement {
   static styles = [
+    consoleDialogStyles,
     unsafeCSS(consoleStyles),
     css`
       .comparison-container {

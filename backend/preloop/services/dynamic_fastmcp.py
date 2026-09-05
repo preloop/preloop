@@ -8,10 +8,11 @@ Phase 1B: Added support for proxied tools from external MCP servers.
 
 import asyncio
 import copy
+import json
 import logging
 import uuid
 from contextvars import ContextVar
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
@@ -29,12 +30,56 @@ from preloop.services.subject_governance import is_tool_enabled_for_subject
 
 logger = logging.getLogger(__name__)
 
+
+def _configs_visible_to_caller(
+    configs: Iterable[Any], caller_managed_agent_id: Optional[str]
+) -> List[Any]:
+    """Order ToolConfiguration rows by scope for the calling agent.
+
+    A row with ``managed_agent_id`` set applies only to that managed agent:
+    rows scoped to a *different* agent are dropped entirely (they must not
+    leak enablement, disablement, or justification requirements to other
+    callers), and rows scoped to the calling agent are returned *after* the
+    account-wide rows so that dict-style ``{tool_name: ...}`` builds let the
+    agent-scoped value win.
+
+    Args:
+        configs: ToolConfiguration rows for the account.
+        caller_managed_agent_id: The calling agent's id (from the API key's
+            context), or None for callers without an agent identity.
+
+    Returns:
+        The visible rows, account-wide first, caller-scoped last.
+    """
+    caller = str(caller_managed_agent_id) if caller_managed_agent_id else None
+    account_rows: List[Any] = []
+    agent_rows: List[Any] = []
+    for tc in configs:
+        row_agent = getattr(tc, "managed_agent_id", None)
+        if row_agent is None:
+            account_rows.append(tc)
+        elif caller is not None and str(row_agent) == caller:
+            agent_rows.append(tc)
+    return account_rows + agent_rows
+
+
 # Context variable to pass policy evaluation results from _call_tool() to
 # individual tool wrappers (which call require_approval()).
 # When set, require_approval() should use this workflow_id instead of looking
 # it up from the tool configuration.
 _rule_workflow_id_var: ContextVar[Optional[str]] = ContextVar(
     "_rule_workflow_id_var", default=None
+)
+
+# Context variable carrying the matched-rule snapshot from _call_tool()'s
+# policy evaluation through to require_approval(), which persists it on the
+# approval request. Without this the approver sees the tool and the arguments
+# but not WHICH rule demanded approval, so a boundary case is indistinguishable
+# from a mid-band one. Set in the same places as _rule_workflow_id_var and
+# cleared on every non-approval path so a stale rule can never be attributed
+# to a later call.
+_rule_context_var: ContextVar[Optional[dict]] = ContextVar(
+    "_rule_context_var", default=None
 )
 
 # Context variable to pass a unique correlation_id from _call_tool() through
@@ -60,6 +105,14 @@ _bypass_approval_var: ContextVar[bool] = ContextVar(
     "_bypass_approval_var", default=False
 )
 
+# The approver's comment from the already-approved request being re-executed.
+# Set by get_approval_status() alongside _bypass_approval_var so tools that
+# consume the comment as their result (ask_user: the comment IS the human's
+# answer) do not lose it when require_approval() short-circuits during replay.
+_approved_comment_var: ContextVar[Optional[str]] = ContextVar(
+    "_approved_comment_var", default=None
+)
+
 # Context variable to ensure internal proxied tool names are only called via proxy translation
 _is_proxy_translation_var: ContextVar[bool] = ContextVar(
     "_is_proxy_translation_var", default=False
@@ -77,8 +130,6 @@ def _strip_fields_from_json_text(text: str, dropped_fields: set[str]) -> Optiona
         The re-serialized JSON with the requested keys removed, or ``None`` if
         the text is not JSON, is not a dict/list-of-dicts, or nothing changed.
     """
-    import json
-
     try:
         parsed = json.loads(text)
     except (ValueError, TypeError):
@@ -333,14 +384,20 @@ class DynamicFastMCP(FastMCP):
                     configs = crud_tool_configuration.get_multi_by_account(
                         db, account_id=str(user_context.account_id), limit=1000
                     )
+                    # Scope-aware: agent-scoped rows apply only to the calling
+                    # agent and override the account-wide row; rows scoped to
+                    # other agents are invisible here.
+                    visible = _configs_visible_to_caller(
+                        configs, getattr(user_context, "managed_agent_id", None)
+                    )
                     modes = {
                         tc.tool_name: tc.justification_mode
-                        for tc in configs
+                        for tc in visible
                         if tc.justification_mode in ("optional", "required")
                     }
                     enabled = {
                         tc.tool_name: tc.is_enabled
-                        for tc in configs
+                        for tc in visible
                         if tc.tool_source == "builtin"
                     }
                     acc = crud_account.get(db, id=user_context.account_id)
@@ -917,9 +974,17 @@ async def {internal_name}({params_str}) -> str:
                             account_id=str(user_context.account_id),
                             limit=1000,
                         )
+                        # Scope-aware (mirrors list_tools): agent-scoped rows
+                        # apply only to the calling agent and override the
+                        # account-wide row; rows scoped to other agents are
+                        # invisible.
+                        visible = _configs_visible_to_caller(
+                            configs,
+                            getattr(user_context, "managed_agent_id", None),
+                        )
                         requires_just = False
                         builtin_enabled = None
-                        for tc in configs:
+                        for tc in visible:
                             if tc.tool_name != name:
                                 continue
                             if tc.justification_mode == "required":
@@ -956,15 +1021,32 @@ async def {internal_name}({params_str}) -> str:
                     )
                     if is_disabled:
                         logger.warning(f"Blocked call to disabled builtin tool: {name}")
+                        denied_text = (
+                            f"Access denied: Tool '{name}' is disabled "
+                            "for this account. Enable it on the Tools "
+                            "page to use it."
+                        )
+                        if name == "permission_prompt":
+                            # Claude Code parses this tool's response as its
+                            # permission behavior schema; a plain string would
+                            # surface as a confusing parse failure instead of
+                            # a clean deny.
+                            denied_text = json.dumps(
+                                {
+                                    "behavior": "deny",
+                                    "message": (
+                                        "The Preloop permission_prompt tool is "
+                                        "disabled for this account. Enable it on "
+                                        "the Tools page in the Preloop console, "
+                                        "then retry."
+                                    ),
+                                }
+                            )
                         return ToolResult(
                             content=[
                                 TextContent(
                                     type="text",
-                                    text=(
-                                        f"Access denied: Tool '{name}' is disabled "
-                                        "for this account. Enable it on the Tools "
-                                        "page to use it."
-                                    ),
+                                    text=denied_text,
                                 )
                             ]
                         )
@@ -1046,7 +1128,7 @@ async def {internal_name}({params_str}) -> str:
             from preloop.services.policy_evaluator import evaluate_policy_async
 
             async with get_async_db_session() as db:
-                action, approval_workflow_id, reason = await evaluate_policy_async(
+                _policy_decision = await evaluate_policy_async(
                     db=db,
                     tool_name=name,
                     tool_args=arguments,
@@ -1073,6 +1155,8 @@ async def {internal_name}({params_str}) -> str:
                     },
                 )
 
+            action, approval_workflow_id, reason = _policy_decision
+
             logger.info(
                 f"Policy evaluation for '{name}': action={action}, "
                 f"workflow_id={approval_workflow_id}, reason={reason}"
@@ -1087,6 +1171,12 @@ async def {internal_name}({params_str}) -> str:
                 )
 
             if action == "require_approval":
+                # Carry the matched rule through to require_approval() so it
+                # lands on the approval row. getattr because tests (and any
+                # future caller) may patch the evaluator with a plain tuple;
+                # a missing snapshot must read as "not recorded", never raise
+                # on the enforcement path.
+                _rule_context_var.set(getattr(_policy_decision, "rule_context", None))
                 if approval_workflow_id:
                     # Store the workflow_id so require_approval() in the tool
                     # wrapper picks it up instead of relying on the legacy
@@ -1099,6 +1189,7 @@ async def {internal_name}({params_str}) -> str:
                     # tool through, otherwise an explicit ``require_approval``
                     # rule would behave like ``allow``.
                     _rule_workflow_id_var.set(None)
+                    _rule_context_var.set(None)
                     logger.error(
                         f"Tool '{name}' matched require_approval rule but no "
                         "approval workflow is configured (rule, tool config, "
@@ -1119,6 +1210,7 @@ async def {internal_name}({params_str}) -> str:
                     )
             else:
                 _rule_workflow_id_var.set(None)
+                _rule_context_var.set(None)
 
         except Exception as e:
             logger.error(
@@ -1132,6 +1224,7 @@ async def {internal_name}({params_str}) -> str:
             # infrastructure error. Block the call and surface a ret600able
             # error to the agent.
             _rule_workflow_id_var.set(None)
+            _rule_context_var.set(None)
             return ToolResult(
                 content=[
                     TextContent(
@@ -1149,6 +1242,7 @@ async def {internal_name}({params_str}) -> str:
         # ── Translate and execute ───────────────────────────────────────
         # Translate tool name for proxied tools
         # Client calls "calculate_fibonacci", we translate to "account_123_calculate_fibonacci"
+        client_tool_name = name
         translation_token = None
         if name in self._proxied_tool_servers:
             safe_account_id = user_context.account_id.replace("-", "_")
@@ -1186,6 +1280,7 @@ async def {internal_name}({params_str}) -> str:
 
             # Clean up context vars after execution
             _rule_workflow_id_var.set(None)
+            _rule_context_var.set(None)
             _correlation_id_var.set(None)
 
             # ── Audit: log tool execution ───────────────────────────────
@@ -1233,7 +1328,7 @@ async def {internal_name}({params_str}) -> str:
 
                     activity_status = "failed" if exec_status == "failed" else "success"
                     server_name = self._proxied_tool_server_names.get(
-                        name, "preloop-mcp"
+                        client_tool_name, "preloop-mcp"
                     )
                     db = next(get_db())
                     try:
@@ -1373,6 +1468,22 @@ async def {internal_name}({params_str}) -> str:
                 logger.debug(
                     f"Failed to persist runtime session activity: {activity_err}"
                 )
+
+            try:
+                from preloop.services.otel_export import emit_tool_call
+
+                emit_tool_call(
+                    tool_name=client_tool_name,
+                    runtime_session_id=user_context.runtime_session_id,
+                    account_id=user_context.account_id,
+                    status=exec_status,
+                    duration_ms=elapsed_ms,
+                    server_name=self._proxied_tool_server_names.get(
+                        client_tool_name, "preloop-mcp"
+                    ),
+                )
+            except Exception:
+                logger.debug("OTLP tool export failed", exc_info=True)
 
         return result
 
@@ -1527,3 +1638,19 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
         return user_context
     finally:
         db.close()
+
+
+# Cross-module ContextVars (imported by initialize_mcp / approval_helper).
+# Referenced here so maintainability scanners do not treat them as unused
+# module globals — same pattern as Alembic ``_ALEMBIC_IDENTIFIERS``. Kept
+# out of ``__all__`` so ``import *`` stays a public-API surface only.
+_CONTEXT_VAR_EXPORTS = (
+    _rule_workflow_id_var,
+    _rule_context_var,
+    _correlation_id_var,
+    _justification_var,
+    _bypass_approval_var,
+    _approved_comment_var,
+    _is_proxy_translation_var,
+)
+assert _CONTEXT_VAR_EXPORTS, "contextvar exports must be defined"

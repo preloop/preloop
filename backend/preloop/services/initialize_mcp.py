@@ -18,7 +18,11 @@ from preloop.services.dynamic_fastmcp import (
     _justification_var,
     create_dynamic_mcp_server,
 )
-from preloop.tools.builtin_defs import ASK_USER_TOOL
+from preloop.tools.builtin_defs import (
+    ASK_USER_TOOL,
+    PERMISSION_PROMPT_TOOL,
+    RESOLVE_SBOM_UPSTREAMS_TOOL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,9 +186,11 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         priority: str | None = None,
         assignee: str | None = None,
         labels: list[str] | None = None,
+        add_reaction: str | None = None,
+        remove_reaction: str | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
-        """Update an existing issue."""
+        """Update an existing issue. To add a GitHub eyes reaction on pickup, pass add_reaction=\"eyes\" with no other fields."""
         # Get user context for approval checking
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 
@@ -206,6 +212,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 "priority": priority,
                 "assignee": assignee,
                 "labels": labels,
+                "add_reaction": add_reaction,
+                "remove_reaction": remove_reaction,
             },
             ctx=ctx,
             workflow_id=_rule_workflow_id_var.get(None),
@@ -224,6 +232,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             priority=priority,
             assignee=assignee,
             labels=labels,
+            add_reaction=add_reaction,
+            remove_reaction=remove_reaction,
         )
         return result.model_dump_json()
 
@@ -534,14 +544,180 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             return_comment_on_approve=True,
         )
 
+        # Approval audit trailer: the platform approval workflow captured the
+        # decision (approver identity, timestamp) on an approval record; stamp
+        # its id into the returned text so an agent transcribing the human's
+        # answer (e.g. into a waiver register) can reference the governed
+        # approval instead of asserting one. Absent metadata (no approval
+        # required, mocked helper) leaves the return format unchanged.
+        from preloop.services.approval_helper import consume_last_approval_meta
+
+        approval_meta = consume_last_approval_meta()
+
+        def _with_audit_trailer(text: str) -> str:
+            if not approval_meta:
+                return text
+            parts = [f"approval_id: {approval_meta.get('request_id')}"]
+            if approval_meta.get("responded_by"):
+                parts.append(f"answered_by: {approval_meta['responded_by']}")
+            if approval_meta.get("resolved_at"):
+                parts.append(f"answered_at: {approval_meta['resolved_at']}")
+            if approval_meta.get("status"):
+                parts.append(f"status: {approval_meta['status']}")
+            return f"{text}\n[{'; '.join(parts)}]"
+
         if not answered:
+            # Async-approval workflows return immediately with a pending
+            # payload (request id + deep links + polling instructions); pass
+            # it through untouched so the agent surfaces the link and polls
+            # rather than concluding the user answered nothing.
+            if answer and answer.lstrip().startswith("{"):
+                try:
+                    import json as _json
+
+                    payload = _json.loads(answer)
+                except ValueError:
+                    payload = None
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("status") == "pending_approval"
+                ):
+                    return answer
             # Declined / cancelled / timed out — no answer was provided.
-            return f"No answer provided: {answer}" if answer else "No answer provided."
+            return _with_audit_trailer(
+                f"No answer provided: {answer}" if answer else "No answer provided."
+            )
 
         if answer:
-            return f"User answered: {answer}"
+            return _with_audit_trailer(f"User answered: {answer}")
         # Answered with no text (e.g. a bare approve on an options-only question).
-        return "User acknowledged the question but provided no answer text."
+        return _with_audit_trailer(
+            "User acknowledged the question but provided no answer text."
+        )
+
+    # Register Tool 7c: permission_prompt (Claude Code --permission-prompt-tool
+    # contract; shared metadata: tools.builtin_defs.PERMISSION_PROMPT_TOOL).
+    # Unlike request_approval this MUST return Claude's behavior schema as a
+    # JSON string: {"behavior": "allow", "updatedInput": {...}} or
+    # {"behavior": "deny", "message": "..."}. Decision logic (including the
+    # 30s-MCP-wait vs long-approval-timeout bridge) lives in
+    # preloop.services.permission_prompt.
+    @mcp.tool(description=PERMISSION_PROMPT_TOOL["description"])
+    async def permission_prompt(
+        tool_name: str,
+        input: dict,  # noqa: A002 - name fixed by Claude Code's contract
+        tool_use_id: str | None = None,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        """Decide a Claude Code permission prompt via Preloop approvals."""
+        import json
+        import os
+        from uuid import UUID as _UUID
+
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+        from preloop.services.permission_prompt import evaluate_permission_prompt
+
+        def _dump(behavior: dict) -> str:
+            return json.dumps(behavior)
+
+        user_context = get_current_user_context()
+        if not user_context:
+            # Fail closed: without identity we cannot route an approval.
+            return _dump(
+                {
+                    "behavior": "deny",
+                    "message": "Preloop could not authenticate this session; "
+                    "tool call denied (fail closed).",
+                }
+            )
+
+        def _as_uuid(value) -> _UUID | None:
+            try:
+                return _UUID(str(value)) if value else None
+            except (ValueError, TypeError):
+                return None
+
+        try:
+            behavior = await evaluate_permission_prompt(
+                base_url=os.getenv("PRELOOP_URL", "http://localhost:8000"),
+                account_id=user_context.account_id,
+                user_id=_as_uuid(user_context.user_id),
+                managed_agent_id=_as_uuid(
+                    getattr(user_context, "managed_agent_id", None)
+                ),
+                runtime_session_id=_as_uuid(
+                    getattr(user_context, "runtime_session_id", None)
+                ),
+                managed_agent_name=getattr(
+                    user_context, "runtime_principal_name", None
+                ),
+                source="claude_code",
+                tool_name=tool_name,
+                tool_input=input,
+                tool_use_id=tool_use_id,
+            )
+        except Exception as exc:  # SECURITY: fail closed, mirroring
+            # approval_helper — a gated call must never run un-approved
+            # because the approval check itself errored.
+            logger.error(
+                f"permission_prompt failed for tool {tool_name}: {exc}",
+                exc_info=True,
+            )
+            behavior = {
+                "behavior": "deny",
+                "message": "Preloop approval check failed; tool call denied "
+                "as a safety measure. Retry the tool call.",
+            }
+        return _dump(behavior)
+
+    # Register Tool 7d: resolve_sbom_upstreams (shared metadata:
+    # tools.builtin_defs.RESOLVE_SBOM_UPSTREAMS_TOOL). Read-only registry
+    # lookup used by the SBOM security presets (005/006) to enrich vendored
+    # Arduino/PlatformIO components for osv_git screening. Resolution logic
+    # lives in preloop.services.sbom_upstream_resolver; it performs no DB
+    # access and degrades gracefully when the registries are unreachable.
+    @mcp.tool(description=RESOLVE_SBOM_UPSTREAMS_TOOL["description"])
+    async def resolve_sbom_upstreams(
+        components: list[dict],
+        ctx: Optional[Context] = None,
+    ) -> str:
+        """Resolve vendored SBOM components to upstream repositories.
+
+        Args:
+            components: Component mappings carrying ``name`` and
+                ``version`` (strings) plus optionally ``purl``.
+            ctx: MCP context (injected by FastMCP).
+
+        Returns:
+            The JSON resolution report, or an error string.
+        """
+        import json
+
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+        from preloop.services.sbom_upstream_resolver import resolve_components
+
+        user_context = get_current_user_context()
+        if not user_context:
+            return "Error: No user context available"
+
+        approved, error = await require_approval(
+            tool_name=RESOLVE_SBOM_UPSTREAMS_TOOL["name"],
+            tool_source="builtin",
+            account_id=user_context.account_id,
+            arguments={"components": components},
+            ctx=ctx,
+            workflow_id=_rule_workflow_id_var.get(None),
+            correlation_id=_correlation_id_var.get(None),
+            justification=_justification_var.get(None),
+        )
+        if not approved:
+            return error
+
+        try:
+            report = await resolve_components(components)
+        except ValueError as exc:
+            return f"Error: {exc}"
+        return json.dumps(report)
 
     # Register Tool 8: add_comment
     @mcp.tool()
@@ -971,6 +1147,10 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         tool_name = approval_request.tool_name
                         tool_args = approval_request.tool_args or {}
                         req_id = approval_request.id
+                        # ask_user replay: the approver's comment IS the
+                        # human's answer — capture it before releasing the
+                        # lock so the re-executed tool can return it.
+                        approver_comment = approval_request.approver_comment
                         approval_request.tool_result = {"_executing": True}
                         await db.commit()
 
@@ -992,10 +1172,12 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         result_preview: Optional[str] = None
                         try:
                             from preloop.services.dynamic_fastmcp import (
+                                _approved_comment_var,
                                 _bypass_approval_var,
                             )
 
                             _bypass_approval_var.set(True)
+                            _approved_comment_var.set(approver_comment)
                             try:
                                 # Try internal (namespaced) name first, fall
                                 # back to original name for built-in tools.
@@ -1020,6 +1202,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                         raise
                             finally:
                                 _bypass_approval_var.set(False)
+                                _approved_comment_var.set(None)
 
                             # Normalise the result to a JSON-safe dict
                             if hasattr(tool_result, "model_dump"):
@@ -1103,6 +1286,6 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             logger.error(f"Error checking approval status: {e}", exc_info=True)
             return json.dumps({"error": f"Failed to check approval status: {str(e)}"})
 
-    logger.info("All 13 default tools registered with DynamicFastMCP")
+    logger.info("Default tools registered with DynamicFastMCP")
 
     return mcp

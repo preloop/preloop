@@ -10,6 +10,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   nats:
     image: nats:alpine
@@ -17,7 +22,29 @@ services:
     ports:
       - "4222:4222" # Client port
       - "8222:8222" # Monitoring port
-    command: [ "-js" ]
+    command: [ "-js", "-m", "8222" ]
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://127.0.0.1:8222/healthz" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/preloop/preloop:latest
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres/preloop
+      SECRET_KEY: development_secret_key_do_not_use_in_production
+      LOG_LEVEL: DEBUG
+    volumes:
+      - .:/app
+    command: python scripts/init_db.py --force
 
   api:
     build:
@@ -26,8 +53,12 @@ services:
     image: ghcr.io/preloop/preloop:latest
     restart: unless-stopped
     depends_on:
-      - postgres
-      - nats
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres/preloop
       NATS_URL: nats://nats:4222
@@ -44,7 +75,7 @@ services:
       - "8000:8000"
     volumes:
       - .:/app
-    command: ./start.sh
+    command: python -m preloop.server --debug --init-test-data
 
   gateway:
     build:
@@ -53,8 +84,12 @@ services:
     image: ghcr.io/preloop/preloop:latest
     restart: unless-stopped
     depends_on:
-      - postgres
-      - nats
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres/preloop
       NATS_URL: nats://nats:4222
@@ -71,7 +106,7 @@ services:
       - "8001:8000"
     volumes:
       - .:/app
-    command: ./start.sh
+    command: python -m preloop.server --debug --init-test-data
 
   scheduler:
     build:
@@ -80,8 +115,12 @@ services:
     image: ghcr.io/preloop/preloop:latest
     restart: unless-stopped
     depends_on:
-      - postgres
-      - nats
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres/preloop
       NATS_URL: nats://nats:4222
@@ -104,8 +143,12 @@ services:
     image: ghcr.io/preloop/preloop:latest
     restart: unless-stopped
     depends_on:
-      - postgres
-      - nats
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres/preloop
       NATS_URL: nats://nats:4222

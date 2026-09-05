@@ -12,11 +12,26 @@ from sqlalchemy.orm import Session
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.models.ai_model import AIModel
 from preloop.services.litellm_routing import to_litellm_model
+from preloop.services.model_credentials import (
+    build_aux_kwargs,
+    call_with_default_model_fallback,
+    check_reasoning_model_empty_content,
+)
 from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
 
-SUMMARY_TIMEOUT_SECONDS = 5.0
+SUMMARY_TIMEOUT_SECONDS = 10.0
+# Per-attempt budget so the primary and the fallback each get a share of the
+# overall SUMMARY_TIMEOUT_SECONDS deadline.
+#
+# Sizing (2026-08-06 prod evidence): short non-reasoning completions through
+# an account-scoped OpenRouter config show p50 2.17s / p90 4.25s / p95 5.10s.
+# The previous 2.5s per-attempt budget sat below the median-to-p90 band, so a
+# healthy primary model timed out on most calls and every summary rode the
+# system-default fallback. 5s per attempt covers ~p95 of a working provider;
+# anything slower is genuinely degraded and should fall back.
+SUMMARY_ATTEMPT_TIMEOUT_SECONDS = SUMMARY_TIMEOUT_SECONDS / 2
 SUMMARY_MAX_TOKENS = 150
 SUMMARY_MAX_CHARS = 400
 
@@ -61,8 +76,9 @@ def _compact_args(tool_args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _call_summary_model(
-    *,
     model: AIModel,
+    creds_kwargs: dict[str, Any],
+    *,
     tool_name: str,
     tool_args: dict[str, Any],
     agent_reasoning: Optional[str],
@@ -77,7 +93,7 @@ def _call_summary_model(
         "agent_reasoning": (agent_reasoning or "")[:500] or None,
         "tool_args": _compact_args(tool_args),
     }
-    kwargs: dict[str, Any] = {
+    call_site_kwargs: dict[str, Any] = {
         "model": _to_litellm_model(model),
         "messages": [
             {
@@ -101,12 +117,10 @@ def _call_summary_model(
         "temperature": 0.1,
         "max_tokens": SUMMARY_MAX_TOKENS,
     }
-    if model.api_key:
-        kwargs["api_key"] = model.api_key
-    if model.api_endpoint:
-        kwargs["api_base"] = model.api_endpoint
+    kwargs = build_aux_kwargs(model, creds_kwargs, call_site_kwargs=call_site_kwargs)
 
     response = litellm.completion(**kwargs)
+    check_reasoning_model_empty_content(response)
     text = (response.choices[0].message.content or "").strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[-1]
@@ -154,15 +168,28 @@ async def generate_approval_summary(
         return None
 
     redacted_args = redact_dict(dict(args))
+
+    def _call(model_to_use: AIModel, creds: dict[str, Any]) -> str:
+        return _call_summary_model(
+            model_to_use,
+            creds,
+            tool_name=tool_name,
+            tool_args=redacted_args,
+            agent_reasoning=agent_reasoning,
+            managed_agent_name=managed_agent_name,
+        )
+
     try:
         summary = await asyncio.wait_for(
-            asyncio.to_thread(
-                _call_summary_model,
-                model=model,
-                tool_name=tool_name,
-                tool_args=redacted_args,
-                agent_reasoning=agent_reasoning,
-                managed_agent_name=managed_agent_name,
+            call_with_default_model_fallback(
+                db=db,
+                account_id=account_id,
+                primary_model=model,
+                caller=_call,
+                operation_name="approval_summary",
+                # Give each attempt half the budget so a slow or hanging primary
+                # still leaves room for the fallback inside the overall deadline.
+                attempt_timeout=SUMMARY_ATTEMPT_TIMEOUT_SECONDS,
             ),
             timeout=SUMMARY_TIMEOUT_SECONDS,
         )

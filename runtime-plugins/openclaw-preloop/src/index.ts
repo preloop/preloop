@@ -4,6 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+import { refreshModels, type GatewayModel } from "./models.js";
+
 type ControlConfig = {
   enabled?: boolean;
   protocol?: string;
@@ -110,6 +112,12 @@ type OperatorCommand = {
   };
 };
 
+/**
+ * Close code the server sends when evicting a superseded WebSocket.  Must
+ * match `EVICTION_CLOSE_CODE` on the server and in the Python client.
+ */
+const EVICTION_CLOSE_CODE = 4000;
+
 /** Reconnect backoff bounds and heartbeat cadence (mirror the Python client). */
 const RECONNECT_BASE_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
@@ -125,6 +133,17 @@ export class PreloopOpenClawPlugin {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private logger?: (message: string) => void;
+
+  /**
+   * Most recently fetched gateway model list, updated by
+   * {@link refreshGatewayModels}.
+   *
+   * Nothing inside the plugin reads this yet, and that is deliberate:
+   * OpenClaw's hook API has no runtime model-catalog mutation surface, so
+   * the list is staged here for the catalog-update hook to consume once it
+   * exists.  Callers embedding the plugin can read it today.
+   */
+  lastGatewayModels: GatewayModel[] = [];
 
   constructor(
     private readonly configPath?: string,
@@ -290,10 +309,17 @@ export class PreloopOpenClawPlugin {
       }
     });
 
-    const onClose = (): void => {
+    const onClose = (event: { code?: number; reason?: string }): void => {
       this.stopHeartbeat();
       if (this.socket === socket) {
         this.socket = undefined;
+      }
+      if (event.code === EVICTION_CLOSE_CODE) {
+        this.log(
+          `Agent Control: evicted by server (${event.reason || "superseded by newer connection"}); will not reconnect`,
+        );
+        this.stopped = true;
+        return;
       }
       this.scheduleReconnect();
     };
@@ -369,6 +395,25 @@ export class PreloopOpenClawPlugin {
   toolApprovalFailOpen(config?: ControlConfig): boolean {
     const resolved = config ?? this.controlConfig;
     return resolved?.tool_approval_fail_open === true;
+  }
+
+  /**
+   * Fetch the current model list from the Preloop gateway and store it
+   * on {@link lastGatewayModels}.  Best-effort; swallows errors.
+   *
+   * OpenClaw's plugin hook API does not expose a runtime model-catalog
+   * mutation method, so this helper fetches and caches the list. A
+   * future OpenClaw hook that supports runtime catalog updates could
+   * consume ``lastGatewayModels`` directly.
+   */
+  async refreshGatewayModels(): Promise<GatewayModel[]> {
+    const config = this.controlConfig ?? this.loadConfig();
+    this.lastGatewayModels = await refreshModels(
+      config,
+      this.fetchImpl,
+      (message) => this.log(message),
+    );
+    return this.lastGatewayModels;
   }
 
   /**
@@ -571,6 +616,8 @@ export class PreloopOpenClawPlugin {
   }
 }
 
+export { gatewayModelsUrl, fetchGatewayModels, type GatewayModel } from "./models.js";
+
 export const plugin = new PreloopOpenClawPlugin();
 
 export const definition = {
@@ -626,7 +673,12 @@ export function register(api: {
     });
   };
 
-  api.on?.("gateway_start", start);
+  api.on?.("gateway_start", () => {
+    start();
+    // Best-effort model-list refresh on gateway start so the model
+    // picker reflects console edits without a full restart.
+    void instance.refreshGatewayModels();
+  });
   api.on?.("gateway_stop", () => {
     started = false;
     instance.stop();

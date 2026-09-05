@@ -1,9 +1,10 @@
 """Token generation and validation for Preloop."""
 
 import os
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError
 
 # Configuration
 from preloop.config import settings
@@ -79,7 +80,7 @@ def verify_token(token: str, token_type: str) -> str:
             )
 
         return email
-    except JWTError:
+    except PyJWTError:
         raise TokenError("Invalid or expired token")
 
 

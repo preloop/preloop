@@ -1611,3 +1611,54 @@ func TestAIModelUsesAmbientProviderCredentials(t *testing.T) {
 		t.Fatal("expected ambient provider credentials to be detected")
 	}
 }
+
+func TestBuildOpenClawManagedProviderEnablesPromptCacheKey(t *testing.T) {
+	// OpenClaw strips prompt_cache_key on "proxy-like" Responses endpoints,
+	// which every Preloop gateway URL is. That leaves its OpenAI transport with
+	// no conversation id on the wire, so all conversations on a machine
+	// collapse into one runtime session that never ends.
+	provider := buildOpenClawManagedProvider(
+		[]openClawConfiguredModel{{ModelAlias: "openai/gpt-5"}},
+		"https://preloop.ai/openai/v1",
+		"openai-responses",
+		"token",
+	)
+
+	models, ok := provider["models"].([]interface{})
+	if !ok || len(models) != 1 {
+		t.Fatalf("expected 1 model entry, got %#v", provider["models"])
+	}
+	entry, ok := models[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map model entry, got %#v", models[0])
+	}
+	compat, ok := entry["compat"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected compat block, got %#v", entry["compat"])
+	}
+	if compat["supportsPromptCacheKey"] != true {
+		t.Fatalf("expected supportsPromptCacheKey=true, got %#v", compat["supportsPromptCacheKey"])
+	}
+}
+
+func TestBuildOpenClawManagedProviderKeepsExplicitPromptCacheKeySetting(t *testing.T) {
+	// An operator who deliberately disabled it must not be overridden.
+	provider := buildOpenClawManagedProvider(
+		[]openClawConfiguredModel{{
+			ModelAlias: "openai/gpt-5",
+			ModelCatalog: map[string]interface{}{
+				"compat": map[string]interface{}{"supportsPromptCacheKey": false},
+			},
+		}},
+		"https://preloop.ai/openai/v1",
+		"openai-responses",
+		"token",
+	)
+
+	models := provider["models"].([]interface{})
+	entry := models[0].(map[string]interface{})
+	compat := entry["compat"].(map[string]interface{})
+	if compat["supportsPromptCacheKey"] != false {
+		t.Fatalf("expected explicit false to be preserved, got %#v", compat["supportsPromptCacheKey"])
+	}
+}

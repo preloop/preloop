@@ -14,20 +14,20 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
-from preloop.services.mcp_tool_discovery import (
-    get_cached_tools_for_server,
-    scan_mcp_server_tools,
-)
 from preloop.models.crud import crud_mcp_server
 from preloop.models.db.session import get_db_session
-from preloop.models.models.user import User
 from preloop.models.models.mcp_server import MCPServer
+from preloop.models.models.user import User
 from preloop.models.schemas.mcp_server import (
     MCPServerCreate,
     MCPServerResponse,
     MCPServerUpdate,
 )
 from preloop.models.schemas.mcp_tool import MCPToolResponse
+from preloop.services.mcp_tool_discovery import (
+    get_cached_tools_for_server,
+    scan_mcp_server_tools,
+)
 from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
 
@@ -573,15 +573,15 @@ async def mcp_server_oauth_authorize(
     4. Redirects the user to the external server's authorization endpoint.
     """
     # Validate the short-lived, purpose- and server-scoped authorize token.
-    from jose import JWTError
-    from jose import jwt as jose_jwt
+    import jwt
+    from jwt import PyJWTError
 
     from preloop.api.auth.jwt import ALGORITHM, SECRET_KEY
     from preloop.models.crud import crud_user
 
     try:
-        payload = jose_jwt.decode(code, SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError:
+        payload = jwt.decode(code, SECRET_KEY, algorithms=[ALGORITHM])
+    except PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired authorization code",

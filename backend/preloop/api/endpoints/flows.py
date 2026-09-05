@@ -1,17 +1,25 @@
+import asyncio
 import uuid
 import secrets
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NoReturn, Optional, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from preloop.models import schemas
-from preloop.models.crud import crud_account, crud_runtime_session_activity
+from preloop.models.crud import (
+    crud_account,
+    crud_ai_model,
+    crud_api_usage,
+    crud_flow_runner,
+    crud_runtime_session_activity,
+)
 from preloop.models.crud.flow import CRUDFlow
 from preloop.models.crud.flow_execution import CRUDFlowExecution
 from preloop.models.db.session import get_db_session as get_db
 from preloop.api.auth import get_current_active_user
+from preloop.models.models.ai_model import AIModel
 from preloop.models.models.user import User
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
@@ -19,6 +27,12 @@ from preloop.utils.hashing import compute_content_hash
 from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
 from preloop.models.crud.flow_execution_log import crud_flow_execution_log
+from preloop.services.runner_service import (
+    derive_execution_runner,
+    pool_from_session_reference,
+    resolve_runner_pool,
+    runner_id_from_session_reference,
+)
 
 
 router = APIRouter()
@@ -56,6 +70,27 @@ def create_flow(
                 status_code=403,
                 detail="Only administrators can configure custom commands for security reasons",
             )
+
+    # A schedule_config implies a schedule trigger: default the source
+    # (mirrors the webhook auto-default below) and reject contradictory
+    # sources so the config can never sit inert on a non-schedule flow.
+    if flow_in.schedule_config and not flow_in.trigger_event_source:
+        flow_in.trigger_event_source = "schedule"
+    if flow_in.schedule_config and flow_in.trigger_event_source != "schedule":
+        raise HTTPException(
+            status_code=400,
+            detail="schedule_config is only valid when trigger_event_source "
+            "is 'schedule'",
+        )
+
+    # Schedule triggers require a cron schedule_config
+    if flow_in.trigger_event_source == "schedule":
+        if not flow_in.schedule_config:
+            raise HTTPException(
+                status_code=400,
+                detail="schedule_config is required for schedule triggers",
+            )
+        flow_in.trigger_event_types = ["schedule"]
 
     # If this is a webhook trigger, auto-generate a secure webhook secret
     if flow_in.trigger_event_source == "webhook" or (
@@ -156,6 +191,29 @@ def read_flows(
     return flows
 
 
+@router.post("/flows/schedule/preview", response_model=schemas.SchedulePreviewResponse)
+@require_permission("view_flows")
+def preview_flow_schedule(
+    *,
+    db: Session = Depends(get_db),
+    preview_in: schemas.SchedulePreviewRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """Preview a schedule trigger configuration.
+
+    Validates the schedule config (invalid configs are rejected with a
+    422 by the schema) and returns a human-readable description plus the
+    next few run times, for display in the flow editor.
+    """
+    config = preview_in.schedule_config
+    return schemas.SchedulePreviewResponse(
+        type=config.type,
+        description=config.describe(),
+        timezone=config.timezone,
+        next_run_times=config.next_fire_times(count=3),
+    )
+
+
 @router.get("/flows/presets", response_model=List[schemas.FlowResponse])
 @require_permission("view_flows")
 def read_presets(
@@ -167,6 +225,88 @@ def read_presets(
     Returns global presets (account_id=None) plus any account-specific presets.
     """
     return crud_flow.get_presets_for_account(db, account_id=current_user.account_id)
+
+
+def _model_has_credential_source(model: AIModel) -> bool:
+    """True when an AI model row has some way to authenticate at run time."""
+    if model.credentials_secret_id or model.api_key:
+        return True
+    meta_data = model.meta_data if isinstance(model.meta_data, dict) else {}
+    gateway = meta_data.get("gateway")
+    return bool(isinstance(gateway, dict) and gateway.get("enabled"))
+
+
+def _model_usable_for_agent(model: AIModel, agent_type: str) -> bool:
+    """True when the agent harness can actually reach this model.
+
+    The codex harness talks to OpenAI directly, or to any other provider only
+    through an explicit endpoint (custom provider / gateway); a model row
+    without either fails inside the container. Other harnesses take the
+    endpoint from the model row as-is, so the credential check suffices.
+    """
+    if not _model_has_credential_source(model):
+        return False
+    if getattr(model, "model_kind", "llm") != "llm":
+        return False
+    if (agent_type or "").lower() == "codex":
+        provider = (model.provider_name or "").strip().lower()
+        if provider in ("openai", ""):
+            return True
+        meta_data = model.meta_data if isinstance(model.meta_data, dict) else {}
+        gateway = meta_data.get("gateway")
+        gateway_enabled = isinstance(gateway, dict) and gateway.get("enabled")
+        return bool(model.api_endpoint or gateway_enabled)
+    return True
+
+
+def _resolve_clone_model_binding(
+    db: Session, preset: Any, account_id: uuid.UUID
+) -> uuid.UUID:
+    """Pick the AI model a cloned preset should run with, at CLONE time.
+
+    Presets ship with ``ai_model_id`` unset (they are account-agnostic), so a
+    verbatim clone runs the default agent with no credentials and dies at RUN
+    time with a raw provider/gateway error. Resolve the binding here instead:
+
+    1. Keep the preset's model when it is set and visible to this account.
+    2. Otherwise bind an account model that the preset's agent can use,
+       preferring the account default, then the newest.
+    3. Otherwise fail the clone with an actionable message.
+
+    Raises:
+        HTTPException: 422 when the account has no usable model credentials.
+    """
+    if preset.ai_model_id:
+        model = crud_ai_model.get(db, id=str(preset.ai_model_id))
+        if model is not None and (
+            model.account_id is None or str(model.account_id) == str(account_id)
+        ):
+            return cast(uuid.UUID, preset.ai_model_id)
+
+    candidates = [
+        model
+        for model in crud_ai_model.get_by_account(db, account_id=account_id)
+        if _model_usable_for_agent(model, preset.agent_type)
+    ]
+    if candidates:
+        candidates.sort(
+            key=lambda m: (
+                not m.is_default,
+                -(m.created_at.timestamp() if m.created_at else 0.0),
+            )
+        )
+        return cast(uuid.UUID, candidates[0].id)
+
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            f"This preset runs on the '{preset.agent_type}' agent, which needs "
+            "an AI model with working credentials, but your account has no "
+            "usable AI model configured for it. Add an AI model (with an API "
+            "key or gateway access) under Settings, then clone the preset "
+            "again."
+        ),
+    )
 
 
 @router.post("/flows/presets/{flow_id}/clone", response_model=schemas.FlowResponse)
@@ -187,66 +327,60 @@ def clone_preset(
     if not preset or not preset.is_preset:
         raise HTTPException(status_code=404, detail="Preset not found")
 
-    # Build dict excluding fields we want to override or that aren't in FlowCreate
-    # Note: is_enabled is excluded so cloned flows start enabled (presets are disabled)
-    # Also exclude template tracking fields - we set these explicitly
-    preset_dict = {
-        k: v
-        for k, v in preset.__dict__.items()
-        if k
-        not in [
-            "_sa_instance_state",
-            "id",
-            "created_at",
-            "updated_at",
-            "name",
-            "is_preset",
-            "is_enabled",
-            "account_id",
-            # Template tracking fields - set explicitly below
-            "source_preset_id",
-            "source_prompt_hash",
-            "source_tools_hash",
-            "prompt_customized",
-            "tools_customized",
-            "preset_update_available",
-        ]
-    }
-
-    # Generate a unique name for the cloned flow
-    base_name = f"Copy of {preset.name}"
-    final_name = base_name
-    suffix = 1
-
-    while crud_flow.get_by_name_and_account(
-        db, name=final_name, account_id=current_user.account_id
-    ):
-        suffix += 1
-        final_name = f"{base_name} ({suffix})"
-
-    # Compute hashes of the preset's current prompt and tools
-    # These are used to detect if the user customizes the flow later
-    source_prompt_hash = compute_content_hash(preset.prompt_template)
-    source_tools_hash = compute_content_hash(preset.allowed_mcp_tools or [])
-
-    cloned_flow_in = schemas.FlowCreate(
-        **preset_dict,
-        name=final_name,
-        is_preset=False,
-        is_enabled=True,  # Cloned flows start enabled
-        account_id=str(current_user.account_id),
-        # Template tracking: link to source preset
-        source_preset_id=str(preset.id),
-        source_prompt_hash=source_prompt_hash,
-        source_tools_hash=source_tools_hash,
-        prompt_customized=False,
-        tools_customized=False,
-        preset_update_available=False,
+    # Bind an AI model that will actually work for this account BEFORE
+    # creating the clone: presets ship without a model, and a clone without
+    # one fails at run time with a raw provider error (never do that to a
+    # first run). Raises 422 with an actionable message when the account has
+    # no usable model.
+    bound_ai_model_id = _resolve_clone_model_binding(
+        db, preset, current_user.account_id
     )
-    cloned_flow = crud_flow.create(
-        db=db, flow_in=cloned_flow_in, account_id=current_user.account_id
+
+    from preloop.services.flow_presets_service import clone_preset_for_account
+
+    return clone_preset_for_account(
+        db,
+        preset,
+        current_user.account_id,
+        name=None,
+        bound_ai_model_id=bound_ai_model_id,
+        flow_crud=crud_flow,
     )
-    return cloned_flow
+
+
+@router.post("/flows/run-preset", response_model=schemas.RunPresetResponse)
+@require_permission("execute_flows")
+def run_preset(
+    *,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    body: schemas.RunPresetRequest,
+) -> schemas.RunPresetResponse:
+    """Run a catalog preset on an issue, creating the account flow on first use.
+
+    ``confirm_create=false`` resolves only: 409 ``flow_missing`` when the
+    account has no clone, or 200 with flow metadata and no execution when
+    one exists. ``confirm_create=true`` creates if needed (requires
+    ``create_flows``) and starts the run.
+    """
+    # Sync handler: an async def would hold Session on the event loop and
+    # fail test_async_sync_session_route_count_does_not_grow.
+    from preloop.services.preset_runner import PresetRunnerError, run_preset_on_target
+
+    try:
+        result = asyncio.run(
+            run_preset_on_target(
+                db,
+                current_user=current_user,
+                preset_slug=body.preset_slug,
+                target=body.target,
+                confirm_create=body.confirm_create,
+                triggered_by=_display_name(current_user),
+            )
+        )
+    except PresetRunnerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return schemas.RunPresetResponse(**result)
 
 
 def _normalize_status_filters(status: Optional[List[str]]) -> Optional[List[str]]:
@@ -293,7 +427,179 @@ def read_flow_executions(
     for execution in executions:
         execution.flow_name = execution.flow.name if execution.flow else None
 
+    _project_models_used(db, executions)
+    _project_execution_runners(db, executions)
+
     return executions
+
+
+def _as_runner_uuid(value: Any) -> Optional[uuid.UUID]:
+    """Accept a UUID (or UUID string); ignore mocks and other junk."""
+    if isinstance(value, uuid.UUID):
+        return value
+    if isinstance(value, str):
+        try:
+            return uuid.UUID(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _project_execution_runners(
+    db: Session,
+    executions: List[Any],
+    *,
+    resolve_pool_from_flow: bool = False,
+) -> None:
+    """Attach the derived runner read model to each execution row.
+
+    Private runs are identified by ``runner_id`` or a ``runner:...`` session
+    reference. Names come from one batched FlowRunner lookup. Pool is the
+    queued-ref pool, or (on detail) the resolved flow/trigger pool.
+    """
+    if not executions:
+        return
+    runner_ids: List[uuid.UUID] = []
+    for execution in executions:
+        runner_id = _as_runner_uuid(getattr(execution, "runner_id", None))
+        if runner_id is None:
+            runner_id = runner_id_from_session_reference(
+                getattr(execution, "agent_session_reference", None)
+            )
+        if runner_id is not None:
+            runner_ids.append(runner_id)
+    runners_by_id = {
+        row.id: row for row in crud_flow_runner.get_by_ids(db, ids=runner_ids)
+    }
+    for execution in executions:
+        ref = getattr(execution, "agent_session_reference", None)
+        runner_id = _as_runner_uuid(getattr(execution, "runner_id", None))
+        if runner_id is None:
+            runner_id = runner_id_from_session_reference(ref)
+        runner = runners_by_id.get(runner_id) if runner_id else None
+        pool = pool_from_session_reference(ref)
+        if pool is None and resolve_pool_from_flow:
+            flow = getattr(execution, "flow", None)
+            details = getattr(execution, "trigger_event_details", None) or {}
+            if flow is not None:
+                pool = resolve_runner_pool(flow, {"trigger_event_data": details})
+        execution.runner = derive_execution_runner(
+            runner_id=runner_id,
+            agent_session_reference=ref if isinstance(ref, str) else None,
+            runner_name=getattr(runner, "name", None) if runner else None,
+            pool=pool,
+        )
+
+
+def _project_models_used(db: Session, executions: List[Any]) -> None:
+    """Attach the model projection to each execution row in one query.
+
+    "Which model ran this" is answered from gateway usage, which the
+    execution row itself does not carry. One grouped aggregate covers the
+    whole page (see ``crud_api_usage.get_models_used_for_executions``); doing
+    it per row would put a query behind every line of the table.
+    """
+    if not executions:
+        return
+    models_by_execution = crud_api_usage.get_models_used_for_executions(
+        db, [execution.id for execution in executions]
+    )
+    for execution in executions:
+        models = models_by_execution.get(str(execution.id), [])
+        execution.models_used = models
+        # The alias that served most requests leads; the rest stay in
+        # models_used so the console can render "+N".
+        execution.model_alias = models[0]["model_alias"] if models else None
+        execution.provider_name = models[0]["provider_name"] if models else None
+
+
+# Terminal execution statuses, mirroring the orchestrator's state machine.
+_TERMINAL_EXECUTION_STATUSES = {
+    "SUCCEEDED",
+    "FAILED",
+    "STOPPED",
+    "TIMEOUT",
+    "CANCELLED",
+}
+
+
+@router.get(
+    "/flows/batches/{batch_id}/executions",
+    response_model=schemas.BatchExecutionsResponse,
+)
+@require_permission("view_flows")
+def read_batch_executions(
+    *,
+    db: Session = Depends(get_db),
+    batch_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+):
+    """List all executions of one matrix/batch trigger with a rollup.
+
+    The rollup aggregates status counts, tokens, tool calls and estimated
+    cost across the batch so an eval matrix can be observed as a unit.
+    """
+    from preloop.models.models.flow_execution import MATRIX_OVERRIDES_KEY
+
+    executions = crud_flow_execution.get_by_batch(
+        db, batch_id=batch_id, account_id=current_user.account_id
+    )
+    if not executions:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    # Projected before validation below, so each cell of a model matrix says
+    # which model actually served it.
+    _project_models_used(db, executions)
+    _project_execution_runners(db, executions, resolve_pool_from_flow=True)
+
+    by_status: Dict[str, int] = {}
+    total_tokens = 0
+    total_cost = 0.0
+    total_tool_calls = 0
+    completed = 0
+    items = []
+    for execution in executions:
+        by_status[execution.status] = by_status.get(execution.status, 0) + 1
+        total_tokens += execution.total_tokens or 0
+        total_cost += float(execution.estimated_cost or 0)
+        total_tool_calls += execution.tool_calls_count or 0
+        if execution.status in _TERMINAL_EXECUTION_STATUSES:
+            completed += 1
+        cell = (execution.trigger_event_details or {}).get(MATRIX_OVERRIDES_KEY)
+        item = schemas.BatchExecutionListItem.model_validate(execution)
+        item.flow_name = execution.flow.name if execution.flow else None
+        item.matrix = (
+            {
+                "index": cell.get("index"),
+                "agent_type": cell.get("agent_type"),
+                "ai_model_id": cell.get("ai_model_id"),
+            }
+            if cell
+            else None
+        )
+        items.append(item)
+
+    # Present cells in matrix order (creation order is the fallback for rows
+    # without a recorded index).
+    items.sort(
+        key=lambda i: i.matrix["index"]
+        if i.matrix and i.matrix.get("index") is not None
+        else 1_000_000
+    )
+
+    return schemas.BatchExecutionsResponse(
+        batch_id=batch_id,
+        flow_id=executions[0].flow_id,
+        rollup=schemas.BatchRollup(
+            total=len(executions),
+            by_status=by_status,
+            completed=completed,
+            total_tokens=total_tokens,
+            total_estimated_cost=round(total_cost, 4),
+            total_tool_calls=total_tool_calls,
+        ),
+        executions=items,
+    )
 
 
 @router.get(
@@ -332,7 +638,124 @@ def read_flow_execution(
                 for row in rows
             ]
 
+    # The model that ran this execution, from the same gateway usage the list
+    # projects, so the detail page and the table never disagree.
+    _project_models_used(db, [execution])
+    _project_execution_runners(db, [execution], resolve_pool_from_flow=True)
+
     return execution
+
+
+@router.get("/flows/executions/{execution_id}/result")
+@require_permission("view_flows")
+def get_flow_execution_result(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """Get the structured result artifact reported by a flow execution.
+
+    Eval/observe flows write ``/workspace/result.json`` as their final
+    report; the runner captures it as a first-class execution artifact.
+    Returns 404 if the execution does not exist or reported no result.
+    """
+    execution = crud_flow_execution.get(
+        db=db, id=execution_id, account_id=current_user.account_id
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Flow execution not found")
+    if execution.result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Flow execution did not report a result artifact",
+        )
+    return {
+        "execution_id": str(execution.id),
+        "status": execution.status,
+        "result": execution.result,
+    }
+
+
+@router.get("/flows/executions/{execution_id}/evidence")
+@require_permission("view_flows")
+def get_flow_execution_evidence(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> Response:
+    """Download the evidence pack captured for a flow execution.
+
+    Audit-style flows write an evidence pack under ``/workspace/evidence``;
+    the runner captures it as a tar.gz archive after the agent finishes.
+    Returns 404 if the execution does not exist or no evidence was captured.
+    """
+    execution = crud_flow_execution.get(
+        db=db, id=execution_id, account_id=current_user.account_id
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Flow execution not found")
+    if not execution.evidence_archive:
+        raise HTTPException(
+            status_code=404,
+            detail="Flow execution has no captured evidence pack",
+        )
+    return Response(
+        content=bytes(execution.evidence_archive),
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="evidence-{execution.id}.tar.gz"'
+            )
+        },
+    )
+
+
+@router.get(
+    "/flows/executions/{execution_id}/workspace",
+    responses={
+        200: {
+            "description": "Size-capped tar.gz of /workspace from this execution.",
+            "content": {
+                "application/gzip": {"schema": {"type": "string", "format": "binary"}}
+            },
+        }
+    },
+)
+@require_permission("view_flows")
+def get_flow_execution_workspace(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> Response:
+    """Download the workspace snapshot captured for a flow execution.
+
+    Every hosted run leaves a size-capped tar.gz of ``/workspace`` (``.git``
+    included, so commits that were never pushed are in it) behind. Returns 404
+    if the execution does not exist, if the workspace was too large to keep,
+    or if the retention window has passed and the janitor reaped it.
+    """
+    execution = crud_flow_execution.get(
+        db=db, id=execution_id, account_id=current_user.account_id
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Flow execution not found")
+    if not execution.workspace_snapshot:
+        raise HTTPException(
+            status_code=404,
+            detail="Flow execution has no captured workspace snapshot",
+        )
+    return Response(
+        content=bytes(execution.workspace_snapshot),
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="workspace-{execution.id}.tar.gz"'
+            )
+        },
+    )
 
 
 @router.get("/flows/executions/{execution_id}/logs")
@@ -579,8 +1002,13 @@ def get_flow_execution_metrics(
         - tool_calls: Number of MCP tool calls made
         - api_requests: Number of API requests made during execution
         - token_usage: Token usage statistics
-        - estimated_cost: Estimated cost based on token usage (0.0 if no pricing)
-        - has_pricing: Whether pricing is configured in AI model metadata
+        - estimated_cost: Estimated cost in USD, or null when no usage could
+          be priced (never a placeholder 0.0, which would misreport real
+          spend as free)
+        - has_pricing: Whether any request could be priced
+        - cost_is_partial: Whether estimated_cost excludes unpriced requests
+        - unpriced_requests: Requests that could not be priced
+        - unpriced_tokens: Token volume behind the unpriced requests
     """
     from preloop.services.execution_metrics import ExecutionMetricsService
 
@@ -606,8 +1034,13 @@ def get_flow_execution_metrics(
             "tool_calls": 0,
             "api_requests": 0,
             "token_usage": {"total_tokens": 0, "input_tokens": 0, "output_tokens": 0},
-            "estimated_cost": 0.0,
+            # Metrics could not be computed, so the cost is unknown rather
+            # than zero; the UI renders this as unavailable, not as free.
+            "estimated_cost": None,
             "has_pricing": False,
+            "cost_is_partial": False,
+            "unpriced_requests": 0,
+            "unpriced_tokens": 0,
         }
 
 
@@ -788,6 +1221,82 @@ async def send_execution_command(
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
 
 
+def _display_name(user: User) -> str:
+    """The name to attribute a manually triggered run to in the console.
+
+    Prefers the operator's own name, then the username, and finally the
+    email, so the executions list says "Manual Run by Ada Lovelace" rather
+    than repeating an opaque id.
+    """
+    name = (getattr(user, "full_name", None) or "").strip()
+    return name or getattr(user, "username", None) or getattr(user, "email", "") or ""
+
+
+def _validate_matrix(
+    db: Session, matrix: Any, account_id: uuid.UUID
+) -> List[Dict[str, Any]]:
+    """Validate a matrix trigger payload; raise HTTP 422 on any bad entry.
+
+    Validation is all-or-nothing: no execution is created unless every entry
+    passes, so a batch never partially materialises from a malformed request.
+    Entry shape (allowed keys, UUID coercion) is enforced by the
+    ``FlowMatrixEntry`` schema; the allowed agent types come straight from the
+    agent factory registry, so both stay in one place.
+    """
+    from pydantic import ValidationError
+
+    from preloop.agents.factory import SUPPORTED_AGENT_TYPES
+    from preloop.services.flow_trigger_service import MATRIX_MAX_ENTRIES
+
+    def _reject(detail: str) -> NoReturn:
+        raise HTTPException(status_code=422, detail=detail)
+
+    if not isinstance(matrix, list) or not matrix:
+        _reject("matrix must be a non-empty list of objects")
+    if len(matrix) > MATRIX_MAX_ENTRIES:
+        _reject(f"matrix supports at most {MATRIX_MAX_ENTRIES} entries")
+
+    validated: List[Dict[str, Any]] = []
+    for index, entry in enumerate(matrix):
+        if not isinstance(entry, dict):
+            _reject(f"matrix[{index}] must be an object")
+        try:
+            parsed = schemas.FlowMatrixEntry.model_validate(entry)
+        except ValidationError as exc:
+            unknown = sorted(
+                str(error["loc"][0])
+                for error in exc.errors()
+                if error["type"] == "extra_forbidden"
+            )
+            if unknown:
+                _reject(
+                    f"matrix[{index}] has unsupported keys: {unknown}; "
+                    "allowed keys are 'agent_type' and 'ai_model_id'"
+                )
+            first = exc.errors()[0]
+            field = first["loc"][0] if first["loc"] else "entry"
+            if field == "ai_model_id":
+                _reject(f"matrix[{index}].ai_model_id must be a UUID")
+            _reject(f"matrix[{index}].{field}: {first['msg']}")
+        cell: Dict[str, Any] = {}
+        if parsed.agent_type is not None:
+            if parsed.agent_type.lower() not in SUPPORTED_AGENT_TYPES:
+                _reject(
+                    f"matrix[{index}].agent_type '{parsed.agent_type}' is not "
+                    f"supported; supported types: {sorted(SUPPORTED_AGENT_TYPES)}"
+                )
+            cell["agent_type"] = parsed.agent_type.lower()
+        if parsed.ai_model_id is not None:
+            ai_model = crud_ai_model.get(db, id=str(parsed.ai_model_id))
+            # Same visibility rule as model listing: account-owned or shared
+            # system model (account_id is NULL).
+            if not ai_model or ai_model.account_id not in (None, account_id):
+                _reject(f"matrix[{index}].ai_model_id '{parsed.ai_model_id}' not found")
+            cell["ai_model_id"] = str(parsed.ai_model_id)
+        validated.append(cell)
+    return validated
+
+
 @router.post("/flows/{flow_id}/trigger")
 @require_permission("execute_flows")
 async def trigger_flow_execution(
@@ -800,24 +1309,53 @@ async def trigger_flow_execution(
     """
     Trigger a test execution for a flow.
 
+    The body is free-form trigger event data, except for the reserved key
+    ``matrix``: when present it must be a list of up to 25
+    ``{"agent_type"?, "ai_model_id"?}`` objects and the trigger fans out to
+    one execution per entry, all sharing a ``batch_id`` (an empty object runs
+    the flow defaults). Without ``matrix`` the behaviour is unchanged.
+
     Args:
         flow_id: Flow to trigger
-        trigger_event_data: Optional custom trigger event data for testing template variables
+        trigger_event_data: Optional custom trigger event data for testing
+            template variables, plus the optional reserved ``matrix`` key
 
     Returns:
-        Execution details
+        Execution details, or batch details (``batch_id`` + per-cell
+        ``execution_id``) when a matrix was given
     """
     # Verify flow exists and user has access
     flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
 
+    # Pop the reserved matrix key so it never leaks into template variables.
+    matrix = None
+    if trigger_event_data and "matrix" in trigger_event_data:
+        matrix = trigger_event_data.pop("matrix")
+
     # Trigger flow execution
     from preloop.services.flow_trigger_service import FlowTriggerService
 
     trigger_service = FlowTriggerService(db)
+
+    if matrix is not None:
+        validated_matrix = _validate_matrix(
+            db, matrix, account_id=current_user.account_id
+        )
+        return await trigger_service.trigger_flow_matrix(
+            flow_id=flow_id,
+            matrix=validated_matrix,
+            test_mode=True,
+            trigger_event_data=trigger_event_data,
+            triggered_by=_display_name(current_user),
+        )
+
     result = await trigger_service.trigger_flow(
-        flow_id=flow_id, test_mode=True, trigger_event_data=trigger_event_data
+        flow_id=flow_id,
+        test_mode=True,
+        trigger_event_data=trigger_event_data,
+        triggered_by=_display_name(current_user),
     )
 
     return result
@@ -876,6 +1414,7 @@ async def retry_flow_execution(
         test_mode=False,
         trigger_event_data=original.trigger_event_details,
         retry_of_execution_id=original.id,
+        triggered_by=_display_name(current_user),
     )
 
     return result
@@ -936,6 +1475,48 @@ def update_flow(
                 status_code=403,
                 detail="Only administrators can configure custom commands for security reasons",
             )
+
+    # Schedule triggers must always keep a valid cron schedule_config
+    effective_source = (
+        flow_in.trigger_event_source
+        if flow_in.trigger_event_source is not None
+        else flow.trigger_event_source
+    )
+    # Reject a schedule_config sent for a flow whose (effective) trigger
+    # source is not 'schedule' - it would be stored but never reconciled.
+    if flow_in.schedule_config and effective_source != "schedule":
+        raise HTTPException(
+            status_code=400,
+            detail="schedule_config is only valid when trigger_event_source "
+            "is 'schedule'",
+        )
+    if effective_source == "schedule":
+        effective_schedule = (
+            flow_in.schedule_config
+            if "schedule_config" in flow_in.model_fields_set
+            else flow.schedule_config
+        )
+        if not effective_schedule:
+            raise HTTPException(
+                status_code=400,
+                detail="schedule_config is required for schedule triggers",
+            )
+        if flow_in.trigger_event_source == "schedule":
+            flow_in.trigger_event_types = ["schedule"]
+
+    # Webhook triggers need a secret to build the trigger URL. The create
+    # path auto-generates one, but flows switched to a webhook trigger
+    # later (e.g. cloned presets, which start with no trigger) ended up
+    # with webhook_config=None: the console never shows a webhook URL and
+    # the flow is untriggerable. Mirror the create-path behavior here.
+    if (
+        effective_source == "webhook"
+        and not flow.webhook_config
+        and not flow_in.webhook_config
+    ):
+        flow_in.webhook_config = schemas.WebhookConfig(
+            webhook_secret=secrets.token_urlsafe(32)
+        )
 
     # Detect customization for template-tracked flows
     # If the user modifies the prompt or tools, mark them as customized
@@ -1020,6 +1601,29 @@ def delete_flow(
         logger.warning(f"Attempt to delete built-in preset {flow_id}")
         raise HTTPException(
             status_code=403, detail="Cannot delete built-in flow presets"
+        )
+
+    # Deleting a flow cascades to its executions (and their logs). If an agent
+    # is still running for one of those executions it would keep streaming
+    # logs for a row that no longer exists (FK violations in the log
+    # persister, orphaned containers). Require executions to be stopped first,
+    # via the existing stop command endpoint, before the flow can be deleted.
+    active_executions = crud_flow_execution.get_running_by_flow(
+        db, flow_id=flow.id, account_id=current_user.account_id
+    )
+    if active_executions:
+        logger.warning(
+            f"Refusing to delete flow {flow_id}: "
+            f"{len(active_executions)} active execution(s)"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Flow has {len(active_executions)} active execution(s). "
+                "Stop the active executions first (use the execution's stop command "
+                "endpoint) and retry the delete."
+                'with {"command": "stop"}) and retry the delete.'
+            ),
         )
 
     flow_name = flow.name  # capture before delete
@@ -1107,7 +1711,36 @@ def dismiss_preset_update(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/webhooks/flows/{flow_id}/{webhook_secret}")
+@router.post(
+    "/webhooks/flows/{flow_id}/{webhook_secret}",
+    responses={
+        200: {
+            "description": (
+                "Execution triggered (or deduplicated to an existing running "
+                "execution for the same repo + commit, see 'deduplicated')."
+            )
+        },
+        202: {
+            "description": (
+                "Execution row was created but dispatch failed; poll "
+                "execution_url or retry from the console. Do not re-send "
+                "the webhook."
+            )
+        },
+        422: {
+            "description": (
+                "Payload does not match the flow's trigger_config; no "
+                "execution was created. Also returned for invalid request "
+                "input (e.g. malformed flow_id)."
+            )
+        },
+        500: {
+            "description": (
+                "No execution could be created (failure at/before the insert)."
+            )
+        },
+    },
+)
 async def trigger_flow_via_webhook(
     *,
     db: Session = Depends(get_db),
@@ -1120,6 +1753,19 @@ async def trigger_flow_via_webhook(
 
     This endpoint allows external services to trigger flows without authentication.
     Security is provided by the unguessable webhook_secret in the URL.
+
+    Success responses carry a nested ``execution`` object with the same
+    ``{id, status, flow_id}`` shape as ``POST /flows/{flow_id}/trigger``, plus
+    flat ``execution_id``/``execution_status``/``execution_url`` fields and
+    ``"status": "triggered"`` for backwards compatibility.
+
+    Deduplication: redelivered payloads carrying the same commit SHA as a
+    still-running execution of this flow return that execution with
+    ``"deduplicated": true`` instead of creating a duplicate. Commit-less
+    payloads (e.g. GlitchTip alerts) are coalesced on a resource key derived
+    from ``webhook_config.dedupe_path`` or the default paths
+    ``attachments.0.title_link`` / ``data.issue.id``; payloads with neither
+    identity are never deduplicated.
     """
     # Get the flow without account filtering
     flow = crud_flow.get(db=db, id=flow_id)
@@ -1150,8 +1796,17 @@ async def trigger_flow_via_webhook(
         payload = {}
 
     # Trigger flow execution with webhook payload
-    from preloop.services.flow_trigger_service import FlowTriggerService
+    import logging
 
+    from fastapi.responses import JSONResponse
+
+    from preloop.config import settings
+    from preloop.services.flow_trigger_service import (
+        FlowDispatchError,
+        FlowTriggerService,
+    )
+
+    logger = logging.getLogger(__name__)
     trigger_service = FlowTriggerService(db)
 
     # Create event data from webhook payload
@@ -1162,7 +1817,101 @@ async def trigger_flow_via_webhook(
         "account_id": str(flow.account_id),
     }
 
-    # Process the event (will trigger flow execution)
-    await trigger_service.process_event(event_data)
+    def _execution_url(execution_id: str) -> str:
+        # Built from settings.preloop_url; self-hosted deployments where the
+        # console lives on a different origin must set PRELOOP_URL (same
+        # pattern as flow_orchestrator and agents/container).
+        return f"{settings.preloop_url}/console/flows/executions/{execution_id}"
 
-    return {"status": "triggered", "flow_id": str(flow_id)}
+    def _response_body(
+        execution_id: str,
+        execution_status: str,
+        *,
+        status: str = "triggered",
+        deduplicated: bool = False,
+    ) -> Dict[str, Any]:
+        # `execution` mirrors the /flows/{flow_id}/trigger response shape;
+        # the flat execution_* fields and "status": "triggered" are kept for
+        # backwards compatibility with existing webhook callers.
+        return {
+            "status": status,
+            "flow_id": str(flow_id),
+            "deduplicated": deduplicated,
+            "execution": {
+                "id": execution_id,
+                "status": execution_status,
+                "flow_id": str(flow_id),
+            },
+            "execution_id": execution_id,
+            "execution_status": execution_status,
+            "execution_url": _execution_url(execution_id),
+        }
+
+    # Enforce the addressed flow's trigger_config policy explicitly. Unlike
+    # the old generic-matching path (process_event), a mismatch is an
+    # explicit 422 rather than a silent skip that still reports success.
+    if not trigger_service.matches_trigger_config(flow, event_data):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Webhook payload does not match trigger_config for flow "
+                f"{flow_id}. Configured filter: {flow.trigger_config}. "
+                "No execution was created. Adjust the payload or the flow's "
+                "trigger_config."
+            ),
+        )
+
+    # Preserve commit-SHA deduplication for direct triggers: a redelivered
+    # webhook (at-least-once delivery, CI retries) for the same repo + commit
+    # returns the EXISTING execution instead of creating a duplicate — and
+    # never a bare skip.
+    duplicate = trigger_service.find_duplicate_execution(flow, event_data)
+    if duplicate is not None:
+        logger.info(
+            f"Webhook for flow {flow_id} deduplicated to existing execution "
+            f"{duplicate.id} (status {duplicate.status})"
+        )
+        return _response_body(str(duplicate.id), duplicate.status, deduplicated=True)
+
+    # Trigger this specific flow directly. The flow was already resolved and
+    # validated above (id + secret + enabled + webhook source) and its
+    # trigger_config checked, so we must not route through generic event
+    # matching (process_event), which can silently skip the flow or swallow
+    # errors while this endpoint still reports success.
+    try:
+        result = await trigger_service.trigger_flow(
+            flow_id=flow_id,
+            test_mode=False,
+            trigger_event_data=event_data,
+        )
+    except FlowDispatchError as e:
+        # The execution row was committed before dispatch failed: report 202
+        # with the execution id so callers can poll, and do NOT claim that no
+        # execution was created (a blind retry would duplicate it — though
+        # commit-SHA dedup above also guards redelivery).
+        logger.error(
+            f"Webhook trigger for flow {flow_id} created execution "
+            f"{e.execution_id} but dispatch failed: {e.original}",
+            exc_info=True,
+        )
+        body = _response_body(e.execution_id, e.execution_status, status="accepted")
+        body["detail"] = (
+            f"Execution {e.execution_id} was created but could not be "
+            "dispatched yet. It remains queued; poll execution_url or retry "
+            "it from the console. Do not re-send this webhook."
+        )
+        return JSONResponse(status_code=202, content=body)
+    except Exception as e:
+        logger.error(
+            f"Webhook trigger failed to create execution for flow {flow_id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Webhook received but no execution could be created for "
+                f"flow {flow_id}. Check server logs for details."
+            ),
+        )
+
+    return _response_body(result["id"], result["status"])

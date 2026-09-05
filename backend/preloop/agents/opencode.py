@@ -12,9 +12,52 @@ from aiodocker.exceptions import DockerError
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.services.model_runtime_resolver import gateway_url_for_api
 
+from .completion_nudge import (
+    AGENT_OUTPUT_LOG_PATH,
+    NUDGE_PROMPT_PATH,
+    build_completion_nudge_block,
+    completion_nudge_enabled,
+    completion_nudge_timeout_seconds,
+)
 from .container import ContainerAgentExecutor
+from .images import default_agent_image
 
 logger = logging.getLogger(__name__)
+
+
+def _opencode_llm_timeout_ms() -> int:
+    """
+    Whole-request LLM timeout injected into OpenCode's provider options.
+
+    OpenCode aborts any in-flight LLM request once ``provider.<id>.options.
+    timeout`` (milliseconds) elapses — the value is wrapped in an
+    ``AbortSignal.timeout`` around every provider fetch
+    (packages/opencode/src/provider/provider.ts, present in v1.2.6 baked into
+    the sandbox image and in the ``opencode-ai@latest`` build the runtime
+    script installs). The previous hardcoded 120_000 ms sat far below the rest
+    of the stack — the gateway proxy readTimeout is 900 s and the MCP tool
+    timeout is 600 s — so real-but-slow upstream calls (30k+ token prompts
+    observed completing 20-35 s *after* OpenCode had already aborted at ~120 s)
+    became fatal "The operation timed out." mid-review failures while the
+    tokens were still billed upstream.
+
+    Aligned with the MCP tool timeout (600 s) and kept under the gateway
+    proxy's 900 s so gateway-side timeouts still surface as HTTP errors
+    (retryable) rather than client aborts. Override via
+    ``OPENCODE_LLM_TIMEOUT_SEC``. A malformed override falls back to the
+    default rather than failing the whole run at config-build time.
+    """
+    raw = os.getenv("OPENCODE_LLM_TIMEOUT_SEC", "600")
+    try:
+        seconds = int(raw)
+        if seconds <= 0:
+            raise ValueError
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "Invalid OPENCODE_LLM_TIMEOUT_SEC=%r; using default 600s", raw
+        )
+        seconds = 600
+    return seconds * 1000
 
 
 def _opencode_provider_local_model_id(model: str, provider: str) -> str:
@@ -45,6 +88,16 @@ class OpenCodeAgent(ContainerAgentExecutor):
     supports any LLM configured by the user.
     """
 
+    # OpenCode sessions are one-shot containers, so "resume" is a fresh
+    # invocation with prior context — validated for the orchestrator's
+    # completion-confirmation round (see AgentExecutor for semantics).
+    supports_confirmation_nudge = True
+
+    # `opencode run --continue` re-enters the last session of the current
+    # project directory, so the completion reminder happens in the container
+    # that just ran, with the workspace and the conversation still in place.
+    supports_inplace_completion_nudge = True
+
     def __init__(self, config: Dict[str, Any]):
         """
         Initialize OpenCode agent.
@@ -54,7 +107,7 @@ class OpenCodeAgent(ContainerAgentExecutor):
                 - model: Model identifier to use (required, no default)
                 - custom settings for OpenCode CLI
         """
-        image = os.getenv("OPENCODE_IMAGE", "docker/sandbox-templates:opencode")
+        image = default_agent_image("opencode") or "docker/sandbox-templates:opencode"
 
         # Auto-detect Kubernetes environment or use explicit env var
         use_k8s = self._detect_kubernetes_environment()
@@ -244,7 +297,12 @@ class OpenCodeAgent(ContainerAgentExecutor):
         # Container configuration
         container_config = {
             "Image": self.image,
-            "Env": [f"{k}={v}" for k, v in env.items()],
+            "Env": [
+                f"{k}={v}"
+                for k, v in self._apply_git_credential_env(
+                    env, execution_context
+                ).items()
+            ],
             "Cmd": ["/bin/bash", "-c", script],
             "WorkingDir": working_dir,
             "Labels": {
@@ -355,6 +413,28 @@ fi
         # Base64-encode the prompt so it can be safely embedded in
         # the shell script without heredoc delimiter injection risk.
         prompt_b64 = base64.b64encode(prompt.encode()).decode()
+
+        # In-place completion nudge, emitted BEFORE the post-execution git
+        # block so it can never re-run a push. `opencode run --continue`
+        # re-enters the session that just ran, in this container and this
+        # workspace, so the reminder costs one short exchange instead of a
+        # second container, a second clone and a second Job name.
+        completion_nudge_block = ""
+        if completion_nudge_enabled(execution_context):
+            completion_nudge_block = build_completion_nudge_block(
+                agent_label="opencode",
+                exit_code_var="OPENCODE_EXIT_CODE",
+                resume_probe="opencode run --help 2>&1 | grep -q -- '--continue'",
+                resume_command=(
+                    "$PRELOOP_NUDGE_TIMEOUT opencode run --continue "
+                    "--format json --print-logs --log-level WARN "
+                    f"--model {opencode_model_arg} --dangerously-skip-permissions "
+                    f'-- "$(cat {NUDGE_PROMPT_PATH})" 2>&1 '
+                    "| node /tmp/opencode-json-log-filter.js "
+                    f'| tee -a "{AGENT_OUTPUT_LOG_PATH}"'
+                ),
+                timeout_seconds=completion_nudge_timeout_seconds(),
+            )
 
         # Create the full script
         script = f"""
@@ -504,8 +584,14 @@ echo "PRELOOP_AGENT_EXEC_START"
 # directly, we should switch to that instead of positional args $(cat ...) to avoid E2BIG on very large prompts.
 # Auto-approve all permission requests to avoid hangs.
 # We use '--' to prevent argument injection if the prompt starts with a hyphen.
+# --print-logs/--log-level WARN: surface opencode's internal logs on stderr —
+# without this, fatal errors only land in log files inside the container and
+# failures are undiagnosable from the captured log stream (issue #212).
+# 2>&1 merges stderr into the filter pipe; the filter passes non-JSON lines
+# through verbatim, so stderr text reaches the execution log in order.
 set +e
-opencode run --format json --model {opencode_model_arg} --dangerously-skip-permissions -- "$(cat /tmp/prompt.txt)" | node /tmp/opencode-json-log-filter.js
+: > "{AGENT_OUTPUT_LOG_PATH}"
+opencode run --format json --print-logs --log-level WARN --model {opencode_model_arg} --dangerously-skip-permissions -- "$(cat /tmp/prompt.txt)" 2>&1 | node /tmp/opencode-json-log-filter.js | tee -a "{AGENT_OUTPUT_LOG_PATH}"
 PIPE_CODES=("${{PIPESTATUS[@]}}")
 OPENCODE_EXIT_CODE=${{PIPE_CODES[0]}}
 FILTER_EXIT_CODE=${{PIPE_CODES[1]:-0}}
@@ -521,11 +607,50 @@ echo ""
 echo "=================================================="
 echo "OpenCode CLI exited with code: $OPENCODE_EXIT_CODE"
 echo "=================================================="
-{post_exec_block}
+{completion_nudge_block}{post_exec_block}
 # Exit with opencode's exit code
 exit $OPENCODE_EXIT_CODE
 """
         return script
+
+    def _build_provider_models_map(
+        self,
+        primary_local_id: str,
+        primary_model: str,
+        effective_provider: str,
+        execution_context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Build the provider ``models`` map for opencode.json.
+
+        When the execution context carries ``authorized_gateway_models``
+        (populated by the flow orchestrator from the account's full
+        gateway-enabled inventory), every authorized model is registered so
+        OpenCode's ``/models`` picker shows them all.  The primary model is
+        always included even if the list is absent or empty.
+
+        Args:
+            primary_local_id: Provider-local id of the primary model.
+            primary_model: Original (possibly qualified) primary model name.
+            effective_provider: The provider id used in the config.
+            execution_context: Execution context (may carry
+                ``authorized_gateway_models``).
+
+        Returns:
+            ``{local_id: {"name": display_name}, ...}`` dict.
+        """
+        models: Dict[str, Any] = {primary_local_id: {"name": primary_model}}
+
+        authorized: list[dict] = execution_context.get("authorized_gateway_models", [])
+        for entry in authorized:
+            alias = entry.get("alias", "")
+            if not alias:
+                continue
+            local_id = _opencode_provider_local_model_id(alias, effective_provider)
+            if not local_id or local_id in models:
+                continue
+            models[local_id] = {"name": entry.get("display_name") or alias}
+
+        return models
 
     def _build_opencode_config(
         self,
@@ -589,6 +714,18 @@ exit $OPENCODE_EXIT_CODE
         # Without the slash, it treats the entire string as the provider.
         model_qualified = f"{effective_model_provider}/{model_local_id}"
 
+        mcp: Dict[str, Any] = {
+            "preloop": {
+                "type": "remote",
+                "url": "$PRELOOP_MCP_URL",
+                "headers": {
+                    "Authorization": "Bearer $PRELOOP_API_TOKEN",
+                },
+                "timeout": mcp_timeout_ms,
+                "enabled": True,
+            }
+        }
+
         config: Dict[str, Any] = {
             "$schema": "https://opencode.ai/config.json",
             "model": model_qualified,
@@ -597,24 +734,28 @@ exit $OPENCODE_EXIT_CODE
             "share": "disabled",
             "enabled_providers": [effective_model_provider],
             "permission": "allow",
-            "mcp": {
-                "preloop": {
-                    "type": "remote",
-                    "url": "$PRELOOP_MCP_URL",
-                    "headers": {
-                        "Authorization": "Bearer $PRELOOP_API_TOKEN",
-                    },
-                    "timeout": mcp_timeout_ms,
-                    "enabled": True,
-                }
-            },
+            "mcp": mcp,
         }
+
+        # Build the full provider models map.  When authorized_gateway_models
+        # is present in the execution context all authorized models are
+        # registered so OpenCode's model picker shows them.  The primary
+        # model is always included regardless.
+        provider_models = self._build_provider_models_map(
+            model_local_id, model, effective_model_provider, execution_context
+        )
 
         # Add provider configuration for custom/non-builtin endpoints.
         # OpenCode schema requires:
-        #   npm   – AI SDK adapter package (e.g. "@ai-sdk/openai-compatible")
-        #   options.baseURL – API endpoint
-        #   models – map of model-id → {name}
+        #   npm   -- AI SDK adapter package (e.g. "@ai-sdk/openai-compatible")
+        #   options.baseURL -- API endpoint
+        #   models -- map of model-id -> {name}
+        # ``timeout`` is OpenCode's whole-request LLM abort (see
+        # _opencode_llm_timeout_ms); ``chunkTimeout`` is the SSE inter-chunk
+        # inactivity abort in opencode >= 1.18 (ignored by older builds) and
+        # gets the same budget so a long silent reasoning phase between
+        # chunks is not treated as a dead stream.
+        llm_timeout_ms = _opencode_llm_timeout_ms()
         if model_endpoint:
             if gateway_enabled and model_provider in ("google", "gemini"):
                 config["provider"] = {
@@ -623,12 +764,10 @@ exit $OPENCODE_EXIT_CODE
                         "options": {
                             "baseURL": model_endpoint,
                             "apiKey": "$OPENAI_API_KEY",
-                            "timeout": 120000,
-                            "chunkTimeout": 120000,
+                            "timeout": llm_timeout_ms,
+                            "chunkTimeout": llm_timeout_ms,
                         },
-                        "models": {
-                            model_local_id: {"name": model},
-                        },
+                        "models": provider_models,
                     }
                 }
             elif not gateway_enabled and model_provider in ("google", "gemini"):
@@ -638,12 +777,10 @@ exit $OPENCODE_EXIT_CODE
                         "options": {
                             "baseURL": model_endpoint,
                             "apiKey": "$GOOGLE_API_KEY",
-                            "timeout": 120000,
-                            "chunkTimeout": 120000,
+                            "timeout": llm_timeout_ms,
+                            "chunkTimeout": llm_timeout_ms,
                         },
-                        "models": {
-                            model_local_id: {"name": model},
-                        },
+                        "models": provider_models,
                     }
                 }
             else:
@@ -653,12 +790,10 @@ exit $OPENCODE_EXIT_CODE
                         "options": {
                             "baseURL": model_endpoint,
                             "apiKey": "$OPENAI_API_KEY",
-                            "timeout": 120000,
-                            "chunkTimeout": 120000,
+                            "timeout": llm_timeout_ms,
+                            "chunkTimeout": llm_timeout_ms,
                         },
-                        "models": {
-                            model_local_id: {"name": model},
-                        },
+                        "models": provider_models,
                     }
                 }
 

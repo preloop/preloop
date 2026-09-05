@@ -231,10 +231,11 @@ func maybeRemoveStaleOpenClawPluginEntries(
 var openClawEnvPattern = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
 var opencodeEnvPattern = regexp.MustCompile(`^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$`)
 var opencodeBearerEnvPattern = regexp.MustCompile(`^[Bb]earer\s+\{env:([A-Za-z_][A-Za-z0-9_]*)\}$`)
+
 // managedGatewayLLMLogPattern matches OpenCode's model-usage log lines across
-// log-format generations: older builds tagged LLM calls with ``service=llm``,
-// while 1.18+ logs streaming requests as ``message=stream`` — both carry
-// ``providerID=<provider> modelID=<model>`` pairs.
+// log-format generations: older builds tagged LLM calls with “service=llm“,
+// while 1.18+ logs streaming requests as “message=stream“ — both carry
+// “providerID=<provider> modelID=<model>“ pairs.
 var managedGatewayLLMLogPattern = regexp.MustCompile(
 	`(?:service=llm|message=stream) providerID=([^\s]+) modelID=([^\s]+)`,
 )
@@ -302,6 +303,10 @@ type managedEnrollmentOptions struct {
 	// would-prompt tool calls to Preloop's mobile/watch approval flow. Off by
 	// default; enabled via `preloop agents onboard --approvals`.
 	Approvals bool
+	// PreferredModel is the operator-selected managed model alias from
+	// ``--model``. When set, the interactive model picker is skipped and this
+	// alias is used for gateway onboarding.
+	PreferredModel string
 	// AgentPrepared marks that the caller already ran
 	// prepareAgentForEnrollment on the agent (display name confirmed,
 	// runtime principal generated). executeManagedEnrollment must not run
@@ -343,6 +348,7 @@ type aiModelResponse struct {
 	CredentialType      string                 `json:"credential_type"`
 	CredentialsSecretID string                 `json:"credentials_secret_id"`
 	HasAPIKey           bool                   `json:"has_api_key"`
+	IsDefault           bool                   `json:"is_default"`
 }
 
 type aiModelCreateRequest struct {
@@ -398,7 +404,11 @@ type managedGatewayUpstream struct {
 	CredentialPayload map[string]interface{}
 	UsesAmbientAuth   bool
 	ManagedModelAlias string
-	Notes             []string
+	// AllowServerCredentialReuse lets an explicit operator model pick reuse a
+	// credential already stored on the matching account AI model, even for
+	// agent kinds that do not otherwise qualify for Claude-style OAuth reuse.
+	AllowServerCredentialReuse bool
+	Notes                      []string
 }
 
 func (u *managedGatewayUpstream) CanRouteThroughGateway() bool {
@@ -508,7 +518,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	// to MCP-only hides the choice from the operator. Non-interactive runs
 	// (--yes / --dry-run / PRELOOP_CONFIRM) keep the degrade behavior; the
 	// preview note explains how to resolve it.
-	gatewayHints := managedGatewayResolutionHints{}
+	gatewayHints := managedGatewayResolutionHints{
+		PreferredModelAlias: strings.TrimSpace(opts.PreferredModel),
+	}
 	if supportsManagedGateway(agent) &&
 		!opts.DryRun &&
 		!opts.AutoApprove &&
@@ -523,6 +535,25 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			return promptErr
 		}
 		gatewayHints.PreferredProviderID = selectedProvider
+	}
+	if supportsManagedGateway(agent) {
+		inferredForPicker, pickerErr := resolveManagedGatewayUpstreamWithHints(agent, gatewayHints)
+		if pickerErr != nil {
+			return pickerErr
+		}
+		selectedAlias, selectedModel, selectErr := resolveManagedModelSelection(
+			client,
+			agent,
+			inferredForPicker,
+			opts,
+		)
+		if selectErr != nil {
+			return selectErr
+		}
+		if selectedAlias != "" {
+			gatewayHints.PreferredModelAlias = selectedAlias
+			gatewayHints.SelectedAIModel = selectedModel
+		}
 	}
 
 	plan, err := buildManagedMCPEnrollmentPlan(
@@ -541,6 +572,11 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		if upstreamErr != nil {
 			return upstreamErr
 		}
+		upstream = applySelectedModelToUpstream(
+			upstream,
+			gatewayHints.PreferredModelAlias,
+			gatewayHints.SelectedAIModel,
+		)
 		if upstream != nil {
 			plan.Notes = append(plan.Notes, upstream.Notes...)
 		}
@@ -638,12 +674,27 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 
 	allowedServers := append([]string{}, serverSync.Added...)
 	allowedServers = append(allowedServers, serverSync.Reused...)
+	prepared, existingManaged, err := ensureManagedAgentIdentityReady(
+		client,
+		agent,
+		opts.AutoApprove,
+		agentsNoReuseIdentity,
+		input,
+		output,
+	)
+	if err != nil {
+		return err
+	}
+	agent = prepared
+	syncAgent = prepareAgentForRemoteServerSync(agent, baseURL)
 	runtimeSession, err := issueRuntimeSessionToken(client, syncAgent, allowedServers)
 	if err != nil {
 		return fmt.Errorf("failed to bootstrap managed agent identity: %w", err)
 	}
 
-	managedAgent, err := getManagedAgentForDiscovered(client, agent)
+	// Prefer GET-by-id when identity prep already resolved the agent so
+	// onboard does not issue a second full /api/v1/agents list.
+	managedAgent, err := resolveManagedAgentAfterBootstrap(client, agent, existingManaged)
 	if err != nil {
 		return err
 	}
@@ -710,6 +761,11 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		if upstreamErr != nil {
 			return upstreamErr
 		}
+		upstream = applySelectedModelToUpstream(
+			upstream,
+			gatewayHints.PreferredModelAlias,
+			gatewayHints.SelectedAIModel,
+		)
 		if upstream != nil {
 			plan.Notes = append(plan.Notes, upstream.Notes...)
 		}
@@ -864,6 +920,15 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		if err := installApprovalHooks(agent, baseURL, credentialResp.Token, output); err != nil {
 			return err
 		}
+		if permissionSourceForAgent(agent) == permissionSourceClaudeCode {
+			// Headless (claude -p) governance: enable the default-disabled
+			// permission_prompt builtin for exactly this agent so the rest
+			// of the account's MCP clients keep paying zero context for it.
+			if err := enablePermissionPromptBuiltin(client, managedAgent.ID, output); err != nil {
+				// Non-fatal: hook-based approvals above already applied.
+				fmt.Fprintf(output, "  Warning: %v\n", err) //nolint:errcheck
+			}
+		}
 	}
 	pluginInstallResult := installAgentControlRuntimePlugin(agent, output)
 	gatewayRestartResult := restartHermesGatewayAfterReconfig(agent, output)
@@ -948,17 +1013,57 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		validationResult["live_validation_status"] = "pending"
 	}
 
+	// The agent's governance may restrict allowed models. Surface a mismatch
+	// with the alias we are about to route (and offer to fix it) before the
+	// live check turns it into an opaque 403. Dry runs returned right after
+	// printing the plan, so only the confirmation flags decide interactivity.
+	if supportsManagedGateway(agent) && strings.TrimSpace(plan.ManagedModelAlias) != "" {
+		interactiveAllowlist := !opts.AutoApprove &&
+			!opts.SkipConfirmation &&
+			!nonInteractiveAutoConfirm() &&
+			stdinIsTerminal()
+		if err := ensureSelectedModelAllowed(
+			client,
+			managedAgent.ID,
+			plan.ManagedModelAlias,
+			gatewayHints.SelectedAIModel,
+			input,
+			output,
+			interactiveAllowlist,
+		); err != nil {
+			return err
+		}
+	}
+
 	var liveValidationErr error
 	liveValidationGatewayVerified := false
 	liveValidationKeepsGatewayConfig := false
 	liveValidationRolledBack := false
+	var liveValidationDuration time.Duration
 	if requestedLiveValidation {
+		fmt.Fprint(output, "Sending test prompt through gateway...") //nolint:errcheck
+		started := time.Now()
 		liveOutcome, err := runManagedAgentLiveValidation(client, agent, validationResult)
+		liveValidationDuration = time.Since(started)
 		if liveOutcome != nil && len(liveOutcome.ValidationResult) > 0 {
 			validationResult = liveOutcome.ValidationResult
 		}
 		liveValidationGatewayVerified = liveValidationStatusGatewayVerified(validationResult)
 		liveValidationKeepsGatewayConfig = liveValidationStatusKeepsGatewayConfig(validationResult)
+		modelAlias := strings.TrimSpace(plan.ManagedModelAlias)
+		if alias, _ := validationResult["live_validation_model_alias"].(string); strings.TrimSpace(alias) != "" {
+			modelAlias = strings.TrimSpace(alias)
+		}
+		printLiveValidationRoundTripResult(
+			output,
+			liveOutcome,
+			err,
+			modelAlias,
+			liveValidationDuration,
+		)
+		if hint := allowedModelsLiveCheckHint(agent, liveOutcome, err); hint != "" {
+			fmt.Fprintln(output, formatCLIError(hint)) //nolint:errcheck
+		}
 		if liveOutcome != nil && liveOutcome.Attempted {
 			// A probe the upstream provider refused (rate limit, billing) is
 			// inconclusive, not a failure: the static config checks passed and
@@ -1106,6 +1211,11 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 	fmt.Printf("  Config updated: %s\n", agent.ConfigPath)
 	fmt.Printf("  Backup saved: %s\n", backupState.BackupPath)
+	printOnboardingFollowUpCommands(
+		output,
+		resolveAgentDisplayName(agent),
+		backupState.BackupPath,
+	)
 	if liveValidationErr != nil && liveValidationRolledBack {
 		// The gateway routing was reverted to the pre-onboarding provider, so
 		// ``preloop agents validate <agent> --live`` can never succeed anymore
@@ -1186,8 +1296,8 @@ func onboardingCompletionHeadline(
 // liveValidationRollbackError marks an enrollment whose live validation
 // failed hard enough that the managed model gateway configuration was rolled
 // back to the pre-onboarding provider. MCP onboarding remains applied, but
-// managed model routing is NOT active and ``preloop agents validate <agent>
-// --live`` can never succeed until the agent is re-onboarded. Single-agent
+// managed model routing is NOT active and “preloop agents validate <agent>
+// --live“ can never succeed until the agent is re-onboarded. Single-agent
 // invocations must exit non-zero on this error; batch flows record the agent
 // as failed in the summary.
 type liveValidationRollbackError struct {
@@ -1715,12 +1825,11 @@ func shouldPreferCurrentConfigForGatewayResolution(agent AgentConfig, current ma
 }
 
 // managedGatewayResolutionHints carries operator-supplied disambiguation for
-// upstream resolution. Today the only hint is a preferred provider ID for
-// agents whose local state is ambiguous (e.g. OpenCode with several auth
-// profiles and no configured or recently-used model); resolvers ignore hints
-// they do not need.
+// upstream resolution. Resolvers ignore hints they do not need.
 type managedGatewayResolutionHints struct {
 	PreferredProviderID string
+	PreferredModelAlias string
+	SelectedAIModel     *aiModelResponse
 }
 
 func resolveManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstream, error) {
@@ -2031,7 +2140,7 @@ func parseGeminiManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 	}
 	apiKey, apiKeyNote := resolveGeminiAPIKey(document)
 	if apiKeyNote != "" {
-		notes = append(notes, apiKeyNote)
+		notes = append(notes, publicPlanNote(apiKeyNote))
 	}
 	if modelRef == "" && apiKey != "" {
 		modelRef = geminiDefaultManagedModel
@@ -2222,7 +2331,7 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 		)
 	}
 	if apiKeyNote != "" {
-		notes = append(notes, apiKeyNote)
+		notes = append(notes, publicPlanNote(apiKeyNote))
 	}
 	if apiKey == "" && !claudeSubscriptionOAuthDetected {
 		if resolveClaudeOAuthEmail() != "" {
@@ -2344,12 +2453,18 @@ func upstreamEligibleForServerCredentialReuse(
 	agent AgentConfig,
 	upstream *managedGatewayUpstream,
 ) bool {
-	if upstream == nil || !isClaudeCodeAgent(agent) {
+	if upstream == nil {
 		return false
 	}
-	return strings.TrimSpace(upstream.ProviderName) != "" &&
-		strings.TrimSpace(upstream.ModelIdentifier) != "" &&
-		strings.TrimSpace(upstream.ManagedModelAlias) != ""
+	if strings.TrimSpace(upstream.ProviderName) == "" ||
+		strings.TrimSpace(upstream.ModelIdentifier) == "" ||
+		strings.TrimSpace(upstream.ManagedModelAlias) == "" {
+		return false
+	}
+	if upstream.AllowServerCredentialReuse {
+		return true
+	}
+	return isClaudeCodeAgent(agent)
 }
 
 // serverHasReusableGatewayCredential checks (best-effort, read-only) whether
@@ -2649,7 +2764,7 @@ func resolveGeminiKeyringAPIKey() (string, string) {
 	}
 	if apiKey := extractGeminiAPIKeyFromCredentialBlob(raw); apiKey != "" {
 		return apiKey, fmt.Sprintf(
-			"Resolved Gemini CLI API key from OS secure storage (service: %s, account: %s).",
+			"Resolved Gemini CLI API key from OS secure storage (service: %q, account: %q).",
 			geminiAPIKeyServiceName,
 			geminiAPIKeyAccountName,
 		)
@@ -2872,7 +2987,7 @@ func resolveClaudeManagedAPIKey() (string, string) {
 	if runtime.GOOS == "darwin" {
 		if user := strings.TrimSpace(os.Getenv("USER")); user != "" {
 			if token, err := keyring.Get("Claude Code", user); err == nil && strings.TrimSpace(token) != "" {
-				return strings.TrimSpace(token), "Resolved Claude Code managed API key from OS Keychain (service: Claude Code)."
+				return strings.TrimSpace(token), "Resolved Claude Code managed API key from OS Keychain (service: \"Claude Code\")."
 			}
 		}
 	}
@@ -2921,7 +3036,7 @@ func resolveClaudeKeychainToken() (string, string) {
 	}
 	if raw := readClaudeKeychainCredentialBlob(); raw != "" {
 		if token := extractClaudeTokenFromCredentialBlob(raw); token != "" {
-			return token, "Resolved Claude Code auth token from OS Keychain (service: Claude Code-credentials)."
+			return token, "Resolved Claude Code auth token from OS Keychain (service: \"Claude Code-credentials\")."
 		}
 	}
 	candidates := []string{}
@@ -2948,7 +3063,7 @@ func resolveClaudeKeychainToken() (string, string) {
 		}
 		if token := extractClaudeTokenFromCredentialBlob(secret); token != "" {
 			return token, fmt.Sprintf(
-				"Resolved Claude Code auth token from OS Keychain (service: Claude Code-credentials, account: %s).",
+				"Resolved Claude Code auth token from OS Keychain (service: \"Claude Code-credentials\", account: %s).",
 				account,
 			)
 		}
@@ -3039,7 +3154,7 @@ func resolveClaudeKeychainOAuthCredential() (*claudeOAuthCredential, string) {
 			raw,
 			time.Now().UTC().Add(time.Hour).UnixMilli(),
 		); credential != nil {
-			return credential, "Resolved Claude Code OAuth credentials from OS Keychain (service: Claude Code-credentials)."
+			return credential, "Resolved Claude Code OAuth credentials from OS Keychain (service: \"Claude Code-credentials\")."
 		}
 	}
 	return nil, ""
@@ -3631,7 +3746,7 @@ func readCodexKeychainOAuthCredential() (*codexOAuthCredential, string) {
 		return nil, ""
 	}
 	return credential, fmt.Sprintf(
-		"Resolved Codex ChatGPT OAuth credentials from OS Keychain (service: Codex Auth, account: %s).",
+		"Resolved Codex ChatGPT OAuth credentials from OS Keychain (service: \"Codex Auth\", account: %s).",
 		account,
 	)
 }
@@ -3859,7 +3974,7 @@ func buildOpenClawManagedMCPEnrollmentPlan(
 
 func supportsAgentControlChannel(agent AgentConfig) bool {
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
-	case "openclaw", hermesSourceType:
+	case "openclaw", hermesSourceType, "claude code":
 		return true
 	default:
 		return false
@@ -3956,6 +4071,15 @@ func applyManagedAgentControlConfig(
 		runtimeSession,
 	)
 	applyAgentControlConfigToDocument(plan.Agent, plan.ManagedDocument, control)
+	if runtimeSessionSourceTypeForAgent(plan.Agent.Name) == "claude_code" {
+		if err := writeClaudePreloopControlFile(control); err != nil {
+			return plan, err
+		}
+		plan.Notes = append(
+			plan.Notes,
+			"Claude Code Agent Control config written to ~/.claude/preloop-control.json. Run `preloop claude` instead of `claude` for remote steer.",
+		)
+	}
 	plan.ManagedControlWSURL = lookupString(control, "control_ws_url")
 	plan.Notes = append(
 		plan.Notes,
@@ -3983,8 +4107,41 @@ func applyAgentControlConfigToDocument(
 		ensureOpenClawPluginAllowlisted(doc)
 		return
 	}
+	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
+		// Claude Code settings.json is reserved for Claude's own schema.
+		// Control lives in ~/.claude/preloop-control.json (written separately).
+		return
+	}
 	preloop := ensureObjectPath(doc, "preloop")
 	preloop["control"] = control
+}
+
+func writeClaudePreloopControlFile(control map[string]interface{}) error {
+	path := claudeControlConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	payload := map[string]interface{}{"control": control}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}
+
+func readClaudePreloopControlFile() (map[string]interface{}, bool) {
+	data, err := os.ReadFile(claudeControlConfigPath())
+	if err != nil {
+		return nil, false
+	}
+	var document map[string]interface{}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return nil, false
+	}
+	if control, ok := asObjectMap(document["control"]); ok {
+		return control, true
+	}
+	return asObjectMap(document)
 }
 
 // ensureOpenClawPluginAllowlisted makes OpenClaw's plugin trust gate
@@ -4155,6 +4312,9 @@ func agentControlConfigFromDocument(
 		}
 		return nil, false
 	}
+	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
+		return readClaudePreloopControlFile()
+	}
 	preloop, ok := asObjectMap(doc["preloop"])
 	if !ok {
 		return nil, false
@@ -4169,6 +4329,8 @@ func agentControlPluginPackageName(agent AgentConfig) string {
 		return "preloop-hermes-plugin"
 	case "openclaw":
 		return "@preloop-ai/openclaw-plugin"
+	case "claude_code":
+		return "@preloop-ai/claude-plugin"
 	default:
 		return ""
 	}
@@ -4181,6 +4343,8 @@ func agentControlPluginVerifyCommand(agent AgentConfig) string {
 		return "preloop-hermes-plugin"
 	case "openclaw":
 		return "preloop-openclaw-plugin"
+	case "claude_code":
+		return "preloop-claude-plugin"
 	default:
 		return ""
 	}
@@ -4192,6 +4356,8 @@ func agentControlPluginInstallerCommand(agent AgentConfig) string {
 		return "hermes"
 	case "openclaw":
 		return "openclaw"
+	case "claude_code":
+		return "npm"
 	default:
 		return ""
 	}
@@ -4253,6 +4419,8 @@ func agentControlPluginSourceDirName(agent AgentConfig) string {
 		return "hermes-preloop"
 	case "openclaw":
 		return "openclaw-preloop"
+	case "claude_code":
+		return "claude-preloop"
 	default:
 		return ""
 	}
@@ -4291,6 +4459,26 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	args := []string{"plugins", "install", installTarget}
+	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
+		cancel()
+		ctx, cancel = context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		args = []string{"install", "-g", installTarget}
+		// npm install -g <source folder> symlinks the folder as-is: it does
+		// not install the folder's devDependencies, so the TypeScript build
+		// (prepare script) cannot run and npm silently skips creating the
+		// preloop-claude-plugin bin link because dist/index.js is missing.
+		// Build the source first so the global install links a working bin.
+		if buildErr := buildClaudePluginSourceIfNeeded(installerPath, installTarget, writer); buildErr != nil {
+			result["control_plugin_install_status"] = "plugin_source_build_failed"
+			result["control_plugin_install_target"] = installTarget
+			result["control_plugin_install_error"] = buildErr.Error()
+			if writer != nil {
+				fmt.Fprintf(writer, "  Warning: Agent Control plugin source build failed: %s\n", buildErr) //nolint:errcheck
+			}
+			return mergeStringMaps(result, ensureManagedAgentControlSidecar(agent, writer))
+		}
+	}
 	output, err := exec.CommandContext(ctx, installerPath, args...).CombinedOutput()
 	result["control_plugin_install_status"] = "install_attempted"
 	result["control_plugin_install_target"] = installTarget
@@ -4515,6 +4703,50 @@ func agentControlPluginSourceCandidates(startPath, dirName string) []string {
 	return candidates
 }
 
+// buildClaudePluginSourceIfNeeded prepares a local claude-preloop source
+// checkout for a global npm install. It is a no-op when the install target is
+// the published package name or when dist/index.js is already built. For an
+// unbuilt source folder it installs the folder's dependencies (including
+// devDependencies, which hold the TypeScript compiler) and runs the build so
+// that npm install -g links the preloop-claude-plugin bin against a real
+// entry point.
+func buildClaudePluginSourceIfNeeded(npmPath, installTarget string, writer io.Writer) error {
+	info, err := os.Stat(installTarget)
+	if err != nil || !info.IsDir() {
+		// Registry package name, not a local source folder.
+		return nil
+	}
+	entry := filepath.Join(installTarget, "dist", "index.js")
+	if entryInfo, entryErr := os.Stat(entry); entryErr == nil && !entryInfo.IsDir() {
+		return nil
+	}
+	if writer != nil {
+		fmt.Fprintf(writer, "  Building Claude Agent Control plugin from source (%s)...\n", installTarget) //nolint:errcheck
+	}
+	steps := [][]string{
+		{"install", "--no-audit", "--no-fund"},
+		{"run", "build"},
+	}
+	for _, stepArgs := range steps {
+		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+		command := exec.CommandContext(ctx, npmPath, stepArgs...)
+		command.Dir = installTarget
+		output, runErr := command.CombinedOutput()
+		cancel()
+		if runErr != nil {
+			message := strings.TrimSpace(string(output))
+			if message == "" {
+				message = runErr.Error()
+			}
+			return fmt.Errorf("npm %s in %s failed: %s", strings.Join(stepArgs, " "), installTarget, message)
+		}
+	}
+	if entryInfo, entryErr := os.Stat(entry); entryErr != nil || entryInfo.IsDir() {
+		return fmt.Errorf("build completed but %s is still missing", entry)
+	}
+	return nil
+}
+
 func existingAgentControlPluginSource(path string) (string, bool) {
 	cleaned := filepath.Clean(path)
 	if info, err := os.Stat(cleaned); err == nil && info.IsDir() {
@@ -4555,14 +4787,18 @@ func verifyAgentControlRuntimePlugin(agent AgentConfig) map[string]interface{} {
 		return mergeStringMaps(result, managedAgentControlSidecarVerification(agent))
 	}
 	result["control_plugin_installed"] = true
-	if strings.TrimSpace(agent.ConfigPath) == "" {
+	configPath := agent.ConfigPath
+	if runtimeSessionSourceTypeForAgent(agent.Name) == "claude_code" {
+		configPath = claudeControlConfigPath()
+	}
+	if strings.TrimSpace(configPath) == "" {
 		result["control_plugin_verification"] = "installed_config_path_missing"
 		return result
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, path, "verify", "--config", agent.ConfigPath).CombinedOutput()
+	output, err := exec.CommandContext(ctx, path, "verify", "--config", configPath).CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))
 		if message == "" {
@@ -4774,6 +5010,8 @@ func managedAgentControlSidecarRuntime(agent AgentConfig) string {
 		return "hermes"
 	case "openclaw":
 		return "openclaw"
+	case "claude_code":
+		return "claude_code"
 	default:
 		return ""
 	}
@@ -5211,6 +5449,25 @@ func buildOpenClawManagedProvider(
 			modelEntry["name"] = configuredModel.ModelAlias
 		}
 		modelEntry["api"] = gatewayAPI
+		// OpenClaw computes a per-conversation `prompt_cache_key` and then
+		// STRIPS it for any Responses-API endpoint it classifies as
+		// "proxy-like", which every Preloop gateway URL is. The result is that
+		// OpenClaw's OpenAI transport arrives with no conversation id at all,
+		// so every conversation on a machine collapses onto one runtime
+		// session that never ends. `supportsPromptCacheKey: true` is the
+		// documented opt-out (it forces shouldStripResponsesPromptCache=false),
+		// and it also recovers upstream prompt-cache hit rate, which the strip
+		// was silently costing us. Merged after the catalog copy so an explicit
+		// operator setting still wins.
+		if compat, ok := modelEntry["compat"].(map[string]interface{}); ok {
+			if _, set := compat["supportsPromptCacheKey"]; !set {
+				compat["supportsPromptCacheKey"] = true
+			}
+		} else {
+			modelEntry["compat"] = map[string]interface{}{
+				"supportsPromptCacheKey": true,
+			}
+		}
 		modelEntries = append(modelEntries, modelEntry)
 	}
 
@@ -5415,6 +5672,75 @@ func syncOpenClawAIModels(
 	return bindings, notes, nil
 }
 
+// findManagedClaudeCodeOAuthSibling returns an existing managed Claude Code
+// AI model that already holds a live same-type OAuth SecretReference. Used
+// so a newly pinned family (e.g. a first-seen fable row) attaches that
+// secret instead of minting a second single-use refresh-token lineage.
+func findManagedClaudeCodeOAuthSibling(
+	existing []aiModelResponse,
+	agent AgentConfig,
+	managedAgent *managedAgentSummary,
+	credentialType string,
+	excludeID string,
+) *aiModelResponse {
+	if !isClaudeCodeAgent(agent) || !isOAuthCredentialType(credentialType) {
+		return nil
+	}
+	wantType := strings.TrimSpace(credentialType)
+	if wantType == "" {
+		return nil
+	}
+	var agentID string
+	if managedAgent != nil {
+		agentID = strings.TrimSpace(managedAgent.ID)
+	}
+	var fallback *aiModelResponse
+	for i := range existing {
+		model := &existing[i]
+		if excludeID != "" && strings.TrimSpace(model.ID) == strings.TrimSpace(excludeID) {
+			continue
+		}
+		if strings.TrimSpace(model.CredentialType) != wantType {
+			continue
+		}
+		if strings.TrimSpace(model.CredentialsSecretID) == "" {
+			continue
+		}
+		modelAgentID := ""
+		if model.MetaData != nil {
+			modelAgentID, _ = model.MetaData["managed_agent_id"].(string)
+			modelAgentID = strings.TrimSpace(modelAgentID)
+		}
+		if agentID != "" && modelAgentID == agentID {
+			return model
+		}
+		// A row tagged with a different managed agent belongs to another
+		// machine's login; never attach to (or overwrite) that lineage.
+		// This also holds when the caller has no managed agent yet: only
+		// untagged rows are eligible then.
+		if modelAgentID != "" {
+			continue
+		}
+		if fallback == nil {
+			fallback = model
+		}
+	}
+	return fallback
+}
+
+func applySharedClaudeCodeOAuthSecret(sibling *aiModelResponse) string {
+	if sibling == nil {
+		return ""
+	}
+	// Attach the sibling's live lineage. Never overwrite it from the local
+	// bundle: an access token can still be inside its window after the
+	// gateway has already consumed the single-use refresh token. Putting
+	// that cached bundle back onto the shared secret bricks every sibling
+	// (invalid_grant). Recovery of a dead lineage goes through the
+	// target-already-has-a-credential re-seed path, not this attach path.
+	return strings.TrimSpace(sibling.CredentialsSecretID)
+}
+
 func syncManagedGatewayAIModel(
 	client *api.Client,
 	managedAgent *managedAgentSummary,
@@ -5471,7 +5797,11 @@ func syncManagedGatewayAIModel(
 		if !equalJSONMap(target.MetaData, metaData) {
 			update["meta_data"] = metaData
 		}
-		if upstream.APIKey != "" && !target.HasAPIKey {
+		// An OAuth upstream is seeded via credential_type/credential_payload
+		// or a shared credentials_secret_id below; sending api_key alongside
+		// either would be rejected by the backend validator.
+		if upstream.APIKey != "" && !target.HasAPIKey &&
+			!isOAuthCredentialType(upstream.CredentialType) {
 			update["api_key"] = upstream.APIKey
 		}
 		// Re-seed the stored credential on re-onboard when the upstream
@@ -5493,7 +5823,23 @@ func syncManagedGatewayAIModel(
 		// downgrades every later onboarding to MCP-only. When the local
 		// bundle is expired and the account already holds a same-type OAuth
 		// credential, keep the account copy — the gateway can refresh it.
-		if len(upstream.CredentialPayload) > 0 &&
+		//
+		// A second exception: when this target has no credential yet but a
+		// sibling Claude Code row already holds the same-type OAuth secret,
+		// attach that secret instead of minting a second lineage.
+		sharedSibling := findManagedClaudeCodeOAuthSibling(
+			existing,
+			agent,
+			managedAgent,
+			upstream.CredentialType,
+			target.ID,
+		)
+		if !target.HasAPIKey && sharedSibling != nil {
+			sharedSecret := applySharedClaudeCodeOAuthSecret(sharedSibling)
+			if sharedSecret != "" {
+				update["credentials_secret_id"] = sharedSecret
+			}
+		} else if len(upstream.CredentialPayload) > 0 &&
 			(!target.HasAPIKey ||
 				strings.TrimSpace(target.CredentialType) != strings.TrimSpace(upstream.CredentialType) ||
 				(isOAuthCredentialType(upstream.CredentialType) &&
@@ -5564,6 +5910,21 @@ func syncManagedGatewayAIModel(
 		CredentialType:  upstream.CredentialType,
 		CredentialsJSON: upstream.CredentialPayload,
 		MetaData:        metaData,
+	}
+	if sharedSibling := findManagedClaudeCodeOAuthSibling(
+		existing,
+		agent,
+		managedAgent,
+		upstream.CredentialType,
+		"",
+	); sharedSibling != nil {
+		sharedSecret := applySharedClaudeCodeOAuthSecret(sharedSibling)
+		if sharedSecret != "" {
+			create.CredentialsSecretID = sharedSecret
+			create.APIKey = ""
+			create.CredentialType = ""
+			create.CredentialsJSON = nil
+		}
 	}
 
 	var created aiModelResponse
@@ -6031,6 +6392,10 @@ func detectWSLEnvironment(getenv func(string) string, procVersionPath string) bo
 func syncManagedAgentRuntimeArtifacts(agent AgentConfig, baseURL, token string) error {
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
 	case "gemini cli":
+		// Gemini CLI still honors GEMINI_API_KEY / GOOGLE_GEMINI_BASE_URL
+		// from the process environment even when settings.json is rewritten,
+		// so a PATH wrapper is the only way to inject gateway routing without
+		// asking the operator to export those variables in every shell.
 		return syncManagedAgentLauncher(
 			"gemini",
 			"gemini-cli.env",
@@ -6041,13 +6406,15 @@ func syncManagedAgentRuntimeArtifacts(agent AgentConfig, baseURL, token string) 
 			},
 		)
 	case "codex cli":
-		return syncManagedAgentLauncher(
-			"codex",
-			"codex-cli.env",
-			map[string]string{
-				"PRELOOP_TOKEN": token,
-			},
-		)
+		// Codex desktop onboarding is config-file only. Model routing uses
+		// experimental_bearer_token (not env_key); MCP uses inlined
+		// http_headers. Codex only requires a process env var when env_key
+		// or bearer_token_env_var is set — see applyCodexManagedGateway.
+		// A ~/.local/bin/codex wrapper that exported PRELOOP_TOKEN was a
+		// leftover of the Gemini launcher and of the flow runner's env_key
+		// pattern; it did not feed model auth, failed when ~/.local/bin was
+		// missing, and was shadowed by Homebrew. Remove leftovers.
+		return removeManagedAgentLauncher("codex", "codex-cli.env")
 	default:
 		return nil
 	}
@@ -6948,6 +7315,41 @@ func claudeUsesBedrock(document map[string]interface{}) bool {
 	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
+// claudeShellBedrockOverrideNotes warns when the CLI's own process
+// environment still carries CLAUDE_CODE_USE_BEDROCK. applyClaudeManagedGateway
+// neutralizes Bedrock routing inside settings.json's env block, but values
+// exported in the launching shell (or a shell rc file) survive onboarding and
+// can override what Preloop wrote, silently re-enabling direct-to-Bedrock
+// traffic that bypasses the gateway. AWS credential variables are inert
+// without the flag, so they are only listed alongside it.
+func claudeShellBedrockOverrideNotes() []string {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("CLAUDE_CODE_USE_BEDROCK")))
+	if value != "1" && value != "true" && value != "yes" && value != "on" {
+		return nil
+	}
+	awsKeys := []string{}
+	for _, key := range []string{
+		"AWS_BEARER_TOKEN_BEDROCK",
+		"AWS_ACCESS_KEY_ID",
+		"AWS_SECRET_ACCESS_KEY",
+		"AWS_SESSION_TOKEN",
+		"AWS_REGION",
+		"AWS_DEFAULT_REGION",
+	} {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			awsKeys = append(awsKeys, key)
+		}
+	}
+	note := "CLAUDE_CODE_USE_BEDROCK is exported in your current shell environment; it can override the gateway configuration Preloop just wrote and send Claude Code straight to Bedrock. Run `unset CLAUDE_CODE_USE_BEDROCK` and remove its export from your shell profile, then relaunch Claude Code."
+	if len(awsKeys) > 0 {
+		note += fmt.Sprintf(
+			" Also unset the exported %s so no direct Bedrock credentials remain.",
+			strings.Join(awsKeys, ", "),
+		)
+	}
+	return []string{note}
+}
+
 func augmentDocumentWithShellExports(
 	document map[string]interface{},
 	keys ...string,
@@ -7320,22 +7722,22 @@ func resolveOpenClawProviderAPIKey(
 
 		for _, account := range accountsToCheck {
 			if secret, err := keyring.Get("openclaw", account); err == nil && secret != "" {
-				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: openclaw, account: %s).", account)
+				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: \"openclaw\", account: %s).", account)
 			}
 
 			// Fallback check for "OpenClaw" capitalized service name
 			if secret, err := keyring.Get("OpenClaw", account); err == nil && secret != "" {
-				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: OpenClaw, account: %s).", account)
+				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: \"OpenClaw\", account: %s).", account)
 			}
 
 			// Fallback check for "openclaw-ai" NPM package service name
 			if secret, err := keyring.Get("openclaw-ai", account); err == nil && secret != "" {
-				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: openclaw-ai, account: %s).", account)
+				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: \"openclaw-ai\", account: %s).", account)
 			}
 
 			// Fallback check for "OpenClaw-AI" package service name
 			if secret, err := keyring.Get("OpenClaw-AI", account); err == nil && secret != "" {
-				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: OpenClaw-AI, account: %s).", account)
+				return secret, fmt.Sprintf("Resolved OpenClaw provider API key from OS Keychain (service: \"OpenClaw-AI\", account: %s).", account)
 			}
 		}
 

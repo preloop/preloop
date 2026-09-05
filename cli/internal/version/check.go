@@ -21,7 +21,7 @@ import (
 // Build-time variables (set via ldflags).
 var (
 	// Version is the current CLI version. Build pipelines can override this via ldflags.
-	Version = "0.13.1"
+	Version = "0.15.0"
 
 	// Commit is the git commit hash.
 	Commit = "unknown"
@@ -122,8 +122,7 @@ func CheckForUpdate() error {
 		_ = err
 	}
 
-	// Compare versions
-	if info.LatestVersion != "" && info.LatestVersion != Version && Version != "dev" {
+	if UpdateAvailable(Version, info.LatestVersion) {
 		displayUpdatePrompt(info)
 	}
 
@@ -329,21 +328,6 @@ func fetchLegacyVersionInfo(client *http.Client) (*VersionInfo, error) {
 	}
 
 	return &info, nil
-}
-
-// displayUpdatePrompt shows a message about the available update.
-func displayUpdatePrompt(info *VersionInfo) {
-	fmt.Println()
-	fmt.Println("╭─────────────────────────────────────────────────────────╮")
-	fmt.Printf("│  A new version of preloop is available: %s → %s  │\n", Version, info.LatestVersion)
-	fmt.Println("│                                                         │")
-	if info.DownloadURL != "" {
-		fmt.Printf("│  Download: %-45s │\n", info.DownloadURL)
-	} else {
-		fmt.Println("│  Run 'preloop update' to upgrade                        │")
-	}
-	fmt.Println("╰─────────────────────────────────────────────────────────╯")
-	fmt.Println()
 }
 
 // ForceCheck forces a version check regardless of the last check time.

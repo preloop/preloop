@@ -6,6 +6,7 @@ import { when } from 'lit/directives/when.js';
 import { getStatusVariant, getComplianceVariant } from '../utils/verdict';
 import { Issue, IssueComplianceResult } from '../types';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
+import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 
 @customElement('single-issue-detail-view')
 export class SingleIssueDetailView extends LitElement {
@@ -52,6 +53,15 @@ export class SingleIssueDetailView extends LitElement {
       font-size: var(--sl-font-size-x-small);
       text-transform: uppercase;
     }
+    .issue-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-small);
+      align-items: center;
+      margin: 0 0 var(--sl-spacing-medium);
+      font-size: var(--sl-font-size-small);
+      color: var(--sl-color-neutral-600);
+    }
     .compliance-reason {
       margin-top: var(--sl-spacing-small);
     }
@@ -67,18 +77,41 @@ export class SingleIssueDetailView extends LitElement {
       return nothing;
     }
 
+    const issue = this.issue;
+    const labels = issue.labels?.filter((label) => label) ?? [];
+
     return html`
       <div class="detail-section">
         <h3>
-          <span> ${this.issue.title} </span>
+          <span> ${issue.title} </span>
           <sl-badge
-            variant=${getStatusVariant(this.issue.status)}
+            variant=${getStatusVariant(issue.status)}
             class="issue-status"
-            >${this.issue.status}</sl-badge
+            >${issue.status}</sl-badge
           >
         </h3>
+        ${
+          issue.priority || issue.assignee || labels.length > 0
+            ? html`<div class="issue-meta">
+                ${
+                  issue.priority
+                    ? html`<span>Priority ${issue.priority}</span>`
+                    : nothing
+                }
+                ${
+                  issue.assignee
+                    ? html`<span>Assignee ${issue.assignee}</span>`
+                    : nothing
+                }
+                ${labels.map(
+                  (label) =>
+                    html`<sl-badge pill variant="neutral">${label}</sl-badge>`
+                )}
+              </div>`
+            : nothing
+        }
         ${when(
-          this.issue.description,
+          issue.description,
           () =>
             html`<div class="issue-description">
               ${unsafeHTML(DOMPurify.sanitize(this.issue.description ?? ''))}

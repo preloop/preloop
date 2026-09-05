@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "preloop.labels" $ | nindent 4 }}
     app.kubernetes.io/component: preloop-sync-worker-{{ .name }}
-    app: preloop-sync-worker-{{ .name}}
+    app: preloop-sync-worker-{{ .name }}
 spec:
   replicas: {{ .replicaCount }}
   selector:
@@ -22,6 +22,7 @@ spec:
       labels:
         {{- include "preloop.selectorLabels" $ | nindent 8 }}
         app.kubernetes.io/component: preloop-sync-worker-{{ .name }}
+        app: preloop-sync-worker-{{ .name }}
     spec:
       {{- with $.Values.imagePullSecrets }}
       imagePullSecrets:
@@ -62,8 +63,7 @@ spec:
               value: {{ $.Values.environment.port | quote }}
             - name: DEBUG
               value: {{ $.Values.environment.debug | quote }}
-            - name: DATABASE_URL
-              value: {{ include "preloop.databaseUrl" $ }}
+            {{- include "preloop.databaseUrlEnv" $ | nindent 12 }}
             - name: DATABASE_POOL_SIZE
               value: {{ $.Values.database.pool.worker.size | quote }}
             - name: DATABASE_MAX_OVERFLOW
@@ -77,13 +77,13 @@ spec:
             - name: SECRET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: jwt-secret
             {{- if $.Values.security.encryptionKey }}
             - name: SECURITY__ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: encryption-key
             {{- end }}
             - name: JWT_ALGORITHM
@@ -98,14 +98,14 @@ spec:
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: openai-api-key
             {{- end }}
             {{- if $.Values.config.anthropic.apiKey }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: anthropic-api-key
             {{- end }}
             {{- if $.Values.config.smtp.host }}
@@ -124,12 +124,24 @@ spec:
             {{- end }}
             - name: NATS_URL
               value: {{ $.Values.nats.url | default (printf "nats://%s-nats:4222" $.Release.Name) }}
+            - name: MODEL_CATALOG_SYNC_SCHEDULED_ENABLED
+              value: {{ $.Values.config.modelCatalogSync.scheduledEnabled | default false | quote }}
             - name: FLOW_EXECUTION_WORKER_ENABLED
               value: {{ $.Values.flowExecution.workerEnabled | default false | quote }}
             - name: FLOW_EXECUTION_CLAIM_STALE_SECONDS
               value: {{ $.Values.flowExecution.claimStaleSeconds | default 120 | quote }}
             - name: FLOW_EXECUTION_RECLAIM_INTERVAL_SECONDS
               value: {{ $.Values.flowExecution.reclaimIntervalSeconds | default 30 | quote }}
+            - name: FLOW_EXECUTION_MAX_WAIT_SECONDS
+              value: {{ $.Values.flowExecution.maxWaitSeconds | default 3600 | quote }}
+            - name: FLOW_COMPLETION_NUDGE_ENABLED
+              value: {{ $.Values.flowExecution.completionNudge.enabled | default true | quote }}
+            - name: FLOW_COMPLETION_NUDGE_TIMEOUT_SECONDS
+              value: {{ $.Values.flowExecution.completionNudge.timeoutSeconds | default 300 | quote }}
+            - name: AGENT_JOB_CREATE_MAX_ATTEMPTS
+              value: {{ $.Values.flowExecution.agentJobCreate.maxAttempts | default 3 | quote }}
+            - name: AGENT_JOB_CREATE_RETRY_BASE_SECONDS
+              value: {{ $.Values.flowExecution.agentJobCreate.retryBaseSeconds | default 0.5 | quote }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -138,7 +150,7 @@ spec:
             - name: SENTRY_DSN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: sentry-dsn
             {{- end }}
             {{- if $.Values.notifications.productTeamEmail }}
@@ -177,7 +189,7 @@ spec:
             - name: AWS_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: aws-secret-access-key
             {{- end }}
             {{- if $.Values.computeBackend.aws.defaultRegion }}
@@ -216,23 +228,36 @@ spec:
             - name: GITHUB_APP_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: github-app-client-secret
             - name: GITHUB_APP_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: github-app-private-key
             - name: GITHUB_APP_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "preloop.fullname" $ }}
+                  name: {{ include "preloop.secretName" $ }}
                   key: github-app-webhook-secret
             - name: GITHUB_APP_SLUG
               value: {{ $.Values.githubApp.slug | quote }}
             {{- end }}
+            {{- include "preloop.extraEnv" $ | nindent 12 }}
+          {{- with $.Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           resources:
             {{- toYaml $.Values.worker.resources | nindent 12 }}
+      {{- with $.Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with $.Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

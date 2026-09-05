@@ -3,11 +3,22 @@ import type { LitElement } from 'lit';
 import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './cost-view.ts';
-import type { CostView } from './cost-view';
+import { CostView } from './cost-view';
 import { invalidateApiCaches } from '../../api';
 
 describe('CostView', () => {
   let fetchStub: sinon.SinonStub;
+  // Per-test copy of the payload so a test can add fields (e.g. the imported
+  // usage block) without leaking into the others.
+  let summaryPayload: Record<string, unknown>;
+  // Per-test feature flags; banner tests enable the override UI.
+  let featuresPayload: Record<string, unknown>;
+  // Per-test reprice POST response; set by banner tests.
+  let repriceResult: Record<string, unknown>;
+  // Optional per-test hooks: onReprice runs when the reprice POST arrives,
+  // summaryResponder (when set) replaces the summary payload per fetch.
+  let onReprice: (() => void) | null;
+  let summaryResponder: (() => Record<string, unknown>) | null;
 
   const summary = {
     period_start: '2026-03-01T00:00:00Z',
@@ -73,12 +84,39 @@ describe('CostView', () => {
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
+    summaryPayload = { ...summary };
+    featuresPayload = { billing: true };
+    onReprice = null;
+    summaryResponder = null;
+    repriceResult = {
+      submitted_async: false,
+      rows_examined: 0,
+      rows_updated: 0,
+      rows_skipped: 0,
+      cost_before: null,
+      cost_after: null,
+      dry_run: false,
+    };
     fetchStub = sinon.stub(window, 'fetch');
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
+      if (url.includes('/api/v1/billing/cost/reprice')) {
+        onReprice?.();
+        return new Response(JSON.stringify(repriceResult), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/v1/billing/cost/pricing-overrides')) {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       if (url.includes('/api/v1/cost/summary')) {
-        return new Response(JSON.stringify(summary), {
+        const payload = summaryResponder ? summaryResponder() : summaryPayload;
+        return new Response(JSON.stringify(payload), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -90,7 +128,7 @@ describe('CostView', () => {
         });
       }
       if (url.includes('/api/v1/features')) {
-        return new Response(JSON.stringify({ features: { billing: true } }), {
+        return new Response(JSON.stringify({ features: featuresPayload }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -142,6 +180,254 @@ describe('CostView', () => {
     expect(loading).to.exist;
   });
 
+  describe('imported usage section', () => {
+    const importedUsage = {
+      event_count: 4,
+      total_tokens: 9680,
+      imported_cost: 2.09,
+      usage_by_model: [
+        {
+          model_alias: 'claude-4.5-sonnet',
+          source: 'cursor',
+          request_count: 2,
+          total_tokens: 7090,
+          imported_cost: 1.67,
+          last_event_at: '2026-07-31T10:05:00Z',
+        },
+        {
+          model_alias: 'composer',
+          source: 'cursor',
+          request_count: 2,
+          total_tokens: 2590,
+          imported_cost: 0.42,
+          last_event_at: '2026-07-31T10:00:00Z',
+        },
+      ],
+    };
+
+    async function loadView(imported?: unknown): Promise<CostView> {
+      if (imported !== undefined) {
+        summaryPayload = { ...summary, imported_usage: imported };
+      }
+      const element = (await fixture(
+        html`<cost-view></cost-view>`
+      )) as CostView;
+      await waitUntil(
+        () => (element as unknown as { loading: boolean }).loading === false
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    it('renders totals and a per-model table when imported usage exists', async () => {
+      const element = await loadView(importedUsage);
+
+      const totals = element.shadowRoot?.querySelector(
+        '[aria-label="Imported usage totals"]'
+      );
+      expect(totals).to.exist;
+      expect(totals?.textContent).to.contain('4');
+      expect(totals?.textContent).to.contain('9,680');
+      expect(totals?.textContent).to.contain('$2.09');
+
+      const table = element.shadowRoot?.querySelector(
+        'table[aria-label="Imported usage by model"]'
+      );
+      expect(table).to.exist;
+      expect(table?.querySelector('th[scope="col"]')).to.exist;
+      expect(table?.querySelectorAll('tbody tr').length).to.equal(2);
+
+      const body = table?.querySelector('tbody')?.textContent ?? '';
+      expect(body).to.contain('claude-4.5-sonnet');
+      expect(body).to.contain('cursor');
+      expect(body).to.contain('$1.67');
+    });
+
+    it('labels the section so imported spend reads as separate from gateway spend', async () => {
+      const element = await loadView(importedUsage);
+
+      const text = element.shadowRoot?.textContent ?? '';
+      expect(text).to.contain('Imported usage');
+      expect(text).to.contain('Not gateway metered');
+    });
+
+    it('keeps imported cost out of the gateway spend metric', async () => {
+      const element = await loadView(importedUsage);
+
+      const metrics = element.shadowRoot?.querySelector(
+        '[aria-label="Cost summary metrics"]'
+      );
+      // Gateway spend stays at the summary's estimated_cost (8.50); the
+      // imported 2.09 must not be added to it.
+      expect(metrics?.textContent).to.contain('$8.50');
+      expect(metrics?.textContent).to.not.contain('$10.59');
+    });
+
+    it('hides the section when there is no imported usage', async () => {
+      const element = await loadView({
+        event_count: 0,
+        total_tokens: 0,
+        imported_cost: 0,
+        usage_by_model: [],
+      });
+
+      expect(
+        element.shadowRoot?.querySelector(
+          '[aria-label="Imported usage totals"]'
+        )
+      ).to.not.exist;
+      expect(element.shadowRoot?.textContent).to.not.contain('Imported usage');
+    });
+
+    it('hides the section when the response omits the imported block', async () => {
+      const element = await loadView();
+
+      expect(
+        element.shadowRoot?.querySelector(
+          '[aria-label="Imported usage totals"]'
+        )
+      ).to.not.exist;
+      expect(element.shadowRoot?.textContent).to.not.contain('Imported usage');
+    });
+
+    describe('conversation rollup', () => {
+      // A parent thread with an estimated and a reconciled record, one
+      // subagent worker conversation, and one unrelated conversation whose
+      // costs were never reported.
+      const conversations = [
+        {
+          conversation_id: 'conv-parent',
+          parent_conversation_id: null,
+          source: 'cursor',
+          event_count: 2,
+          total_tokens: 1200,
+          estimated_cost: 2.0,
+          reconciled_cost: 1.8,
+          last_event_at: '2026-07-31T10:05:00Z',
+        },
+        {
+          conversation_id: 'conv-worker',
+          parent_conversation_id: 'conv-parent',
+          source: 'cursor',
+          event_count: 1,
+          total_tokens: 300,
+          estimated_cost: 0.4,
+          reconciled_cost: null,
+          last_event_at: '2026-07-31T10:04:00Z',
+        },
+        {
+          conversation_id: 'conv-lonely',
+          parent_conversation_id: null,
+          source: 'cursor',
+          event_count: 1,
+          total_tokens: null,
+          estimated_cost: null,
+          reconciled_cost: null,
+          last_event_at: '2026-07-31T09:00:00Z',
+        },
+      ];
+
+      function conversationTable(element: CostView) {
+        return element.shadowRoot?.querySelector(
+          'table[aria-label="Imported usage by conversation"]'
+        );
+      }
+
+      it('nests subagent conversations under their parent thread', async () => {
+        const element = await loadView({
+          ...importedUsage,
+          usage_by_conversation: conversations,
+        });
+
+        const table = conversationTable(element);
+        expect(table).to.exist;
+
+        const rows = [...(table?.querySelectorAll('tbody tr') ?? [])];
+        // parent, nested worker, thread total, lonely conversation.
+        expect(rows.length).to.equal(4);
+        expect(rows[0]?.textContent).to.contain('conv-parent');
+        expect(rows[1]?.textContent).to.contain('conv-worker');
+        expect(
+          rows[1]?.querySelector('.conversation-child-cell'),
+          'worker row must be visually nested under its parent'
+        ).to.exist;
+        expect(rows[3]?.textContent).to.contain('conv-lonely');
+      });
+
+      it('shows per-thread totals with estimated and reconciled kept apart', async () => {
+        const element = await loadView({
+          ...importedUsage,
+          usage_by_conversation: conversations,
+        });
+
+        const totalRow = conversationTable(element)?.querySelector(
+          'tr.conversation-thread-total'
+        );
+        expect(totalRow).to.exist;
+        const text = totalRow?.textContent ?? '';
+        expect(text).to.contain('Thread total');
+        expect(text).to.contain('1,500'); // 1200 + 300 tokens
+        expect(text).to.contain('$2.40'); // estimated: 2.00 + 0.40
+        expect(text).to.contain('$1.80'); // reconciled stays its own figure
+        // The two bases must never be summed into one number.
+        expect(text).to.not.contain('$4.20');
+      });
+
+      it('renders null quantities as "not reported", never as zero', async () => {
+        const element = await loadView({
+          ...importedUsage,
+          usage_by_conversation: conversations,
+        });
+
+        const rows = [
+          ...(conversationTable(element)?.querySelectorAll('tbody tr') ?? []),
+        ];
+        const lonely = rows.find((row) =>
+          row.textContent?.includes('conv-lonely')
+        );
+        expect(lonely).to.exist;
+        expect(lonely?.textContent).to.contain('not reported');
+        expect(lonely?.textContent).to.not.contain('$0.00');
+
+        // The worker's missing reconciled amount is also "not reported".
+        const worker = rows.find((row) =>
+          row.textContent?.includes('conv-worker')
+        );
+        expect(worker?.textContent).to.contain('not reported');
+      });
+
+      it('keeps the estimated and reconciled columns separate', async () => {
+        const element = await loadView({
+          ...importedUsage,
+          usage_by_conversation: conversations,
+        });
+
+        const headers = [
+          ...(conversationTable(element)?.querySelectorAll('th[scope="col"]') ??
+            []),
+        ].map((th) => th.textContent?.trim());
+        expect(headers).to.include('Estimated cost');
+        expect(headers).to.include('Reconciled cost');
+      });
+
+      it('hides the rollup when no conversations are reported', async () => {
+        const element = await loadView({
+          ...importedUsage,
+          usage_by_conversation: [],
+        });
+
+        expect(conversationTable(element)).to.not.exist;
+        expect(element.shadowRoot?.textContent).to.not.contain('Conversations');
+      });
+
+      it('hides the rollup when an older server omits the field', async () => {
+        const element = await loadView(importedUsage);
+
+        expect(conversationTable(element)).to.not.exist;
+      });
+    });
+  });
+
   it('renders the page title and description in the view header', async () => {
     const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
     await element.updateComplete;
@@ -157,5 +443,339 @@ describe('CostView', () => {
     expect(description?.textContent).to.contain(
       'Understand gateway spend by model, agent, session, flow, and API key.'
     );
+  });
+
+  describe('unpriced reprice banner', () => {
+    const unpricedSummary = {
+      unpriced_requests: 2,
+      unpriced_tokens: 6000,
+      unpriced_models: [
+        {
+          model: 'openai-compatible/muse-spark',
+          requests: 2,
+          tokens: 6000,
+        },
+      ],
+    };
+
+    let originalInterval: number;
+    let originalAttempts: number;
+
+    beforeEach(() => {
+      // Shrink the async poll so tests do not wait real minutes. The
+      // statics are readonly at compile time only; restore them after.
+      const viewClass = CostView as unknown as {
+        REPRICE_POLL_INTERVAL_MS: number;
+        REPRICE_POLL_MAX_ATTEMPTS: number;
+      };
+      originalInterval = viewClass.REPRICE_POLL_INTERVAL_MS;
+      originalAttempts = viewClass.REPRICE_POLL_MAX_ATTEMPTS;
+      viewClass.REPRICE_POLL_INTERVAL_MS = 1;
+      featuresPayload = { billing: true, model_price_overrides: true };
+      summaryPayload = { ...summary, ...unpricedSummary };
+    });
+
+    afterEach(() => {
+      const viewClass = CostView as unknown as {
+        REPRICE_POLL_INTERVAL_MS: number;
+        REPRICE_POLL_MAX_ATTEMPTS: number;
+      };
+      viewClass.REPRICE_POLL_INTERVAL_MS = originalInterval;
+      viewClass.REPRICE_POLL_MAX_ATTEMPTS = originalAttempts;
+    });
+
+    async function loadView(): Promise<CostView> {
+      const element = (await fixture(
+        html`<cost-view></cost-view>`
+      )) as CostView;
+      await waitUntil(
+        () => (element as unknown as { loading: boolean }).loading === false
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    function banner(element: CostView) {
+      return element.shadowRoot?.querySelector('#panel-pricing-catalog');
+    }
+
+    function bannerButton(element: CostView, label: string) {
+      return [...(banner(element)?.querySelectorAll('sl-button') ?? [])].find(
+        (button) => button.textContent?.trim() === label
+      );
+    }
+
+    it('renders the unpriced count and names the affected models', async () => {
+      const element = await loadView();
+
+      const text = banner(element)?.textContent ?? '';
+      expect(text).to.contain('2');
+      expect(text).to.contain('6,000');
+      expect(text).to.contain('openai-compatible/muse-spark');
+      expect(text).to.contain('missing from the price catalog');
+      expect(bannerButton(element, 'Reprice now')).to.exist;
+    });
+
+    it('wires the override CTA to the price override dialog, pre-filled', async () => {
+      const element = await loadView();
+
+      const cta = bannerButton(element, 'Set price override');
+      expect(cta, 'override CTA must be present').to.exist;
+      (cta as HTMLElement).click();
+      await element.updateComplete;
+
+      const state = element as unknown as {
+        priceDialogOpen: boolean;
+        priceModelAlias: string;
+      };
+      expect(state.priceDialogOpen).to.equal(true);
+      expect(state.priceModelAlias).to.equal('openai-compatible/muse-spark');
+
+      const dialog = element.shadowRoot?.querySelector(
+        'sl-dialog[label="Add Price Override"]'
+      );
+      expect(dialog).to.exist;
+      expect((dialog as unknown as { open: boolean }).open).to.equal(true);
+    });
+
+    it('sync reprice reports the actual counts and reloads the banner', async () => {
+      repriceResult = {
+        ...repriceResult,
+        submitted_async: false,
+        rows_examined: 2,
+        rows_updated: 2,
+      };
+      // The reprice "works": after the POST the window is fully priced.
+      onReprice = () => {
+        summaryPayload = {
+          ...summaryPayload,
+          unpriced_requests: 0,
+          unpriced_tokens: 0,
+          unpriced_models: [],
+        };
+      };
+      const element = await loadView();
+
+      const reprice = bannerButton(element, 'Reprice now');
+      expect(reprice).to.exist;
+      (reprice as HTMLElement).click();
+
+      await waitUntil(() => {
+        const state = element as unknown as {
+          repriceNotice: string | null;
+          repricing: boolean;
+        };
+        return (
+          !state.repricing && state.repriceNotice?.includes('Reprice finished')
+        );
+      });
+      await element.updateComplete;
+
+      const state = element as unknown as { repriceNotice: string | null };
+      expect(state.repriceNotice).to.contain('2 of 2 requests priced');
+
+      // The reloaded summary has nothing unpriced: the warning banner is
+      // replaced by the success notice.
+      expect(banner(element)).to.not.exist;
+      const success = element.shadowRoot?.querySelector(
+        'sl-alert[variant="success"]'
+      );
+      expect(success?.textContent).to.contain('2 of 2 requests priced');
+    });
+
+    it('async reprice polls the summary, then reloads and reports', async () => {
+      repriceResult = {
+        ...repriceResult,
+        submitted_async: true,
+        rows_examined: null,
+        rows_updated: null,
+        rows_skipped: null,
+      };
+      // The background worker finishes before the first poll: from the
+      // second summary fetch on, the window comes back fully priced.
+      let summaryFetches = 0;
+      summaryResponder = () => {
+        summaryFetches += 1;
+        return summaryFetches > 1
+          ? {
+              ...summaryPayload,
+              unpriced_requests: 0,
+              unpriced_tokens: 0,
+              unpriced_models: [],
+            }
+          : summaryPayload;
+      };
+      const element = await loadView();
+
+      const reprice = bannerButton(element, 'Reprice now');
+      expect(reprice).to.exist;
+      (reprice as HTMLElement).click();
+
+      await waitUntil(() => {
+        const state = element as unknown as {
+          repriceNotice: string | null;
+          repricing: boolean;
+        };
+        return (
+          !state.repricing && state.repriceNotice?.includes('Reprice finished')
+        );
+      });
+      await element.updateComplete;
+
+      const state = element as unknown as { repriceNotice: string | null };
+      expect(state.repriceNotice).to.contain(
+        'every request in this window now has a cost estimate'
+      );
+      // The summary was polled and then reloaded, not left stale.
+      expect(summaryFetches).to.be.greaterThan(1);
+      expect(banner(element)).to.not.exist;
+    });
+
+    it('async reprice with no change says so instead of claiming success', async () => {
+      const viewClass = CostView as unknown as {
+        REPRICE_POLL_MAX_ATTEMPTS: number;
+      };
+      viewClass.REPRICE_POLL_MAX_ATTEMPTS = 3;
+      repriceResult = {
+        ...repriceResult,
+        submitted_async: true,
+        rows_examined: null,
+        rows_updated: null,
+        rows_skipped: null,
+      };
+      const element = await loadView();
+
+      const reprice = bannerButton(element, 'Reprice now');
+      expect(reprice).to.exist;
+      (reprice as HTMLElement).click();
+
+      await waitUntil(() => {
+        const state = element as unknown as {
+          repriceNotice: string | null;
+          repricing: boolean;
+        };
+        return !state.repricing && state.repriceNotice?.includes('No change');
+      });
+      await element.updateComplete;
+
+      const state = element as unknown as { repriceNotice: string | null };
+      expect(state.repriceNotice).to.contain('price override');
+      // The banner stays, still naming the unpriceable model.
+      expect(banner(element)?.textContent).to.contain(
+        'openai-compatible/muse-spark'
+      );
+    });
+
+    it('async reprice never reports a negative priced count', async () => {
+      repriceResult = {
+        ...repriceResult,
+        submitted_async: true,
+        rows_examined: null,
+        rows_updated: null,
+        rows_skipped: null,
+      };
+      // Live traffic adds unpriced rows during the poll window: the count
+      // moves (2 -> 5), so the poll stops early, but nothing was priced.
+      let summaryFetches = 0;
+      summaryResponder = () => {
+        summaryFetches += 1;
+        return summaryFetches > 1
+          ? { ...summaryPayload, unpriced_requests: 5, unpriced_tokens: 9000 }
+          : summaryPayload;
+      };
+      const element = await loadView();
+
+      const reprice = bannerButton(element, 'Reprice now');
+      expect(reprice).to.exist;
+      (reprice as HTMLElement).click();
+
+      await waitUntil(() => {
+        const state = element as unknown as {
+          repriceNotice: string | null;
+          repricing: boolean;
+        };
+        return !state.repricing && state.repriceNotice?.includes('No change');
+      });
+      await element.updateComplete;
+
+      const state = element as unknown as { repriceNotice: string | null };
+      expect(state.repriceNotice).to.not.match(/-\d+ requests priced/);
+      expect(state.repriceNotice).to.contain('price override');
+      // The banner reloads to the grown count, still naming the model.
+      expect(banner(element)?.textContent).to.contain('5');
+    });
+
+    it('async reprice finishing after the last poll still reports the decrease', async () => {
+      const viewClass = CostView as unknown as {
+        REPRICE_POLL_MAX_ATTEMPTS: number;
+      };
+      viewClass.REPRICE_POLL_MAX_ATTEMPTS = 3;
+      repriceResult = {
+        ...repriceResult,
+        submitted_async: true,
+        rows_examined: null,
+        rows_updated: null,
+        rows_skipped: null,
+      };
+      // Every poll sees the stale count, so the poll times out; the worker
+      // finishes before the final reload, which shows one of the two
+      // requests got priced. The notice must come from the reloaded
+      // summary, not from the poll's early-stop signal.
+      let summaryFetches = 0;
+      summaryResponder = () => {
+        summaryFetches += 1;
+        // Initial load, previous-range fetch and 3 polls see the stale
+        // count; the final reload (fetch 6) sees the decrease.
+        return summaryFetches > 5
+          ? { ...summaryPayload, unpriced_requests: 1, unpriced_tokens: 2000 }
+          : summaryPayload;
+      };
+      const element = await loadView();
+
+      const reprice = bannerButton(element, 'Reprice now');
+      expect(reprice).to.exist;
+      (reprice as HTMLElement).click();
+
+      await waitUntil(() => {
+        const state = element as unknown as {
+          repriceNotice: string | null;
+          repricing: boolean;
+        };
+        return (
+          !state.repricing && state.repriceNotice?.includes('Reprice finished')
+        );
+      });
+      await element.updateComplete;
+
+      const state = element as unknown as { repriceNotice: string | null };
+      expect(state.repriceNotice).to.contain('1 requests priced');
+      expect(state.repriceNotice).to.contain('1 still unpriced');
+      // One row remains unpriced, so the banner stays up.
+      expect(banner(element)).to.exist;
+    });
+
+    it('override CTA does not pre-fill the coalesced unknown model', async () => {
+      summaryPayload = {
+        ...summary,
+        unpriced_requests: 3,
+        unpriced_tokens: 4200,
+        unpriced_models: [{ model: 'unknown', requests: 3, tokens: 4200 }],
+      };
+      const element = await loadView();
+
+      const cta = bannerButton(element, 'Set price override');
+      expect(cta, 'override CTA must be present').to.exist;
+      (cta as HTMLElement).click();
+      await element.updateComplete;
+
+      const state = element as unknown as {
+        priceDialogOpen: boolean;
+        priceModelAlias: string;
+      };
+      expect(state.priceDialogOpen).to.equal(true);
+      // "unknown" is the backend placeholder for rows with no model alias;
+      // pre-filling it would create a no-op override, so the field is empty.
+      expect(state.priceModelAlias).to.equal('');
+    });
   });
 });

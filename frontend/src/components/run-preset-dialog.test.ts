@@ -1,0 +1,194 @@
+import { expect, aTimeout } from '@open-wc/testing';
+import sinon from 'sinon';
+
+import {
+  openRunPresetDialog,
+  resetRunPresetDialogForTests,
+  type RunPresetDialog,
+} from './run-preset-dialog';
+
+const issueId = '22222222-2222-2222-2222-222222222222';
+
+function dialogElement(): RunPresetDialog {
+  const element = document.body.querySelector(
+    'run-preset-dialog'
+  ) as RunPresetDialog | null;
+  expect(element, 'run-preset-dialog singleton is mounted').to.exist;
+  return element as RunPresetDialog;
+}
+
+async function clickFooter(label: string) {
+  const element = dialogElement();
+  await element.updateComplete;
+  const button = [
+    ...(element.shadowRoot?.querySelectorAll('sl-button') || []),
+  ].find((candidate) => candidate.textContent?.trim() === label);
+  expect(button, `footer button "${label}" exists`).to.exist;
+  (button as HTMLElement).click();
+}
+
+describe('RunPresetDialog', () => {
+  let fetchStub: sinon.SinonStub;
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-access-token');
+  });
+
+  afterEach(() => {
+    fetchStub?.restore();
+    resetRunPresetDialogForTests();
+    document.body
+      .querySelectorAll('sl-alert')
+      .forEach((alert) => alert.remove());
+    localStorage.clear();
+  });
+
+  it('first run shows create copy and sends confirm_create', async () => {
+    const bodies: unknown[] = [];
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input, init) => {
+      const url = String(input);
+      if (!url.includes('/api/v1/flows/run-preset')) {
+        return new Response('{}', { status: 200 });
+      }
+      const parsed = JSON.parse(String(init?.body || '{}'));
+      bodies.push(parsed);
+      if (!parsed.confirm_create) {
+        return new Response(
+          JSON.stringify({
+            detail: {
+              code: 'flow_missing',
+              flow_name: 'Automated Issue Implementation',
+            },
+          }),
+          { status: 409 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          execution_id: 'exec-1',
+          flow_id: 'flow-1',
+          flow_name: 'Automated Issue Implementation',
+          flow_created: true,
+          execution_url: '/console/flows/executions/exec-1',
+        }),
+        { status: 200 }
+      );
+    });
+
+    void openRunPresetDialog({
+      presetSlug: 'automated-issue-implementation',
+      target: { kind: 'issue', issue_id: issueId },
+      issueKey: 'ALP-9',
+    });
+    await aTimeout(20);
+    const element = dialogElement();
+    await element.updateComplete;
+
+    const createDialog = element.shadowRoot?.querySelector('sl-dialog');
+    expect(createDialog?.getAttribute('label')).to.equal(
+      'Create the implementer flow?'
+    );
+    expect(element.shadowRoot?.textContent).to.contain(
+      'This account has no Automated Issue Implementation flow yet.'
+    );
+    expect(element.shadowRoot?.textContent).to.contain('then run it on ALP-9');
+
+    await clickFooter('Create and run');
+    await aTimeout(20);
+    expect(bodies.length).to.equal(2);
+    expect((bodies[0] as { confirm_create: boolean }).confirm_create).to.equal(
+      false
+    );
+    expect((bodies[1] as { confirm_create: boolean }).confirm_create).to.equal(
+      true
+    );
+  });
+
+  it('existing flow shows run copy', async () => {
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async () => {
+      return new Response(
+        JSON.stringify({
+          execution_id: null,
+          flow_id: 'flow-1',
+          flow_name: 'Automated Issue Implementation',
+          flow_created: false,
+          execution_url: null,
+        }),
+        { status: 200 }
+      );
+    });
+
+    void openRunPresetDialog({
+      presetSlug: 'automated-issue-implementation',
+      target: { kind: 'issue', issue_id: issueId },
+      issueKey: 'ALP-9',
+    });
+    await aTimeout(20);
+    const element = dialogElement();
+    await element.updateComplete;
+
+    const runDialog = element.shadowRoot?.querySelector('sl-dialog');
+    expect(runDialog?.getAttribute('label')).to.equal(
+      'Run Automated Issue Implementation on ALP-9?'
+    );
+    expect(runDialog?.getAttribute('label')).to.not.contain(
+      'Create the implementer flow?'
+    );
+    const run = [
+      ...(element.shadowRoot?.querySelectorAll('sl-button') || []),
+    ].find((candidate) => candidate.textContent?.trim() === 'Run');
+    expect(run).to.exist;
+  });
+
+  it('422 renders model alert', async () => {
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input, init) => {
+      const url = String(input);
+      if (!url.includes('/api/v1/flows/run-preset')) {
+        return new Response('{}', { status: 200 });
+      }
+      const parsed = JSON.parse(String(init?.body || '{}'));
+      if (!parsed.confirm_create) {
+        return new Response(
+          JSON.stringify({
+            execution_id: null,
+            flow_id: 'flow-1',
+            flow_name: 'Automated Issue Implementation',
+            flow_created: false,
+            execution_url: null,
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          detail:
+            "This preset runs on the 'codex' agent, which needs an AI model",
+        }),
+        { status: 422 }
+      );
+    });
+
+    void openRunPresetDialog({
+      presetSlug: 'automated-issue-implementation',
+      target: { kind: 'issue', issue_id: issueId },
+      issueKey: 'ALP-9',
+    });
+    await aTimeout(20);
+    await clickFooter('Run');
+    await aTimeout(20);
+    const element = dialogElement();
+    await element.updateComplete;
+
+    const alert = element.shadowRoot?.querySelector('sl-alert');
+    expect(alert).to.exist;
+    expect(alert?.getAttribute('variant')).to.equal('warning');
+    expect(element.shadowRoot?.textContent?.replace(/\s+/g, ' ')).to.contain(
+      'No usable AI model for this preset. Add one under Models, then try again.'
+    );
+    const models = element.shadowRoot?.querySelector(
+      'sl-button[href="/console/ai-models"]'
+    );
+    expect(models).to.exist;
+    expect(models?.textContent).to.contain('Models');
+  });
+});

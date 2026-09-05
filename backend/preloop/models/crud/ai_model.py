@@ -1,6 +1,8 @@
 """CRUD operations for AIModel model."""
 
+import copy
 import json
+import logging
 import uuid
 from typing import Any, Dict, Optional, Sequence
 
@@ -11,6 +13,30 @@ from preloop.models.models.ai_model import AIModel
 from preloop.models.crud.secret_reference import crud_secret_reference
 from preloop.services.secret_service import get_secret_service
 from .base import CRUDBase
+
+logger = logging.getLogger(__name__)
+
+
+def _effective_gateway_alias_from_fields(
+    provider_name: Optional[str],
+    model_identifier: Optional[str],
+    meta_data: Optional[Dict],
+) -> Optional[str]:
+    """Compute the alias a would-be model row answers to on the gateway.
+
+    Mirrors ``model_runtime_resolver.effective_gateway_alias`` but works on
+    raw field values so create/update payloads can be validated before a row
+    exists. ``None`` when the row is not gateway-enabled.
+    """
+    gateway = meta_data.get("gateway") if isinstance(meta_data, dict) else None
+    if not isinstance(gateway, dict) or not gateway.get("enabled"):
+        return None
+    alias = gateway.get("model_alias")
+    if isinstance(alias, str) and alias.strip():
+        return alias.strip()
+    provider = (provider_name or "openai").strip().lower()
+    identifier = (model_identifier or "").strip()
+    return f"{provider}/{identifier}" if identifier else provider
 
 
 class CRUDAIModel(CRUDBase[AIModel]):
@@ -34,6 +60,35 @@ class CRUDAIModel(CRUDBase[AIModel]):
         normalized_meta["service_kind"] = model_kind
         normalized["meta_data"] = normalized_meta
         return normalized
+
+    @staticmethod
+    def _validate_qwen_api_endpoint(
+        obj_data: Dict[str, Any],
+        existing: Optional[AIModel] = None,
+    ) -> None:
+        """Reject a Qwen chat endpoint outside DashScope / Model Studio."""
+        provider = (
+            str(
+                obj_data.get("provider_name")
+                or (existing.provider_name if existing is not None else "")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        if provider != "qwen":
+            return
+        if "api_endpoint" in obj_data:
+            endpoint = obj_data.get("api_endpoint")
+        elif existing is not None:
+            endpoint = existing.api_endpoint
+        else:
+            return
+        if not isinstance(endpoint, str) or not endpoint.strip():
+            return
+        from preloop.services.ai_model_provider import validate_qwen_endpoint
+
+        validate_qwen_endpoint(endpoint)
 
     @staticmethod
     def _apply_secret_reference_fields(
@@ -185,6 +240,109 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 return ai_model
         return candidates[0]
 
+    def _enforce_unique_gateway_alias(
+        self,
+        db: Session,
+        *,
+        obj_data: Dict,
+        provider_name: Optional[str],
+        model_identifier: Optional[str],
+        account_id,
+        exclude_id: Optional[uuid.UUID] = None,
+    ) -> None:
+        """Keep gateway aliases unique per account at write time.
+
+        Two bindings answering to the same alias make routing and usage
+        attribution ambiguous (an alias resolves to exactly one
+        ``ai_model_id``). Explicit user writes that would collide are
+        rejected; agent-onboarding imports (rows carrying
+        ``meta_data.managed_by``) are auto-suffixed instead — an import must
+        never fail onboarding, but it must never silently take over a user's
+        alias either.
+
+        This is deliberately an application-level read-then-write check with
+        no backing DB constraint, so two writes racing each other can both
+        pass and land a collision. A partial unique index cannot express the
+        *effective* alias — it is a conditional over
+        ``meta_data->'gateway'->>'model_alias'`` and the computed
+        ``provider/model_identifier`` default (an indexed expression would
+        need a backfilled generated column) — and creating one would abort
+        ``alembic upgrade`` on accounts holding legacy user-created
+        collisions, which the audit migration intentionally reports but
+        never rewrites. The residual race is tolerated because the runtime
+        resolver keeps colliding aliases deterministic (user-created wins,
+        else stable inventory order) and every multi-match is logged and
+        surfaced via ``X-Preloop-Warning``, so a raced-in collision is
+        visible instead of silently misrouting.
+
+        Args:
+            db: Active session.
+            obj_data: Normalized column values about to be written. Mutated
+                in place (deep-copied ``meta_data``) when auto-suffixing.
+            provider_name: Effective provider for default-alias computation.
+            model_identifier: Effective identifier for default-alias
+                computation.
+            account_id: Owning account; ``None`` (system rows) is exempt.
+            exclude_id: Row being updated, excluded from the taken-alias set.
+
+        Raises:
+            ValueError: When a non-import write would create a collision.
+        """
+        if account_id is None:
+            return
+        meta_data = obj_data.get("meta_data")
+        alias = _effective_gateway_alias_from_fields(
+            provider_name, model_identifier, meta_data
+        )
+        if not alias:
+            return
+
+        from preloop.services.model_runtime_resolver import effective_gateway_alias
+
+        # NOTE: read-then-write without a DB-level uniqueness guard; see the
+        # docstring for why no partial unique index backs this and why the
+        # concurrent-write window is acceptable.
+        taken: set[str] = set()
+        for existing in (
+            db.query(self.model).filter(self.model.account_id == account_id).all()
+        ):
+            if exclude_id is not None and existing.id == exclude_id:
+                continue
+            existing_alias = effective_gateway_alias(existing)
+            if existing_alias:
+                taken.add(existing_alias)
+        if alias not in taken:
+            return
+
+        managed_by = (
+            str((meta_data or {}).get("managed_by") or "").strip()
+            if isinstance(meta_data, dict)
+            else ""
+        )
+        if not managed_by:
+            raise ValueError(
+                f"Gateway alias '{alias}' is already used by another AI model "
+                "in this account. Choose a different alias (or remove the "
+                "other binding) so gateway routing and usage attribution stay "
+                "unambiguous."
+            )
+
+        suffix = 2
+        while f"{alias}-{suffix}" in taken:
+            suffix += 1
+        suffixed = f"{alias}-{suffix}"
+        new_meta = copy.deepcopy(meta_data)
+        new_meta.setdefault("gateway", {})["model_alias"] = suffixed
+        obj_data["meta_data"] = new_meta
+        logger.warning(
+            "gateway_alias_collision_autosuffix account=%s managed_by=%r "
+            "requested_alias=%r assigned_alias=%r",
+            account_id,
+            managed_by,
+            alias,
+            suffixed,
+        )
+
     def create_with_account(
         self,
         db: Session,
@@ -204,6 +362,14 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 and commit themselves.
         """
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
+        self._validate_qwen_api_endpoint(obj_data)
+        self._enforce_unique_gateway_alias(
+            db,
+            obj_data=obj_data,
+            provider_name=obj_data.get("provider_name"),
+            model_identifier=obj_data.get("model_identifier"),
+            account_id=account_id,
+        )
         if obj_in.get("is_default"):
             for existing_model in (
                 db.query(self.model)
@@ -234,8 +400,57 @@ class CRUDAIModel(CRUDBase[AIModel]):
     def get_by_account(
         self, db: Session, *, account_id: uuid.UUID | str
     ) -> list[AIModel]:
-        """Get all AIModels for a specific account."""
-        return db.query(self.model).filter(self.model.account_id == account_id).all()
+        """Get all AIModels for a specific account.
+
+        Eager-loads ``credentials_secret`` so callers that inspect
+        ``is_principal_bound_oauth`` (credential type via the secret) do not
+        issue one query per row. This is a relationship load, not a decrypt.
+        """
+        return (
+            db.query(self.model)
+            .options(joinedload(self.model.credentials_secret))
+            .filter(self.model.account_id == account_id)
+            .all()
+        )
+
+    def get_for_account(
+        self,
+        db: Session,
+        *,
+        id: uuid.UUID,
+        account_id: uuid.UUID,
+    ) -> Optional[AIModel]:
+        """Load one account-owned AI model with its credential secret eager-loaded.
+
+        Used by live model listing so stored keys can be decrypted without a
+        second query. Returns None when the id is missing or belongs to
+        another account.
+        """
+        return (
+            db.query(self.model)
+            .options(joinedload(self.model.credentials_secret))
+            .filter(self.model.id == id, self.model.account_id == account_id)
+            .first()
+        )
+
+    def resolve_listing_secret(self, ai_model: AIModel) -> Optional[str]:
+        """Decrypt stored provider credentials for server-side listing only.
+
+        The plaintext must never be returned to API clients. Callers use it
+        only to authenticate a live list-models request.
+
+        Args:
+            ai_model: Row previously loaded by :meth:`get_for_account`.
+
+        Returns:
+            The decrypted secret string, or None when the model has no
+            resolvable credential.
+        """
+        resolved = get_secret_service().resolve_ai_model_credentials(ai_model)
+        if resolved is None:
+            return None
+        value = (resolved.value or "").strip()
+        return value or None
 
     def get_for_managed_agent_enrichment(
         self,
@@ -326,6 +541,83 @@ class CRUDAIModel(CRUDBase[AIModel]):
     ) -> AIModel:
         """Update an AIModel. If setting a model as default, ensure others are not."""
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
+        self._validate_qwen_api_endpoint(obj_data, existing=db_obj)
+
+        # Preserve the gateway alias when provider_name changes so that
+        # in-flight agents configured with the old alias can still resolve
+        # the model. Only applies to gateway-enabled models using the
+        # computed default alias (no explicit model_alias configured).
+        from preloop.services.model_runtime_resolver import effective_gateway_alias
+
+        old_alias = effective_gateway_alias(db_obj)
+        if old_alias and "provider_name" in obj_data:
+            old_provider = (db_obj.provider_name or "").strip().lower()
+            new_provider = (obj_data["provider_name"] or "").strip().lower()
+            if old_provider != new_provider:
+                old_meta = (
+                    db_obj.meta_data if isinstance(db_obj.meta_data, dict) else {}
+                )
+                old_gw = (
+                    old_meta.get("gateway")
+                    if isinstance(old_meta.get("gateway"), dict)
+                    else {}
+                )
+                configured_alias = old_gw.get("model_alias")
+                incoming_meta = (
+                    obj_data.get("meta_data")
+                    if isinstance(obj_data.get("meta_data"), dict)
+                    else {}
+                )
+                incoming_gw = (
+                    incoming_meta.get("gateway")
+                    if isinstance(incoming_meta.get("gateway"), dict)
+                    else {}
+                )
+                incoming_alias = incoming_gw.get("model_alias")
+                # An alias the admin sets in this same update wins over the
+                # pin: they chose the new address deliberately.
+                has_explicit_alias = any(
+                    isinstance(alias, str) and alias.strip()
+                    for alias in (configured_alias, incoming_alias)
+                )
+                if not has_explicit_alias:
+                    # No explicit alias -- pin the current default so the
+                    # address in-flight agents know stays stable.
+                    merged_meta_for_pin = dict(
+                        obj_data["meta_data"]
+                        if "meta_data" in obj_data
+                        else (old_meta or {})
+                    )
+                    gw_block = dict(merged_meta_for_pin.get("gateway") or {})
+                    gw_block["model_alias"] = old_alias
+                    merged_meta_for_pin["gateway"] = gw_block
+                    obj_data["meta_data"] = merged_meta_for_pin
+
+        # Enforce alias uniqueness only when this update changes the effective
+        # gateway alias; pre-existing rows (including legacy collisions being
+        # cleaned up) must remain updatable for unrelated fields.
+        merged_provider = obj_data.get("provider_name", db_obj.provider_name)
+        merged_identifier = obj_data.get("model_identifier", db_obj.model_identifier)
+        merged_meta = (
+            obj_data["meta_data"] if "meta_data" in obj_data else db_obj.meta_data
+        )
+        new_alias = _effective_gateway_alias_from_fields(
+            merged_provider, merged_identifier, merged_meta
+        )
+        if new_alias and new_alias != effective_gateway_alias(db_obj):
+            check_data = {"meta_data": merged_meta}
+            self._enforce_unique_gateway_alias(
+                db,
+                obj_data=check_data,
+                provider_name=merged_provider,
+                model_identifier=merged_identifier,
+                account_id=db_obj.account_id,
+                exclude_id=db_obj.id,
+            )
+            if check_data["meta_data"] is not merged_meta:
+                # Import row was auto-suffixed; persist the rewritten alias.
+                obj_data["meta_data"] = check_data["meta_data"]
+
         target_model_kind = (obj_data.get("meta_data") or {}).get(
             "service_kind"
         ) or db_obj.model_kind
@@ -343,6 +635,17 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 if self._model_kind(existing_model) == target_model_kind:
                     existing_model.is_default = False
 
+        # An explicit ``credentials_secret_id: null`` survives ``exclude_unset``
+        # and would otherwise NULL the column and garbage-collect the secret
+        # it pointed at. Detaching a credential is not an update operation;
+        # treat null as "unchanged" so a stray PUT cannot destroy a live
+        # OAuth lineage shared by sibling rows.
+        if "credentials_secret_id" in obj_data and (
+            obj_data["credentials_secret_id"] is None
+        ):
+            obj_data.pop("credentials_secret_id")
+
+        previous_secret_id = db_obj.credentials_secret_id
         self._apply_secret_reference_fields(
             db,
             obj_data=obj_data,
@@ -351,7 +654,59 @@ class CRUDAIModel(CRUDBase[AIModel]):
             existing_secret_id=db_obj.credentials_secret_id,
         )
 
-        return super().update(db, db_obj=db_obj, obj_in=obj_data)
+        updated = super().update(db, db_obj=db_obj, obj_in=obj_data)
+        if previous_secret_id is not None and str(updated.credentials_secret_id) != str(
+            previous_secret_id
+        ):
+            self._delete_unreferenced_credential_secret(db, previous_secret_id)
+            db.commit()
+        return updated
+
+    def _delete_unreferenced_credential_secret(
+        self, db: Session, secret_id: uuid.UUID
+    ) -> None:
+        """Delete a SecretReference when nothing still points at it.
+
+        ``secret_reference`` is also FK'd from Tracker (API key and webhook)
+        and ProviderBillingConnection. Those use different ``secret_kind``
+        values, so sharing is not expected; still check them so a missed
+        reference cannot CASCADE-delete a billing connection or NULL a
+        tracker secret.
+        """
+        from preloop.models.models.provider_billing import (
+            ProviderBillingConnection,
+        )
+        from preloop.models.models.tracker import Tracker
+
+        remaining_reference = (
+            db.query(self.model.id)
+            .filter(self.model.credentials_secret_id == secret_id)
+            .first()
+        )
+        if remaining_reference is not None:
+            return
+        tracker_reference = (
+            db.query(Tracker.id)
+            .filter(
+                or_(
+                    Tracker.credentials_secret_id == secret_id,
+                    Tracker.webhook_secret_id == secret_id,
+                )
+            )
+            .first()
+        )
+        if tracker_reference is not None:
+            return
+        billing_reference = (
+            db.query(ProviderBillingConnection.id)
+            .filter(ProviderBillingConnection.secret_reference_id == secret_id)
+            .first()
+        )
+        if billing_reference is not None:
+            return
+        secret_ref = crud_secret_reference.get(db, id=secret_id)
+        if secret_ref is not None:
+            db.delete(secret_ref)
 
     def remove(self, db: Session, *, id: uuid.UUID) -> Optional[AIModel]:
         """Delete an AIModel and any unreferenced credential secret."""
@@ -364,15 +719,7 @@ class CRUDAIModel(CRUDBase[AIModel]):
         db.flush()
 
         if secret_id is not None:
-            remaining_reference = (
-                db.query(self.model.id)
-                .filter(self.model.credentials_secret_id == secret_id)
-                .first()
-            )
-            if remaining_reference is None:
-                secret_ref = crud_secret_reference.get(db, id=secret_id)
-                if secret_ref is not None:
-                    db.delete(secret_ref)
+            self._delete_unreferenced_credential_secret(db, secret_id)
 
         db.commit()
         return obj

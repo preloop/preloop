@@ -1,0 +1,28 @@
+{
+  "schema": "preloop.cra.repostub/v1",
+  "flow": "release-security-audit",
+  "run_at": "2026-08-20T12:00:00Z",
+  "repo": {
+    "remote": "https://git.example.com/example-product/firmware.git",
+    "commit": "b2c7d3b9c643ed04aa7f6730561d002d3e0f2ef7",
+    "branch": "main"
+  },
+  "product": {
+    "name": "example-product",
+    "compliance_repo": "https://git.example.com/example-product/product-compliance.git",
+    "evidence_path": "products/example-product/audits/2026-08-20T120000Z-v1.2.3/"
+  },
+  "release_ref": "v1.2.3",
+  "verdict": "pass_with_findings",
+  "gate_passed": true,
+  "counts_by_severity": {
+    "critical": 0,
+    "high": 1,
+    "medium": 3,
+    "low": 2,
+    "unknown": 1
+  },
+  "result_schema": "preloop.cra.releaseaudit/v1",
+  "note": "synthetic fixture",
+  "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+}

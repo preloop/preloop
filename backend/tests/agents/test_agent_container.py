@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock, patch, PropertyMock
 import pytest
 
 from preloop.agents.base import AgentStatus
-from preloop.agents.container import ContainerAgentExecutor
+from preloop.agents.container import (
+    ContainerAgentExecutor,
+    K8S_TERMINAL_LOG_TAIL_LINES,
+    _WORST_CASE_EMISSION_LINES,
+)
 
 
 @pytest.fixture
@@ -337,3 +341,618 @@ class TestContainerAgentExecutor:
 
         session_ref = await container_executor.start(execution_context)
         assert session_ref == "container-xyz"
+
+
+def _result_artifact_tar(content: bytes, name: str = "result.json"):
+    """Build an in-memory tarfile like Docker's archive API returns."""
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        info = tarfile.TarInfo(name=name)
+        info.size = len(content)
+        tf.addfile(info, io.BytesIO(content))
+    buf.seek(0)
+    return tarfile.open(fileobj=buf, mode="r")
+
+
+def _make_tar(files: dict[str, bytes]):
+    """Build an in-memory multi-file tarfile like Docker's archive API."""
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name, content in files.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+    buf.seek(0)
+    return tarfile.open(fileobj=buf, mode="r")
+
+
+class TestGetResultArtifact:
+    """Tests for first-class /workspace/result.json capture."""
+
+    @pytest.mark.asyncio
+    async def test_valid_result_artifact(self, container_executor, mock_docker):
+        """A valid JSON object in /workspace/result.json is returned parsed."""
+        payload = (
+            b'{"schema": "preloop.eval.result/v1", "status": "pass",'
+            b' "summary": "ok", "metrics": {"latency_ms": 12}}'
+        )
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(
+            return_value=_result_artifact_tar(payload)
+        )
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        artifact = await container_executor.get_result_artifact("container-123")
+
+        assert artifact == {
+            "schema": "preloop.eval.result/v1",
+            "status": "pass",
+            "summary": "ok",
+            "metrics": {"latency_ms": 12},
+        }
+        mock_container.get_archive.assert_awaited_once_with("/workspace/result.json")
+
+    @pytest.mark.asyncio
+    async def test_missing_result_artifact_returns_none(
+        self, container_executor, mock_docker
+    ):
+        """No result.json (Docker 404) is the normal case: returns None."""
+        from aiodocker.exceptions import DockerError
+
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(
+            side_effect=DockerError(
+                404, {"message": "Could not find the file in container"}
+            )
+        )
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        artifact = await container_executor.get_result_artifact("container-123")
+
+        assert artifact is None
+
+    @pytest.mark.asyncio
+    async def test_non_404_docker_error_is_wrapped(
+        self, container_executor, mock_docker
+    ):
+        """A daemon failure (non-404) is an infra error, not "no artifact".
+
+        It must stay visible as a wrapped error object so an eval run whose
+        artifact could not be fetched is distinguishable from a run that
+        reported nothing.
+        """
+        from aiodocker.exceptions import DockerError
+
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(
+            side_effect=DockerError(500, {"message": "daemon exploded"})
+        )
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        artifact = await container_executor.get_result_artifact("container-123")
+
+        assert artifact is not None
+        assert artifact["error"] == "result_artifact_fetch_failed"
+        assert artifact["docker_status"] == 500
+        assert "daemon exploded" in artifact["detail"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_is_wrapped(self, container_executor, mock_docker):
+        """A present-but-broken result.json yields a wrapped error object."""
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(
+            return_value=_result_artifact_tar(b"{not json")
+        )
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        artifact = await container_executor.get_result_artifact("container-123")
+
+        assert artifact is not None
+        assert artifact["error"] == "result_artifact_invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_non_object_json_is_wrapped(self, container_executor, mock_docker):
+        """A JSON array/scalar (not an object) yields a wrapped error object."""
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(
+            return_value=_result_artifact_tar(b'["not", "an", "object"]')
+        )
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        artifact = await container_executor.get_result_artifact("container-123")
+
+        assert artifact is not None
+        assert artifact["error"] == "result_artifact_not_object"
+
+    @pytest.mark.asyncio
+    async def test_oversized_artifact_is_not_persisted(
+        self, container_executor, mock_docker
+    ):
+        """Artifacts above the size cap are reported, not stored."""
+        from preloop.agents.container import MAX_RESULT_ARTIFACT_BYTES
+
+        big = b'{"pad": "' + b"x" * (MAX_RESULT_ARTIFACT_BYTES + 10) + b'"}'
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(return_value=_result_artifact_tar(big))
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        artifact = await container_executor.get_result_artifact("container-123")
+
+        assert artifact is not None
+        assert artifact["error"] == "result_artifact_too_large"
+        assert artifact["limit_bytes"] == MAX_RESULT_ARTIFACT_BYTES
+
+
+def _k8s_executor() -> ContainerAgentExecutor:
+    return ContainerAgentExecutor(
+        agent_type="test-agent",
+        config={},
+        image="test-image:latest",
+        use_kubernetes=True,
+    )
+
+
+def _emission_lines(
+    channel: str, payload: bytes, status: str = "present", size: int | None = None
+) -> list[str]:
+    """Build the marker-line block the K8s wrapper script emits."""
+    import base64
+
+    declared = len(payload) if size is None else size
+    lines = [f"PRELOOP_ARTIFACT_BEGIN {channel} {status} {declared}"]
+    if status == "present":
+        b64 = base64.b64encode(payload).decode()
+        lines.extend(
+            "PRELOOP_ARTIFACT_B64 " + b64[i : i + 76] for i in range(0, len(b64), 76)
+        )
+    lines.append(f"PRELOOP_ARTIFACT_END {channel}")
+    return lines
+
+
+class TestKubernetesResultArtifact:
+    """Kubernetes capture parses the wrapper's log-channel emission."""
+
+    @pytest.mark.asyncio
+    async def test_present_result_is_parsed(self):
+        executor = _k8s_executor()
+        payload = b'{"schema": "preloop.eval.result/v1", "status": "success"}'
+        lines = ["agent output", "FLOW_EXECUTION_SUCCESS"] + _emission_lines(
+            "result", payload
+        )
+        executor._get_kubernetes_logs = AsyncMock(return_value=lines)
+
+        artifact = await executor.get_result_artifact("job-123")
+
+        assert artifact == {
+            "schema": "preloop.eval.result/v1",
+            "status": "success",
+        }
+        executor._get_kubernetes_logs.assert_awaited_once_with(
+            "job-123",
+            tail=K8S_TERMINAL_LOG_TAIL_LINES,
+            include_artifact_streams=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_absent_result_returns_none(self):
+        executor = _k8s_executor()
+        executor._get_kubernetes_logs = AsyncMock(
+            return_value=[
+                "agent output",
+                "PRELOOP_ARTIFACT_BEGIN result absent",
+                "PRELOOP_ARTIFACT_END result",
+            ]
+        )
+
+        assert await executor.get_result_artifact("job-123") is None
+
+    @pytest.mark.asyncio
+    async def test_no_emission_returns_none(self):
+        """Logs without markers (wrapper not applied / logs gone): None."""
+        executor = _k8s_executor()
+        executor._get_kubernetes_logs = AsyncMock(return_value=["agent output"])
+
+        assert await executor.get_result_artifact("job-123") is None
+
+    @pytest.mark.asyncio
+    async def test_too_large_is_wrapped(self):
+        from preloop.agents.container import MAX_RESULT_ARTIFACT_BYTES
+
+        executor = _k8s_executor()
+        executor._get_kubernetes_logs = AsyncMock(
+            return_value=[
+                "PRELOOP_ARTIFACT_BEGIN result too_large 999999",
+                "PRELOOP_ARTIFACT_END result",
+            ]
+        )
+
+        artifact = await executor.get_result_artifact("job-123")
+
+        assert artifact == {
+            "error": "result_artifact_too_large",
+            "size_bytes": 999999,
+            "limit_bytes": MAX_RESULT_ARTIFACT_BYTES,
+        }
+
+    @pytest.mark.asyncio
+    async def test_truncated_emission_is_visible_error(self):
+        """A BEGIN without its END (log rotation) must not look like "no
+        artifact"."""
+        executor = _k8s_executor()
+        lines = _emission_lines("result", b'{"status": "success"}')[:-1]
+        executor._get_kubernetes_logs = AsyncMock(return_value=lines)
+
+        artifact = await executor.get_result_artifact("job-123")
+
+        assert artifact is not None
+        assert artifact["error"] == "result_artifact_fetch_failed"
+
+    @pytest.mark.asyncio
+    async def test_corrupt_base64_is_visible_error(self):
+        executor = _k8s_executor()
+        executor._get_kubernetes_logs = AsyncMock(
+            return_value=[
+                "PRELOOP_ARTIFACT_BEGIN result present 10",
+                "PRELOOP_ARTIFACT_B64 !!!not-base64!!!",
+                "PRELOOP_ARTIFACT_END result",
+            ]
+        )
+
+        artifact = await executor.get_result_artifact("job-123")
+
+        assert artifact is not None
+        assert artifact["error"] == "result_artifact_fetch_failed"
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_shares_docker_error_shape(self):
+        executor = _k8s_executor()
+        executor._get_kubernetes_logs = AsyncMock(
+            return_value=_emission_lines("result", b"{not json")
+        )
+
+        artifact = await executor.get_result_artifact("job-123")
+
+        assert artifact is not None
+        assert artifact["error"] == "result_artifact_invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_last_emission_wins(self):
+        """Only the wrapper's own (last) block is trusted, not echoes."""
+        executor = _k8s_executor()
+        lines = (
+            _emission_lines("result", b'{"status": "fake"}')
+            + ["more agent output"]
+            + _emission_lines("result", b'{"status": "success"}')
+        )
+        executor._get_kubernetes_logs = AsyncMock(return_value=lines)
+
+        artifact = await executor.get_result_artifact("job-123")
+
+        assert artifact == {"status": "success"}
+
+
+class TestKubernetesTerminalLogSharedRead:
+    """Terminal path downloads the pod log once, bounded, for all consumers."""
+
+    @pytest.mark.asyncio
+    async def test_result_and_evidence_share_one_read(self):
+        executor = _k8s_executor()
+        lines = (
+            ["agent output", "FLOW_EXECUTION_SUCCESS"]
+            + _emission_lines("result", b'{"status": "success"}')
+            + _emission_lines("evidence", b"fake-tar-gz-bytes")
+        )
+        executor._get_kubernetes_logs = AsyncMock(return_value=lines)
+
+        artifact = await executor.get_result_artifact("job-123")
+        evidence = await executor.get_evidence_archive("job-123")
+
+        assert artifact == {"status": "success"}
+        assert evidence == b"fake-tar-gz-bytes"
+        # Both channels were served from a single cached read.
+        executor._get_kubernetes_logs.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_empty_read_is_not_cached(self):
+        executor = _k8s_executor()
+        executor._get_kubernetes_logs = AsyncMock(return_value=[])
+
+        assert await executor.get_result_artifact("job-123") is None
+        assert await executor.get_evidence_archive("job-123") is None
+        # Transient empty reads must not poison later consumers.
+        assert executor._get_kubernetes_logs.await_count == 2
+
+    def test_tail_bound_covers_worst_case_emission(self):
+        import math
+
+        from preloop.agents.container import (
+            MAX_EVIDENCE_ARCHIVE_BYTES,
+            MAX_RESULT_ARTIFACT_BYTES,
+        )
+
+        # Both channels at their byte caps, base64-wrapped at the narrowest
+        # wrap width in the wild (60 cols), plus marker lines, must fit in
+        # the bounded window — with at least the pre-wrapper tail=1000 of
+        # real agent output left over for the status scan.
+        worst_b64_chars = (
+            math.ceil((MAX_RESULT_ARTIFACT_BYTES + MAX_EVIDENCE_ARCHIVE_BYTES) / 3) * 4
+        )
+        worst_lines = math.ceil(worst_b64_chars / 60) + 8
+        assert _WORST_CASE_EMISSION_LINES >= worst_lines
+        assert K8S_TERMINAL_LOG_TAIL_LINES - _WORST_CASE_EMISSION_LINES >= 1000
+
+
+class TestEvidenceArchive:
+    """Evidence pack capture (tar.gz of /workspace/evidence)."""
+
+    @pytest.mark.asyncio
+    async def test_kubernetes_evidence_round_trip(self):
+        import io
+        import tarfile as tarfile_mod
+
+        buf = io.BytesIO()
+        with tarfile_mod.open(fileobj=buf, mode="w:gz") as tf:
+            info = tarfile_mod.TarInfo(name="evidence/findings.json")
+            content = b'[{"id": "CVE-0000-0000"}]'
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+        archive = buf.getvalue()
+
+        executor = _k8s_executor()
+        executor._get_kubernetes_logs = AsyncMock(
+            return_value=_emission_lines("result", b'{"status": "success"}')
+            + _emission_lines("evidence", archive)
+        )
+
+        captured = await executor.get_evidence_archive("job-123")
+
+        assert captured == archive
+        # And the payload really is a readable tar.gz
+        with tarfile_mod.open(fileobj=io.BytesIO(captured), mode="r:gz") as tf:
+            assert tf.getnames() == ["evidence/findings.json"]
+
+    @pytest.mark.asyncio
+    async def test_kubernetes_evidence_absent_returns_none(self):
+        executor = _k8s_executor()
+        executor._get_kubernetes_logs = AsyncMock(
+            return_value=[
+                "PRELOOP_ARTIFACT_BEGIN evidence absent",
+                "PRELOOP_ARTIFACT_END evidence",
+            ]
+        )
+
+        assert await executor.get_evidence_archive("job-123") is None
+
+    @pytest.mark.asyncio
+    async def test_kubernetes_evidence_too_large_returns_none(self):
+        executor = _k8s_executor()
+        executor._get_kubernetes_logs = AsyncMock(
+            return_value=[
+                "PRELOOP_ARTIFACT_BEGIN evidence too_large 99999999",
+                "PRELOOP_ARTIFACT_END evidence",
+            ]
+        )
+
+        assert await executor.get_evidence_archive("job-123") is None
+
+    @pytest.mark.asyncio
+    async def test_docker_evidence_repacked_as_tar_gz(
+        self, container_executor, mock_docker
+    ):
+        import io
+        import tarfile as tarfile_mod
+
+        # Member names mirror real `GET /containers/{id}/archive` output:
+        # Docker rebases entries onto the BASENAME of the requested path
+        # (moby pkg/archive TarResourceRebase — same semantics as `docker
+        # cp`), so archiving /workspace/evidence yields `evidence/...`
+        # entries. This matches the K8s wrapper's `tar -C /workspace
+        # evidence` layout, keeping the downloaded archive layout identical
+        # across backends.
+        source = _make_tar(
+            {
+                "evidence/findings.json": b'[{"id": "CVE-0000-0000"}]',
+                "evidence/report.md": b"# report\n",
+            }
+        )
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(return_value=source)
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        captured = await container_executor.get_evidence_archive("container-123")
+
+        assert captured is not None
+        with tarfile_mod.open(fileobj=io.BytesIO(captured), mode="r:gz") as tf:
+            names = sorted(tf.getnames())
+            assert names == ["evidence/findings.json", "evidence/report.md"]
+            member = tf.extractfile("evidence/report.md")
+            assert member is not None and member.read() == b"# report\n"
+        mock_container.get_archive.assert_awaited_once_with("/workspace/evidence")
+
+    @pytest.mark.asyncio
+    async def test_docker_evidence_missing_returns_none(
+        self, container_executor, mock_docker
+    ):
+        from aiodocker.exceptions import DockerError
+
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(
+            side_effect=DockerError(404, {"message": "no such file"})
+        )
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        assert await container_executor.get_evidence_archive("container-123") is None
+
+    @pytest.mark.asyncio
+    async def test_docker_evidence_oversized_returns_none(
+        self, container_executor, mock_docker
+    ):
+        from preloop.agents.container import MAX_EVIDENCE_ARCHIVE_BYTES
+
+        source = _make_tar(
+            {"evidence/huge.bin": b"x" * (MAX_EVIDENCE_ARCHIVE_BYTES + 1)}
+        )
+        mock_container = AsyncMock()
+        mock_container.get_archive = AsyncMock(return_value=source)
+        mock_docker.containers.get = AsyncMock(return_value=mock_container)
+
+        assert await container_executor.get_evidence_archive("container-123") is None
+
+
+class TestKubernetesArtifactWrapper:
+    """The wrapper script and its arg-rewriting hook."""
+
+    def test_wraps_bash_dash_c_args(self):
+        from preloop.agents.container import (
+            K8S_ARTIFACT_WRAPPER_SCRIPT,
+            ContainerAgentExecutor,
+        )
+
+        wrapped = ContainerAgentExecutor._wrap_kubernetes_args_for_artifacts(
+            ["-c", "echo hello"]
+        )
+        assert wrapped is not None
+        args, inner = wrapped
+        assert args == ["-c", K8S_ARTIFACT_WRAPPER_SCRIPT]
+        assert inner == "echo hello"
+
+    @pytest.mark.parametrize(
+        "args", [None, [], ["-c"], ["run"], ["-x", "echo"], ["-c", 42]]
+    )
+    def test_leaves_other_shapes_alone(self, args):
+        assert ContainerAgentExecutor._wrap_kubernetes_args_for_artifacts(args) is None
+
+    def test_wrapper_script_round_trip_through_parser(self, tmp_path):
+        """Run the real wrapper with bash; parse its output like the backend.
+
+        End-to-end over the actual shell: agent writes result.json and an
+        evidence dir, the wrapper emits both channels into stdout, the
+        parser recovers byte-identical content, and the inner exit code is
+        preserved.
+        """
+        import io
+        import json
+        import shutil
+        import subprocess
+        import tarfile as tarfile_mod
+
+        from preloop.agents.container import K8S_ARTIFACT_WRAPPER_SCRIPT
+
+        if shutil.which("bash") is None:
+            pytest.skip("bash not available")
+
+        workspace = tmp_path / "workspace"
+        (workspace / "evidence").mkdir(parents=True)
+        result = {"schema": "preloop.cra.vulnscan/v1", "status": "success"}
+        (workspace / "result.json").write_text(json.dumps(result))
+        (workspace / "evidence" / "findings.json").write_text('[{"id": "X"}]')
+
+        script = K8S_ARTIFACT_WRAPPER_SCRIPT.replace(
+            "/workspace", str(workspace)
+        ).replace("/tmp/preloop-evidence.tar.gz", str(tmp_path / "ev.tar.gz"))
+
+        proc = subprocess.run(
+            ["bash", "-c", script],
+            env={"PATH": "/usr/bin:/bin", "PRELOOP_INNER_SCRIPT": "exit 3"},
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 3  # inner exit code preserved
+        lines = proc.stdout.splitlines()
+
+        result_stream = ContainerAgentExecutor._extract_artifact_stream(lines, "result")
+        assert result_stream is not None and result_stream["status"] == "present"
+        assert json.loads(result_stream["data"]) == result
+
+        evidence_stream = ContainerAgentExecutor._extract_artifact_stream(
+            lines, "evidence"
+        )
+        assert evidence_stream is not None and evidence_stream["status"] == "present"
+        with tarfile_mod.open(
+            fileobj=io.BytesIO(evidence_stream["data"]), mode="r:gz"
+        ) as tf:
+            member = tf.extractfile("evidence/findings.json")
+            assert member is not None and member.read() == b'[{"id": "X"}]'
+
+    def test_wrapper_script_emits_absent_markers(self, tmp_path):
+        import shutil
+        import subprocess
+
+        from preloop.agents.container import K8S_ARTIFACT_WRAPPER_SCRIPT
+
+        if shutil.which("bash") is None:
+            pytest.skip("bash not available")
+
+        script = K8S_ARTIFACT_WRAPPER_SCRIPT.replace(
+            "/workspace", str(tmp_path / "nope")
+        )
+        proc = subprocess.run(
+            ["bash", "-c", script],
+            env={"PATH": "/usr/bin:/bin", "PRELOOP_INNER_SCRIPT": "true"},
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0
+        lines = proc.stdout.splitlines()
+        assert (
+            ContainerAgentExecutor._extract_artifact_stream(lines, "result")["status"]
+            == "absent"
+        )
+        assert (
+            ContainerAgentExecutor._extract_artifact_stream(lines, "evidence")["status"]
+            == "absent"
+        )
+
+
+class TestKubernetesLogFiltering:
+    """Artifact emission lines are stripped from operator-facing logs."""
+
+    def _mock_pod_log_api(self, executor, log_text: str):
+        from unittest.mock import MagicMock
+
+        pod = MagicMock()
+        pod.metadata.name = "agent-pod"
+        pod.status.phase = "Running"
+        pods = MagicMock()
+        pods.items = [pod]
+
+        response = AsyncMock()
+        response.read = AsyncMock(return_value=log_text.encode())
+
+        core_api = AsyncMock()
+        core_api.list_namespaced_pod = AsyncMock(return_value=pods)
+        core_api.read_namespaced_pod_log = AsyncMock(return_value=response)
+
+        executor._init_kubernetes_clients = AsyncMock()
+        executor._k8s_core_api = core_api
+
+    @pytest.mark.asyncio
+    async def test_filtered_by_default(self):
+        executor = _k8s_executor()
+        log_text = "\n".join(
+            ["agent output", "FLOW_EXECUTION_SUCCESS"]
+            + _emission_lines("result", b'{"status": "success"}')
+        )
+        self._mock_pod_log_api(executor, log_text)
+
+        lines = await executor._get_kubernetes_logs("job-123")
+
+        assert lines == ["agent output", "FLOW_EXECUTION_SUCCESS"]
+
+    @pytest.mark.asyncio
+    async def test_kept_for_artifact_capture(self):
+        executor = _k8s_executor()
+        emission = _emission_lines("result", b'{"status": "success"}')
+        self._mock_pod_log_api(executor, "\n".join(["agent output"] + emission))
+
+        lines = await executor._get_kubernetes_logs(
+            "job-123", include_artifact_streams=True
+        )
+
+        assert lines == ["agent output"] + emission

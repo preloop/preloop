@@ -51,16 +51,16 @@ jobs:
     name: Tests & version checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
 
       - name: Run runtime plugin tests
         run: |
-          pip install pytest
+          pip install --require-hashes -r .github/requirements/runtime-test.txt
           pytest runtime-plugins/tests -q
 
       - name: Check per-plugin manifest lockstep (and tag match)
@@ -96,9 +96,9 @@ jobs:
       run:
         working-directory: runtime-plugins/openclaw-preloop
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
@@ -108,6 +108,14 @@ jobs:
           npm ci
           npm run build
           npm pack --dry-run
+
+      # Lockfile-pinned ClawHub CLI (see .github/tools/clawhub). `npm ci` is
+      # what Scorecard accepts; a global `npm i -g` is not.
+      - name: Install ClawHub CLI
+        working-directory: .github/tools/clawhub
+        run: |
+          npm ci
+          echo "${GITHUB_WORKSPACE}/.github/tools/clawhub/node_modules/.bin" >> "$GITHUB_PATH"
 
       # Fail before npm is touched if the ClawHub token is missing or the
       # package does not pass the Plugin Inspector. npm and ClawHub must go out
@@ -119,7 +127,6 @@ jobs:
             echo "::error::secret CLAWHUB_TOKEN is not set on the 'release' environment — refusing to publish to npm, because npm and ClawHub must not diverge. Generate it once locally with 'clawhub login' then 'clawhub token', and add it as a repo secret."
             exit 1
           fi
-          npm i -g clawhub
           clawhub login --token "$CLAWHUB_TOKEN" --no-input
           clawhub whoami --no-input
           clawhub package validate . --json --no-input
@@ -188,23 +195,23 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
 
       - name: Build
         working-directory: runtime-plugins/hermes-preloop
         run: |
-          pip install build twine
+          pip install --require-hashes -r "$GITHUB_WORKSPACE/.github/requirements/build.txt"
           python -m build
           twine check dist/*
 
       - name: Publish
         if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           password: ${{ secrets.PLUGINS_PYPI_TOKEN }}
           packages-dir: runtime-plugins/hermes-preloop/dist/

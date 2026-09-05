@@ -1995,7 +1995,7 @@ export class RuntimeSessionsView extends LitElement {
                         .selectedSessionId=${this.selectedSessionId}
                         .syncModeToUrl=${true}
                         layout="full"
-                        defaultReplayMode="timeline"
+                        defaultReplayMode="conversation"
                         .features=${{
                           summaries: true,
                           optimization:

@@ -87,6 +87,30 @@ class TestPolicyDocumentValid:
         doc = PolicyDocument(**data)
         assert doc.tools[0].source == "github"
 
+    def test_tool_with_agent_source(self):
+        data = _minimal_doc(
+            mcp_servers=[_server("Example MCP Server")],
+            tools=[_tool("Bash", source="agent")],
+        )
+        doc = PolicyDocument(**data)
+        assert doc.tools[0].source == "agent"
+
+    def test_tool_with_agent_source_case_insensitive(self):
+        data = _minimal_doc(
+            tools=[_tool("Bash", source="AGENT")],
+        )
+        doc = PolicyDocument(**data)
+        assert doc.tools[0].source == "agent"
+
+    def test_policy_document_accepts_agent_source_without_mcp_server(self):
+        """A native tool with source agent is not an MCP server name."""
+        data = _minimal_doc(
+            tools=[_tool("Bash", source="agent")],
+        )
+        doc = PolicyDocument(**data)
+        assert doc.tools[0].source == "agent"
+        assert doc.mcp_servers is None
+
     def test_tool_with_conditions(self):
         data = _minimal_doc(
             approval_workflows=[_approval_workflow("pol")],
@@ -313,6 +337,10 @@ class TestToolDefinition:
     def test_http_source(self):
         tool = ToolDefinition(name="webhook", source="http")
         assert tool.source == "http"
+
+    def test_agent_source(self):
+        tool = ToolDefinition(name="Bash", source="agent")
+        assert tool.source == "agent"
 
     def test_custom_server_source(self):
         tool = ToolDefinition(name="create_issue", source="github-server")

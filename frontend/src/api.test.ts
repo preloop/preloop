@@ -1,7 +1,12 @@
 import { expect } from '@open-wc/testing';
 import sinon from 'sinon';
 import { Router } from '@vaadin/router';
-import { fetchWithAuth, AuthedElement, getFlowExecutions } from './api.js';
+import {
+  fetchWithAuth,
+  AuthedElement,
+  getFlowExecutions,
+  uploadAvatar,
+} from './api.js';
 import { customElement } from 'lit/decorators.js';
 
 // Minimal test element that exposes fetchData for testing
@@ -238,6 +243,65 @@ describe('api', () => {
         'recovered-refresh-token'
       );
     });
+
+    it('asks once when two callers want the same GET at the same time', async () => {
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      fetchStub.callsFake(async () => {
+        await gate;
+        return new Response(JSON.stringify({ users: [{ id: 'user-1' }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      const both = Promise.all([
+        fetchWithAuth('/api/v1/users?skip=0&limit=100'),
+        fetchWithAuth('/api/v1/users?skip=0&limit=100'),
+      ]);
+      release();
+      const [first, second] = await both;
+
+      expect(fetchStub.callCount, 'one network request').to.equal(1);
+      // Each caller reads its own body: a shared response consumed once
+      // would leave the second caller with a locked stream.
+      expect(await first.json()).to.eql({ users: [{ id: 'user-1' }] });
+      expect(await second.json()).to.eql({ users: [{ id: 'user-1' }] });
+    });
+
+    it('asks again once the shared request has settled', async () => {
+      fetchStub.resolves(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+
+      await fetchWithAuth('/api/v1/features');
+      await fetchWithAuth('/api/v1/features');
+
+      // A coalescer, not a cache: nothing is remembered after a response
+      // lands, so nobody can read a stale body.
+      expect(fetchStub.callCount).to.equal(2);
+    });
+
+    it('never joins two writes to the same URL', async () => {
+      fetchStub.resolves(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+
+      await Promise.all([
+        fetchWithAuth('/api/v1/flows', { method: 'POST', body: '{}' }),
+        fetchWithAuth('/api/v1/flows', { method: 'POST', body: '{}' }),
+      ]);
+
+      expect(fetchStub.callCount).to.equal(2);
+    });
   });
 
   describe('getFlowExecutions', () => {
@@ -361,6 +425,61 @@ describe('api', () => {
 
       expect(result).to.be.null;
       document.body.removeChild(el);
+    });
+  });
+
+  describe('uploadAvatar', () => {
+    const file = new File(['avatar'], 'photo.png', { type: 'image/png' });
+
+    it('uses the API detail string when present', async () => {
+      fetchStub.resolves(
+        new Response(JSON.stringify({ detail: 'Not an image.' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+
+      let message = '';
+      try {
+        await uploadAvatar(file);
+      } catch (e: unknown) {
+        message = (e as Error).message;
+      }
+      expect(message).to.equal('Not an image.');
+    });
+
+    it('explains a 413 HTML body as too large', async () => {
+      fetchStub.resolves(
+        new Response('<html>413 Request Entity Too Large</html>', {
+          status: 413,
+          headers: { 'Content-Type': 'text/html' },
+        })
+      );
+
+      let message = '';
+      try {
+        await uploadAvatar(file);
+      } catch (e: unknown) {
+        message = (e as Error).message;
+      }
+      expect(message).to.equal('Image too large to upload.');
+    });
+
+    it('includes the HTTP status when the body is not JSON', async () => {
+      fetchStub.resolves(
+        new Response('<html>Bad Gateway</html>', {
+          status: 502,
+          headers: { 'Content-Type': 'text/html' },
+        })
+      );
+
+      let message = '';
+      try {
+        await uploadAvatar(file);
+      } catch (e: unknown) {
+        message = (e as Error).message;
+      }
+      expect(message).to.equal('Failed to upload avatar (502)');
     });
   });
 });

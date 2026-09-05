@@ -14,6 +14,7 @@ import {
   deleteToolOutputFilter,
   listToolOutputFilters,
 } from '../api';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 /**
  * Dialog for managing tool output filters. Opened from the session
@@ -67,76 +68,79 @@ export class ToolOutputFilterDialog extends LitElement {
   @state()
   private errorMessage: string | null = null;
 
-  static styles = css`
-    :host {
-      display: contents;
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      :host {
+        display: contents;
+      }
 
-    .field-list {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-x-small);
-      margin-top: var(--sl-spacing-x-small);
-    }
+      .field-list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-x-small);
+        margin-top: var(--sl-spacing-x-small);
+      }
 
-    .section-title {
-      color: var(--sl-color-neutral-900);
-      font-weight: 600;
-      margin-top: var(--sl-spacing-medium);
-    }
+      .section-title {
+        color: var(--sl-color-neutral-900);
+        font-weight: 600;
+        margin-top: var(--sl-spacing-medium);
+      }
 
-    .hint {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-      line-height: 1.45;
-      margin-top: var(--sl-spacing-2x-small);
-    }
+      .hint {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        line-height: 1.45;
+        margin-top: var(--sl-spacing-2x-small);
+      }
 
-    .scope {
-      color: var(--sl-color-neutral-700);
-      font-size: var(--sl-font-size-small);
-    }
+      .scope {
+        color: var(--sl-color-neutral-700);
+        font-size: var(--sl-font-size-small);
+      }
 
-    .existing {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-x-small);
-      margin-top: var(--sl-spacing-x-small);
-    }
+      .existing {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-x-small);
+        margin-top: var(--sl-spacing-x-small);
+      }
 
-    .existing-item {
-      align-items: center;
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      display: flex;
-      gap: var(--sl-spacing-small);
-      justify-content: space-between;
-      padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
-    }
+      .existing-item {
+        align-items: center;
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        display: flex;
+        gap: var(--sl-spacing-small);
+        justify-content: space-between;
+        padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+      }
 
-    .existing-meta {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-x-small);
-    }
+      .existing-meta {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-x-small);
+      }
 
-    .existing-fields {
-      display: flex;
-      flex-wrap: wrap;
-      gap: var(--sl-spacing-2x-small);
-      margin-top: var(--sl-spacing-2x-small);
-    }
+      .existing-fields {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-2x-small);
+        margin-top: var(--sl-spacing-2x-small);
+      }
 
-    .empty {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-    }
+      .empty {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+      }
 
-    .error {
-      color: var(--sl-color-danger-700);
-      font-size: var(--sl-font-size-small);
-      margin-top: var(--sl-spacing-x-small);
-    }
-  `;
+      .error {
+        color: var(--sl-color-danger-700);
+        font-size: var(--sl-font-size-small);
+        margin-top: var(--sl-spacing-x-small);
+      }
+    `,
+  ];
 
   willUpdate(changed: Map<string, unknown>): void {
     // Re-seed the checklist whenever the dialog is (re)opened or the suggested

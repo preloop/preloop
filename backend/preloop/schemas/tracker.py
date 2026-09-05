@@ -4,8 +4,9 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, HttpUrl, ConfigDict
+from pydantic import BaseModel, Field, HttpUrl, ConfigDict, computed_field
 
+from preloop.models.crud.tracker import UNKNOWN_PROJECTS_META_KEY
 from preloop.models.models.tracker import TrackerType
 from .tracker_scope_rule import TrackerScopeRuleCreate, TrackerScopeRuleResponse
 
@@ -136,6 +137,26 @@ class TrackerResponse(TrackerBase):
     )
 
     model_config = {"from_attributes": True}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def degraded_projects(self) -> List[str]:
+        """Project identifiers seen on webhooks that never resolved.
+
+        These are repositories/projects the tracker receives webhooks for but
+        which repeated syncs could not import -- almost always because the
+        integration's scope excludes them (GitHub App installed on selected
+        repositories only, or an EXCLUDE scope rule). Surfaced so the user can
+        fix the scope instead of the sync retrying forever.
+        """
+        unknown = (self.meta_data or {}).get(UNKNOWN_PROJECTS_META_KEY) or {}
+        if not isinstance(unknown, dict):
+            return []
+        return sorted(
+            identifier
+            for identifier, entry in unknown.items()
+            if isinstance(entry, dict) and entry.get("degraded")
+        )
 
 
 class TrackerTestRequest(BaseModel):

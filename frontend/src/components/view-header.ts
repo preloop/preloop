@@ -30,12 +30,24 @@ export class ViewHeader extends LitElement {
       }
       h1 {
         margin: 0;
+        font-size: var(--console-text-h1);
+        font-weight: 600;
+        letter-spacing: -0.01em;
       }
+      /* neutral-500 is 3.0:1 on a dark card: the meta rung of the ladder is
+         the only gray allowed to carry 13px text in either theme. */
       .description,
       ::slotted([slot='description']) {
         margin: var(--sl-spacing-2x-small) 0 0;
-        color: var(--sl-color-neutral-500);
-        font-size: 0.9rem;
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+      }
+      /* Page-level meta ("Updated just now") sits opposite the title, in the
+         meta register: it says when, not what. */
+      ::slotted([slot='meta']) {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+        font-variant-numeric: tabular-nums;
       }
     `,
   ];
@@ -50,6 +62,7 @@ export class ViewHeader extends LitElement {
               <slot name="title-prefix"></slot>${this.headerText}
             </h1>
             <slot name="main-column"></slot>
+            <slot name="meta"></slot>
           </div>
           ${
             this.description

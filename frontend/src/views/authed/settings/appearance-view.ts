@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
 import '@shoelace-style/shoelace/dist/components/radio-button/radio-button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
+import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { DEFAULT_THEME, Theme } from '../../../theme';
 
@@ -55,18 +56,31 @@ export class AppearanceView extends LitElement {
 
   render() {
     return html`
-      <view-header headerText="Appearance" width="narrow"> </view-header>
+      <view-header
+        headerText="Appearance"
+        description="Customize the look and feel of the Preloop console."
+        width="narrow"
+      ></view-header>
       <div class="column-layout narrow">
         <div class="main-column">
           <sl-card>
             <sl-radio-group
-              label="Theme"
+              label="Theme Preference"
               value=${this.selectedTheme}
               @sl-change=${this.handleThemeChange}
             >
-              <sl-radio-button value="light">Light</sl-radio-button>
-              <sl-radio-button value="dark">Dark</sl-radio-button>
-              <sl-radio-button value="system">System</sl-radio-button>
+              <sl-radio-button value="light">
+                <sl-icon slot="prefix" name="sun"></sl-icon>
+                Light
+              </sl-radio-button>
+              <sl-radio-button value="dark">
+                <sl-icon slot="prefix" name="moon"></sl-icon>
+                Dark
+              </sl-radio-button>
+              <sl-radio-button value="system">
+                <sl-icon slot="prefix" name="display"></sl-icon>
+                System
+              </sl-radio-button>
             </sl-radio-group>
           </sl-card>
         </div>

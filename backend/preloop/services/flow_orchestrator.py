@@ -2,8 +2,10 @@ import logging
 import uuid
 import json
 import asyncio
+import shlex
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import re
 
 from sqlalchemy.orm import Session
@@ -20,20 +22,73 @@ from preloop.models.crud import (
     crud_user,
 )
 from preloop.models.models.flow import Flow
+from preloop.models.models.flow_execution import (
+    MATRIX_OVERRIDES_KEY,
+    resolve_matrix_agent_selection,
+)
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.runtime_session import RuntimeSession
-from preloop.agents import create_agent_executor, AgentStatus
+from preloop.agents import (
+    create_executor_for_execution,
+    AgentStatus,
+)
+from preloop.agents.container import AGENT_SESSION_SUFFIX_KEY
+from preloop.agents.completion_nudge import (
+    COMPLETION_NUDGE_MARKER,
+    COMPLETION_NUDGE_RESULT_MARKER,
+    COMPLETION_NUDGE_UNSUPPORTED_MARKER,
+)
+from preloop.agents.failure_analysis import analyze_agent_failure
+from preloop.services.flow_failure_category import (
+    FAILURE_CATEGORY_UNKNOWN,
+    derive_failure_category,
+)
+from preloop.services.flow_execution_notifications import (
+    needs_tracker_comment,
+    notify_terminal_execution,
+)
+from preloop.services.prompt_resolvers.execution import execution_console_url
+from preloop.config import settings
+from preloop.services.flow_pr_binding import (
+    PR_OPENED_MARKER,
+    find_bound_execution,
+    max_resumes_per_pr,
+    merge_result_preserving_pr_binding,
+    note_resume_started,
+    parse_pr_opened_marker,
+    record_opened_pr,
+    resume_count,
+    take_pending_followup,
+)
 from preloop.services.prompt_resolvers import (
     resolver_registry,
     ResolverContext,
     TriggerEventResolver,
     ProjectResolver,
     AccountResolver,
+    ExecutionResolver,
 )
+from preloop.services.prompt_resolvers.execution import resume_rebase_conflict_hint
 from preloop.services.flow_execution_logger import FlowExecutionLogger
+from preloop.services.flow_runtime_token import (
+    create_flow_runtime_token,
+    revoke_flow_runtime_tokens,
+)
+from preloop.services.tracker_git_token import resolve_tracker_git_token
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
-from preloop.utils.repo_urls import inject_oauth_token, tracker_host_kind
+from preloop.utils.git_credentials import (
+    GitCredential,
+    credential_username,
+    strip_url_credentials,
+    temporary_credential_file,
+)
+from preloop.utils.repo_urls import repo_url_log_location, tracker_host_kind
+from preloop.utils.workspace_seed import (
+    attach_workspace_file_paths,
+    parse_workspace_files,
+)
+from preloop.utils.secret_scrubbing import scrub_secrets
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AUDIT,
     ACCOUNT_TOPIC_RUNTIME_SESSIONS,
@@ -42,6 +97,12 @@ from preloop.services.account_realtime import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Statuses after which no agent of this execution can still be running, so its
+# runtime credentials can be retired. Anything else means the agent may still
+# be live (an interrupted run is resumed by a peer worker), and its gateway
+# token must keep working.
+TERMINAL_EXECUTION_STATUSES = frozenset({"SUCCEEDED", "FAILED", "STOPPED", "CANCELLED"})
 
 # Sentinel string that agents print when completing successfully.
 FLOW_SUCCESS_SENTINEL = "FLOW_EXECUTION_SUCCESS"
@@ -62,9 +123,247 @@ MCP_TOOL_LOOP_DUPLICATE_WINDOW_SECONDS = 0.5
 FLOW_SUCCESS_INSTRUCTION = f"""
 
 ---
-IMPORTANT: When you have successfully completed your task, you MUST print the following marker on a line by itself: {FLOW_SUCCESS_SENTINEL}
-Do not include any other text on the same line as the marker. This signals successful completion.
+IMPORTANT: When you have successfully completed your task, you MUST confirm success in one of two ways: print the following marker on a line by itself (no other text on that line): {FLOW_SUCCESS_SENTINEL}
+or write /workspace/result.json with a recognized completion status. Statuses such as "success", "pass", and "fail" confirm completion. Preserve any richer structured report instead of replacing it with a bare status object. Without one of these confirmations the run is marked FAILED.
 ---"""
+
+FLOW_EVAL_SUCCESS_INSTRUCTION = """
+
+---
+IMPORTANT: Your existing structured /workspace/result.json report is the flow confirmation channel. Preserve its schema and all rich report fields; do not overwrite it with a bare status object. The `pass` and `fail` verdicts confirm that the flow completed. An `error` verdict means the evaluation could not complete. Do not print sentinel markers.
+---"""
+
+# Instruction for audit flows (CRA/RSA preset family) whose result contract
+# uses a top-level "verdict" instead of "status". Mirrors the eval precedent:
+# the structured result.json IS the confirmation channel, and a failing audit
+# is a completed flow. Unlike the eval instruction, the sentinel is not
+# forbidden — printing it additionally is harmless, and it stays REQUIRED for
+# contracts without a top-level "verdict" AND without a top-level "status"
+# field, which otherwise have no result.json confirmation at all.
+# (preloop.cra.vulnscan/v1 carries a top-level "status" completion field
+# since preset revision #283, so it uses the generic instruction, whose
+# result.json-status branch matches its contract.)
+# NOTE: the sentinel is kept INLINE (see FLOW_SUCCESS_INSTRUCTION) so the
+# prompt echo cannot trigger the exact-line detector.
+FLOW_AUDIT_SUCCESS_INSTRUCTION = f"""
+
+---
+IMPORTANT: Your structured /workspace/result.json report is the flow confirmation channel: a top-level "verdict" of "pass", "pass_with_findings", or "fail" confirms that the flow ran to completion (a failing audit is still a completed audit); a verdict of "error" means the audit itself could not complete. Preserve the exact result schema your instructions require and all rich report fields; never overwrite the file with a bare status object. Additionally printing the success marker on a line by itself (no other text on that line) after writing the file is allowed and harmless: {FLOW_SUCCESS_SENTINEL}
+If your required result shape has NO top-level "verdict" field, you MUST print that marker after writing the file — without it the run is marked FAILED.
+---"""
+
+# Schema ids of the audit result contracts (presets 004-006) whose top-level
+# "verdict" vocabulary is pass | pass_with_findings | fail (+ error). The
+# due-diligence contract (preloop.cra.duediligence/v1, verdict
+# "recorded" | "error") is deliberately NOT listed: its verdict vocabulary is
+# not a recognized completion confirmation, so those flows keep the generic
+# sentinel instruction.
+AUDIT_RESULT_SCHEMA_MARKERS = (
+    "preloop.cra.sbomaudit/v1",
+    "preloop.cra.releaseaudit/v1",
+)
+
+
+def _success_instruction_for_prompt(prompt: str) -> str:
+    """Select the completion instruction matching the prompt's result contract."""
+    normalized_prompt = prompt.lower()
+    if (
+        "preloop.eval.result/v1" in normalized_prompt
+        or "do not print sentinel markers" in normalized_prompt
+    ):
+        return FLOW_EVAL_SUCCESS_INSTRUCTION
+    if any(marker in normalized_prompt for marker in AUDIT_RESULT_SCHEMA_MARKERS):
+        return FLOW_AUDIT_SUCCESS_INSTRUCTION
+    return FLOW_SUCCESS_INSTRUCTION
+
+
+# result.json "status" values that count as an explicit success confirmation
+# (channel 2 — equal in standing to the printed sentinel) or an explicit
+# flow-failure report. Eval vocabulary (preloop.eval.result/v1): "pass" and
+# "fail" are completed-run verdicts (the subject's checks passed or failed);
+# only "error" means the eval itself could not complete. "fail" is therefore
+# a success confirmation for the flow, not a flow-failure signal.
+RESULT_ARTIFACT_SUCCESS_STATUSES = frozenset(
+    {"success", "succeeded", "pass", "passed", "fail"}
+)
+RESULT_ARTIFACT_FAILURE_STATUSES = frozenset({"failure", "failed", "error"})
+
+# Statuses that mean the work did not finish. On the widened-signal path
+# (runtimes that cannot be resumed) these must not count as success: a
+# report that says "timeout" is the agent saying it ran out of time.
+RESULT_ARTIFACT_INCOMPLETE_STATUSES = frozenset(
+    {
+        "timeout",
+        "timed_out",
+        "cancelled",
+        "canceled",
+        "partial",
+        "in_progress",
+        "running",
+        "pending",
+    }
+)
+
+# Audit vocabulary (preloop.cra.sbomaudit/v1, preloop.cra.releaseaudit/v1):
+# the top-level field is "verdict", never "status". As with eval, "fail" and
+# "pass_with_findings" are completed-run verdicts — the audit ran to
+# completion and reported its outcome — so they confirm the FLOW succeeded;
+# only "error" means the audit itself could not complete.
+RESULT_ARTIFACT_VERDICT_SUCCESSES = frozenset(
+    {"pass", "passed", "pass_with_findings", "fail"}
+)
+RESULT_ARTIFACT_VERDICT_FAILURES = frozenset({"error"})
+
+
+def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Classify a result.json artifact as an explicit completion verdict.
+
+    Returns ``"success"`` or ``"failure"`` when the artifact carries an
+    explicit ``status`` verdict, else ``None`` (no artifact, no status field,
+    or an unrecognised value — none of which is a confirmation).
+
+    ``status`` is authoritative when it carries a recognized value. When it
+    is absent or unrecognized, the audit contracts' top-level ``verdict`` is
+    consulted as a fallback so audit runs that honour their result schema are
+    recognized as completed (channel 2) instead of being overridden to FAILED
+    for a missing success confirmation.
+    """
+    if not isinstance(artifact, dict):
+        return None
+    status = artifact.get("status")
+    if isinstance(status, str):
+        normalized = status.strip().lower()
+        if normalized in RESULT_ARTIFACT_SUCCESS_STATUSES:
+            return "success"
+        if normalized in RESULT_ARTIFACT_FAILURE_STATUSES:
+            return "failure"
+    verdict = artifact.get("verdict")
+    if isinstance(verdict, str):
+        normalized = verdict.strip().lower()
+        if normalized in RESULT_ARTIFACT_VERDICT_SUCCESSES:
+            return "success"
+        if normalized in RESULT_ARTIFACT_VERDICT_FAILURES:
+            return "failure"
+    return None
+
+
+# Line-start prefix an agent can print during the one-shot confirmation round
+# to state plainly that the ORIGINAL task did not complete. Everything after
+# the prefix is surfaced verbatim as the failure reason.
+FLOW_FAILURE_REPORT_PREFIX = "FLOW_EXECUTION_FAILED:"
+
+# Rough chars-per-token ratio used to convert the configured nudge token
+# ceiling into a character budget for the prior-context excerpt.
+CONFIRMATION_NUDGE_TOKEN_CHAR_RATIO = 4
+
+# How many trailing lines of the previous run's output are quoted into the
+# nudge prompt (before the character budget is applied).
+CONFIRMATION_NUDGE_LOG_TAIL_LINES = 200
+
+
+def _armed_log_lines(lines: List[str]) -> List[str]:
+    """Return stripped log lines armed at the agent-exec-start marker.
+
+    Mirrors the live-stream detector: lines before AGENT_EXEC_START_MARKER
+    are prompt echo and are discarded. When the marker itself is missing from
+    the refetched logs (e.g. runtime-side truncation), all lines are scanned:
+    that is safe because every completion instruction embeds the sentinel
+    INLINE, so a prompt echo can never occupy a full line by itself.
+    """
+    stripped = [str(line).strip() for line in lines]
+    try:
+        start = stripped.index(AGENT_EXEC_START_MARKER) + 1
+    except ValueError:
+        start = 0
+    return stripped[start:]
+
+
+def _sentinel_in_log_lines(lines: List[str]) -> bool:
+    """Exact-line success-sentinel scan over complete (refetched) logs."""
+    return FLOW_SUCCESS_SENTINEL in _armed_log_lines(lines)
+
+
+def _failure_report_in_log_lines(lines: List[str]) -> Optional[str]:
+    """Return the reason from an explicit FLOW_EXECUTION_FAILED: line, if any."""
+    for line in _armed_log_lines(lines):
+        if line.startswith(FLOW_FAILURE_REPORT_PREFIX):
+            return line[len(FLOW_FAILURE_REPORT_PREFIX) :].strip() or "no reason given"
+    return None
+
+
+def _build_confirmation_nudge_prompt(
+    original_prompt: str, prior_log_lines: List[str], max_tokens: int
+) -> str:
+    """Build the minimal follow-up prompt for the confirmation round.
+
+    The prompt carries prior context (head of the original prompt + tail of
+    the previous run's output) bounded by the configured token ceiling
+    (~4 chars/token, split evenly between the two excerpts). Every embedded
+    log line is quoted with "> " so that when the runtime echoes the prompt
+    into its own logs, no embedded line can satisfy the exact-line sentinel
+    detector or the line-start failure prefix.
+    """
+    budget_chars = max(2000, max_tokens * CONFIRMATION_NUDGE_TOKEN_CHAR_RATIO)
+    prompt_excerpt = original_prompt[: budget_chars // 2]
+    quoted_tail = "\n".join(
+        "> " + str(line)
+        for line in prior_log_lines[-CONFIRMATION_NUDGE_LOG_TAIL_LINES:]
+    )[-(budget_chars // 2) :]
+    return f"""This is a one-shot completion-confirmation round, NOT a new task.
+
+Your previous invocation for the task below exited without confirming whether it completed. Do NOT redo, continue, or extend the task, and do not perform any new side effects (no pushes, comments, or API writes).
+
+Decide from the context below whether the ORIGINAL task ran to completion.
+
+If and only if it completed, confirm it through the originally-instructed channel: prefer writing /workspace/result.json with the completion status or verdict the original instructions require (for example {{"status": "success"}}); printing this marker on a line by itself (no other text on that line) is also accepted: {FLOW_SUCCESS_SENTINEL}
+
+If it did not complete, state that plainly: write /workspace/result.json as {{"status": "failure", "reason": "<one short sentence>"}} or print a single line that starts with {FLOW_FAILURE_REPORT_PREFIX} followed by the reason.
+
+--- ORIGINAL TASK PROMPT (truncated, context only) ---
+{prompt_excerpt}
+--- END ORIGINAL TASK PROMPT ---
+
+--- OUTPUT TAIL OF PREVIOUS RUN (each line quoted with "> ") ---
+{quoted_tail}
+--- END OUTPUT TAIL ---"""
+
+
+# Bounds for a per-flow timeout budget. The floor keeps a typo from making a
+# flow unrunnable (a container needs longer than a few seconds just to pull an
+# image and clone), and the ceiling keeps a runaway run from holding a worker
+# slot and an agent Job for more than a day.
+FLOW_TIMEOUT_SECONDS_MIN = 60
+FLOW_TIMEOUT_SECONDS_MAX = 86400
+
+
+@dataclass(frozen=True)
+class TimeoutBudget:
+    """The wall-clock budget one flow execution is allowed to spend.
+
+    ``source`` is ``"flow"`` when the flow carries its own
+    ``timeout_seconds`` and ``"default"`` when the global setting applies. It
+    exists so the failure message can name the budget an operator has to
+    change, which the flat "Execution timed out after 3600 seconds" could
+    not: on staging every one of the 7 timeouts sat exactly on the global
+    ceiling, which told nobody whether the run was stuck or simply long.
+    """
+
+    seconds: int
+    source: str
+
+    def timeout_message(self) -> str:
+        """Operator-facing failure message naming the budget that expired."""
+        if self.source == "flow":
+            return (
+                f"Execution timed out after {self.seconds} seconds "
+                f"(this flow's timeout budget). Raise timeout_seconds on the "
+                "flow if the work genuinely needs longer."
+            )
+        return (
+            f"Execution timed out after {self.seconds} seconds (the default "
+            "timeout budget). Set timeout_seconds on the flow to give it a "
+            "budget of its own."
+        )
 
 
 def _make_json_serializable(obj: Any) -> Any:
@@ -100,6 +399,9 @@ class FlowExecutionOrchestrator:
         self.trigger_event_data = trigger_event_data
         self.flow: Optional[Flow] = None
         self.ai_model: Optional[AIModel] = None
+        # Effective agent type: flow.agent_type unless overridden by a matrix
+        # cell (see MATRIX_OVERRIDES_KEY); resolved in _get_flow_details.
+        self.agent_type: Optional[str] = None
         self.execution_log = None
         self.runtime_session: Optional[RuntimeSession] = None
         self.nats_client: Client = nats_client
@@ -109,21 +411,51 @@ class FlowExecutionOrchestrator:
         self._command_subscription: Optional[Any] = None
         self._stop_requested = asyncio.Event()
         self._success_sentinel_seen = asyncio.Event()
+        # PR/MR the container wrapper opened in its post-execution step, read
+        # from the PRELOOP_PR_OPENED log line and bound at terminal status.
+        self._opened_pr: Optional[Dict[str, str]] = None
         self._agent_exec_started = (
             False  # Set when AGENT_EXEC_START_MARKER seen in logs
         )
+        # One-shot completion-confirmation round (layer 2): at most one nudge
+        # per execution, across all attempts. Set the moment a nudge is
+        # considered, so even an errored nudge is never repeated.
+        self._confirmation_nudge_attempted = False
+        # In-place completion nudge (the cheap layer): the agent script itself
+        # re-invoked the harness in this container when it exited without
+        # confirming. Observed from the marker lines it prints, so the
+        # orchestrator never nudges a second time for the same session.
+        self._inplace_nudge_seen = False
+        self._inplace_nudge_logged = False
+        self._inplace_nudge_unsupported = False
+        # Execution context of the current attempt, kept so the confirmation
+        # nudge can re-invoke the agent with prior context.
+        self._execution_context: Optional[Dict[str, Any]] = None
         self._user_messages: asyncio.Queue = asyncio.Queue()
+        # Evidence pack (tar.gz bytes) captured alongside the result artifact
+        # before executor cleanup; persisted at finalize time. Kept out of
+        # the agent_result dict so it never travels through NATS updates.
+        self._evidence_archive: Optional[bytes] = None
+        # tar.gz of /workspace captured before the runtime is torn down, so a
+        # run that failed before pushing can be downloaded or resumed.
+        self._workspace_snapshot: Optional[bytes] = None
 
         # Execution metrics tracked during execution
         self.total_tokens: int = 0
         self.tool_calls_count: int = 0
-        self.estimated_cost: float = 0.0
+        # None means "not priced yet / could not be priced". Defaulting this to
+        # 0.0 made unpriced executions display a confident $0.00 in the UI.
+        self.estimated_cost: Optional[float] = None
 
         # Commit status tracking
         self._tracker_client = None
         self._commit_sha: Optional[str] = None
         self._status_context: str = "preloop"
         self._is_recovered: bool = False  # Set to True during execution recovery
+        # Warning messages already surfaced on the execution timeline, so a
+        # repeated condition (e.g. status posted at pending and again at
+        # success) does not spam the same line.
+        self._emitted_warnings: set[str] = set()
         # Set when a sync worker owns this orchestrator (claim lease heartbeat).
         self._orchestrator_worker_id: Optional[str] = None
 
@@ -200,6 +532,119 @@ class FlowExecutionOrchestrator:
         logger.debug(f"No commit SHA found in payload. Keys: {list(payload.keys())}")
         return None
 
+    def _extract_trigger_repository_identifier(self) -> Optional[str]:
+        """Return the repository identifier carried by the trigger payload.
+
+        GitHub sends ``repository.full_name`` and GitLab sends
+        ``project.path_with_namespace``. Used to tell "the webhook named a repo
+        we could not map to a project" (a real misconfiguration) apart from
+        "this execution has no repository context at all" (manual runs).
+        """
+        payload = self.trigger_event_data.get("payload", {})
+        if not isinstance(payload, dict):
+            return None
+
+        repo = payload.get("repository")
+        if isinstance(repo, dict):
+            identifier = repo.get("full_name") or repo.get("name")
+            if identifier:
+                return str(identifier)
+
+        project = payload.get("project")
+        if isinstance(project, dict):
+            identifier = project.get("path_with_namespace") or project.get("name")
+            if identifier:
+                return str(identifier)
+
+        return None
+
+    async def _resolve_commit_status_project_id(self) -> Optional[str]:
+        """Resolve the project the commit status must be posted to.
+
+        The status has to land on the repository that actually triggered this
+        execution. Posting to ``flow.trigger_project_ids[0]`` means every repo
+        other than the first one a multi-repo flow watches gets a
+        ``422 No commit found for SHA`` instead of a check (issue #175).
+        """
+        resolved = self._resolve_trigger_project_id(
+            allow_first_project_fallback=False,
+        )
+        if resolved:
+            return resolved
+
+        repo_identifier = self._extract_trigger_repository_identifier()
+        if repo_identifier:
+            # The webhook told us which repo it came from and we could not map
+            # it to a project. Falling back to the first trigger project would
+            # post the status to the wrong repository, so refuse and say so.
+            await self._emit_execution_warning(
+                "Commit status skipped: could not match the triggering repository "
+                f"'{repo_identifier}' to a Preloop project. Add it as a project on "
+                "the tracker so checks can be posted to the right repository.",
+                details={
+                    "repository": repo_identifier,
+                    "flow_trigger_project_ids": [
+                        str(pid) for pid in (self.flow.trigger_project_ids or [])
+                    ]
+                    if self.flow
+                    else [],
+                },
+            )
+            return None
+
+        trigger_project_ids = (
+            [str(pid) for pid in self.flow.trigger_project_ids]
+            if self.flow and self.flow.trigger_project_ids
+            else []
+        )
+        if not trigger_project_ids:
+            return None
+
+        if len(trigger_project_ids) > 1:
+            # No repository context and several candidates: any choice is a
+            # guess, so make the guess visible instead of silently picking one.
+            await self._emit_execution_warning(
+                "Commit status target is ambiguous: the trigger event carries no "
+                f"repository, and this flow watches {len(trigger_project_ids)} "
+                "projects. Using the first one, which may be the wrong repository.",
+                details={"flow_trigger_project_ids": trigger_project_ids},
+            )
+
+        return trigger_project_ids[0]
+
+    async def _emit_execution_warning(
+        self,
+        message: str,
+        *,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Surface a non-fatal problem on the execution timeline, not just in logs.
+
+        Server-side ``logger.warning`` calls are invisible to the user whose
+        flow silently did half its job. This publishes an ``execution_warning``
+        entry, which is persisted with the execution logs and rendered in the
+        console.
+
+        Identical messages are emitted once per execution: commit status runs
+        two or three times per execution (pending, then success or failure),
+        and a misconfiguration would otherwise repeat verbatim each time.
+        """
+        if message in self._emitted_warnings:
+            logger.debug(f"Suppressing repeated execution warning: {message}")
+            return
+        self._emitted_warnings.add(message)
+
+        logger.warning(message)
+        payload: Dict[str, Any] = {"message": message, "level": "warning"}
+        if details:
+            payload["details"] = _make_json_serializable(details)
+        try:
+            await self._publish_update("execution_warning", payload)
+        except Exception as publish_error:
+            logger.warning(
+                f"Failed to publish execution warning: {publish_error}",
+            )
+
     async def _get_tracker_client_for_status(self):
         """Get a tracker client for updating commit status.
 
@@ -210,20 +655,19 @@ class FlowExecutionOrchestrator:
             return self._tracker_client
 
         try:
-            # Get project from trigger_project_ids on the flow
             if not self.flow:
                 logger.warning("[CommitStatus] No flow object available")
                 return None
 
-            # Get the first project ID from the array (if any)
-            trigger_project_id = None
-            if self.flow.trigger_project_ids and len(self.flow.trigger_project_ids) > 0:
-                trigger_project_id = self.flow.trigger_project_ids[0]
+            # Resolve the project from the repository that ACTUALLY triggered
+            # this execution, not from flow.trigger_project_ids[0].
+            trigger_project_id = await self._resolve_commit_status_project_id()
 
             if not trigger_project_id:
-                # This is expected for flows not tied to a specific project
+                # Expected for flows not tied to a specific project; the
+                # misconfigured cases already emitted a warning above.
                 logger.debug(
-                    "[CommitStatus] Flow has no trigger_project_ids - skipping status update"
+                    "[CommitStatus] No trigger project resolved - skipping status update"
                 )
                 return None
 
@@ -232,15 +676,16 @@ class FlowExecutionOrchestrator:
 
             project = crud_project.get(self.db, id=trigger_project_id)
             if not project:
-                logger.warning(
-                    f"[CommitStatus] Project not found for trigger_project_id: "
-                    f"{trigger_project_id}"
+                await self._emit_execution_warning(
+                    "Commit status skipped: the triggering project "
+                    f"{trigger_project_id} no longer exists.",
                 )
                 return None
 
             if not project.organization_id:
-                logger.warning(
-                    f"[CommitStatus] Project {project.id} has no organization_id"
+                await self._emit_execution_warning(
+                    f"Commit status skipped: project {project.name} is not linked "
+                    "to an organization, so the target repository is unknown.",
                 )
                 return None
 
@@ -279,6 +724,24 @@ class FlowExecutionOrchestrator:
                 exc_info=True,
             )
             return None
+
+    @staticmethod
+    def _describe_status_target(tracker_client: Any) -> str:
+        """Human-readable description of where a commit status is being posted."""
+        details = getattr(tracker_client, "connection_details", None)
+        if not isinstance(details, dict):
+            return "the triggering repository"
+
+        owner = details.get("owner")
+        repo = details.get("repo")
+        if owner and repo:
+            return f"{owner}/{repo}"
+
+        project_path = details.get("project_path") or details.get("project_id")
+        if project_path:
+            return str(project_path)
+
+        return "the triggering repository"
 
     async def _update_commit_status(
         self,
@@ -325,6 +788,7 @@ class FlowExecutionOrchestrator:
             )
             return
 
+        status_target = "the triggering repository"
         try:
             logger.info(
                 f"[CommitStatus] Getting tracker client. "
@@ -340,6 +804,8 @@ class FlowExecutionOrchestrator:
                     f"account_id: {self.flow.account_id if self.flow else None}"
                 )
                 return
+
+            status_target = self._describe_status_target(tracker_client)
 
             logger.info(
                 f"[CommitStatus] Got tracker client: {type(tracker_client).__name__}, "
@@ -358,8 +824,6 @@ class FlowExecutionOrchestrator:
             if self.execution_log:
                 # Construct absolute URL to the execution details page
                 # GitHub/GitLab require absolute URLs for commit status links
-                from preloop.config import settings
-
                 base_url = getattr(settings, "preloop_url", None) or getattr(
                     settings, "PRELOOP_URL", None
                 )
@@ -396,10 +860,22 @@ class FlowExecutionOrchestrator:
             )
 
         except Exception as e:
-            # Don't fail the execution if status update fails
+            # Don't fail the execution if status update fails, but do not hide
+            # it either: a swallowed 422 used to leave the flow looking green
+            # while GitHub showed no check at all (issue #175).
             logger.error(
                 f"[CommitStatus] FAILED to update: {e}",
                 exc_info=True,
+            )
+            sha_label = self._commit_sha[:8] if self._commit_sha else "unknown"
+            await self._emit_execution_warning(
+                f"Commit status '{state}' could not be posted to {status_target} "
+                f"for commit {sha_label}: {_exception_message(e)}",
+                details={
+                    "state": state,
+                    "commit_sha": self._commit_sha,
+                    "target": status_target,
+                },
             )
 
     @staticmethod
@@ -536,21 +1012,40 @@ class FlowExecutionOrchestrator:
         if not self.flow:
             raise ValueError(f"Flow with id {self.flow_id} not found")
 
-        logger.info(
-            f"Found flow: {self.flow.name} (agent_type: {self.flow.agent_type})"
+        # Apply per-cell matrix overrides (batch fan-out) without mutating the
+        # shared flow row: a matrix trigger stores its cell's agent_type /
+        # ai_model_id inside trigger_event_details under MATRIX_OVERRIDES_KEY.
+        matrix_overrides = (self.trigger_event_data or {}).get(
+            MATRIX_OVERRIDES_KEY
+        ) or {}
+        self.agent_type, effective_ai_model_id = resolve_matrix_agent_selection(
+            self.trigger_event_data,
+            flow_agent_type=self.flow.agent_type,
+            flow_ai_model_id=self.flow.ai_model_id,
         )
+        if matrix_overrides:
+            logger.info(
+                "Matrix overrides for execution (batch %s, cell %s): "
+                "agent_type=%s, ai_model_id=%s",
+                matrix_overrides.get("batch_id"),
+                matrix_overrides.get("index"),
+                matrix_overrides.get("agent_type"),
+                matrix_overrides.get("ai_model_id"),
+            )
+
+        logger.info(f"Found flow: {self.flow.name} (agent_type: {self.agent_type})")
 
         # Get AI model if specified
-        if self.flow.ai_model_id:
+        if effective_ai_model_id:
             ai_model_id_str = (
-                str(self.flow.ai_model_id)
-                if isinstance(self.flow.ai_model_id, uuid.UUID)
-                else self.flow.ai_model_id
+                str(effective_ai_model_id)
+                if isinstance(effective_ai_model_id, uuid.UUID)
+                else effective_ai_model_id
             )
             self.ai_model = crud_ai_model.get(self.db, id=ai_model_id_str)
             if not self.ai_model:
                 logger.warning(
-                    f"AI model {self.flow.ai_model_id} not found for flow {self.flow_id}"
+                    f"AI model {effective_ai_model_id} not found for flow {self.flow_id}"
                 )
             else:
                 logger.info(
@@ -636,8 +1131,21 @@ class FlowExecutionOrchestrator:
                         f"No resolver found for prefix '{prefix}' and simple resolution failed for {{{{{placeholder}}}}}"
                     )
 
-        # Append the success sentinel instruction so the agent can signal completion
-        resolved_prompt = resolved_prompt + FLOW_SUCCESS_INSTRUCTION
+        # Resume runs always learn to inspect rebase-conflict.txt, because
+        # the rebase happens after this prompt is resolved. Keep this before
+        # the success-confirmation instruction, which must stay last.
+        resolved_prompt = resolved_prompt + resume_rebase_conflict_hint(
+            self.trigger_event_data
+        )
+
+        # Append the success-confirmation instruction so the agent can signal
+        # completion. MUST stay at the very END of the prompt (recency): after
+        # multi-million-token runs the model is far more likely to honor the
+        # last instruction it saw (see execution ff1294e1 — work done, marker
+        # forgotten). Nothing may be appended after this.
+        resolved_prompt = resolved_prompt + _success_instruction_for_prompt(
+            resolved_prompt
+        )
 
         logger.info("Prompt resolution complete")
         return resolved_prompt
@@ -651,6 +1159,8 @@ class FlowExecutionOrchestrator:
             resolver_registry.register(ProjectResolver())
         if not resolver_registry.get("account"):
             resolver_registry.register(AccountResolver())
+        if not resolver_registry.get("execution"):
+            resolver_registry.register(ExecutionResolver())
 
     def _sync_runtime_session(
         self,
@@ -778,114 +1288,101 @@ class FlowExecutionOrchestrator:
         Returns:
             Tuple of (token_key, token_id) or (None, None) if creation failed
         """
-        from datetime import timedelta
-        from preloop.models.crud import crud_user
-
         try:
-            account = crud_account.get(self.db, id=self.flow.account_id)
-
-            if not account:
-                logger.warning(f"Account {self.flow.account_id} not found")
-                return None, None
-
-            principal_user = None
-            if account.primary_user_id:
-                principal_user = crud_user.get(self.db, id=account.primary_user_id)
-                if principal_user and not principal_user.is_active:
-                    principal_user = None  # Fall back to other active users
-
-            if not principal_user:
-                # Fall back to the first available active user for older accounts that
-                # do not have `primary_user_id` populated yet, or if primary is inactive.
-                users = crud_user.get_by_account(
-                    self.db, account_id=self.flow.account_id
-                )
-                active_users = [u for u in users if u.is_active]
-                if active_users:
-                    principal_user = active_users[0]
-
-            if not principal_user:
-                logger.warning(
-                    f"No active users found for account {self.flow.account_id}, "
-                    f"cannot create API token"
-                )
-                return None, None
-
-            # Create API key that expires in 2 hours
-            expires_at = datetime.now(timezone.utc) + timedelta(hours=2)
             runtime_session = self._sync_runtime_session()
-
-            # Store flow execution context in the token for tool filtering
-            context_data = {
-                "flow_execution_id": str(self.execution_log.id)
-                if self.execution_log
-                else None,
-                "runtime_session_id": (
-                    str(runtime_session.id) if runtime_session is not None else None
-                ),
-                "flow_id": str(self.flow_id),
-                "allowed_mcp_tools": self.flow.allowed_mcp_tools or [],
-                "allowed_mcp_servers": self.flow.allowed_mcp_servers or [],
-                "runtime_principal": {
-                    "type": "flow_execution",
-                    "id": str(self.execution_log.id) if self.execution_log else None,
-                    "name": self.flow.name,
-                    "user_id": str(principal_user.id),
-                    "username": principal_user.username,
-                },
-            }
-
-            api_key, token_key = crud_api_key.create_runtime_key(
+            return create_flow_runtime_token(
                 self.db,
-                name=f"Flow Execution {self.execution_log.id if self.execution_log else 'temp'}",
-                account_id=self.flow.account_id,
-                user_id=principal_user.id,
-                expires_at=expires_at,
-                scopes=["mcp:read", "mcp:write"],
-                context_data=context_data,
+                flow=self.flow,
+                execution_id=self.execution_log.id if self.execution_log else None,
+                runtime_session_id=(
+                    runtime_session.id if runtime_session is not None else None
+                ),
             )
-
-            logger.info(
-                "Created temporary API key record id=%s for flow execution %s "
-                "(principal_user=%s), expires at %s",
-                api_key.id,
-                self.execution_log.id if self.execution_log else None,
-                principal_user.username,
-                expires_at,
-            )
-
-            return token_key, api_key.id
-
-        except Exception as e:
+        except Exception as exc:
             logger.error(
                 "Failed to create temporary API key record: %s",
-                type(e).__name__,
+                type(exc).__name__,
                 exc_info=True,
             )
             self.db.rollback()
             return None, None
 
+    def _execution_reached_terminal_state(self) -> bool:
+        """Read this execution's committed status back from the database.
+
+        The in-memory row can be stale (another worker may have finished the
+        execution), so the status is re-read rather than trusted.
+        """
+        if self.execution_log is None:
+            return False
+        try:
+            row = crud_flow_execution.get(self.db, id=self.execution_log.id)
+            if row is not None:
+                # Another worker may have finished this execution; without an
+                # explicit refresh the identity map hands back this session's
+                # own, possibly stale, copy of the row.
+                self.db.refresh(row)
+        except Exception as exc:
+            logger.warning(
+                "Could not read execution status for %s: %s",
+                self.execution_log.id,
+                type(exc).__name__,
+            )
+            return False
+        if row is None:
+            return False
+        return str(row.status).upper() in TERMINAL_EXECUTION_STATUSES
+
+    def _revoke_execution_runtime_tokens(self) -> int:
+        """Revoke every runtime token minted for this execution."""
+        account_id = getattr(self.flow, "account_id", None)
+        execution_id = self.execution_log.id if self.execution_log else None
+        revoked = revoke_flow_runtime_tokens(
+            self.db,
+            account_id=account_id,
+            execution_id=execution_id,
+        )
+        if revoked == 0 and self.temporary_api_key_id:
+            # Fall back to the key this orchestrator minted (account or
+            # execution unknown, e.g. a flow row that never loaded).
+            try:
+                if crud_api_key.deactivate(self.db, key_id=self.temporary_api_key_id):
+                    revoked = 1
+            except Exception as exc:
+                logger.error(
+                    "Failed to cleanup temporary API key record: %s",
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                self.db.rollback()
+        return revoked
+
     def _cleanup_temporary_api_token(self):
-        """Deactivate the temporary API token created for this flow execution."""
-        if not self.temporary_api_key_id:
+        """Retire this execution's runtime token once the execution is terminal.
+
+        The agent outlives its orchestrator. A deploy drain cancels the
+        in-flight handler, releases the claim and re-dispatches the execution
+        so a peer worker resumes monitoring the *same* agent Job (see
+        ``flow_execution_runner.claim_and_run_execution``). Revoking the token
+        on the way out of an interrupted run leaves that still-running agent
+        holding a credential the gateway rejects, and the run dies mid-stream
+        with "Invalid authentication credentials".
+
+        So the token is retired only when the execution itself has reached a
+        terminal state; whichever worker finishes the run revokes it.
+        """
+        if not self.temporary_api_key_id and self.execution_log is None:
             return
 
-        try:
-            api_key = crud_api_key.deactivate(self.db, key_id=self.temporary_api_key_id)
-
-            if api_key:
-                # Log outcome only — key ids are treated as sensitive by CodeQL.
-                logger.info("Deactivated temporary API key record")
-            else:
-                logger.warning("Temporary API key record not found for cleanup")
-
-        except Exception as e:
-            logger.error(
-                "Failed to cleanup temporary API key record: %s",
-                type(e).__name__,
-                exc_info=True,
+        if not self._execution_reached_terminal_state():
+            logger.info(
+                "Leaving runtime token active for execution %s: not terminal "
+                "(handed off to another worker)",
+                self.execution_log.id if self.execution_log else "unknown",
             )
-            self.db.rollback()
+            return
+
+        self._revoke_execution_runtime_tokens()
 
     def _simple_resolve(self, placeholder: str, data: Dict[str, Any]) -> Optional[str]:
         """
@@ -964,40 +1461,47 @@ class FlowExecutionOrchestrator:
                 else:
                     branch = self._extract_pr_branch_from_trigger()
 
-            branch_arg = f" -b {branch}" if branch else ""
+            branch_arg = f" -b {shlex.quote(branch)}" if branch else ""
 
-            # Prepare git clone command
+            # Resolve tracker credentials. The token is written to a
+            # short-lived credential file rather than into the clone URL, so
+            # the resulting remote carries no secret (issue #173).
+            credential: Optional[GitCredential] = None
             use_tracker_creds = git_config.get("use_tracker_credentials", True)
             if use_tracker_creds:
-                # Get tracker credentials from trigger event
                 credentials = await self._get_tracker_credentials()
                 if credentials:
-                    # Inject credentials into URL
-                    repo_url = self._inject_credentials_into_url(repo_url, credentials)
+                    credential = self._build_clone_credential(repo_url, credentials)
 
+            repo_url = strip_url_credentials(repo_url)
             clone_cmd = (
-                f"git clone --recursive{branch_arg} {repo_url} {full_clone_path}"
+                f"git clone --recursive{branch_arg} "
+                f"{shlex.quote(repo_url)} {shlex.quote(full_clone_path)}"
             )
 
             logger.info(f"Executing git clone to {full_clone_path}")
 
-            # Execute git clone
-            process = await asyncio.create_subprocess_shell(
-                clone_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=work_dir,
-            )
+            with temporary_credential_file(credential) as clone_env:
+                # Execute git clone
+                process = await asyncio.create_subprocess_shell(
+                    clone_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=work_dir,
+                    env=clone_env,
+                )
 
-            stdout, stderr = await process.communicate()
+                stdout, stderr = await process.communicate()
 
             if process.returncode != 0:
                 logger.error(
-                    f"Git clone failed with code {process.returncode}: {stderr.decode()}"
+                    "Git clone failed with code %s: %s",
+                    process.returncode,
+                    scrub_secrets(stderr.decode()),
                 )
                 return None
 
-            logger.info(f"Git clone successful: {stdout.decode()}")
+            logger.info(f"Git clone successful: {scrub_secrets(stdout.decode())}")
 
             # Checkout the specific commit SHA from trigger event if available
             # This ensures we're reviewing the exact code from the PR/push event
@@ -1152,12 +1656,20 @@ class FlowExecutionOrchestrator:
             logger.debug(f"Error extracting PR branch: {e}")
             return None
 
-    def _resolve_trigger_project_id(self) -> Optional[str]:
+    def _resolve_trigger_project_id(
+        self, *, allow_first_project_fallback: bool = True
+    ) -> Optional[str]:
         """Resolve the project that triggered this execution.
 
         Prefer the repository from the webhook payload (e.g. the MR's project)
         over the first entry in flow.trigger_project_ids, which may be a
         different repo when the flow watches multiple projects.
+
+        Args:
+            allow_first_project_fallback: When False, return None instead of
+                falling back to ``flow.trigger_project_ids[0]``. Callers that
+                address a specific repository (commit statuses) need this,
+                because a wrong repo is worse than no repo.
         """
         project_id = self.trigger_event_data.get("project_id")
         if project_id:
@@ -1171,6 +1683,9 @@ class FlowExecutionOrchestrator:
         if resolved:
             logger.info(f"Resolved trigger project from event payload: {resolved}")
             return resolved
+
+        if not allow_first_project_fallback:
+            return None
 
         if self.flow.trigger_project_ids:
             fallback = str(self.flow.trigger_project_ids[0])
@@ -1229,10 +1744,22 @@ class FlowExecutionOrchestrator:
                 logger.warning(f"Tracker {tracker_id} not found")
                 return None
 
-            # Return credentials (api_key is encrypted in DB, should be decrypted here)
+            # Not `resolved_api_key`: a GitHub App tracker stores no key, its
+            # credential is a short-lived installation token minted here. Using
+            # the raw column left App-installed repositories with no git
+            # credential at all, so the post-execution push failed with
+            # "could not read Username for 'https://github.com'".
+            token = await resolve_tracker_git_token(tracker)
+            if not token:
+                logger.warning(
+                    "Tracker %s has no usable git token (auth_type=%s)",
+                    tracker_id,
+                    tracker.auth_type,
+                )
+
             return {
-                "tracker_id": tracker_id,
-                "token": tracker.resolved_api_key,
+                "tracker_id": str(tracker_id),
+                "token": token or "",
                 "tracker_type": tracker.tracker_type,
             }
 
@@ -1243,35 +1770,110 @@ class FlowExecutionOrchestrator:
             )
             return None
 
-    def _inject_credentials_into_url(
+    def _resolve_project_tracker_id(self, project_id: Optional[str]) -> Optional[str]:
+        """Return the tracker owning ``project_id``, or None."""
+
+        if not project_id:
+            return None
+        try:
+            from preloop.models.crud import crud_project
+
+            project = crud_project.get(self.db, id=str(project_id))
+            organization = project.organization if project else None
+            tracker_id = getattr(organization, "tracker_id", None)
+            return str(tracker_id) if tracker_id else None
+        except Exception as e:
+            logger.warning(
+                "Could not resolve the tracker for project %s: %s", project_id, e
+            )
+            return None
+
+    async def _attach_trigger_tracker_credentials(
+        self, execution_context: Dict[str, Any]
+    ) -> None:
+        """Add the triggering project's tracker credentials to the context.
+
+        The agent container resolves a repository's token from
+        ``git_credentials_map[tracker_id]`` and otherwise falls back to a
+        database lookup that reads the stored key only. That fallback returns
+        nothing for a GitHub App tracker, which has no stored key, so a flow
+        whose repository entry carries no ``tracker_id`` ran with no git
+        credential: the clone of a public repository still worked and the
+        post-execution push then failed to authenticate.
+
+        Minting an App installation token is async and must happen here, in
+        the orchestrator, not in the synchronous container code path.
+
+        GitHub App installation tokens expire within an hour. They are minted
+        at execution start and delivered in the container environment; the
+        post-execution ``git push`` is the same container script, so a run
+        longer than that window can still fail the push with an expired
+        token. The recovery bundle is written before the push.
+        """
+
+        tracker_id = self._resolve_project_tracker_id(
+            execution_context.get("trigger_project_id")
+        ) or self.trigger_event_data.get("tracker_id")
+        if not tracker_id:
+            return
+
+        tracker_id = str(tracker_id)
+        credentials_map = execution_context.get("git_credentials_map") or {}
+        if not (credentials_map.get(tracker_id) or {}).get("token"):
+            creds = await self._get_tracker_credentials_by_id(tracker_id)
+            if not creds or not creds.get("token"):
+                logger.warning(
+                    "No git token available for the triggering tracker %s; "
+                    "the post-execution push will have no credentials",
+                    tracker_id,
+                )
+                return
+            credentials_map[tracker_id] = creds
+
+        execution_context["git_credentials_map"] = credentials_map
+        # Read by container.py when a repository entry declares no tracker.
+        execution_context["trigger_tracker_id"] = tracker_id
+        logger.info("Attached trigger tracker %s git credentials", tracker_id)
+
+    def _build_clone_credential(
         self, repo_url: str, credentials: Dict[str, str]
-    ) -> str:
-        """Inject credentials into repository URL for authentication."""
+    ) -> Optional[GitCredential]:
+        """Build a credential for a repository without altering its URL.
+
+        Replaces the previous ``_inject_credentials_into_url``. Embedding the
+        token in the URL made it the repository's ``origin`` remote, so any
+        later ``git remote -v`` leaked it into flow execution logs (issue
+        #173). The token is now supplied through a short-lived credential file
+        instead, leaving the remote clean.
+        """
         try:
             token = credentials.get("token")
             tracker_type = credentials.get("tracker_type")
 
             if not token:
-                return repo_url
+                return None
 
             host_kind = tracker_host_kind(repo_url)
-            if host_kind in {"github", "gitlab"} or tracker_type in {
-                "github",
-                "gitlab",
-            }:
-                return inject_oauth_token(repo_url, token)
+            if host_kind is None and tracker_type not in {"github", "gitlab"}:
+                logger.warning(
+                    "Could not determine tracker type for %s; "
+                    "using the generic credential username",
+                    repo_url_log_location(repo_url),
+                )
 
-            # If we can't inject, return original URL
-            logger.warning("Could not inject credentials into repository URL")
-            return repo_url
+            return GitCredential(
+                repo_url=strip_url_credentials(repo_url),
+                username=credential_username(host_kind, tracker_type),
+                token=token,
+            )
 
         except Exception as e:
             logger.error(
-                "Error injecting credentials: %s",
+                "Error building git credential: %s",
                 type(e).__name__,
                 exc_info=True,
             )
-            return repo_url
+            return None
 
     async def _execute_custom_commands(self, work_dir: str) -> bool:
         """
@@ -1353,11 +1955,29 @@ class FlowExecutionOrchestrator:
 
     async def _prepare_execution_context(self) -> Dict[str, Any]:
         """Prepare the full execution context for the agent."""
+        effective_agent_type = self.agent_type or self.flow.agent_type
         logger.info(
-            f"Preparing execution context for agent type: {self.flow.agent_type}"
+            f"Preparing execution context for agent type: {effective_agent_type}"
         )
 
         resolved_prompt = await self._resolve_prompt()
+
+        # Validate trigger-payload workspace seeds before any agent starts: a
+        # bad `workspace_files` declaration (path traversal, oversized inline
+        # content) must fail the execution here with a clear message rather
+        # than inside the container. Raises WorkspaceSeedError -> run() marks
+        # the execution FAILED with that message.
+        workspace_files = parse_workspace_files(
+            self.trigger_event_data.get("payload")
+            if isinstance(self.trigger_event_data, dict)
+            else None
+        )
+        if workspace_files:
+            logger.info(
+                "Trigger payload seeds %d workspace file(s): %s",
+                len(workspace_files),
+                [seed.path for seed in workspace_files],
+            )
 
         # Create short-lived API token for this flow execution
         account_api_token = None
@@ -1376,7 +1996,7 @@ class FlowExecutionOrchestrator:
             "flow_name": self.flow.name,  # Used for generating git branch names
             "execution_id": str(self.execution_log.id),
             "prompt": resolved_prompt,
-            "agent_type": self.flow.agent_type,
+            "agent_type": effective_agent_type,
             "agent_config": self.flow.agent_config,
             "allowed_mcp_servers": self.flow.allowed_mcp_servers,
             "allowed_mcp_tools": self.flow.allowed_mcp_tools,
@@ -1391,6 +2011,12 @@ class FlowExecutionOrchestrator:
             # Singular form used by container.py for git clone and credential lookup
             "trigger_project_id": self._resolve_trigger_project_id(),
         }
+
+        # Correlated resume: hand the runner the prior execution's workspace
+        # so unpushed commits (and scratch state) survive into this run.
+        restore_archive = self._resolve_workspace_restore_archive()
+        if restore_archive is not None:
+            execution_context["workspace_restore_archive"] = restore_archive
 
         # Prepare git credentials if repositories are configured
         if self.flow.git_clone_config:
@@ -1423,6 +2049,14 @@ class FlowExecutionOrchestrator:
                         "Git clone enabled but could not get tracker credentials"
                     )
 
+            # Repositories declared without a tracker_id (and the
+            # trigger-project fallback used when none are declared at all)
+            # resolved their token inside the agent container, which reads the
+            # stored key only and therefore finds nothing for a GitHub App
+            # tracker. Resolve it here, where minting an installation token is
+            # possible, and hand it over with the rest of the credentials.
+            await self._attach_trigger_tracker_credentials(execution_context)
+
         # Add AI model details if available
         if self.ai_model:
             logger.info(
@@ -1438,6 +2072,49 @@ class FlowExecutionOrchestrator:
                     else None
                 )
             )
+
+            # Populate the authorized gateway model list so agent config
+            # generators (e.g. OpenCode) can include every model the
+            # principal is allowed to use, not just the primary one.  The
+            # list must be scoped to the execution credential: this flow
+            # principal is not authorized for subscription-OAuth models
+            # bound to a managed agent, and offering them would only
+            # produce a 400 at the gateway.
+            if resolved_model_runtime.model_gateway_enabled:
+                try:
+                    from preloop.services.agent_model_list import (
+                        list_authorized_gateway_models,
+                    )
+                    from preloop.services.model_gateway_auth import (
+                        build_runtime_key_auth_context,
+                    )
+
+                    auth_context = (
+                        build_runtime_key_auth_context(
+                            self.db,
+                            token=account_api_token,
+                            api_key_id=str(self.temporary_api_key_id),
+                        )
+                        if account_api_token and self.temporary_api_key_id
+                        else None
+                    )
+                    authorized = list_authorized_gateway_models(
+                        self.db,
+                        str(self.flow.account_id),
+                        auth_context=auth_context,
+                    )
+                    execution_context["authorized_gateway_models"] = [
+                        {"alias": m.alias, "display_name": m.display_name}
+                        for m in authorized
+                    ]
+                except Exception:
+                    logger.warning(
+                        "Could not resolve authorized gateway models for flow "
+                        "%s; the agent config falls back to the primary model "
+                        "only",
+                        self.flow.id,
+                        exc_info=True,
+                    )
         else:
             logger.warning(
                 f"No AI model configured for flow {self.flow.id}, "
@@ -1505,6 +2182,27 @@ class FlowExecutionOrchestrator:
                             f"Previous line: {previous_line[:120]!r}"
                         )
                         self._success_sentinel_seen.set()
+
+                # PR/MR opened by the wrapper's post-execution curl. The
+                # response never reaches Python, so the line is the binding
+                # channel (MCP create_pull_request binds directly instead).
+                if PR_OPENED_MARKER in stripped_line:
+                    self._note_opened_pr(stripped_line)
+
+                # In-place completion nudge markers printed by the agent
+                # script. Order matters: the result marker shares the start
+                # marker's prefix, so the exact match is tested first.
+                if stripped_line == COMPLETION_NUDGE_MARKER:
+                    self._note_inplace_nudge(source="live_stream")
+                elif stripped_line.startswith(COMPLETION_NUDGE_RESULT_MARKER):
+                    self._note_inplace_nudge_result(stripped_line)
+                elif stripped_line.startswith(COMPLETION_NUDGE_UNSUPPORTED_MARKER):
+                    self._inplace_nudge_unsupported = True
+                    logger.info(
+                        "Agent runtime could not resume its session in place "
+                        "for the completion contract: %s",
+                        stripped_line,
+                    )
 
                 previous_tool_calls_count = len(self.execution_logger.mcp_usage_logs)
 
@@ -1832,8 +2530,14 @@ class FlowExecutionOrchestrator:
 
         agent_executor = None
         try:
-            # Create agent executor using factory
-            agent_executor = create_agent_executor(agent_type, agent_config)
+            agent_executor = create_executor_for_execution(
+                agent_type,
+                agent_config,
+                flow=self.flow,
+                execution=self.execution_log,
+                db=self.db,
+                execution_context=execution_context,
+            )
 
             # Start the agent
             session_reference = await agent_executor.start(execution_context)
@@ -1854,6 +2558,754 @@ class FlowExecutionOrchestrator:
                     )
             raise
 
+    def _resolve_workspace_restore_archive(self) -> Optional[bytes]:
+        """Load the workspace snapshot of the execution this run resumes.
+
+        Returns None when this is not a correlated resume, when the prior
+        execution kept no snapshot (too large, or already reaped by the
+        janitor), or when the lookup fails. In every one of those cases the
+        runner falls back to the normal git clone.
+        """
+        resume = (self.trigger_event_data or {}).get("_resume")
+        if not isinstance(resume, dict):
+            return None
+        prior_id = resume.get("execution_id")
+        if not prior_id:
+            return None
+        try:
+            prior = crud_flow_execution.get(db=self.db, id=prior_id)
+        except Exception as e:
+            logger.warning(
+                f"Could not load prior execution {prior_id} for workspace restore: {e}"
+            )
+            return None
+        if prior is None:
+            return None
+        if getattr(prior, "flow_id", None) != getattr(self.flow, "id", None):
+            logger.warning(
+                "Refusing workspace restore from execution %s: flow mismatch",
+                prior_id,
+            )
+            return None
+        snapshot = getattr(prior, "workspace_snapshot", None)
+        if not snapshot:
+            logger.info(
+                "No workspace snapshot stored for prior execution %s; "
+                "resume will re-clone",
+                prior_id,
+            )
+            return None
+        logger.info(
+            "Restoring workspace snapshot from execution %s (%d bytes)",
+            prior_id,
+            len(snapshot),
+        )
+        return bytes(snapshot)
+
+    async def _capture_result_artifact(
+        self, agent_executor: Any, session_reference: str
+    ) -> Optional[Dict[str, Any]]:
+        """Capture the agent's structured result artifact, if any.
+
+        Eval/observe flows write ``/workspace/result.json`` as their final
+        report; executors that support first-class capture expose
+        ``get_result_artifact``. Best-effort: a missing artifact or an
+        executor without support simply yields None.
+
+        Also captures the evidence pack (``/workspace/evidence`` as tar.gz
+        bytes) as a side effect, stashed on ``self._evidence_archive`` for
+        persistence at finalize time. It must happen here because both
+        artifacts are only readable before the executor is cleaned up, and
+        this method is called on every terminal path.
+        """
+        await self._capture_evidence_archive(agent_executor, session_reference)
+        await self._capture_workspace_snapshot(agent_executor, session_reference)
+        getter = getattr(agent_executor, "get_result_artifact", None)
+        if not callable(getter):
+            return None
+        try:
+            artifact = await getter(session_reference)
+        except Exception as e:
+            logger.warning(f"Failed to capture result artifact: {e}")
+            return None
+        # Only plain JSON objects are persistable (also guards against mock
+        # executors in tests returning non-dict values).
+        if not isinstance(artifact, dict):
+            return None
+        self.execution_logger.log_milestone(
+            "result_artifact_captured",
+            {"keys": sorted(artifact.keys())[:20]},
+        )
+        return artifact
+
+    async def _capture_evidence_archive(
+        self, agent_executor: Any, session_reference: str
+    ) -> None:
+        """Capture the evidence pack archive, if the executor supports it.
+
+        Best-effort and captured at most once per execution: retries on the
+        same terminal path must not overwrite an already captured archive
+        with None after the container is gone.
+        """
+        if self._evidence_archive is not None:
+            return
+        getter = getattr(agent_executor, "get_evidence_archive", None)
+        if not callable(getter):
+            return
+        try:
+            archive = await getter(session_reference)
+        except Exception as e:
+            logger.warning(f"Failed to capture evidence archive: {e}")
+            return
+        if not isinstance(archive, (bytes, bytearray)) or not archive:
+            return
+        self._evidence_archive = bytes(archive)
+        self.execution_logger.log_milestone(
+            "evidence_archive_captured",
+            {"size_bytes": len(self._evidence_archive)},
+        )
+
+    async def _capture_workspace_snapshot(
+        self, agent_executor: Any, session_reference: str
+    ) -> None:
+        """Capture the workspace snapshot, if the executor supports it.
+
+        Same contract as the evidence pack: best effort, at most once per
+        execution, and only readable before the executor is cleaned up.
+        """
+        if self._workspace_snapshot is not None:
+            return
+        getter = getattr(agent_executor, "get_workspace_snapshot", None)
+        if not callable(getter):
+            return
+        try:
+            snapshot = await getter(session_reference)
+        except Exception as e:
+            logger.warning(f"Failed to capture workspace snapshot: {e}")
+            return
+        if not isinstance(snapshot, (bytes, bytearray)) or not snapshot:
+            return
+        self._workspace_snapshot = bytes(snapshot)
+        self.execution_logger.log_milestone(
+            "workspace_snapshot_captured",
+            {"size_bytes": len(self._workspace_snapshot)},
+        )
+
+    async def _refetch_exited_session_logs(
+        self, agent_executor: Any, session_reference: str
+    ) -> List[str]:
+        """Refetch the COMPLETE runtime logs after agent exit (layer 3).
+
+        The live stream is best-effort: a late reconnect can silently lose
+        the tail, taking the success sentinel with it. Batch log reads
+        (docker logs / K8s pod logs) return the full buffer, so a post-exit
+        refetch is the authoritative view. Best-effort: any error yields an
+        empty list and the decision ladder simply moves on.
+        """
+        getter = getattr(agent_executor, "get_logs", None)
+        if not callable(getter):
+            return []
+        try:
+            logs = await getter(session_reference, tail=None)
+        except Exception as e:
+            logger.warning(f"Post-exit log refetch failed: {_exception_message(e)}")
+            return []
+        if not isinstance(logs, list):
+            return []
+        return [line for line in logs if isinstance(line, str)]
+
+    def _note_opened_pr(self, line: str) -> None:
+        """Remember the PR/MR the wrapper opened (first one wins)."""
+        parsed = parse_pr_opened_marker(line)
+        if not parsed:
+            return
+        if self._opened_pr is not None:
+            return
+        self._opened_pr = parsed
+        logger.info("Wrapper opened a pull request for this execution")
+        self.execution_logger.log_milestone(
+            "pull_request_opened",
+            {
+                "pr_url": parsed.get("url"),
+                "branch": parsed.get("branch"),
+                "provider": parsed.get("provider"),
+            },
+        )
+
+    def _bind_opened_pr(self, output_summary: Optional[str]) -> None:
+        """Persist the wrapper-opened PR on this execution's result.
+
+        Runs on the terminal path so a later comment on that PR can resume
+        this flow. ``output_summary`` is rescanned when the live stream
+        missed the marker line (reconnects can drop the tail).
+        """
+        if self._opened_pr is None and output_summary:
+            for line in output_summary.splitlines():
+                if PR_OPENED_MARKER in line:
+                    self._note_opened_pr(line)
+                    break
+        if self._opened_pr is None or self.execution_log is None:
+            return
+        record_opened_pr(
+            self.db,
+            self.execution_log.id,
+            self._opened_pr.get("url", ""),
+            source_branch=self._opened_pr.get("branch"),
+        )
+
+    async def _start_queued_followup(self) -> None:
+        """Start the single follow-up resume queued while this run was going.
+
+        Comments that arrive during a run set ``result.pending_followup``
+        instead of starting a competing execution; many comments collapse into
+        one flag, so exactly one follow-up run is started here.
+        """
+        if self.execution_log is None or self.flow is None:
+            return
+        try:
+            followup = take_pending_followup(self.db, self.execution_log)
+            if not followup:
+                return
+            event_data = dict(self.execution_log.trigger_event_details or {})
+            resume = dict(event_data.get("_resume") or {})
+            resume["execution_id"] = str(self.execution_log.id)
+            if followup.get("pr_url"):
+                resume["pr_url"] = followup["pr_url"]
+            if followup.get("source_branch"):
+                resume["source_branch"] = followup["source_branch"]
+            if followup.get("comment_url"):
+                resume["comment_url"] = followup["comment_url"]
+            resume["followup_of_execution_id"] = str(self.execution_log.id)
+            event_data["_resume"] = resume
+            event_data.pop("test_mode", None)
+
+            pr_url = resume.get("pr_url")
+            opener = self.execution_log
+            if pr_url:
+                found = find_bound_execution(self.db, self.flow.id, pr_url)
+                if found is not None:
+                    opener = found
+            cap = max_resumes_per_pr(self.flow)
+            started = resume_count(opener)
+            if started >= cap:
+                logger.info(
+                    "Skipping queued follow-up for execution %s: already "
+                    "started %s/%s resumes for this PR",
+                    self.execution_log.id,
+                    started,
+                    cap,
+                )
+                return
+            resume["resume_index"] = note_resume_started(self.db, opener)
+            event_data["_resume"] = resume
+
+            from preloop.services.flow_trigger_service import FlowTriggerService
+
+            trigger_service = FlowTriggerService(self.db)
+            await trigger_service._start_flow_execution(
+                flow=self.flow,
+                event_data=event_data,
+                nats_client=self.nats_client,
+            )
+            logger.info(
+                "Started queued follow-up resume after execution %s (index %s)",
+                self.execution_log.id,
+                resume.get("resume_index"),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to start the queued follow-up resume for execution %s",
+                getattr(self.execution_log, "id", None),
+                exc_info=True,
+            )
+
+    def _note_inplace_nudge(self, *, source: str) -> None:
+        """Record that the agent script ran its own completion reminder.
+
+        Emitted once per execution as the ``completion_nudge`` timeline
+        event, whether the marker was seen live or recovered from the
+        post-exit log refetch. The orchestrator does not nudge again after
+        this: the agent has already been asked, in the container where the
+        work happened, and asking twice is two model calls for one answer.
+
+        Args:
+            source: Where the marker was observed (``live_stream`` or
+                ``post_exit_rescan``).
+        """
+        self._inplace_nudge_seen = True
+        if self._inplace_nudge_logged:
+            return
+        self._inplace_nudge_logged = True
+        self.execution_logger.log_milestone(
+            "completion_nudge",
+            {
+                "mode": "in_place",
+                "source": source,
+                "agent_type": self.agent_type,
+            },
+        )
+        logger.info("In-place completion nudge observed (source=%s)", source)
+
+    def _note_inplace_nudge_result(self, line: str) -> None:
+        """Record the exit code of the in-place reminder round."""
+        self._inplace_nudge_seen = True
+        exit_code: Optional[int] = None
+        _, _, tail = line.partition("exit=")
+        try:
+            exit_code = int(tail.strip().split()[0])
+        except (ValueError, IndexError):
+            exit_code = None
+        self.execution_logger.log_milestone(
+            "completion_nudge_result",
+            {"mode": "in_place", "exit_code": exit_code},
+        )
+
+    def _scan_inplace_nudge_markers(self, lines: List[str]) -> None:
+        """Recover the in-place nudge markers from refetched logs.
+
+        The live stream is best-effort; the same reconnect that loses a
+        sentinel can lose these. The complete post-exit logs are the
+        authoritative view, so they are rescanned before the orchestrator
+        decides whether to start a nudge session of its own.
+        """
+        for line in _armed_log_lines(lines):
+            if line == COMPLETION_NUDGE_MARKER:
+                self._note_inplace_nudge(source="post_exit_rescan")
+            elif line.startswith(COMPLETION_NUDGE_RESULT_MARKER):
+                if not self._inplace_nudge_logged:
+                    self._note_inplace_nudge(source="post_exit_rescan")
+                self._inplace_nudge_seen = True
+            elif line.startswith(COMPLETION_NUDGE_UNSUPPORTED_MARKER):
+                self._inplace_nudge_unsupported = True
+
+    def _accept_wider_completion_signal(
+        self, agent_executor: Any, result_artifact: Optional[Dict[str, Any]]
+    ) -> bool:
+        """Whether a bare result.json counts as completion for this runtime.
+
+        The fallback for runtimes that cannot be resumed in place (gemini,
+        aider, openhands, remote runners): there is nobody left to ask, so a
+        report the agent actually wrote is the best evidence available. A
+        non-empty JSON object at ``/workspace/result.json`` is accepted as
+        completion even when its status vocabulary is not one Preloop
+        recognizes, except for known failure and incomplete statuses
+        (``timeout``, ``cancelled``, ``in_progress``, ...): those say the
+        work did not finish and must not be recorded as success. An explicit
+        failure status is usually decided earlier; the check here is the
+        last line of defence on this path.
+
+        Runtimes that CAN resume are deliberately excluded: for them the
+        agent was asked directly and declined to confirm, which is a much
+        stronger signal than the presence of a file.
+
+        The capability check is a strict identity test against ``False``, the
+        mirror of the ``supports_confirmation_nudge is True`` check: widening
+        what counts as success is a safety decision, so it is taken only for
+        a runtime that positively declares it cannot be resumed, never for an
+        executor whose capability is merely unknown (a mock, a partially
+        implemented runtime), which keeps failing closed.
+        """
+        if (
+            getattr(agent_executor, "supports_inplace_completion_nudge", None)
+            is not False
+        ):
+            return False
+        if self._inplace_nudge_seen:
+            return False
+        if not isinstance(result_artifact, dict) or not result_artifact:
+            return False
+        status = result_artifact.get("status")
+        if isinstance(status, str):
+            normalized = status.strip().lower()
+            if (
+                normalized in RESULT_ARTIFACT_FAILURE_STATUSES
+                or normalized in RESULT_ARTIFACT_INCOMPLETE_STATUSES
+            ):
+                return False
+        return True
+
+    async def _resolve_missing_confirmation(
+        self,
+        agent_executor: Any,
+        session_reference: str,
+        result: Any,
+        result_artifact: Optional[Dict[str, Any]],
+    ) -> tuple[str, Optional[str], Optional[Dict[str, Any]]]:
+        """Decision ladder for an exit-0 run with no success confirmation.
+
+        Order (cheapest first):
+          1. Layer 3 — refetch the complete runtime logs and rescan for the
+             exact-line sentinel (covers the lost-stream-tail edge), and for
+             the in-place completion-nudge markers.
+          2. Layer 2 — one confirmation-round nudge, skipped when the agent
+             script already nudged itself in place (the cheap layer) or when
+             the run recorded actions a nudge could repeat.
+          3. Wider completion signals for runtimes that cannot be resumed at
+             all: a non-empty result.json is accepted as completion.
+          4. Fail closed with the standard missing-confirmation message.
+
+        Returns ``(final_status, error_message, result_artifact)``.
+        """
+        # Layer 3: post-exit full-log refetch + sentinel rescan.
+        refetched_lines = await self._refetch_exited_session_logs(
+            agent_executor, session_reference
+        )
+        self._scan_inplace_nudge_markers(refetched_lines)
+        sentinel_found = _sentinel_in_log_lines(refetched_lines)
+        self.execution_logger.log_milestone(
+            "post_exit_log_rescan",
+            {
+                "sentinel_found": sentinel_found,
+                "line_count": len(refetched_lines),
+            },
+        )
+        if sentinel_found:
+            logger.info(
+                "Post-exit log rescan found the success sentinel that the "
+                "live stream missed — treating the run as confirmed."
+            )
+            self._success_sentinel_seen.set()
+            return result.status.value, result.error_message, result_artifact
+
+        # Layer 2: one-shot confirmation round.
+        nudge = await self._run_confirmation_nudge(agent_executor, refetched_lines)
+        nudge_outcome = nudge.get("outcome")
+        nudge_artifact = nudge.get("artifact")
+        merged_artifact = result_artifact
+        if isinstance(nudge_artifact, dict):
+            # "Completing" result.json: keep the rich original report (if
+            # any) and let the nudge's completion fields land on top.
+            merged_artifact = (
+                {**result_artifact, **nudge_artifact}
+                if isinstance(result_artifact, dict)
+                else nudge_artifact
+            )
+
+        if nudge_outcome == "confirmed_success":
+            return result.status.value, result.error_message, merged_artifact
+
+        if nudge_outcome == "explicit_failure":
+            reason = nudge.get("reason") or "no reason given"
+            return (
+                "FAILED",
+                "Agent stated in the confirmation round that the original "
+                f"task did not complete: {reason}",
+                merged_artifact,
+            )
+
+        # Wider completion signals, for runtimes that cannot be resumed.
+        if self._accept_wider_completion_signal(agent_executor, merged_artifact):
+            assert merged_artifact is not None
+            logger.info(
+                "Accepting a written result.json as the completion signal for "
+                "a runtime that cannot be resumed in place."
+            )
+            self.execution_logger.log_milestone(
+                "completion_signal_accepted",
+                {
+                    "signal": "result_artifact_present",
+                    "agent_type": self.agent_type,
+                    "keys": sorted(merged_artifact.keys())[:20],
+                },
+            )
+            return result.status.value, result.error_message, merged_artifact
+
+        # Fail closed: no confirmation even after the ladder.
+        logger.warning(
+            f"Agent exited with SUCCEEDED status (exit_code={result.exit_code}) "
+            f"but neither success-confirmation channel was used "
+            f"(no sentinel in logs, no result.json success status). "
+            f"Overriding status to FAILED."
+        )
+        self.execution_logger.log_milestone(
+            "success_confirmation_missing",
+            {
+                "original_status": result.status.value,
+                "exit_code": result.exit_code,
+                "sentinel_seen": False,
+                "artifact_confirmation": _result_artifact_confirmation(result_artifact),
+                "nudge_outcome": nudge_outcome,
+                "inplace_nudge": self._inplace_nudge_seen,
+                "inplace_nudge_unsupported": self._inplace_nudge_unsupported,
+            },
+        )
+        # When no error heuristics fired (result.error_message is empty),
+        # say explicitly that the run failed ONLY for missing confirmation,
+        # and name both channels — operators must be able to tell this
+        # class apart from real failures at a glance.
+        error_message = result.error_message or (
+            "Agent exited with code 0 but did not confirm "
+            "success on either channel: the "
+            f"{FLOW_SUCCESS_SENTINEL} sentinel was not printed "
+            "and no result.json with a recognized completion "
+            'status (top-level {"status": "success"} or an '
+            "audit verdict such as pass, pass_with_findings, "
+            "or fail) was written. The work may have completed "
+            "without confirmation, or the agent died mid-task."
+        )
+        if self._inplace_nudge_seen and not result.error_message:
+            # Name the reminder round: an operator reading this should not
+            # have to open the timeline to learn the agent was asked again.
+            error_message += (
+                " The agent was reminded once in its own container and still "
+                "did not confirm."
+            )
+        return "FAILED", error_message, result_artifact
+
+    async def _run_confirmation_nudge(
+        self, agent_executor: Any, prior_log_lines: List[str]
+    ) -> Dict[str, Any]:
+        """Layer 2: re-invoke the agent ONCE to confirm or deny completion.
+
+        The nudge is a fresh, cheap invocation carrying prior context (head
+        of the original prompt + tail of the previous run's output, bounded
+        by ``flow_confirmation_nudge_max_tokens``). Its only job: if and only
+        if the original task completed, confirm through the
+        originally-instructed channel (result.json preferred, sentinel also
+        accepted); otherwise state the failure plainly.
+
+        Single-shot by construction (``_confirmation_nudge_attempted``) and a
+        graceful no-op for runtimes that cannot cheaply re-invoke with prior
+        context (``supports_confirmation_nudge`` is not ``True``). Every call
+        logs the ``confirmation_nudge_used`` milestone with its outcome.
+
+        Returns a dict with ``outcome`` and, when available, ``reason`` /
+        ``artifact``. Outcomes: ``confirmed_success``, ``explicit_failure``,
+        ``no_confirmation``, ``timeout``, ``error``,
+        ``skipped_already_used``, ``skipped_unsupported_runtime``,
+        ``skipped_no_execution_context``.
+        """
+
+        def _finish(
+            outcome: str,
+            *,
+            reason: Optional[str] = None,
+            artifact: Optional[Dict[str, Any]] = None,
+            channel: Optional[str] = None,
+            extra: Optional[Dict[str, Any]] = None,
+        ) -> Dict[str, Any]:
+            details: Dict[str, Any] = {"outcome": outcome}
+            if channel:
+                details["channel"] = channel
+            if reason:
+                details["reason"] = str(reason)[:500]
+            if extra:
+                details.update(extra)
+            self.execution_logger.log_milestone("confirmation_nudge_used", details)
+            logger.info(f"Confirmation nudge outcome: {outcome}")
+            return {"outcome": outcome, "reason": reason, "artifact": artifact}
+
+        if self._confirmation_nudge_attempted:
+            # One round max — even across flow-level retry attempts.
+            return _finish("skipped_already_used")
+        self._confirmation_nudge_attempted = True
+
+        if self._inplace_nudge_seen:
+            # The agent script already asked, in the container where the work
+            # happened. A second round would be a second model call for the
+            # same answer, from a session that knows strictly less.
+            return _finish("skipped_inplace_nudge_used")
+
+        actions_taken = self.execution_logger.get_actions_taken()
+        if actions_taken:
+            # A nudge re-invokes the agent. Once side effects are on record
+            # (a posted comment, a push), a model that decides to "finish the
+            # job" repeats them, and a duplicate review comment is worse than
+            # a run reported as unconfirmed.
+            return _finish(
+                "skipped_actions_recorded",
+                extra={"action_count": len(actions_taken)},
+            )
+
+        # Strict identity check: mock executors (AsyncMock) auto-create
+        # truthy attributes, and an accidental nudge in tests or on an
+        # unvalidated runtime must be impossible.
+        if getattr(agent_executor, "supports_confirmation_nudge", False) is not True:
+            return _finish(
+                "skipped_unsupported_runtime",
+                extra={"agent_type": getattr(agent_executor, "agent_type", None)},
+            )
+
+        context = self._execution_context
+        if not isinstance(context, dict) or not context.get("prompt"):
+            return _finish("skipped_no_execution_context")
+
+        max_tokens = max(256, int(settings.flow_confirmation_nudge_max_tokens))
+        timeout_seconds = max(30, int(settings.flow_confirmation_nudge_timeout_seconds))
+        log_lines = prior_log_lines or self.execution_logger.get_agent_output_lines()
+
+        nudge_context = dict(context)
+        nudge_context["prompt"] = _build_confirmation_nudge_prompt(
+            context["prompt"], log_lines, max_tokens
+        )
+        # No clone, no custom commands, no post-exec push/PR: the nudge must
+        # not repeat side effects of the original run.
+        nudge_context["git_clone_config"] = None
+        nudge_context["custom_commands"] = None
+        nudge_context["confirmation_nudge"] = True
+        # The nudge is a second session for the SAME execution, started while
+        # the original agent Job still exists (it lingers until its TTL). It
+        # therefore needs its own runtime session name, or the nudge can only
+        # ever fail with a 409 name conflict on Kubernetes.
+        nudge_context[AGENT_SESSION_SUFFIX_KEY] = "nudge"
+        # Token ceiling for runtimes that honor model parameters; the prompt
+        # budget above enforces the input side regardless. The nudge ceiling
+        # is a hard cap: a larger limit inherited from the flow's model is
+        # clamped down, while a tighter pre-existing limit is respected.
+        model_parameters = dict(context.get("model_parameters") or {})
+        existing_limit = model_parameters.get("max_output_tokens")
+        if isinstance(existing_limit, int) and 0 < existing_limit < max_tokens:
+            model_parameters["max_output_tokens"] = existing_limit
+        else:
+            model_parameters["max_output_tokens"] = max_tokens
+        nudge_context["model_parameters"] = model_parameters
+
+        try:
+            nudge_reference, nudge_executor = await self._start_agent_session(
+                nudge_context
+            )
+        except Exception as start_error:
+            return _finish("error", reason=_exception_message(start_error))
+
+        try:
+            poll_interval = 5
+            elapsed = 0
+            status: Optional[AgentStatus] = None
+            terminal = (
+                AgentStatus.SUCCEEDED,
+                AgentStatus.FAILED,
+                AgentStatus.STOPPED,
+            )
+            while elapsed < timeout_seconds:
+                try:
+                    status = await nudge_executor.get_status(nudge_reference)
+                except Exception as status_error:
+                    logger.warning(
+                        f"Nudge status check failed: {_exception_message(status_error)}"
+                    )
+                if status in terminal:
+                    break
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+
+            if status not in terminal:
+                try:
+                    await nudge_executor.stop(nudge_reference)
+                except Exception as stop_error:
+                    # Best-effort stop of the timed-out nudge session; the
+                    # finally block still runs cleanup, and we fail closed
+                    # with the timeout outcome either way.
+                    logger.warning(
+                        "Failed to stop timed-out nudge session: "
+                        f"{_exception_message(stop_error)}"
+                    )
+                return _finish(
+                    "timeout",
+                    extra={
+                        "timeout_seconds": timeout_seconds,
+                        "session_reference": nudge_reference,
+                    },
+                )
+
+            nudge_logs: List[str] = []
+            try:
+                fetched = await nudge_executor.get_logs(nudge_reference, tail=None)
+                if isinstance(fetched, list):
+                    nudge_logs = [line for line in fetched if isinstance(line, str)]
+            except Exception as log_error:
+                logger.warning(
+                    f"Failed to fetch nudge logs: {_exception_message(log_error)}"
+                )
+
+            artifact = await self._capture_result_artifact(
+                nudge_executor, nudge_reference
+            )
+            artifact_confirmation = _result_artifact_confirmation(artifact)
+            failure_reason = _failure_report_in_log_lines(nudge_logs)
+
+            # An explicit failure statement wins over everything, mirroring
+            # the main completion contract.
+            if artifact_confirmation == "failure" or failure_reason is not None:
+                reason = failure_reason
+                if reason is None and isinstance(artifact, dict):
+                    reason = (
+                        artifact.get("reason")
+                        or artifact.get("error")
+                        or artifact.get("summary")
+                        or f"result.json status={artifact.get('status')!r}"
+                    )
+                return _finish(
+                    "explicit_failure",
+                    reason=reason,
+                    artifact=artifact,
+                    channel=(
+                        "result_artifact"
+                        if artifact_confirmation == "failure"
+                        else "failure_line"
+                    ),
+                )
+
+            if artifact_confirmation == "success" or _sentinel_in_log_lines(nudge_logs):
+                return _finish(
+                    "confirmed_success",
+                    artifact=artifact,
+                    channel=(
+                        "result_artifact"
+                        if artifact_confirmation == "success"
+                        else "sentinel"
+                    ),
+                )
+
+            return _finish(
+                "no_confirmation",
+                extra={
+                    "nudge_status": status.value
+                    if isinstance(status, AgentStatus)
+                    else None,
+                    "session_reference": nudge_reference,
+                },
+            )
+        except Exception as nudge_error:
+            return _finish("error", reason=_exception_message(nudge_error))
+        finally:
+            try:
+                await nudge_executor.cleanup()
+            except Exception as cleanup_error:
+                logger.warning(f"Error during nudge executor cleanup: {cleanup_error}")
+
+    def _execution_timeout_budget(self) -> TimeoutBudget:
+        """Resolve the wall-clock budget for this execution.
+
+        A flow that carries ``timeout_seconds`` sets its own budget; every
+        other flow keeps the global default. The value is clamped so that a
+        bad number cannot make a flow unrunnable or let one hold a worker
+        slot indefinitely.
+        """
+        default_seconds = int(settings.flow_execution_max_wait_seconds)
+        default_seconds = max(
+            FLOW_TIMEOUT_SECONDS_MIN,
+            min(FLOW_TIMEOUT_SECONDS_MAX, default_seconds),
+        )
+        configured = getattr(self.flow, "timeout_seconds", None)
+        if configured is None:
+            return TimeoutBudget(seconds=default_seconds, source="default")
+        try:
+            seconds = int(configured)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Flow {getattr(self.flow, 'id', None)} has a non-numeric "
+                f"timeout_seconds ({configured!r}); using the default budget"
+            )
+            return TimeoutBudget(seconds=default_seconds, source="default")
+        clamped = max(FLOW_TIMEOUT_SECONDS_MIN, min(FLOW_TIMEOUT_SECONDS_MAX, seconds))
+        if clamped != seconds:
+            logger.warning(
+                f"Flow {getattr(self.flow, 'id', None)} timeout_seconds "
+                f"{seconds} is outside [{FLOW_TIMEOUT_SECONDS_MIN}, "
+                f"{FLOW_TIMEOUT_SECONDS_MAX}]; clamped to {clamped}"
+            )
+        return TimeoutBudget(seconds=clamped, source="flow")
+
     async def _monitor_agent_execution(
         self, session_reference: str, agent_executor: Any
     ) -> Dict[str, Any]:
@@ -1868,13 +3320,17 @@ class FlowExecutionOrchestrator:
             Dict with execution results including status, output, errors
         """
         logger.info(f"Monitoring agent execution {session_reference}")
+        timeout_budget = self._execution_timeout_budget()
         self.execution_logger.log_milestone(
-            "agent_monitoring_started", {"session_reference": session_reference}
+            "agent_monitoring_started",
+            {
+                "session_reference": session_reference,
+                "timeout_seconds": timeout_budget.seconds,
+                "timeout_source": timeout_budget.source,
+            },
         )
 
         try:
-            from preloop.config import settings
-
             # Start listening for user commands
             await self._listen_for_commands()
 
@@ -1883,8 +3339,9 @@ class FlowExecutionOrchestrator:
                 self._stream_logs_to_nats(agent_executor, session_reference)
             )
 
-            # Poll agent status until completion
-            max_wait_time = max(30, int(settings.flow_execution_max_wait_seconds))
+            # Poll agent status until completion, bounded by this flow's
+            # timeout budget (flow.timeout_seconds, else the global default).
+            max_wait_time = timeout_budget.seconds
             poll_interval = 5  # Check status every 5 seconds
             elapsed = 0
             consecutive_failures = 0
@@ -1928,7 +3385,28 @@ class FlowExecutionOrchestrator:
                     )
                     await agent_executor.stop(session_reference)
                     await self._publish_update("user_stopped", {"elapsed": elapsed})
-                    break
+                    self.execution_logger.log_milestone(
+                        "user_requested_stop", {"elapsed": elapsed}
+                    )
+                    # Return explicitly: falling through to the end of the
+                    # while loop would report this as "Execution timed out
+                    # after {max_wait_time} seconds", which is wrong and very
+                    # confusing (executions stopped after 45s were reported as
+                    # 3600s timeouts).
+                    return {
+                        "status": "STOPPED",
+                        "error_message": (
+                            f"Execution stopped by user request after {elapsed} seconds."
+                        ),
+                        "actions_taken": self.execution_logger.get_actions_taken(),
+                        "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                        # An eval run may have already written result.json
+                        # before the user stopped it; the container is kept
+                        # (AutoRemove=False) so capture still works.
+                        "result": await self._capture_result_artifact(
+                            agent_executor, session_reference
+                        ),
+                    }
 
                 # Get status with error handling
                 try:
@@ -1969,6 +3447,12 @@ class FlowExecutionOrchestrator:
                                 "error_message": f"Monitoring error: {retry_error_message}",
                                 "actions_taken": self.execution_logger.get_actions_taken(),
                                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                                # Best-effort: the daemon may be the very
+                                # thing that is failing, but if the artifact
+                                # is reachable we must not lose it.
+                                "result": await self._capture_result_artifact(
+                                    agent_executor, session_reference
+                                ),
                             }
 
                         # Continue polling for transient errors
@@ -2015,6 +3499,11 @@ class FlowExecutionOrchestrator:
                         "error_message": error_message,
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                        # Capture whatever the agent reported before it got
+                        # stuck in the tool loop.
+                        "result": await self._capture_result_artifact(
+                            agent_executor, session_reference
+                        ),
                     }
 
                 if status in (
@@ -2033,11 +3522,26 @@ class FlowExecutionOrchestrator:
                         {"status": status.value, "exit_code": result.exit_code},
                     )
 
-                    # Sentinel-based status override:
-                    # If the container reports SUCCEEDED (exit code 0) but the
-                    # FLOW_EXECUTION_SUCCESS sentinel was NOT found in logs,
-                    # treat it as FAILED.  This catches agents (e.g. OpenCode)
-                    # that error out but still exit with code 0.
+                    # Structured result artifact (/workspace/result.json)
+                    # captured first-class from the workspace — the
+                    # eval/observe contract surface (no log scraping). Fetched
+                    # BEFORE the status decision: it is confirmation channel 2.
+                    result_artifact = await self._capture_result_artifact(
+                        agent_executor, session_reference
+                    )
+                    artifact_confirmation = _result_artifact_confirmation(
+                        result_artifact
+                    )
+
+                    # Positive-confirmation contract (fail-closed):
+                    # Exit code 0 is NEVER sufficient for success — agent CLIs
+                    # exit 0 even when the agent died mid-task. A run reported
+                    # SUCCEEDED by the container must be explicitly confirmed
+                    # through one of two channels, either of which suffices:
+                    #   1. the FLOW_EXECUTION_SUCCESS sentinel printed in logs
+                    #   2. a result.json artifact with a success status
+                    # An explicit failure status in result.json wins over
+                    # everything, including a printed sentinel.
                     # Guard: only apply the override when the agent-exec-start
                     # marker was actually seen in logs.  If we never streamed
                     # real logs (e.g. mocks, or the log stream failed before
@@ -2047,26 +3551,66 @@ class FlowExecutionOrchestrator:
 
                     if (
                         result.status == AgentStatus.SUCCEEDED
-                        and self._agent_exec_started
-                        and not self._success_sentinel_seen.is_set()
+                        and artifact_confirmation == "failure"
                     ):
+                        assert result_artifact is not None
+                        artifact_status = result_artifact.get("status")
                         logger.warning(
-                            f"Agent exited with SUCCEEDED status (exit_code={result.exit_code}) "
-                            f"but success sentinel was NOT found in logs. "
-                            f"Overriding status to FAILED."
+                            "Agent exited with SUCCEEDED status but result.json "
+                            "reports an explicit failure status "
+                            f"({artifact_status!r}). "
+                            "Overriding status to FAILED."
                         )
                         self.execution_logger.log_milestone(
-                            "sentinel_missing_override",
+                            "result_artifact_failure_override",
                             {
                                 "original_status": result.status.value,
                                 "exit_code": result.exit_code,
+                                "artifact_status": artifact_status,
+                                "sentinel_seen": self._success_sentinel_seen.is_set(),
                             },
                         )
                         final_status = "FAILED"
-                        error_message = (
-                            result.error_message
-                            or "Agent exited with code 0 but did not produce "
-                            "the success sentinel — likely encountered an error."
+                        error_message = result.error_message or (
+                            "Agent reported an explicit failure in result.json "
+                            f"(status={artifact_status!r})."
+                        )
+                    elif (
+                        result.status == AgentStatus.SUCCEEDED
+                        and self._agent_exec_started
+                        and not self._success_sentinel_seen.is_set()
+                        and artifact_confirmation != "success"
+                    ):
+                        # Neither confirmation channel was used. Before
+                        # failing closed, walk the recovery ladder:
+                        #   1. refetch the COMPLETE runtime logs and rescan
+                        #      for the sentinel (a late stream reconnect can
+                        #      lose the tail of an otherwise confirmed run),
+                        #   2. one confirmation-round nudge (supported
+                        #      runtimes only),
+                        #   3. FAILED with the standard missing-confirmation
+                        #      message.
+                        (
+                            final_status,
+                            error_message,
+                            result_artifact,
+                        ) = await self._resolve_missing_confirmation(
+                            agent_executor,
+                            session_reference,
+                            result,
+                            result_artifact,
+                        )
+                    elif (
+                        result.status == AgentStatus.SUCCEEDED
+                        and not self._success_sentinel_seen.is_set()
+                        and artifact_confirmation == "success"
+                    ):
+                        # The artifact alone confirmed the run — record it so
+                        # operators can see which channel was used.
+                        assert result_artifact is not None
+                        self.execution_logger.log_milestone(
+                            "result_artifact_confirmed_success",
+                            {"artifact_status": result_artifact.get("status")},
                         )
 
                     return {
@@ -2075,7 +3619,18 @@ class FlowExecutionOrchestrator:
                         "error_message": error_message,
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                        "result": result_artifact,
                         "exit_code": result.exit_code,
+                        # First-pass failure classification made against the
+                        # FULL container logs. error_message keeps only the
+                        # generated sentence, which cannot encode the
+                        # transient/terminal verdict — _retry_decision needs
+                        # this to survive.
+                        "failure_analysis": (
+                            asdict(result.failure_analysis)
+                            if result.failure_analysis is not None
+                            else None
+                        ),
                     }
 
                 # Check if the success sentinel was seen in logs while
@@ -2098,12 +3653,52 @@ class FlowExecutionOrchestrator:
                             "sentinel_grace_period_expired",
                             {"sentinel_seen_at": sentinel_seen_at, "elapsed": elapsed},
                         )
+                        # Container is still alive here (post-exec
+                        # commands); the archive API works either way.
+                        result_artifact = await self._capture_result_artifact(
+                            agent_executor, session_reference
+                        )
+                        if _result_artifact_confirmation(result_artifact) == "failure":
+                            # Same invariant as the terminal path: an explicit
+                            # failure in result.json wins over the sentinel.
+                            assert result_artifact is not None
+                            artifact_status = result_artifact.get("status")
+                            # Container may still be in post-exec; fetch the
+                            # result so _retry_decision sees exit_code instead
+                            # of treating it as unknown.
+                            result = await agent_executor.get_result(session_reference)
+                            self.execution_logger.log_milestone(
+                                "result_artifact_failure_override",
+                                {
+                                    "artifact_status": artifact_status,
+                                    "sentinel_seen": True,
+                                    "exit_code": result.exit_code,
+                                },
+                            )
+                            return {
+                                "status": "FAILED",
+                                "error_message": (
+                                    "Agent reported an explicit failure in "
+                                    "result.json (status="
+                                    f"{artifact_status!r})."
+                                ),
+                                "actions_taken": self.execution_logger.get_actions_taken(),
+                                "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                                "result": result_artifact,
+                                "exit_code": result.exit_code,
+                                "failure_analysis": (
+                                    asdict(result.failure_analysis)
+                                    if result.failure_analysis is not None
+                                    else None
+                                ),
+                            }
                         return {
                             "status": "SUCCEEDED",
                             "output_summary": self.execution_logger.get_agent_output_summary(),
                             "error_message": None,
                             "actions_taken": self.execution_logger.get_actions_taken(),
                             "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                            "result": result_artifact,
                         }
 
                 # Wait before next poll
@@ -2114,14 +3709,25 @@ class FlowExecutionOrchestrator:
             logger.warning(
                 f"Agent execution {session_reference} timed out after {max_wait_time}s"
             )
-            self.execution_logger.log_milestone("agent_execution_timeout")
+            self.execution_logger.log_milestone(
+                "agent_execution_timeout",
+                {
+                    "timeout_seconds": timeout_budget.seconds,
+                    "timeout_source": timeout_budget.source,
+                },
+            )
             await agent_executor.stop(session_reference)
 
             return {
                 "status": "FAILED",
-                "error_message": f"Execution timed out after {max_wait_time} seconds",
+                "error_message": timeout_budget.timeout_message(),
                 "actions_taken": self.execution_logger.get_actions_taken(),
                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                # A timed-out eval run may still have written result.json;
+                # the stopped container is kept, so the artifact is reachable.
+                "result": await self._capture_result_artifact(
+                    agent_executor, session_reference
+                ),
             }
 
         except Exception as e:
@@ -2138,6 +3744,11 @@ class FlowExecutionOrchestrator:
                 "error_message": f"Monitoring error: {error_message}",
                 "actions_taken": self.execution_logger.get_actions_taken(),
                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                # _capture_result_artifact never raises; best-effort capture
+                # so an unexpected monitor error does not lose the artifact.
+                "result": await self._capture_result_artifact(
+                    agent_executor, session_reference
+                ),
             }
         finally:
             # Always cleanup monitoring resources
@@ -2164,6 +3775,7 @@ class FlowExecutionOrchestrator:
         # Ensure trigger_event_data is JSON serializable (convert UUIDs, datetimes, etc.)
         serializable_event_data = _make_json_serializable(self.trigger_event_data)
         attach_trigger_subject(serializable_event_data)
+        attach_workspace_file_paths(serializable_event_data)
 
         execution_create = schemas.FlowExecutionCreate(
             flow_id=self.flow_id,
@@ -2183,6 +3795,29 @@ class FlowExecutionOrchestrator:
     async def _update_execution_log(self, status: str, **kwargs):
         """Update the execution log and publish the update to NATS."""
         logger.info(f"Updating execution log to status: {status}")
+
+        # Every terminal write goes through here, so this is the one place
+        # that guarantees a failed execution carries a failure_category.
+        # Callers that hold richer evidence (an agent result with a failure
+        # analysis, or the exception that aborted the run) pass an explicit
+        # category and it is respected; everyone else gets one derived from
+        # the message being stored, falling back to the message already on
+        # the row when this update only moves the status.
+        if kwargs.get("failure_category") is None:
+            derived = derive_failure_category(
+                status=status,
+                error_message=(
+                    kwargs.get("error_message")
+                    or getattr(self.execution_log, "error_message", None)
+                ),
+            )
+            existing = getattr(self.execution_log, "failure_category", None)
+            if derived == FAILURE_CATEGORY_UNKNOWN and existing:
+                # Never downgrade a category an earlier, better-informed
+                # write already established.
+                derived = existing
+            if derived is not None:
+                kwargs["failure_category"] = derived
 
         # Debug logging for metrics
         if "tool_calls_count" in kwargs or "total_tokens" in kwargs:
@@ -2231,6 +3866,252 @@ class FlowExecutionOrchestrator:
 
         logger.debug(f"Execution log updated: status={status}")
 
+    async def _notify_terminal(
+        self,
+        status: str,
+        failure_category: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Post configured tracker comments after a terminal status write.
+
+        Never raises: a notification failure must not rewrite the execution
+        status that was just persisted.
+        """
+        try:
+            if not self.flow or not self.execution_log:
+                return
+            notifications = getattr(self.flow, "notifications", None)
+            if not notifications:
+                return
+
+            log_lines: List[str] = []
+            if self.execution_logger:
+                summary = self.execution_logger.get_agent_output_summary(tail_lines=20)
+                if summary:
+                    log_lines = summary.splitlines()
+
+            tracker_client = None
+            if needs_tracker_comment(notifications, status, failure_category):
+                tracker_client = await self._get_tracker_client_for_status()
+
+            execution_id = str(self.execution_log.id)
+            trigger_details = (
+                getattr(self.execution_log, "trigger_event_details", None)
+                or self.trigger_event_data
+            )
+            result_payload = (
+                result
+                if result is not None
+                else getattr(self.execution_log, "result", None)
+            )
+            await notify_terminal_execution(
+                notifications=notifications,
+                status=status,
+                failure_category=failure_category
+                or getattr(self.execution_log, "failure_category", None),
+                execution_id=execution_id,
+                execution_url=execution_console_url(execution_id),
+                trigger_event_details=trigger_details,
+                result=result_payload if isinstance(result_payload, dict) else None,
+                log_lines=log_lines,
+                tracker_client=tracker_client,
+            )
+        except Exception:
+            logger.warning(
+                "Flow terminal notification failed for execution %s",
+                getattr(self.execution_log, "id", "unknown"),
+                exc_info=True,
+            )
+
+    def _retry_decision(self, agent_result: Dict[str, Any]) -> Optional[str]:
+        """Decide whether a failed attempt may be retried.
+
+        Returns ``None`` when the attempt is retryable, or a short reason
+        string explaining why it is not. The reason is logged so an operator
+        can see *why* a failure was treated as terminal.
+
+        The safety boundary is the container's post-execution block (git push,
+        pull-request/merge-request creation), which the agent entrypoints run
+        only when the agent process exited ``0``. A non-zero exit therefore
+        means no external side effect was produced by the container and the
+        attempt can be repeated safely. Anything else — an exit code of 0, an
+        unknown exit code, or side effects already recorded on the timeline —
+        is treated as unsafe, because re-running it risks a duplicate comment,
+        push or pull request. A wrong retry is worse than no retry.
+        """
+        status = agent_result.get("status")
+        if status != "FAILED":
+            # STOPPED (user requested) and SUCCEEDED are never retried.
+            return f"status is {status}, not FAILED"
+
+        exit_code = agent_result.get("exit_code")
+        if exit_code is None:
+            return "agent exit code is unknown, so external side effects cannot be ruled out"
+        if exit_code == 0:
+            return (
+                "agent exited 0, so the container ran its post-execution "
+                "push/pull-request block; retrying could double-post"
+            )
+
+        if self.execution_logger.get_actions_taken():
+            return "the agent already recorded actions; retrying could repeat them"
+
+        if not self._failure_is_transient(agent_result):
+            return "the failure is not a transient upstream failure"
+
+        return None
+
+    @staticmethod
+    def _failure_is_transient(agent_result: Dict[str, Any]) -> bool:
+        """Whether the failed attempt is worth retrying.
+
+        Prefers the first-pass verdict the agent executor classified against
+        the FULL container logs (``failure_analysis`` on the result). The
+        stored ``error_message`` is a lossy summary — a raw severed-stream
+        stack yields a fallback message that re-analyses as non-transient,
+        and a no-status "unreachable" sentence re-analyses as transient even
+        for a policy-terminated run — so the message is only consulted for
+        legacy results that carry no attached verdict.
+        """
+        analysis_payload = agent_result.get("failure_analysis")
+        if isinstance(analysis_payload, dict) and "transient" in analysis_payload:
+            return bool(analysis_payload["transient"])
+        if analysis_payload is not None and hasattr(analysis_payload, "transient"):
+            # Tolerate an un-serialised AgentFailureAnalysis instance.
+            return bool(analysis_payload.transient)
+
+        return analyze_agent_failure(agent_result.get("error_message") or "").transient
+
+    async def _run_agent_with_retries(
+        self, execution_context: Dict[str, Any]
+    ) -> tuple[Dict[str, Any], Optional[str]]:
+        """Start and monitor the agent, retrying transient upstream failures.
+
+        One provider having a bad minute should not kill a whole review. Each
+        attempt gets a fresh agent session; between attempts we back off so a
+        briefly-overloaded provider has time to recover.
+
+        Retries are deliberately conservative — see :meth:`_retry_decision`
+        for the side-effect boundary that governs them — and always visible:
+        every retry is recorded as an ``execution_retry_scheduled`` milestone
+        and surfaced on the execution timeline, so flakiness is never hidden.
+
+        Args:
+            execution_context: Context prepared for the agent.
+
+        Returns:
+            Tuple of ``(agent_result, session_reference)`` for the final
+            attempt made.
+        """
+        max_attempts = max(1, int(settings.flow_execution_max_attempts))
+        backoff_seconds = max(0, int(settings.flow_execution_retry_backoff_seconds))
+
+        # Kept for the completion-confirmation round: the nudge re-invokes
+        # the agent with a minimal follow-up prompt derived from this context.
+        self._execution_context = execution_context
+
+        agent_result: Dict[str, Any] = {}
+        session_reference: Optional[str] = None
+
+        for attempt in range(1, max_attempts + 1):
+            # Each attempt starts a NEW agent session, so it must ask the
+            # runtime for a new session name. Without this, attempt 2 asked
+            # Kubernetes for the Job name attempt 1 still owns and died with
+            # "Failed to start agent Job: (409) Conflict" — the retry that
+            # was supposed to rescue a transient provider failure became the
+            # thing that failed the run. Attempt 1 keeps the historic
+            # unsuffixed name so an in-flight run stays addressable by the
+            # session reference stored before this change.
+            execution_context[AGENT_SESSION_SUFFIX_KEY] = (
+                f"a{attempt}" if attempt > 1 else None
+            )
+            session_reference, agent_executor = await self._start_agent_session(
+                execution_context
+            )
+
+            await self._update_execution_log(
+                status="RUNNING",
+                agent_session_reference=session_reference,
+            )
+            self._sync_runtime_session(session_reference=session_reference)
+
+            agent_result = await self._monitor_agent_execution(
+                session_reference, agent_executor
+            )
+
+            if attempt >= max_attempts:
+                if agent_result.get("status") == "FAILED" and max_attempts > 1:
+                    logger.info(
+                        "Execution %s exhausted all %s attempts",
+                        self.execution_log.id if self.execution_log else "unknown",
+                        max_attempts,
+                    )
+                    # Mirror the per-retry milestone: without this, the final
+                    # failure of a retried run looks identical on the timeline
+                    # to a first-attempt failure.
+                    self.execution_logger.log_milestone(
+                        "execution_retries_exhausted",
+                        {
+                            "attempts": max_attempts,
+                            "session_reference": session_reference,
+                        },
+                    )
+                    await self._emit_execution_warning(
+                        f"All {max_attempts} attempts failed; giving up.",
+                        details={"attempts": max_attempts},
+                    )
+                break
+
+            reason = self._retry_decision(agent_result)
+            if reason is not None:
+                logger.info(
+                    "Not retrying execution %s: %s",
+                    self.execution_log.id if self.execution_log else "unknown",
+                    reason,
+                )
+                break
+
+            delay = backoff_seconds * (2 ** (attempt - 1))
+            failure_summary = (agent_result.get("error_message") or "").strip()
+            logger.warning(
+                "Attempt %s/%s of execution %s hit a transient upstream failure; "
+                "retrying in %ss",
+                attempt,
+                max_attempts,
+                self.execution_log.id if self.execution_log else "unknown",
+                delay,
+            )
+            self.execution_logger.log_milestone(
+                "execution_retry_scheduled",
+                {
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "delay_seconds": delay,
+                    "reason": failure_summary,
+                    "session_reference": session_reference,
+                },
+            )
+            # Surfaced on the timeline so a user can see the run was retried
+            # rather than silently taking twice as long.
+            await self._emit_execution_warning(
+                f"Attempt {attempt} of {max_attempts} failed with a transient "
+                f"upstream error; retrying. ({failure_summary})",
+                details={"attempt": attempt, "max_attempts": max_attempts},
+            )
+            await self._publish_update(
+                "execution_retry",
+                {
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "delay_seconds": delay,
+                },
+            )
+
+            if delay:
+                await asyncio.sleep(delay)
+
+        return agent_result, session_reference
+
     async def run(self):
         """
         Execute the flow through its full lifecycle.
@@ -2240,6 +4121,9 @@ class FlowExecutionOrchestrator:
         2. INITIALIZING: Flow and AI model details retrieved
         3. RUNNING: Agent session started
         4. SUCCEEDED/FAILED: Execution completed
+
+        A failed attempt whose cause was a transient upstream model-provider
+        failure is retried (see :meth:`_run_agent_with_retries`).
         """
         try:
             # Stage 1: Retrieve flow details first (needed for account_id in messages)
@@ -2282,22 +4166,11 @@ class FlowExecutionOrchestrator:
                 resolved_input_prompt=execution_context["prompt"],
             )
 
-            # Stage 4: Start agent session (returns both session reference and executor)
-            session_reference, agent_executor = await self._start_agent_session(
+            # Stages 4 and 5: start the agent and monitor it, retrying the
+            # whole attempt when the upstream model provider failed in a way
+            # that another attempt could plausibly survive.
+            agent_result, session_reference = await self._run_agent_with_retries(
                 execution_context
-            )
-
-            # Agent started successfully - now mark as RUNNING with session reference
-            await self._update_execution_log(
-                status="RUNNING",
-                agent_session_reference=session_reference,
-            )
-            self._sync_runtime_session(session_reference=session_reference)
-
-            # Stage 5: Monitor agent execution and collect results
-            # Pass the executor so we don't create a duplicate instance
-            agent_result = await self._monitor_agent_execution(
-                session_reference, agent_executor
             )
 
             # Update execution log with final results including detailed logs
@@ -2335,12 +4208,80 @@ class FlowExecutionOrchestrator:
             except Exception as e:
                 logger.error(f"Failed to calculate final metrics for execution: {e}")
 
+            # Persist the evidence pack (if one was captured before executor
+            # cleanup) in the same transaction as the terminal status update.
+            have_binary_artifacts = (
+                self._evidence_archive is not None
+                or self._workspace_snapshot is not None
+            )
+            if have_binary_artifacts and self.execution_log is not None:
+                try:
+                    if self._evidence_archive is not None:
+                        crud_flow_execution.set_evidence_archive(
+                            self.db,
+                            db_obj=self.execution_log,
+                            archive=self._evidence_archive,
+                        )
+                    if self._workspace_snapshot is not None:
+                        crud_flow_execution.set_workspace_snapshot(
+                            self.db,
+                            db_obj=self.execution_log,
+                            archive=self._workspace_snapshot,
+                        )
+                except Exception as evidence_error:
+                    logger.warning(
+                        "Failed to persist evidence archive / workspace "
+                        f"snapshot: {evidence_error}"
+                    )
+                    # A failed flush must not poison the terminal status
+                    # update that follows.
+                    #
+                    # NOTE: rollback() discards ALL pending session state,
+                    # not just the failed archive. That is safe here only
+                    # because the archive is the sole pending change at this
+                    # point and _update_execution_log() below re-persists
+                    # status/result/metrics and commits. If you add another
+                    # pending write to this terminal block BEFORE this line,
+                    # it would be silently dropped — narrow this recovery
+                    # (expire + rebind the execution row) instead.
+                    self.db.rollback()
+
+            # The wrapper opens PRs with a raw curl whose response never
+            # reaches Python; bind it here, before the refresh below, so the
+            # merged result keeps pr_url for comment-driven resume.
+            self._bind_opened_pr(output_summary)
+
+            # MCP create_pull_request writes pr_url onto result in another
+            # session. Refresh so a None agent result cannot wipe the binding.
+            try:
+                self.db.refresh(self.execution_log)
+            except Exception:
+                logger.debug(
+                    "Could not refresh execution log before merging result",
+                    exc_info=True,
+                )
+            merged_result = merge_result_preserving_pr_binding(
+                getattr(self.execution_log, "result", None),
+                agent_result.get("result"),
+            )
+
             await self._update_execution_log(
                 status=final_status,
                 model_output_summary=output_summary,
                 error_message=agent_result.get("error_message"),
+                # The agent executor already classified the failure against
+                # the FULL container logs; that verdict is strictly better
+                # evidence than the truncated error message, so pass it in
+                # rather than letting _update_execution_log re-derive from
+                # prose.
+                failure_category=derive_failure_category(
+                    status=final_status,
+                    error_message=agent_result.get("error_message"),
+                    failure_analysis=agent_result.get("failure_analysis"),
+                ),
                 actions_taken_summary=agent_result.get("actions_taken"),
                 mcp_usage_logs=agent_result.get("mcp_usage_logs"),
+                result=merged_result,
                 end_time=datetime.now(timezone.utc),
                 tool_calls_count=self.tool_calls_count,
                 total_tokens=self.total_tokens,
@@ -2361,11 +4302,36 @@ class FlowExecutionOrchestrator:
                 state=status_state,
                 description=status_description,
             )
+            await self._notify_terminal(
+                status=final_status,
+                failure_category=derive_failure_category(
+                    status=final_status,
+                    error_message=agent_result.get("error_message"),
+                    failure_analysis=agent_result.get("failure_analysis"),
+                ),
+                result=merged_result,
+            )
 
             logger.info(
                 f"Flow execution completed with status {final_status}: {self.execution_log.id}"
             )
 
+            # Comments that arrived while this run was going were queued as a
+            # single follow-up; start it now that the run is terminal.
+            await self._start_queued_followup()
+
+        except asyncio.CancelledError:
+            # Deploy drain: the worker cancels in-flight handlers, releases the
+            # claim and re-dispatches so a peer resumes monitoring the agent,
+            # which keeps running. Nothing is finalized here (the execution is
+            # not over) and, critically, the runtime token is left active for
+            # the agent that is still streaming.
+            logger.info(
+                "Flow execution %s interrupted; leaving it to the worker that "
+                "resumes it (agent and runtime token untouched)",
+                self.execution_log.id if self.execution_log else "unknown",
+            )
+            raise
         except Exception as e:
             logger.error(
                 f"Flow execution {self.execution_log.id if self.execution_log else 'unknown'} failed: {e}",
@@ -2404,22 +4370,39 @@ class FlowExecutionOrchestrator:
                             f"Failed to calculate final metrics for failed execution: {metrics_error}"
                         )
 
+                    exception_category = derive_failure_category(
+                        status="FAILED",
+                        error_message=str(e),
+                        exception=e,
+                    )
                     await self._update_execution_log(
                         status="FAILED",
                         error_message=str(e),
+                        # The exception type carries the category for failures
+                        # raised by the runtime itself (e.g. AgentStartError on
+                        # an unresolvable Job name conflict), which no amount
+                        # of message matching would recover as reliably.
+                        failure_category=exception_category,
                         end_time=datetime.now(timezone.utc),
                         tool_calls_count=self.tool_calls_count,
                         total_tokens=self.total_tokens,
                         estimated_cost=self.estimated_cost,
                     )
                     self._sync_runtime_session(ended_at=datetime.now(timezone.utc))
+                    await self._notify_terminal(
+                        status="FAILED",
+                        failure_category=exception_category,
+                    )
                 except Exception as update_error:
                     logger.error(
                         f"Failed to update execution log after error: {update_error}",
                         exc_info=True,
                     )
+                # A failed run is still terminal: release the queued
+                # follow-up so a review comment is not lost with it.
+                await self._start_queued_followup()
             else:
                 logger.error("Cannot update execution log - not created yet")
         finally:
-            # Always cleanup the temporary API token
+            # Retire the runtime token, but only if this execution is over.
             self._cleanup_temporary_api_token()

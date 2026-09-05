@@ -1,8 +1,109 @@
 import uuid
 from datetime import datetime, UTC
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, ConfigDict
+
+
+class ExecutionModelUsage(BaseModel):
+    """One model alias that served requests during an execution."""
+
+    model_alias: str = Field(
+        ..., description="Gateway model alias, e.g. 'openai/gpt-5'"
+    )
+    provider_name: Optional[str] = Field(
+        None, description="Provider that served the requests, when recorded"
+    )
+    request_count: int = Field(
+        0, description="Gateway requests this execution sent to that alias"
+    )
+
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
+class ExecutionModelProjection(BaseModel):
+    """Which model(s) ran an execution, derived from gateway usage.
+
+    Mixed into both the list and the detail response so "what ran this" is
+    answerable without a second call. Every field is None/empty for an
+    execution whose gateway traffic recorded no model alias (a run that never
+    called the gateway, or one that predates alias recording).
+    """
+
+    model_alias: Optional[str] = Field(
+        None,
+        description=(
+            "Alias of the model that served most of this execution's gateway "
+            "requests. Null when the execution has no attributable gateway "
+            "usage."
+        ),
+    )
+    provider_name: Optional[str] = Field(
+        None, description="Provider behind ``model_alias``, when recorded"
+    )
+    models_used: List[ExecutionModelUsage] = Field(
+        default_factory=list,
+        description=(
+            "Every distinct model alias this execution used with its request "
+            "count, most used first."
+        ),
+    )
+
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
+class ExecutionRunner(BaseModel):
+    """Where an execution ran: a private CLI runner or Preloop hosted.
+
+    Derived at read time from ``FlowExecution.runner_id`` and
+    ``agent_session_reference`` ``runner:...`` forms. Hosted is the default
+    so the console can always name the executor.
+    """
+
+    kind: Literal["private", "hosted"] = Field(
+        ...,
+        description=(
+            "private when the run was leased to a self-hosted CLI runner; "
+            "hosted when it used the built-in Preloop executor"
+        ),
+    )
+    id: Optional[uuid.UUID] = Field(
+        None,
+        description="FlowRunner id when kind is private and a runner was assigned",
+    )
+    name: str = Field(
+        ...,
+        description='Display name. "Preloop hosted" when kind is hosted.',
+    )
+    pool: Optional[str] = Field(
+        None,
+        description="Resolved runner pool string, when known",
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExecutionRunnerSummary(BaseModel):
+    """List-row runner: kind and name only."""
+
+    kind: Literal["private", "hosted"] = Field(
+        ...,
+        description="private for a self-hosted CLI runner; hosted otherwise",
+    )
+    name: str = Field(
+        ...,
+        description='Display name. "Preloop hosted" when kind is hosted.',
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+def _hosted_runner() -> ExecutionRunner:
+    return ExecutionRunner(kind="hosted", name="Preloop hosted")
+
+
+def _hosted_runner_summary() -> ExecutionRunnerSummary:
+    return ExecutionRunnerSummary(kind="hosted", name="Preloop hosted")
 
 
 # Base Pydantic model for FlowExecution attributes
@@ -40,6 +141,13 @@ class FlowExecutionBase(BaseModel):
     mcp_usage_logs: Optional[List[Dict[str, Any]]] = Field(
         None, description="Detailed log of each MCP tool call"
     )
+    result: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Structured result artifact reported by the agent "
+            "(parsed /workspace/result.json, eval/observe runs)"
+        ),
+    )
     agent_session_reference: Optional[str] = Field(
         None,
         description="Reference to agent session (e.g., session ID, K8s job ID, container ID, process ID)",
@@ -47,8 +155,23 @@ class FlowExecutionBase(BaseModel):
     error_message: Optional[str] = Field(
         None, description="Error message if the execution failed"
     )
+    failure_category: Optional[str] = Field(
+        None,
+        description=(
+            "Coarse machine-readable reason a terminal execution did not "
+            "succeed: one of runner_conflict, runner_error, model_transient, "
+            "model_auth, model_quota, model_config, no_confirmation, "
+            "tool_error, agent_error, timeout, cancelled, unknown. Null for "
+            "successful or still-running executions, and for executions that "
+            "predate this field."
+        ),
+    )
     retry_of_execution_id: Optional[uuid.UUID] = Field(
         None, description="ID of the original execution if this is a retry"
+    )
+    batch_id: Optional[uuid.UUID] = Field(
+        None,
+        description="Shared ID linking executions created by one matrix/batch trigger",
     )
     tool_calls_count: Optional[int] = Field(
         0, description="Total number of tool/MCP calls made during execution"
@@ -76,27 +199,36 @@ class FlowExecutionUpdate(BaseModel):
     model_output_summary: Optional[str] = None
     actions_taken_summary: Optional[List[Dict[str, Any]]] = None
     mcp_usage_logs: Optional[List[Dict[str, Any]]] = None
+    result: Optional[Dict[str, Any]] = None
     agent_session_reference: Optional[str] = None
     error_message: Optional[str] = None
+    failure_category: Optional[str] = None
     tool_calls_count: Optional[int] = None
     total_tokens: Optional[int] = None
     estimated_cost: Optional[float] = None
 
 
 # Pydantic model for representing a FlowExecution in API responses (includes DB fields)
-class FlowExecutionResponse(FlowExecutionBase):
+class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
     id: uuid.UUID
     created_at: datetime
     updated_at: datetime
 
     # Include flow name for display purposes
     flow_name: Optional[str] = None
+    runner: ExecutionRunner = Field(
+        default_factory=_hosted_runner,
+        description=(
+            "Where this execution ran. Hosted when the built-in executor "
+            "ran it; private when a self-hosted CLI runner did."
+        ),
+    )
 
     # Example of how to include related data if needed
     # flow: Optional[FlowResponse] = None # Assuming a FlowResponse Pydantic schema exists
 
 
-class FlowExecutionListResponse(BaseModel):
+class FlowExecutionListResponse(ExecutionModelProjection):
     """Lightweight flow execution row for list views."""
 
     id: uuid.UUID
@@ -105,7 +237,16 @@ class FlowExecutionListResponse(BaseModel):
     start_time: datetime
     end_time: Optional[datetime] = None
     error_message: Optional[str] = None
+    failure_category: Optional[str] = Field(
+        None,
+        description=(
+            "Coarse machine-readable failure class for terminal executions "
+            "(runner_conflict, model_transient, agent_error, ...). Null when "
+            "the execution succeeded, is still running, or predates the field."
+        ),
+    )
     retry_of_execution_id: Optional[uuid.UUID] = None
+    batch_id: Optional[uuid.UUID] = None
     tool_calls_count: Optional[int] = 0
     total_tokens: Optional[int] = 0
     estimated_cost: Optional[float] = 0.0
@@ -129,6 +270,13 @@ class FlowExecutionListResponse(BaseModel):
             "carries one."
         ),
     )
+    runner: ExecutionRunnerSummary = Field(
+        default_factory=_hosted_runner_summary,
+        description=(
+            "Where this execution ran. List rows carry kind and name; "
+            "detail adds id and pool."
+        ),
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -136,6 +284,77 @@ class FlowExecutionListResponse(BaseModel):
 # Schema for FlowExecution as stored in DB (identical to Response for now)
 class FlowExecutionInDB(FlowExecutionResponse):
     pass
+
+
+# --- Matrix / batch fan-out schemas ---
+
+
+class FlowMatrixEntry(BaseModel):
+    """One cell of a matrix trigger. Empty entry means 'flow defaults'."""
+
+    agent_type: Optional[str] = Field(
+        None,
+        description="Agent harness override (e.g. 'opencode'); None = flow default",
+    )
+    ai_model_id: Optional[uuid.UUID] = Field(
+        None, description="AI model override; None = flow default"
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class BatchExecutionRef(BaseModel):
+    """Per-cell execution reference in a batch trigger response."""
+
+    index: int
+    # Both keys are provided on purpose: "id" matches the existing single
+    # trigger response, "execution_id" matches the webhook trigger response
+    # shape (see fix/webhook-trigger-execution-id).
+    id: uuid.UUID
+    execution_id: uuid.UUID
+    status: str
+    agent_type: Optional[str] = None
+    ai_model_id: Optional[uuid.UUID] = None
+
+
+class BatchTriggerResponse(BaseModel):
+    """Response for a trigger request that carried a matrix."""
+
+    batch_id: uuid.UUID
+    flow_id: uuid.UUID
+    executions: List[BatchExecutionRef]
+
+
+class BatchRollup(BaseModel):
+    """Aggregate metrics over the executions of one batch."""
+
+    total: int
+    by_status: Dict[str, int]
+    completed: int = Field(
+        0, description="Executions in a terminal state (succeeded/failed/etc.)"
+    )
+    total_tokens: int = 0
+    total_estimated_cost: float = 0.0
+    total_tool_calls: int = 0
+
+
+class BatchExecutionListItem(FlowExecutionListResponse):
+    """Execution row in a batch listing, annotated with its matrix cell."""
+
+    matrix: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Matrix cell overrides this execution was created with "
+        "(index, agent_type, ai_model_id)",
+    )
+
+
+class BatchExecutionsResponse(BaseModel):
+    """Executions of one batch plus a status/cost/token rollup."""
+
+    batch_id: uuid.UUID
+    flow_id: uuid.UUID
+    rollup: BatchRollup
+    executions: List[BatchExecutionListItem]
 
 
 # Pydantic model for sending commands to a flow execution

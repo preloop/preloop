@@ -156,3 +156,12 @@ class IssueSearchResults(BaseModel):
     items: List[IssueResponse] = Field(..., description="Search result items")
     total: int = Field(..., description="Total number of matching issues")
     query: str = Field(..., description="Search query used")
+
+
+class IssueListResponse(BaseModel):
+    """Paginated list of issues for a project or tracker."""
+
+    items: List[IssueResponse] = Field(..., description="Issue list items")
+    total: int = Field(..., description="Total number of matching issues")
+    skip: int = Field(..., description="Number of issues skipped")
+    limit: int = Field(..., description="Page size")

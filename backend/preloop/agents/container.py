@@ -1,19 +1,365 @@
 """Container-based agent executor for Docker and Kubernetes."""
 
+import asyncio
+import base64
+import binascii
+import gzip
+import io
 import json
 import logging
 import os
+import random
+import re
 import shlex
+import tarfile
 from typing import Any, Dict, Optional
 
 import aiodocker
 from aiodocker.exceptions import DockerError
 
+from preloop.config import settings
+from preloop.services.flow_failure_category import (
+    FAILURE_CATEGORY_RUNNER_CONFLICT,
+    FAILURE_CATEGORY_RUNNER_ERROR,
+)
+
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
+from .errors import AgentStartError
+from .failure_analysis import analyze_agent_failure
 from preloop.services.mcp_config_service import MCPConfigService
-from preloop.utils.repo_urls import inject_oauth_token, tracker_host_kind
+from preloop.services.tracker_git_token import APP_AUTH_TYPES
+from preloop.utils.git_credentials import (
+    GitCredential,
+    build_credential_env,
+    build_credential_setup_shell,
+    build_push_auth_setup_shell,
+    credential_username,
+    git_token_env_var,
+    needs_http_path_scoping,
+    strip_url_credentials,
+)
+from preloop.utils.repo_urls import repo_url_log_location, tracker_host_kind
+from preloop.utils.secret_scrubbing import scrub_secret_lines, scrub_secrets
+from preloop.utils.workspace_seed import (
+    build_workspace_seed_shell,
+    parse_workspace_files,
+)
+from preloop.utils.workspace_snapshot import (
+    WORKSPACE_SNAPSHOT_PATH,
+    WORKSPACE_VOLUME_PREFIX,
+    build_setup_commands_shell,
+    build_workspace_snapshot_shell,
+)
 
 logger = logging.getLogger(__name__)
+
+# Git ref names interpolated into generated shell (origin/<branch>..HEAD).
+# Charset is unquoted-shell-safe so we never splice shlex.quote into the
+# middle of a token (origin/'feat/x'). Extra checks below match git's
+# own refname rules: no ``..``, leading ``-``, trailing ``.``, or
+# ``~``/``^``/``:`` (the last three are already outside the charset).
+_SAFE_GIT_REF_CHARS = re.compile(r"^[A-Za-z0-9._/\-]+$")
+
+
+def _validated_git_ref(name: Optional[str]) -> Optional[str]:
+    """Return ``name`` when it is a safe git branch/ref, otherwise None."""
+
+    if not name or not isinstance(name, str):
+        return None
+    if not _SAFE_GIT_REF_CHARS.fullmatch(name):
+        return None
+    if name.startswith("-") or name.startswith("/") or name.endswith("."):
+        return None
+    if name.endswith("/") or ".." in name or "//" in name:
+        return None
+    for part in name.split("/"):
+        if not part or part.startswith(".") or part.endswith(".lock"):
+            return None
+    return name
+
+
+# Path inside the agent container where eval/observe flows write their
+# structured result report (see backend/presets/003-observe-eval.yaml).
+RESULT_ARTIFACT_PATH = "/workspace/result.json"
+# Guardrail: refuse to persist oversized artifacts (the preset asks agents to
+# keep result.json small and reference workspace files for bulky output).
+MAX_RESULT_ARTIFACT_BYTES = 256 * 1024
+
+# Directory inside the agent container where audit-style presets write their
+# evidence pack (see backend/presets/004..006). Captured as a tar.gz archive.
+EVIDENCE_DIR_PATH = "/workspace/evidence"
+# Cap on the COMPRESSED evidence archive. On Kubernetes the archive travels
+# base64-encoded through the pod log stream, so this must stay comfortably
+# inside the kubelet's default 10 MiB container-log rotation limit.
+MAX_EVIDENCE_ARCHIVE_BYTES = 2 * 1024 * 1024
+
+# The wrapper opens PRs/MRs itself (post-execution curl). The response is kept
+# under the evidence dir and the resulting URL is echoed on one line so the
+# orchestrator can bind the execution to the PR it opened.
+PR_RESPONSE_FILE = f"{EVIDENCE_DIR_PATH}/pr.json"
+PR_LOOKUP_FILE = f"{EVIDENCE_DIR_PATH}/pr-lookup.json"
+PR_OPENED_LOG_MARKER = "PRELOOP_PR_OPENED"
+
+
+def build_github_pr_capture_shell(
+    *, token_ref: str, owner: str, repo: str, branch: str
+) -> str:
+    """Shell that turns the create-PR response into one recognizable line.
+
+    Falls back to a head-branch lookup so an already-existing PR (the
+    "may already exist" branch) still binds to this execution.
+    """
+
+    grep_pr = 'grep -o \'"html_url"[[:space:]]*:[[:space:]]*"[^"]*/pull/[0-9]*"\''
+    sed_url = 'sed \'s/.*"\\(https[^"]*\\)"$/\\1/\''
+    return f"""
+    PR_URL=$({grep_pr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url})
+    if [ -z "$PR_URL" ]; then
+      echo "No PR URL in the create response; looking it up by head branch"
+      curl -sS \\
+        -H "Authorization: token {token_ref}" \\
+        -H "Accept: application/vnd.github.v3+json" \\
+        -o {PR_LOOKUP_FILE} \\
+        "https://api.github.com/repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}" \\
+        || echo "PR lookup by head branch failed"
+      PR_URL=$({grep_pr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
+    fi
+    if [ -n "$PR_URL" ]; then
+      echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$PR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"github\\"}}"
+    else
+      echo "No pull request URL could be resolved for branch {branch}"
+    fi
+"""
+
+
+def build_gitlab_mr_capture_shell(
+    *, token_ref: str, gitlab_host: str, encoded_path: str, branch: str
+) -> str:
+    """GitLab counterpart of :func:`build_github_pr_capture_shell`."""
+
+    grep_mr = (
+        'grep -o \'"web_url"[[:space:]]*:[[:space:]]*"[^"]*/merge_requests/[0-9]*"\''
+    )
+    sed_url = 'sed \'s/.*"\\(https[^"]*\\)"$/\\1/\''
+    return f"""
+    MR_URL=$({grep_mr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url})
+    if [ -z "$MR_URL" ]; then
+      echo "No MR URL in the create response; looking it up by source branch"
+      curl -sS \\
+        -H "PRIVATE-TOKEN: {token_ref}" \\
+        -o {PR_LOOKUP_FILE} \\
+        "https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests?state=opened&source_branch={branch}" \\
+        || echo "MR lookup by source branch failed"
+      MR_URL=$({grep_mr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
+    fi
+    if [ -n "$MR_URL" ]; then
+      echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$MR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"gitlab\\"}}"
+    else
+      echo "No merge request URL could be resolved for branch {branch}"
+    fi
+"""
+
+
+# Bounded tail for terminal-path pod log reads on Kubernetes. The artifact
+# emission always TRAILS the agent output and its payload is capped by the two
+# byte limits above, so a window of (worst-case emission lines + a generous
+# status-scan window) is guaranteed to contain the COMPLETE emission plus at
+# least as much real agent output as the pre-wrapper tail=1000 status read
+# inspected. Worst case emission: both byte caps base64-encoded at the
+# narrowest wrap width in the wild (60 cols), plus marker lines.
+# Cap on the workspace snapshot that travels through the Kubernetes pod log
+# stream. The configured WORKSPACE_SNAPSHOT_MAX_BYTES (512 MiB by default) is
+# a Docker-path budget: there the archive is copied out of the container over
+# the Docker API. On Kubernetes the only channel a finished pod still has is
+# its log, so the snapshot must stay inside the same kubelet log-rotation
+# budget as the evidence pack. Larger workspaces are skipped on Kubernetes
+# with a logged reason until snapshots move to object storage.
+K8S_WORKSPACE_STREAM_MAX_BYTES = 2 * 1024 * 1024
+
+
+# Docker named volume holding /workspace for one execution. Created on start,
+# reaped by the workspace janitor once WORKSPACE_SNAPSHOT_TTL_HOURS has passed.
+# Prefix lives in preloop.utils.workspace_snapshot so the janitor does not
+# import this module.
+
+
+def workspace_volume_name(execution_id: str) -> str:
+    """Return the Docker volume name backing /workspace for an execution."""
+
+    return f"{WORKSPACE_VOLUME_PREFIX}{execution_id}"
+
+
+def k8s_workspace_snapshot_limit() -> int:
+    """Effective workspace-snapshot cap for the Kubernetes log channel."""
+
+    configured = int(
+        getattr(
+            settings, "workspace_snapshot_max_bytes", K8S_WORKSPACE_STREAM_MAX_BYTES
+        )
+        or 0
+    )
+    if configured <= 0:
+        return 0
+    return min(configured, K8S_WORKSPACE_STREAM_MAX_BYTES)
+
+
+_WORST_CASE_EMISSION_LINES = (
+    MAX_RESULT_ARTIFACT_BYTES
+    + MAX_EVIDENCE_ARCHIVE_BYTES
+    + K8S_WORKSPACE_STREAM_MAX_BYTES
+) * 4 // (3 * 60) + 64
+K8S_TERMINAL_LOG_TAIL_LINES = _WORST_CASE_EMISSION_LINES + 2000
+
+# Marker-line prefix for the Kubernetes artifact log channel. Every line the
+# emission wrapper prints starts with this prefix, so operator-facing log
+# consumers can filter the (potentially large, base64) blocks statelessly.
+# Grammar:
+#   PRELOOP_ARTIFACT_BEGIN <channel> <status> [<size_bytes>]
+#   PRELOOP_ARTIFACT_B64 <base64-chunk>          (0..n lines)
+#   PRELOOP_ARTIFACT_END <channel>
+# where <channel> is "result" or "evidence" and <status> is one of
+# present | absent | too_large | error.
+ARTIFACT_STREAM_LINE_PREFIX = "PRELOOP_ARTIFACT_"
+
+# Environment variable carrying the original (unwrapped) agent script when the
+# Kubernetes artifact-emission wrapper is applied.
+K8S_INNER_SCRIPT_ENV = "PRELOOP_INNER_SCRIPT"
+
+# Key under which the orchestrator names the SESSION (not the execution) that
+# is being started. One execution can legitimately start several agent
+# sessions — attempt 2 of the transient-failure retry, the completion
+# confirmation nudge — and each needs its own Kubernetes Job. Without a
+# discriminator every session of one execution asks the API server for the
+# same Job name, and the second one fails with 409 AlreadyExists while the
+# first Job is still around (it lingers for AGENT_JOB_TTL_SECONDS after it
+# finishes). That is the staging "Failed to start agent Job: (409) Conflict"
+# signature.
+AGENT_SESSION_SUFFIX_KEY = "agent_session_suffix"
+
+# Kubernetes object names must be DNS-1123 labels: <=63 chars, lowercase
+# alphanumeric and '-', starting and ending alphanumeric.
+K8S_NAME_MAX_LENGTH = 63
+_K8S_NAME_INVALID_RE = re.compile(r"[^a-z0-9-]+")
+
+# Bounded wait for a leftover finished Job to actually disappear after a
+# delete, before the name can be reused.
+_JOB_DELETE_POLL_INTERVAL_SECONDS = 0.5
+_JOB_DELETE_MAX_WAIT_SECONDS = 15.0
+
+
+def kubernetes_job_name(
+    execution_id: str, *, session_suffix: Optional[str] = None
+) -> str:
+    """Build the DNS-1123 Job name for one agent session of an execution.
+
+    The execution id stays the readable core of the name (operators grep for
+    it), and the optional session suffix keeps a retry attempt or the
+    confirmation nudge from colliding with the Job of the session before it.
+
+    Args:
+        execution_id: Flow execution UUID (string).
+        session_suffix: Short discriminator for this session within the
+            execution (``"a2"``, ``"nudge"``). None/empty keeps the historic
+            ``agent-<execution_id>`` name, so an in-flight first attempt is
+            still found by its stored session reference across a deploy.
+
+    Returns:
+        A valid Kubernetes Job name.
+    """
+    base = f"agent-{execution_id}".replace("_", "-").lower()
+    suffix = (session_suffix or "").replace("_", "-").lower()
+    suffix = _K8S_NAME_INVALID_RE.sub("", suffix)
+    if suffix:
+        base = f"{base[: K8S_NAME_MAX_LENGTH - len(suffix) - 1]}-{suffix}"
+    base = _K8S_NAME_INVALID_RE.sub("", base)[:K8S_NAME_MAX_LENGTH]
+    return base.strip("-")
+
+
+def _job_create_retry_delay_seconds(attempt: int) -> float:
+    """Jittered exponential backoff before re-attempting a Job creation.
+
+    Args:
+        attempt: Zero-based index of the attempt that just failed.
+
+    Returns:
+        Seconds to wait. Jitter matters here because the collisions this
+        guards against are caused by *concurrent* actors (two dispatchers,
+        a reclaiming worker): a fixed backoff would keep them in lockstep.
+    """
+    base = max(0.0, float(settings.agent_job_create_retry_base_seconds))
+    return (base * (2**attempt)) + random.uniform(0, base)
+
+
+async def _sleep_before_job_create_retry(seconds: float) -> None:
+    """Sleep hook tests can patch without slowing the suite."""
+    await asyncio.sleep(seconds)
+
+
+# Wrapper applied to Kubernetes agent scripts. Runs the unchanged agent script
+# in a CHILD shell (so its own `trap ... EXIT` and `exit $rc` cannot skip the
+# epilogue), then emits result.json and the evidence pack into stdout between
+# PRELOOP_ARTIFACT_* markers. `base64 < file` (stdin form) is portable across
+# GNU coreutils, busybox and BSD; wrapped or single-line output are both
+# accepted by the parser.
+#
+# Security note: the emission duplicates result/evidence content into the pod
+# log, where it is retained by the kubelet until log rotation and readable by
+# anyone with pod-log access in the agent namespace. Deployments must keep
+# that RBAC scoped as tightly as the account-scoped API/DB column. The
+# object-storage follow-up (tracked on the PR) moves the evidence channel off
+# the log stream entirely.
+K8S_ARTIFACT_WRAPPER_SCRIPT = f"""
+_preloop_emit_artifacts() {{
+    if [ -f {RESULT_ARTIFACT_PATH} ]; then
+        _pl_size=$(wc -c < {RESULT_ARTIFACT_PATH} | tr -d ' ')
+        if [ "$_pl_size" -gt {MAX_RESULT_ARTIFACT_BYTES} ] 2>/dev/null; then
+            echo "PRELOOP_ARTIFACT_BEGIN result too_large $_pl_size"
+        else
+            echo "PRELOOP_ARTIFACT_BEGIN result present $_pl_size"
+            base64 < {RESULT_ARTIFACT_PATH} | sed 's/^/PRELOOP_ARTIFACT_B64 /'
+        fi
+        echo "PRELOOP_ARTIFACT_END result"
+    else
+        echo "PRELOOP_ARTIFACT_BEGIN result absent"
+        echo "PRELOOP_ARTIFACT_END result"
+    fi
+    if [ -d {EVIDENCE_DIR_PATH} ]; then
+        if tar -czf /tmp/preloop-evidence.tar.gz -C /workspace evidence 2>/dev/null; then
+            _pl_esize=$(wc -c < /tmp/preloop-evidence.tar.gz | tr -d ' ')
+            if [ "$_pl_esize" -gt {MAX_EVIDENCE_ARCHIVE_BYTES} ] 2>/dev/null; then
+                echo "PRELOOP_ARTIFACT_BEGIN evidence too_large $_pl_esize"
+            else
+                echo "PRELOOP_ARTIFACT_BEGIN evidence present $_pl_esize"
+                base64 < /tmp/preloop-evidence.tar.gz | sed 's/^/PRELOOP_ARTIFACT_B64 /'
+            fi
+        else
+            echo "PRELOOP_ARTIFACT_BEGIN evidence error"
+        fi
+        echo "PRELOOP_ARTIFACT_END evidence"
+    else
+        echo "PRELOOP_ARTIFACT_BEGIN evidence absent"
+        echo "PRELOOP_ARTIFACT_END evidence"
+    fi
+{build_workspace_snapshot_shell(max_bytes=k8s_workspace_snapshot_limit())}
+    if [ -f {WORKSPACE_SNAPSHOT_PATH} ]; then
+        _pl_wssize=$(wc -c < {WORKSPACE_SNAPSHOT_PATH} | tr -d ' ')
+        echo "PRELOOP_ARTIFACT_BEGIN workspace present $_pl_wssize"
+        base64 < {WORKSPACE_SNAPSHOT_PATH} | sed 's/^/PRELOOP_ARTIFACT_B64 /'
+        echo "PRELOOP_ARTIFACT_END workspace"
+    else
+        echo "PRELOOP_ARTIFACT_BEGIN workspace absent"
+        echo "PRELOOP_ARTIFACT_END workspace"
+    fi
+}}
+if [ -z "${{{K8S_INNER_SCRIPT_ENV}}}" ]; then
+    echo "ERROR: {K8S_INNER_SCRIPT_ENV} is not set" >&2
+    exit 1
+fi
+bash -c "${{{K8S_INNER_SCRIPT_ENV}}}"
+_preloop_rc=$?
+_preloop_emit_artifacts
+exit $_preloop_rc
+"""
 
 
 def _exception_message(exc: BaseException) -> str:
@@ -70,6 +416,11 @@ class ContainerAgentExecutor(AgentExecutor):
         self.agent_namespace = os.getenv(
             "AGENT_EXECUTION_NAMESPACE", "agent-executions"
         )
+        # One bounded pod-log read per finished job, shared by the terminal
+        # path's three consumers (status scan, result channel, evidence
+        # channel). Executor instances live for a single execution, so no
+        # eviction is needed.
+        self._k8s_terminal_log_cache: Dict[str, list[str]] = {}
 
     async def _get_docker_client(self) -> aiodocker.Docker:
         """Get or create Docker client."""
@@ -198,7 +549,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
         # Create a writable workspace volume for the container
         # This ensures the agent has write permissions
-        workspace_volume = f"agent-workspace-{execution_id}"
+        workspace_volume = workspace_volume_name(execution_id)
 
         # Determine working directory based on git clone configuration
         working_dir = "/workspace"
@@ -221,7 +572,12 @@ class ContainerAgentExecutor(AgentExecutor):
         # Container configuration
         container_config = {
             "Image": self.image,
-            "Env": [f"{k}={v}" for k, v in env.items()],
+            "Env": [
+                f"{k}={v}"
+                for k, v in self._apply_git_credential_env(
+                    env, execution_context
+                ).items()
+            ],
             "User": "10000:10000",  # Explicitly set user and group
             "WorkingDir": working_dir,  # Set working directory to git repo if configured
             "Labels": {
@@ -257,6 +613,11 @@ class ContainerAgentExecutor(AgentExecutor):
             container = await docker.containers.create(config=container_config)
             container_id = container.id
 
+            # Restore a prior execution's workspace (correlated resume) into
+            # the fresh volume BEFORE the entrypoint runs, so the init script
+            # finds the repository already checked out and skips the clone.
+            await self._restore_docker_workspace(container, execution_context)
+
             await container.start()
 
             self._containers[container_id] = container
@@ -271,6 +632,68 @@ class ContainerAgentExecutor(AgentExecutor):
                 f"Failed to start container for execution {execution_id}: {e}"
             )
             raise RuntimeError(f"Failed to start agent container: {e}")
+
+    @staticmethod
+    def _workspace_restore_archive(
+        execution_context: Dict[str, Any],
+    ) -> Optional[bytes]:
+        """Return the prior-execution workspace snapshot to restore, if any."""
+
+        archive = execution_context.get("workspace_restore_archive")
+        if isinstance(archive, (bytes, bytearray)) and archive:
+            return bytes(archive)
+        return None
+
+    def workspace_restore_planned(self, execution_context: Dict[str, Any]) -> bool:
+        """Whether this run starts from a restored workspace.
+
+        Only the Docker runner can seed the workspace before the entrypoint
+        runs (the volume is writable through the Docker API while the
+        container is created but not started). On Kubernetes ``/workspace`` is
+        an emptyDir with no pre-start write path, so a resume there falls back
+        to the clone until snapshots move to object storage.
+        """
+
+        if self._workspace_restore_archive(execution_context) is None:
+            return False
+        if self.use_kubernetes:
+            self.logger.info(
+                "Workspace snapshot available but the Kubernetes runner cannot "
+                "seed an emptyDir before start; falling back to git clone"
+            )
+            return False
+        return True
+
+    async def _restore_docker_workspace(
+        self, container: Any, execution_context: Dict[str, Any]
+    ) -> bool:
+        """Unpack a prior workspace snapshot into the created container.
+
+        Best effort: a failure here leaves the workspace empty, and the init
+        script's restore guard falls back to the normal clone.
+        """
+
+        archive = self._workspace_restore_archive(execution_context)
+        if archive is None or self.use_kubernetes:
+            return False
+        try:
+            tar_bytes = gzip.decompress(archive)
+            # The snapshot is `tar -C / workspace`, so members are
+            # "workspace/..." and the extraction root is "/".
+            await container.put_archive("/", tar_bytes)
+        except Exception as e:
+            self.logger.warning(
+                "Failed to restore workspace snapshot for execution %s: %s",
+                execution_context.get("execution_id"),
+                _exception_message(e),
+            )
+            return False
+        self.logger.info(
+            "Restored workspace snapshot (%d bytes compressed) for execution %s",
+            len(archive),
+            execution_context.get("execution_id"),
+        )
+        return True
 
     async def _start_kubernetes_pod(self, execution_context: Dict[str, Any]) -> str:
         """
@@ -287,8 +710,14 @@ class ContainerAgentExecutor(AgentExecutor):
         execution_id = execution_context["execution_id"]
         flow_id = execution_context["flow_id"]
 
-        # Generate unique job name (K8s names must be DNS-1123 compliant)
-        job_name = f"agent-{execution_id}".replace("_", "-").lower()
+        # Job name: execution id plus the per-session discriminator, so a
+        # retry attempt or the confirmation nudge never asks for the name a
+        # previous session of this execution already owns (see
+        # AGENT_SESSION_SUFFIX_KEY).
+        job_name = kubernetes_job_name(
+            execution_id,
+            session_suffix=execution_context.get(AGENT_SESSION_SUFFIX_KEY),
+        )
 
         # Prepare environment variables
         # Start with agent-specific env if provided by any subclass.
@@ -339,8 +768,13 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             env["MCP_CONFIG_JSON"] = json.dumps(mcp_config)
 
-        # Convert env dict to list of V1EnvVar
-        env_vars = [client.V1EnvVar(name=k, value=v) for k, v in env.items()]
+        # Convert env dict to list of V1EnvVar. Git credentials are merged in
+        # here rather than baked into the agent script, so the token stays out
+        # of the pod's command line (issue #173).
+        env_vars = [
+            client.V1EnvVar(name=k, value=v)
+            for k, v in self._apply_git_credential_env(env, execution_context).items()
+        ]
 
         # Get resource limits from config or use defaults
         memory_limit = os.getenv("AGENT_MEMORY_LIMIT", "2Gi")
@@ -369,6 +803,18 @@ class ContainerAgentExecutor(AgentExecutor):
         # Check if subclass provided custom command/args (e.g., CodexAgent)
         command = execution_context.get("_container_command")
         args = execution_context.get("_container_args")
+
+        # Wrap `bash -c <script>` invocations with the artifact-emission
+        # epilogue so result.json / the evidence pack become retrievable from
+        # the pod's log stream after completion (a finished pod's filesystem
+        # is unreachable through the API). The original script moves into an
+        # env var and runs unchanged in a child shell.
+        wrapped = self._wrap_kubernetes_args_for_artifacts(args)
+        if wrapped is not None:
+            args, inner_script = wrapped
+            env_vars.append(
+                client.V1EnvVar(name=K8S_INNER_SCRIPT_ENV, value=inner_script)
+            )
 
         # Run as root by default — codex-universal installs runtimes (nvm, pyenv,
         # cargo, phpenv) under /root and hardcodes /root/.nvm/nvm.sh in /etc/profile.
@@ -489,23 +935,253 @@ class ContainerAgentExecutor(AgentExecutor):
             ),
         )
 
+        return await self._create_kubernetes_job(
+            job, job_name=job_name, execution_id=execution_id
+        )
+
+    async def _create_kubernetes_job(
+        self, job: Any, *, job_name: str, execution_id: str
+    ) -> str:
+        """Create the agent Job, tolerating conflicts and API-server blips.
+
+        Two failure shapes must not kill a flow execution:
+
+        * **409 AlreadyExists.** Either another actor already created the Job
+          for this exact session (a duplicate dispatch, a worker reclaiming a
+          lease) — in which case the existing Job IS our agent and is adopted
+          instead of started twice — or a Job of the same name from an
+          earlier, already-finished session is still lingering inside its
+          TTL, in which case it is deleted (background propagation, so its
+          pods go with it) and the name reused.
+        * **429 / 5xx from the API server.** A transient control-plane
+          failure; retried with jittered backoff.
+
+        Anything else (403, invalid manifest, quota) is terminal and raised
+        immediately — retrying it only delays a failure the user must see.
+
+        Args:
+            job: The V1Job body to create.
+            job_name: Name on the body, used for conflict resolution.
+            execution_id: Owning flow execution (for logs and the ownership
+                check on an existing Job).
+
+        Returns:
+            The Job name (the agent session reference).
+
+        Raises:
+            AgentStartError: When the Job could not be created within the
+                configured attempts, or the failure was terminal.
+        """
+        max_attempts = max(1, int(settings.agent_job_create_max_attempts))
+        last_error: Optional[ApiException] = None
+
+        for attempt in range(max_attempts):
+            try:
+                await self._k8s_batch_api.create_namespaced_job(
+                    namespace=self.agent_namespace, body=job
+                )
+                self.logger.info(
+                    f"Started Kubernetes Job {job_name} in namespace "
+                    f"{self.agent_namespace} for execution {execution_id}"
+                )
+                return job_name
+            except ApiException as e:
+                last_error = e
+                # Whether a create can still follow this attempt. Everything
+                # that is only a *precondition* for another create - deleting
+                # a finished leftover to free its name - is gated on it: with
+                # AGENT_JOB_CREATE_MAX_ATTEMPTS=1 nothing would recreate the
+                # Job, so deleting would throw away the leftover's logs and
+                # still fail the run. Adoption is not gated: it returns a
+                # started agent without needing another attempt.
+                can_retry = attempt < max_attempts - 1
+                if e.status == 409:
+                    adopted = await self._resolve_job_name_conflict(
+                        job_name=job_name,
+                        execution_id=execution_id,
+                        may_delete=can_retry,
+                    )
+                    if adopted:
+                        self.logger.warning(
+                            f"Adopted pre-existing Kubernetes Job {job_name} for "
+                            f"execution {execution_id} instead of starting a "
+                            "duplicate agent"
+                        )
+                        return job_name
+                elif not self._is_retryable_job_api_error(e):
+                    self.logger.error(
+                        f"Failed to create Kubernetes Job for execution "
+                        f"{execution_id}: {e}"
+                    )
+                    raise AgentStartError(
+                        f"Failed to start agent Job: {e}",
+                        category=FAILURE_CATEGORY_RUNNER_ERROR,
+                    ) from e
+
+                if not can_retry:
+                    break
+
+                delay = _job_create_retry_delay_seconds(attempt)
+                self.logger.warning(
+                    "Retrying Kubernetes Job creation for execution %s after "
+                    "HTTP %s (attempt %s/%s, delay=%.2fs)",
+                    execution_id,
+                    e.status,
+                    attempt + 1,
+                    max_attempts,
+                    delay,
+                )
+                await _sleep_before_job_create_retry(delay)
+
+        assert last_error is not None
+        self.logger.error(
+            f"Failed to create Kubernetes Job for execution {execution_id} after "
+            f"{max_attempts} attempts: {last_error}"
+        )
+        raise AgentStartError(
+            f"Failed to start agent Job: {last_error}",
+            category=(
+                FAILURE_CATEGORY_RUNNER_CONFLICT
+                if last_error.status == 409
+                else FAILURE_CATEGORY_RUNNER_ERROR
+            ),
+        ) from last_error
+
+    @staticmethod
+    def _is_retryable_job_api_error(error: "ApiException") -> bool:
+        """Whether a Job-create API error is worth another attempt."""
+        status = getattr(error, "status", None)
         try:
-            # Create the Job
-            await self._k8s_batch_api.create_namespaced_job(
-                namespace=self.agent_namespace, body=job
+            status = int(status)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        return status == 429 or 500 <= status < 600
+
+    async def _resolve_job_name_conflict(
+        self, *, job_name: str, execution_id: str, may_delete: bool = True
+    ) -> bool:
+        """Adopt or clear the Job that owns a conflicting name.
+
+        Args:
+            job_name: Name that came back 409 AlreadyExists.
+            execution_id: Execution the caller is starting.
+            may_delete: Whether a finished leftover may be deleted to free
+                its name. False when no create attempt remains, in which case
+                the leftover (and its logs) is left in place: deleting it
+                would help nobody and destroy the evidence.
+
+        Returns:
+            True when the existing Job is a live agent for this execution and
+            was adopted (the caller must NOT create anything). False when the
+            name was freed (or the Job vanished) and creation should be
+            retried, and when a leftover was deliberately left in place.
+
+        Raises:
+            AgentStartError: When the conflicting Job does not provably
+                belong to this execution. Deleting or adopting it would
+                corrupt an unrelated run, so this fails loudly instead.
+        """
+        try:
+            existing = await self._k8s_batch_api.read_namespaced_job(
+                name=job_name, namespace=self.agent_namespace
+            )
+        except ApiException as read_error:
+            if read_error.status == 404:
+                # Raced with the owner's own cleanup: the name is free again.
+                return False
+            self.logger.warning(
+                f"Could not read conflicting Job {job_name}: {read_error}"
+            )
+            return False
+
+        # Fail closed on ownership: this guard is the only thing standing
+        # between a name collision and someone else's agent being adopted or
+        # deleted. Every Preloop job-creation path sets the label, so a
+        # missing one means the Job is not ours to touch (an operator's, a
+        # foreign tool's, or a label stripped after creation) - unknown
+        # ownership is treated exactly like foreign ownership.
+        labels = getattr(getattr(existing, "metadata", None), "labels", None) or {}
+        owner = labels.get("preloop.execution_id")
+        if not owner:
+            raise AgentStartError(
+                f"Failed to start agent Job: name {job_name} is already used by "
+                "a Job with no preloop.execution_id label (unknown owner)",
+                category=FAILURE_CATEGORY_RUNNER_CONFLICT,
+            )
+        if str(owner) != str(execution_id):
+            raise AgentStartError(
+                f"Failed to start agent Job: name {job_name} is already used by "
+                f"execution {owner}",
+                category=FAILURE_CATEGORY_RUNNER_CONFLICT,
             )
 
-            self.logger.info(
-                f"Started Kubernetes Job {job_name} in namespace {self.agent_namespace} "
-                f"for execution {execution_id}"
-            )
-            return job_name
+        if self._job_is_live(existing):
+            return True
 
-        except ApiException as e:
-            self.logger.error(
-                f"Failed to create Kubernetes Job for execution {execution_id}: {e}"
+        if not may_delete:
+            # Last attempt: nothing would recreate the Job, so deleting the
+            # leftover would only cost its logs. Fail on the 409 instead.
+            self.logger.warning(
+                f"Leaving finished leftover Job {job_name} in place for "
+                f"execution {execution_id}: no creation attempt remains "
+                "(AGENT_JOB_CREATE_MAX_ATTEMPTS)"
             )
-            raise RuntimeError(f"Failed to start agent Job: {e}")
+            return False
+
+        self.logger.info(
+            f"Deleting finished leftover Job {job_name} so execution "
+            f"{execution_id} can reuse the name"
+        )
+        try:
+            await self._k8s_batch_api.delete_namespaced_job(
+                name=job_name,
+                namespace=self.agent_namespace,
+                # Background propagation removes the Job's pods with it;
+                # without it the orphaned pods keep the name's resources
+                # (and their logs) around.
+                propagation_policy="Background",
+            )
+        except ApiException as delete_error:
+            if delete_error.status != 404:
+                self.logger.warning(
+                    f"Could not delete leftover Job {job_name}: {delete_error}"
+                )
+                return False
+
+        await self._wait_for_job_deletion(job_name)
+        return False
+
+    @staticmethod
+    def _job_is_live(job: Any) -> bool:
+        """Whether a Job still has (or may still get) a running pod."""
+        status = getattr(job, "status", None)
+        if status is None:
+            # No status yet means the Job was only just created.
+            return True
+        if getattr(status, "active", None):
+            return True
+        if getattr(status, "succeeded", None) or getattr(status, "failed", None):
+            return False
+        # Created but not yet scheduled: no counters, no completion time.
+        return getattr(status, "completion_time", None) is None
+
+    async def _wait_for_job_deletion(self, job_name: str) -> None:
+        """Poll until a deleted Job is gone, bounded by a hard deadline."""
+        waited = 0.0
+        while waited < _JOB_DELETE_MAX_WAIT_SECONDS:
+            try:
+                await self._k8s_batch_api.read_namespaced_job(
+                    name=job_name, namespace=self.agent_namespace
+                )
+            except ApiException as e:
+                if e.status == 404:
+                    return
+            await _sleep_before_job_create_retry(_JOB_DELETE_POLL_INTERVAL_SECONDS)
+            waited += _JOB_DELETE_POLL_INTERVAL_SECONDS
+        self.logger.warning(
+            f"Leftover Job {job_name} still present after "
+            f"{_JOB_DELETE_MAX_WAIT_SECONDS}s; retrying creation anyway"
+        )
 
     async def get_status(self, session_reference: str) -> AgentStatus:
         """
@@ -667,10 +1343,16 @@ class ContainerAgentExecutor(AgentExecutor):
                         "Logs contain benign messages (e.g., 'no commits'), not marking as failed."
                     )
 
+            failure_analysis = None
             if status == AgentStatus.FAILED:
+                # Analyse the full logs once and keep the whole verdict:
+                # only the message survives into FlowExecution.error_message,
+                # so the transient/terminal classification must travel on the
+                # result itself for the orchestrator's retry decision.
+                failure_analysis = analyze_agent_failure(logs_text)
                 error_message = (
                     info["State"].get("Error")
-                    or self._extract_error_from_logs(logs_text)
+                    or failure_analysis.message
                     or f"Container exited with code {exit_code}"
                 )
 
@@ -680,6 +1362,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 output_summary=output_summary,
                 error_message=error_message,
                 exit_code=exit_code,
+                failure_analysis=failure_analysis,
             )
 
         except DockerError as e:
@@ -707,8 +1390,20 @@ class ContainerAgentExecutor(AgentExecutor):
         try:
             await self._init_kubernetes_clients()
 
-            # Get logs
-            logs = await self.get_logs(job_name, tail=1000)
+            # Get logs from the shared bounded terminal read. A small tail
+            # (the pre-wrapper tail=1000) is no longer safe: the server
+            # applies tail_lines BEFORE we filter the artifact emission, and
+            # a present evidence block can occupy tens of thousands of
+            # trailing lines — evicting the success sentinel from any small
+            # window. The shared read's bound is derived from the emission
+            # byte caps, so after filtering the emission lines out we still
+            # hold at least as much real agent output as before the wrapper.
+            raw_lines = await self._get_kubernetes_terminal_logs(job_name)
+            logs = [
+                line
+                for line in raw_lines
+                if not line.strip().startswith(ARTIFACT_STREAM_LINE_PREFIX)
+            ]
             output_summary = "\n".join(logs[-50:]) if logs else None
 
             # Check for error patterns in logs
@@ -747,10 +1442,13 @@ class ContainerAgentExecutor(AgentExecutor):
             except Exception as e:
                 self.logger.warning(f"Could not get exit code for Job {job_name}: {e}")
 
+            failure_analysis = None
             if status == AgentStatus.FAILED:
-                error_message = (
-                    self._extract_error_from_logs(logs_text)
-                    or f"Job exited with code {exit_code}"
+                # Same as the Docker path: keep the full-log verdict on the
+                # result, not just the message.
+                failure_analysis = analyze_agent_failure(logs_text)
+                error_message = failure_analysis.message or (
+                    f"Job exited with code {exit_code}"
                     if exit_code is not None
                     else "Job failed"
                 )
@@ -761,6 +1459,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 output_summary=output_summary,
                 error_message=error_message,
                 exit_code=exit_code,
+                failure_analysis=failure_analysis,
             )
 
         except ApiException as e:
@@ -778,6 +1477,491 @@ class ContainerAgentExecutor(AgentExecutor):
     # Marker printed by the agent script before the agent command runs.
     # Must match AGENT_EXEC_START_MARKER in flow_orchestrator.py.
     AGENT_EXEC_START_MARKER = "PRELOOP_AGENT_EXEC_START"
+
+    async def get_result_artifact(
+        self, session_reference: str
+    ) -> Optional[Dict[str, Any]]:
+        """Capture the structured result artifact written by the agent.
+
+        Reads ``RESULT_ARTIFACT_PATH`` (``/workspace/result.json``) out of the
+        container via the Docker archive API — no log scraping or sentinel
+        parsing. Works for both running and exited containers (containers are
+        started with ``AutoRemove: False``).
+
+        Returns the parsed JSON object, a wrapped ``{"error": ...}`` object
+        when the file exists but is unusable (invalid JSON, not an object,
+        oversized) or the fetch failed in a visible way, or ``None`` when the
+        agent wrote no artifact — the normal case for non-eval flows.
+
+        On Kubernetes a completed pod's filesystem is not reachable via the
+        API, so the agent script is wrapped to emit the artifact into the pod
+        log stream between ``PRELOOP_ARTIFACT_*`` markers; this method parses
+        it back out of the logs (see ``K8S_ARTIFACT_WRAPPER_SCRIPT``).
+        """
+        if self.use_kubernetes:
+            return await self._get_kubernetes_result_artifact(session_reference)
+
+        try:
+            docker = await self._get_docker_client()
+            container = await docker.containers.get(session_reference)
+            tar = await container.get_archive(RESULT_ARTIFACT_PATH)
+        except DockerError as e:
+            if e.status == 404:
+                # File (or container) not found: the agent did not write a
+                # result artifact — the normal case for non-eval flows.
+                return None
+            # Any other daemon status (500, 429, ...) is an infra failure,
+            # not "no artifact". Keep it visible: an eval run whose artifact
+            # could not be fetched must not look identical to a run that
+            # reported nothing.
+            self.logger.warning(
+                f"Failed to read result artifact from container "
+                f"{session_reference[:12]}: {_exception_message(e)}"
+            )
+            return {
+                "error": "result_artifact_fetch_failed",
+                "detail": _exception_message(e)[:500],
+                "docker_status": e.status,
+            }
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to read result artifact from container "
+                f"{session_reference[:12]}: {_exception_message(e)}"
+            )
+            return None
+
+        try:
+            member = next((m for m in tar.getmembers() if m.isfile()), None)
+            if member is None:
+                return None
+            if member.size > MAX_RESULT_ARTIFACT_BYTES:
+                self.logger.warning(
+                    f"Result artifact from container {session_reference[:12]} "
+                    f"is too large ({member.size} bytes), not persisting content"
+                )
+                return {
+                    "error": "result_artifact_too_large",
+                    "size_bytes": member.size,
+                    "limit_bytes": MAX_RESULT_ARTIFACT_BYTES,
+                }
+            fileobj = tar.extractfile(member)
+            if fileobj is None:
+                return None
+            raw = fileobj.read(MAX_RESULT_ARTIFACT_BYTES + 1)
+        finally:
+            tar.close()
+
+        return self._interpret_result_artifact_bytes(raw, session_reference)
+
+    def _interpret_result_artifact_bytes(
+        self, raw: bytes, session_reference: str
+    ) -> Dict[str, Any]:
+        """Parse captured result.json bytes with the shared validation rules.
+
+        Shared by the Docker archive path and the Kubernetes log-channel path
+        so both surface identical error objects.
+        """
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            self.logger.warning(
+                f"Result artifact from {session_reference[:40]} is not valid JSON: {e}"
+            )
+            return {
+                "error": "result_artifact_invalid_json",
+                "detail": str(e)[:500],
+            }
+        if not isinstance(parsed, dict):
+            return {
+                "error": "result_artifact_not_object",
+                "detail": f"expected a JSON object, got {type(parsed).__name__}",
+            }
+        return parsed
+
+    @staticmethod
+    def _wrap_kubernetes_args_for_artifacts(
+        args: Any,
+    ) -> Optional[tuple[list, str]]:
+        """Return wrapped ``(args, inner_script)`` for ``["-c", script]`` args.
+
+        Only the ``bash -c <script>`` shape used by the shell-scripted agents
+        (codex, gemini, opencode) is wrapped; anything else is left untouched
+        and artifact capture degrades to the pre-wrapper behaviour (None).
+        """
+        if (
+            isinstance(args, list)
+            and len(args) == 2
+            and args[0] == "-c"
+            and isinstance(args[1], str)
+        ):
+            return ["-c", K8S_ARTIFACT_WRAPPER_SCRIPT], args[1]
+        return None
+
+    @staticmethod
+    def _extract_artifact_stream(
+        lines: list[str], channel: str
+    ) -> Optional[Dict[str, Any]]:
+        """Extract one artifact channel from pod log lines.
+
+        Returns ``None`` when no BEGIN marker for ``channel`` exists (wrapper
+        not applied, or logs rotated away), otherwise a dict with:
+        ``status``: present | absent | too_large | error | truncated | corrupt
+        ``size``: declared byte size when the marker carried one
+        ``data``: decoded payload bytes when status == "present"
+        """
+        begin_prefix = f"{ARTIFACT_STREAM_LINE_PREFIX}BEGIN {channel}"
+        end_line = f"{ARTIFACT_STREAM_LINE_PREFIX}END {channel}"
+        b64_prefix = f"{ARTIFACT_STREAM_LINE_PREFIX}B64 "
+
+        begin_idx = None
+        for idx in range(len(lines) - 1, -1, -1):
+            if lines[idx].strip().startswith(begin_prefix):
+                begin_idx = idx
+                break
+        if begin_idx is None:
+            return None
+
+        marker_parts = lines[begin_idx].strip().split()
+        # ["PRELOOP_ARTIFACT_BEGIN", channel, status, size?]
+        status = marker_parts[2] if len(marker_parts) > 2 else "error"
+        size: Optional[int] = None
+        if len(marker_parts) > 3:
+            try:
+                size = int(marker_parts[3])
+            except ValueError:
+                size = None
+
+        chunks: list[str] = []
+        terminated = False
+        for line in lines[begin_idx + 1 :]:
+            stripped = line.strip()
+            if stripped == end_line:
+                terminated = True
+                break
+            if stripped.startswith(b64_prefix):
+                chunks.append(stripped[len(b64_prefix) :])
+        if not terminated:
+            return {"status": "truncated", "size": size, "data": None}
+        if status != "present":
+            return {"status": status, "size": size, "data": None}
+        try:
+            data = base64.b64decode("".join(chunks), validate=True)
+        except (binascii.Error, ValueError):
+            return {"status": "corrupt", "size": size, "data": None}
+        return {"status": "present", "size": size, "data": data}
+
+    async def _get_kubernetes_terminal_logs(self, job_name: str) -> list[str]:
+        """Read the tail of a finished Job's pod log once and cache it.
+
+        The terminal path has three log consumers — status summarisation and
+        error-pattern scanning (``_get_kubernetes_result``), the ``result``
+        artifact channel and the ``evidence`` channel. They all share this
+        single bounded read instead of each re-downloading the log.
+
+        ``K8S_TERMINAL_LOG_TAIL_LINES`` is sized so the trailing artifact
+        emission is ALWAYS fully inside the window (its payload is byte-capped
+        and it is the last thing the wrapper prints), with a generous window
+        of real agent output to spare for the status scan. Returns raw lines
+        (artifact streams included); callers filter what they don't need.
+        """
+        cached = self._k8s_terminal_log_cache.get(job_name)
+        if cached is not None:
+            return cached
+        lines = await self._get_kubernetes_logs(
+            job_name, tail=K8S_TERMINAL_LOG_TAIL_LINES, include_artifact_streams=True
+        )
+        if lines:
+            # Don't cache empty reads: they can be transient (pod listing
+            # hiccup) and each caller degrades gracefully on its own.
+            self._k8s_terminal_log_cache[job_name] = lines
+        return lines
+
+    async def _get_kubernetes_result_artifact(
+        self, job_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """Capture result.json emitted into the pod log stream on Kubernetes.
+
+        The agent script wrapper emits the artifact between structured marker
+        lines right before the container exits (see
+        ``K8S_ARTIFACT_WRAPPER_SCRIPT``); this parses the last ``result``
+        channel block out of the shared terminal log read.
+        """
+        try:
+            lines = await self._get_kubernetes_terminal_logs(job_name)
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to read logs for result artifact of Job {job_name}: "
+                f"{_exception_message(e)}"
+            )
+            return None
+
+        stream = self._extract_artifact_stream(lines, "result")
+        if stream is None:
+            # Wrapper not applied (custom runner image / legacy job) or the
+            # emission was rotated out of the log — same visibility as before
+            # this feature existed.
+            self.logger.debug(
+                f"No result artifact emission found in logs of Job {job_name}"
+            )
+            return None
+        status = stream["status"]
+        if status == "absent":
+            return None
+        if status == "too_large":
+            self.logger.warning(
+                f"Result artifact from Job {job_name} is too large "
+                f"({stream['size']} bytes), not persisting content"
+            )
+            return {
+                "error": "result_artifact_too_large",
+                "size_bytes": stream["size"],
+                "limit_bytes": MAX_RESULT_ARTIFACT_BYTES,
+            }
+        if status != "present":
+            # truncated / corrupt / error: an eval run whose artifact could
+            # not be recovered must not look identical to one that reported
+            # nothing.
+            self.logger.warning(
+                f"Result artifact emission from Job {job_name} is unusable "
+                f"(status={status})"
+            )
+            return {
+                "error": "result_artifact_fetch_failed",
+                "detail": f"log emission {status}",
+            }
+        return self._interpret_result_artifact_bytes(stream["data"], job_name)
+
+    async def get_evidence_archive(self, session_reference: str) -> Optional[bytes]:
+        """Capture the evidence pack (``/workspace/evidence``) as tar.gz bytes.
+
+        Docker: fetches the directory through the archive API and re-packs it
+        as tar.gz. Kubernetes: decodes the base64 emission from the pod log
+        stream (see ``K8S_ARTIFACT_WRAPPER_SCRIPT``). Best-effort: returns
+        ``None`` when there is no evidence directory, when it exceeds
+        ``MAX_EVIDENCE_ARCHIVE_BYTES``, or on fetch errors (all logged).
+        """
+        if self.use_kubernetes:
+            return await self._get_kubernetes_evidence_archive(session_reference)
+        return await self._get_docker_evidence_archive(session_reference)
+
+    async def _get_kubernetes_evidence_archive(self, job_name: str) -> Optional[bytes]:
+        try:
+            lines = await self._get_kubernetes_terminal_logs(job_name)
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to read logs for evidence archive of Job {job_name}: "
+                f"{_exception_message(e)}"
+            )
+            return None
+        stream = self._extract_artifact_stream(lines, "evidence")
+        if stream is None or stream["status"] == "absent":
+            return None
+        if stream["status"] != "present":
+            self.logger.warning(
+                f"Evidence archive from Job {job_name} not captured "
+                f"(status={stream['status']}, size={stream['size']})"
+            )
+            return None
+        return bytes(stream["data"])
+
+    async def _get_docker_evidence_archive(
+        self, session_reference: str
+    ) -> Optional[bytes]:
+        try:
+            docker = await self._get_docker_client()
+            container = await docker.containers.get(session_reference)
+            tar = await container.get_archive(EVIDENCE_DIR_PATH)
+        except DockerError as e:
+            if e.status != 404:
+                self.logger.warning(
+                    f"Failed to read evidence archive from container "
+                    f"{session_reference[:12]}: {_exception_message(e)}"
+                )
+            return None
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to read evidence archive from container "
+                f"{session_reference[:12]}: {_exception_message(e)}"
+            )
+            return None
+
+        try:
+            total_size = sum(m.size for m in tar.getmembers() if m.isfile())
+            if total_size > MAX_EVIDENCE_ARCHIVE_BYTES:
+                self.logger.warning(
+                    f"Evidence pack from container {session_reference[:12]} "
+                    f"is too large uncompressed ({total_size} bytes), "
+                    "not capturing"
+                )
+                return None
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w:gz") as out:
+                for member in tar.getmembers():
+                    if member.isfile():
+                        fileobj = tar.extractfile(member)
+                        if fileobj is not None:
+                            out.addfile(member, fileobj)
+                    elif member.isdir():
+                        out.addfile(member)
+        finally:
+            tar.close()
+
+        data = buffer.getvalue()
+        if len(data) > MAX_EVIDENCE_ARCHIVE_BYTES:
+            self.logger.warning(
+                f"Evidence archive from container {session_reference[:12]} "
+                f"is too large ({len(data)} bytes), not capturing"
+            )
+            return None
+        return data
+
+    async def get_workspace_snapshot(self, session_reference: str) -> Optional[bytes]:
+        """Capture ``/workspace`` as a size-capped tar.gz for later restore.
+
+        Runs on every terminal path, success or failure, so an execution that
+        died before its push still leaves the commits somewhere recoverable
+        (issue #386). Docker: a short-lived helper container mounts the
+        execution's workspace volume and builds the archive there, so the cap
+        is enforced before any bytes cross the Docker API. Kubernetes: the
+        archive is decoded from the artifact log channel written by
+        ``K8S_ARTIFACT_WRAPPER_SCRIPT``.
+
+        Best effort: returns ``None`` when there is nothing to capture, when
+        the workspace exceeds ``WORKSPACE_SNAPSHOT_MAX_BYTES``, or on any
+        error (all logged).
+        """
+        limit = int(getattr(settings, "workspace_snapshot_max_bytes", 0) or 0)
+        if limit <= 0:
+            self.logger.info(
+                "Workspace snapshot disabled (workspace_snapshot_max_bytes=%s)",
+                limit,
+            )
+            return None
+        if self.use_kubernetes:
+            return await self._get_kubernetes_workspace_snapshot(session_reference)
+        return await self._get_docker_workspace_snapshot(session_reference, limit)
+
+    async def _get_kubernetes_workspace_snapshot(
+        self, job_name: str
+    ) -> Optional[bytes]:
+        try:
+            lines = await self._get_kubernetes_terminal_logs(job_name)
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to read logs for workspace snapshot of Job {job_name}: "
+                f"{_exception_message(e)}"
+            )
+            return None
+        stream = self._extract_artifact_stream(lines, "workspace")
+        if stream is None or stream["status"] == "absent":
+            self.logger.info(
+                f"No workspace snapshot emitted by Job {job_name} "
+                "(too large for the log channel, or wrapper not applied)"
+            )
+            return None
+        if stream["status"] != "present":
+            self.logger.warning(
+                f"Workspace snapshot from Job {job_name} not captured "
+                f"(status={stream['status']}, size={stream['size']})"
+            )
+            return None
+        return bytes(stream["data"])
+
+    async def _get_docker_workspace_snapshot(
+        self, session_reference: str, limit: int
+    ) -> Optional[bytes]:
+        """Build and fetch the snapshot through a helper container.
+
+        The agent container has already exited, so its filesystem cannot run
+        `tar`; the workspace itself lives on the named volume
+        ``agent-workspace-<execution_id>`` which outlives it. A helper
+        container from the same image mounts that volume, writes the capped
+        archive to its own /tmp, and is removed afterwards.
+        """
+        docker = None
+        helper = None
+        try:
+            docker = await self._get_docker_client()
+            container = await docker.containers.get(session_reference)
+            info = await container.show()
+            labels = (info.get("Config") or {}).get("Labels") or {}
+            execution_id = labels.get("preloop.execution_id")
+            if not execution_id:
+                self.logger.warning(
+                    f"Container {session_reference[:12]} has no execution label; "
+                    "cannot locate its workspace volume"
+                )
+                return None
+            volume_name = workspace_volume_name(execution_id)
+            snapshot_shell = build_workspace_snapshot_shell(max_bytes=limit)
+            helper = await docker.containers.create(
+                config={
+                    "Image": self.image,
+                    "Entrypoint": ["/bin/sh", "-c"],
+                    "Cmd": [snapshot_shell],
+                    "Labels": {
+                        "preloop.execution_id": execution_id,
+                        "preloop.role": "workspace-snapshot",
+                    },
+                    "HostConfig": {
+                        "AutoRemove": False,
+                        "NetworkMode": "none",
+                        "Binds": [f"{volume_name}:/workspace:rw"],
+                    },
+                }
+            )
+            await helper.start()
+            await helper.wait()
+            tar = await helper.get_archive(WORKSPACE_SNAPSHOT_PATH)
+        except DockerError as e:
+            if e.status != 404:
+                self.logger.warning(
+                    f"Failed to build workspace snapshot for container "
+                    f"{session_reference[:12]}: {_exception_message(e)}"
+                )
+            else:
+                self.logger.info(
+                    f"No workspace snapshot produced for container "
+                    f"{session_reference[:12]} (nothing to capture or over cap)"
+                )
+            return None
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to build workspace snapshot for container "
+                f"{session_reference[:12]}: {_exception_message(e)}"
+            )
+            return None
+        finally:
+            if helper is not None:
+                try:
+                    await helper.delete(force=True)
+                except Exception as cleanup_error:
+                    self.logger.debug(
+                        f"Failed to remove workspace snapshot helper: "
+                        f"{_exception_message(cleanup_error)}"
+                    )
+
+        try:
+            data = None
+            for member in tar.getmembers():
+                if not member.isfile():
+                    continue
+                fileobj = tar.extractfile(member)
+                if fileobj is not None:
+                    data = fileobj.read()
+                    break
+        finally:
+            tar.close()
+
+        if not data:
+            return None
+        if len(data) > limit:
+            self.logger.warning(
+                f"Workspace snapshot for container {session_reference[:12]} "
+                f"is too large ({len(data)} bytes > {limit}), not capturing"
+            )
+            return None
+        return data
 
     def _detect_error_in_logs(self, logs_text: str) -> bool:
         """
@@ -903,10 +2087,18 @@ class ContainerAgentExecutor(AgentExecutor):
 
     def _extract_error_from_logs(self, logs_text: str) -> str:
         """
-        Extract error message from logs.
+        Extract a human-actionable error message from logs.
 
-        Searches from the END of logs for the most relevant error, filtering
-        out status/metadata lines that don't contain useful error information.
+        Delegates to :func:`analyze_agent_failure`, which looks for the
+        *meaningful* failure signal (an upstream provider status and the
+        agent's own exhausted retry loop) anywhere in the log, rather than
+        returning whatever the last error-shaped line happened to be. The tail
+        of a failed run is usually a stack trace or a stringified error object
+        (``[object Object]``), which names no cause.
+
+        Message-only view: ``get_result`` calls :func:`analyze_agent_failure`
+        directly so the full classification (``transient`` verdict, evidence)
+        can travel on the ``AgentExecutionResult``.
 
         Args:
             logs_text: Full log text
@@ -914,60 +2106,7 @@ class ContainerAgentExecutor(AgentExecutor):
         Returns:
             Extracted error message or empty string
         """
-        lines = logs_text.split("\n")
-
-        # Filter out status/metadata lines that aren't useful for error display
-        status_prefixes = (
-            "[Agent Status]",
-            "[Status Update]",
-            "Status:",
-            '{"status":',
-        )
-
-        # Get content lines (non-empty, non-status lines)
-        content_lines = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped and not stripped.startswith(status_prefixes):
-                content_lines.append(line)
-
-        if not content_lines:
-            return ""
-
-        # Priority 1: Look for explicit ERROR: lines from the end (most relevant)
-        # These are typically agent-generated errors like "ERROR: Quota exceeded"
-        for i in range(len(content_lines) - 1, -1, -1):
-            line = content_lines[i]
-            if line.strip().upper().startswith("ERROR:"):
-                # Found an explicit error line - return it with some context
-                start = max(0, i - 2)
-                end = min(len(content_lines), i + 3)
-                return "\n".join(content_lines[start:end])
-
-        # Priority 2: Look for Python exceptions/tracebacks from the end
-        for i in range(len(content_lines) - 1, -1, -1):
-            line_lower = content_lines[i].lower()
-            if any(
-                pattern in line_lower
-                for pattern in ["traceback", "exception:", "raise "]
-            ):
-                # Found exception - include context
-                start = max(0, i)
-                end = min(len(content_lines), i + 10)
-                return "\n".join(content_lines[start:end])
-
-        # Priority 3: Look for other error patterns from the end
-        for i in range(len(content_lines) - 1, -1, -1):
-            line_lower = content_lines[i].lower()
-            if any(pattern in line_lower for pattern in ["error", "failed", "fatal"]):
-                # Include some context around the error
-                start = max(0, i - 2)
-                end = min(len(content_lines), i + 3)
-                return "\n".join(content_lines[start:end])
-
-        # Priority 4: If no error patterns found, return last few content lines
-        # as they may contain relevant information about why the execution failed
-        return "\n".join(content_lines[-5:])
+        return analyze_agent_failure(logs_text).message
 
     async def stop(self, session_reference: str) -> None:
         """
@@ -1029,15 +2168,21 @@ class ContainerAgentExecutor(AgentExecutor):
         """
         Get logs from a container (batch mode).
 
+        Output is scrubbed of known credential formats before it is returned,
+        because every consumer of this method either persists the lines or
+        shows them to a user (issue #173).
+
         Args:
             session_reference: Container ID or Job name
             tail: Number of recent log lines, or None for all logs
 
         Returns:
-            List of log lines
+            List of log lines, with secrets redacted
         """
         if self.use_kubernetes:
-            return await self._get_kubernetes_logs(session_reference, tail)
+            return scrub_secret_lines(
+                await self._get_kubernetes_logs(session_reference, tail)
+            )
 
         try:
             docker = await self._get_docker_client()
@@ -1054,7 +2199,7 @@ class ContainerAgentExecutor(AgentExecutor):
                     decoded_logs.append(line.decode("utf-8", errors="replace"))
                 else:
                     decoded_logs.append(line)
-            return decoded_logs
+            return scrub_secret_lines(decoded_logs)
 
         except DockerError as e:
             self.logger.error(
@@ -1066,18 +2211,22 @@ class ContainerAgentExecutor(AgentExecutor):
         """
         Stream logs from a container in real-time.
 
+        Lines are scrubbed of known credential formats before they are yielded,
+        so neither the persisted execution log nor the live console feed can
+        carry a token (issue #173).
+
         Args:
             session_reference: Container ID or Job name
 
         Yields:
-            Log lines as they are produced
+            Log lines as they are produced, with secrets redacted
         """
         if self.use_kubernetes:
             async for line in self._stream_kubernetes_logs(session_reference):
-                yield line
+                yield scrub_secrets(line)
         else:
             async for line in self._stream_docker_logs(session_reference):
-                yield line
+                yield scrub_secrets(line)
 
     async def _stream_docker_logs(self, container_id: str):
         """
@@ -1138,7 +2287,10 @@ class ContainerAgentExecutor(AgentExecutor):
             yield f"[ERROR] Unexpected error: {error_message}"
 
     async def _get_kubernetes_logs(
-        self, job_name: str, tail: int | None = None
+        self,
+        job_name: str,
+        tail: int | None = None,
+        include_artifact_streams: bool = False,
     ) -> list[str]:
         """
         Get logs from the Pod associated with a Kubernetes Job.
@@ -1146,6 +2298,10 @@ class ContainerAgentExecutor(AgentExecutor):
         Args:
             job_name: Name of the Job
             tail: Number of recent log lines, or None for all logs
+            include_artifact_streams: Keep the ``PRELOOP_ARTIFACT_*`` emission
+                lines (base64 result/evidence blocks). Off by default so
+                operator-facing logs and summaries stay readable; only the
+                artifact-capture paths turn this on.
 
         Returns:
             List of log lines
@@ -1184,7 +2340,14 @@ class ContainerAgentExecutor(AgentExecutor):
             log_text = log_data.decode("utf-8", errors="replace")
 
             # Split into lines
-            return log_text.strip().split("\n") if log_text.strip() else []
+            lines = log_text.strip().split("\n") if log_text.strip() else []
+            if not include_artifact_streams:
+                lines = [
+                    line
+                    for line in lines
+                    if not line.strip().startswith(ARTIFACT_STREAM_LINE_PREFIX)
+                ]
+            return lines
 
         except ApiException as e:
             if e.status == 404:
@@ -1211,8 +2374,6 @@ class ContainerAgentExecutor(AgentExecutor):
             pod_name = None
 
             # Retry for up to 60 seconds to find the pod
-            import asyncio
-
             for attempt in range(60):
                 pods = await self._k8s_core_api.list_namespaced_pod(
                     namespace=self.agent_namespace, label_selector=label_selector
@@ -1276,7 +2437,12 @@ class ContainerAgentExecutor(AgentExecutor):
             # Read lines from the stream
             async for line in response.content:
                 decoded_line = line.decode("utf-8", errors="replace").rstrip()
-                if decoded_line:  # Skip empty lines
+                if decoded_line and not decoded_line.startswith(
+                    ARTIFACT_STREAM_LINE_PREFIX
+                ):
+                    # Skip empty lines and the artifact emission block (base64
+                    # result/evidence payload) — noise for live viewers; the
+                    # capture path reads it from the pod log afterwards.
                     yield decoded_line
 
         except ApiException as e:
@@ -1293,6 +2459,67 @@ class ContainerAgentExecutor(AgentExecutor):
                 exc_info=True,
             )
             yield f"[ERROR] Unexpected error: {error_message}"
+
+    # Keys under which resolved git secrets are stashed on the execution
+    # context, to be turned into container environment variables. Private to
+    # this class; nothing outside the agent layer should read them.
+    GIT_CREDENTIALS_CONTEXT_KEY = "_git_credentials"
+    GIT_API_TOKENS_CONTEXT_KEY = "_git_api_tokens"
+
+    def _register_git_credentials(
+        self,
+        execution_context: Dict[str, Any],
+        credentials: Dict[int, GitCredential],
+    ) -> None:
+        """Stash resolved git-transport credentials for conversion to env vars."""
+
+        if credentials:
+            execution_context[self.GIT_CREDENTIALS_CONTEXT_KEY] = credentials
+
+    def _register_git_api_token(
+        self, execution_context: Dict[str, Any], repo_index: int, token: str
+    ) -> str:
+        """Stash a REST API token for one repository and return its env var name.
+
+        The post-execution PR/MR calls talk to the GitHub/GitLab REST API, not
+        to git, so they cannot use the credential helper. They read the token
+        from this variable instead of having it baked into the shell script.
+        """
+
+        tokens = execution_context.setdefault(self.GIT_API_TOKENS_CONTEXT_KEY, {})
+        tokens[repo_index] = token
+        return git_token_env_var(repo_index)
+
+    def _git_credential_env(self, execution_context: Dict[str, Any]) -> Dict[str, str]:
+        """Return env vars carrying git secrets for this execution.
+
+        Called by every container start path after the init and post-execution
+        commands have been built, since that is when secrets are resolved.
+        Returns an empty dict when the flow clones nothing or has no token.
+        """
+
+        credentials: Dict[int, GitCredential] = (
+            execution_context.get(self.GIT_CREDENTIALS_CONTEXT_KEY) or {}
+        )
+        env = dict(
+            build_credential_env(credentials[index] for index in sorted(credentials))
+        )
+
+        api_tokens: Dict[int, str] = (
+            execution_context.get(self.GIT_API_TOKENS_CONTEXT_KEY) or {}
+        )
+        for repo_index, token in api_tokens.items():
+            env[git_token_env_var(repo_index)] = token
+
+        return env
+
+    def _apply_git_credential_env(
+        self, env: Dict[str, str], execution_context: Dict[str, Any]
+    ) -> Dict[str, str]:
+        """Merge git credential env vars into an agent's environment."""
+
+        env.update(self._git_credential_env(execution_context))
+        return env
 
     def _prepare_init_commands(self, execution_context: Dict[str, Any]) -> str:
         """
@@ -1329,6 +2556,9 @@ class ContainerAgentExecutor(AgentExecutor):
                 )
                 git_cmd = self._prepare_git_clone_command(execution_context)
                 if git_cmd:
+                    git_cmd = self._wrap_clone_with_workspace_restore(
+                        git_cmd, execution_context
+                    )
                     commands.append(git_cmd)
                     self.logger.info(
                         "Git clone commands added (length=%d)", len(git_cmd)
@@ -1347,6 +2577,13 @@ class ContainerAgentExecutor(AgentExecutor):
         else:
             self.logger.debug("No git_clone_config in execution context")
 
+        # Seed /workspace files declared on the trigger payload. After git
+        # clone (whose pre-clone backup would sweep earlier writes away) and
+        # before custom commands (which may consume the seeded files).
+        seed_cmd = self._prepare_workspace_seed_commands(execution_context)
+        if seed_cmd:
+            commands.append(seed_cmd)
+
         # Prepare custom commands if enabled
         custom_commands = execution_context.get("custom_commands")
         if custom_commands and custom_commands.get("enabled"):
@@ -1356,10 +2593,129 @@ class ContainerAgentExecutor(AgentExecutor):
                 # Note: These commands come from admin-only configuration
                 commands.append(cmd)
 
+        # Repository setup (dependency install, service bring-up) declared on
+        # git_clone_config.setup_commands: after clone/restore, before the
+        # agent, output captured to the evidence pack.
+        setup_cmd = self._prepare_setup_commands(execution_context)
+        if setup_cmd:
+            commands.append(setup_cmd)
+
         # Join all commands with &&
         if commands:
             return " && ".join(commands)
         return ""
+
+    def _prepare_workspace_seed_commands(
+        self, execution_context: Dict[str, Any]
+    ) -> str:
+        """Build shell commands writing trigger-payload ``workspace_files``.
+
+        The orchestrator has already validated the declaration (and failed
+        the execution otherwise); re-parsing here is a defense-in-depth guard
+        that raises rather than materializing an unvalidated path.
+        """
+        trigger_data = execution_context.get("trigger_event_data") or {}
+        payload = (
+            trigger_data.get("payload") if isinstance(trigger_data, dict) else None
+        )
+        seeds = parse_workspace_files(payload)
+        if not seeds:
+            return ""
+        self.logger.info(
+            "Seeding %d workspace file(s) from trigger payload: %s",
+            len(seeds),
+            [seed.path for seed in seeds],
+        )
+        return build_workspace_seed_shell(seeds)
+
+    def _prepare_setup_commands(self, execution_context: Dict[str, Any]) -> str:
+        """Build the ``git_clone_config.setup_commands`` block, if declared."""
+
+        git_config = execution_context.get("git_clone_config") or {}
+        if not isinstance(git_config, dict):
+            return ""
+        setup_commands = git_config.get("setup_commands") or []
+        if not isinstance(setup_commands, (list, tuple)):
+            self.logger.warning(
+                "Ignoring git_clone_config.setup_commands: expected a list, got %s",
+                type(setup_commands).__name__,
+            )
+            return ""
+        working_dir = self._primary_workspace_path(execution_context, git_config)
+        shell = build_setup_commands_shell(setup_commands, working_dir=working_dir)
+        if shell:
+            self.logger.info(
+                "Prepared %d setup command(s) running in %s",
+                len(setup_commands),
+                working_dir,
+            )
+        return shell
+
+    def _primary_workspace_path(
+        self, execution_context: Dict[str, Any], git_config: Dict[str, Any]
+    ) -> str:
+        """Absolute path of the first cloned repository (or /workspace)."""
+
+        repositories = self._resolve_git_clone_repositories(
+            execution_context, git_config
+        )
+        if not repositories:
+            return "/workspace"
+        return self._resolve_repository_clone_path(repositories[0], 0)
+
+    def _wrap_clone_with_workspace_restore(
+        self, clone_command: str, execution_context: Dict[str, Any]
+    ) -> str:
+        """Skip the clone when a prior workspace was restored into the volume.
+
+        A correlated resume seeds ``/workspace`` from the previous execution's
+        snapshot, which keeps commits that were never pushed. In that case the
+        repository is already there: fetch and check out the PR branch inside
+        it instead of cloning over the top. The check is made in the container
+        (``[ -d <repo>/.git ]``) rather than in Python, so a restore that
+        failed silently still falls back to the clone.
+        """
+
+        if not self.workspace_restore_planned(execution_context):
+            return clone_command
+
+        git_config = execution_context.get("git_clone_config") or {}
+        repo_path = self._primary_workspace_path(execution_context, git_config)
+        branch = _validated_git_ref(execution_context.get("_git_source_branch"))
+        git_user_name = git_config.get("git_user_name", "Preloop")
+        git_user_email = git_config.get("git_user_email", "git@preloop.ai")
+
+        restore_steps = [
+            f'echo "Restored workspace found at {repo_path}, skipping git clone"',
+            f"git config --global user.name {shlex.quote(git_user_name)}",
+            f"git config --global user.email {shlex.quote(git_user_email)}",
+            "git config --global --add safe.directory '*'",
+            build_credential_setup_shell(),
+            f"cd {shlex.quote(repo_path)}",
+        ]
+        if branch:
+            restore_steps.extend(
+                [
+                    f"git fetch origin {branch} || true",
+                    (
+                        f"git checkout {branch} "
+                        f"|| git checkout -b {branch} origin/{branch} || true"
+                    ),
+                    # Fast-forward only: a resume must never discard the local
+                    # commits that are the reason the snapshot was kept.
+                    f"git merge --ff-only origin/{branch} || true",
+                ]
+            )
+        restore_steps.append("git log --oneline -3 || true")
+
+        restore_block = " && ".join(restore_steps)
+        return (
+            f"if [ -d {shlex.quote(repo_path)}/.git ]; then\n"
+            f"{restore_block}\n"
+            "else\n"
+            f"{clone_command}\n"
+            "fi"
+        )
 
     def _resolve_git_clone_repositories(
         self, execution_context: Dict[str, Any], git_config: Dict[str, Any]
@@ -1397,17 +2753,36 @@ class ContainerAgentExecutor(AgentExecutor):
         source_branch = git_config.get("source_branch") or None
         target_branch = git_config.get("target_branch") or None
         trigger_data = execution_context.get("trigger_event_data", {})
+        resume = trigger_data.get("_resume") if isinstance(trigger_data, dict) else None
+        resume_branch = None
+        if isinstance(resume, dict):
+            resume_branch = resume.get("source_branch") or None
 
-        if not source_branch:
-            source_branch = self._extract_source_branch_from_trigger(trigger_data)
-        if not source_branch:
-            source_branch = "main"
+        if resume_branch:
+            # Clone and push the same PR branch so a comment restart continues
+            # the existing review, not a new branch off main.
+            source_branch = resume_branch
+            target_branch = resume_branch
+            if not execution_context.get("resume_from"):
+                prior = resume.get("execution_id") if isinstance(resume, dict) else None
+                execution_context["resume_from"] = (
+                    str(prior) if prior else resume_branch
+                )
+            self.logger.info(
+                "Resume clone: using existing PR branch %s as source and target",
+                resume_branch,
+            )
+        else:
+            if not source_branch:
+                source_branch = self._extract_source_branch_from_trigger(trigger_data)
+            if not source_branch:
+                source_branch = "main"
 
-        if not target_branch:
-            flow_name = execution_context.get("flow_name", "flow")
-            execution_id = execution_context.get("execution_id", "exec")
-            safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
-            target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
+            if not target_branch:
+                flow_name = execution_context.get("flow_name", "flow")
+                execution_id = execution_context.get("execution_id", "exec")
+                safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
+                target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
 
         commit_sha = self._extract_commit_sha_from_trigger(trigger_data)
         if commit_sha:
@@ -1416,6 +2791,39 @@ class ContainerAgentExecutor(AgentExecutor):
             )
 
         return source_branch, target_branch, commit_sha, git_user_name, git_user_email
+
+    def _is_resume_execution(self, execution_context: Dict[str, Any]) -> bool:
+        """True when this run continues a prior PR-comment execution."""
+
+        if execution_context.get("resume_from"):
+            return True
+        trigger_data = execution_context.get("trigger_event_data")
+        if not isinstance(trigger_data, dict):
+            return False
+        resume = trigger_data.get("_resume")
+        return isinstance(resume, dict) and bool(
+            resume.get("execution_id") or resume.get("source_branch")
+        )
+
+    def _resolve_resume_base_branch(
+        self,
+        git_config: Dict[str, Any],
+        repo_config: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Return the flow base branch a resume rebase should land on.
+
+        Prefers ``repositories[].branch``, then top-level ``git_clone_config.branch``,
+        then ``source_branch``, then ``main``.
+        """
+
+        if repo_config:
+            repo_branch = repo_config.get("branch")
+            if repo_branch:
+                return str(repo_branch)
+        configured = git_config.get("branch") or git_config.get("source_branch")
+        if configured:
+            return str(configured)
+        return "main"
 
     def _build_git_global_setup_commands(
         self, git_user_name: str, git_user_email: str
@@ -1467,53 +2875,104 @@ class ContainerAgentExecutor(AgentExecutor):
 
         return repo_url
 
-    def _inject_git_credentials_into_url(
+    def _resolve_repository_token(
+        self,
+        repo_config: Dict[str, Any],
+        execution_context: Dict[str, Any],
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Return ``(token, tracker_type)`` for one repository entry.
+
+        Sources, in order:
+
+        1. the repository's own tracker, as resolved by the orchestrator,
+        2. the triggering project's tracker, also resolved by the orchestrator
+           (the only source that works for a GitHub App tracker, whose token is
+           a short-lived installation token that cannot be read from the
+           database),
+        3. a direct database lookup of the triggering project's stored key.
+
+        An entry with an empty token does not stop the search: the orchestrator
+        records a tracker it could not get a key for, and falling through gives
+        the remaining sources a chance instead of running with no credential.
+        """
+
+        git_credentials_map = execution_context.get("git_credentials_map") or {}
+
+        candidate_ids = [
+            repo_config.get("tracker_id"),
+            execution_context.get("trigger_tracker_id"),
+        ]
+        for tracker_id in candidate_ids:
+            if not tracker_id:
+                continue
+            tracker_creds = git_credentials_map.get(tracker_id) or {}
+            if tracker_creds.get("token"):
+                return tracker_creds.get("token"), tracker_creds.get("tracker_type")
+
+        trigger_project_id = execution_context.get("trigger_project_id")
+        if trigger_project_id:
+            token, tracker_type = self._get_token_from_project(
+                trigger_project_id, execution_context.get("account_id")
+            )
+            if token:
+                return token, tracker_type
+
+        # Nothing usable: return the tracker type when known, so the caller can
+        # still log which host kind was expected.
+        for tracker_id in candidate_ids:
+            tracker_creds = (
+                (git_credentials_map.get(tracker_id) or {}) if tracker_id else {}
+            )
+            if tracker_creds.get("tracker_type"):
+                return None, tracker_creds.get("tracker_type")
+
+        return None, None
+
+    def _build_git_credential(
         self,
         repo_url: str,
         repo_config: Dict[str, Any],
         execution_context: Dict[str, Any],
-    ) -> str:
-        """Inject tracker credentials into HTTPS clone URLs when needed."""
+    ) -> Optional[GitCredential]:
+        """Resolve the credential for a repository without touching its URL.
 
-        if "@" in repo_url:
-            return repo_url
+        The returned credential is written to a git credential store inside the
+        container. The clone URL itself stays credential-free, so ``git remote
+        -v`` in the workspace cannot leak the token (issue #173).
+        """
 
-        token: Optional[str] = None
-        tracker_type: Optional[str] = None
-        tracker_id = repo_config.get("tracker_id")
-        git_credentials_map = execution_context.get("git_credentials_map", {})
+        safe_url = strip_url_credentials(repo_url)
 
-        if tracker_id and tracker_id in git_credentials_map:
-            tracker_creds = git_credentials_map.get(tracker_id, {})
-            token = tracker_creds.get("token")
-            tracker_type = tracker_creds.get("tracker_type")
-        else:
-            trigger_project_id = execution_context.get("trigger_project_id")
-            if trigger_project_id:
-                token, tracker_type = self._get_token_from_project(
-                    trigger_project_id, execution_context.get("account_id")
-                )
-
+        token, tracker_type = self._resolve_repository_token(
+            repo_config, execution_context
+        )
         if not token:
             self.logger.warning(
-                "No token available to inject into repository URL. "
-                "Clone may fail if the repository is private."
+                "No token available for %s. "
+                "Clone may fail if the repository is private.",
+                repo_url_log_location(safe_url),
             )
-            return repo_url
+            return None
 
-        host_kind = tracker_host_kind(repo_url)
-        if host_kind == "github" or tracker_type == "github":
-            self.logger.info("Injected GitHub token into URL")
-            return inject_oauth_token(repo_url, token, token_as_username=True)
-        if host_kind == "gitlab" or tracker_type == "gitlab":
-            self.logger.info("Injected GitLab token into URL")
-            return inject_oauth_token(repo_url, token, user="gitlab-ci-token")
+        host_kind = tracker_host_kind(safe_url)
+        if host_kind is None and tracker_type not in {"github", "gitlab"}:
+            # Still authenticate: an unrecognized host is usually a self-hosted
+            # instance, and refusing here would break clones that work today.
+            # Only the username convention is uncertain, not the token itself.
+            self.logger.warning(
+                "Could not determine tracker type for %s (tracker_type=%s); "
+                "using the generic credential username",
+                repo_url_log_location(safe_url),
+                tracker_type,
+            )
 
-        self.logger.warning(
-            "Could not determine tracker type for token injection (tracker_type=%s)",
-            tracker_type,
+        username = credential_username(host_kind, tracker_type)
+        self.logger.info(
+            "Prepared git credential for %s (user=%s, token not in URL)",
+            repo_url_log_location(safe_url),
+            username,
         )
-        return repo_url
+        return GitCredential(repo_url=safe_url, username=username, token=token)
 
     def _resolve_repository_clone_path(
         self, repo_config: Dict[str, Any], repo_index: int
@@ -1636,6 +3095,20 @@ if ! git checkout {q_commit} 2>/dev/null; then
         echo "========================================="
         echo "FATAL ERROR: Could not checkout commit {q_commit_short}"
         echo "Tried direct checkout, commit fetch, source branch, and MR ref."
+        echo "--- diagnostics ---"
+        # Every attempt above hides stderr so the fallback chain stays quiet on
+        # the happy path. Once we have actually failed, re-run the fetch and
+        # checkout WITH stderr so the real cause (auth failure, unknown ref,
+        # commit force-pushed away) reaches the execution log instead of a
+        # generic "could not checkout".
+        echo "$ git fetch origin {q_commit}"
+        git fetch origin {q_commit} 2>&1 | tail -n 5 || true
+        echo "$ git checkout {q_commit}"
+        git checkout {q_commit} 2>&1 | tail -n 5 || true
+        echo "$ git remote -v"
+        git remote -v 2>&1 | sed -n '1,2p' || true
+        echo "available refs:"
+        git for-each-ref --format='%(refname)' --count=20 2>&1 || true
         echo "========================================="
         exit 1
     fi
@@ -1700,6 +3173,72 @@ echo "  Branch: {q_target} (from {q_source})"{sha_display}
 echo "========================================="
 """.strip()
 
+    def _build_git_resume_rebase_shell(
+        self, *, full_path: str, base_branch: str
+    ) -> str:
+        """Fetch the flow base branch and rebase the cloned PR branch onto it.
+
+        On conflict the rebase is aborted (not auto-resolved). Conflicting
+        paths are written to ``/workspace/evidence/rebase-conflict.txt``
+        (prefixed with an instruction to resolve them). Resume prompts tell
+        the agent to inspect that file if it exists. ``PRELOOP_RESUME_REBASE_CONFLICT=1``
+        is exported in the container for in-container processes. The block
+        always exits 0 so a conflict does not abort init.
+        """
+
+        safe_base = _validated_git_ref(base_branch)
+        if not safe_base:
+            self.logger.warning(
+                "Skipping resume rebase: unsafe base branch %r", base_branch
+            )
+            return ""
+
+        q_path = shlex.quote(full_path)
+        conflict_file = f"{EVIDENCE_DIR_PATH}/rebase-conflict.txt"
+        rebased_marker = f"{EVIDENCE_DIR_PATH}/resume-rebased"
+        return f"""
+cd {q_path}
+echo "Resume rebase: fetching origin/{safe_base} and rebasing the PR branch onto it"
+if git fetch origin {safe_base}; then
+    if git rebase origin/{safe_base}; then
+        echo "Resume rebase onto origin/{safe_base} succeeded"
+        mkdir -p {EVIDENCE_DIR_PATH}
+        touch {rebased_marker}
+        export PRELOOP_RESUME_REBASED=1
+    else
+        echo "Resume rebase onto origin/{safe_base} conflicted; leaving rebase aborted"
+        mkdir -p {EVIDENCE_DIR_PATH}
+        {{
+            echo "git rebase onto the flow base branch conflicted and was aborted."
+            echo "Resolve these paths before continuing:"
+            git diff --name-only --diff-filter=U 2>/dev/null || true
+        }} > {conflict_file}
+        git rebase --abort || true
+        export PRELOOP_RESUME_REBASE_CONFLICT=1
+        echo "Wrote conflicting files to {conflict_file}"
+    fi
+else
+    echo "Resume rebase: could not fetch origin/{safe_base}; skipping rebase"
+fi
+cd /workspace
+true
+""".strip()
+
+    def _build_git_push_shell(self, safe_target: str, *, resume_rebase: bool) -> str:
+        """Build the post-exec push. Force-with-lease only after a resume rebase."""
+
+        if not resume_rebase:
+            return f"  git push origin {safe_target}"
+        rebased_marker = f"{EVIDENCE_DIR_PATH}/resume-rebased"
+        return (
+            f"  if [ -f {rebased_marker} ] || "
+            f'[ "${{PRELOOP_RESUME_REBASED:-}}" = "1" ]; then\n'
+            f"    git push --force-with-lease origin {safe_target}\n"
+            f"  else\n"
+            f"    git push origin {safe_target}\n"
+            f"  fi"
+        )
+
     def _build_repository_clone_command_block(
         self,
         *,
@@ -1710,8 +3249,14 @@ echo "========================================="
         target_branch: str,
         commit_sha: Optional[str],
         trigger_data: Dict[str, Any],
+        credentials: Optional[Dict[int, GitCredential]] = None,
     ) -> Optional[list[str]]:
-        """Build shell command blocks for one repository."""
+        """Build shell command blocks for one repository.
+
+        Any resolved credential is recorded in ``credentials`` rather than
+        written into the clone URL, so the remote stored in ``.git/config``
+        never contains a secret (issue #173).
+        """
 
         repo_url = self._resolve_repository_clone_url(
             repo_config, repo_index, execution_context, trigger_data
@@ -1726,9 +3271,14 @@ echo "========================================="
             )
             return None
 
-        repo_url = self._inject_git_credentials_into_url(
+        credential = self._build_git_credential(
             repo_url, repo_config, execution_context
         )
+        if credential is not None and credentials is not None:
+            credentials[repo_index] = credential
+
+        # The URL that reaches `git clone` is always credential-free.
+        repo_url = strip_url_credentials(repo_url)
         full_path = self._resolve_repository_clone_path(repo_config, repo_index)
         clone_branch = self._resolve_repository_clone_branch(
             repo_config,
@@ -1737,7 +3287,7 @@ echo "========================================="
             trigger_data=trigger_data,
         )
 
-        return [
+        commands = [
             self._build_git_pre_clone_shell(full_path),
             self._build_git_clone_shell(repo_url, full_path, clone_branch),
             self._build_git_branch_setup_shell(
@@ -1754,6 +3304,18 @@ echo "========================================="
                 commit_sha=commit_sha,
             ),
         ]
+        if self._is_resume_execution(execution_context):
+            git_config = execution_context.get("git_clone_config") or {}
+            if not isinstance(git_config, dict):
+                git_config = {}
+            base_branch = self._resolve_resume_base_branch(git_config, repo_config)
+            rebase_shell = self._build_git_resume_rebase_shell(
+                full_path=full_path, base_branch=base_branch
+            )
+            if rebase_shell:
+                commands.append(rebase_shell)
+                execution_context["_git_resume_rebase"] = True
+        return commands
 
     def _prepare_git_clone_command(self, execution_context: Dict[str, Any]) -> str:
         """
@@ -1786,6 +3348,7 @@ echo "========================================="
             )
 
             clone_commands: list[str] = []
+            credentials: Dict[int, GitCredential] = {}
             configured_repos_count = 0
             for idx, repo_config in enumerate(repositories):
                 command_block = self._build_repository_clone_command_block(
@@ -1796,6 +3359,7 @@ echo "========================================="
                     target_branch=target_branch,
                     commit_sha=commit_sha,
                     trigger_data=trigger_data,
+                    credentials=credentials,
                 )
                 if command_block is None:
                     continue
@@ -1818,9 +3382,19 @@ echo "========================================="
                 self.logger.error(error_msg)
                 return f'echo "{error_msg}" && exit 1'
 
+            # Stash the credentials on the context so the agent can pass them
+            # to the container as environment variables. They must never be
+            # rendered into the script itself, which is echoed by some images
+            # and can end up in `kubectl describe`.
+            self._register_git_credentials(execution_context, credentials)
+
+            credential_setup = build_credential_setup_shell(
+                use_http_path=needs_http_path_scoping(credentials.values())
+            )
+
             execution_context["_git_target_branch"] = target_branch
             execution_context["_git_source_branch"] = source_branch
-            return " && ".join(git_setup_commands + clone_commands)
+            return " && ".join(git_setup_commands + [credential_setup] + clone_commands)
 
         except Exception as e:
             self.logger.error(f"Error preparing git clone command: {e}", exc_info=True)
@@ -1845,8 +3419,11 @@ echo "========================================="
                 self.logger.debug("No git_clone_config in execution context")
                 return ""
 
-            # Check for repositories - if they exist, we should have cloned them
-            repositories = git_config.get("repositories", [])
+            # Match clone: empty repositories still falls back to the trigger
+            # project, otherwise post-exec would skip a repo that was cloned.
+            repositories = self._resolve_git_clone_repositories(
+                execution_context, git_config
+            )
             if not repositories:
                 self.logger.debug("No repositories in git_clone_config")
                 return ""
@@ -1864,6 +3441,23 @@ echo "========================================="
             if not target_branch:
                 return ""
 
+            safe_target = _validated_git_ref(target_branch)
+            if not safe_target:
+                self.logger.warning(
+                    "Skipping post-execution git: unsafe target branch %r",
+                    target_branch,
+                )
+                return ""
+            safe_source = _validated_git_ref(source_branch)
+            if source_branch and safe_source is None:
+                self.logger.warning(
+                    "Skipping post-execution git: unsafe source branch %r",
+                    source_branch,
+                )
+                return ""
+            if safe_source is None:
+                safe_source = "main"
+
             post_commands = []
 
             for idx, repo_config in enumerate(repositories):
@@ -1876,26 +3470,68 @@ echo "========================================="
                     # Relative path - prepend /workspace/
                     full_path = f"/workspace/{clone_path}"
 
-                # Get tracker info for PR/MR creation
-                tracker_id = repo_config.get("tracker_id")
-                git_credentials_map = execution_context.get("git_credentials_map", {})
-                tracker_creds = git_credentials_map.get(tracker_id)
+                # Resolve the tracker token the same way clone does, so a
+                # missing tracker_id still finds the trigger-project token.
+                token, tracker_type = self._resolve_repository_token(
+                    repo_config, execution_context
+                )
 
-                if not tracker_creds:
-                    continue
+                # The REST API token is passed through the environment rather
+                # than interpolated into the script, so it cannot leak via the
+                # container command line, `kubectl describe`, or a shell trace
+                # (issue #173). `token_ref` is the shell expansion to use.
+                token_ref = ""
+                if token:
+                    token_ref = "${%s}" % self._register_git_api_token(
+                        execution_context, idx, token
+                    )
 
-                tracker_type = tracker_creds.get("tracker_type")
-                token = tracker_creds.get("token")
+                trigger_data = execution_context.get("trigger_event_data", {})
+                repo_url = self._resolve_repository_clone_url(
+                    repo_config, idx, execution_context, trigger_data
+                )
+                host_kind = (
+                    tracker_host_kind(strip_url_credentials(repo_url))
+                    if repo_url
+                    else None
+                )
+                username = credential_username(host_kind, tracker_type)
+                push_auth = build_push_auth_setup_shell(
+                    token_ref=token_ref, username=username
+                )
 
-                # Commands to check for commits and push
+                # Commands to check for commits and push. Persist a bundle
+                # under /workspace/evidence *before* push so a failed push
+                # still leaves a recoverable artifact in the log stream.
                 # Note: Directory is guaranteed to exist because git clone validation would have failed earlier
                 repo_post_commands = [
                     f"cd {full_path}",
-                    # Check if there are any commits on target branch vs source
-                    f'COMMIT_COUNT=$(git rev-list --count {source_branch}..{target_branch} 2>/dev/null || echo "0")',
+                    # Resume clones source==target, so origin/<branch>..HEAD
+                    # still counts local commits the branch-vs-branch range
+                    # would miss. Branch names are validated above; do not
+                    # shlex.quote mid-token (that yields origin/'feat/x').
+                    f'COMMIT_COUNT=$(git rev-list --count origin/{safe_target}..HEAD 2>/dev/null || git rev-list --count {safe_source}..{safe_target} 2>/dev/null || echo "0")',
                     'if [ "$COMMIT_COUNT" -gt "0" ]; then',
-                    f'  echo "Found $COMMIT_COUNT commits on {target_branch}, pushing..."',
-                    f"  git push origin {target_branch}",
+                    f'  echo "Found $COMMIT_COUNT commits on {safe_target}, pushing..."',
+                    f"  mkdir -p {EVIDENCE_DIR_PATH}",
+                    f"  git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
+                    f"  git log -1 --format='%H %s' >> {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
+                    f"  git format-patch --stdout {safe_source}..HEAD > {EVIDENCE_DIR_PATH}/branch.patch 2>/dev/null || true",
+                    (
+                        f"  git bundle create {EVIDENCE_DIR_PATH}/branch.bundle "
+                        f"{safe_source}..HEAD 2>/dev/null "
+                        f"|| git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD "
+                        f"2>/dev/null || true"
+                    ),
+                    f'  echo "Wrote git recovery artifacts under {EVIDENCE_DIR_PATH}"',
+                    push_auth,
+                    self._build_git_push_shell(
+                        safe_target,
+                        resume_rebase=bool(
+                            execution_context.get("_git_resume_rebase")
+                            or self._is_resume_execution(execution_context)
+                        ),
+                    ),
                 ]
 
                 # Add PR/MR creation if enabled
@@ -1945,9 +3581,10 @@ echo "========================================="
                                 if use_custom:
                                     # Use custom title and description
                                     pr_create_cmd = f"""
-    curl -X POST \\
-      -H "Authorization: token {token}" \\
+    curl -sS -X POST \\
+      -H "Authorization: token {token_ref}" \\
       -H "Accept: application/vnd.github.v3+json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://api.github.com/repos/{owner}/{repo}/pulls \\
       -d "$(cat <<'PREOF'
 {{
@@ -1959,7 +3596,12 @@ echo "========================================="
 PREOF
 )" \\
       || echo "Failed to create PR (may already exist)"
-"""
+""" + build_github_pr_capture_shell(
+                                        token_ref=token_ref,
+                                        owner=owner,
+                                        repo=repo,
+                                        branch=target_branch,
+                                    )
                                 else:
                                     # Build title and description from commits
                                     execution_link = f"{preloop_url}/console/flows/executions/{execution_id}"
@@ -1978,9 +3620,10 @@ PREOF
     fi
 
     # Create PR with dynamic title/body
-    curl -X POST \\
-      -H "Authorization: token {token}" \\
+    curl -sS -X POST \\
+      -H "Authorization: token {token_ref}" \\
       -H "Accept: application/vnd.github.v3+json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://api.github.com/repos/{owner}/{repo}/pulls \\
       -d "$(cat <<PREOF
 {{
@@ -1992,7 +3635,12 @@ PREOF
 PREOF
 )" \\
       || echo "Failed to create PR (may already exist)"
-"""
+""" + build_github_pr_capture_shell(
+                                        token_ref=token_ref,
+                                        owner=owner,
+                                        repo=repo,
+                                        branch=target_branch,
+                                    )
                                 repo_post_commands.append(pr_create_cmd)
 
                     elif tracker_type == "gitlab":
@@ -2047,9 +3695,10 @@ PREOF
                                 # Use custom title and description
                                 mr_create_cmd = f"""
     echo "Creating Merge Request on {gitlab_host}..."
-    curl -X POST \\
-      -H "PRIVATE-TOKEN: {token}" \\
+    curl -sS -X POST \\
+      -H "PRIVATE-TOKEN: {token_ref}" \\
       -H "Content-Type: application/json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests \\
       -d "$(cat <<'MREOF'
 {{
@@ -2061,7 +3710,12 @@ PREOF
 MREOF
 )" \\
       || echo "Failed to create MR (may already exist)"
-"""
+""" + build_gitlab_mr_capture_shell(
+                                    token_ref=token_ref,
+                                    gitlab_host=gitlab_host,
+                                    encoded_path=encoded_path,
+                                    branch=target_branch,
+                                )
                             else:
                                 # Build title and description from commits
                                 execution_link = f"{preloop_url}/console/flows/executions/{execution_id}"
@@ -2080,9 +3734,10 @@ MREOF
     fi
 
     echo "Creating Merge Request on {gitlab_host}..."
-    curl -X POST \\
-      -H "PRIVATE-TOKEN: {token}" \\
+    curl -sS -X POST \\
+      -H "PRIVATE-TOKEN: {token_ref}" \\
       -H "Content-Type: application/json" \\
+      -o {PR_RESPONSE_FILE} \\
       https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests \\
       -d "$(cat <<MREOF
 {{
@@ -2094,7 +3749,12 @@ MREOF
 MREOF
 )" \\
       || echo "Failed to create MR (may already exist)"
-"""
+""" + build_gitlab_mr_capture_shell(
+                                    token_ref=token_ref,
+                                    gitlab_host=gitlab_host,
+                                    encoded_path=encoded_path,
+                                    branch=target_branch,
+                                )
                             repo_post_commands.append(mr_create_cmd)
 
                 repo_post_commands.extend(
@@ -2125,17 +3785,22 @@ MREOF
     ) -> Optional[str]:
         """Construct repository URL from project and tracker information.
 
-        Uses the tracker URL, project slug, and authentication token to construct
-        a complete clone URL in the format:
-        - GitLab: https://gitlab-ci-token:{token}@{host}/{slug}.git
-        - GitHub: https://{token}@github.com/{slug}.git
+        Uses the tracker URL and project slug to construct a clone URL in the
+        format:
+        - GitLab: https://{host}/{slug}.git
+        - GitHub: https://github.com/{slug}.git
+
+        The URL is deliberately credential-free (issue #173). The tracker token
+        is still required for the lookup to succeed, because a project whose
+        tracker has no key configured cannot be cloned at all, but the token is
+        delivered separately through the git credential helper.
 
         Args:
             project_id: Project ID
             account_id: Account ID
 
         Returns:
-            Repository clone URL with token injected, or None if not found
+            Credential-free repository clone URL, or None if not found
         """
         self.logger.info(
             f"Looking up repo URL for project_id={project_id}, account_id={account_id}"
@@ -2194,9 +3859,15 @@ MREOF
                     )
                     return None
 
-                # Get token from tracker (we always have tokens for GitHub/GitLab)
-                token = tracker.resolved_api_key
-                if not token:
+                # A tracker with no usable credential cannot clone a private
+                # repository, so refusing here gives a clearer error than a
+                # failed clone. App-authenticated trackers are the exception:
+                # they legitimately store no key, their token is minted by the
+                # orchestrator and delivered through the execution context.
+                if (
+                    not tracker.resolved_api_key
+                    and (tracker.auth_type or "").lower() not in APP_AUTH_TYPES
+                ):
                     self.logger.warning(
                         f"Tracker {tracker.id} has no API key configured"
                     )
@@ -2207,7 +3878,7 @@ MREOF
                 slug = project.slug
 
                 if tracker_type == "gitlab":
-                    # GitLab format: https://gitlab-ci-token:{token}@{host}/{slug}.git
+                    # GitLab format: https://{host}/{slug}.git (no credentials)
                     if not tracker.url:
                         self.logger.warning(
                             f"GitLab tracker {tracker.id} has no URL configured"
@@ -2225,19 +3896,19 @@ MREOF
                     if not slug.endswith(".git"):
                         slug = f"{slug}.git"
 
-                    clone_url = f"https://gitlab-ci-token:{token}@{host}/{slug}"
+                    clone_url = f"https://{host}/{slug}"
                     self.logger.info(
                         f"Constructed GitLab clone URL for {slug} on {host}"
                     )
                     return clone_url
 
                 elif tracker_type == "github":
-                    # GitHub format: https://{token}@github.com/{slug}.git
+                    # GitHub format: https://github.com/{slug}.git (no credentials)
                     # Ensure slug ends with .git
                     if not slug.endswith(".git"):
                         slug = f"{slug}.git"
 
-                    clone_url = f"https://{token}@github.com/{slug}"
+                    clone_url = f"https://github.com/{slug}"
                     self.logger.info(f"Constructed GitHub clone URL for {slug}")
                     return clone_url
 
@@ -2286,6 +3957,17 @@ MREOF
                 tracker = crud_tracker.get(db, id=organization.tracker_id)
                 resolved_token = tracker.resolved_api_key if tracker else ""
                 if not tracker or not resolved_token:
+                    if tracker and (tracker.auth_type or "").lower() in APP_AUTH_TYPES:
+                        # App trackers store no key: their credential is an
+                        # installation token minted asynchronously by the
+                        # orchestrator and delivered through
+                        # `git_credentials_map` / `trigger_tracker_id`.
+                        self.logger.warning(
+                            "Tracker %s authenticates through an app installation, "
+                            "so no token can be read here; expected the execution "
+                            "context to carry it",
+                            tracker.id,
+                        )
                     return None, None
 
                 return resolved_token, tracker.tracker_type.lower()
@@ -2321,6 +4003,22 @@ MREOF
             if isinstance(pr, dict) and pr.get("number") is not None:
                 ref = f"pull/{pr['number']}/head"
                 self.logger.info(f"Extracted GitHub PR fetch ref: {ref}")
+                return ref
+
+            issue = payload.get("issue")
+            if (
+                isinstance(issue, dict)
+                and isinstance(issue.get("pull_request"), dict)
+                and issue.get("number") is not None
+            ):
+                ref = f"pull/{issue['number']}/head"
+                self.logger.info(f"Extracted GitHub PR comment fetch ref: {ref}")
+                return ref
+
+            mr = payload.get("merge_request")
+            if isinstance(mr, dict) and mr.get("iid") is not None:
+                ref = f"refs/merge-requests/{mr['iid']}/head"
+                self.logger.info(f"Extracted GitLab MR note fetch ref: {ref}")
                 return ref
 
             return None
@@ -2397,6 +4095,15 @@ MREOF
             if isinstance(obj_attrs, dict) and obj_attrs.get("source_branch"):
                 branch = obj_attrs["source_branch"]
                 self.logger.info(f"Extracted source branch from GitLab MR: {branch}")
+                return branch
+
+            # GitLab note on an MR
+            mr = payload.get("merge_request")
+            if isinstance(mr, dict) and mr.get("source_branch"):
+                branch = mr["source_branch"]
+                self.logger.info(
+                    f"Extracted source branch from GitLab MR note: {branch}"
+                )
                 return branch
 
             return None

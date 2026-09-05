@@ -1,6 +1,7 @@
 """Tests for the database session module."""
 
 import os
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,11 +12,13 @@ import preloop.models.db.session as session_module
 
 
 EXPECTED_POOL_KWARGS = {
-    "pool_size": 20,
-    "max_overflow": 40,
+    "pool_size": 10,
+    "max_overflow": 20,
     "pool_pre_ping": True,
     "pool_recycle": 1800,
-    "pool_timeout": 30,
+    # Short by design: a saturated pool fails fast with 503 rather than
+    # holding a request for half a minute (2026-09-03 incident).
+    "pool_timeout": 5,
     "pool_use_lifo": True,
 }
 
@@ -262,3 +265,42 @@ def test_get_db_session_invalidates_when_rollback_fails():
 
         mock_session.rollback.assert_called_once()
         mock_session.invalidate.assert_called_once()
+
+
+def test_get_health_engine_is_created_once_under_concurrency(mock_engine_dependencies):
+    """Concurrent first calls must not build more than one health engine.
+
+    The health engine used a plain check-then-create global, so two threads
+    racing on the first probe could each build an engine (and each open its own
+    connection), leaking a pool the code would then forget about.
+    """
+    import threading
+
+    session_module._health_engine = None
+    started = threading.Barrier(8)
+    engines: list = []
+
+    def slow_create_engine(*args, **kwargs):
+        # Widen the race window between the check and the assignment.
+        time.sleep(0.05)
+        return MagicMock(name="health_engine")
+
+    mock_engine_dependencies["create_engine"].side_effect = slow_create_engine
+
+    def call_it() -> None:
+        started.wait()
+        engines.append(
+            session_module.get_health_engine("postgresql://user:pass@host/db")
+        )
+
+    threads = [threading.Thread(target=call_it) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    try:
+        assert mock_engine_dependencies["create_engine"].call_count == 1
+        assert len({id(engine) for engine in engines}) == 1
+    finally:
+        session_module._health_engine = None

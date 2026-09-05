@@ -1,15 +1,20 @@
 """CRUD operations for ApiKey model."""
 
 import hashlib
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..models.api_key import ApiKey
+from ..models.managed_agent_credential import ManagedAgentCredential
 from ..models.user import User
 from .base import CRUDBase
+
+logger = logging.getLogger(__name__)
 
 
 class CRUDApiKey(CRUDBase[ApiKey]):
@@ -318,6 +323,42 @@ class CRUDApiKey(CRUDBase[ApiKey]):
             db.flush()
         return deactivated
 
+    def deactivate_runtime_keys_for_flow_execution(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        execution_id: Any,
+        commit: bool = True,
+    ) -> List[ApiKey]:
+        """Deactivate runtime-scoped API keys bound to one flow execution."""
+        key_objs = (
+            db.query(ApiKey)
+            .filter(
+                ApiKey.account_id == account_id,
+                ApiKey.is_active.is_(True),
+                ApiKey.context_data.op("->>")("flow_execution_id") == str(execution_id),
+            )
+            .all()
+        )
+
+        deactivated: List[ApiKey] = []
+        for key_obj in key_objs:
+            key_obj.is_active = False
+            db.add(key_obj)
+            deactivated.append(key_obj)
+
+        if not deactivated:
+            return deactivated
+
+        if commit:
+            db.commit()
+            for key_obj in deactivated:
+                db.refresh(key_obj)
+        else:
+            db.flush()
+        return deactivated
+
     def deactivate_runtime_keys_for_managed_agent(
         self,
         db: Session,
@@ -354,6 +395,97 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         else:
             db.flush()
         return deactivated
+
+    def reactivate_runtime_keys_for_managed_agent(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        managed_agent_id: str,
+        commit: bool = True,
+    ) -> List[ApiKey]:
+        """Reactivate runtime keys a past suspension deactivated.
+
+        Pausing an agent is a lifecycle flag today (every auth path rejects
+        non-active agents on every request), so nothing needs restoring for
+        agents paused by current code. This heals agents that were suspended
+        by the older revoke-on-suspend behavior, whose durable gateway
+        credential stayed ``is_active = False`` forever because resume had no
+        inverse.
+
+        Deliberately narrow so it can never resurrect a credential an
+        operator killed on purpose:
+
+        - only keys bound to this managed agent (never principal-wide sweeps,
+          which would touch sibling agents' credentials),
+        - never a key whose ``ManagedAgentCredential`` row is ``revoked``,
+        - never an expired key.
+
+        Args:
+            db: Database session.
+            account_id: Account that owns the keys.
+            managed_agent_id: Managed agent whose keys are being restored.
+            commit: Commit the transaction when True.
+
+        Returns:
+            The API keys that were reactivated.
+        """
+        # ``expires_at`` is a naive column holding UTC (see ApiKey.is_expired),
+        # so the cutoff is computed here rather than with func.now(), which
+        # would compare a timestamptz against a naive column.
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        key_objs = (
+            db.query(ApiKey)
+            .outerjoin(
+                ManagedAgentCredential,
+                ManagedAgentCredential.api_key_id == ApiKey.id,
+            )
+            .filter(
+                ApiKey.account_id == account_id,
+                ApiKey.is_active.is_(False),
+                ApiKey.context_data.op("->>")("managed_agent_id")
+                == str(managed_agent_id),
+                or_(
+                    ManagedAgentCredential.id.is_(None),
+                    ManagedAgentCredential.status != "revoked",
+                ),
+                or_(
+                    ApiKey.expires_at.is_(None),
+                    ApiKey.expires_at > now_naive,
+                ),
+            )
+            .all()
+        )
+
+        reactivated: List[ApiKey] = []
+        skipped_expired = 0
+        for key_obj in key_objs:
+            # Belt and braces: the SQL filter above does the real work, this
+            # catches a row that expired between the query and this loop.
+            if key_obj.is_expired:
+                skipped_expired += 1
+                continue
+            key_obj.is_active = True
+            db.add(key_obj)
+            reactivated.append(key_obj)
+
+        if not reactivated:
+            logger.info(
+                "No runtime keys reactivated for managed agent %s "
+                "(candidates=%d, skipped_expired=%d)",
+                managed_agent_id,
+                len(key_objs),
+                skipped_expired,
+            )
+            return reactivated
+
+        if commit:
+            db.commit()
+            for key_obj in reactivated:
+                db.refresh(key_obj)
+        else:
+            db.flush()
+        return reactivated
 
     def validate_key(
         self, db: Session, *, key: str, required_scopes: Optional[List[str]] = None

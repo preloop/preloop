@@ -9,6 +9,7 @@ package cmd
 // default model instead of the managed alias.
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -197,5 +198,90 @@ func TestApplyClaudeManagedGatewayKeepsFamilySelectionBehavior(t *testing.T) {
 			"family aliases keep the selector form in settings.model, got %#v",
 			plan.ManagedDocument["model"],
 		)
+	}
+}
+
+func TestClaudeShellBedrockOverrideNotes(t *testing.T) {
+	// applyClaudeManagedGateway neutralizes Bedrock only inside settings.json.
+	// A shell-exported CLAUDE_CODE_USE_BEDROCK survives onboarding in the
+	// agent's process environment and can override the gateway config, so it
+	// must produce an actionable note.
+
+	cases := []struct {
+		name    string
+		flag    string
+		awsKey  string
+		want    bool
+		wantAWS bool
+	}{
+		{"flag exported triggers a warning", "1", "", true, false},
+		{"flag true triggers a warning", "true", "", true, false},
+		{"flag 0 is silent", "0", "", false, false},
+		{"flag unset is silent", "", "", false, false},
+		{"aws keys are listed alongside the flag", "1", "AKIAIOSFODNN7EXAMPLE", true, true},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Setenv("CLAUDE_CODE_USE_BEDROCK", testCase.flag)
+			t.Setenv("AWS_ACCESS_KEY_ID", testCase.awsKey)
+			t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
+			t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+			t.Setenv("AWS_SESSION_TOKEN", "")
+			t.Setenv("AWS_REGION", "")
+			t.Setenv("AWS_DEFAULT_REGION", "")
+
+			notes := claudeShellBedrockOverrideNotes()
+			if !testCase.want {
+				if len(notes) != 0 {
+					t.Fatalf("expected no notes, got %#v", notes)
+				}
+				return
+			}
+			if len(notes) != 1 {
+				t.Fatalf("expected exactly one note, got %#v", notes)
+			}
+			if !strings.Contains(notes[0], "CLAUDE_CODE_USE_BEDROCK") {
+				t.Errorf("note must name the overriding variable: %q", notes[0])
+			}
+			hasAWSMention := strings.Contains(notes[0], "AWS_ACCESS_KEY_ID")
+			if testCase.wantAWS && !hasAWSMention {
+				t.Errorf("exported AWS key must be listed: %q", notes[0])
+			}
+			if !testCase.wantAWS && hasAWSMention {
+				t.Errorf("no AWS key exported; note must not list one: %q", notes[0])
+			}
+		})
+	}
+}
+
+func TestApplyClaudeManagedGatewayWarnsOnShellBedrockOverride(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+
+	plan := managedMCPEnrollmentPlan{
+		ManagedDocument: map[string]interface{}{
+			"model": "claude-sonnet-4-5",
+		},
+	}
+	plan, err := applyClaudeManagedGateway(
+		plan,
+		"https://preloop.example",
+		"claude-durable-token",
+		"anthropic/claude-sonnet-4-5",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("unexpected gateway apply error: %v", err)
+	}
+
+	found := false
+	for _, note := range plan.Notes {
+		if strings.Contains(note, "CLAUDE_CODE_USE_BEDROCK") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a shell-override warning note, got %#v", plan.Notes)
 	}
 }

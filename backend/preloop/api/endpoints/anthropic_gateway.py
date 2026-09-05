@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Depends, Header
 from sqlalchemy.orm import Session
-from starlette.responses import StreamingResponse
 
 from preloop.models.db.session import get_db_session
 from preloop.services.model_gateway_auth import (
@@ -15,6 +14,7 @@ from preloop.services.model_gateway_auth import (
 )
 from preloop.api.deps import get_budget_enforcer
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
+from preloop.services.gateway_streaming import GatewayStreamingResponse
 from preloop.services.openai_gateway import OpenAIGatewayService
 
 router = APIRouter(include_in_schema=False)
@@ -61,6 +61,9 @@ def create_message(
     auth_context: ModelGatewayAuthContext = Depends(get_anthropic_gateway_auth_context),
     budget_enforcer: Any = Depends(get_budget_enforcer),
     x_preloop_session_id: Optional[str] = Header(None, alias="X-Preloop-Session-Id"),
+    x_claude_code_session_id: Optional[str] = Header(
+        None, alias="X-Claude-Code-Session-Id"
+    ),
     anthropic_version: Optional[str] = Header(None, alias="anthropic-version"),
     anthropic_beta: Optional[str] = Header(None, alias="anthropic-beta"),
 ) -> Any:
@@ -69,21 +72,29 @@ def create_message(
     The ``anthropic-version`` and ``anthropic-beta`` headers are forwarded to
     the service so the subscription-OAuth passthrough can preserve the
     client's requested API surface (e.g. prompt-caching betas) upstream.
+
+    Claude Code does not send ``X-Preloop-Session-Id``; it stamps its own
+    conversation id on ``X-Claude-Code-Session-Id`` (and, redundantly, inside
+    ``metadata.user_id``). Accepting it here means each real Claude Code session
+    gets its own runtime session instead of every run on a machine collapsing
+    onto one eternal session row. Preloop's own header still wins when both are
+    present, so an explicit per-run id is never overridden.
     """
     service = OpenAIGatewayService(
         db,
         auth_context,
         budget_enforcer=budget_enforcer,
-        client_session_id=x_preloop_session_id,
+        client_session_id=x_preloop_session_id or x_claude_code_session_id,
     )
     if payload.get("stream"):
-        return StreamingResponse(
+        return GatewayStreamingResponse(
             service.stream_message(
                 payload,
                 anthropic_version=anthropic_version,
                 anthropic_beta=anthropic_beta,
             ),
             media_type="text/event-stream",
+            on_complete=service.flush_deferred_stream_record,
         )
     return service.create_message(
         payload,

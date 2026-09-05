@@ -90,6 +90,34 @@ def _build_usage(**overrides) -> ApiUsage:
     return usage
 
 
+def test_build_event_prefers_api_usage_cache_columns_over_stale_meta():
+    """Activity payload cache tokens must come from ApiUsage columns first."""
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage(
+        cache_read_tokens=1200,
+        cache_creation_tokens=3400,
+        meta_data={
+            "endpoint_kind": "responses",
+            "usage_details": {
+                "cache_read_input_tokens": 1,
+                "cache_creation_input_tokens": 2,
+                "prompt_tokens_details": {"cached_tokens": 1},
+            },
+            "budget": {"soft_limit_exceeded": False},
+            "error_detail": None,
+        },
+    )
+    with patch.object(settings, "model_gateway_capture_content", False):
+        event = emitter._build_event(
+            usage=usage,
+            request_payload={"messages": [{"role": "user", "content": "hi"}]},
+            response_payload={"output_text": "ok"},
+        )
+    payload = event["payload"]
+    assert payload["cache_read_input_tokens"] == 1200
+    assert payload["cache_creation_input_tokens"] == 3400
+
+
 def test_build_event_includes_budget_runtime_principal_and_redacted_payloads():
     """Captured payload previews should keep structure while redacting secrets."""
     emitter = ModelGatewayEventEmitter(MagicMock())
@@ -461,3 +489,123 @@ async def test_publish_to_nats_drops_event_when_truncated_payload_is_still_too_l
         await emitter._publish_to_nats(event)
 
     nats_client.publish.assert_not_called()
+
+
+def test_build_event_strips_nul_and_control_bytes_from_bodies():
+    """Regression: gzip/binary bodies must not reach a JSONB column.
+
+    Incident 2026-08-05: an agent fetched a URL that returned gzip, the body
+    landed in runtime_session_activity.metadata, and Postgres rejected the NUL
+    with UntranslatableCharacter, poisoning the request's session.
+    """
+    import json
+
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage()
+    gzip_magic = "\x1f\x8b\x08\x00"
+
+    with (
+        patch.object(settings, "model_gateway_capture_content", True),
+        patch.object(settings, "model_gateway_max_preview_chars", 100000),
+        patch.object(settings, "model_gateway_activity_max_body_chars", 100000),
+    ):
+        event = emitter._build_event(
+            usage=usage,
+            request_payload={"messages": [{"role": "user", "content": "fetch it"}]},
+            response_payload={"body": gzip_magic + "binary\x00payload"},
+        )
+
+    payload = event["payload"]
+    assert payload["response"]["body"] == "binarypayload"
+    # The captured bodies must survive the same encode path psycopg2 uses.
+    # (api_key_name is a MagicMock attribute here, so encode only the bodies.)
+    encoded = json.dumps(
+        {"request": payload["request"], "response": payload["response"]}
+    )
+    assert "\x00" not in encoded
+    assert "\u0000" not in encoded
+
+
+def test_build_event_caps_activity_bodies_with_an_explicit_marker():
+    """533KB activity rows are a DB bloat problem independent of encoding."""
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage()
+
+    with (
+        patch.object(settings, "model_gateway_capture_content", True),
+        patch.object(settings, "model_gateway_max_preview_chars", 100000),
+        patch.object(settings, "model_gateway_activity_max_body_chars", 50),
+    ):
+        event = emitter._build_event(
+            usage=usage,
+            request_payload={"messages": [{"role": "user", "content": "hi"}]},
+            response_payload={"body": "z" * 500},
+        )
+
+    body = event["payload"]["response"]["body"]
+    assert body.startswith("z" * 50)
+    assert body.endswith("... [truncated 450 bytes]")
+
+
+def test_build_event_preserves_newlines_and_tabs_in_bodies():
+    """Transcripts must keep their shape; only invisible controls are dropped."""
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage()
+    text = "def f():\n\treturn 1\r\n"
+
+    with (
+        patch.object(settings, "model_gateway_capture_content", True),
+        patch.object(settings, "model_gateway_max_preview_chars", 100000),
+        patch.object(settings, "model_gateway_activity_max_body_chars", 100000),
+    ):
+        event = emitter._build_event(
+            usage=usage,
+            request_payload={"messages": [{"role": "user", "content": "hi"}]},
+            response_payload={"body": text},
+        )
+
+    assert event["payload"]["response"]["body"] == text
+
+
+def test_build_event_surfaces_upstream_retry_count():
+    """A call the gateway had to retry must say so on the execution timeline.
+
+    Without this the only visible symptom of a flaky provider is a run that
+    took longer than usual, which is indistinguishable from a slow model.
+    """
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage(
+        meta_data={
+            "endpoint_kind": "responses",
+            "upstream_retries": 2,
+            "error_detail": None,
+        }
+    )
+    with patch.object(settings, "model_gateway_capture_content", False):
+        event = emitter._build_event(
+            usage=usage, request_payload=None, response_payload=None
+        )
+    assert event["payload"]["retried"] == 2
+
+
+def test_build_event_reports_zero_retries_for_a_clean_call():
+    """`retried` is always present so consumers never special-case its absence."""
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage()
+    with patch.object(settings, "model_gateway_capture_content", False):
+        event = emitter._build_event(
+            usage=usage, request_payload=None, response_payload=None
+        )
+    assert event["payload"]["retried"] == 0
+
+
+def test_derive_outcome_treats_allowlist_denial_as_budget_denied():
+    """No policy_denied vocabulary exists, so allowlist denials stay budget_denied."""
+    detail = (
+        "Model 'vendor/alpha-chat' is not in this agent's allowed models "
+        "(Alpha Chat). Edit the agent's governance in the Preloop console or "
+        "pick an allowed model."
+    )
+    assert ModelGatewayEventEmitter._derive_outcome(403, detail) == "budget_denied"
+    assert ModelGatewayEventEmitter._derive_outcome(403, "forbidden") == "error"
+    assert ModelGatewayEventEmitter._derive_outcome(200, None) == "success"

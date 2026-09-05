@@ -2,6 +2,7 @@
 
 import json
 
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import ai_model as ai_model_crud_module
@@ -281,6 +282,9 @@ def test_get_ai_models_by_account(db_session: Session, create_account):
     assert len(models_acc2) == 1
     assert models_acc1[0].provider_name in ["openai", "openai"]
     assert models_acc2[0].provider_name == "anthropic"
+    # Seed resolution on catalog sync inspects is_principal_bound_oauth, which
+    # reads credentials_secret. The listing query must eager-load it.
+    assert "credentials_secret" not in sa_inspect(models_acc1[0]).unloaded
 
 
 def test_update_ai_model_and_default_logic(db_session: Session, create_account):
@@ -720,3 +724,224 @@ def test_get_all_for_account_is_deterministically_ordered(
     # Repeated calls must agree — this is what pricing stability depends on.
     for _ in range(3):
         assert ordering() == observed
+
+
+def test_provider_switch_preserves_gateway_alias(db_session, create_account):
+    """Changing provider_name must pin the old default gateway alias.
+
+    In-flight agents talk to the gateway using the alias they were configured
+    with. If the alias changes because the admin edits provider_name, the
+    agent gets a 404 and the provider switch is invisible to running sessions.
+    The CRUD update should auto-set meta_data.gateway.model_alias to the old
+    default alias so the model stays addressable under the old name while
+    routing with the new provider.
+    """
+    from preloop.services.model_runtime_resolver import effective_gateway_alias
+
+    account = create_account()
+    model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Kimi K3",
+            "provider_name": "nvidia_nim",
+            "model_identifier": "kimi-k3",
+            "api_key": "nvidia-key",
+            "meta_data": {"gateway": {"enabled": True}},
+        },
+        account_id=account.id,
+    )
+
+    old_alias = effective_gateway_alias(model)
+    assert old_alias == "nvidia_nim/kimi-k3"
+
+    # Edit: switch provider to moonshot
+    updated = crud_ai_model.update(
+        db=db_session,
+        db_obj=model,
+        obj_in={"provider_name": "moonshot"},
+    )
+    db_session.refresh(updated)
+
+    # The alias must still resolve to the OLD spelling so in-flight agents
+    # keep working.
+    new_alias = effective_gateway_alias(updated)
+    assert new_alias == old_alias, (
+        f"Gateway alias changed from {old_alias!r} to {new_alias!r} on "
+        "provider edit; in-flight agents would 404"
+    )
+
+    # The provider_name itself must have changed.
+    assert updated.provider_name == "moonshot"
+
+    # The alias is pinned via meta_data, not by blocking the provider change.
+    gw = updated.meta_data.get("gateway", {})
+    assert gw.get("model_alias") == "nvidia_nim/kimi-k3"
+
+
+def test_provider_switch_no_op_when_alias_already_configured(
+    db_session, create_account
+):
+    """If the admin already set a custom gateway alias, do not overwrite it."""
+    from preloop.services.model_runtime_resolver import effective_gateway_alias
+
+    account = create_account()
+    model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Custom Alias Model",
+            "provider_name": "nvidia_nim",
+            "model_identifier": "kimi-k3",
+            "api_key": "nvidia-key",
+            "meta_data": {
+                "gateway": {"enabled": True, "model_alias": "my-custom-alias"}
+            },
+        },
+        account_id=account.id,
+    )
+
+    assert effective_gateway_alias(model) == "my-custom-alias"
+
+    updated = crud_ai_model.update(
+        db=db_session,
+        db_obj=model,
+        obj_in={"provider_name": "moonshot"},
+    )
+    db_session.refresh(updated)
+
+    # Custom alias must be untouched.
+    assert effective_gateway_alias(updated) == "my-custom-alias"
+    assert updated.provider_name == "moonshot"
+
+
+def test_provider_switch_skipped_when_gateway_not_enabled(db_session, create_account):
+    """Non-gateway models should not get an alias pinned on provider change."""
+    account = create_account()
+    model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Direct Model",
+            "provider_name": "nvidia_nim",
+            "model_identifier": "kimi-k3",
+            "api_key": "nvidia-key",
+        },
+        account_id=account.id,
+    )
+
+    updated = crud_ai_model.update(
+        db=db_session,
+        db_obj=model,
+        obj_in={"provider_name": "moonshot"},
+    )
+    db_session.refresh(updated)
+
+    # No gateway block should have been created.
+    meta = updated.meta_data or {}
+    gw = meta.get("gateway", {})
+    assert not gw.get("model_alias"), "Non-gateway model should not get a pinned alias"
+
+
+def test_provider_switch_keeps_incoming_alias_from_same_update(
+    db_session, create_account
+):
+    """An alias set in the same update as the provider change must survive.
+
+    The pin exists to keep in-flight agents working when nobody chose an
+    address. If the admin explicitly picks a new alias while switching
+    provider, that choice wins over the pin.
+    """
+    from preloop.services.model_runtime_resolver import effective_gateway_alias
+
+    account = create_account()
+    model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Kimi K3",
+            "provider_name": "nvidia_nim",
+            "model_identifier": "kimi-k3",
+            "api_key": "nvidia-key",
+            "meta_data": {"gateway": {"enabled": True}},
+        },
+        account_id=account.id,
+    )
+
+    assert effective_gateway_alias(model) == "nvidia_nim/kimi-k3"
+
+    updated = crud_ai_model.update(
+        db=db_session,
+        db_obj=model,
+        obj_in={
+            "provider_name": "moonshot",
+            "meta_data": {
+                "gateway": {"enabled": True, "model_alias": "kimi-k3-preferred"}
+            },
+        },
+    )
+    db_session.refresh(updated)
+
+    assert effective_gateway_alias(updated) == "kimi-k3-preferred"
+    assert updated.meta_data["gateway"]["model_alias"] == "kimi-k3-preferred"
+    assert updated.provider_name == "moonshot"
+
+
+def test_provider_switch_pins_when_incoming_meta_has_no_alias(
+    db_session, create_account
+):
+    """A meta_data payload without an alias still gets the old alias pinned."""
+    from preloop.services.model_runtime_resolver import effective_gateway_alias
+
+    account = create_account()
+    model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Kimi K3",
+            "provider_name": "nvidia_nim",
+            "model_identifier": "kimi-k3",
+            "api_key": "nvidia-key",
+            "meta_data": {"gateway": {"enabled": True}},
+        },
+        account_id=account.id,
+    )
+
+    updated = crud_ai_model.update(
+        db=db_session,
+        db_obj=model,
+        obj_in={
+            "provider_name": "moonshot",
+            "meta_data": {"gateway": {"enabled": True}, "notes": "switched provider"},
+        },
+    )
+    db_session.refresh(updated)
+
+    assert effective_gateway_alias(updated) == "nvidia_nim/kimi-k3"
+    assert updated.meta_data["notes"] == "switched provider"
+    assert updated.provider_name == "moonshot"
+
+
+def test_provider_switch_ignores_blank_incoming_alias(db_session, create_account):
+    """A whitespace-only incoming alias is not an explicit choice; still pin."""
+    from preloop.services.model_runtime_resolver import effective_gateway_alias
+
+    account = create_account()
+    model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Kimi K3",
+            "provider_name": "nvidia_nim",
+            "model_identifier": "kimi-k3",
+            "api_key": "nvidia-key",
+            "meta_data": {"gateway": {"enabled": True}},
+        },
+        account_id=account.id,
+    )
+
+    updated = crud_ai_model.update(
+        db=db_session,
+        db_obj=model,
+        obj_in={
+            "provider_name": "moonshot",
+            "meta_data": {"gateway": {"enabled": True, "model_alias": "   "}},
+        },
+    )
+    db_session.refresh(updated)
+
+    assert effective_gateway_alias(updated) == "nvidia_nim/kimi-k3"

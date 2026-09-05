@@ -48,6 +48,16 @@ from preloop.models.models.project import Project
 from preloop.models.crud import crud_organization, crud_project, crud_webhook
 
 
+def _github_link_has_next(link_header: Optional[str]) -> bool:
+    """Return True when a GitHub Link header includes rel=next."""
+    if not link_header:
+        return False
+    for part in link_header.split(","):
+        if 'rel="next"' in part or "rel=next" in part or "rel='next'" in part:
+            return True
+    return False
+
+
 class GitHubTracker(BaseTracker):
     """GitHub tracker implementation.
 
@@ -213,27 +223,26 @@ class GitHubTracker(BaseTracker):
         data: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Make a request to the GitHub API.
+        """Make a request to the GitHub API and return the JSON body."""
+        body, _headers = await self._request_with_headers(
+            method, endpoint, data, params
+        )
+        return body
 
-        Args:
-            method: HTTP method (GET, POST, PATCH, PUT, DELETE)
-            endpoint: API endpoint path
-            data: Request body data
-            params: Query parameters
-
-        Returns:
-            Response data
-        """
+    async def _request_with_headers(
+        self,
+        method: str,
+        endpoint: str,
+        data: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Any, Dict[str, str]]:
+        """GET/POST helper that also returns response headers (for Link pagination)."""
         url = (
             f"{self.API_BASE_URL}{endpoint}"
             if endpoint.startswith("/")
             else f"{self.API_BASE_URL}/{endpoint}"
         )
-
-        # Get auth headers (may refresh installation token for github_app auth)
         headers = await self._get_auth_headers()
-
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.request(
@@ -243,15 +252,13 @@ class GitHubTracker(BaseTracker):
                     json=data,
                     params=params,
                 )
-
                 if response.status_code == HTTP_STATUS_UNAUTHORIZED:
                     raise TrackerAuthenticationError("GitHub authentication failed")
                 elif response.status_code >= 400:
                     raise TrackerResponseError(
                         f"GitHub API error: {response.status_code} - {response.text}"
                     )
-
-                return response.json()
+                return response.json(), dict(response.headers)
             except httpx.RequestError as e:
                 raise TrackerConnectionError(f"GitHub connection error: {str(e)}")
 
@@ -1345,6 +1352,9 @@ class GitHubTracker(BaseTracker):
             "project",
             "repository",
             "push",
+            "check_run",
+            "check_suite",
+            "workflow_run",
         ]
         payload = {
             "name": "web",
@@ -2011,6 +2021,70 @@ class GitHubTracker(BaseTracker):
         except Exception as e:
             logger.error(f"Error getting pull request {pr_number}: {e}")
             raise TrackerResponseError(f"Failed to get pull request: {e}")
+
+    async def list_pull_requests(
+        self,
+        state: str = "open",
+        limit: int = 20,
+        page: int = 1,
+    ) -> Dict[str, Any]:
+        """List pull requests for the connected repository.
+
+        Args:
+            state: GitHub PR state (open, closed, all).
+            limit: Page size (per_page).
+            page: 1-based page number.
+
+        Returns:
+            Dict with normalized ``items`` and ``has_more`` from the Link header.
+        """
+        owner = self.connection_details.get("owner")
+        repo = self.connection_details.get("repo")
+        if not owner or not repo:
+            raise TrackerResponseError("Owner/repo not found in connection details")
+
+        path = f"/repos/{owner}/{repo}/pulls"
+        params = {
+            "state": state,
+            "per_page": limit,
+            "page": page,
+            "sort": "updated",
+            "direction": "desc",
+        }
+        raw, headers = await self._request_with_headers("GET", path, params=params)
+        if not isinstance(raw, list):
+            raise TrackerResponseError("GitHub pull request list was not an array")
+        items = [self._normalize_listed_pull_request(pr) for pr in raw]
+        return {
+            "items": items,
+            "has_more": _github_link_has_next(
+                headers.get("Link") or headers.get("link")
+            ),
+        }
+
+    def _normalize_listed_pull_request(self, pr_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Map a GitHub pulls-list item to the shared PR list shape."""
+        user = pr_data.get("user") if isinstance(pr_data.get("user"), dict) else {}
+        head = pr_data.get("head") if isinstance(pr_data.get("head"), dict) else {}
+        base = pr_data.get("base") if isinstance(pr_data.get("base"), dict) else {}
+        number = int(pr_data.get("number") or 0)
+        state = str(pr_data.get("state") or "open")
+        if state == "opened":
+            state = "open"
+        return {
+            "number": number,
+            "iid": number,
+            "title": pr_data.get("title") or "",
+            "description": pr_data.get("body") or "",
+            "url": pr_data.get("html_url") or "",
+            "author": user.get("login") or "",
+            "source_branch": head.get("ref") or "",
+            "target_branch": base.get("ref") or "",
+            "state": state,
+            "draft": bool(pr_data.get("draft", False)),
+            "created_at": pr_data.get("created_at"),
+            "updated_at": pr_data.get("updated_at"),
+        }
 
     async def update_pull_request(
         self,
@@ -3028,6 +3102,38 @@ class GitHubTracker(BaseTracker):
         except httpx.RequestError as e:
             raise TrackerConnectionError(f"GitHub connection error: {str(e)}")
 
+    @staticmethod
+    def _match_thread_comment(
+        thread: Dict[str, Any],
+        comment_id: str,
+    ) -> Optional[str]:
+        """Match a comment against a review thread node.
+
+        Tries both the numeric database ID and the GraphQL node ID of every
+        comment in the thread.
+
+        Args:
+            thread: A reviewThread node from the GraphQL response.
+            comment_id: The comment's numeric ID or node_id.
+
+        Returns:
+            The thread node_id (PRRT_*) if matched, None otherwise.
+        """
+        thread_id = thread.get("id")
+        comments = thread.get("comments", {}).get("nodes", [])
+
+        for comment in comments:
+            # Match by database ID (numeric)
+            if str(comment.get("databaseId")) == str(comment_id):
+                logger.info(f"Found thread {thread_id} for comment {comment_id}")
+                return thread_id
+            # Match by node_id
+            if comment.get("id") == comment_id:
+                logger.info(f"Found thread {thread_id} for comment {comment_id}")
+                return thread_id
+
+        return None
+
     @async_retry()
     async def get_thread_id_for_comment(
         self,
@@ -3053,20 +3159,53 @@ class GitHubTracker(BaseTracker):
             logger.warning("Owner/repo not found for thread lookup")
             return None
 
-        # GraphQL query to get review threads and their comments
+        # GraphQL query to page through review threads. Only the first
+        # comments page is fetched here; deeper comment pages are loaded
+        # per-thread via THREAD_COMMENTS_QUERY below so a comments cursor is
+        # never applied to a sibling thread's connection.
         query = """
-            query GetPRReviewThreads($owner: String!, $name: String!, $prNumber: Int!) {
+            query GetPRReviewThreads($owner: String!, $name: String!, $prNumber: Int!, $threadsCursor: String) {
                 repository(owner: $owner, name: $name) {
                     pullRequest(number: $prNumber) {
-                        reviewThreads(first: 100) {
+                        reviewThreads(first: 100, after: $threadsCursor) {
+                            pageInfo {
+                                hasNextPage
+                                endCursor
+                            }
                             nodes {
                                 id
                                 comments(first: 50) {
+                                    pageInfo {
+                                        hasNextPage
+                                        endCursor
+                                    }
                                     nodes {
                                         id
                                         databaseId
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        """
+
+        # Thread-scoped pagination query: fetches deeper comment pages for a
+        # single review thread via its node id.
+        thread_comments_query = """
+            query GetPRReviewThreadComments($threadId: ID!, $commentsCursor: String) {
+                node(id: $threadId) {
+                    ... on PullRequestReviewThread {
+                        id
+                        comments(first: 50, after: $commentsCursor) {
+                            pageInfo {
+                                hasNextPage
+                                endCursor
+                            }
+                            nodes {
+                                id
+                                databaseId
                             }
                         }
                     }
@@ -3085,50 +3224,94 @@ class GitHubTracker(BaseTracker):
 
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    graphql_url,
-                    headers=headers,
-                    json={"query": query, "variables": variables},
-                    timeout=30.0,
-                )
+                threads_cursor: Optional[str] = None
 
-                if response.status_code >= 400:
-                    logger.warning(f"GraphQL query failed: {response.status_code}")
-                    return None
+                # Outer loop pages through reviewThreads; the inner loop
+                # pages through each thread's comments before moving on.
+                while True:
+                    response = await client.post(
+                        graphql_url,
+                        headers=headers,
+                        json={
+                            "query": query,
+                            "variables": {
+                                **variables,
+                                "threadsCursor": threads_cursor,
+                            },
+                        },
+                        timeout=30.0,
+                    )
 
-                data = response.json()
+                    if response.status_code >= 400:
+                        logger.warning(f"GraphQL query failed: {response.status_code}")
+                        return None
 
-                if "errors" in data:
-                    logger.warning(f"GraphQL errors: {data['errors']}")
-                    return None
+                    data = response.json()
 
-                # Search through threads to find the comment
-                threads = (
-                    data.get("data", {})
-                    .get("repository", {})
-                    .get("pullRequest", {})
-                    .get("reviewThreads", {})
-                    .get("nodes", [])
-                )
+                    if "errors" in data:
+                        logger.warning(f"GraphQL errors: {data['errors']}")
+                        return None
 
-                # Try to match by comment_id (numeric) or node_id (string)
-                for thread in threads:
-                    thread_id = thread.get("id")
-                    comments = thread.get("comments", {}).get("nodes", [])
+                    connection = (
+                        data.get("data", {})
+                        .get("repository", {})
+                        .get("pullRequest", {})
+                        .get("reviewThreads", {})
+                    )
+                    threads = connection.get("nodes", [])
 
-                    for comment in comments:
-                        # Match by database ID (numeric)
-                        if str(comment.get("databaseId")) == str(comment_id):
-                            logger.info(
-                                f"Found thread {thread_id} for comment {comment_id}"
+                    for thread in threads:
+                        thread_id = thread.get("id")
+                        comments_cursor: Optional[str] = None
+
+                        while True:
+                            found = self._match_thread_comment(thread, comment_id)
+                            if found:
+                                return found
+
+                            page_info = thread.get("comments", {}).get("pageInfo", {})
+                            if not page_info.get("hasNextPage") or not page_info.get(
+                                "endCursor"
+                            ):
+                                break
+                            comments_cursor = page_info["endCursor"]
+
+                            response = await client.post(
+                                graphql_url,
+                                headers=headers,
+                                json={
+                                    "query": thread_comments_query,
+                                    "variables": {
+                                        "threadId": thread_id,
+                                        "commentsCursor": comments_cursor,
+                                    },
+                                },
+                                timeout=30.0,
                             )
-                            return thread_id
-                        # Match by node_id
-                        if comment.get("id") == comment_id:
-                            logger.info(
-                                f"Found thread {thread_id} for comment {comment_id}"
-                            )
-                            return thread_id
+
+                            if response.status_code >= 400:
+                                logger.warning(
+                                    f"GraphQL query failed: {response.status_code}"
+                                )
+                                return None
+
+                            data = response.json()
+
+                            if "errors" in data:
+                                logger.warning(f"GraphQL errors: {data['errors']}")
+                                return None
+
+                            updated = data.get("data", {}).get("node", {}) or {}
+                            if not updated or updated.get("id") != thread_id:
+                                break
+                            thread = updated
+
+                    page_info = connection.get("pageInfo", {})
+                    if not page_info.get("hasNextPage") or not page_info.get(
+                        "endCursor"
+                    ):
+                        break
+                    threads_cursor = page_info["endCursor"]
 
                 logger.warning(f"No thread found for comment {comment_id}")
                 return None

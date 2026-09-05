@@ -6,10 +6,15 @@ passing tokens as query parameters.
 """
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from uuid import UUID
 
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
+    from preloop.models.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -144,22 +149,26 @@ class WebSocketAuthMiddleware:
         try:
             from preloop.api.auth.jwt import decode_token
             from preloop.models.crud import crud_user
-            from preloop.models.db.session import get_db_session
-            from preloop.services.db_executor import detach_user
+            from preloop.services.db_executor import detach_user, run_db_async
 
             token_data = decode_token(token)
             if not token_data or not token_data.sub:
                 return None
 
-            # Get user from database via CRUD layer
-            db = next(get_db_session())
-            try:
-                user = crud_user.get(db, id=UUID(token_data.sub))
+            user_id = UUID(token_data.sub)
+
+            def _load(db: "Session") -> Optional["User"]:
+                """Load the user in a short-lived session on a worker thread."""
+                user = crud_user.get(db, id=user_id)
                 if user and user.is_active:
                     return detach_user(db, user)
                 return None
-            finally:
-                db.close()
+
+            # Off the loop on purpose: every console reconnect lands here, and
+            # a saturated pool would otherwise block the whole worker (and the
+            # liveness probe) for the pool timeout. See
+            # ``preloop.api.loop_safety``.
+            return await run_db_async(_load)
 
         except Exception as e:
             logger.debug(f"Token validation failed: {e}")

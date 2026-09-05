@@ -199,6 +199,20 @@ class TestCodexBuildScript:
         assert "_post_exec_sleep()" in script
         assert "trap _post_exec_sleep EXIT" in script
 
+    def test_script_always_attaches_preloop_mcp(self):
+        """Empty allowlist still attaches Preloop MCP. Overhead is tools."""
+        agent = CodexAgent({})
+        bare = agent._build_codex_script(
+            {
+                "prompt": "test",
+                "execution_id": "exec-1",
+                "flow_name": "test-flow",
+            }
+        )
+        assert "[mcp_servers.preloop]" in bare
+        assert "preloop.security.mcp_server" not in bare
+        assert "repo-audit" not in bare
+
     def test_script_contains_codex_exec_command(self):
         """Script runs codex exec with correct flags."""
         agent = CodexAgent({})
@@ -242,12 +256,15 @@ class TestCodexAuthConfig:
         assert "OPENAI_API_KEY" in auth_block
         assert 'model = "gpt-5.4"' in auth_block
         assert "[mcp_servers.preloop]" in auth_block
+        assert "repo-audit" not in auth_block
 
     def test_custom_provider_config(self):
         """Custom provider generates provider-specific config.toml section."""
         agent = CodexAgent({})
         auth_block = agent._build_codex_auth_config(
-            "claude-sonnet-4-20250514", "anthropic", "https://api.anthropic.com/v1"
+            "claude-sonnet-4-20250514",
+            "anthropic",
+            "https://api.anthropic.com/v1",
         )
         assert "ANTHROPIC_API_KEY" in auth_block
         assert "anthropic" in auth_block
@@ -376,3 +393,39 @@ class TestCodexPrepareEnvironment:
         env = await agent._prepare_environment(context)
         assert env["MCP_TOOL_TIMEOUT"] == "600"
         assert context["_mcp_tool_timeout"] == 600
+
+
+class TestCodexDynamicModelListing:
+    """Codex CLI populates its model picker from GET /models.
+
+    The Preloop gateway already includes a top-level ``models`` array in
+    the GET /models response (see openai_gateway.py list_models) which
+    Codex CLI's model-manager deserializes.  This means Codex is already
+    dynamic: enabling a new model on the account makes it appear in
+    ``GET /models`` immediately without config regeneration.
+
+    These tests assert the contract so regressions are caught.
+    """
+
+    def test_codex_config_has_no_static_model_list(self):
+        """Codex auth config does not embed a models list.
+
+        Unlike OpenCode (which writes a ``models`` map in opencode.json),
+        Codex's config.toml and auth.json contain only the primary model
+        and provider setup.  The model picker is populated at runtime via
+        ``GET /models``.
+        """
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config("gpt-5", "openai", "")
+        # config.toml has model = "..." but no [models] section
+        assert 'model = "gpt-5"' in auth_block
+        assert "[models]" not in auth_block
+
+    def test_codex_custom_provider_has_no_static_model_list(self):
+        """Custom-provider config.toml also has no embedded model list."""
+        agent = CodexAgent({})
+        auth_block = agent._build_codex_auth_config(
+            "claude-sonnet-4", "preloop", "https://gw.example/openai/v1"
+        )
+        assert 'model = "claude-sonnet-4"' in auth_block
+        assert "[models]" not in auth_block

@@ -7,16 +7,27 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
-from pydantic import BaseModel, EmailStr
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    UploadFile,
+    status,
+)
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_for_user
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud import (
     crud_account,
     crud_ai_model,
     crud_api_key,
+    crud_attention_dismissal,
     crud_approval_workflow,
     crud_managed_agent,
     crud_managed_agent_ai_model_binding,
@@ -28,11 +39,18 @@ from preloop.models.crud import (
 )
 from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
+from preloop.models.models.attention_dismissal import AttentionDismissal
 from preloop.models.models.user import User as UserModel
+from preloop.schemas.attention import (
+    AttentionDismissalListResponse,
+    AttentionDismissalResponse,
+    AttentionDismissalUpsertRequest,
+)
 from preloop.schemas.gateway_usage import (
     AccountManagedAgentListResponse,
     AccountGatewayUsageSearchResponse,
     AccountGatewayUsageSummaryResponse,
+    AccountRateLimitReportResponse,
     AccountRuntimeSessionDetailResponse,
     AccountRuntimeSessionListResponse,
     GatewayTokenUsage,
@@ -46,7 +64,12 @@ from preloop.schemas.gateway_usage import (
     ManagedAgentModelBindingSummary,
     ManagedAgentModelBindingSyncRequest,
     ManagedAgentEnrollmentValidateRequest,
+    ManagedAgentIdentityMutationCounts,
+    ManagedAgentMergeRequest,
+    ManagedAgentMergeResponse,
     ManagedAgentRegisterRequest,
+    ManagedAgentRekeyRequest,
+    ManagedAgentRekeyResponse,
     ManagedAgentServerActivitySummary,
     ManagedAgentSummary,
     ManagedAgentToolActivitySummary,
@@ -54,6 +77,8 @@ from preloop.schemas.gateway_usage import (
     ManagedAgentUsageAggregate,
     RuntimeSessionActivityListResponse,
     RuntimeSessionInteractionSummary,
+    RuntimeSessionCacheSummary,
+    RuntimeSessionRequestCache,
     RuntimeSessionRequestItem,
     RuntimeSessionRequestListResponse,
     RuntimeSessionRequestTool,
@@ -77,6 +102,22 @@ from preloop.services.account_realtime import (
 )
 from preloop.services.account_governance_cache import (
     invalidate_account_governance_cache,
+)
+from preloop.services.cache_accounting import (
+    build_request_cache_accounting,
+    summarize_session_cache,
+)
+from preloop.services.aux_model_retry import call_with_aux_retry
+from preloop.services.managed_agent_identity import (
+    ManagedAgentIdentityError,
+    PrincipalIdentity,
+    merge_managed_agents,
+    rekey_managed_agent,
+)
+from preloop.services.model_credentials import (
+    build_aux_kwargs,
+    check_reasoning_model_empty_content,
+    resolve_model_call_credentials,
 )
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
@@ -103,7 +144,7 @@ AGENT_CONTROL_CAPABILITIES = [
 ]
 AGENT_CONTROL_INPUT_MODES = ["text", "voice_transcript"]
 AGENT_CONTROL_OUTPUT_MODES = ["event", "status", "text"]
-AGENT_CONTROL_SUPPORTED_AGENT_KINDS = {"hermes", "openclaw"}
+AGENT_CONTROL_SUPPORTED_AGENT_KINDS = {"hermes", "openclaw", "claude_code"}
 AGENT_CONTROL_STATE_UNSUPPORTED = "unsupported"
 AGENT_CONTROL_STATE_INSTALL_PENDING = "install_pending"
 AGENT_CONTROL_STATE_PLUGIN_CONFIGURED = "plugin_configured"
@@ -584,6 +625,8 @@ def _managed_agent_control_fields(
     summary: dict,
     latest_enrollment: Optional[dict],
     control_enrollment: Optional[dict] = None,
+    *,
+    ws_connected: Optional[bool] = None,
 ) -> dict:
     """Expose Agent Control only after an explicit runtime control enrollment."""
     agent_kind = str(
@@ -602,11 +645,32 @@ def _managed_agent_control_fields(
     control_enabled = bool(
         summary.get("lifecycle_state") == "active" and control_configured
     )
-    control_online = bool(
-        control_enabled
-        and summary.get("runtime_session_id")
-        and summary.get("ended_at") is None
-    )
+    snapshot: dict = {}
+    agent_id = str(summary.get("id") or "")
+    if ws_connected is None and agent_id:
+        try:
+            from preloop.api.endpoints.agent_control import agent_control_snapshot
+
+            snapshot = agent_control_snapshot(agent_id)
+        except (ImportError, AttributeError, RuntimeError):
+            snapshot = {}
+        ws_connected = bool(snapshot.get("online"))
+        if not ws_connected:
+            # Sidecar heartbeats persist last_seen_at *and* session mode.
+            # Enrollment and gateway usage also stamp last_seen_at, so recency
+            # alone would mark a freshly onboarded agent online. Require a
+            # persisted sidecar mode so a REST worker that did not accept the
+            # WebSocket can still report online.
+            persisted_mode = summary.get("control_session_mode")
+            seen = summary.get("last_seen_at")
+            if persisted_mode in {"local", "remote", "queued"} and seen is not None:
+                if getattr(seen, "tzinfo", None) is None:
+                    seen = seen.replace(tzinfo=UTC)
+                try:
+                    ws_connected = datetime.now(UTC) - seen <= timedelta(seconds=45)
+                except TypeError:
+                    ws_connected = False
+    control_online = bool(control_enabled and ws_connected)
     if control_online:
         control_state = AGENT_CONTROL_STATE_PLUGIN_CONNECTED
     elif control_enabled:
@@ -615,18 +679,31 @@ def _managed_agent_control_fields(
         control_state = AGENT_CONTROL_STATE_INSTALL_PENDING
     else:
         control_state = AGENT_CONTROL_STATE_UNSUPPORTED
+    supports_interrupt = bool(control_enabled and snapshot.get("supports_interrupt"))
+    if snapshot.get("online"):
+        session_mode = str(snapshot.get("session_mode") or "")
+    else:
+        session_mode = str(summary.get("control_session_mode") or "")
+    if not control_online:
+        session_mode = "offline"
+    elif session_mode not in {"local", "remote", "queued"}:
+        session_mode = "remote"
+    capabilities = list(AGENT_CONTROL_CAPABILITIES) if control_enabled else []
+    if control_enabled:
+        capabilities.extend(["request_takeover", "release"])
+    if supports_interrupt and "interrupt" not in capabilities:
+        capabilities.append("interrupt")
     return {
         "control_feature_name": "Agent Control",
-        "control_capabilities": (
-            list(AGENT_CONTROL_CAPABILITIES) if control_enabled else []
-        ),
+        "control_capabilities": capabilities,
         "control_state": control_state,
         "control_enabled": control_enabled,
         "control_online": control_online,
         "supports_new_session": control_enabled,
         "supports_existing_session": control_enabled,
         "supports_voice": control_enabled,
-        "supports_interrupt": False,
+        "supports_interrupt": supports_interrupt,
+        "control_session_mode": session_mode,
         "supported_input_modes": (
             list(AGENT_CONTROL_INPUT_MODES) if control_enabled else []
         ),
@@ -939,6 +1016,21 @@ class AccountDetailsResponse(BaseModel):
 
     id: str
     organization_name: Optional[str] = None
+    default_runner_pool: Optional[str] = Field(
+        default=None,
+        description=(
+            "Account default runner pool: a runner id, name, or label; "
+            "the literal 'server' for Preloop hosted; null for any "
+            "online private runner."
+        ),
+    )
+    hosted_minutes_remaining: Optional[int] = Field(
+        default=None,
+        description=(
+            "Hosted runner minutes remaining for this account. "
+            "Null when quota is not configured."
+        ),
+    )
     created_at: str
     updated_at: str
 
@@ -947,6 +1039,26 @@ class AccountDetailsUpdate(BaseModel):
     """Account details update request."""
 
     organization_name: Optional[str] = None
+    default_runner_pool: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Account default runner pool: a runner id, name, or label; "
+            "the literal 'server' for Preloop hosted; null for any "
+            "online private runner."
+        ),
+    )
+
+    @field_validator("default_runner_pool", mode="before")
+    @classmethod
+    def normalize_default_runner_pool(cls, value: Any) -> Optional[str]:
+        """Strip whitespace and treat an empty string as unset."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        raise TypeError("default_runner_pool must be a string or null")
 
 
 class AccountDeletionRequest(BaseModel):
@@ -971,6 +1083,8 @@ async def get_account_details(
     return AccountDetailsResponse(
         id=str(account.id),
         organization_name=account.organization_name,
+        default_runner_pool=getattr(account, "default_runner_pool", None),
+        hosted_minutes_remaining=getattr(account, "hosted_minutes_remaining", None),
         created_at=account.created_at.isoformat(),
         updated_at=account.updated_at.isoformat(),
     )
@@ -1001,6 +1115,10 @@ async def update_account_details(
     return AccountDetailsResponse(
         id=str(updated_account.id),
         organization_name=updated_account.organization_name,
+        default_runner_pool=getattr(updated_account, "default_runner_pool", None),
+        hosted_minutes_remaining=getattr(
+            updated_account, "hosted_minutes_remaining", None
+        ),
         created_at=updated_account.created_at.isoformat(),
         updated_at=updated_account.updated_at.isoformat(),
     )
@@ -1075,6 +1193,33 @@ def search_account_gateway_usage(
         session_source_type=session_source_type,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get(
+    "/account/gateway-usage/rate-limits",
+    response_model=AccountRateLimitReportResponse,
+)
+@require_permission("view_cost")
+def get_account_rate_limit_report(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+    runtime_principal_id: Optional[str] = Query(None),
+) -> AccountRateLimitReportResponse:
+    """Get observed rate-limit telemetry and subscription headroom (#136).
+
+    All figures are echoes of real upstream provider responses: 429 counts,
+    provider-advised blocked time, and the latest observed rate-limit header
+    snapshots per provider/model, each with its observation timestamp.
+    """
+    return ModelGatewayUsageService(db).get_account_rate_limit_report(
+        account=account,
+        start_date=start_date,
+        end_date=end_date,
+        runtime_principal_id=runtime_principal_id,
     )
 
 
@@ -1212,8 +1357,9 @@ async def extract_agent_name(
     from preloop.services.litellm_routing import to_litellm_model
 
     litellm_model = to_litellm_model(default_model)
+    creds_kwargs = resolve_model_call_credentials(default_model, db=db)
 
-    kwargs = {
+    call_site_kwargs = {
         "model": litellm_model,
         "messages": [
             {
@@ -1225,14 +1371,21 @@ async def extract_agent_name(
         "temperature": 0.0,
         "max_tokens": 100,
     }
-    if default_model.api_key:
-        kwargs["api_key"] = default_model.api_key
-    if default_model.api_endpoint:
-        kwargs["api_base"] = default_model.api_endpoint
+    kwargs = build_aux_kwargs(
+        default_model, creds_kwargs, call_site_kwargs=call_site_kwargs
+    )
 
     def _call():
-        response = litellm.completion(**kwargs)
-        return response.choices[0].message.content.strip()
+        def _complete():
+            response = litellm.completion(**kwargs)
+            check_reasoning_model_empty_content(response)
+            return response.choices[0].message.content.strip()
+
+        return call_with_aux_retry(
+            _complete,
+            operation_name="extract_agent_name",
+            provider=getattr(default_model, "provider_name", None),
+        )
 
     try:
         name = await asyncio.to_thread(_call)
@@ -1522,6 +1675,11 @@ async def create_account_managed_agent(
     ``active`` so the operator can immediately mint a gateway credential for it
     via ``POST /agents/{agent_id}/credentials``.
 
+    Pass ``agent_kind`` (for example ``cursor``) to record which product the
+    agent is; it defaults to ``custom``. The kind is what usage import resolves
+    a default attribution target by, so an API-created Cursor agent can now be
+    the implicit target of ``POST /usage/import``.
+
     Duplicate ``display_name`` values are allowed within an account: each custom
     agent is keyed by a unique generated ``session_source_id``, so two agents
     sharing a display name remain distinct registry entries. Operators may
@@ -1542,6 +1700,7 @@ async def create_account_managed_agent(
         display_name=payload.display_name,
         description=payload.description,
         owner_user_id=current_user.id,
+        agent_kind=payload.agent_kind,
         commit=True,
     )
     summary = crud_managed_agent.get_summary_for_account(
@@ -1565,6 +1724,7 @@ async def create_account_managed_agent(
                 "agent_id": str(agent.id),
                 "display_name": agent.display_name,
                 "session_source_type": agent.session_source_type,
+                "agent_kind": agent.agent_kind,
                 "registered_by_user_id": str(current_user.id),
             },
         )
@@ -1937,13 +2097,18 @@ async def update_account_managed_agent(
     db: Session = Depends(get_db_session),
 ):
     """Update managed-agent ownership or lifecycle controls."""
+    # Locked for the whole handler: ``lifecycle_state`` is read here and the
+    # credential restore/revoke decision below is made from that read, so a
+    # concurrent operator action (a resume racing a decommission) must not
+    # land in between and leave keys reactivated on a decommissioned agent.
     agent = crud_managed_agent.get_for_account(
-        db, account_id=str(account.id), agent_id=agent_id
+        db, account_id=str(account.id), agent_id=agent_id, for_update=True
     )
     if agent is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
+    prior_lifecycle_state = agent.lifecycle_state
 
     set_owner = "owner_user_id" in update.model_fields_set
     set_display_name = "display_name" in update.model_fields_set
@@ -1979,8 +2144,22 @@ async def update_account_managed_agent(
     bound_runtime_session_id = (
         str(agent.runtime_session_id) if agent.runtime_session_id is not None else None
     )
-    should_revoke_runtime_access = lifecycle_state in {"suspended", "decommissioned"}
-    revoke_timestamp = datetime.now(UTC) if should_revoke_runtime_access else None
+    # Pause (``suspended``) is a REVERSIBLE lifecycle flag: every auth path
+    # re-reads ``lifecycle_state`` from the database on every request
+    # (model_gateway_auth.authenticate_bearer_token, jwt._authenticate_with_api_key,
+    # runtime token issuance), so a paused agent is rejected without touching
+    # its credentials. Deactivating keys made pause irreversible, because
+    # resume had no inverse and every later gateway call 401'd before any
+    # usage row was written. Hard credential revocation now belongs to the
+    # terminal states only: decommission (offboard) and delete.
+    should_revoke_runtime_access = lifecycle_state == "decommissioned"
+    # Resume/reenroll heal agents whose keys a previous release revoked on
+    # suspend, and un-archive decommissioned agents. Restoration is narrow
+    # (see crud_api_key.reactivate_runtime_keys_for_managed_agent): only this
+    # agent's own unexpired, non-operator-revoked keys.
+    should_restore_runtime_access = (
+        lifecycle_state == "active" and prior_lifecycle_state != "active"
+    )
     updated = crud_managed_agent.update_operator_state(
         db,
         account_id=str(account.id),
@@ -1999,7 +2178,8 @@ async def update_account_managed_agent(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
-    if should_revoke_runtime_access and revoke_timestamp is not None:
+    if should_revoke_runtime_access:
+        revoke_timestamp = datetime.now(UTC)
         # Revoke only this agent's keys (plus legacy keys with no agent
         # binding). Several registry entries can share one runtime principal,
         # and a principal-wide sweep would also kill sibling agents' durable
@@ -2025,6 +2205,24 @@ async def update_account_managed_agent(
                 ended_at=revoke_timestamp,
                 commit=False,
             )
+    if should_restore_runtime_access:
+        crud_api_key.reactivate_runtime_keys_for_managed_agent(
+            db,
+            account_id=account.id,
+            managed_agent_id=str(agent.id),
+            commit=False,
+        )
+        # A previous release ended the bound session on suspend and nothing
+        # ever reopened it, which kept session-bound runtime keys rejected
+        # after resume. Reopen the agent's own session so the inverse of a
+        # pause is a genuine round trip.
+        crud_runtime_session.reopen_for_managed_agent(
+            db,
+            account_id=str(account.id),
+            session_source_type=agent.session_source_type,
+            session_source_id=agent.session_source_id,
+            commit=False,
+        )
     db.commit()
     db.refresh(updated)
 
@@ -2121,6 +2319,144 @@ async def delete_account_managed_agent(
     return {"message": "Managed agent removed"}
 
 
+@router.post(
+    "/agents/{agent_id}/rekey",
+    response_model=ManagedAgentRekeyResponse,
+)
+@require_permission("manage_agents")
+async def rekey_account_managed_agent(
+    agent_id: str,
+    body: ManagedAgentRekeyRequest,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+):
+    """Rewrite one managed agent's durable principal id and dependent rows."""
+    identity = None
+    if body.principal_identity is not None:
+        identity = PrincipalIdentity(
+            hostname=body.principal_identity.hostname,
+            config_path=body.principal_identity.config_path,
+            source_type=body.principal_identity.source_type,
+            derivation=body.principal_identity.derivation,
+        )
+    try:
+        agent, counts = rekey_managed_agent(
+            db,
+            account_id=account.id,
+            agent_id=agent_id,
+            new_session_source_id=body.new_session_source_id,
+            identity=identity,
+            user_id=current_user.id,
+            commit=True,
+        )
+    except ManagedAgentIdentityError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    summary = crud_managed_agent.get_summary_for_account(
+        db, account_id=str(account.id), agent_id=str(agent.id)
+    )
+    if summary is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
+        )
+    emit_account_event(
+        build_account_event(
+            account_id=str(account.id),
+            topic=ACCOUNT_TOPIC_MANAGED_AGENTS,
+            event_type="managed_agent_rekeyed",
+            payload={
+                "agent_id": str(agent.id),
+                "session_source_id": agent.session_source_id,
+            },
+        )
+    )
+    return ManagedAgentRekeyResponse(
+        agent=ManagedAgentSummary(**summary),
+        counts=ManagedAgentIdentityMutationCounts(
+            usage_moved=counts.usage_moved,
+            usage_deleted=counts.usage_deleted,
+            runtime_sessions_moved=counts.runtime_sessions_moved,
+            budget_spend_moved=counts.budget_spend_moved,
+            budget_spend_merged=counts.budget_spend_merged,
+            budget_policies_moved=counts.budget_policies_moved,
+            budget_policies_dropped=counts.budget_policies_dropped,
+            approvals_moved=counts.approvals_moved,
+            keys_deactivated=counts.keys_deactivated,
+            dropped_budget_policies=counts.dropped_budget_policies,
+        ),
+    )
+
+
+@router.post(
+    "/agents/{survivor_id}/merge",
+    response_model=ManagedAgentMergeResponse,
+)
+@require_permission("manage_agents")
+async def merge_account_managed_agents(
+    survivor_id: str,
+    body: ManagedAgentMergeRequest,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+):
+    """Merge a duplicate managed agent into a survivor (dry-run capable)."""
+    try:
+        survivor, duplicate, counts = merge_managed_agents(
+            db,
+            account_id=account.id,
+            survivor_id=survivor_id,
+            duplicate_id=body.duplicate_agent_id,
+            dry_run=body.dry_run,
+            user_id=current_user.id,
+        )
+        if not body.dry_run:
+            db.commit()
+    except ManagedAgentIdentityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    survivor_summary = crud_managed_agent.get_summary_for_account(
+        db, account_id=str(account.id), agent_id=str(survivor.id)
+    )
+    duplicate_summary = crud_managed_agent.get_summary_for_account(
+        db, account_id=str(account.id), agent_id=str(duplicate.id)
+    )
+    if survivor_summary is None or duplicate_summary is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
+        )
+    if not body.dry_run:
+        emit_account_event(
+            build_account_event(
+                account_id=str(account.id),
+                topic=ACCOUNT_TOPIC_MANAGED_AGENTS,
+                event_type="managed_agent_merged",
+                payload={
+                    "survivor_id": str(survivor.id),
+                    "duplicate_id": str(duplicate.id),
+                },
+            )
+        )
+    return ManagedAgentMergeResponse(
+        survivor=ManagedAgentSummary(**survivor_summary),
+        duplicate=ManagedAgentSummary(**duplicate_summary),
+        dry_run=body.dry_run,
+        counts=ManagedAgentIdentityMutationCounts(
+            usage_moved=counts.usage_moved,
+            usage_deleted=counts.usage_deleted,
+            runtime_sessions_moved=counts.runtime_sessions_moved,
+            budget_spend_moved=counts.budget_spend_moved,
+            budget_spend_merged=counts.budget_spend_merged,
+            budget_policies_moved=counts.budget_policies_moved,
+            budget_policies_dropped=counts.budget_policies_dropped,
+            approvals_moved=counts.approvals_moved,
+            keys_deactivated=counts.keys_deactivated,
+            dropped_budget_policies=counts.dropped_budget_policies,
+        ),
+    )
+
+
 @router.get("/runtime-sessions", response_model=AccountRuntimeSessionListResponse)
 @require_permission("view_runtime_sessions")
 async def list_account_runtime_sessions(
@@ -2137,16 +2473,20 @@ async def list_account_runtime_sessions(
     offset: int = Query(0, ge=0),
 ):
     """List runtime sessions for the current account."""
-    return RuntimeSessionExplorerService(db).list_account_sessions(
-        account=account,
-        query=query,
-        session_source_type=session_source_type,
-        status=status,
-        start_date=start_date,
-        end_date=end_date,
-        limit=limit,
-        offset=offset,
-        background_tasks=background_tasks,
+    # Off the loop on purpose: the console polls this path, and a saturated
+    # pool must not stall the liveness probe. See preloop.api.loop_safety.
+    return await run_db_off_loop(
+        lambda: RuntimeSessionExplorerService(db).list_account_sessions(
+            account=account,
+            query=query,
+            session_source_type=session_source_type,
+            status=status,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+            background_tasks=background_tasks,
+        )
     )
 
 
@@ -2164,11 +2504,13 @@ async def get_account_runtime_session_detail(
     end_date: Optional[datetime] = Query(None),
 ):
     """Return one runtime session detail summary without heavy arrays."""
-    return RuntimeSessionExplorerService(db).get_account_session_detail(
-        account=account,
-        runtime_session_id=runtime_session_id,
-        start_date=start_date,
-        end_date=end_date,
+    return await run_db_off_loop(
+        lambda: RuntimeSessionExplorerService(db).get_account_session_detail(
+            account=account,
+            runtime_session_id=runtime_session_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
     )
 
 
@@ -2189,14 +2531,16 @@ async def get_account_session_interactions(
     interaction_offset: int = Query(0, ge=0),
 ):
     """Paginated search across captured interactions for this session."""
-    return RuntimeSessionExplorerService(db).get_account_session_interactions(
-        account=account,
-        runtime_session_id=runtime_session_id,
-        interaction_query=interaction_query,
-        start_date=start_date,
-        end_date=end_date,
-        interaction_limit=interaction_limit,
-        interaction_offset=interaction_offset,
+    return await run_db_off_loop(
+        lambda: RuntimeSessionExplorerService(db).get_account_session_interactions(
+            account=account,
+            runtime_session_id=runtime_session_id,
+            interaction_query=interaction_query,
+            start_date=start_date,
+            end_date=end_date,
+            interaction_limit=interaction_limit,
+            interaction_offset=interaction_offset,
+        )
     )
 
 
@@ -2212,14 +2556,19 @@ async def get_account_session_activity_timeline(
     db: Session = Depends(get_db_session),
 ):
     """Activity timeline overview for this session."""
-    return RuntimeSessionExplorerService(db).get_account_session_activity_timeline(
-        account=account,
-        runtime_session_id=runtime_session_id,
+    return await run_db_off_loop(
+        lambda: RuntimeSessionExplorerService(db).get_account_session_activity_timeline(
+            account=account,
+            runtime_session_id=runtime_session_id,
+        )
     )
 
 
 def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
     """Convert an ApiUsage row into a unified-timeline request item.
+
+    Also carries the per-call prompt-cache split (read / write / miss) built by
+    :func:`preloop.services.cache_accounting.build_request_cache_accounting`.
 
     Args:
         row: One ``ApiUsage`` ORM row for a gateway request.
@@ -2247,6 +2596,7 @@ def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
                 )
             )
     status_code = int(row.status_code or 0)
+    cache = build_request_cache_accounting(row)
     return RuntimeSessionRequestItem(
         id=str(row.id),
         timestamp=row.timestamp,
@@ -2254,6 +2604,7 @@ def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
         provider_name=row.provider_name,
         status_code=status_code,
         is_error=status_code >= 400,
+        error_class=row.error_class,
         finish_reason=(meta.get("finish_reason") if isinstance(meta, dict) else None),
         is_retry=bool(meta.get("is_retry", False)) if isinstance(meta, dict) else False,
         prompt_tokens=int(row.prompt_tokens or 0),
@@ -2263,6 +2614,9 @@ def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
         endpoint=row.endpoint,
         tools=tools,
         tools_total_schema_tokens=tools_total,
+        # NULL cache columns stay NULL through the wire: the UI must say
+        # "not reported by provider", never zero.
+        cache=RuntimeSessionRequestCache(**cache.as_dict()),
     )
 
 
@@ -2290,47 +2644,61 @@ async def list_account_runtime_session_requests(
     """
     from preloop.models.crud.api_usage import crud_api_usage
 
-    session = crud_runtime_session.get_account_session(
-        db, account_id=str(account.id), runtime_session_id=runtime_session_id
-    )
-    if session is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Runtime session not found"
+    def _query() -> RuntimeSessionRequestListResponse:
+        session = crud_runtime_session.get_account_session(
+            db, account_id=str(account.id), runtime_session_id=runtime_session_id
+        )
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Runtime session not found",
+            )
+
+        rows = crud_api_usage.list_session_request_rows(
+            db,
+            account_id=account.id,
+            runtime_session_id=runtime_session_id,
+            limit=limit,
+            offset=offset,
+            failed_only=failed_only,
+            event_ids=event_ids,
+        )
+        total = crud_api_usage.count_session_request_rows(
+            db,
+            account_id=account.id,
+            runtime_session_id=runtime_session_id,
+            failed_only=failed_only,
+            event_ids=event_ids,
+        )
+        failed_count = crud_api_usage.count_session_request_rows(
+            db,
+            account_id=account.id,
+            runtime_session_id=runtime_session_id,
+            failed_only=True,
+        )
+        items = [_request_row_to_item(row) for row in rows]
+        # The cache rollup spans the whole session, not the current page, so
+        # the summary block is stable while the user pages or filters the list.
+        cache_summary = summarize_session_cache(
+            crud_api_usage.list_session_cache_rows(
+                db,
+                account_id=account.id,
+                runtime_session_id=runtime_session_id,
+            )
+        )
+        next_offset = offset + len(items)
+        return RuntimeSessionRequestListResponse(
+            items=items,
+            total=total,
+            failed_count=failed_count,
+            limit=limit,
+            offset=offset,
+            next_offset=next_offset if next_offset < total else None,
+            has_more=next_offset < total,
+            cache_summary=RuntimeSessionCacheSummary(**cache_summary.as_dict()),
         )
 
-    rows = crud_api_usage.list_session_request_rows(
-        db,
-        account_id=account.id,
-        runtime_session_id=runtime_session_id,
-        limit=limit,
-        offset=offset,
-        failed_only=failed_only,
-        event_ids=event_ids,
-    )
-    total = crud_api_usage.count_session_request_rows(
-        db,
-        account_id=account.id,
-        runtime_session_id=runtime_session_id,
-        failed_only=failed_only,
-        event_ids=event_ids,
-    )
-    failed_count = crud_api_usage.count_session_request_rows(
-        db,
-        account_id=account.id,
-        runtime_session_id=runtime_session_id,
-        failed_only=True,
-    )
-    items = [_request_row_to_item(row) for row in rows]
-    next_offset = offset + len(items)
-    return RuntimeSessionRequestListResponse(
-        items=items,
-        total=total,
-        failed_count=failed_count,
-        limit=limit,
-        offset=offset,
-        next_offset=next_offset if next_offset < total else None,
-        has_more=next_offset < total,
-    )
+    return await run_db_off_loop(_query)
 
 
 @router.post(
@@ -2366,55 +2734,61 @@ async def get_account_runtime_session_gateway_events(
     metadata_only: bool = Query(False),
 ) -> dict[str, Any]:
     """Return one compact page of stored gateway event metadata for a session."""
-    session = crud_runtime_session.get_account_session(
-        db, account_id=str(account.id), runtime_session_id=runtime_session_id
-    )
-    if session is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Runtime session not found"
-        )
-
     from preloop.models.crud.runtime_session_activity import (
         crud_runtime_session_activity,
     )
 
-    rows = crud_runtime_session_activity.list_model_gateway_calls_for_session(
-        db,
-        account_id=account.id,
-        runtime_session_id=runtime_session_id,
-        tail=tail,
-        limit=limit,
-        offset=offset,
-        metadata_only=metadata_only,
-    )
-    total = crud_runtime_session_activity.count_model_gateway_calls_for_session(
-        db,
-        account_id=account.id,
-        runtime_session_id=runtime_session_id,
-    )
-    page_limit = min(tail, 200) if tail else min(limit, 5000 if metadata_only else 100)
+    def _query() -> dict[str, Any]:
+        session = crud_runtime_session.get_account_session(
+            db, account_id=str(account.id), runtime_session_id=runtime_session_id
+        )
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Runtime session not found",
+            )
 
-    events = [
-        {
-            "id": str(row.id),
-            "timestamp": row.timestamp.isoformat() if row.timestamp else None,
-            "type": row.activity_type,
-            "payload": row.metadata_,
+        rows = crud_runtime_session_activity.list_model_gateway_calls_for_session(
+            db,
+            account_id=account.id,
+            runtime_session_id=runtime_session_id,
+            tail=tail,
+            limit=limit,
+            offset=offset,
+            metadata_only=metadata_only,
+        )
+        total = crud_runtime_session_activity.count_model_gateway_calls_for_session(
+            db,
+            account_id=account.id,
+            runtime_session_id=runtime_session_id,
+        )
+        page_limit = (
+            min(tail, 200) if tail else min(limit, 5000 if metadata_only else 100)
+        )
+
+        events = [
+            {
+                "id": str(row.id),
+                "timestamp": row.timestamp.isoformat() if row.timestamp else None,
+                "type": row.activity_type,
+                "payload": row.metadata_,
+            }
+            for row in rows
+        ]
+        next_offset = offset + len(events)
+        return {
+            "source": "database",
+            "logs": events,
+            "pagination": {
+                "limit": page_limit,
+                "offset": offset,
+                "next_offset": next_offset if next_offset < total else None,
+                "total": total,
+                "has_more": next_offset < total,
+            },
         }
-        for row in rows
-    ]
-    next_offset = offset + len(events)
-    return {
-        "source": "database",
-        "logs": events,
-        "pagination": {
-            "limit": page_limit,
-            "offset": offset,
-            "next_offset": next_offset if next_offset < total else None,
-            "total": total,
-            "has_more": next_offset < total,
-        },
-    }
+
+    return await run_db_off_loop(_query)
 
 
 @router.get(
@@ -2429,37 +2803,43 @@ async def get_account_runtime_session_gateway_event_detail(
     db: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
     """Return the raw, massive stored gateway event JSON detail for one runtime session activity."""
-    session = crud_runtime_session.get_account_session(
-        db, account_id=str(account.id), runtime_session_id=runtime_session_id
-    )
-    if session is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Runtime session not found"
-        )
-
     from preloop.models.crud.runtime_session_activity import (
         crud_runtime_session_activity,
     )
 
-    activity = crud_runtime_session_activity.get_model_gateway_call_for_session(
-        db,
-        account_id=account.id,
-        runtime_session_id=runtime_session_id,
-        activity_id=activity_id,
-    )
+    def _query() -> dict[str, Any]:
+        session = crud_runtime_session.get_account_session(
+            db, account_id=str(account.id), runtime_session_id=runtime_session_id
+        )
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Runtime session not found",
+            )
 
-    if activity is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Runtime session activity not found",
+        activity = crud_runtime_session_activity.get_model_gateway_call_for_session(
+            db,
+            account_id=account.id,
+            runtime_session_id=runtime_session_id,
+            activity_id=activity_id,
         )
 
-    return {
-        "id": str(activity.id),
-        "timestamp": activity.timestamp.isoformat() if activity.timestamp else None,
-        "type": activity.activity_type,
-        "payload": activity.metadata_,
-    }
+        if activity is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Runtime session activity not found",
+            )
+
+        return {
+            "id": str(activity.id),
+            "timestamp": (
+                activity.timestamp.isoformat() if activity.timestamp else None
+            ),
+            "type": activity.activity_type,
+            "payload": activity.metadata_,
+        }
+
+    return await run_db_off_loop(_query)
 
 
 @router.post(
@@ -2711,23 +3091,249 @@ async def get_dashboard_telemetry(
     now = datetime.now(timezone.utc)
     day_ago = now - timedelta(days=1)
 
-    active_sessions = crud_runtime_session.count_active_sessions(
-        db, account_id=str(account.id)
+    def _query() -> DashboardTelemetryResponse:
+        active_sessions = crud_runtime_session.count_active_sessions(
+            db, account_id=str(account.id)
+        )
+
+        usage_stats = crud_api_usage.get_dashboard_usage_stats(
+            db, account_id=str(account.id), since=day_ago
+        )
+
+        cost = usage_stats.get("estimated_cost", 0.0)
+        total_calls = usage_stats.get("total_calls", 0)
+        success_calls = usage_stats.get("success_calls", 0)
+
+        success_rate = (success_calls / total_calls * 100.0) if total_calls > 0 else 0.0
+
+        return DashboardTelemetryResponse(
+            active_agents=active_sessions,
+            total_tool_calls=total_calls,
+            daily_cost=cost,
+            success_rate=success_rate,
+        )
+
+    return await run_db_off_loop(_query)
+
+
+# ---------------------------------------------------------------------------
+# User avatar endpoints
+# ---------------------------------------------------------------------------
+
+
+class AvatarResponse(BaseModel):
+    """Response after avatar upload or deletion."""
+
+    avatar_url: Optional[str] = None
+    avatar_source: Optional[str] = None
+
+
+async def _read_upload_with_limit(upload: UploadFile, max_bytes: int) -> bytes:
+    """Read an upload in chunks and reject payloads larger than max_bytes.
+
+    ``UploadFile.read()`` of the whole body would buffer a multi-GB multipart
+    in memory before ``process_avatar`` could enforce ``MAX_UPLOAD_BYTES``.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await upload.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"Image too large. Maximum: {max_bytes} bytes",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@router.put("/users/me/avatar", response_model=AvatarResponse)
+async def upload_avatar(
+    file: UploadFile,
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AvatarResponse:
+    """Upload or replace the current user's profile avatar.
+
+    Accepts PNG, JPEG, WebP, or GIF images up to 5 MB. The image is
+    validated, EXIF-stripped, cropped to a center square, and re-encoded as a
+    bounded PNG stored as a base64 data URI. Manual uploads always take
+    precedence over SSO-provided avatars.
+    """
+    from preloop.services.avatar import (
+        MAX_UPLOAD_BYTES,
+        AvatarValidationError,
+        process_avatar,
     )
 
-    usage_stats = crud_api_usage.get_dashboard_usage_stats(
-        db, account_id=str(account.id), since=day_ago
+    raw = await _read_upload_with_limit(file, MAX_UPLOAD_BYTES)
+    content_type = file.content_type or "application/octet-stream"
+    try:
+        data_uri = process_avatar(raw, content_type)
+    except AvatarValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
+    current_user.avatar_url = data_uri
+    current_user.avatar_source = "manual"
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return AvatarResponse(
+        avatar_url=current_user.avatar_url,
+        avatar_source=current_user.avatar_source,
     )
 
-    cost = usage_stats.get("estimated_cost", 0.0)
-    total_calls = usage_stats.get("total_calls", 0)
-    success_calls = usage_stats.get("success_calls", 0)
 
-    success_rate = (success_calls / total_calls * 100.0) if total_calls > 0 else 0.0
+@router.delete("/users/me/avatar", response_model=AvatarResponse)
+async def delete_avatar(
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AvatarResponse:
+    """Remove the current user's avatar, falling back to the default."""
+    current_user.avatar_url = None
+    current_user.avatar_source = None
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return AvatarResponse(avatar_url=None, avatar_source=None)
 
-    return DashboardTelemetryResponse(
-        active_agents=active_sessions,
-        total_tool_calls=total_calls,
-        daily_cost=cost,
-        success_rate=success_rate,
+
+def _dismissal_response(
+    dismissal: AttentionDismissal,
+    usernames: dict[str, str],
+) -> AttentionDismissalResponse:
+    """Serialize one dismissal, resolving who silenced it."""
+    response = AttentionDismissalResponse.model_validate(dismissal)
+    if dismissal.dismissed_by_user_id:
+        response.dismissed_by_username = usernames.get(
+            str(dismissal.dismissed_by_user_id)
+        )
+    return response
+
+
+def _resolve_dismissal_usernames(
+    db: Session, dismissals: list[AttentionDismissal]
+) -> dict[str, str]:
+    """Map user id -> display name for a batch of dismissals, in one query."""
+    user_ids = {
+        dismissal.dismissed_by_user_id
+        for dismissal in dismissals
+        if dismissal.dismissed_by_user_id
+    }
+    if not user_ids:
+        return {}
+    rows = db.query(UserModel).filter(UserModel.id.in_(user_ids)).all()
+    return {
+        str(row.id): (row.full_name or row.username or row.email or str(row.id))
+        for row in rows
+    }
+
+
+@router.get(
+    "/attention/dismissals",
+    response_model=AttentionDismissalListResponse,
+)
+async def list_attention_dismissals(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AttentionDismissalListResponse:
+    """List the console attention items this account has silenced.
+
+    Reading is open to any member of the account: the console needs this list
+    to render the inbox at all, and a member who cannot see it would be shown
+    items their colleagues have already dealt with.
+
+    Expired snoozes are excluded and garbage-collected here, so "hidden until"
+    never quietly becomes "hidden forever".
+    """
+
+    def _query() -> AttentionDismissalListResponse:
+        crud_attention_dismissal.purge_expired_for_account(db, account_id=account.id)
+        dismissals = crud_attention_dismissal.get_active_for_account(
+            db, account_id=account.id
+        )
+        usernames = _resolve_dismissal_usernames(db, dismissals)
+        return AttentionDismissalListResponse(
+            items=[
+                _dismissal_response(dismissal, usernames) for dismissal in dismissals
+            ],
+            total=len(dismissals),
+        )
+
+    return await run_db_off_loop(_query)
+
+
+@router.put(
+    "/attention/dismissals/{item_id}",
+    response_model=AttentionDismissalResponse,
+)
+@require_permission("manage_agents")
+async def upsert_attention_dismissal(
+    # Bounded by the column (``String(255)``): an oversized id is a 422 rather
+    # than a Postgres DataError behind a 500.
+    item_id: Annotated[str, Path(min_length=1, max_length=255)],
+    payload: AttentionDismissalUpsertRequest,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AttentionDismissalResponse:
+    """Silence one attention item until its fingerprint changes.
+
+    ``item_id`` is the console's stable id for the item (``<kind>:<entity
+    id>``), and the body's ``fingerprint`` is why it was showing. Dismissing
+    an item that has already been dismissed replaces the row, which is how an
+    item that came back with a new fingerprint gets silenced again.
+
+    Writing takes ``manage_agents``: an operator who may reconfigure the fleet
+    may also declare that one of its states is expected.
+    """
+    if payload.reason == "snoozed" and not payload.snooze_days:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="snooze_days is required when reason is 'snoozed'",
+        )
+    snooze_until = (
+        datetime.now(UTC) + timedelta(days=payload.snooze_days)
+        if payload.reason == "snoozed" and payload.snooze_days
+        else None
     )
+    dismissal = crud_attention_dismissal.upsert(
+        db,
+        account_id=account.id,
+        item_id=item_id,
+        fingerprint=payload.fingerprint,
+        reason=payload.reason,
+        snooze_until=snooze_until,
+        dismissed_by_user_id=current_user.id,
+    )
+    usernames = _resolve_dismissal_usernames(db, [dismissal])
+    return _dismissal_response(dismissal, usernames)
+
+
+@router.delete(
+    "/attention/dismissals/{item_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+@require_permission("manage_agents")
+async def delete_attention_dismissal(
+    item_id: Annotated[str, Path(min_length=1, max_length=255)],
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> None:
+    """Restore a silenced item so it shows in the inbox again."""
+    removed = crud_attention_dismissal.delete_by_item(
+        db, account_id=account.id, item_id=item_id
+    )
+    if not removed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dismissal not found",
+        )

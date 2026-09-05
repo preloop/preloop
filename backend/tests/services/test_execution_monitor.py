@@ -213,7 +213,7 @@ class TestCheckExecution:
         )
 
         with patch(
-            "preloop.services.execution_monitor.create_agent_executor",
+            "preloop.agents.create_executor_for_execution",
             side_effect=Exception("Failed to create executor"),
         ):
             await execution_monitor._check_execution(mock_db_session, sample_execution)
@@ -234,7 +234,7 @@ class TestCheckExecution:
         mock_executor.get_status = AsyncMock(return_value=AgentStatus.FAILED)
 
         with patch(
-            "preloop.services.execution_monitor.create_agent_executor",
+            "preloop.agents.create_executor_for_execution",
             return_value=mock_executor,
         ):
             await execution_monitor._check_execution(mock_db_session, sample_execution)
@@ -256,7 +256,7 @@ class TestCheckExecution:
         mock_executor.get_status = AsyncMock(return_value=AgentStatus.SUCCEEDED)
 
         with patch(
-            "preloop.services.execution_monitor.create_agent_executor",
+            "preloop.agents.create_executor_for_execution",
             return_value=mock_executor,
         ):
             await execution_monitor._check_execution(mock_db_session, sample_execution)
@@ -277,7 +277,7 @@ class TestCheckExecution:
         mock_executor.get_status = AsyncMock(return_value=AgentStatus.STOPPED)
 
         with patch(
-            "preloop.services.execution_monitor.create_agent_executor",
+            "preloop.agents.create_executor_for_execution",
             return_value=mock_executor,
         ):
             await execution_monitor._check_execution(mock_db_session, sample_execution)
@@ -301,7 +301,7 @@ class TestCheckExecution:
         mock_executor.get_status = AsyncMock(return_value=AgentStatus.RUNNING)
 
         with patch(
-            "preloop.services.execution_monitor.create_agent_executor",
+            "preloop.agents.create_executor_for_execution",
             return_value=mock_executor,
         ):
             await execution_monitor._check_execution(mock_db_session, sample_execution)
@@ -323,7 +323,7 @@ class TestCheckExecution:
         mock_executor.get_status = AsyncMock(return_value=AgentStatus.STARTING)
 
         with patch(
-            "preloop.services.execution_monitor.create_agent_executor",
+            "preloop.agents.create_executor_for_execution",
             return_value=mock_executor,
         ):
             await execution_monitor._check_execution(mock_db_session, sample_execution)
@@ -347,7 +347,7 @@ class TestCheckExecution:
         )
 
         with patch(
-            "preloop.services.execution_monitor.create_agent_executor",
+            "preloop.agents.create_executor_for_execution",
             return_value=mock_executor,
         ):
             await execution_monitor._check_execution(mock_db_session, sample_execution)
@@ -371,7 +371,7 @@ class TestCheckExecution:
         mock_executor.cleanup = AsyncMock()
 
         with patch(
-            "preloop.services.execution_monitor.create_agent_executor",
+            "preloop.agents.create_executor_for_execution",
             return_value=mock_executor,
         ):
             await execution_monitor._check_execution(mock_db_session, sample_execution)

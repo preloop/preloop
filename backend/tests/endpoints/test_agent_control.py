@@ -1,6 +1,7 @@
 """Endpoint tests for the managed-agent control plane."""
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,11 +9,13 @@ import pytest
 from starlette.websockets import WebSocketDisconnect
 
 from preloop.models.crud import (
+    crud_agent_control_command,
     crud_managed_agent,
     crud_managed_agent_enrollment,
     crud_runtime_session,
     crud_runtime_session_activity,
 )
+from preloop.schemas.agent_control import AgentControlSendMessageRequest
 
 
 def _issue_runtime_token(client, *, session_source_id: str = "openclaw-live"):
@@ -267,20 +270,22 @@ def test_controllable_agents_list_and_detail_expose_capabilities(
     item = next(agent for agent in items if agent["id"] == str(managed_agent.id))
     assert item["control_feature_name"] == "Agent Control"
     assert item["control_enabled"] is True
-    assert item["control_online"] is True
+    assert item["control_online"] is False
+    assert item["control_state"] == "plugin_configured"
     assert item["supports_new_session"] is True
     assert item["supports_existing_session"] is True
     assert item["supports_voice"] is True
     assert item["supports_interrupt"] is False
     assert "send_text_prompt" in item["control_capabilities"]
+    assert "request_takeover" in item["control_capabilities"]
     assert item["supported_input_modes"] == ["text", "voice_transcript"]
 
     detail_response = client.get(f"/api/v1/agents/{managed_agent.id}")
     assert detail_response.status_code == 200
     detail_agent = detail_response.json()["agent"]
     assert detail_agent["control_enabled"] is True
-    assert detail_agent["control_online"] is True
-    assert detail_agent["control_state"] == "plugin_connected"
+    assert detail_agent["control_online"] is False
+    assert detail_agent["control_state"] == "plugin_configured"
 
 
 def test_control_capabilities_require_explicit_plugin_config(
@@ -435,8 +440,8 @@ def test_runtime_control_validation_survives_later_cli_enrollment(
         if agent["id"] == str(managed_agent.id)
     )
     assert item["control_enabled"] is True
-    assert item["control_online"] is True
-    assert item["control_state"] == "plugin_connected"
+    assert item["control_online"] is False
+    assert item["control_state"] == "plugin_configured"
 
     mock_nats = MagicMock()
     mock_nats.is_connected = True
@@ -695,7 +700,11 @@ def test_agent_control_prompt_targets_existing_session(
     payload = body["command_envelope"]["payload"]
     assert payload["session_mode"] == "existing"
     assert payload["target_session_id"] == str(runtime_session.id)
+    assert payload["session_source_id"] == runtime_session.session_source_id
+    assert payload["session_reference"] == runtime_session.session_reference
     assert payload["start_new_session"] is False
+    assert body["session_source_id"] == runtime_session.session_source_id
+    assert body["session_reference"] == runtime_session.session_reference
 
     activity = crud_runtime_session_activity.list_for_runtime_session(
         db_session,
@@ -709,6 +718,99 @@ def test_agent_control_prompt_targets_existing_session(
     assert command_activity[0].summary == "Continue the current task"
     assert command_activity[0].metadata_["session_mode"] == "existing"
     assert command_activity[0].metadata_["target_session_id"] == str(runtime_session.id)
+
+
+@patch("preloop.api.endpoints.agent_control.get_nats_client")
+def test_agent_control_existing_session_envelope_includes_native_ids(
+    mock_get_nats_client,
+    client,
+    db_session,
+    test_user,
+):
+    """Existing-session commands persist the target's native resume identity.
+
+    Clients keep sending the Preloop runtime-session UUID. The sidecar
+    resumes by session_source_id, so the outbound envelope must carry that
+    native id (and session_reference) even when they differ from the
+    managed agent's durable source id.
+    """
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "claude-principal-host",
+            "session_reference": "/tmp/claude.json",
+            "runtime_principal_name": "Claude Code",
+        },
+    )
+    assert token_response.status_code == 201
+    managed_agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="claude_code",
+        session_source_id="claude-principal-host",
+    )
+    assert managed_agent is not None
+    _mark_agent_control_configured(db_session, test_user, managed_agent)
+
+    native_session = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="ses_native_abc123",
+        session_reference="resume:ses_native_abc123",
+        runtime_principal_type="claude_code",
+        runtime_principal_id="claude-principal-host",
+        runtime_principal_name="Claude Code",
+        started_at=datetime.now(UTC),
+        last_activity_at=datetime.now(UTC),
+    )
+    db_session.commit()
+
+    mock_nats = MagicMock()
+    mock_nats.is_connected = True
+    mock_nats.publish = AsyncMock()
+    mock_get_nats_client.return_value = mock_nats
+
+    request_json = {
+        "message": "Resume the ended investigation",
+        "target_session_id": str(native_session.id),
+        "session_source_id": "client-must-not-win",
+        "session_reference": "client-supplied-ref",
+        "metadata": {"source": "ios"},
+    }
+    parsed = AgentControlSendMessageRequest.model_validate(request_json)
+    assert "session_source_id" not in AgentControlSendMessageRequest.model_fields
+    assert "session_reference" not in AgentControlSendMessageRequest.model_fields
+    assert "session_source_id" not in parsed.model_dump()
+    assert "session_reference" not in parsed.model_dump()
+
+    response = client.post(
+        f"/api/v1/agents/{managed_agent.id}/control/commands",
+        json=request_json,
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["session_mode"] == "existing"
+    assert body["target_session_id"] == str(native_session.id)
+    assert body["session_source_id"] == "ses_native_abc123"
+    assert body["session_reference"] == "resume:ses_native_abc123"
+    payload = body["command_envelope"]["payload"]
+    assert payload["target_session_id"] == str(native_session.id)
+    assert payload["session_source_id"] == "ses_native_abc123"
+    assert payload["session_reference"] == "resume:ses_native_abc123"
+
+    record = crud_agent_control_command.get_by_command_id(
+        db_session,
+        account_id=test_user.account_id,
+        command_id=body["command_id"],
+    )
+    assert record is not None
+    persisted = record.envelope["payload"]
+    assert persisted["target_session_id"] == str(native_session.id)
+    assert persisted["session_source_id"] == "ses_native_abc123"
+    assert persisted["session_reference"] == "resume:ses_native_abc123"
 
 
 @patch("preloop.api.endpoints.agent_control.get_nats_client")
@@ -748,6 +850,16 @@ def test_agent_control_prompt_can_request_new_session(
     assert body["session_mode"] == "new"
     assert body["target_session_id"] is not None
     assert body["target_session_id"] != body["runtime_session_id"]
+    history_session = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=body["target_session_id"],
+    )
+    assert history_session is not None
+    assert body["session_source_id"] == history_session.session_source_id
+    assert body["session_reference"] == history_session.session_reference
+    assert history_session.session_source_id.startswith("openclaw-new-session-")
+    assert history_session.session_reference == "Agent Control new session"
     payload = body["command_envelope"]["payload"]
     assert payload["session_mode"] == "new"
     assert payload["start_new_session"] is True
@@ -817,3 +929,125 @@ def test_agent_control_voice_transcript_alias_routes_prompt(
     assert payload["input_mode"] == "voice_transcript"
     assert payload["voice"] == {"locale": "en-US", "duration_ms": 2500}
     assert payload["metadata"] == {"device": "watch"}
+
+
+@patch("preloop.api.endpoints.agent_control.get_nats_client")
+def test_agent_control_takeover_honors_start_new_session(
+    mock_get_nats_client,
+    client,
+    db_session,
+    test_user,
+):
+    """Worktree takeover must mint a new session, not attach to current."""
+    _issue_runtime_token(client, session_source_id="openclaw-takeover-new")
+    managed_agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="openclaw",
+        session_source_id="openclaw-takeover-new",
+    )
+    assert managed_agent is not None
+    _mark_agent_control_configured(db_session, test_user, managed_agent)
+
+    mock_nats = MagicMock()
+    mock_nats.is_connected = True
+    mock_nats.publish = AsyncMock()
+    mock_get_nats_client.return_value = mock_nats
+
+    response = client.post(
+        f"/api/v1/agents/{managed_agent.id}/control/takeover",
+        json={"start_new_session": True, "spawn_worktree": True},
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["session_mode"] == "new"
+    payload = body["command_envelope"]["payload"]
+    assert payload["session_mode"] == "new"
+    assert payload["spawn_worktree"] is True
+
+
+def test_agent_control_ws_evicts_previous_connection_with_close_4000(
+    client, db_session, test_user, caplog
+):
+    """Second WebSocket for the same agent evicts the first with close 4000."""
+    token_body = _issue_runtime_token(client, session_source_id="openclaw-eviction")
+    url = f"/api/v1/agents/control/ws?token={token_body['token']}"
+
+    with caplog.at_level(logging.WARNING, logger="preloop.api.endpoints.agent_control"):
+        with client.websocket_connect(url) as ws1:
+            connected1 = ws1.receive_json()
+            assert connected1["type"] == "presence"
+            assert connected1["name"] == "connected"
+
+            # Open a second connection for the same agent.
+            with client.websocket_connect(url) as ws2:
+                connected2 = ws2.receive_json()
+                assert connected2["type"] == "presence"
+                assert connected2["name"] == "connected"
+
+                # The first connection must have been evicted with code 4000.
+                with pytest.raises(WebSocketDisconnect) as exc_info:
+                    ws1.receive_json()
+                assert exc_info.value.code == 4000
+
+                # The newest connection receives subsequent commands.
+                ws2.send_json(
+                    {
+                        "type": "heartbeat",
+                        "message_id": "hb-evict",
+                        "payload": {},
+                    }
+                )
+                ack = ws2.receive_json()
+                assert ack["type"] == "ack"
+                assert ack["name"] == "heartbeat"
+                assert ack["message_id"] == "hb-evict"
+
+    # A warning was logged mentioning the eviction.
+    eviction_warnings = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and "Evicting" in r.message
+    ]
+    assert len(eviction_warnings) == 1
+    assert "superseded" in eviction_warnings[0].message
+
+
+def test_agent_control_ws_evicted_connection_does_not_clear_agent_binding(
+    client, db_session, test_user
+):
+    """An evicted connection must not mark the agent offline on teardown."""
+    token_body = _issue_runtime_token(
+        client, session_source_id="openclaw-evict-binding"
+    )
+    managed_agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="openclaw",
+        session_source_id="openclaw-evict-binding",
+    )
+    assert managed_agent is not None
+    url = f"/api/v1/agents/control/ws?token={token_body['token']}"
+
+    with client.websocket_connect(url) as ws1:
+        assert ws1.receive_json()["type"] == "presence"
+
+        with client.websocket_connect(url) as ws2:
+            assert ws2.receive_json()["type"] == "presence"
+
+            # Drain the eviction close on ws1 so its handler finishes.
+            with pytest.raises(WebSocketDisconnect):
+                ws1.receive_json()
+
+        # ws1's handler is done; ws2 just exited its context -- that is
+        # the ACTIVE disconnect. Only ws2 should mark the agent offline.
+        db_session.expire_all()
+        refreshed = crud_managed_agent.get_for_account(
+            db_session,
+            account_id=str(test_user.account_id),
+            agent_id=str(managed_agent.id),
+        )
+        assert refreshed is not None
+        # After ws2 (the active binding) disconnects, the session is cleared.
+        assert refreshed.runtime_session_id is None

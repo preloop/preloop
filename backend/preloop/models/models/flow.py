@@ -1,6 +1,14 @@
-from sqlalchemy import Boolean, Column, ForeignKey, String, Text, JSON  # Added JSON
+from sqlalchemy import (  # Added JSON
+    Boolean,
+    Column,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    JSON,
+)
 
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from .base import Base
@@ -27,6 +35,14 @@ class Flow(Base):
     #     "webhook_secret": str - secret token for authenticating webhook requests
     # }
     webhook_config = Column(JSON, nullable=True, default=None)
+    # Schedule-specific configuration (for trigger_event_source == 'schedule')
+    # Discriminated on "type" (see schemas.flow.ScheduleConfig):
+    #   {"type": "cron", "expr": "0 6 * * 1-5", "timezone": "Europe/Athens"}
+    #   {"type": "interval", "every": 30, "unit": "minutes", "timezone": ...}
+    #   {"type": "daily", "at": "06:30", "timezone": ...}
+    #   {"type": "weekly", "days": ["mon", "fri"], "at": "09:00", "timezone": ...}
+    # Legacy rows may lack "type" and use {"cron": ..., "timezone": ...}.
+    schedule_config = Column(JSON, nullable=True, default=None)
     prompt_template = Column(Text, nullable=False)
     ai_model_id = Column(
         UUID(as_uuid=True),
@@ -102,6 +118,29 @@ class Flow(Base):
     tools_customized = Column(Boolean, default=False, nullable=False)
     # Flag indicating if a newer preset version is available (for notifications)
     preset_update_available = Column(Boolean, default=False, nullable=False)
+    # When set, executions lease to a matching self-hosted runner (id, name,
+    # or label). The literal "server" opts into the hosted executor. NULL
+    # inherits account.default_runner_pool, then any online private runner.
+    runner_pool = Column(String(200), nullable=True)
+    # Wall-clock budget for one execution of this flow, in seconds. NULL means
+    # the global default (FLOW_EXECUTION_MAX_WAIT_SECONDS). A review flow that
+    # should finish in minutes and a nightly audit that legitimately runs for
+    # hours cannot share one ceiling: with a single global value, "stuck" and
+    # "genuinely long" produce the same timeout row.
+    timeout_seconds = Column(Integer, nullable=True)
+    # Terminal-path notifications. NULL means no tracker comments.
+    # Failed executions always surface as console attention items.
+    # Shape:
+    # {
+    #     "on_failure": {
+    #         "comment_on_trigger_issue": bool,
+    #         "attention_item": bool,  # ignored; kept for stored JSON
+    #     },
+    #     "on_success": {
+    #         "comment_on_trigger_issue": bool,
+    #     },
+    # }
+    notifications = Column(JSONB, nullable=True, default=None)
 
     ai_model = relationship("AIModel", back_populates="flows")
     account = relationship("Account", back_populates="flows", foreign_keys=[account_id])

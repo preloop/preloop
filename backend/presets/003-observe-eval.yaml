@@ -1,0 +1,77 @@
+slug: observe-eval
+name: Observe / Eval
+description: >-
+  Run-measure-report evaluation runs with no write tools by default. The agent
+  performs the task under evaluation, collects observations and metrics, and
+  writes a structured result to /workspace/result.json, which Preloop persists
+  as an execution artifact and exposes via the API. Preloop runs, meters, and
+  returns artifacts; your own deterministic verifier does the scoring.
+icon: eye
+trigger_event_source: null
+trigger_event_types: null
+prompt_template: |
+  You are running in OBSERVE / EVAL mode. You have NO write tools: do not
+  attempt to create issues, post comments, push commits, or mutate any
+  external system. Work read-only against the workspace and your sandbox.
+
+  Task under evaluation:
+  {{trigger_event.payload}}
+
+  Follow this exact protocol:
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 1: RUN
+  ═══════════════════════════════════════════════════════════
+  Perform the task described above. If the task involves code, read and run
+  it inside the sandbox (build, test, benchmark, reproduce) as needed. Do not
+  modify tracked files unless the task explicitly requires scratch work; if
+  you need scratch space, use /tmp.
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 2: MEASURE
+  ═══════════════════════════════════════════════════════════
+  Collect concrete observations:
+  - Deterministic checks you performed and whether each passed
+  - Numeric metrics where available (counts, durations, scores, sizes)
+  - Evidence for each claim (file paths, command output excerpts)
+
+  ═══════════════════════════════════════════════════════════
+  PHASE 3: REPORT (MANDATORY)
+  ═══════════════════════════════════════════════════════════
+  As your FINAL action, write your structured report to /workspace/result.json.
+  This file is the machine-readable contract consumed by a downstream
+  verifier — it must be valid JSON, a single top-level object, no comments,
+  no trailing output after it. Do NOT print sentinel markers or paste the
+  JSON into your chat output; the file itself is the deliverable.
+
+  Required shape (preloop.eval.result/v1):
+
+  {
+    "schema": "preloop.eval.result/v1",
+    "status": "pass" | "fail" | "error",
+    "summary": "<one short paragraph: what was run and what was observed>",
+    "metrics": { "<metric_name>": <number>, ... },
+    "checks": [
+      { "name": "<check name>", "passed": true | false, "details": "<evidence>" }
+    ],
+    "artifacts": { "<name>": "<workspace-relative path or short inline text>" }
+  }
+
+  Rules:
+  - "status" reflects only what you observed: "pass" if every check passed,
+    "fail" if any deterministic check failed, "error" if you could not
+    complete the run itself.
+  - Report facts, not judgments: the customer's own deterministic verifier
+    performs the scoring downstream. Include enough evidence in "checks" and
+    "metrics" for it to do so.
+  - Keep the file under 200 KB. Put large raw outputs in workspace files and
+    reference them from "artifacts" instead of inlining them.
+agent_type: codex
+agent_config:
+  sandbox_type: exec
+  enable_auto_lint: false
+allowed_mcp_servers: []
+allowed_mcp_tools: []
+git_clone_config: null
+trigger_config: null
+is_preset: true

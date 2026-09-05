@@ -1,0 +1,111 @@
+{
+  "schema": "preloop.cra.duediligence/v1",
+  "flow": "component-due-diligence",
+  "run_at": "2026-08-20T12:00:00Z",
+  "git": null,
+  "tool_versions": {
+    "curl": "8.5.0"
+  },
+  "inputs_declared": {
+    "component": "libexample 1.4.2 (payload)",
+    "supplier_docs": "2 files via workspace seed"
+  },
+  "runner": {
+    "kind": null,
+    "id": null
+  },
+  "regime_profile": "cra",
+  "component": {
+    "name": "libexample",
+    "version": "1.4.2",
+    "purl": "pkg:generic/libexample@1.4.2",
+    "supplier": "Example Components Ltd",
+    "homepage": "https://libexample.example.com"
+  },
+  "product": "example-product",
+  "usage_context": "TLS transport in the firmware update client",
+  "evidence": {
+    "docs_examined": [
+      {
+        "title": "Security policy",
+        "source": "docs/security-policy.pdf",
+        "retrieved_at": null,
+        "covers": "vulnerability disclosure process and contact"
+      }
+    ],
+    "cve_history": {
+      "osv_queried_at": "2026-08-20T11:58:00Z",
+      "kev_snapshot_date": "2026-08-19",
+      "matchable": true,
+      "count": 4,
+      "kev_ids": [],
+      "notable": [
+        {
+          "id": "CVE-2024-0001",
+          "severity": "high",
+          "note": "fixed in 1.4.0 within 14 days of disclosure"
+        }
+      ]
+    },
+    "maintenance": {
+      "latest_release": "1.4.2",
+      "latest_release_date": "2026-05-11",
+      "signals": [
+        {
+          "signal": "monthly release cadence over the last year",
+          "source": "https://libexample.example.com/releases",
+          "retrieved_at": "2026-08-20T11:59:00Z"
+        }
+      ]
+    },
+    "ce_declaration": {
+      "present": true,
+      "document": "docs/ce-declaration.pdf",
+      "issuer": "Example Components Ltd",
+      "date": "2026-01-15",
+      "authenticity_verified": false
+    },
+    "license": {
+      "declared": "Apache-2.0",
+      "flags": []
+    },
+    "open_unknowns": [
+      "Supplier EOL policy beyond 2028 not determined: no support statement delivered"
+    ]
+  },
+  "decision": {
+    "outcome": "accepted",
+    "decided_via": "preloop_approval",
+    "approval_operation": "Component risk decision: libexample@1.4.2 for example-product",
+    "reviewer": null,
+    "note": "Reviewer identity and decision timestamp are in the Preloop approval audit trail for this execution."
+  },
+  "record": {
+    "compliance_repo": "https://git.example.com/example-product/product-compliance.git",
+    "repo_commit": "5c9d0172c3b636788c23f3a4dca295d9870d1e49",
+    "path": "products/example-product/components/libexample/2026-08-20T120000Z-due-diligence.json",
+    "committed": true
+  },
+  "status": "success",
+  "verdict": "recorded",
+  "checks": [
+    {
+      "name": "component_identity_present",
+      "passed": true,
+      "skipped": false,
+      "details": "name, version and purl delivered in the payload"
+    }
+  ],
+  "assessments": [
+    {
+      "topic": "maintenance",
+      "judgment": "Agent judgment: actively maintained, based on the cited release cadence; not a risk decision."
+    }
+  ],
+  "artifacts": {
+    "dossier": "evidence/dossier.md",
+    "facts": "evidence/facts.json"
+  },
+  "note": "synthetic fixture",
+  "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
+}

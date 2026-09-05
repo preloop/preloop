@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 from preloop.services.policy_evaluator import (
+    _evaluate_simple_condition_on_bindings,
     evaluate_policy,
     evaluate_policy_async,
     evaluate_simple_expression,
@@ -210,6 +211,36 @@ class TestEvaluatePolicyWithRules:
             db=mock_db,
             tool_name="test_tool",
             tool_args={"amount": 200},
+            account_id=uuid4(),
+        )
+
+        assert action == "allow"
+        assert approval_id is None
+
+    def test_allow_rule_with_true_literal_returns_allow(self, mock_audit_logging):
+        """An allow rule with condition_expression='true' must allow.
+
+        Regression: the 'true' literal raised ValueError during simple
+        expression parsing, so the rule failed closed to require_approval
+        instead of allowing.
+        """
+        workflow_id = uuid4()
+        mock_config = MagicMock()
+        mock_config.id = uuid4()
+        mock_config.approval_workflow_id = workflow_id
+
+        rule = self._make_rule(action="allow", condition_expression="true")
+
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_config
+        mock_db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
+            rule
+        ]
+
+        action, approval_id, desc = evaluate_policy(
+            db=mock_db,
+            tool_name="test_tool",
+            tool_args={"anything": "goes"},
             account_id=uuid4(),
         )
 
@@ -487,10 +518,87 @@ class TestEvaluateSimpleExpression:
         # a non-empty expression. So we test a valid expression.
         assert evaluate_simple_expression("args.x == 'y'", {"x": "y"})
 
+    def test_boolean_literal_true(self):
+        """A bare 'true' literal (any case) always matches.
+
+        Regression: 'true' was normalised to 'args.true', which failed to
+        parse and raised ValueError, so allow rules configured with a
+        catch-all 'true' condition failed closed to require_approval.
+        """
+        assert evaluate_simple_expression("true", {})
+        assert evaluate_simple_expression("True", {"amount": 100})
+        assert evaluate_simple_expression("TRUE", {})
+        assert evaluate_simple_expression("  true  ", {})
+
+    def test_boolean_literal_false(self):
+        """A bare 'false' literal (any case) never matches."""
+        assert not evaluate_simple_expression("false", {})
+        assert not evaluate_simple_expression("False", {"amount": 100})
+        assert not evaluate_simple_expression("FALSE", {})
+
     def test_invalid_expression_raises(self):
         """Unsupported expression format raises ValueError."""
         with pytest.raises(ValueError, match="Unsupported"):
             evaluate_simple_expression("invalid syntax", {})
+
+    def test_simple_matches_regex_on_string(self):
+        """args.field.matches('regex') uses re.search on the string value."""
+        assert evaluate_simple_expression(
+            'args.command.matches("rm -rf|git push --force")',
+            {"command": "git push --force origin main"},
+        )
+        assert not evaluate_simple_expression(
+            'args.command.matches("rm -rf|git push --force")',
+            {"command": "git push origin main"},
+        )
+        assert evaluate_simple_expression(
+            'args.file_path.matches("(^|/)\\\\.github/")',
+            {"file_path": ".github/workflows/ci.yml"},
+        )
+        assert not evaluate_simple_expression(
+            'args.file_path.matches("(^|/)\\\\.github/")',
+            {"file_path": "\\xgithub/workflows/ci.yml"},
+        )
+        assert evaluate_simple_expression(
+            'args.file_path.matches("a\\"b")',
+            {"file_path": 'a"b'},
+        )
+
+    def test_simple_matches_missing_field_is_false(self):
+        """A matches() rule does not fire when the field is absent."""
+        assert not evaluate_simple_expression(
+            'args.command.matches("rm -rf")',
+            {},
+        )
+        assert not evaluate_simple_expression(
+            'args.command.matches("rm -rf")',
+            {"command": None},
+        )
+
+    def test_simple_matches_rejects_oversized_pattern(self):
+        """Patterns longer than 512 characters are rejected before compile."""
+        oversized = "a" * 513
+        with pytest.raises(ValueError, match="512"):
+            evaluate_simple_expression(
+                f'args.command.matches("{oversized}")',
+                {"command": "a"},
+            )
+
+    def test_simple_matches_on_bindings_decodes_founder_path_escape(self):
+        """The bindings evaluator decodes the same stored .github/ text."""
+        assert _evaluate_simple_condition_on_bindings(
+            'file_path.matches("(^|/)\\\\.github/")',
+            {"file_path": ".github/workflows/ci.yml"},
+        )
+
+    def test_simple_matches_parser_is_linear_on_backslash_runs(self):
+        """Unclosed matches() with many \\\\a sequences must fail fast."""
+        payload = "\\\\a" * 80
+        with pytest.raises(ValueError, match="Unsupported"):
+            evaluate_simple_expression(
+                f'args.command.matches("{payload}',
+                {"command": "x"},
+            )
 
 
 class TestEvaluateCelExpression:

@@ -32,6 +32,7 @@ from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.user import User
 from preloop.services.policy import (
+    ModelIORule,
     PolicyApplier,
     PolicyDiffResult,
     PolicyDocument,
@@ -41,7 +42,15 @@ from preloop.services.policy import (
     export_current_policy,
     export_policy_to_json,
     export_policy_to_yaml,
+    is_known_tool_source,
     load_policy_from_string,
+)
+from preloop.services.model_content_policy import (
+    delete_model_io_rule,
+    load_model_io_rules,
+    replace_model_io_rules,
+    serialize_model_io_rules,
+    upsert_model_io_rule,
 )
 from preloop.services.policy_version_service import PolicyVersionService
 from preloop.utils.permissions import require_permission
@@ -123,6 +132,18 @@ class PruneResponse(BaseModel):
     """Response from a prune operation."""
 
     deleted_count: int
+
+
+class ModelIORuleListResponse(BaseModel):
+    """List of model I/O content policy rules."""
+
+    rules: List[Dict[str, Any]]
+
+
+class ModelIORulePatchRequest(BaseModel):
+    """Partial update for enable/disable."""
+
+    enabled: Optional[bool] = None
 
 
 logger = logging.getLogger(__name__)
@@ -224,7 +245,7 @@ async def validate_policy(
             for idx, tool in enumerate(policy.tools):
                 # Check MCP server references
                 source_lower = tool.source.lower()
-                if source_lower not in ["builtin", "mcp", "http"]:
+                if not is_known_tool_source(source_lower):
                     if source_lower not in all_available_servers:
                         available_list = ", ".join(sorted(all_available_servers))
                         result.errors.append(
@@ -316,7 +337,7 @@ async def upload_policy(
     5. Applies default behavior settings
 
     When `mcp_servers` is omitted from the policy file, tools that reference
-    server names (sources that aren't 'builtin', 'mcp', or 'http') will be
+    server names (sources that are not a known ToolSource value) will be
     validated against servers already configured in your account. If a
     referenced server doesn't exist:
     - With `skip_missing_servers=false` (default): Returns an error
@@ -405,6 +426,122 @@ async def upload_policy(
     )
 
     return result
+
+
+@router.get(
+    "/policies/model-io-rules",
+    response_model=ModelIORuleListResponse,
+    summary="List model I/O content policy rules",
+)
+@require_permission("view_policies")
+def list_model_io_rules(
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> ModelIORuleListResponse:
+    """Return model.request and model.response rules for the console."""
+    rules = load_model_io_rules(db, account.id)
+    return ModelIORuleListResponse(rules=serialize_model_io_rules(rules))
+
+
+@router.post(
+    "/policies/model-io-rules",
+    summary="Create or replace a model I/O content policy rule",
+)
+@require_permission("manage_policies")
+def create_model_io_rule(
+    rule: ModelIORule,
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Save one model I/O rule from the Policies console form."""
+    saved = upsert_model_io_rule(db, account.id, rule)
+    db.commit()
+    return saved.model_dump(exclude_none=True, mode="json")
+
+
+@router.put(
+    "/policies/model-io-rules/{rule_id}",
+    summary="Replace a model I/O content policy rule",
+)
+@require_permission("manage_policies")
+def update_model_io_rule(
+    rule_id: str,
+    rule: ModelIORule,
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Replace an existing model I/O rule. The path id wins."""
+    if rule.id != rule_id:
+        rule = rule.model_copy(update={"id": rule_id})
+    existing = {item.id: item for item in load_model_io_rules(db, account.id)}
+    if rule_id not in existing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"model_io rule '{rule_id}' not found",
+        )
+    saved = upsert_model_io_rule(db, account.id, rule)
+    db.commit()
+    return saved.model_dump(exclude_none=True, mode="json")
+
+
+@router.patch(
+    "/policies/model-io-rules/{rule_id}",
+    summary="Enable or disable a model I/O content policy rule",
+)
+@require_permission("manage_policies")
+def patch_model_io_rule(
+    rule_id: str,
+    patch: ModelIORulePatchRequest,
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Toggle enabled without rewriting the rest of the rule."""
+    rules = load_model_io_rules(db, account.id)
+    updated: List[ModelIORule] = []
+    found = False
+    for item in rules:
+        if item.id == rule_id:
+            found = True
+            if patch.enabled is not None:
+                item = item.model_copy(update={"enabled": patch.enabled})
+            updated.append(item)
+        else:
+            updated.append(item)
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"model_io rule '{rule_id}' not found",
+        )
+    replace_model_io_rules(db, account.id, updated)
+    db.commit()
+    saved = next(item for item in updated if item.id == rule_id)
+    return saved.model_dump(exclude_none=True, mode="json")
+
+
+@router.delete(
+    "/policies/model-io-rules/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a model I/O content policy rule",
+)
+@require_permission("manage_policies")
+def remove_model_io_rule(
+    rule_id: str,
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> Response:
+    """Delete one model I/O rule."""
+    if not delete_model_io_rule(db, account.id, rule_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"model_io rule '{rule_id}' not found",
+        )
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(
@@ -595,7 +732,8 @@ async def get_policy_schema() -> dict:
     schema["title"] = "Preloop Policy Schema"
     schema["description"] = (
         "Schema for Preloop policy-as-code YAML/JSON files. "
-        "Define MCP servers, approval workflows, tool configurations, and defaults."
+        "Define MCP servers, approval workflows, tool configurations, "
+        "model I/O content rules, and defaults."
     )
 
     return schema
@@ -1017,6 +1155,16 @@ class GeneratePolicyRequest(BaseModel):
             "for the LLM (recommended for more accurate generation)"
         ),
     )
+    scope_mcp_server_name: Optional[str] = Field(
+        None,
+        description=(
+            "When set, starter-policy generation scopes LLM context and "
+            "raw model output to this MCP server. The merge still restores "
+            "all current tools so the diff preview only shows this "
+            "server's changes. Older clients that omit the field fall "
+            "back to matching the prompt text."
+        ),
+    )
 
 
 class GeneratePolicyFromAuditRequest(BaseModel):
@@ -1094,7 +1242,12 @@ async def generate_policy(
         # are not thread-safe and must not be shared across threads.
         model = service._resolve_model()
         context_block = (
-            service._build_context_block() if request.include_current_config else ""
+            service._build_context_block(
+                request.prompt,
+                scope_mcp_server_name=request.scope_mcp_server_name,
+            )
+            if request.include_current_config
+            else ""
         )
 
         # Only the LLM call (network I/O, CPU-bound tokenization)
@@ -1108,10 +1261,20 @@ async def generate_policy(
         yaml_output = await asyncio.to_thread(
             service._call_llm, model, system_prompt, request.prompt
         )
+        if request.include_current_config:
+            yaml_output = service._merge_preserving_unrelated(
+                yaml_output,
+                request.prompt,
+                scope_mcp_server_name=request.scope_mcp_server_name,
+            )
         warnings = service._validate_output(yaml_output)
         result = {"yaml": yaml_output, "warnings": warnings}
     except PolicyGenerationError as exc:
-        logger.warning("Policy generation failed for account %s: %s", account.id, exc)
+        logger.warning(
+            "Policy generation failed for account %s: %s",
+            account.id,
+            type(exc).__name__,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),

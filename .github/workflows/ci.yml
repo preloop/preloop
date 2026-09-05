@@ -1,6 +1,16 @@
 # Preloop Open Source - CI Pipeline
 # Runs unit tests on pull requests and pushes to main
-# Builds and pushes Docker images on releases and main branch
+# Builds and pushes Docker images on main and version tags (not on PRs —
+# release.yml already publishes images, and a multi-arch QEMU build is the
+# long tail after tests go green).
+#
+# PR jobs are path-filtered so a docs-only or frontend-only change does not
+# pay for eight Postgres shards. Filters are job-level, not workflow-level:
+# a workflow `on.pull_request.paths` skip made stacked PRs look clean because
+# no checks ran at all. `main` and tags always run every suite.
+#
+# Make the `CI` aggregator the required check. Individual shards may be
+# skipped; skipped-because-paths-did-not-change is success, a red shard is not.
 
 name: CI
 
@@ -14,6 +24,10 @@ on:
   # looked clean because nothing had examined them.
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   PYTHON_VERSION: "3.11"
   NODE_VERSION: "22"
@@ -25,6 +39,81 @@ permissions:
 
 jobs:
   # ==========================================================================
+  # Changed paths (PRs only; push/tag forces every output true)
+  # ==========================================================================
+
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.out.outputs.backend }}
+      frontend: ${{ steps.out.outputs.frontend }}
+      cli: ${{ steps.out.outputs.cli }}
+      plugins: ${{ steps.out.outputs.plugins }}
+      helm: ${{ steps.out.outputs.helm }}
+      workflow: ${{ steps.out.outputs.workflow }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: github.event_name == 'pull_request'
+
+      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3.0.3
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'pyproject.toml'
+              - 'requirements/**'
+              - '.github/requirements/app-dev.txt'
+              - '.github/requirements/coverage.txt'
+              - '.github/requirements/test.txt'
+              - '.github/requirements/test.in'
+              - 'scripts/init_db.py'
+            frontend:
+              - 'frontend/**'
+            cli:
+              - 'cli/**'
+            plugins:
+              - 'runtime-plugins/**'
+              - 'pyproject.toml'
+              - '.github/requirements/runtime-plugin-test.txt'
+              - '.github/requirements/runtime-test.txt'
+              - '.github/requirements/runtime-test.in'
+            helm:
+              - 'helm/**'
+              - 'scripts/helm-render-check.sh'
+            workflow:
+              - '.github/workflows/ci.yml'
+
+      - name: Set job outputs
+        id: out
+        env:
+          EVENT: ${{ github.event_name }}
+          BACKEND: ${{ steps.filter.outputs.backend }}
+          FRONTEND: ${{ steps.filter.outputs.frontend }}
+          CLI: ${{ steps.filter.outputs.cli }}
+          PLUGINS: ${{ steps.filter.outputs.plugins }}
+          HELM: ${{ steps.filter.outputs.helm }}
+          WORKFLOW: ${{ steps.filter.outputs.workflow }}
+        run: |
+          if [ "$EVENT" != "pull_request" ] || [ "$WORKFLOW" = "true" ]; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            echo "cli=true" >> "$GITHUB_OUTPUT"
+            echo "plugins=true" >> "$GITHUB_OUTPUT"
+            echo "helm=true" >> "$GITHUB_OUTPUT"
+            echo "workflow=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend=${BACKEND:-false}" >> "$GITHUB_OUTPUT"
+            echo "frontend=${FRONTEND:-false}" >> "$GITHUB_OUTPUT"
+            echo "cli=${CLI:-false}" >> "$GITHUB_OUTPUT"
+            echo "plugins=${PLUGINS:-false}" >> "$GITHUB_OUTPUT"
+            echo "helm=${HELM:-false}" >> "$GITHUB_OUTPUT"
+            echo "workflow=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ==========================================================================
   # Backend Tests
   # ==========================================================================
 
@@ -32,24 +121,29 @@ jobs:
     name: Lint & Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
+      # App + [dev] extra hash-pinned via app-dev.txt. `--no-deps` then
+      # installs only the local package (Scorecard requires that for `-e`).
+      # Regenerate: uv pip compile --universal --generate-hashes
+      #   --python-version 3.11 --extra dev pyproject.toml
+      #   -o .github/requirements/app-dev.txt
       - name: Install Python dependencies
         run: |
-          pip install -U pip pre-commit ruff
-          pip install -e ".[dev]"
+          pip install --require-hashes -r .github/requirements/app-dev.txt
+          pip install --no-deps -e .
 
       - name: Install frontend dependencies
         run: cd frontend && npm ci
@@ -60,9 +154,40 @@ jobs:
       - name: Run ruff
         run: ruff check .
 
-  test-backend:
-    name: Backend Tests
+  helm-lint:
+    name: Helm Chart Checks
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.helm == 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # helm is preinstalled on ubuntu-latest runners
+      - name: Helm render checks (chart lint + CNPG backup wiring)
+        run: sh scripts/helm-render-check.sh
+
+  # Eight shards, each with its own Postgres. GitLab splits this suite into
+  # dozens of per-file jobs; that is a poor fit here because each GitHub
+  # runner spends ~1.5m on checkout/pip/migrations before pytest starts.
+  # Four shards left group 1 (the first duration_based_chunks slice) as the
+  # wall-clock pole: ~7-9m vs ~3-4.5m for the others. Eight shards cut that
+  # first slice in half without going back to per-file jobs.
+  # pytest-split keeps new tests in the partition automatically. Use
+  # duration_based_chunks (not least_duration): without a timings file,
+  # least_duration round-robins individual tests across shards and breaks
+  # unittest setUp isolation plus tests that share a process-wide DB
+  # session. Chunks keep collection order, so files stay together. The 60%
+  # coverage floor is applied after shards are combined -- a single shard
+  # only sees part of the tree.
+  test-backend:
+    name: Backend Tests (${{ matrix.group }}/8)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -82,27 +207,31 @@ jobs:
       DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db
       OPENAI_API_KEY: mock_key
       ANTHROPIC_API_KEY: mock_key
+      PRELOOP_DISABLE_TELEMETRY: "true"
+      COVERAGE_FILE: coverage-data.${{ matrix.group }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Cache pip
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('.github/requirements/app-dev.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      # App + [dev] extra hash-pinned via app-dev.txt; `--no-deps` installs
+      # only the local package.
       - name: Install dependencies
         run: |
-          pip install -U pip pytest pytest-cov pytest-asyncio loguru
-          pip install -e ".[dev]"
+          pip install --require-hashes -r .github/requirements/app-dev.txt
+          pip install --no-deps -e .
 
       - name: Initialize database
         run: python scripts/init_db.py --force
@@ -111,25 +240,82 @@ jobs:
         run: |
           pytest -v \
             -m "not integration" \
+            --splits 8 \
+            --group ${{ matrix.group }} \
+            --splitting-algorithm=duration_based_chunks \
             --cov=preloop \
-            --cov-report=xml \
-            --cov-fail-under=60 \
+            --cov-report= \
             --junitxml=test-results.xml
 
+      - name: Upload coverage data
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-coverage-${{ matrix.group }}
+          path: coverage-data.${{ matrix.group }}
+          if-no-files-found: error
+
+      - name: Upload test results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: backend-test-results-${{ matrix.group }}
+          path: test-results.xml
+
+  test-backend-coverage:
+    name: Backend Coverage
+    runs-on: ubuntu-latest
+    needs: [changes, test-backend]
+    if: needs.changes.outputs.backend == 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-coverage-${{ hashFiles('.github/requirements/coverage.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # This job only combines/reports shard data, so it installs a tiny
+      # dedicated lock (coverage.txt) instead of the full app-dev lock. The
+      # two locks must pin the same coverage.py version or `coverage combine`
+      # may reject/misread the data files written by the shards (which do use
+      # app-dev.txt).
+      - name: Install coverage
+        run: pip install --require-hashes -r .github/requirements/coverage.txt
+
+      - name: Download shard coverage data
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: backend-coverage-*
+          path: coverage-shards
+          merge-multiple: true
+
+      - name: Combine coverage and enforce floor
+        run: |
+          mapfile -t coverage_files < <(find coverage-shards -name 'coverage-data.*' -type f | sort)
+          if [ ${#coverage_files[@]} -ne 8 ]; then
+            echo "Expected 8 shard coverage files, found ${#coverage_files[@]}"
+            find coverage-shards -type f -print
+            exit 1
+          fi
+          coverage combine "${coverage_files[@]}"
+          coverage xml -o coverage.xml
+          coverage report --fail-under=60
+
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         if: github.event_name != 'pull_request'
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
-
-      - name: Upload test results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: backend-test-results
-          path: test-results.xml
 
   # ==========================================================================
   # Frontend Tests
@@ -138,15 +324,17 @@ jobs:
   test-frontend:
     name: Frontend Tests
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     defaults:
       run:
         working-directory: frontend
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -171,35 +359,43 @@ jobs:
   test-runtime-plugins:
     name: Runtime Plugin Tests
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.plugins == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
           cache-dependency-path: runtime-plugins/openclaw-preloop/package-lock.json
 
       - name: Cache pip
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-runtime-plugins-${{ hashFiles('**/pyproject.toml') }}
+          key: ${{ runner.os }}-pip-runtime-plugins-${{ hashFiles('.github/requirements/runtime-plugin-test.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-runtime-plugins-
             ${{ runner.os }}-pip-
 
+      # Runtime + pytest hash-pinned together (a merge of runtime.txt and
+      # runtime-test.txt conflicts on pygments). `--no-deps` installs only
+      # the local package. Regenerate:
+      #   uv pip compile --universal --generate-hashes --python-version 3.11 \
+      #     pyproject.toml .github/requirements/runtime-test.in \
+      #     -o .github/requirements/runtime-plugin-test.txt
       - name: Install Python dependencies
         run: |
-          pip install -U pip pytest pytest-asyncio
-          pip install -e .
+          pip install --require-hashes -r .github/requirements/runtime-plugin-test.txt
+          pip install --no-deps -e .
 
       - name: Run runtime-plugin pytest
         run: |
@@ -213,6 +409,14 @@ jobs:
 
       - name: Run OpenClaw plugin tests
         working-directory: runtime-plugins/openclaw-preloop
+        run: npm test
+
+      - name: Install Claude plugin dependencies
+        working-directory: runtime-plugins/claude-preloop
+        run: npm ci
+
+      - name: Run Claude plugin tests
+        working-directory: runtime-plugins/claude-preloop
         run: npm test
 
   # ==========================================================================
@@ -253,16 +457,18 @@ jobs:
     name: CLI Tests (Windows)
     runs-on: windows-latest
     continue-on-error: true
+    needs: changes
+    if: needs.changes.outputs.cli == 'true'
 
     defaults:
       run:
         working-directory: cli
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: cli/go.mod
           cache-dependency-path: cli/go.sum
@@ -287,23 +493,26 @@ jobs:
   build-and-push:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
-    needs: [lint, test-backend, test-frontend, test-runtime-plugins]
+    # PRs do not build images: this job is a multi-arch QEMU build that does
+    # not push, and release.yml already publishes from main/tags.
+    if: github.event_name != 'pull_request'
+    needs: [lint, test-backend-coverage, test-frontend, test-runtime-plugins]
     permissions:
       contents: read
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY_GHCR }}
           username: ${{ github.actor }}
@@ -311,14 +520,14 @@ jobs:
 
       - name: Log in to Docker Hub
         if: github.event_name != 'pull_request' && vars.PUSH_TO_DOCKERHUB == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract metadata for backend image
         id: meta-backend
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: |
             ${{ env.REGISTRY_GHCR }}/preloop/preloop
@@ -332,7 +541,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push backend image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -344,7 +553,7 @@ jobs:
 
       - name: Extract metadata for frontend image
         id: meta-frontend
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: |
             ${{ env.REGISTRY_GHCR }}/preloop/console
@@ -358,7 +567,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push frontend image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ./frontend
           platforms: linux/amd64,linux/arm64
@@ -369,3 +578,52 @@ jobs:
             BRAND=preloop
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Required check. Per-suite jobs may skip when their tree did not change;
+  # a failed suite must still fail this job (skipped-because-needs-failed
+  # would otherwise look like a path-filter skip). `changes` is in `needs`
+  # so a checkout/filter crash cannot leave this job green with no tests.
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    if: always() && !cancelled()
+    needs:
+      - changes
+      - lint
+      - helm-lint
+      - test-backend
+      - test-backend-coverage
+      - test-frontend
+      - test-runtime-plugins
+    steps:
+      - name: Require every suite to have passed or been skipped
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          LINT: ${{ needs.lint.result }}
+          HELM: ${{ needs.helm-lint.result }}
+          BACKEND: ${{ needs.test-backend.result }}
+          COVERAGE: ${{ needs.test-backend-coverage.result }}
+          FRONTEND: ${{ needs.test-frontend.result }}
+          PLUGINS: ${{ needs.test-runtime-plugins.result }}
+        run: |
+          failed=0
+          check() {
+            name="$1"
+            result="$2"
+            echo "$name=$result"
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "::error::$name ended $result"
+                failed=1
+                ;;
+            esac
+          }
+          check changes "$CHANGES"
+          check lint "$LINT"
+          check helm-lint "$HELM"
+          check test-backend "$BACKEND"
+          check test-backend-coverage "$COVERAGE"
+          check test-frontend "$FRONTEND"
+          check test-runtime-plugins "$PLUGINS"
+          exit "$failed"

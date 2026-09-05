@@ -197,3 +197,202 @@ class TestTriggerEventResolver:
         # Verify nested structures are preserved
         assert parsed["payload"]["object_attributes"]["title"] == "Add new feature"
         assert len(parsed["payload"]["labels"]) == 2
+        # No iid/number on this fixture, so aliasing is a no-op.
+        assert "number" not in parsed["payload"]["object_attributes"]
+        assert "iid" not in parsed["payload"]["object_attributes"]
+
+
+class TestCrossTrackerObjectAttributes:
+    """GitHub number and GitLab iid must both resolve in presets."""
+
+    @pytest.mark.asyncio
+    async def test_gitlab_issue_iid_aliases_as_number(self):
+        resolver = TriggerEventResolver()
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "source": "gitlab",
+                "payload": {
+                    "object_kind": "issue",
+                    "object_attributes": {
+                        "title": "Add login",
+                        "description": "Please implement OAuth",
+                        "iid": 12,
+                        "url": "https://gitlab.example/group/proj/-/issues/12",
+                    },
+                    "repository": {"name": "proj"},
+                },
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+
+        assert await resolver.resolve("payload.object_attributes.iid", context) == "12"
+        assert (
+            await resolver.resolve("payload.object_attributes.number", context) == "12"
+        )
+        assert (
+            await resolver.resolve("payload.object_attributes.title", context)
+            == "Add login"
+        )
+
+    @pytest.mark.asyncio
+    async def test_github_issue_number_aliases_as_iid(self):
+        resolver = TriggerEventResolver()
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "source": "github",
+                "payload": {
+                    "issue": {
+                        "title": "Add login",
+                        "body": "Please implement OAuth",
+                        "number": 12,
+                    }
+                },
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+
+        assert (
+            await resolver.resolve("payload.object_attributes.number", context) == "12"
+        )
+        assert await resolver.resolve("payload.object_attributes.iid", context) == "12"
+
+    @pytest.mark.asyncio
+    async def test_gitlab_note_lifts_issue_iid(self):
+        resolver = TriggerEventResolver()
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "source": "gitlab",
+                "payload": {
+                    "object_kind": "note",
+                    "object_attributes": {
+                        "id": 9001,
+                        "note": "please also add tests",
+                        "noteable_type": "Issue",
+                        "url": "https://gitlab.example/group/proj/-/issues/12#note_9001",
+                    },
+                    "issue": {
+                        "iid": 12,
+                        "title": "Add login",
+                        "description": "Please implement OAuth",
+                        "url": "https://gitlab.example/group/proj/-/issues/12",
+                    },
+                },
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+
+        assert (
+            await resolver.resolve("payload.object_attributes.number", context) == "12"
+        )
+        assert await resolver.resolve("payload.object_attributes.iid", context) == "12"
+        assert (
+            await resolver.resolve("payload.object_attributes.title", context)
+            == "Add login"
+        )
+        assert (
+            await resolver.resolve("payload.object_attributes.url", context)
+            == "https://gitlab.example/group/proj/-/issues/12#note_9001"
+        )
+
+    @pytest.mark.asyncio
+    async def test_gitlab_note_lifts_merge_request_iid(self):
+        resolver = TriggerEventResolver()
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "source": "gitlab",
+                "payload": {
+                    "object_kind": "note",
+                    "object_attributes": {
+                        "id": 9002,
+                        "note": "please rebase",
+                        "noteable_type": "MergeRequest",
+                        "url": "https://gitlab.example/group/proj/-/merge_requests/8#note_9002",
+                    },
+                    "merge_request": {
+                        "iid": 8,
+                        "title": "Implements: Add login",
+                        "description": "Closes #12",
+                        "url": "https://gitlab.example/group/proj/-/merge_requests/8",
+                    },
+                },
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+
+        assert (
+            await resolver.resolve("payload.object_attributes.number", context) == "8"
+        )
+        assert await resolver.resolve("payload.object_attributes.iid", context) == "8"
+        assert (
+            await resolver.resolve("payload.object_attributes.title", context)
+            == "Implements: Add login"
+        )
+        assert (
+            await resolver.resolve("payload.object_attributes.description", context)
+            == "Closes #12"
+        )
+        assert (
+            await resolver.resolve("payload.object_attributes.url", context)
+            == "https://gitlab.example/group/proj/-/merge_requests/8#note_9002"
+        )
+
+
+class TestWorkspaceFilesRedaction:
+    """workspace_files blobs must never be embedded into prompts."""
+
+    @pytest.mark.asyncio
+    async def test_full_event_dump_redacts_content(self):
+        """{{trigger_event}} omits inline file contents but keeps paths."""
+        import base64
+        import json
+
+        resolver = TriggerEventResolver()
+        content = base64.b64encode(b"fixture-bytes" * 100).decode("ascii")
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "source": "webhook",
+                "payload": {
+                    "run": "smoke-1",
+                    "workspace_files": [
+                        {"path": "fixtures/input.json", "content_base64": content}
+                    ],
+                },
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+
+        result = await resolver.resolve("", context)
+        assert content not in result
+        parsed = json.loads(result)
+        entry = parsed["payload"]["workspace_files"][0]
+        assert entry["path"] == "fixtures/input.json"
+        assert "omitted" in entry["content_base64"]
+        # The rest of the payload still resolves normally.
+        assert parsed["payload"]["run"] == "smoke-1"
+
+    @pytest.mark.asyncio
+    async def test_payload_fields_still_resolve(self):
+        """Deep paths next to workspace_files are unaffected."""
+        resolver = TriggerEventResolver()
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "payload": {
+                    "run": "smoke-1",
+                    "workspace_files": [{"path": "a.txt", "content_base64": "eA=="}],
+                }
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+        assert await resolver.resolve("payload.run", context) == "smoke-1"

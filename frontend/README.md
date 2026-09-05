@@ -49,6 +49,10 @@ To run the test suite using Web Test Runner, use the following command:
 npm run test
 ```
 
+Authenticated views extend `AuthedElement` in `src/api.ts` and call the API through `fetchWithAuth` (JWT in `localStorage`, refresh, redirect to `/login` on auth failure). Routes live in `src/components/lit-app.ts`; do not copy a route map into this file.
+
+In Web Test Runner tests, stub `window.fetch` (not ES-module exports). Use `waitUntil()` from `@open-wc/testing` for async DOM updates. Browser console errors during tests that assert error handling are expected.
+
 ## Architecture
 
 ### SSR Content Slotting for SEO

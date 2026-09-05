@@ -16,6 +16,7 @@ import type {
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
   RuntimeSessionReplayResponse,
+  SessionCacheProfile,
   SessionContextProfileSegment,
 } from '../types';
 import type {
@@ -28,6 +29,7 @@ import {
   suggestSessionOptimizations,
 } from '../utils/session-observer';
 import { replayRuntimeSession } from '../api';
+import { consoleDialogStyles } from '../styles/console-dialog';
 
 const SEGMENT_LABELS: Record<string, string> = {
   system_prompt: 'System prompt',
@@ -105,372 +107,393 @@ export class SessionOptimizationPanel extends LitElement {
   @state()
   private verifyErrors: Record<string, string> = {};
 
-  static styles = css`
-    :host {
-      display: block;
-    }
+  static styles = [
+    consoleDialogStyles,
+    css`
+      :host {
+        display: block;
+      }
 
-    .panel {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-small);
-    }
+      .panel {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-small);
+      }
 
-    .suggestion {
-      background: var(--sl-color-neutral-0);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      padding: var(--sl-spacing-medium);
-    }
+      .suggestion {
+        background: var(--sl-color-neutral-0);
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        padding: var(--sl-spacing-medium);
+      }
 
-    .suggestion-header {
-      align-items: start;
-      display: flex;
-      gap: var(--sl-spacing-small);
-      justify-content: space-between;
-    }
+      .suggestion-header {
+        align-items: start;
+        display: flex;
+        gap: var(--sl-spacing-small);
+        justify-content: space-between;
+      }
 
-    .title {
-      color: var(--sl-color-neutral-900);
-      font-weight: 700;
-    }
+      .title {
+        color: var(--sl-color-neutral-900);
+        font-weight: 700;
+      }
 
-    .description,
-    .evidence,
-    .savings {
-      color: var(--sl-color-neutral-700);
-      font-size: var(--sl-font-size-small);
-      line-height: 1.45;
-      margin-top: var(--sl-spacing-2x-small);
-    }
+      .description,
+      .evidence,
+      .savings {
+        color: var(--sl-color-neutral-700);
+        font-size: var(--sl-font-size-small);
+        line-height: 1.45;
+        margin-top: var(--sl-spacing-2x-small);
+      }
 
-    .savings {
-      color: var(--sl-color-success-700);
-      font-weight: 600;
-    }
+      .savings {
+        color: var(--sl-color-success-700);
+        font-weight: 600;
+      }
 
-    .verify-result {
-      margin-top: var(--sl-spacing-small);
-      padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
-      border-radius: var(--sl-border-radius-medium);
-      background: var(--sl-color-neutral-50);
-      border: 1px solid var(--sl-color-neutral-200);
-      color: var(--sl-color-neutral-700);
-      font-size: var(--sl-font-size-small);
-      line-height: 1.45;
-    }
+      .verify-result {
+        margin-top: var(--sl-spacing-small);
+        padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+        border-radius: var(--sl-border-radius-medium);
+        background: var(--sl-color-neutral-50);
+        border: 1px solid var(--sl-color-neutral-200);
+        color: var(--sl-color-neutral-700);
+        font-size: var(--sl-font-size-small);
+        line-height: 1.45;
+      }
 
-    .verify-headline {
-      align-items: center;
-      color: var(--sl-color-success-700);
-      display: flex;
-      font-weight: 600;
-      gap: var(--sl-spacing-2x-small);
-    }
+      .verify-headline {
+        align-items: center;
+        color: var(--sl-color-success-700);
+        display: flex;
+        font-weight: 600;
+        gap: var(--sl-spacing-2x-small);
+      }
 
-    .verify-note {
-      margin-top: var(--sl-spacing-2x-small);
-      color: var(--sl-color-neutral-600);
-    }
+      .verify-note {
+        margin-top: var(--sl-spacing-2x-small);
+        color: var(--sl-color-neutral-600);
+      }
 
-    .verify-error {
-      align-items: center;
-      background: var(--sl-color-danger-50);
-      border-color: var(--sl-color-danger-200);
-      color: var(--sl-color-danger-700);
-      display: flex;
-      gap: var(--sl-spacing-2x-small);
-    }
+      .verify-error {
+        align-items: center;
+        background: var(--sl-color-danger-50);
+        border-color: var(--sl-color-danger-200);
+        color: var(--sl-color-danger-700);
+        display: flex;
+        gap: var(--sl-spacing-2x-small);
+      }
 
-    .savings-summary {
-      border: 1px solid var(--sl-color-success-200);
-      background: var(--sl-color-success-50);
-      border-radius: var(--sl-border-radius-medium);
-      padding: var(--sl-spacing-small) var(--sl-spacing-medium);
-      margin-bottom: var(--sl-spacing-small);
-    }
+      .savings-summary {
+        border: 1px solid var(--sl-color-success-200);
+        background: var(--sl-color-success-50);
+        border-radius: var(--sl-border-radius-medium);
+        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+        margin-bottom: var(--sl-spacing-small);
+      }
 
-    .savings-summary-headline {
-      color: var(--sl-color-success-700);
-      font-size: var(--sl-font-size-medium);
-      font-weight: var(--sl-font-weight-semibold);
-    }
+      .savings-summary-headline {
+        color: var(--sl-color-success-700);
+        font-size: var(--sl-font-size-medium);
+        font-weight: var(--sl-font-weight-semibold);
+      }
 
-    .savings-summary-headline strong {
-      font-size: var(--sl-font-size-large);
-    }
+      .savings-summary-headline strong {
+        font-size: var(--sl-font-size-large);
+      }
 
-    .savings-pct {
-      color: var(--sl-color-success-600);
-      font-weight: var(--sl-font-weight-normal);
-    }
+      .savings-pct {
+        color: var(--sl-color-success-600);
+        font-weight: var(--sl-font-weight-normal);
+      }
 
-    .savings-summary-detail {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-      margin-top: var(--sl-spacing-2x-small);
-      line-height: 1.45;
-    }
+      .savings-summary-detail {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        margin-top: var(--sl-spacing-2x-small);
+        line-height: 1.45;
+      }
 
-    .actions {
-      align-items: center;
-      display: flex;
-      gap: var(--sl-spacing-small);
-      justify-content: flex-end;
-      margin-top: var(--sl-spacing-small);
-    }
+      .idle-expiry-summary {
+        margin: 0 0 var(--sl-spacing-medium);
+        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+        border-left: 3px solid var(--sl-color-warning-600);
+        background: color-mix(
+          in srgb,
+          var(--sl-color-warning-600) 12%,
+          transparent
+        );
+        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-700);
+        line-height: 1.45;
+      }
 
-    .waste-banner {
-      align-items: center;
-      display: flex;
-      flex-wrap: wrap;
-      gap: var(--sl-spacing-small);
-    }
+      .idle-expiry-summary strong {
+        color: var(--sl-color-neutral-900);
+      }
 
-    .segment-row {
-      align-items: center;
-      display: grid;
-      gap: var(--sl-spacing-small);
-      grid-template-columns: 170px 1fr 110px;
-      margin-top: var(--sl-spacing-2x-small);
-    }
+      .actions {
+        align-items: center;
+        display: flex;
+        gap: var(--sl-spacing-small);
+        justify-content: flex-end;
+        margin-top: var(--sl-spacing-small);
+      }
 
-    .segment-label {
-      color: var(--sl-color-neutral-800);
-      font-size: var(--sl-font-size-small);
-    }
+      .waste-banner {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small);
+      }
 
-    .segment-bar {
-      background: var(--sl-color-neutral-100);
-      border-radius: 999px;
-      height: 10px;
-      overflow: hidden;
-    }
+      .segment-row {
+        align-items: center;
+        display: grid;
+        gap: var(--sl-spacing-small);
+        grid-template-columns: 170px 1fr 110px;
+        margin-top: var(--sl-spacing-2x-small);
+      }
 
-    .segment-bar-fill {
-      background: var(--sl-color-primary-500);
-      border-radius: 999px;
-      height: 100%;
-      min-width: 2px;
-    }
+      .segment-label {
+        color: var(--sl-color-neutral-800);
+        font-size: var(--sl-font-size-small);
+      }
 
-    .segment-bar-fill.tool_outputs {
-      background: var(--sl-color-warning-500);
-    }
+      .segment-bar {
+        background: var(--sl-color-neutral-100);
+        border-radius: 999px;
+        height: 10px;
+        overflow: hidden;
+      }
 
-    .segment-bar-fill.tool_schemas {
-      background: var(--sl-color-violet-500);
-    }
+      .segment-bar-fill {
+        background: var(--sl-color-primary-500);
+        border-radius: 999px;
+        height: 100%;
+        min-width: 2px;
+      }
 
-    .segment-bar-fill.system_prompt {
-      background: var(--sl-color-sky-500);
-    }
+      .segment-bar-fill.tool_outputs {
+        background: var(--sl-color-warning-500);
+      }
 
-    .segment-value {
-      color: var(--sl-color-neutral-700);
-      font-size: var(--sl-font-size-x-small);
-      text-align: right;
-    }
+      .segment-bar-fill.tool_schemas {
+        background: var(--sl-color-violet-500);
+      }
 
-    .history-item {
-      background: var(--sl-color-neutral-0);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      padding: var(--sl-spacing-medium);
-    }
+      .segment-bar-fill.system_prompt {
+        background: var(--sl-color-sky-500);
+      }
 
-    .outcome {
-      border-top: 1px dashed var(--sl-color-neutral-200);
-      margin-top: var(--sl-spacing-x-small);
-      padding-top: var(--sl-spacing-x-small);
-    }
+      .segment-value {
+        color: var(--sl-color-neutral-700);
+        font-size: var(--sl-font-size-x-small);
+        text-align: right;
+      }
 
-    .outcome-positive {
-      color: var(--sl-color-success-700);
-      font-weight: 600;
-    }
+      .history-item {
+        background: var(--sl-color-neutral-0);
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        padding: var(--sl-spacing-medium);
+      }
 
-    .outcome-negative {
-      color: var(--sl-color-danger-700);
-      font-weight: 600;
-    }
+      .outcome {
+        border-top: 1px dashed var(--sl-color-neutral-200);
+        margin-top: var(--sl-spacing-x-small);
+        padding-top: var(--sl-spacing-x-small);
+      }
 
-    .transparency {
-      color: var(--sl-color-neutral-500);
-      font-size: var(--sl-font-size-x-small);
-      margin-top: var(--sl-spacing-x-small);
-    }
+      .outcome-positive {
+        color: var(--sl-color-success-700);
+        font-weight: 600;
+      }
 
-    .empty {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-      padding: var(--sl-spacing-medium);
-      text-align: center;
-    }
+      .outcome-negative {
+        color: var(--sl-color-danger-700);
+        font-weight: 600;
+      }
 
-    .apply-summary {
-      background: var(--sl-color-neutral-50);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      font-size: var(--sl-font-size-small);
-      line-height: 1.5;
-      margin-top: var(--sl-spacing-small);
-      padding: var(--sl-spacing-small);
-    }
+      .transparency {
+        color: var(--sl-color-neutral-500);
+        font-size: var(--sl-font-size-x-small);
+        margin-top: var(--sl-spacing-x-small);
+      }
 
-    .tool-checklist {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-x-small);
-      margin-top: var(--sl-spacing-small);
-      max-height: 320px;
-      overflow-y: auto;
-    }
+      .empty {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        padding: var(--sl-spacing-medium);
+        text-align: center;
+      }
 
-    .governance-link {
-      font-size: var(--sl-font-size-small);
-      margin-top: var(--sl-spacing-medium);
-    }
+      .apply-summary {
+        background: var(--sl-color-neutral-50);
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        font-size: var(--sl-font-size-small);
+        line-height: 1.5;
+        margin-top: var(--sl-spacing-small);
+        padding: var(--sl-spacing-small);
+      }
 
-    .governance-link a {
-      color: var(--sl-color-primary-700);
-      text-decoration: none;
-    }
+      .tool-checklist {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-x-small);
+        margin-top: var(--sl-spacing-small);
+        max-height: 320px;
+        overflow-y: auto;
+      }
 
-    .governance-link a:hover {
-      text-decoration: underline;
-    }
+      .governance-link {
+        font-size: var(--sl-font-size-small);
+        margin-top: var(--sl-spacing-medium);
+      }
 
-    /* Launch console states (approved spec: 1A analyzing / 2A failed /
+      .governance-link a {
+        color: var(--sl-color-primary-700);
+        text-decoration: none;
+      }
+
+      .governance-link a:hover {
+        text-decoration: underline;
+      }
+
+      /* Launch console states (approved spec: 1A analyzing / 2A failed /
        3A no-waste). Designed for the dark #212632 surface context, Inter,
        console-compact type (14px headings / 13px body), 4px radii, and the
        semantic palette (info #30C9E8, error #FF5D5D, success #26D962,
        action #0284C7). */
-    .job-state {
-      padding: var(--sl-spacing-medium);
-    }
-
-    .job-state-heading {
-      font-size: 14px;
-      font-weight: 600;
-      line-height: 1.4;
-    }
-
-    .job-state-body {
-      font-size: 13px;
-      line-height: 1.5;
-      margin-top: 4px;
-      opacity: 0.85;
-    }
-
-    /* 1A — analyzing: slim indeterminate bar in info cyan. */
-    .job-analyzing .job-progress {
-      background: rgba(48, 201, 232, 0.2);
-      border-radius: 4px;
-      height: 4px;
-      margin-bottom: 12px;
-      overflow: hidden;
-      position: relative;
-    }
-
-    .job-analyzing .job-progress-fill {
-      animation: job-progress-slide 1.4s ease-in-out infinite;
-      background: #30c9e8;
-      border-radius: 4px;
-      height: 100%;
-      position: absolute;
-      width: 40%;
-    }
-
-    @keyframes job-progress-slide {
-      0% {
-        left: -40%;
+      .job-state {
+        padding: var(--sl-spacing-medium);
       }
-      100% {
-        left: 100%;
-      }
-    }
 
-    @media (prefers-reduced-motion: reduce) {
+      .job-state-heading {
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 1.4;
+      }
+
+      .job-state-body {
+        font-size: 13px;
+        line-height: 1.5;
+        margin-top: 4px;
+        opacity: 0.85;
+      }
+
+      /* 1A — analyzing: slim indeterminate bar in info cyan. */
+      .job-analyzing .job-progress {
+        background: rgba(48, 201, 232, 0.2);
+        border-radius: 4px;
+        height: 4px;
+        margin-bottom: 12px;
+        overflow: hidden;
+        position: relative;
+      }
+
       .job-analyzing .job-progress-fill {
-        animation: none;
-        left: 0;
-        opacity: 0.5;
-        width: 100%;
+        animation: job-progress-slide 1.4s ease-in-out infinite;
+        background: #30c9e8;
+        border-radius: 4px;
+        height: 100%;
+        position: absolute;
+        width: 40%;
       }
-    }
 
-    /* 2A — failed: inline alert with the error-red left border. */
-    .job-failed {
-      border-left: 4px solid #ff5d5d;
-      border-radius: 4px;
-      padding-left: calc(var(--sl-spacing-medium) - 4px + 12px);
-    }
+      @keyframes job-progress-slide {
+        0% {
+          left: -40%;
+        }
+        100% {
+          left: 100%;
+        }
+      }
 
-    .job-failed .job-state-heading {
-      color: #ff5d5d;
-    }
+      @media (prefers-reduced-motion: reduce) {
+        .job-analyzing .job-progress-fill {
+          animation: none;
+          left: 0;
+          opacity: 0.5;
+          width: 100%;
+        }
+      }
 
-    .job-retry-button {
-      background: #0284c7;
-      border: none;
-      border-radius: 4px;
-      color: #ffffff;
-      cursor: pointer;
-      font-family: inherit;
-      font-size: 13px;
-      font-weight: 600;
-      margin-top: 12px;
-      padding: 8px 14px;
-    }
+      /* 2A — failed: inline alert with the error-red left border. */
+      .job-failed {
+        border-left: 4px solid #ff5d5d;
+        border-radius: 4px;
+        padding-left: calc(var(--sl-spacing-medium) - 4px + 12px);
+      }
 
-    .job-retry-button:focus-visible {
-      outline: 2px solid #30c9e8;
-      outline-offset: 2px;
-    }
+      .job-failed .job-state-heading {
+        color: #ff5d5d;
+      }
 
-    @media (max-width: 768px), (pointer: coarse) {
       .job-retry-button {
-        min-height: 44px;
-        min-width: 44px;
+        background: #0284c7;
+        border: none;
+        border-radius: 4px;
+        color: #ffffff;
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        margin-top: 12px;
+        padding: 8px 14px;
       }
-    }
 
-    /* 3A — no-waste: centered calm state. */
-    .job-no-waste {
-      text-align: center;
-    }
+      .job-retry-button:focus-visible {
+        outline: 2px solid #30c9e8;
+        outline-offset: 2px;
+      }
 
-    .job-no-waste-check {
-      color: #26d962;
-      display: block;
-      font-size: 24px;
-      line-height: 1;
-      margin: 0 auto 8px;
-    }
+      @media (max-width: 768px), (pointer: coarse) {
+        .job-retry-button {
+          min-height: 44px;
+          min-width: 44px;
+        }
+      }
 
-    .job-no-waste a {
-      color: #30c9e8;
-      display: inline-block;
-      font-size: 13px;
-      margin-top: 12px;
-      text-decoration: none;
-    }
+      /* 3A — no-waste: centered calm state. */
+      .job-no-waste {
+        text-align: center;
+      }
 
-    .job-no-waste a:hover {
-      text-decoration: underline;
-    }
+      .job-no-waste-check {
+        color: #26d962;
+        display: block;
+        font-size: 24px;
+        line-height: 1;
+        margin: 0 auto 8px;
+      }
 
-    .sr-only {
-      clip: rect(0 0 0 0);
-      clip-path: inset(50%);
-      height: 1px;
-      overflow: hidden;
-      position: absolute;
-      white-space: nowrap;
-      width: 1px;
-    }
-  `;
+      .job-no-waste a {
+        color: #30c9e8;
+        display: inline-block;
+        font-size: 13px;
+        margin-top: 12px;
+        text-decoration: none;
+      }
+
+      .job-no-waste a:hover {
+        text-decoration: underline;
+      }
+
+      .sr-only {
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        height: 1px;
+        overflow: hidden;
+        position: absolute;
+        white-space: nowrap;
+        width: 1px;
+      }
+    `,
+  ];
 
   private getConfidenceVariant(confidence: string) {
     if (confidence === 'high') return 'success';
@@ -644,6 +667,8 @@ export class SessionOptimizationPanel extends LitElement {
     let mode = 'evidence';
     if (suggestion.id === 'stabilize-prefix') {
       mode = 'cache-breaking';
+    } else if (suggestion.id === 'reduce-idle-cache-expiry') {
+      mode = 'cache-idle-expiry';
     } else if (
       suggestion.id.includes('failed') ||
       suggestion.id.includes('error')
@@ -1110,6 +1135,7 @@ export class SessionOptimizationPanel extends LitElement {
           ${formatNumber(profile.total_completion_tokens)} completion tokens
         </span>
       </div>
+      ${this.renderIdleExpirySummary()}
       ${
         segments.length
           ? segments.map((segment: SessionContextProfileSegment) => {
@@ -1262,6 +1288,38 @@ export class SessionOptimizationPanel extends LitElement {
       }
     }
     return html`<div class="transparency">${parts.join(' · ')}</div>`;
+  }
+
+  /**
+   * Measured idle-TTL cache expiry roll-up from the context profile.
+   * Copy stays per-session and tied to ApiUsage-backed detector output.
+   */
+  private renderIdleExpirySummary() {
+    const cacheProfile: SessionCacheProfile | null | undefined =
+      this.optimization?.context_profile?.cache_profile;
+    if (!cacheProfile) return nothing;
+    const events = Array.isArray(cacheProfile.idle_expiry_events)
+      ? cacheProfile.idle_expiry_events
+      : [];
+    if (!events.length) return nothing;
+    const expiryCost = Number(
+      cacheProfile.measured_idle_expiry_extra_cost_usd ?? 0
+    );
+    const sessionCost = Number(
+      this.optimization?.analyzed_scope_estimated_cost ??
+        this.session?.estimated_cost ??
+        0
+    );
+    const costLabel =
+      expiryCost > 0 ? formatCost(expiryCost) : 'an unpriced write premium';
+    const sessionLabel =
+      sessionCost > 0 ? ` of this session's ${formatCost(sessionCost)}` : '';
+    return html`
+      <div class="idle-expiry-summary" data-testid="idle-expiry-summary">
+        Cache expiries cost <strong>${costLabel}</strong>${sessionLabel}
+        (${events.length} expir${events.length === 1 ? 'y' : 'ies'}, measured).
+      </div>
+    `;
   }
 
   // Aggregate before/after savings across all suggestions — the demo's
@@ -1460,6 +1518,7 @@ export class SessionOptimizationPanel extends LitElement {
           </sl-tab>
           <sl-tab-panel name="suggestions">
             <div class="panel">
+              ${this.renderIdleExpirySummary()}
               ${this.renderSavingsSummary(suggestions)}
               ${suggestions.map((suggestion) =>
                 this.renderSuggestion(suggestion)
