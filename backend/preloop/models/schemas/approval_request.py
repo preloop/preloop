@@ -17,7 +17,11 @@ from pydantic import (
 # `Notification via {channel} to {recipients} ({status})` as stored for the
 # authenticated console timeline. Recipients may be emails or usernames.
 _NOTIFICATION_DETAIL = re.compile(r"^(Notification via \S+)(?: to (.+))? \(([^)]+)\)$")
+_VOTE_DETAIL = re.compile(r"^(Approved|Declined) by (\S+)(.*)$")
 _EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
+_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 _MORE_RECIPIENTS = re.compile(r"\+(\d+) more")
 
 
@@ -36,9 +40,10 @@ def _recipient_count(recipients: str) -> int:
 def public_event_detail(event_type: str, detail: str) -> str:
     """Render a timeline detail that is safe to return on a token link.
 
-    The console timeline may include recipient emails; the public token page
-    must not. Notification rows become a channel + recipient count; any
-    leftover email-shaped text is stripped.
+    The console timeline may include recipient emails and actor ids; the
+    public token page must not. Notification rows become a channel +
+    recipient count. Vote rows drop the voter id. Any leftover email- or
+    UUID-shaped text is stripped.
     """
     text = detail or ""
     if event_type == "notification_sent":
@@ -50,6 +55,12 @@ def public_event_detail(event_type: str, detail: str) -> str:
             count = _recipient_count(recipients)
             noun = "recipient" if count == 1 else "recipients"
             return f"{prefix} to {count} {noun} ({status})"
+    if event_type == "vote_received":
+        match = _VOTE_DETAIL.match(text)
+        if match:
+            action, _who, rest = match.group(1), match.group(2), match.group(3)
+            text = f"{action} by an approver{rest}"
+    text = _UUID_RE.sub("[redacted]", text)
     return _EMAIL_RE.sub("[redacted]", text)
 
 
@@ -287,7 +298,8 @@ class ApprovalEventPublic(BaseModel):
 
     Deliberately excludes actor ids/emails: a token link is a bearer secret
     and must not leak other approvers' identities. ``detail`` is redacted
-    on construction so notification recipient emails cannot leak through.
+    on construction so notification recipient emails and vote actor ids
+    cannot leak through.
     """
 
     event_type: str = Field(..., description="Timeline event type")
@@ -301,7 +313,7 @@ class ApprovalEventPublic(BaseModel):
 
     @model_validator(mode="after")
     def redact_identities(self) -> "ApprovalEventPublic":
-        """Strip recipient emails/usernames from public timeline text."""
+        """Strip recipient emails and actor ids from public timeline text."""
         self.detail = public_event_detail(self.event_type, self.detail)
         return self
 

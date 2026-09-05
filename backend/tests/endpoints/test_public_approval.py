@@ -477,7 +477,51 @@ class TestPublicEventDetailRedaction:
         from preloop.models.schemas.approval_request import public_event_detail
 
         redacted = public_event_detail(
-            "vote_received", "Approved by jane@example.com via console"
+            "expired", "Timed out; last pinged jane@example.com"
         )
         assert "jane@example.com" not in redacted
         assert "[redacted]" in redacted
+
+    def test_vote_received_drops_actor_uuid(self):
+        from preloop.models.schemas.approval_request import public_event_detail
+
+        voter = "123e4567-e89b-12d3-a456-426614174000"
+        redacted = public_event_detail(
+            "vote_received",
+            f"Approved by {voter} (1/2) via console",
+        )
+        assert voter not in redacted
+        assert redacted == "Approved by an approver (1/2) via console"
+
+    def test_vote_received_drops_email_voter(self):
+        from preloop.models.schemas.approval_request import public_event_detail
+
+        redacted = public_event_detail(
+            "vote_received", "Approved by jane@example.com via console"
+        )
+        assert "jane@example.com" not in redacted
+        assert redacted == "Approved by an approver via console"
+
+    def test_vote_received_drops_anonymous_label(self):
+        from preloop.models.schemas.approval_request import public_event_detail
+
+        redacted = public_event_detail(
+            "vote_received", "Declined by anonymous (1 decline(s))"
+        )
+        assert "anonymous" not in redacted
+        assert redacted == "Declined by an approver (1 decline(s))"
+
+    def test_approval_event_public_redacts_vote_actor_id(self):
+        from datetime import datetime, timezone
+
+        from preloop.models.schemas.approval_request import ApprovalEventPublic
+
+        voter = "123e4567-e89b-12d3-a456-426614174000"
+        event = ApprovalEventPublic(
+            event_type="vote_received",
+            detail=f"Approved by {voter} (1/2) via console",
+            comment=None,
+            timestamp=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+        assert voter not in event.detail
+        assert event.detail == "Approved by an approver (1/2) via console"
