@@ -244,9 +244,9 @@ export class ApprovalsView extends AuthedElement {
         justify-content: flex-end;
       }
 
-      /* Destructive last, after a gap, never beside the everyday action. */
+      /* Destructive last, after a large gap, never beside the everyday action. */
       .approval-actions .row-deny {
-        margin-left: var(--sl-spacing-medium);
+        margin-left: var(--sl-spacing-large);
       }
 
       .approval-actions .row-details {

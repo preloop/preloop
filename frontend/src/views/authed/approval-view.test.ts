@@ -198,6 +198,34 @@ describe('ApprovalView', () => {
       expect(deny.hasAttribute('outline'), 'Deny must be outline').to.be.true;
     });
 
+    it('names the comment field and hides the shortcut from screen readers', async () => {
+      const element = await renderRequest(pendingRequest());
+      const bar = element.shadowRoot?.querySelector(
+        '.decision-bar'
+      ) as HTMLElement;
+
+      // Shoelace wires the label to the inner input, so a label attribute is
+      // what gives the field an accessible name; a placeholder alone does not.
+      const comment = bar.querySelector('.decision-comment') as HTMLElement;
+      expect(
+        comment.getAttribute('label'),
+        'the comment field needs an accessible name'
+      ).to.contain('Comment');
+
+      bar.querySelectorAll('kbd').forEach((key) => {
+        expect(
+          key.getAttribute('aria-hidden'),
+          'the shortcut hint is read out as part of the button label'
+        ).to.equal('true');
+      });
+      expect(
+        (bar.querySelector('.approve') as HTMLElement).getAttribute('title')
+      ).to.equal('Approve (A)');
+      expect(
+        (bar.querySelector('.deny') as HTMLElement).getAttribute('title')
+      ).to.equal('Deny (D)');
+    });
+
     it('approves on the A key', async () => {
       const element = await renderRequest(pendingRequest());
 

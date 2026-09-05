@@ -242,6 +242,21 @@ export class ApprovalView extends AuthedElement {
         min-width: 160px;
       }
 
+      /*
+       * The label repeats the placeholder and would cost the bar a whole row.
+       * Keep it in the accessibility tree (Shoelace wires it to the input, so
+       * the field has a name) and take it out of the picture.
+       */
+      .decision-comment::part(form-control-label) {
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        height: 1px;
+        overflow: hidden;
+        position: absolute;
+        white-space: nowrap;
+        width: 1px;
+      }
+
       .decision-buttons {
         display: flex;
         align-items: center;
@@ -297,8 +312,9 @@ export class ApprovalView extends AuthedElement {
           flex: 1;
         }
 
+        /* The stacked buttons take the full row, so the large gap still fits. */
         .decision-buttons .deny {
-          margin-left: var(--sl-spacing-medium);
+          margin-left: var(--sl-spacing-large);
         }
       }
     `,
@@ -949,6 +965,7 @@ export class ApprovalView extends AuthedElement {
         <sl-input
           class="decision-comment"
           size="small"
+          label="Comment (optional)"
           placeholder="Comment (optional)"
           .value=${this.comment}
           @sl-input=${(e: any) => (this.comment = e.target.value)}
@@ -958,22 +975,24 @@ export class ApprovalView extends AuthedElement {
           <sl-button
             class="approve"
             variant="success"
+            title="Approve (A)"
             @click=${this.handleApprove}
             ?loading=${this.submitting}
             ?disabled=${this.submitting}
           >
             <sl-icon slot="prefix" name="check-circle"></sl-icon>
-            Approve<kbd>A</kbd>
+            Approve<kbd aria-hidden="true">A</kbd>
           </sl-button>
           <sl-button
             class="deny"
             variant="danger"
             outline
+            title="Deny (D)"
             @click=${this.handleDeny}
             ?disabled=${this.submitting}
           >
             <sl-icon slot="prefix" name="x-circle"></sl-icon>
-            Deny<kbd>D</kbd>
+            Deny<kbd aria-hidden="true">D</kbd>
           </sl-button>
         </div>
       </div>
