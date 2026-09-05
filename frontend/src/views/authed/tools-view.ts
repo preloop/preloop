@@ -224,11 +224,13 @@ export class ToolsView extends LitElement {
         color: var(--sl-color-primary-700);
       }
 
-      .context-tax {
+      /* Meta note at the end of a summary strip (token cost on MCP, the
+         account default on Native). */
+      .strip-note {
         color: var(--console-meta-color, var(--sl-color-neutral-600));
       }
 
-      .context-tax strong {
+      .strip-note strong {
         font-variant-numeric: tabular-nums;
         color: var(--sl-color-neutral-900);
       }
@@ -1737,8 +1739,12 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     `;
   }
 
+  private _toolNoun(count: number): string {
+    return count === 1 ? 'tool' : 'tools';
+  }
+
   private _resultsLabel(shown: number, total: number): string {
-    const noun = total === 1 ? 'tool' : 'tools';
+    const noun = this._toolNoun(total);
     if (shown === total) {
       return `${shown} ${noun}`;
     }
@@ -1789,7 +1795,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
 
     return html`
       <div class="summary-strip">
-        ${this._renderStripCount(stats.total, 'tools', {
+        ${this._renderStripCount(stats.total, this._toolNoun(stats.total), {
           active: noFilters,
           onClick: () => this._clearFilters(),
         })}
@@ -1811,7 +1817,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         ${
           stats.contextTaxTokens > 0
             ? html`<span class="strip-sep" aria-hidden="true">·</span>
-                <span class="context-tax">
+                <span class="strip-note">
                   Enabled tools add
                   <strong
                     >~${stats.contextTaxTokens.toLocaleString()} tokens</strong
@@ -2006,7 +2012,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
       !this.nativeFilters.query;
     return html`
       <div class="summary-strip native-summary-strip">
-        ${this._renderStripCount(stats.total, 'tools', {
+        ${this._renderStripCount(stats.total, this._toolNoun(stats.total), {
           active: noFilters,
           onClick: () => this._clearNativeFilters(),
         })}
@@ -2028,7 +2034,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         ${
           this.governanceDefaults
             ? html`<span class="strip-sep" aria-hidden="true">·</span>
-                <span class="context-tax"
+                <span class="strip-note"
                   >${
                     this._nativeAsksByDefault()
                       ? 'asks a human by default'

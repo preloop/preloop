@@ -1651,7 +1651,6 @@ export class AuditView extends AuthedElement {
       .timeline-group {
         border-radius: 4px;
         background: var(--sl-color-neutral-0);
-        transition: border-color 0.2s;
       }
       .timeline-group.tool-call {
         background: var(--sl-color-neutral-0);
@@ -1936,8 +1935,7 @@ export class AuditView extends AuthedElement {
           grid-template-columns: minmax(0, 1fr);
         }
         .filter-bar sl-input,
-        .filter-bar sl-select,
-        .filter-bar sl-input[type='date'] {
+        .filter-bar sl-select {
           width: 100%;
           max-width: 100%;
           min-width: 0;

@@ -296,7 +296,7 @@ describe('ToolsView (approvals + conditions)', () => {
     ) as HTMLButtonElement | null;
     expect(unavailableButton?.getAttribute('aria-pressed')).to.equal('false');
 
-    const contextTax = el.shadowRoot?.querySelector('.context-tax');
+    const contextTax = el.shadowRoot?.querySelector('.strip-note');
     expect(contextTax).to.exist;
     // Only enabled+supported tools contribute (1200), not unavailable (800).
     expect(contextTax?.textContent?.replace(/\s+/g, ' ')).to.contain(
@@ -1067,8 +1067,9 @@ describe('ToolsView – tabs and toolbar', () => {
 
     const toolsCount = [
       ...(el.shadowRoot?.querySelectorAll('.strip-count') || []),
-    ].find((button) => /^\s*\d+\s+tools\s*$/.test(button.textContent || '')) as
-      HTMLButtonElement | undefined;
+    ].find((button) =>
+      /^\s*\d+\s+tools?\s*$/.test(button.textContent || '')
+    ) as HTMLButtonElement | undefined;
     expect(toolsCount).to.exist;
     toolsCount!.click();
     await el.updateComplete;
@@ -1166,7 +1167,7 @@ describe('ToolsView – tabs and toolbar', () => {
     );
 
     const strip = el.shadowRoot?.querySelector('.summary-strip');
-    expect(strip?.textContent?.replace(/\s+/g, ' ')).to.contain('1 tools');
+    expect(strip?.textContent?.replace(/\s+/g, ' ')).to.contain('1 tool ');
 
     const nativeEditor = el.shadowRoot?.querySelector(
       'sl-tab-panel[name="native"] tools-editor-component'
@@ -1312,7 +1313,7 @@ describe('ToolsView – tabs and toolbar', () => {
         ?.textContent?.replace(/\s+/g, ' ')
         .trim()
     ).to.equal(
-      '1 tools · 1 allowed · 0 blocked · 0 with rules · runs without asking by default'
+      '1 tool · 1 allowed · 0 blocked · 0 with rules · runs without asking by default'
     );
   });
 
