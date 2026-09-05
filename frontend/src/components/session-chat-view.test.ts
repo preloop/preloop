@@ -47,6 +47,32 @@ function previewEvent(
   } as FlowGatewayEvent;
 }
 
+function manyEvents(count: number): FlowGatewayEvent[] {
+  return Array.from({ length: count }, (_, index) =>
+    previewEvent(
+      `e${index}`,
+      `2026-08-06T10:${String(index).padStart(2, '0')}:00Z`,
+      [
+        { role: 'user', text: `prompt ${index}` },
+        { role: 'assistant', text: `answer ${index}`, source: 'response' },
+      ]
+    )
+  );
+}
+
+function distanceFromBottom(thread: HTMLElement): number {
+  return thread.scrollHeight - thread.scrollTop - thread.clientHeight;
+}
+
+/** Let the ResizeObserver and the layout it reacts to settle. */
+async function waitForStableScroll(thread: HTMLElement): Promise<void> {
+  for (let frame = 0; frame < 6; frame += 1) {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    if (distanceFromBottom(thread) < 2) return;
+  }
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
 describe('session-chat-view', () => {
   it('renders empty state without events', async () => {
     const el = await fixture<SessionChatView>(
@@ -382,6 +408,173 @@ describe('session-chat-view in the talk window', () => {
       ) as HTMLElement
     ).click();
     expect(retried).to.deep.equal(['p1']);
+  });
+
+  it('follows a new turn when the event page size does not change', async () => {
+    // The talk view refetches a fixed page of the newest events, so once a
+    // session is longer than one page the array length stops growing while
+    // its contents keep changing. Counting events missed every one of those.
+    const page = (offset: number) =>
+      Array.from({ length: 12 }, (_, index) =>
+        previewEvent(
+          `e${offset + index}`,
+          `2026-08-06T10:${String(offset + index).padStart(2, '0')}:00Z`,
+          [
+            { role: 'user', text: `prompt ${offset + index}` },
+            {
+              role: 'assistant',
+              text: `answer ${offset + index}`,
+              source: 'response',
+            },
+          ]
+        )
+      );
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view
+        scrollable
+        followLive
+        style="height: 200px"
+        .events=${page(0)}
+      ></session-chat-view>`
+    );
+    await el.updateComplete;
+    const thread = el.shadowRoot!.querySelector('.thread') as HTMLElement;
+
+    // Same length, newer contents: one turn scrolled off the top.
+    el.events = page(1);
+    await el.updateComplete;
+    await waitForStableScroll(thread);
+
+    expect(distanceFromBottom(thread)).to.be.lessThan(2);
+    expect(thread.textContent).to.contain('answer 12');
+  });
+
+  it('stays at the bottom when content grows after the update', async () => {
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view
+        scrollable
+        followLive
+        style="height: 200px"
+        .events=${[
+          previewEvent('e1', '2026-08-06T10:00:00Z', [
+            { role: 'user', text: 'ship it' },
+            { role: 'assistant', text: 'shipped', source: 'response' },
+          ]),
+        ]}
+      ></session-chat-view>`
+    );
+    await el.updateComplete;
+    const thread = el.shadowRoot!.querySelector('.thread') as HTMLElement;
+    const content = el.shadowRoot!.querySelector(
+      '.thread-content'
+    ) as HTMLElement;
+
+    // Whatever grows after the render that scrolled (a Shoelace element
+    // rendering in its own cycle, a font, an image, a reflowing <pre>).
+    const grown = document.createElement('div');
+    grown.style.height = '800px';
+    content.appendChild(grown);
+    await waitForStableScroll(thread);
+
+    expect(thread.scrollHeight).to.be.greaterThan(thread.clientHeight);
+    expect(
+      distanceFromBottom(thread),
+      'follow mode re-sticks once the layout settles'
+    ).to.be.lessThan(2);
+  });
+
+  it('does not treat a layout-driven scroll as the reader scrolling away', async () => {
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view
+        scrollable
+        followLive
+        style="height: 200px"
+        .events=${manyEvents(12)}
+      ></session-chat-view>`
+    );
+    await el.updateComplete;
+    const thread = el.shadowRoot!.querySelector('.thread') as HTMLElement;
+
+    // No wheel, no touch, no key, no pointer: the viewport moved on its own.
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new Event('scroll'));
+    await el.updateComplete;
+
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="jump-latest"]'),
+      'layout must not switch following off'
+    ).to.not.exist;
+    expect(distanceFromBottom(thread)).to.be.lessThan(2);
+  });
+
+  it('never yanks a reader who scrolled up with a gesture', async () => {
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view
+        scrollable
+        followLive
+        style="height: 200px"
+        .events=${manyEvents(12)}
+      ></session-chat-view>`
+    );
+    await el.updateComplete;
+    const thread = el.shadowRoot!.querySelector('.thread') as HTMLElement;
+
+    thread.dispatchEvent(new WheelEvent('wheel', { deltaY: -400 }));
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new Event('scroll'));
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('[data-testid="jump-latest"]')).to
+      .exist;
+
+    el.events = manyEvents(13);
+    await el.updateComplete;
+    await waitForStableScroll(thread);
+
+    expect(thread.scrollTop, 'the reader stays where they were').to.equal(0);
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="jump-latest"]'),
+      'the pill is how they come back'
+    ).to.exist;
+  });
+
+  it('rebinds the thread after a session switch empties it', async () => {
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view
+        scrollable
+        followLive
+        style="height: 200px"
+        .events=${manyEvents(12)}
+      ></session-chat-view>`
+    );
+    await el.updateComplete;
+    const first = el.shadowRoot!.querySelector('.thread') as HTMLElement;
+    first.dispatchEvent(new WheelEvent('wheel', { deltaY: -400 }));
+    first.scrollTop = 0;
+    first.dispatchEvent(new Event('scroll'));
+    await el.updateComplete;
+
+    // Following a new session clears the thread, which removes the .thread
+    // node entirely (the empty branch), then builds a new one.
+    el.events = [];
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.empty')).to.exist;
+    el.events = manyEvents(12);
+    await el.updateComplete;
+
+    const thread = el.shadowRoot!.querySelector('.thread') as HTMLElement;
+    await waitForStableScroll(thread);
+    expect(
+      distanceFromBottom(thread),
+      'the new session opens at the latest'
+    ).to.be.lessThan(2);
+
+    // The listeners must be on the new node, not the discarded one.
+    thread.dispatchEvent(new WheelEvent('wheel', { deltaY: -400 }));
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new Event('scroll'));
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('[data-testid="jump-latest"]')).to
+      .exist;
   });
 
   it('announces the agent reply politely', async () => {

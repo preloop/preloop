@@ -34,6 +34,27 @@ const MESSAGE_PREVIEW_CHARS = 2000;
 const STEP_PREVIEW_CHARS = 600;
 /** How far from the bottom still counts as "reading the latest". */
 const FOLLOW_THRESHOLD_PX = 48;
+/**
+ * How long after a real gesture a scroll event still counts as user intent.
+ * Wheel and touch scrolling keep emitting scroll events for a few hundred ms
+ * after the last input event (momentum), so the window has to outlive the
+ * gesture itself.
+ */
+const USER_SCROLL_WINDOW_MS = 700;
+/**
+ * How long an expand/collapse click stops the follow re-stick. Growing a
+ * message the reader just opened must not scroll it out from under them.
+ */
+const EXPAND_SETTLE_MS = 500;
+/** Input that means the operator moved the thread themselves. */
+const GESTURE_EVENTS = [
+  'wheel',
+  'touchstart',
+  'touchmove',
+  'pointerdown',
+  'mousedown',
+  'keydown',
+] as const;
 
 /** A turn the operator sent that the server has not echoed back yet. */
 export interface PendingTalkMessage {
@@ -116,12 +137,34 @@ export class SessionChatView extends LitElement {
     },
   };
 
-  // Events seen at the last follow-live scroll; scrolling happens only when
-  // new events actually arrive, never on state-only re-renders.
-  private lastScrolledEventCount = 0;
+  // What the thread held at the last follow-live scroll; scrolling happens
+  // only when the conversation actually changed, never on state-only
+  // re-renders. This is a signature, not a count: the talk view refetches a
+  // fixed page of the newest events, so once a session is longer than one
+  // page the array length stops growing while its contents keep changing.
+  private lastContentSignature = '';
   private lastScrolledPendingCount = 0;
   private lastAnnouncedKey: string | null = null;
-  private scrollBound = false;
+  /**
+   * The `.thread` node the listeners are attached to. Not a boolean: the
+   * loading and empty render branches have no `.thread`, so switching
+   * sessions destroys it and Lit builds a new one. A latched boolean would
+   * leave the listeners on the detached node and freeze `atBottom` for good.
+   */
+  private boundThread: HTMLElement | null = null;
+  /** The thread node went away (loading or empty branch) and will come back. */
+  private threadWasDestroyed = false;
+  private contentObserver: ResizeObserver | null = null;
+  private observedContent: Element | null = null;
+  /**
+   * When the last real user gesture on the thread happened. Negative
+   * infinity, not zero: `performance.now()` starts at zero, so zero would
+   * read as "a gesture just happened" for the first second of the page.
+   */
+  private lastGestureAt = Number.NEGATIVE_INFINITY;
+  private pointerDown = false;
+  /** Re-sticking is paused until this timestamp (an expand/collapse click). */
+  private stickPausedUntil = 0;
 
   @state()
   private liveAnnouncement = '';
@@ -140,7 +183,18 @@ export class SessionChatView extends LitElement {
       position: relative;
     }
 
+    /*
+     * Two elements, not one: the thread is the scroll viewport and the
+     * content inside it is the thing whose height changes. A ResizeObserver
+     * on a scroll container never fires for content growth, and content
+     * growth after an update is exactly what used to leave the talk window
+     * short of the bottom.
+     */
     .thread {
+      display: block;
+    }
+
+    .thread-content {
       display: flex;
       flex-direction: column;
       gap: var(--sl-spacing-medium);
@@ -152,6 +206,9 @@ export class SessionChatView extends LitElement {
       min-height: 0;
       overflow-y: auto;
       overscroll-behavior: contain;
+    }
+
+    :host([scrollable]) .thread-content {
       padding: var(--sl-spacing-small) var(--sl-spacing-medium);
     }
 
@@ -388,23 +445,30 @@ export class SessionChatView extends LitElement {
     }
   }
 
+  connectedCallback(): void {
+    super.connectedCallback();
+    // Keyboard scrolling (arrows, PageDown, Home/End) targets whatever has
+    // focus inside the thread, so the host is where it can always be seen.
+    this.addEventListener('keydown', this.markGesture);
+    window.addEventListener('pointerup', this.handlePointerUp);
+    window.addEventListener('pointercancel', this.handlePointerUp);
+  }
+
   updated(changed: PropertyValues<this>): void {
-    const thread = this.renderRoot.querySelector('.thread');
-    if (thread && this.scrollable && !this.scrollBound) {
-      thread.addEventListener('scroll', this.handleScroll, { passive: true });
-      this.scrollBound = true;
-    }
+    this.bindThread();
     // A turn the operator just typed always pulls the thread down: they are
     // looking at what they sent.
     const pendingGrew = this.pending.length > this.lastScrolledPendingCount;
     this.lastScrolledPendingCount = this.pending.length;
+    const signature = this.contentSignature();
+    const contentChanged = signature !== this.lastContentSignature;
+    this.lastContentSignature = signature;
     if (!this.followLive) return;
-    // Scroll only when new events arrived (or follow-live was just switched
-    // on); a scrollTop write on every update would force a reflow — and yank
-    // the view — each time the user expands a message they are reading.
-    const newEvents = this.events.length > this.lastScrolledEventCount;
-    this.lastScrolledEventCount = this.events.length;
-    if (!newEvents && !pendingGrew && !changed.has('followLive')) return;
+    // Scroll only when the conversation changed (or follow-live was just
+    // switched on); a scrollTop write on every update would force a reflow
+    // and yank the view each time the user expands a message they are
+    // reading.
+    if (!contentChanged && !pendingGrew && !changed.has('followLive')) return;
     // Someone who scrolled up to re-read is not interrupted; the pill takes
     // them back when they want it.
     if (this.scrollable && !this.atBottom && !pendingGrew) return;
@@ -412,23 +476,149 @@ export class SessionChatView extends LitElement {
   }
 
   disconnectedCallback(): void {
-    const thread = this.renderRoot?.querySelector('.thread');
-    thread?.removeEventListener('scroll', this.handleScroll);
-    this.scrollBound = false;
+    this.removeEventListener('keydown', this.markGesture);
+    window.removeEventListener('pointerup', this.handlePointerUp);
+    window.removeEventListener('pointercancel', this.handlePointerUp);
+    this.releaseThread();
+    this.contentObserver?.disconnect();
+    this.contentObserver = null;
+    this.observedContent = null;
     super.disconnectedCallback();
+  }
+
+  /** What the thread is showing right now, cheap enough to compare per update. */
+  private contentSignature(): string {
+    const items = this.conversation.items;
+    const last = items[items.length - 1];
+    return `${items.length}|${last ? last.key : ''}|${this.events.length}|${
+      this.activity.length
+    }`;
+  }
+
+  /**
+   * Attach scroll/gesture listeners and the size observer to the current
+   * `.thread`, re-attaching whenever Lit replaces it (loading and empty
+   * branches remove it, and a session switch goes through both).
+   */
+  private bindThread(): void {
+    const thread = this.renderRoot.querySelector(
+      '.thread'
+    ) as HTMLElement | null;
+    if (thread !== this.boundThread) {
+      if (this.boundThread && !thread) this.threadWasDestroyed = true;
+      this.releaseThread();
+      this.boundThread = thread;
+      // A rebuilt thread is a different conversation (the talk view empties
+      // events when it follows the agent into a new session), so following
+      // resumes whether or not the reader had scrolled up in the old one.
+      if (thread && this.threadWasDestroyed) {
+        this.threadWasDestroyed = false;
+        if (this.followLive) this.atBottom = true;
+      }
+      if (thread && this.scrollable) {
+        thread.addEventListener('scroll', this.handleScroll, { passive: true });
+        for (const type of GESTURE_EVENTS) {
+          thread.addEventListener(type, this.markGesture, { passive: true });
+        }
+      }
+    }
+    this.observeContent();
+  }
+
+  private releaseThread(): void {
+    const thread = this.boundThread;
+    if (!thread) return;
+    thread.removeEventListener('scroll', this.handleScroll);
+    for (const type of GESTURE_EVENTS) {
+      thread.removeEventListener(type, this.markGesture);
+    }
+    if (this.observedContent) {
+      this.contentObserver?.unobserve(this.observedContent);
+      this.observedContent = null;
+    }
+    this.contentObserver?.unobserve(thread);
+    this.boundThread = null;
+  }
+
+  /**
+   * Follow the thread's own height and its content's height. Content that
+   * grows after the update that scrolled (Shoelace elements rendering in
+   * their own cycle, fonts, images, a `<pre>` reflowing) would otherwise
+   * leave the view a few hundred pixels short of the bottom, and the viewport
+   * shrinking (the composer growing, the follow banner appearing, a window
+   * resize) would do the same.
+   */
+  private observeContent(): void {
+    if (!this.scrollable || !this.boundThread) return;
+    const content = this.renderRoot.querySelector('.thread-content');
+    if (!content || content === this.observedContent) return;
+    if (!this.contentObserver) {
+      this.contentObserver = new ResizeObserver(() => this.stickIfFollowing());
+    }
+    if (this.observedContent)
+      this.contentObserver.unobserve(this.observedContent);
+    this.contentObserver.observe(content);
+    this.contentObserver.observe(this.boundThread);
+    this.observedContent = content;
+  }
+
+  private markGesture = (event?: Event): void => {
+    if (event?.type === 'pointerdown') this.pointerDown = true;
+    this.lastGestureAt = performance.now();
+  };
+
+  private handlePointerUp = (): void => {
+    if (!this.pointerDown) return;
+    this.pointerDown = false;
+    this.lastGestureAt = performance.now();
+  };
+
+  /** Did the operator's own hands move the thread just now? */
+  private gestureInFlight(): boolean {
+    if (this.pointerDown) return true;
+    return performance.now() - this.lastGestureAt <= USER_SCROLL_WINDOW_MS;
   }
 
   private handleScroll = (event: Event): void => {
     const thread = event.currentTarget as HTMLElement;
     const distance =
       thread.scrollHeight - thread.scrollTop - thread.clientHeight;
-    const atBottom = distance <= FOLLOW_THRESHOLD_PX;
-    if (atBottom !== this.atBottom) this.atBottom = atBottom;
+    if (distance <= FOLLOW_THRESHOLD_PX) {
+      // Scrolling back to the bottom always resumes following, however the
+      // view got there.
+      if (!this.atBottom) this.atBottom = true;
+      return;
+    }
+    if (!this.atBottom) return;
+    if (this.followLive && !this.gestureInFlight()) {
+      // Layout moved the viewport, not the reader: a growing composer, an
+      // inserted banner, a resize, our own write racing a height change.
+      // Following is not something the page gets to switch off. Only a live
+      // thread is put back; a static one is the reader's to move.
+      this.stickToBottom();
+      return;
+    }
+    this.atBottom = false;
   };
+
+  /** Re-pin the viewport without touching follow state. */
+  private stickToBottom(): void {
+    const thread = this.boundThread;
+    if (!thread) return;
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  private stickIfFollowing(): void {
+    if (!this.followLive || !this.scrollable || !this.atBottom) return;
+    if (performance.now() < this.stickPausedUntil) return;
+    this.stickToBottom();
+  }
 
   /** Public so the talk page can snap the thread down after it loads. */
   public scrollToLatest(): void {
-    const thread = this.renderRoot.querySelector('.thread');
+    const thread =
+      this.boundThread ??
+      (this.renderRoot.querySelector('.thread') as HTMLElement | null);
     if (!thread) return;
     thread.scrollTop = thread.scrollHeight;
     this.atBottom = true;
@@ -442,6 +632,7 @@ export class SessionChatView extends LitElement {
   }
 
   private toggleMessage(key: string): void {
+    this.pauseSticking();
     const next = new Set(this.expandedMessageKeys);
     if (next.has(key)) next.delete(key);
     else next.add(key);
@@ -449,10 +640,20 @@ export class SessionChatView extends LitElement {
   }
 
   private toggleStep(key: string): void {
+    this.pauseSticking();
     const next = new Set(this.expandedStepKeys);
     if (next.has(key)) next.delete(key);
     else next.add(key);
     this.expandedStepKeys = next;
+  }
+
+  /**
+   * Opening a message the reader is looking at grows the thread, and growing
+   * the thread re-sticks it to the bottom. That would scroll the thing they
+   * just opened out of view, so the observer keeps its hands off for a moment.
+   */
+  private pauseSticking(): void {
+    this.stickPausedUntil = performance.now() + EXPAND_SETTLE_MS;
   }
 
   private requestEarlierEvents(): void {
@@ -756,53 +957,56 @@ ${
     return html`
       ${this.renderLiveRegion()}${this.renderJumpPill()}
       <div class="thread">
-        ${
-          this.hasMoreEvents
-            ? html`
-                <sl-button
-                  class="load-earlier"
-                  size="small"
-                  ?loading=${this.loadingMoreEvents}
-                  @click=${() => this.requestEarlierEvents()}
-                >
-                  Load earlier conversation
-                </sl-button>
-              `
-            : nothing
-        }
-        ${
-          stats.eventsWithoutRawBody > 0
-            ? html`
-                <div class="coverage-note" role="note">
-                  Message structure was unavailable for
-                  ${stats.eventsWithoutRawBody} of ${stats.totalEvents}
-                  requests, so some tool results may appear as user prompts
-                  there.
-                </div>
-              `
-            : nothing
-        }
-        ${
-          stats.eventsWithPartialToolResults > 0
-            ? html`
-                <div class="coverage-note" role="note">
-                  ${stats.eventsWithPartialToolResults} of ${stats.totalEvents}
-                  requests carried tool results with no extractable text, so
-                  some of those may appear as user prompts.
-                </div>
-              `
-            : nothing
-        }
-        ${repeat(
-          items,
-          (item) => item.key,
-          (item) => this.renderItem(item)
-        )}
-        ${repeat(
-          this.pending,
-          (message) => message.id,
-          (message) => this.renderPending(message)
-        )}
+        <div class="thread-content">
+          ${
+            this.hasMoreEvents
+              ? html`
+                  <sl-button
+                    class="load-earlier"
+                    size="small"
+                    ?loading=${this.loadingMoreEvents}
+                    @click=${() => this.requestEarlierEvents()}
+                  >
+                    Load earlier conversation
+                  </sl-button>
+                `
+              : nothing
+          }
+          ${
+            stats.eventsWithoutRawBody > 0
+              ? html`
+                  <div class="coverage-note" role="note">
+                    Message structure was unavailable for
+                    ${stats.eventsWithoutRawBody} of ${stats.totalEvents}
+                    requests, so some tool results may appear as user prompts
+                    there.
+                  </div>
+                `
+              : nothing
+          }
+          ${
+            stats.eventsWithPartialToolResults > 0
+              ? html`
+                  <div class="coverage-note" role="note">
+                    ${stats.eventsWithPartialToolResults} of
+                    ${stats.totalEvents} requests carried tool results with no
+                    extractable text, so some of those may appear as user
+                    prompts.
+                  </div>
+                `
+              : nothing
+          }
+          ${repeat(
+            items,
+            (item) => item.key,
+            (item) => this.renderItem(item)
+          )}
+          ${repeat(
+            this.pending,
+            (message) => message.id,
+            (message) => this.renderPending(message)
+          )}
+        </div>
       </div>
     `;
   }
