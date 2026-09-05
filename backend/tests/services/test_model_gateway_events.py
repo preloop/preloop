@@ -597,3 +597,15 @@ def test_build_event_reports_zero_retries_for_a_clean_call():
             usage=usage, request_payload=None, response_payload=None
         )
     assert event["payload"]["retried"] == 0
+
+
+def test_derive_outcome_treats_allowlist_denial_as_budget_denied():
+    """No policy_denied vocabulary exists, so allowlist denials stay budget_denied."""
+    detail = (
+        "Model 'vendor/alpha-chat' is not in this agent's allowed models "
+        "(Alpha Chat). Edit the agent's governance in the Preloop console or "
+        "pick an allowed model."
+    )
+    assert ModelGatewayEventEmitter._derive_outcome(403, detail) == "budget_denied"
+    assert ModelGatewayEventEmitter._derive_outcome(403, "forbidden") == "error"
+    assert ModelGatewayEventEmitter._derive_outcome(200, None) == "success"

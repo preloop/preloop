@@ -1013,6 +1013,28 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		validationResult["live_validation_status"] = "pending"
 	}
 
+	// The agent's governance may restrict allowed models. Surface a mismatch
+	// with the alias we are about to route (and offer to fix it) before the
+	// live check turns it into an opaque 403. Dry runs returned right after
+	// printing the plan, so only the confirmation flags decide interactivity.
+	if supportsManagedGateway(agent) && strings.TrimSpace(plan.ManagedModelAlias) != "" {
+		interactiveAllowlist := !opts.AutoApprove &&
+			!opts.SkipConfirmation &&
+			!nonInteractiveAutoConfirm() &&
+			stdinIsTerminal()
+		if err := ensureSelectedModelAllowed(
+			client,
+			managedAgent.ID,
+			plan.ManagedModelAlias,
+			gatewayHints.SelectedAIModel,
+			input,
+			output,
+			interactiveAllowlist,
+		); err != nil {
+			return err
+		}
+	}
+
 	var liveValidationErr error
 	liveValidationGatewayVerified := false
 	liveValidationKeepsGatewayConfig := false
@@ -1039,6 +1061,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			modelAlias,
 			liveValidationDuration,
 		)
+		if hint := allowedModelsLiveCheckHint(agent, liveOutcome, err); hint != "" {
+			fmt.Fprintln(output, formatCLIError(hint)) //nolint:errcheck
+		}
 		if liveOutcome != nil && liveOutcome.Attempted {
 			// A probe the upstream provider refused (rate limit, billing) is
 			// inconclusive, not a failure: the static config checks passed and

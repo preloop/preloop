@@ -438,3 +438,202 @@ def test_account_without_allowlist_is_unaffected(db_session, test_user):
         result = service.preflight_check(ai_model, {**payload, "input": "hi"})
         assert result.hard_limit_exceeded is False
         assert result.enforcement_reason is None
+
+
+def test_allowlist_accepts_display_name_entry(db_session, test_user):
+    """The console stored display names; ``Alpha Chat`` must govern its row."""
+    ai_model = _governed_model(
+        db_session,
+        test_user,
+        name="Alpha Chat",
+        provider_name="acme",
+        model_identifier="alpha-chat",
+    )
+    api_key = _key_scoped_allowlist(db_session, test_user, ["Beta Flash", "Alpha Chat"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(
+        ai_model, {"model": "acme/alpha-chat", "input": "hi"}
+    )
+
+    assert result.hard_limit_exceeded is False
+    assert result.enforcement_reason is None
+
+
+def test_allowlist_display_name_match_is_case_insensitive_and_trimmed(
+    db_session, test_user
+):
+    """Hand-typed names differ in case and whitespace from the stored row."""
+    ai_model = _governed_model(db_session, test_user, name="Alpha Chat")
+    api_key = _key_scoped_allowlist(db_session, test_user, ["  alpha chat "])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(ai_model, {"model": "claude-opus-4-1"})
+
+    assert result.hard_limit_exceeded is False
+
+
+def test_allowlist_accepts_model_id_entry(db_session, test_user):
+    """The deploy wizard persists AIModel ids; those must govern too."""
+    ai_model = _governed_model(db_session, test_user)
+    api_key = _key_scoped_allowlist(db_session, test_user, [str(ai_model.id)])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(
+        ai_model, {"model": "anthropic/claude-opus-4-1", "input": "hi"}
+    )
+
+    assert result.hard_limit_exceeded is False
+
+
+def test_allowlist_accepts_configured_gateway_alias_entry(db_session, test_user):
+    """An explicit ``meta_data.gateway.model_alias`` is the preferred key."""
+    ai_model = _governed_model(
+        db_session,
+        test_user,
+        meta_data={
+            "gateway": {"enabled": True, "model_alias": "team/opus"},
+            "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
+        },
+    )
+    api_key = _key_scoped_allowlist(db_session, test_user, ["team/opus"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(ai_model, {"model": "team/opus", "input": "hi"})
+
+    assert result.hard_limit_exceeded is False
+
+
+def test_allowlist_unrelated_display_name_still_denies(db_session, test_user):
+    """Naming a different model by display name must not open the gate."""
+    ai_model = _governed_model(db_session, test_user, name="Governed Opus")
+    _governed_model(
+        db_session,
+        test_user,
+        name="Alpha Chat",
+        provider_name="acme",
+        model_identifier="alpha-chat",
+    )
+    api_key = _key_scoped_allowlist(db_session, test_user, ["Alpha Chat"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(
+        ai_model, {"model": "anthropic/claude-opus-4-1", "input": "hi"}
+    )
+
+    assert result.hard_limit_exceeded is True
+    assert result.enforcement_reason == "subject_model_not_allowed"
+    assert result.allowed_models == ["Alpha Chat"]
+    assert result.requested_model == "anthropic/claude-opus-4-1"
+
+
+def test_allowlist_denial_names_alias_when_request_omits_model(db_session, test_user):
+    """Without a wire model the denial quotes the resolved gateway alias."""
+    ai_model = _governed_model(db_session, test_user)
+    api_key = _key_scoped_allowlist(db_session, test_user, ["Alpha Chat"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(ai_model, {"input": "hi"})
+
+    assert result.hard_limit_exceeded is True
+    assert result.requested_model == "anthropic/claude-opus-4-1"
+
+
+def test_empty_allowlist_allows_every_model(db_session, test_user):
+    """An empty list is "unrestricted", not "nothing allowed"."""
+    ai_model = _governed_model(db_session, test_user)
+    api_key = _key_scoped_allowlist(db_session, test_user, [])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(
+        ai_model, {"model": "anthropic/claude-opus-4-1", "input": "hi"}
+    )
+
+    assert result.hard_limit_exceeded is False
+    assert result.enforcement_reason is None
+    assert result.allowed_models is None
+
+
+def test_display_name_of_a_sibling_row_does_not_cover_a_different_import(
+    db_session, test_user
+):
+    """A display name covers one inventory row, not a second import of the same identifier.
+
+    Two account rows can share a model identifier while using different
+    provider names and gateway aliases. Governance keys on rows, so listing
+    the first row's display name must not admit a request that resolved to
+    the sibling.
+    """
+    _governed_model(
+        db_session,
+        test_user,
+        name="Alpha Chat",
+        provider_name="acme",
+        model_identifier="alpha-chat",
+    )
+    sibling_import = _governed_model(
+        db_session,
+        test_user,
+        name="Imported alpha-chat",
+        provider_name="vendor",
+        model_identifier="alpha-chat",
+        meta_data={
+            "gateway": {"enabled": True, "model_alias": "vendor/alpha-chat"},
+            "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
+        },
+    )
+    api_key = _key_scoped_allowlist(db_session, test_user, ["Beta Flash", "Alpha Chat"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(
+        sibling_import, {"model": "vendor/alpha-chat", "input": "hi"}
+    )
+
+    assert result.hard_limit_exceeded is True
+    assert result.enforcement_reason == "subject_model_not_allowed"
+
+
+def test_enforce_or_raise_names_model_and_allowlist_when_not_allowed(
+    db_session, test_user
+):
+    """The bare "budget exceeded" message is gone: the 403 says what to fix."""
+    ai_model = _governed_model(
+        db_session,
+        test_user,
+        name="Imported alpha-chat",
+        provider_name="vendor",
+        model_identifier="alpha-chat",
+        meta_data={
+            "gateway": {"enabled": True, "model_alias": "vendor/alpha-chat"},
+            "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
+        },
+    )
+    api_key = _key_scoped_allowlist(db_session, test_user, ["Beta Flash", "Alpha Chat"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.enforce_or_raise(
+            ai_model, {"model": "vendor/alpha-chat", "input": "hi"}
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == (
+        "Model 'vendor/alpha-chat' is not in this agent's allowed models "
+        "(Beta Flash, Alpha Chat). Edit the agent's governance in the Preloop "
+        "console or pick an allowed model."
+    )
+
+
+def test_enforce_or_raise_elides_long_allowlists(db_session, test_user):
+    """More than five entries collapse to five plus an ellipsis."""
+    ai_model = _governed_model(db_session, test_user)
+    api_key = _key_scoped_allowlist(
+        db_session, test_user, [f"model-{index}" for index in range(8)]
+    )
+    service = _governed_service(db_session, test_user, api_key)
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.enforce_or_raise(ai_model, {"model": "claude-opus-4-1"})
+
+    assert "(model-0, model-1, model-2, model-3, model-4, ...)" in exc_info.value.detail
+    assert "model-5" not in exc_info.value.detail
