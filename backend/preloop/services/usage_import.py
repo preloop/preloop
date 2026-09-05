@@ -326,9 +326,9 @@ def sync_runtime_session_for_record(
 
     Title and summary come from record metadata: ``session_title`` always
     wins, ``session_title_default`` only fills an empty title, and
-    ``session_summary`` replaces the summary. When the record carries an
-    opt-in ``transcript``, each message is stored as a
-    ``transcript_message`` activity on the session.
+    ``session_summary`` replaces the summary. An opt-in ``transcript`` is
+    stored separately via :func:`add_transcript_activities`, after the
+    record's usage row landed.
 
     Args:
         db: Database session (flushed, not committed).
@@ -394,8 +394,37 @@ def sync_runtime_session_for_record(
     )
     if summary:
         session.summary = summary
-        session.summary_updated_at = datetime.now(timezone.utc)
+        session.summary_updated_at = observed_at
 
+    db.add(session)
+    db.flush()
+    return session
+
+
+def add_transcript_activities(
+    db: Session,
+    *,
+    account_id: str,
+    source: str,
+    record: UsageIngestRecord,
+    session: RuntimeSession,
+    timestamp: datetime,
+) -> None:
+    """Store a record's opt-in transcript messages as session activities.
+
+    Called only after the record's usage row was actually inserted, so a
+    request that loses the dedupe race (``log_imported_usage_event``
+    returns ``None``) never attaches its transcript to the session the
+    winning request already populated.
+
+    Args:
+        db: Database session (flushed, not committed).
+        account_id: Owning account id.
+        source: Ingest source label.
+        record: The pushed record carrying the transcript.
+        session: The record's runtime session.
+        timestamp: Fallback activity timestamp (the record's).
+    """
     for message in record.transcript or []:
         db.add(
             RuntimeSessionActivity(
@@ -408,15 +437,12 @@ def sync_runtime_session_for_record(
                     "role": message.role,
                     "source": f"usage_ingest:{source}",
                     "external_id": record.external_id,
-                    "conversation_id": conversation_id,
+                    "conversation_id": record.conversation_id,
                 },
                 timestamp=message.timestamp or timestamp,
             )
         )
-
-    db.add(session)
     db.flush()
-    return session
 
 
 def push_record_fingerprint(*, source: str, external_id: str) -> str:
@@ -461,13 +487,16 @@ def ingest_push_records(
     (:meth:`~preloop.models.crud.api_usage.CRUDApiUsage.log_imported_usage_event`):
     rows land as ``action_type='imported_usage'`` / ``usage_source='imported'``,
     ``total_tokens`` derives from input+output only, and cache-read tokens
-    stay in their own column — never summed into totals or charged spend.
+    stay in their own column: never summed into totals or charged spend.
     Conversation ids, message/tool counts, and cost_basis land in their
     first-class columns; lifecycle events (``event_type != 'usage'``) land
     as zero-cost rows unless explicitly priced. Each record's conversation
     is also registered as a runtime session keyed ``(source,
     conversation_id)`` (see :func:`sync_runtime_session_for_record`) and
-    the row is linked to it.
+    the row is linked to it. Opt-in transcript messages become session
+    activities only after the row landed (see
+    :func:`add_transcript_activities`), so a lost dedupe race never
+    duplicates them.
 
     Args:
         db: Database session.
@@ -509,6 +538,7 @@ def ingest_push_records(
                 for key, value in record.metadata.items():
                     meta.setdefault(key, value)
             runtime_session_id = None
+            session: Optional[RuntimeSession] = None
             try:
                 with db.begin_nested():
                     session = sync_runtime_session_for_record(
@@ -571,6 +601,26 @@ def ingest_push_records(
             )
             if row is not None:
                 existing_by_fp[fingerprint] = row
+                if session is not None and record.transcript:
+                    try:
+                        with db.begin_nested():
+                            add_transcript_activities(
+                                db,
+                                account_id=account_id,
+                                source=source,
+                                record=record,
+                                session=session,
+                                timestamp=timestamp,
+                            )
+                    except SQLAlchemyError:
+                        # Activities are bookkeeping; the ledger row stands.
+                        logger.warning(
+                            "Transcript activity sync failed for ingest record %s "
+                            "(source=%s)",
+                            record.external_id,
+                            source,
+                            exc_info=True,
+                        )
                 results.append(UsageIngestRecordResult(external_id=record.external_id))
                 continue
             # A concurrent request landed this fingerprint between the

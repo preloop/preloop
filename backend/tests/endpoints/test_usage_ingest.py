@@ -32,6 +32,19 @@ def _make_cursor_agent(db, account_id, *, source_id="cursor-ws-1", name="Cursor"
     )
 
 
+def _make_codex_agent(db, account_id, *, source_id="codex-ws-1", name="Codex"):
+    """Register a managed Codex agent like `preloop agents onboard Codex`."""
+    return crud_managed_agent.upsert_from_runtime_session(
+        db,
+        account_id=account_id,
+        runtime_session_id=None,
+        session_source_type="desktop_agent",
+        session_source_id=source_id,
+        display_name=name,
+        agent_kind="codex",
+    )
+
+
 def _record(**overrides):
     """Build one valid ingest record."""
     record = {
@@ -937,6 +950,44 @@ class TestRuntimeSessions:
             .one()
         )
         assert row.runtime_session_id is None
+
+    def test_codex_source_registers_session(self, client, db_session, test_user):
+        """A Codex rollout import registers the thread as a runtime session."""
+        agent = _make_codex_agent(db_session, test_user.account_id)
+        db_session.commit()
+        started = self._lifecycle(
+            "session_start",
+            "thread-01a054f7",
+            "codex:thread-01a054f7:session_meta",
+            10,
+            model="gpt-5",
+        )
+        usage = self._lifecycle(
+            "usage",
+            "thread-01a054f7",
+            "codex:thread-01a054f7:token_count:1",
+            9,
+            model="gpt-5",
+            input_tokens=1200,
+            output_tokens=850,
+        )
+        response = client.post(
+            INGEST_URL, json=_payload([started, usage], source="codex")
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["accepted"] == 2
+
+        session = self._session(
+            db_session, test_user.account_id, "thread-01a054f7", source="codex"
+        )
+        assert session is not None
+        assert session.runtime_principal_id == agent.session_source_id
+        rows = (
+            db_session.query(ApiUsage)
+            .filter(ApiUsage.action_type == "imported_usage")
+            .all()
+        )
+        assert {row.runtime_session_id for row in rows} == {session.id}
 
     def test_sessions_are_listed_in_the_runtime_sessions_explorer(
         self, client, db_session, test_user

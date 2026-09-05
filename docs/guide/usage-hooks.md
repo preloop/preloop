@@ -125,6 +125,11 @@ sources fill the gap:
   the compaction record's metadata and uses it as `input_tokens` for the
   next generation (`input_source: pre_compact_context_tokens`).
 
+The estimate also biases the other way after a compaction: the transcript
+keeps growing while Cursor's real context shrank, so chars-based input is
+overstated until the next `preCompact` replaces it with Cursor's own
+count.
+
 The server prices estimated records that carry tokens through the model
 pricing catalog. Cursor's version-first Claude spellings are mapped onto
 catalog keys (`claude-4.5-sonnet` prices as `claude-sonnet-4-5`). The
@@ -229,7 +234,7 @@ decides from `hook_event_name` what to do.
 | `subagentStop` | `subagent_stop` | Ships the documented `message_count` and `tool_call_count`, plus a token estimate from `agent_transcript_path`. |
 | `stop` | `response` | Token estimate, session title and summary. Fires when the agent loop finishes responding. |
 | `preCompact` | `compaction` | `context_tokens`, `context_window_size`, `context_usage_percent`, `messages_to_compact` and `is_first_compaction` in metadata; `message_count` as a column. |
-| `beforeSubmitPrompt` | not shipped | The first prompt line is kept locally for the session title; the prompt is otherwise ignored. |
+| `beforeSubmitPrompt` | not shipped | The first prompt line is kept locally for the session title; the prompt is otherwise ignored. Answers `{"continue": true}` on stdout, the decision JSON this event's contract expects. |
 | any other event | not shipped | Permission, file, and thought hooks would inflate event counts without adding cost signal. The command acknowledges them and exits 0. |
 
 Deduplication: the server deduplicates on `(source, external_id)`.
@@ -360,7 +365,10 @@ preloop usage hook --from codex < ~/.codex/sessions/2026/08/31/rollout-....jsonl
 
 Stdin is capped at 1 MiB (the same bound as live hooks). Use `--file`
 for larger rollouts. `--source` defaults to `codex` in this mode so the
-ingest API can attribute events to the onboarded Codex agent.
+ingest API can attribute events to the onboarded Codex agent. Every
+shipped record carries the thread's conversation id, so importing a
+historical rollout also registers the thread as a runtime session (source
+type `codex`) and populates the sessions explorer.
 
 ### Event mapping
 
@@ -383,8 +391,10 @@ The command is fail-open by design:
   stall). File imports use the CLI's default API timeout
 - any error (server unreachable, expired login, malformed payload) is
   printed to stderr and the command still exits 0
-- stdin hooks write nothing to stdout. `--file` prints a one-line
-  shipment summary
+- stdin hooks write nothing to stdout, except Cursor's
+  `beforeSubmitPrompt`, which answers `{"continue": true}` so Cursor
+  never treats the hook as failed. `--file` prints a one-line shipment
+  summary
 
 A failed shipment means missing events, nothing more.
 
