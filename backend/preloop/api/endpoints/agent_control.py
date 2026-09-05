@@ -92,7 +92,7 @@ _SERIALIZATION_ERRORS = (
 )
 
 HEARTBEAT_TOUCH_INTERVAL = timedelta(seconds=15)
-SUPPORTED_CONTROL_AGENT_KINDS = {"hermes", "openclaw", "claude_code"}
+SUPPORTED_CONTROL_AGENT_KINDS = {"hermes", "openclaw", "claude_code", "opencode"}
 
 
 @dataclass(frozen=True)

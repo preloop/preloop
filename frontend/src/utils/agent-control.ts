@@ -143,6 +143,7 @@ const AGENT_CONTROL_SUPPORTED_KINDS = new Set([
   'hermes',
   'openclaw',
   'claude_code',
+  'opencode',
 ]);
 
 /**

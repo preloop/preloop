@@ -10897,7 +10897,9 @@ components:
           - type: string
           - type: 'null'
           title: Source
-          description: Originating agent, e.g. 'claude_code'
+          description: 'Originating agent adapter: ''claude_code'', ''codex_cli'',
+            ''cursor'', ''opencode'', ''openclaw'', or ''hermes''. Stored as the ''_preloop_source''
+            marker inside tool_args so approver surfaces can label the requester.'
         session_id:
           anyOf:
           - type: string

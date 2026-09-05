@@ -21,6 +21,17 @@ describe('approval identity', () => {
     ).to.equal('Cursor');
   });
 
+  it('labels the OpenCode plugin adapter', () => {
+    expect(
+      formatApprovalRequester('Laptop OpenCode', {
+        _preloop_source: 'opencode',
+      })
+    ).to.equal('Laptop OpenCode via OpenCode');
+    expect(
+      formatApprovalRequester(null, { _preloop_source: 'opencode' })
+    ).to.equal('OpenCode');
+  });
+
   it('keeps adapter metadata out of tool arguments', () => {
     const toolArgs = { command: 'git status', _preloop_source: 'cursor' };
     expect(getApprovalSource(toolArgs)).to.equal('cursor');
