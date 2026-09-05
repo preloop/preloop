@@ -96,7 +96,8 @@ export class TrackerIssueView extends LitElement {
   }
 
   private _trackerLabel(): string {
-    const type = this._tracker?.tracker_type?.toLowerCase() || '';
+    if (!this._tracker) return 'tracker';
+    const type = this._tracker.tracker_type?.toLowerCase() || '';
     if (type.includes('gitlab')) return 'GitLab';
     if (type.includes('jira')) return 'Jira';
     return 'GitHub';
@@ -120,6 +121,8 @@ export class TrackerIssueView extends LitElement {
       key: item.key,
       source: '',
       url: item.url,
+      labels: item.labels,
+      assignee: item.assignee,
     };
   }
 
@@ -138,9 +141,9 @@ export class TrackerIssueView extends LitElement {
         fetchWithAuth(`/api/v1/trackers/${this._trackerId}`),
       ]);
       this._issue = issue;
-      if (trackerRes.ok) {
-        this._tracker = (await trackerRes.json()) as TrackerSummary;
-      }
+      this._tracker = trackerRes.ok
+        ? ((await trackerRes.json()) as TrackerSummary)
+        : null;
     } catch (error) {
       this._error =
         error instanceof Error ? error.message : 'Failed to load issue';

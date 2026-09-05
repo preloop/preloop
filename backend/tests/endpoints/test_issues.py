@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import (
+    crud_account,
     crud_issue,
     crud_organization,
     crud_project,
@@ -820,10 +821,71 @@ class TestListIssues:
         issue_test_data: dict,
     ) -> None:
         """A project outside the account's trackers returns 404."""
-        del issue_test_data
-        missing_id = uuid4()
-        response = client.get(f"/api/v1/issues?project_id={missing_id}")
-        assert response.status_code == 404
+        del test_user
+        other_account = crud_account.create(
+            db_session,
+            obj_in={"organization_name": "Other Org", "is_active": True},
+        )
+        other_tracker = crud_tracker.create(
+            db_session,
+            obj_in={
+                "name": "Other Tracker",
+                "tracker_type": "github",
+                "url": "https://github.com/other",
+                "api_key": "other_key",
+                "account_id": str(other_account.id),
+                "is_active": True,
+            },
+        )
+        db_session.flush()
+        other_org = crud_organization.create(
+            db_session,
+            obj_in={
+                "name": "Other Org",
+                "identifier": "other-org",
+                "tracker_id": str(other_tracker.id),
+                "is_active": True,
+            },
+        )
+        db_session.flush()
+        other_project = crud_project.create(
+            db_session,
+            obj_in={
+                "name": "Other Project",
+                "identifier": "other-proj",
+                "slug": "other-proj",
+                "organization_id": str(other_org.id),
+                "is_active": True,
+            },
+        )
+        db_session.flush()
+
+        own = client.get(f"/api/v1/issues?project_id={issue_test_data['project'].id}")
+        assert own.status_code == 200
+
+        hidden = client.get(f"/api/v1/issues?project_id={other_project.id}")
+        assert hidden.status_code == 404
+
+        missing = client.get(f"/api/v1/issues?project_id={uuid4()}")
+        assert missing.status_code == 404
+
+    def test_list_issues_q_escapes_like_wildcards(
+        self,
+        client: TestClient,
+        db_session: Session,
+        test_user: User,
+        issue_test_data: dict,
+    ) -> None:
+        """Literal % and _ in q do not act as ILIKE wildcards."""
+        del test_user, db_session
+        project = issue_test_data["project"]
+        percent = client.get(f"/api/v1/issues?project_id={project.id}&q=%25")
+        assert percent.status_code == 200
+        assert percent.json()["total"] == 0
+
+        underscore = client.get(f"/api/v1/issues?project_id={project.id}&q=_")
+        assert underscore.status_code == 200
+        assert underscore.json()["total"] == 0
 
 
 class TestGetIssueCount:

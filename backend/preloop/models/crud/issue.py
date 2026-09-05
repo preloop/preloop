@@ -191,9 +191,13 @@ class CRUDIssue(CRUDBase[Issue]):
             else:
                 query = query.filter(Issue.status == status)
         if q:
-            search_term = f"%{q}%"
+            escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            search_term = f"%{escaped}%"
             query = query.filter(
-                or_(Issue.key.ilike(search_term), Issue.title.ilike(search_term))
+                or_(
+                    Issue.key.ilike(search_term, escape="\\"),
+                    Issue.title.ilike(search_term, escape="\\"),
+                )
             )
         if account_id:
             query = query.join(Tracker).filter(Tracker.account_id == account_id)

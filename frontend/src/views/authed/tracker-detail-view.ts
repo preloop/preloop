@@ -374,11 +374,7 @@ export class TrackerDetailView extends LitElement {
       if (this._selectedProjectId) {
         params.set('project', this._selectedProjectId);
       }
-      if (this._issueStatus !== 'open') {
-        params.set('status', this._issueStatus);
-      } else {
-        params.set('status', 'open');
-      }
+      params.set('status', this._issueStatus);
     }
     const query = params.toString();
     const next = query
@@ -704,9 +700,11 @@ export class TrackerDetailView extends LitElement {
               : visible.length === 0
                 ? html`<div class="issues-empty">
                     ${
-                      this._issueStatus === 'open'
-                        ? `No open issues in ${project?.name || 'this project'}. Switch the status filter to see closed issues.`
-                        : `No issues in ${project?.name || 'this project'}.`
+                      this._issues.length === 0
+                        ? this._issueStatus === 'open'
+                          ? `No open issues in ${project?.name || 'this project'}. Switch the status filter to see closed issues.`
+                          : `No issues in ${project?.name || 'this project'}.`
+                        : `No issues match '${this._issueSearch.trim()}'.`
                     }
                   </div>`
                 : html`
@@ -750,14 +748,13 @@ export class TrackerDetailView extends LitElement {
                     </table>
                     ${
                       canLoadMore
-                        ? html`<a
+                        ? html`<sl-button
                             class="load-more"
-                            href="#"
-                            @click=${(e: Event) => {
-                              e.preventDefault();
-                              this._loadMoreIssues();
-                            }}
-                            >Load more</a
+                            size="small"
+                            variant="text"
+                            ?loading=${this._issuesLoading}
+                            @click=${() => this._loadMoreIssues()}
+                            >Load more</sl-button
                           >`
                         : ''
                     }

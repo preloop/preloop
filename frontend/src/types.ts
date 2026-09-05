@@ -1408,6 +1408,8 @@ export interface Issue {
   key: string;
   source: string;
   url: string;
+  labels?: string[] | null;
+  assignee?: string | null;
 }
 
 export interface IssueListItem {

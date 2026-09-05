@@ -170,4 +170,66 @@ describe('TrackerDetailView', () => {
       'No open issues in Alpha. Switch the status filter to see closed issues.'
     );
   });
+
+  it('search with no matches uses its own empty line', async () => {
+    fetchStub = stubFetch({
+      issues: [
+        {
+          id: 'issue-1',
+          key: 'ALP-1',
+          title: 'Fix login',
+          status: 'open',
+          updated_at: '2026-01-03T00:00:00Z',
+          project: 'Alpha',
+          project_id: projectA.id,
+          url: 'https://example.com/1',
+        },
+      ],
+      total: 1,
+    });
+    const el = await mountView();
+    await (
+      el as unknown as { _loadIssues: (reset: boolean) => Promise<void> }
+    )._loadIssues(true);
+    await el.updateComplete;
+    (
+      el as unknown as { _onIssueSearch: (event: Event) => void }
+    )._onIssueSearch({
+      target: { value: 'zzzz-no-match' },
+    } as unknown as Event);
+    await el.updateComplete;
+    expect(el.shadowRoot?.textContent).to.contain(
+      "No issues match 'zzzz-no-match'."
+    );
+    expect(el.shadowRoot?.textContent).to.not.contain(
+      'Switch the status filter to see closed issues.'
+    );
+  });
+
+  it('Load more is a button with a loading state', async () => {
+    fetchStub = stubFetch({
+      issues: [
+        {
+          id: 'issue-1',
+          key: 'ALP-1',
+          title: 'Fix login',
+          status: 'open',
+          updated_at: '2026-01-03T00:00:00Z',
+          project: 'Alpha',
+          project_id: projectA.id,
+          url: 'https://example.com/1',
+        },
+      ],
+      total: 40,
+    });
+    const el = await mountView();
+    await (
+      el as unknown as { _loadIssues: (reset: boolean) => Promise<void> }
+    )._loadIssues(true);
+    await el.updateComplete;
+    const loadMore = el.shadowRoot?.querySelector('sl-button.load-more');
+    expect(loadMore).to.exist;
+    expect(loadMore?.textContent).to.contain('Load more');
+    expect(el.shadowRoot?.querySelector('a.load-more')).to.not.exist;
+  });
 });
