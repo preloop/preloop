@@ -986,4 +986,34 @@ describe('FlowsView', () => {
       expect(element.shadowRoot?.querySelector('table.flows-table')).to.exist;
     });
   });
+
+  it('labels the preset card action Use preset', async () => {
+    fetchStub = createFetchStub(
+      [],
+      [{ id: 'preset-1', name: 'Office Reviewer' }]
+    );
+    const element = (await fixture(
+      html`<flows-view></flows-view>`
+    )) as FlowsView;
+
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'Flows view did not finish loading'
+    );
+    await waitUntil(
+      () => (element as any).presets?.length === 1,
+      'Presets did not load'
+    );
+    await element.updateComplete;
+
+    const buttons = Array.from(
+      element.shadowRoot!.querySelectorAll('.flow-card sl-button')
+    );
+    expect(
+      buttons.some((button) =>
+        (button.textContent || '').includes('Use preset')
+      )
+    ).to.be.true;
+    expect(element.shadowRoot!.textContent).to.not.include('Use template');
+  });
 });
