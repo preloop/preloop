@@ -293,6 +293,20 @@ test("read-only tools (read, glob, grep, list) are decided by the backend, not l
   assert.equal(allowAll.count, 1);
 });
 
+test("a hook input without a tool name still reaches the backend as tool", async () => {
+  const state = countingFetch({ decision: "allow" });
+  const plugin = makePlugin(state.fetch);
+  const outcome = await plugin.handleToolExecuteBefore(
+    { tool: undefined, sessionID: "ses_1", callID: "call_noname" },
+    { args: {} },
+  );
+  assert.equal(outcome.allowed, true);
+  assert.equal(state.count, 1);
+  const body = JSON.parse(state.calls[0].init.body);
+  assert.equal(body.source, "opencode");
+  assert.equal(body.tool_name, "tool");
+});
+
 test("Preloop MCP tools are not gated a second time", async () => {
   const state = countingFetch({ decision: "deny" });
   const plugin = makePlugin(state.fetch);

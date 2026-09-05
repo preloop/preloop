@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 ADAPTER_CLAUDE_CODE = "Claude Code"
 ADAPTER_CODEX_CLI = "Codex CLI"
 ADAPTER_CURSOR = "Cursor"
+ADAPTER_OPENCODE = "OpenCode"
 
 
 def _string(description: str) -> Dict[str, str]:
@@ -35,7 +36,7 @@ def _object(description: str) -> Dict[str, str]:
 NATIVE_TOOLS: List[Dict[str, Any]] = [
     {
         "name": "Bash",
-        "adapters": [ADAPTER_CLAUDE_CODE],
+        "adapters": [ADAPTER_CLAUDE_CODE, ADAPTER_OPENCODE],
         "description": "Run a shell command inside the Claude Code agent.",
         "parameters": {
             "command": _string("Shell command to execute"),
@@ -45,7 +46,7 @@ NATIVE_TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "Edit",
-        "adapters": [ADAPTER_CLAUDE_CODE, ADAPTER_CURSOR],
+        "adapters": [ADAPTER_CLAUDE_CODE, ADAPTER_CURSOR, ADAPTER_OPENCODE],
         "description": "Replace text in an existing file.",
         "parameters": {
             "file_path": _string("Path of the file to edit"),
@@ -56,7 +57,7 @@ NATIVE_TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "Write",
-        "adapters": [ADAPTER_CLAUDE_CODE, ADAPTER_CURSOR],
+        "adapters": [ADAPTER_CLAUDE_CODE, ADAPTER_CURSOR, ADAPTER_OPENCODE],
         "description": "Create or overwrite a file.",
         "parameters": {
             "file_path": _string("Path of the file to write"),
@@ -65,7 +66,7 @@ NATIVE_TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "Read",
-        "adapters": [ADAPTER_CLAUDE_CODE],
+        "adapters": [ADAPTER_CLAUDE_CODE, ADAPTER_OPENCODE],
         "description": "Read a file from the workspace.",
         "parameters": {
             "file_path": _string("Path of the file to read"),
@@ -73,7 +74,7 @@ NATIVE_TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "Glob",
-        "adapters": [ADAPTER_CLAUDE_CODE],
+        "adapters": [ADAPTER_CLAUDE_CODE, ADAPTER_OPENCODE],
         "description": "Find files by a glob pattern.",
         "parameters": {
             "pattern": _string("Glob pattern to match"),
@@ -82,7 +83,7 @@ NATIVE_TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "Grep",
-        "adapters": [ADAPTER_CLAUDE_CODE],
+        "adapters": [ADAPTER_CLAUDE_CODE, ADAPTER_OPENCODE],
         "description": "Search file contents by pattern.",
         "parameters": {
             "pattern": _string("Search pattern"),
@@ -91,7 +92,7 @@ NATIVE_TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "WebFetch",
-        "adapters": [ADAPTER_CLAUDE_CODE],
+        "adapters": [ADAPTER_CLAUDE_CODE, ADAPTER_OPENCODE],
         "description": "Fetch a URL from the agent process.",
         "parameters": {
             "url": _string("URL to fetch"),
@@ -111,7 +112,7 @@ NATIVE_TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "MultiEdit",
-        "adapters": [ADAPTER_CLAUDE_CODE],
+        "adapters": [ADAPTER_CLAUDE_CODE, ADAPTER_OPENCODE],
         "description": "Apply several replacements to one file.",
         "parameters": {
             "file_path": _string("Path of the file to edit"),
@@ -120,7 +121,7 @@ NATIVE_TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "Task",
-        "adapters": [ADAPTER_CLAUDE_CODE],
+        "adapters": [ADAPTER_CLAUDE_CODE, ADAPTER_OPENCODE],
         "description": "Launch a Claude Code sub-agent task.",
         "parameters": {
             "description": _string("Short task title"),

@@ -323,6 +323,48 @@ class TestListAllTools:
         assert bash["is_supported"] is True
         assert "command" in bash["parameters"]
         assert "Claude Code" in bash["adapters"]
+        assert "OpenCode" in bash["adapters"]
+
+    async def test_native_catalogue_lists_opencode_adapter(
+        self, mock_db, mock_user, mock_account, mocker
+    ):
+        """The OpenCode adapter appears on the shared native tool rows."""
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_configuration.get_multi_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_mcp_server.get_active_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tool_access_rule.get_multi_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.api.endpoints.tools.crud_tracker.get_for_account",
+            return_value=[],
+        )
+
+        result = tools.list_all_tools(
+            account=mock_account, current_user=mock_user, db=mock_db
+        )
+
+        native = {tool["name"]: tool for tool in result if tool["source"] == "agent"}
+        for name in (
+            "Bash",
+            "Edit",
+            "Write",
+            "Read",
+            "Glob",
+            "Grep",
+            "WebFetch",
+            "MultiEdit",
+            "Task",
+        ):
+            assert "OpenCode" in native[name]["adapters"], name
+        # NotebookEdit has no OpenCode counterpart.
+        assert "OpenCode" not in native["NotebookEdit"]["adapters"]
 
     async def test_list_tools_merges_seen_agent_configs_with_rules(
         self, mock_db, mock_user, mock_account, mocker

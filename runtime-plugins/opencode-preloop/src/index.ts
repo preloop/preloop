@@ -958,7 +958,7 @@ export class PreloopOpenCodePlugin {
     const args = output.args ?? {};
     const toolName = mapOpenCodeToolName(input.tool);
     if (
-      input.tool.trim().toLowerCase() === "bash" &&
+      (input.tool ?? "").trim().toLowerCase() === "bash" &&
       this.safeReadAutoAllowEnabled(config)
     ) {
       const command = args["command"];
