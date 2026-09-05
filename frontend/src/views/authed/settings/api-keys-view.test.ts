@@ -126,6 +126,92 @@ describe('ApiKeysView', () => {
     expect(content).to.contain('1 tool');
   });
 
+  it('keeps recently active chips primary so they do not look idle', async () => {
+    fetchStub.restore();
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (
+        url.includes('/api/v1/auth/api-keys') &&
+        !url.includes('/governance')
+      ) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 'recent-key',
+              name: 'Recent Key',
+              created_at: '2026-03-10T09:00:00Z',
+              last_used_at: '2026-03-10T09:45:00Z',
+              activity_status: 'recently_active',
+              expires_at: null,
+            },
+            {
+              id: 'live-key',
+              name: 'Live Key',
+              created_at: '2026-03-10T09:00:00Z',
+              last_used_at: '2026-03-10T10:00:00Z',
+              activity_status: 'active_now',
+              expires_at: null,
+            },
+            {
+              id: 'idle-key',
+              name: 'Idle Key',
+              created_at: '2026-03-10T09:00:00Z',
+              last_used_at: null,
+              activity_status: 'idle',
+              expires_at: null,
+            },
+            {
+              id: 'revoked-key',
+              name: 'Revoked Key',
+              created_at: '2026-03-01T09:00:00Z',
+              last_used_at: null,
+              activity_status: 'revoked',
+              expires_at: null,
+            },
+          ]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.endsWith('/api/v1/features')) {
+        return new Response(JSON.stringify({ features: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'API keys view did not finish loading'
+    );
+    (element as any).showAllKeys = true;
+    await element.updateComplete;
+
+    const chipVariants = Object.fromEntries(
+      Array.from(
+        element.shadowRoot?.querySelectorAll('sl-badge.chip') || []
+      ).map((badge) => [
+        badge.textContent?.trim(),
+        badge.getAttribute('variant'),
+      ])
+    );
+    expect(chipVariants).to.deep.equal({
+      'Recently active': 'primary',
+      'Active now': 'success',
+      Idle: 'neutral',
+      Revoked: 'danger',
+    });
+  });
+
   it('hides revoked and expired keys behind a footer and reveals them on Show all', async () => {
     fetchStub.restore();
     fetchStub = sinon.stub(window, 'fetch');

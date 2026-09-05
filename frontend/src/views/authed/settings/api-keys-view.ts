@@ -254,6 +254,7 @@ export class ApiKeysView extends LitElement {
     if (this.isRevoked(key)) return 'danger';
     if (this.isExpired(key)) return 'neutral';
     if (key.activity_status === 'active_now') return 'success';
+    if (key.activity_status === 'recently_active') return 'primary';
     return 'neutral';
   }
 
