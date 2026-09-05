@@ -1,5 +1,6 @@
 import uuid
-from typing import List, Optional, Any
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session, joinedload, load_only, with_expression
 from sqlalchemy.future import select
@@ -410,9 +411,28 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         return query.all()
 
     def get_execution_stats_for_flows(
-        self, db: Session, flow_ids: List[Any]
+        self, db: Session, flow_ids: List[Any], start_date: Optional[datetime] = None
     ) -> List[Any]:
-        """Get execution statistics for a list of flow IDs."""
+        """Get execution statistics for a list of flow IDs.
+
+        Args:
+            db: Database session.
+            flow_ids: Flows to aggregate.
+            start_date: When given, each row also carries the counts for that
+                window (``runs``, ``failed``, ``cost``, ``last_run_at``,
+                ``since``). The flows list states one period in its header
+                ("in the last 30d") and used to fill it from two sources: runs
+                counted client-side from a sample of the 200 most recent
+                executions, spend from a per-range usage endpoint. A flow
+                whose runs fell outside the sample then read "No run in the
+                last 30d" beside a real spend. These fields answer runs,
+                failures and spend for the same window, from the database.
+                The all-time fields keep their meaning either way, because
+                other callers (the agents view) show lifetime totals.
+
+        Returns:
+            One row per flow that has ever executed.
+        """
         if not flow_ids:
             return []
 
@@ -460,6 +480,51 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         cost_map = {str(row.flow_id): row.estimated_cost for row in cost_stats}
 
+        window_map: Dict[str, Dict[str, Any]] = {}
+        if start_date is not None:
+            window_stats = (
+                db.query(
+                    self.model.flow_id,
+                    func.count(self.model.id).label("runs"),
+                    func.sum(case((self.model.status == "FAILED", 1), else_=0)).label(
+                        "failed"
+                    ),
+                    func.max(self.model.start_time).label("last_run_at"),
+                )
+                .filter(
+                    self.model.flow_id.in_(flow_ids),
+                    self.model.start_time >= start_date,
+                )
+                .group_by(self.model.flow_id)
+                .all()
+            )
+            window_cost = (
+                db.query(
+                    ApiUsage.flow_id,
+                    func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
+                        "estimated_cost"
+                    ),
+                )
+                .filter(
+                    ApiUsage.flow_id.in_(flow_ids),
+                    ApiUsage.action_type == "model_gateway",
+                    ApiUsage.timestamp >= start_date,
+                )
+                .group_by(ApiUsage.flow_id)
+                .all()
+            )
+            window_cost_map = {
+                str(row.flow_id): float(row.estimated_cost or 0.0)
+                for row in window_cost
+            }
+            for row in window_stats:
+                window_map[str(row.flow_id)] = {
+                    "runs": int(row.runs or 0),
+                    "failed": int(row.failed or 0),
+                    "last_run_at": row.last_run_at,
+                    "cost": window_cost_map.get(str(row.flow_id), 0.0),
+                }
+
         class FlowStatResponse:
             def __init__(self, row):
                 self.flow_id = row.flow_id
@@ -467,6 +532,14 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 self.running_execs = row.running_execs
                 self.last_seen_at = row.last_seen_at
                 self.estimated_cost = cost_map.get(str(row.flow_id), 0.0)
+                self.since = start_date
+                window = window_map.get(str(row.flow_id))
+                # A flow with no run in the window is a real answer (0 runs,
+                # 0 failed, no spend), not a missing one.
+                self.runs = window["runs"] if window else 0
+                self.failed = window["failed"] if window else 0
+                self.last_run_at = window["last_run_at"] if window else None
+                self.cost = window["cost"] if window else 0.0
 
         return [FlowStatResponse(row) for row in exec_stats]
 

@@ -2,9 +2,11 @@
 
 import logging
 import re
-from typing import Dict
+from typing import Any, Dict, List, Sequence
 
+from sqlalchemy import String, case, cast, func
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from preloop.models import models
 from preloop.services.model_pricing import estimate_ai_model_usage_cost
@@ -14,6 +16,10 @@ logger = logging.getLogger(__name__)
 #: ``flow_execution.estimated_cost`` is ``Numeric(10, 4)``; quantize writes so
 #: comparisons against the stored value are stable.
 _ROLLUP_DECIMALS = 4
+
+#: Log entry types that represent one tool/MCP call, as counted by
+#: :meth:`ExecutionMetricsService._count_tool_calls`.
+TOOL_CALL_LOG_TYPES = ("tool_call", "mcp_call")
 
 
 def sync_execution_cost_rollup(db: Session, execution_id: str) -> bool:
@@ -70,6 +76,175 @@ def sync_execution_cost_rollup(db: Session, execution_id: str) -> bool:
         db.add(execution)
         db.flush()
     return True
+
+
+def get_execution_totals(
+    db: Session, execution_ids: Sequence[Any]
+) -> Dict[str, Dict[str, Any]]:
+    """Tool calls and gateway cost per execution, for a whole page at once.
+
+    The executions list used to print the two rollup columns
+    (``tool_calls_count``, ``estimated_cost``) while the execution page showed
+    the aggregation behind :class:`ExecutionMetricsService`, and the two
+    disagreed on staging: 0 tool calls in the table against 16 on the page,
+    $0.03 against $0.08 for the same run. The rollup columns are written once
+    by the orchestrator and are a floor, not the answer: MCP calls recorded by
+    the gateway and usage rows priced after the run are not in them.
+
+    This is that same aggregation, batched: four grouped queries for a page
+    instead of one per row, and it deliberately never touches the JSONB log
+    blobs (see the tool-call note below).
+
+    Args:
+        db: Database session.
+        execution_ids: Execution ids to aggregate (str or UUID).
+
+    Returns:
+        ``{execution_id: {"tool_calls": int, "estimated_cost": float | None,
+        "has_gateway_usage": bool}}`` for every id asked for.
+        ``estimated_cost`` is ``None`` when nothing could be priced, which is
+        "unknown", not "free".
+    """
+    from preloop.models.crud.api_usage import exclude_replay_usage_condition
+    from preloop.models.models.api_usage import ApiUsage
+    from preloop.models.models.flow_execution import FlowExecution
+    from preloop.models.models.flow_execution_log import FlowExecutionLog
+    from preloop.models.models.runtime_session_activity import RuntimeSessionActivity
+
+    ids = list(
+        dict.fromkeys(
+            str(execution_id) for execution_id in execution_ids if execution_id
+        )
+    )
+    if not ids:
+        return {}
+
+    # The MCP log's length, and the rollups the row already carries. Only the
+    # array length crosses the wire, never the payload.
+    mcp_calls = case(
+        (
+            func.jsonb_typeof(FlowExecution.mcp_usage_logs) == "array",
+            func.jsonb_array_length(FlowExecution.mcp_usage_logs),
+        ),
+        else_=0,
+    )
+    stored_rows = db.query(
+        cast(FlowExecution.id, String).label("execution_id"),
+        mcp_calls.label("mcp_calls"),
+        FlowExecution.tool_calls_count.label("stored_tool_calls"),
+        FlowExecution.estimated_cost.label("stored_cost"),
+    ).filter(cast(FlowExecution.id, String).in_(ids))
+
+    # Tool calls normalized out of the JSONB blob into their own table.
+    entry_rows = (
+        db.query(
+            cast(FlowExecutionLog.execution_id, String).label("execution_id"),
+            func.count(FlowExecutionLog.id).label("tool_calls"),
+        )
+        .filter(
+            cast(FlowExecutionLog.execution_id, String).in_(ids),
+            FlowExecutionLog.log_type.in_(TOOL_CALL_LOG_TYPES),
+        )
+        .group_by(cast(FlowExecutionLog.execution_id, String))
+    )
+
+    # Tool calls the MCP server recorded against the run. The execution page
+    # falls back to these when the MCP log is empty, so the table must see
+    # them too (this is the "0 tool calls in the list" case).
+    activity_rows = (
+        db.query(
+            cast(RuntimeSessionActivity.flow_execution_id, String).label(
+                "execution_id"
+            ),
+            func.count(RuntimeSessionActivity.id).label("tool_calls"),
+        )
+        .filter(
+            cast(RuntimeSessionActivity.flow_execution_id, String).in_(ids),
+            RuntimeSessionActivity.activity_type == "tool_call",
+        )
+        .group_by(cast(RuntimeSessionActivity.flow_execution_id, String))
+    )
+
+    # Cost, with the attribution and the NULL semantics of
+    # ``crud_api_usage.get_gateway_usage_for_execution``.
+    cost_rows = (
+        db.query(
+            cast(ApiUsage.flow_execution_id, String).label("execution_id"),
+            func.sum(ApiUsage.estimated_cost).label("estimated_cost"),
+            func.count(ApiUsage.id).label("requests"),
+        )
+        .filter(
+            ApiUsage.action_type == "model_gateway",
+            cast(ApiUsage.flow_execution_id, String).in_(ids),
+            exclude_replay_usage_condition(),
+        )
+        .group_by(cast(ApiUsage.flow_execution_id, String))
+    )
+
+    entry_calls = {row.execution_id: int(row.tool_calls or 0) for row in entry_rows}
+    activity_calls = {
+        row.execution_id: int(row.tool_calls or 0) for row in activity_rows
+    }
+    costs = {row.execution_id: row for row in cost_rows}
+
+    totals: Dict[str, Dict[str, Any]] = {}
+    for row in stored_rows:
+        execution_id = row.execution_id
+        # Same shape as ``_count_tool_calls``: the MCP log plus the normalized
+        # entries, floored by the rollup the orchestrator wrote and by what
+        # the MCP server recorded, because the execution page shows the
+        # largest of those and the two views have to agree.
+        visible = int(row.mcp_calls or 0) + entry_calls.get(execution_id, 0)
+        tool_calls = max(
+            int(row.stored_tool_calls or 0),
+            visible,
+            activity_calls.get(execution_id, 0),
+        )
+
+        cost_row = costs.get(execution_id)
+        if cost_row is not None and int(cost_row.requests or 0) > 0:
+            # Attributed gateway usage is the answer even when it is NULL:
+            # "we could not price this" is not "this was free", and it is
+            # what the execution page shows.
+            raw_cost = cost_row.estimated_cost
+            estimated_cost = (
+                None if raw_cost is None else round(float(raw_cost), _ROLLUP_DECIMALS)
+            )
+            has_gateway_usage = True
+        else:
+            stored_cost = row.stored_cost
+            estimated_cost = None if stored_cost is None else float(stored_cost)
+            has_gateway_usage = False
+
+        totals[execution_id] = {
+            "tool_calls": tool_calls,
+            "estimated_cost": estimated_cost,
+            "has_gateway_usage": has_gateway_usage,
+        }
+    return totals
+
+
+def project_execution_totals(db: Session, executions: List[Any]) -> None:
+    """Put the execution page's numbers on the rows a list is about to return.
+
+    Written with ``set_committed_value`` on purpose: these are read-model
+    values for one response, so the ORM must not treat them as edits and
+    flush them over the stored rollups (the rollup has its own writer,
+    :func:`sync_execution_cost_rollup`).
+
+    Args:
+        db: Database session.
+        executions: The execution rows being serialized.
+    """
+    if not executions:
+        return
+    totals = get_execution_totals(db, [execution.id for execution in executions])
+    for execution in executions:
+        total = totals.get(str(execution.id))
+        if not total:
+            continue
+        set_committed_value(execution, "tool_calls_count", total["tool_calls"])
+        set_committed_value(execution, "estimated_cost", total["estimated_cost"])
 
 
 class ExecutionMetricsService:

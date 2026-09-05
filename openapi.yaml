@@ -7380,6 +7380,22 @@ paths:
           type: integer
           default: 100
           title: Limit
+      - name: stats_since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: 'When set, execution_stats also carries the counts for the
+            window starting at this time: runs, failed, cost and last_run_at. The
+            flows list states one period and needs runs and spend measured over the
+            same one.'
+          title: Stats Since
+        description: 'When set, execution_stats also carries the counts for the window
+          starting at this time: runs, failed, cost and last_run_at. The flows list
+          states one period and needs runs and spend measured over the same one.'
       responses:
         '200':
           description: Successful Response
