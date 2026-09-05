@@ -139,4 +139,29 @@ describe('list-toolbar', () => {
     const count = element.querySelector('[slot="count"]');
     expect(count?.textContent?.trim()).to.equal('2 trackers');
   });
+
+  it('renders canvas in the same switcher when the page asks for it', async () => {
+    const element = await render({
+      views: ['list', 'cards', 'canvas'],
+      view: 'canvas',
+    });
+    const buttons = [
+      ...element.shadowRoot!.querySelectorAll('sl-button[data-view]'),
+    ];
+    expect(
+      buttons.map((button) => button.getAttribute('data-view'))
+    ).to.deep.equal(['list', 'cards', 'canvas']);
+    expect(buttons.map((button) => button.textContent?.trim())).to.deep.equal([
+      'List',
+      'Cards',
+      'Canvas',
+    ]);
+    expect(buttons[2].querySelector('sl-icon')?.getAttribute('name')).to.equal(
+      'diagram-3'
+    );
+    expect(buttons[2].getAttribute('variant')).to.equal('primary');
+    expect(
+      element.shadowRoot!.querySelectorAll('sl-button-group')
+    ).to.have.lengthOf(1);
+  });
 });

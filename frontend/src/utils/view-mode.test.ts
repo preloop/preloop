@@ -44,6 +44,10 @@ describe('view-mode', () => {
     localStorage.setItem(key, 'cards');
     expect(loadViewMode(key, ['list'], 'list')).to.equal('list');
     expect(loadViewMode(key, ['list', 'cards'], 'list')).to.equal('cards');
+    localStorage.setItem(key, 'canvas');
+    expect(loadViewMode(key, ['list', 'cards', 'canvas'], 'list')).to.equal(
+      'canvas'
+    );
   });
 
   it('falls back when localStorage throws', () => {
@@ -74,6 +78,8 @@ describe('view-mode', () => {
     expect(effectiveViewMode('list', false)).to.equal('list');
     expect(effectiveViewMode('cards', true)).to.equal('cards');
     expect(effectiveViewMode('cards', false)).to.equal('cards');
+    expect(effectiveViewMode('canvas', true)).to.equal('canvas');
+    expect(effectiveViewMode('canvas', false)).to.equal('canvas');
   });
 
   it('subscribes to the Flows list-to-cards breakpoint', () => {
