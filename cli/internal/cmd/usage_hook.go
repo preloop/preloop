@@ -411,6 +411,41 @@ func enrichCursorRecordFromTranscript(
 			warn(fmt.Errorf("subagent transcript estimate skipped: %w", err))
 		}
 		attachCursorTokenEstimate(record, estimate)
+	case "preCompact":
+		attachCursorCompactionContext(input, record)
+		if input.ContextTokens == nil {
+			return
+		}
+		if err := rememberCursorContextTokens(conversationID, input.GenerationID, *input.ContextTokens); err != nil {
+			warn(fmt.Errorf("context tokens not remembered: %w", err))
+		}
+	}
+}
+
+// attachCursorCompactionContext copies preCompact's context measurements
+// into record metadata. context_tokens is Cursor's own count and the only
+// ground-truth token figure a Cursor hook ever reports; the rest describe
+// how full the window was when compaction started.
+func attachCursorCompactionContext(input cursorHookInput, record map[string]interface{}) {
+	metadata, _ := record["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+		record["metadata"] = metadata
+	}
+	if input.ContextTokens != nil {
+		metadata["context_tokens"] = *input.ContextTokens
+	}
+	if input.ContextWindowSize != nil {
+		metadata["context_window_size"] = *input.ContextWindowSize
+	}
+	if input.ContextUsagePercent != nil {
+		metadata["context_usage_percent"] = *input.ContextUsagePercent
+	}
+	if input.MessagesToCompact != nil {
+		metadata["messages_to_compact"] = *input.MessagesToCompact
+	}
+	if input.IsFirstCompaction != nil {
+		metadata["is_first_compaction"] = *input.IsFirstCompaction
 	}
 }
 

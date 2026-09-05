@@ -356,3 +356,94 @@ func TestUsageHookCursorNoTranscriptAnywhereShipsPlainLifecycle(t *testing.T) {
 		t.Errorf("transcripts disabled is not an error: %q", stderr)
 	}
 }
+
+func cursorPreCompactPayload(conversationID, generationID string, contextTokens int) string {
+	payload := map[string]interface{}{
+		"conversation_id":       conversationID,
+		"generation_id":         generationID,
+		"hook_event_name":       "preCompact",
+		"model":                 "claude-4.5-sonnet",
+		"context_tokens":        contextTokens,
+		"context_window_size":   200000,
+		"context_usage_percent": 60.5,
+		"message_count":         40,
+		"messages_to_compact":   30,
+		"is_first_compaction":   true,
+	}
+	data, _ := json.Marshal(payload)
+	return string(data)
+}
+
+func TestUsageHookCursorPreCompactShipsContextMetadata(t *testing.T) {
+	home := testenv.SetHome(t, t.TempDir())
+	body, stderr := runCursorHook(t, cursorPreCompactPayload("conv-7", "gen-3", 121000))
+	if stderr != "" {
+		t.Errorf("unexpected stderr: %s", stderr)
+	}
+	record := decodeSingleIngestRecord(t, body)
+	if record["event_type"] != "compaction" || record["message_count"] != float64(40) {
+		t.Errorf("event_type=%v message_count=%v", record["event_type"], record["message_count"])
+	}
+	if _, ok := record["input_tokens"]; ok {
+		t.Errorf("preCompact is a marker, not a usage record: %#v", record)
+	}
+	metadata := record["metadata"].(map[string]interface{})
+	want := map[string]interface{}{
+		"context_tokens":        float64(121000),
+		"context_window_size":   float64(200000),
+		"context_usage_percent": 60.5,
+		"messages_to_compact":   float64(30),
+		"is_first_compaction":   true,
+	}
+	for key, value := range want {
+		if metadata[key] != value {
+			t.Errorf("metadata[%s]=%v, want %v", key, metadata[key], value)
+		}
+	}
+	state := readCursorState(t, home, "conv-7")
+	if state.PendingContextTokens == nil || *state.PendingContextTokens != 121000 {
+		t.Errorf("context tokens not remembered: %#v", state)
+	}
+	if state.PendingContextGenerationID != "gen-3" {
+		t.Errorf("pending generation=%q", state.PendingContextGenerationID)
+	}
+}
+
+func TestUsageHookCursorStopAfterPreCompactUsesContextTokens(t *testing.T) {
+	home := testenv.SetHome(t, t.TempDir())
+	transcript := copyCursorFixture(t, "conversation.jsonl")
+	runCursorHook(t, cursorStopPayload("conv-8", "gen-1", transcript))
+	runCursorHook(t, cursorPreCompactPayload("conv-8", "gen-2", 121000))
+
+	appendCursorFixture(t, transcript, "generation2.jsonl")
+	body, _ := runCursorHook(t, cursorStopPayload("conv-8", "gen-2", transcript))
+	record := decodeSingleIngestRecord(t, body)
+	// Cursor's own context count replaces the 71-token chars estimate;
+	// output still comes from the transcript delta.
+	if record["input_tokens"] != float64(121000) || record["output_tokens"] != float64(14) {
+		t.Errorf("tokens in=%v out=%v, want 121000/14", record["input_tokens"], record["output_tokens"])
+	}
+	estimate := tokenEstimateMeta(t, record)
+	if estimate["input_source"] != "pre_compact_context_tokens" {
+		t.Errorf("input_source=%v", estimate["input_source"])
+	}
+	if estimate["input_chars"] != float64(26) {
+		t.Errorf("chars still reported for transparency, got %v", estimate["input_chars"])
+	}
+
+	state := readCursorState(t, home, "conv-8")
+	if state.PendingContextTokens != nil {
+		t.Errorf("context tokens must be consumed by one generation: %#v", state)
+	}
+	if state.InputTokens != 28+121000 || state.OutputTokens != 36+14 {
+		t.Errorf("state totals in=%d out=%d", state.InputTokens, state.OutputTokens)
+	}
+
+	// The generation after that falls back to the chars heuristic.
+	appendCursorFixture(t, transcript, "generation2.jsonl")
+	body, _ = runCursorHook(t, cursorStopPayload("conv-8", "gen-3", transcript))
+	record = decodeSingleIngestRecord(t, body)
+	if tokenEstimateMeta(t, record)["input_source"] != "transcript_chars" {
+		t.Errorf("third generation should use chars again: %#v", record)
+	}
+}

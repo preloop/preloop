@@ -511,6 +511,24 @@ func estimateCursorGeneration(
 	return estimate, state, nil
 }
 
+// rememberCursorContextTokens stores preCompact's context_tokens so the
+// next generation's input_tokens use Cursor's own measurement instead of
+// the chars heuristic. preCompact fires before the context shrinks, so
+// the figure is the size of the context that was just re-sent.
+func rememberCursorContextTokens(stateKey, generationID string, contextTokens int) error {
+	if contextTokens < 0 {
+		return nil
+	}
+	state, err := loadCursorTranscriptState(stateKey)
+	if err != nil {
+		return err
+	}
+	tokens := contextTokens
+	state.PendingContextTokens = &tokens
+	state.PendingContextGenerationID = generationID
+	return saveCursorTranscriptState(stateKey, state)
+}
+
 // attachCursorTokenEstimate puts the estimate on an ingest record. Records
 // with an estimate of zero on both sides (nothing new in the transcript)
 // keep their lifecycle meaning and ship without token fields: null stays
