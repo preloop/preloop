@@ -22,15 +22,17 @@ import {
   listProjects,
   listIssueDuplicates,
   checkAIVerdict,
+  getIssueDuplicateAiStatus,
   dismissDuplicatePair,
   listOrganizations,
+  VerdictError,
 } from '../../api';
 import type {
   Project,
   DuplicatePair,
   DuplicatesResponse,
   Organization,
-  Issue,
+  VerdictState,
 } from '../../types';
 import {
   DEFAULT_SIMILARITY_THRESHOLD,
@@ -55,10 +57,10 @@ export class IssuesView extends LitElement {
   private _duplicates: DuplicatePair[] = [];
 
   @state()
-  private _aiVerdicts: Record<string, AIModelVerdict> = {};
+  private _verdicts: Record<string, VerdictState> = {};
 
   @state()
-  private _loadingVerdicts: Record<string, boolean> = {};
+  private _aiModelName = '';
 
   @state()
   private _loading = false;
@@ -288,7 +290,7 @@ export class IssuesView extends LitElement {
       this._duplicates = data.duplicates;
       this._hasMorePages = data.duplicates.length === this._pageSize;
       this._updateUrl(); // Update URL after fetching
-      this.fetchAIModelVerdicts(); // Fetch verdicts after getting duplicates
+      void this.fetchAIModelVerdicts();
     } catch (error) {
       this._error =
         error instanceof Error ? error.message : 'An unknown error occurred.';
@@ -298,36 +300,98 @@ export class IssuesView extends LitElement {
     }
   }
 
-  async fetchAIModelVerdicts() {
-    const newVerdicts = { ...this._aiVerdicts };
-    const newLoadingVerdicts = { ...this._loadingVerdicts };
+  private _pairKey(pair: DuplicatePair): string {
+    return `${pair.issue1.id}-${pair.issue2.id}`;
+  }
 
-    const promises = this._duplicates.map((pair) => {
-      const pairKey = `${pair.issue1.id}-${pair.issue2.id}`;
-      if (newVerdicts[pairKey]) {
-        return Promise.resolve();
+  private _setVerdict(pairKey: string, next: VerdictState) {
+    this._verdicts = { ...this._verdicts, [pairKey]: next };
+  }
+
+  private _stateFromError(error: unknown): VerdictState {
+    if (error instanceof VerdictError) {
+      if (error.code === 'no_default_ai_model') {
+        return { state: 'no_model' };
       }
+      if (error.code === 'timeout') {
+        return { state: 'timeout' };
+      }
+    }
+    return { state: 'failed' };
+  }
 
-      newLoadingVerdicts[pairKey] = true;
+  async fetchAIModelVerdicts() {
+    let configured = true;
+    try {
+      const status = await getIssueDuplicateAiStatus();
+      configured = status.configured;
+      this._aiModelName = status.model_name || '';
+    } catch (error) {
+      console.error('Failed to fetch AI status:', error);
+    }
 
-      return checkAIVerdict(pair.issue1.id, pair.issue2.id)
-        .then((verdict) => {
-          newVerdicts[pairKey] = verdict;
-        })
-        .catch((error) => {
-          console.error(`Failed to fetch AI verdict for ${pairKey}:`, error);
-          // Store a failed state if needed, or just remove loading indicator
-        })
-        .finally(() => {
-          newLoadingVerdicts[pairKey] = false;
-        });
+    if (!configured) {
+      const noModel: Record<string, VerdictState> = {};
+      for (const pair of this._duplicates) {
+        noModel[this._pairKey(pair)] = { state: 'no_model' };
+      }
+      this._verdicts = { ...this._verdicts, ...noModel };
+      return;
+    }
+
+    const pending = this._duplicates.filter((pair) => {
+      const current = this._verdicts[this._pairKey(pair)];
+      return !current || current.state === 'checking';
     });
 
-    this._loadingVerdicts = newLoadingVerdicts;
+    for (const pair of pending) {
+      this._setVerdict(this._pairKey(pair), { state: 'checking' });
+    }
 
-    await Promise.all(promises);
+    await Promise.all(pending.map((pair) => this._fetchVerdictForPair(pair)));
+  }
 
-    this._aiVerdicts = newVerdicts;
+  private async _fetchVerdictForPair(pair: DuplicatePair) {
+    const pairKey = this._pairKey(pair);
+    this._setVerdict(pairKey, { state: 'checking' });
+    try {
+      const verdict = await checkAIVerdict(pair.issue1.id, pair.issue2.id);
+      this._setVerdict(pairKey, { state: 'done', verdict });
+    } catch (error) {
+      console.error(`Failed to fetch AI verdict for ${pairKey}:`, error);
+      this._setVerdict(pairKey, this._stateFromError(error));
+    }
+  }
+
+  private _retryVerdict(pair: DuplicatePair) {
+    void this._fetchVerdictForPair(pair);
+  }
+
+  private _renderRowVerdict(
+    pair: DuplicatePair,
+    verdictState: VerdictState | undefined
+  ) {
+    const state = verdictState?.state;
+    if (state === 'no_model') {
+      return html`<span>No AI model</span>`;
+    }
+    if (state === 'failed' || state === 'timeout') {
+      return html`
+        <sl-button
+          size="small"
+          variant="text"
+          @click=${(e: Event) => {
+            e.stopPropagation();
+            this._retryVerdict(pair);
+          }}
+          >Retry</sl-button
+        >
+      `;
+    }
+    if (state === 'done') {
+      return renderVerdict(verdictState?.verdict as AIModelVerdict | undefined);
+    }
+    return renderVerdict({ decision: 'checking' });
   }
 
   private _toggleRow(pairKey: string) {
@@ -375,17 +439,19 @@ export class IssuesView extends LitElement {
   }
 
   private renderDetailRow(pair: DuplicatePair) {
-    const pairKey = `${pair.issue1.id}-${pair.issue2.id}`;
-    const aiVerdict = this._aiVerdicts[pairKey];
-    const loadingVerdict = this._loadingVerdicts[pairKey];
+    const pairKey = this._pairKey(pair);
+    const verdictState = this._verdicts[pairKey];
+    const aiVerdict = verdictState?.verdict as AIModelVerdict | undefined;
 
     return html`
       <issue-detail-view
         .pair=${pair}
-        .aiVerdict=${aiVerdict}
-        .loadingVerdict=${loadingVerdict}
+        .aiVerdict=${aiVerdict ?? null}
+        .verdictState=${verdictState ?? { state: 'checking' }}
+        .modelName=${this._aiModelName}
         @resolve=${() => this._openResolveModal(pair)}
         @dismiss=${() => this._handleDismiss(pair)}
+        @retry-verdict=${() => this._retryVerdict(pair)}
       ></issue-detail-view>
     `;
   }
@@ -508,7 +574,11 @@ export class IssuesView extends LitElement {
 
   render() {
     return html`
-      <view-header headerText="Issue Similarity" width="wide">
+      <view-header
+        headerText="Similar issues"
+        description="Find overlapping issues and resolve duplicates"
+        width="wide"
+      >
         <div slot="main-column">
           <sl-button @click=${this._openFilterModal}>
             <sl-icon slot="prefix" name="filter"></sl-icon>
@@ -601,9 +671,11 @@ export class IssuesView extends LitElement {
                         </thead>
                         <tbody>
                           ${this._duplicates.map((pair) => {
-                            const pairKey = `${pair.issue1.id}-${pair.issue2.id}`;
-                            const verdict = this._aiVerdicts[pairKey];
-                            const isFaint = this._loadingVerdicts[pairKey];
+                            const pairKey = this._pairKey(pair);
+                            const verdictState = this._verdicts[pairKey];
+                            const verdict = verdictState?.verdict as
+                              AIModelVerdict | undefined;
+                            const isFaint = verdictState?.state === 'checking';
                             const isExpanded = this._expandedRowKey === pairKey;
 
                             return html`
@@ -681,7 +753,10 @@ export class IssuesView extends LitElement {
                                           style="--sl-color-warning-text: var(--sl-color-orange-50); --sl-color-warning-600: var(--sl-color-orange-700);"
                                           >Identical</sl-badge
                                         >`
-                                      : renderVerdict(verdict)
+                                      : this._renderRowVerdict(
+                                          pair,
+                                          verdictState
+                                        )
                                   }
                                 </td>
                                 <td>

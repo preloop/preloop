@@ -1408,6 +1408,47 @@ export interface Issue {
   key: string;
   source: string;
   url: string;
+  labels?: string[] | null;
+  assignee?: string | null;
+}
+
+export interface IssueListItem {
+  id: string;
+  external_id: string;
+  key: string;
+  title: string;
+  description?: string | null;
+  status?: string | null;
+  priority?: string | null;
+  assignee?: string | null;
+  labels?: string[] | null;
+  organization: string;
+  project: string;
+  project_id: string;
+  project_identifier?: string | null;
+  url: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IssueListResponse {
+  items: IssueListItem[];
+  total: number;
+  skip: number;
+  limit: number;
+}
+
+export type VerdictStatus =
+  'checking' | 'done' | 'failed' | 'timeout' | 'no_model';
+
+export interface VerdictState {
+  state: VerdictStatus;
+  verdict?: {
+    decision?: string;
+    reason?: string;
+    suggestion?: string;
+    resolution?: string;
+  };
 }
 
 export interface DuplicatePair {
