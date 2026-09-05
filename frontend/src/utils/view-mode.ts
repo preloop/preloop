@@ -1,16 +1,21 @@
 /**
- * Persisted list/cards view mode for collection pages.
+ * Persisted view mode for collection pages.
  *
- * Copied from the Flows page so Trackers and Models (and, later, Agents and
- * Flows themselves) share one storage contract. List is the default
- * (DESIGN.md, "Tables and views"): a table compares rows; cards are for
- * browsing and for phones. A stored choice wins. The narrow-viewport
- * fallback never overwrites that choice.
+ * List is the default (DESIGN.md, "Tables and views"): a table compares
+ * rows; cards are for browsing and for phones. Agents also offers canvas
+ * (topology). A stored choice wins. The narrow-viewport fallback never
+ * overwrites that choice.
  */
 
-export type ListViewMode = 'list' | 'cards';
+export type ListViewMode = 'list' | 'cards' | 'canvas';
 
 export const LIST_VIEW_MODES: readonly ListViewMode[] = ['list', 'cards'];
+
+export const AGENTS_VIEW_MODES: readonly ListViewMode[] = [
+  'list',
+  'cards',
+  'canvas',
+];
 
 /** List is the default so thirty items are compared, not browsed. */
 export const DEFAULT_LIST_VIEW: ListViewMode = 'list';

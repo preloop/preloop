@@ -2374,9 +2374,7 @@ def test_run_preset_409_when_flow_missing_without_confirm(
     assert exc_info.value.detail["flow_name"] == "Automated Issue Implementation"
 
 
-def test_run_preset_creates_and_triggers(
-    mock_account: Account, mocker: MockerFixture
-):
+def test_run_preset_creates_and_triggers(mock_account: Account, mocker: MockerFixture):
     issue_id = uuid.uuid4()
     flow_id = uuid.uuid4()
     execution_id = uuid.uuid4()
@@ -2452,9 +2450,7 @@ def test_run_preset_requires_create_flows_to_create(
     assert "not create them" in str(exc_info.value.detail)
 
 
-def test_run_preset_unknown_slug_404(
-    mock_account: Account, mocker: MockerFixture
-):
+def test_run_preset_unknown_slug_404(mock_account: Account, mocker: MockerFixture):
     issue_id = uuid.uuid4()
 
     with pytest.raises(HTTPException) as exc_info:

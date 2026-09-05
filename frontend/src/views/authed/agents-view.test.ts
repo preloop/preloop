@@ -202,9 +202,11 @@ describe('AgentsView', () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
     await waitForAgents(el);
 
+    const toolbar = el.shadowRoot?.querySelector('list-toolbar');
     const buttons = Array.from(
-      el.shadowRoot?.querySelectorAll('sl-button-group sl-button[data-view]') ||
-        []
+      toolbar?.shadowRoot?.querySelectorAll(
+        'sl-button-group sl-button[data-view]'
+      ) || []
     );
     expect(buttons.map((b) => b.getAttribute('data-view'))).to.deep.equal([
       'list',
@@ -328,9 +330,74 @@ describe('AgentsView', () => {
     // The switcher still reports List as the chosen view.
     expect(
       el.shadowRoot
-        ?.querySelector('sl-button[data-view="list"]')
+        ?.querySelector('list-toolbar')
+        ?.shadowRoot?.querySelector('sl-button[data-view="list"]')
         ?.getAttribute('aria-pressed')
     ).to.equal('true');
+  });
+
+  it('paints cards on a narrow viewport even when canvas is stored', async () => {
+    localStorage.setItem('preloop.agents.view_mode', 'canvas');
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    expect(el.shadowRoot?.querySelector('.agent-node')).to.exist;
+
+    (el as unknown as { narrowViewport: boolean }).narrowViewport = true;
+    await el.updateComplete;
+
+    expect(el.shadowRoot?.querySelector('.agent-node')).to.not.exist;
+    expect(el.shadowRoot?.querySelector('.cards')).to.exist;
+    expect(localStorage.getItem('preloop.agents.view_mode')).to.equal('canvas');
+    expect(
+      el.shadowRoot
+        ?.querySelector('list-toolbar')
+        ?.shadowRoot?.querySelector('sl-button[data-view="canvas"]')
+        ?.getAttribute('aria-pressed')
+    ).to.equal('true');
+  });
+
+  it('debounces toolbar search and fetches with the query', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const agentUrls = () =>
+      fetchStub
+        .getCalls()
+        .map((call) =>
+          typeof call.args[0] === 'string'
+            ? call.args[0]
+            : call.args[0].toString()
+        )
+        .filter((url: string) => url.startsWith('/api/v1/agents'));
+
+    const before = agentUrls();
+    expect(before.some((url: string) => url.includes('query='))).to.be.false;
+
+    const clock = sinon.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout'],
+    });
+    try {
+      el.shadowRoot?.querySelector('list-toolbar')?.dispatchEvent(
+        new CustomEvent('search-change', {
+          detail: { value: 'claude' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+
+      clock.tick(399);
+      expect(agentUrls()).to.deep.equal(before);
+
+      clock.tick(1);
+    } finally {
+      clock.restore();
+    }
+
+    await waitUntil(
+      () => agentUrls().some((url: string) => url.includes('query=claude')),
+      'search fetch did not include the query'
+    );
   });
 
   it('renders claude_desktop agents and agents of unknown kinds', async () => {
@@ -734,7 +801,9 @@ describe('AgentsView', () => {
     await waitForAgents(el);
 
     expect(
-      el.shadowRoot?.querySelector('.results-count')?.textContent?.trim()
+      el.shadowRoot
+        ?.querySelector('list-toolbar [slot="count"]')
+        ?.textContent?.trim()
     ).to.equal('2 agents');
   });
 

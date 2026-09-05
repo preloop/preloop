@@ -362,10 +362,9 @@ def run_preset(
     account has no clone, or 200 with flow metadata and no execution when
     one exists. ``confirm_create=true`` creates if needed (requires
     ``create_flows``) and starts the run.
-
-    Synchronous so the handler does not hold a ``Session`` on the event loop
-    (``test_async_sync_session_route_count_does_not_grow``).
     """
+    # Sync handler: an async def would hold Session on the event loop and
+    # fail test_async_sync_session_route_count_does_not_grow.
     from preloop.services.preset_runner import PresetRunnerError, run_preset_on_target
 
     try:
