@@ -300,7 +300,7 @@ export class ApiKeyView extends LitElement {
       );
     } catch (err: any) {
       console.error('Error updating governance:', err);
-      alert(err.message || 'Failed to update governance policy');
+      showToast(err.message || 'Failed to update governance policy', 'danger');
     } finally {
       this.updatingGovernance = false;
     }
