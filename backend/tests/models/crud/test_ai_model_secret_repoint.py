@@ -8,8 +8,12 @@ previous secret when nothing else still points at it.
 import pytest
 from sqlalchemy.orm import Session
 
-from preloop.models.crud import crud_ai_model
+from datetime import UTC, datetime
+from uuid import uuid4
+
+from preloop.models.crud import crud_ai_model, crud_tracker
 from preloop.models.models import Account
+from preloop.models.models.provider_billing import ProviderBillingConnection
 from preloop.models.models.secret_reference import SecretReference
 
 
@@ -178,3 +182,104 @@ def test_update_with_null_credentials_secret_id_keeps_secret(
     assert updated.name == "Claude Sonnet (renamed)"
     assert updated.credentials_secret_id == secret_id
     assert db_session.get(SecretReference, secret_id) is not None
+
+
+def test_update_repoint_keeps_secret_still_referenced_by_tracker(
+    db_session: Session, create_account
+):
+    """GC must not delete a secret that a Tracker still points at."""
+    account: Account = create_account()
+
+    primary = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Claude Fable",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-fable-5-1",
+            "api_key": "fable-lineage-key",
+        },
+        account_id=account.id,
+    )
+    sibling = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Claude Sonnet",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-sonnet-4-5",
+            "api_key": "sonnet-lineage-key",
+        },
+        account_id=account.id,
+    )
+    live_secret_id = primary.credentials_secret_id
+    orphan_secret_id = sibling.credentials_secret_id
+    tracker = crud_tracker.create(
+        db_session,
+        obj_in={
+            "name": "GitHub",
+            "tracker_type": "github",
+            "url": "https://github.com/acme",
+            "account_id": str(account.id),
+            "is_active": True,
+        },
+    )
+    tracker.credentials_secret_id = orphan_secret_id
+    db_session.commit()
+
+    crud_ai_model.update(
+        db=db_session,
+        db_obj=sibling,
+        obj_in={"credentials_secret_id": live_secret_id},
+    )
+
+    assert db_session.get(SecretReference, orphan_secret_id) is not None
+
+
+def test_update_repoint_keeps_secret_still_referenced_by_billing(
+    db_session: Session, create_account
+):
+    """GC must not delete a secret that a billing connection still points at."""
+    account: Account = create_account()
+
+    primary = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Claude Fable",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-fable-5-1",
+            "api_key": "fable-lineage-key",
+        },
+        account_id=account.id,
+    )
+    sibling = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Claude Sonnet",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-sonnet-4-5",
+            "api_key": "sonnet-lineage-key",
+        },
+        account_id=account.id,
+    )
+    live_secret_id = primary.credentials_secret_id
+    orphan_secret_id = sibling.credentials_secret_id
+    now = datetime.now(UTC).replace(tzinfo=None)
+    db_session.add(
+        ProviderBillingConnection(
+            id=uuid4(),
+            account_id=account.id,
+            provider="anthropic",
+            secret_reference_id=orphan_secret_id,
+            is_active=True,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    db_session.commit()
+
+    crud_ai_model.update(
+        db=db_session,
+        db_obj=sibling,
+        obj_in={"credentials_secret_id": live_secret_id},
+    )
+
+    assert db_session.get(SecretReference, orphan_secret_id) is not None

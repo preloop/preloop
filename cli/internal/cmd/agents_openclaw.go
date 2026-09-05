@@ -5703,48 +5703,17 @@ func findManagedClaudeCodeOAuthSibling(
 	return fallback
 }
 
-func overwriteManagedClaudeCodeOAuthSecret(
-	client *api.Client,
-	sibling *aiModelResponse,
-	upstream *managedGatewayUpstream,
-) error {
-	if client == nil || sibling == nil || upstream == nil {
-		return nil
-	}
-	update := map[string]interface{}{
-		"credential_type":    upstream.CredentialType,
-		"credential_payload": upstream.CredentialPayload,
-	}
-	var updated aiModelResponse
-	if err := client.Put("/api/v1/ai-models/"+sibling.ID, update, &updated); err != nil {
-		return fmt.Errorf(
-			"failed to refresh shared Claude Code credential on %q: %w",
-			sibling.Name,
-			err,
-		)
-	}
-	return nil
-}
-
-func applySharedClaudeCodeOAuthSecret(
-	client *api.Client,
-	sibling *aiModelResponse,
-	upstream *managedGatewayUpstream,
-) (string, error) {
+func applySharedClaudeCodeOAuthSecret(sibling *aiModelResponse) string {
 	if sibling == nil {
-		return "", nil
+		return ""
 	}
-	secretID := strings.TrimSpace(sibling.CredentialsSecretID)
-	if secretID == "" {
-		return "", nil
-	}
-	if len(upstream.CredentialPayload) > 0 &&
-		!oauthCredentialPayloadExpired(upstream.CredentialPayload) {
-		if err := overwriteManagedClaudeCodeOAuthSecret(client, sibling, upstream); err != nil {
-			return "", err
-		}
-	}
-	return secretID, nil
+	// Attach the sibling's live lineage. Never overwrite it from the local
+	// bundle: an access token can still be inside its window after the
+	// gateway has already consumed the single-use refresh token. Putting
+	// that cached bundle back onto the shared secret bricks every sibling
+	// (invalid_grant). Recovery of a dead lineage goes through the
+	// target-already-has-a-credential re-seed path, not this attach path.
+	return strings.TrimSpace(sibling.CredentialsSecretID)
 }
 
 func syncManagedGatewayAIModel(
@@ -5841,14 +5810,7 @@ func syncManagedGatewayAIModel(
 			target.ID,
 		)
 		if !target.HasAPIKey && sharedSibling != nil {
-			sharedSecret, shareErr := applySharedClaudeCodeOAuthSecret(
-				client,
-				sharedSibling,
-				upstream,
-			)
-			if shareErr != nil {
-				return nil, nil, shareErr
-			}
+			sharedSecret := applySharedClaudeCodeOAuthSecret(sharedSibling)
 			if sharedSecret != "" {
 				update["credentials_secret_id"] = sharedSecret
 			}
@@ -5931,14 +5893,7 @@ func syncManagedGatewayAIModel(
 		upstream.CredentialType,
 		"",
 	); sharedSibling != nil {
-		sharedSecret, shareErr := applySharedClaudeCodeOAuthSecret(
-			client,
-			sharedSibling,
-			upstream,
-		)
-		if shareErr != nil {
-			return nil, nil, shareErr
-		}
+		sharedSecret := applySharedClaudeCodeOAuthSecret(sharedSibling)
 		if sharedSecret != "" {
 			create.CredentialsSecretID = sharedSecret
 			create.APIKey = ""

@@ -665,13 +665,44 @@ class CRUDAIModel(CRUDBase[AIModel]):
     def _delete_unreferenced_credential_secret(
         self, db: Session, secret_id: uuid.UUID
     ) -> None:
-        """Delete a SecretReference when no AIModel still points at it."""
+        """Delete a SecretReference when nothing still points at it.
+
+        ``secret_reference`` is also FK'd from Tracker (API key and webhook)
+        and ProviderBillingConnection. Those use different ``secret_kind``
+        values, so sharing is not expected; still check them so a missed
+        reference cannot CASCADE-delete a billing connection or NULL a
+        tracker secret.
+        """
+        from preloop.models.models.provider_billing import (
+            ProviderBillingConnection,
+        )
+        from preloop.models.models.tracker import Tracker
+
         remaining_reference = (
             db.query(self.model.id)
             .filter(self.model.credentials_secret_id == secret_id)
             .first()
         )
         if remaining_reference is not None:
+            return
+        tracker_reference = (
+            db.query(Tracker.id)
+            .filter(
+                or_(
+                    Tracker.credentials_secret_id == secret_id,
+                    Tracker.webhook_secret_id == secret_id,
+                )
+            )
+            .first()
+        )
+        if tracker_reference is not None:
+            return
+        billing_reference = (
+            db.query(ProviderBillingConnection.id)
+            .filter(ProviderBillingConnection.secret_reference_id == secret_id)
+            .first()
+        )
+        if billing_reference is not None:
             return
         secret_ref = crud_secret_reference.get(db, id=secret_id)
         if secret_ref is not None:

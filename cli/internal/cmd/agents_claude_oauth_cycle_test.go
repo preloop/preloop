@@ -431,7 +431,7 @@ func TestSyncManagedGatewayAIModelCreateReusesClaudeSiblingSecretWhenLocalExpire
 	}
 }
 
-func TestSyncManagedGatewayAIModelCreateReseedsClaudeSiblingThenSharesSecret(t *testing.T) {
+func TestSyncManagedGatewayAIModelCreateReusesClaudeSiblingSecretWhenLocalUnexpired(t *testing.T) {
 	sibling := claudeManagedOAuthSiblingForTest(
 		"sibling-sonnet",
 		"claude-sonnet-4-5",
@@ -444,8 +444,8 @@ func TestSyncManagedGatewayAIModelCreateReseedsClaudeSiblingThenSharesSecret(t *
 
 	freshExpiry := time.Now().UTC().Add(4 * time.Hour).UnixMilli()
 	upstream := claudeFableUpstreamForTest(map[string]interface{}{
-		"access":  "sk-ant-oat01-fresh",
-		"refresh": "sk-ant-ort01-fresh",
+		"access":  "sk-ant-oat01-cached",
+		"refresh": "sk-ant-ort01-cached",
 		"expires": freshExpiry,
 	})
 
@@ -462,22 +462,14 @@ func TestSyncManagedGatewayAIModelCreateReseedsClaudeSiblingThenSharesSecret(t *
 	if model == nil {
 		t.Fatalf("expected created fable row, got nil")
 	}
-	reseededSibling := false
 	var createBody map[string]interface{}
 	for _, write := range writes {
-		if write.Method == http.MethodPut && strings.HasSuffix(write.Path, "/sibling-sonnet") {
-			payload, _ := write.Body["credential_payload"].(map[string]interface{})
-			if payload["access"] != "sk-ant-oat01-fresh" {
-				t.Fatalf("expected fresh payload on sibling, got %#v", write.Body)
-			}
-			reseededSibling = true
+		if write.Method == http.MethodPut {
+			t.Fatalf("unexpired local bundle must not overwrite the sibling secret; got %#v", write)
 		}
 		if write.Method == http.MethodPost {
 			createBody = write.Body
 		}
-	}
-	if !reseededSibling {
-		t.Fatalf("expected a PUT of the fresh bundle onto the sibling; writes: %#v", writes)
 	}
 	if createBody == nil {
 		t.Fatalf("expected a create for the new fable row; writes: %#v", writes)
@@ -554,7 +546,7 @@ func TestSyncManagedGatewayAIModelUpdateAttachesClaudeSiblingSecretWhenTargetHas
 	}
 }
 
-func TestSyncManagedGatewayAIModelUpdateReseedsClaudeSiblingWhenTargetHasNoCredential(t *testing.T) {
+func TestSyncManagedGatewayAIModelUpdateAttachesClaudeSiblingSecretWhenLocalUnexpired(t *testing.T) {
 	fable := claudeManagedOAuthSiblingForTest(
 		"target-fable",
 		"claude-fable-5-1",
@@ -575,8 +567,8 @@ func TestSyncManagedGatewayAIModelUpdateReseedsClaudeSiblingWhenTargetHasNoCrede
 
 	freshExpiry := time.Now().UTC().Add(4 * time.Hour).UnixMilli()
 	upstream := claudeFableUpstreamForTest(map[string]interface{}{
-		"access":  "sk-ant-oat01-fresh",
-		"refresh": "sk-ant-ort01-fresh",
+		"access":  "sk-ant-oat01-cached",
+		"refresh": "sk-ant-ort01-cached",
 		"expires": freshExpiry,
 	})
 
@@ -593,18 +585,13 @@ func TestSyncManagedGatewayAIModelUpdateReseedsClaudeSiblingWhenTargetHasNoCrede
 	if model == nil {
 		t.Fatalf("expected updated fable row, got nil")
 	}
-	reseededSibling := false
 	attached := false
 	for _, write := range writes {
 		if write.Method != http.MethodPut {
 			t.Fatalf("must not create a second secret when a sibling lineage exists; got %#v", write)
 		}
 		if strings.HasSuffix(write.Path, "/sibling-sonnet") {
-			payload, _ := write.Body["credential_payload"].(map[string]interface{})
-			if payload["access"] != "sk-ant-oat01-fresh" {
-				t.Fatalf("expected fresh payload on sibling, got %#v", write.Body)
-			}
-			reseededSibling = true
+			t.Fatalf("unexpired local bundle must not overwrite the sibling secret; got %#v", write)
 		}
 		if strings.HasSuffix(write.Path, "/target-fable") {
 			if write.Body["credentials_secret_id"] != "secret-live" {
@@ -616,8 +603,8 @@ func TestSyncManagedGatewayAIModelUpdateReseedsClaudeSiblingWhenTargetHasNoCrede
 			attached = true
 		}
 	}
-	if !reseededSibling || !attached {
-		t.Fatalf("expected sibling re-seed then target attach; writes: %#v", writes)
+	if !attached {
+		t.Fatalf("expected a PUT attaching the sibling secret to the fable row; writes: %#v", writes)
 	}
 }
 
