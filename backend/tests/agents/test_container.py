@@ -1,12 +1,26 @@
 """Tests for container agent executor."""
 
+import json
+import pathlib
+import subprocess
+import sys
 import uuid
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from preloop.agents.base import AgentExecutionResult, AgentStatus
-from preloop.agents.container import ContainerAgentExecutor, _validated_git_ref
+from preloop.agents.container import (
+    COMMIT_PR_BODY_FILE,
+    COMMIT_PR_LIST_FILE,
+    COMMIT_PR_TITLE_FILE,
+    FLOW_PR_BODY_FILE,
+    FLOW_PR_TITLE_FILE,
+    WRITE_PR_PAYLOAD_PY,
+    ContainerAgentExecutor,
+    _validated_git_ref,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -1785,6 +1799,260 @@ class TestResolveGitBranchPlan:
         )
         assert source == "main"
         assert target == "preloop/automated-issue-implementation-83021dcc"
+
+    def test_issue_trigger_names_branch_from_issue_number(self, container_executor):
+        source, target, _, _, _ = container_executor._resolve_git_branch_plan(
+            {
+                "flow_name": "Automated Issue Implementation",
+                "execution_id": "08095fd6-f861-4939-997d-2600d1ec5a80",
+                "trigger_event_data": {
+                    "payload": {
+                        "issue": {
+                            "number": 356,
+                            "title": "Persist OpenCode/Codex session IDs",
+                        }
+                    }
+                },
+            },
+            {"source_branch": None, "target_branch": None},
+        )
+        assert source == "main"
+        assert target == "preloop/issue-356-08095fd6"
+
+
+class TestInterpolateGitConfigText:
+    def test_github_issue_aliases_object_attributes_paths(self):
+        from preloop.agents.container import interpolate_git_config_text
+
+        trigger = {
+            "payload": {
+                "issue": {
+                    "number": 356,
+                    "title": "Persist session ids",
+                    "body": "Wanted",
+                }
+            }
+        }
+        assert (
+            interpolate_git_config_text(
+                "Implements: {{trigger_event.payload.object_attributes.title}}",
+                trigger,
+            )
+            == "Implements: Persist session ids"
+        )
+        assert (
+            interpolate_git_config_text(
+                "Closes #{{trigger_event.payload.object_attributes.number}}",
+                trigger,
+            )
+            == "Closes #356"
+        )
+
+    def test_unresolved_placeholder_is_empty(self):
+        from preloop.agents.container import interpolate_git_config_text
+
+        assert interpolate_git_config_text("Implements: {{missing.title}}", {}) == ""
+
+
+def _run_write_pr_payload_py(
+    tmp_path: pathlib.Path,
+    *,
+    commit_count: int,
+    commit_title: str = "",
+    commit_body: str = "",
+    commit_list: str = "",
+    flow_name: str = "",
+    execution_link: str = "",
+    issue_number: str = "",
+    flow_title: str = "",
+    flow_body: str = "",
+) -> dict[str, Any]:
+    """Run the in-container payload script against temp files."""
+
+    files = {
+        FLOW_PR_TITLE_FILE: flow_title,
+        FLOW_PR_BODY_FILE: flow_body,
+        COMMIT_PR_TITLE_FILE: commit_title,
+        COMMIT_PR_BODY_FILE: commit_body,
+        COMMIT_PR_LIST_FILE: commit_list,
+    }
+    out_path = tmp_path / "pr-payload.json"
+    for path, content in files.items():
+        pathlib.Path(path).write_text(content, encoding="utf-8")
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "-",
+                str(out_path),
+                "preloop/issue-356-08095fd6",
+                "main",
+                "github",
+                issue_number,
+                flow_name,
+                execution_link,
+                str(commit_count),
+            ],
+            input=WRITE_PR_PAYLOAD_PY,
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        return json.loads(out_path.read_text(encoding="utf-8"))
+    finally:
+        for path in files:
+            pathlib.Path(path).unlink(missing_ok=True)
+
+
+class TestWritePrPayloadPy:
+    def test_json_roundtrip_survives_quotes_and_newlines(self):
+        body = (
+            "A restart used to start a cold\n"
+            'agent: files die with "PRELOOP_AGENT_SESSION".'
+        )
+        encoded = json.dumps(
+            {
+                "title": "Persist ids so resumes can use native --resume",
+                "body": body,
+                "head": "preloop/issue-356-08095fd6",
+                "base": "main",
+            },
+            ensure_ascii=False,
+        )
+        parsed = json.loads(encoded)
+        assert parsed["body"] == body
+        assert "\n" not in encoded.replace("\\n", "")
+
+    def test_commit_fallback_single_commit_includes_execution_link(self, tmp_path):
+        payload = _run_write_pr_payload_py(
+            tmp_path,
+            commit_count=1,
+            commit_title="Persist session ids",
+            commit_body="Keeps native --resume working.",
+            flow_name="Automated Issue Implementation",
+            execution_link=(
+                "https://app.preloop.ai/console/flows/executions/"
+                "08095fd6-f861-4939-997d-2600d1ec5a80"
+            ),
+        )
+        assert payload["title"] == "Persist session ids"
+        assert "Automated changes from Preloop flow:" in payload["body"]
+        assert (
+            "[Automated Issue Implementation](https://app.preloop.ai"
+            "/console/flows/executions/08095fd6-f861-4939-997d-2600d1ec5a80)"
+            in payload["body"]
+        )
+        assert "Keeps native --resume working." in payload["body"]
+        assert "**Commits:**" not in payload["body"]
+
+    def test_commit_fallback_multi_commit_lists_subjects(self, tmp_path):
+        payload = _run_write_pr_payload_py(
+            tmp_path,
+            commit_count=2,
+            commit_title="Persist session ids",
+            commit_body="unused for multi-commit",
+            commit_list="- Persist session ids\n- Add tests",
+            flow_name="Automated Issue Implementation",
+            execution_link=(
+                "https://app.preloop.ai/console/flows/executions/"
+                "08095fd6-f861-4939-997d-2600d1ec5a80"
+            ),
+        )
+        assert payload["title"] == "[Preloop] Automated Issue Implementation"
+        assert "**Commits:**" in payload["body"]
+        assert "- Persist session ids" in payload["body"]
+        assert "- Add tests" in payload["body"]
+        assert "/console/flows/executions/08095fd6" in payload["body"]
+
+
+class TestPostExecutionPullRequest:
+    """The wrapper used to interpolate title/body into JSON, so a multi-line
+    pull_request_description (preset 011) or a commit body with quotes made
+    GitHub reject the create call after a successful push.
+    """
+
+    def _context(self, **overrides):
+        context = {
+            "flow_id": "flow-1",
+            "execution_id": "08095fd6-f861-4939-997d-2600d1ec5a80",
+            "flow_name": "Automated Issue Implementation",
+            "_git_target_branch": "preloop/issue-356-08095fd6",
+            "_git_source_branch": "main",
+            "git_clone_config": {
+                "enabled": True,
+                "create_pull_request": True,
+                "pull_request_title": (
+                    "Implements: {{trigger_event.payload.object_attributes.title}}"
+                ),
+                "pull_request_description": (
+                    "Automated implementation for "
+                    "#{{trigger_event.payload.object_attributes.number}}\n\n"
+                    "Closes #{{trigger_event.payload.object_attributes.number}}"
+                ),
+                "repositories": [
+                    {
+                        "repository_url": "https://github.com/acme/private.git",
+                        "clone_path": "/workspace",
+                        "tracker_id": "tracker-1",
+                    }
+                ],
+            },
+            "git_credentials_map": {
+                "tracker-1": {
+                    "token": "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789",
+                    "tracker_type": "github",
+                }
+            },
+            "trigger_event_data": {
+                "payload": {
+                    "issue": {"number": 356, "title": "Persist session ids"},
+                    "repository": {"clone_url": "https://github.com/acme/private.git"},
+                }
+            },
+        }
+        context.update(overrides)
+        return context
+
+    def test_multiline_description_is_not_raw_json(self, container_executor):
+        commands = container_executor._prepare_git_post_execution_commands(
+            self._context()
+        )
+        assert "json.dumps" in commands
+        assert "/workspace/result.json" in commands
+        assert "https://api.github.com/repos/acme/private/pulls" in commands
+        assert '  "body": "Automated implementation' not in commands
+        assert "Closes #356" in commands or "base64 -d" in commands
+        assert "${PRELOOP_GIT_TOKEN_1}" in commands
+        assert "github_pat_11ABCDEFG" not in commands
+
+    def test_host_kind_creates_pr_when_tracker_type_missing(self, container_executor):
+        context = self._context()
+        context["git_credentials_map"]["tracker-1"]["tracker_type"] = None
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "https://api.github.com/repos/acme/private/pulls" in commands
+
+    def test_result_json_fields_are_consulted(self, container_executor):
+        commands = container_executor._prepare_git_post_execution_commands(
+            self._context()
+        )
+        assert "pr_title" in commands
+        assert "pr_body" in commands
+
+    def test_commit_fallback_keeps_execution_link_and_commit_list(
+        self, container_executor
+    ):
+        context = self._context()
+        context["git_clone_config"]["pull_request_title"] = ""
+        context["git_clone_config"]["pull_request_description"] = ""
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert (
+            "/console/flows/executions/08095fd6-f861-4939-997d-2600d1ec5a80" in commands
+        )
+        assert "**Commits:**" in commands
+        assert "[Preloop]" in commands
+        assert '"$COMMIT_COUNT"' in commands
+        assert "/tmp/preloop-commit-pr-list.txt" in commands
+        assert 'git log --format="- %s"' in commands
 
 
 class TestExtractMergeRequestRef:

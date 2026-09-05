@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Codex ChatGPT-OAuth model auto-registration**: when Codex CLI (or any
+  OpenAI-protocol client using a ChatGPT subscription-OAuth credential)
+  asks for a `gpt-*` / o-series / `chatgpt-*` model the account has not
+  registered (for example `gpt-6-astra` after a Codex update), the gateway
+  lazily creates a sibling `AIModel` sharing the same OAuth secret and
+  binds it to the requesting agent instead of answering 404. OpenAI remains
+  the authorization boundary; `preloop models sync` still cannot discover
+  against those credentials. Flag:
+  `MODEL_GATEWAY_CODEX_FAMILY_AUTOREGISTER_ENABLED` (default on).
+
 - **Native (no Docker) dev environment**: `docs/native-dev.md` describes
   running PostgreSQL, NATS, the API, and Vite on one host. `Dockerfile.dev`
   installs those system packages without copying the app;
@@ -88,6 +98,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Wrapper PR/MR create no longer sends invalid JSON**:
+  `git_clone_config.create_pull_request` interpolated title and body into
+  a curl JSON payload, so a multi-line `pull_request_description` (preset
+  011) or a commit body with quotes made GitHub/GitLab reject the create
+  after a successful push. The wrapper now `json.dumps` the payload, reads
+  `pr_title` / `pr_body` from `/workspace/result.json` when the agent
+  writes them, interpolates git-config placeholders (GitHub `issue.*`
+  aliases GitLab `object_attributes.*`), names new branches
+  `preloop/issue-{n}-{exec[:8]}`, logs the HTTP status, and restores the
+  non-custom fallback body (flow execution link, plus a `**Commits:**`
+  list on multi-commit pushes).
 - **Cursor permission hook raised two approvals per shell command**:
   `preloop agents onboard Cursor --approvals` installs the same hook for
   `beforeShellExecution`, `beforeMCPExecution`, and `preToolUse`, and

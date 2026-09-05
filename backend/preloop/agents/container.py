@@ -98,7 +98,142 @@ MAX_EVIDENCE_ARCHIVE_BYTES = 2 * 1024 * 1024
 # orchestrator can bind the execution to the PR it opened.
 PR_RESPONSE_FILE = f"{EVIDENCE_DIR_PATH}/pr.json"
 PR_LOOKUP_FILE = f"{EVIDENCE_DIR_PATH}/pr-lookup.json"
+PR_PAYLOAD_FILE = f"{EVIDENCE_DIR_PATH}/pr-payload.json"
 PR_OPENED_LOG_MARKER = "PRELOOP_PR_OPENED"
+FLOW_PR_TITLE_FILE = "/tmp/preloop-flow-pr-title.txt"
+FLOW_PR_BODY_FILE = "/tmp/preloop-flow-pr-body.txt"
+COMMIT_PR_TITLE_FILE = "/tmp/preloop-commit-pr-title.txt"
+COMMIT_PR_BODY_FILE = "/tmp/preloop-commit-pr-body.txt"
+COMMIT_PR_LIST_FILE = "/tmp/preloop-commit-pr-list.txt"
+
+# GitHub issue webhooks store title/number under ``issue.*``. The
+# automated-issue-implementation preset templates use GitLab's
+# ``object_attributes.*`` paths, so those names alias onto the GitHub shape.
+_GIT_CONFIG_PLACEHOLDER_RE = re.compile(r"\{\{(\w+(?:\.\w+)*)\}\}")
+_GIT_CONFIG_PATH_ALIASES = {
+    "object_attributes.title": ("issue.title",),
+    "object_attributes.description": ("issue.body", "issue.description"),
+    "object_attributes.number": ("issue.number",),
+    "object_attributes.iid": ("issue.number",),
+}
+
+# Builds the GitHub/GitLab create payload in the container so title and body
+# can contain quotes and newlines. Reads, in order: result.json (agent),
+# flow-configured title/body, then the commit subject/body (with a flow
+# execution link, and a **Commits:** list when the push is more than one
+# commit).
+WRITE_PR_PAYLOAD_PY = r"""
+import json
+import pathlib
+import sys
+
+out_path, head, base, kind = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+issue_number = sys.argv[5] if len(sys.argv) > 5 else ""
+flow_name = sys.argv[6] if len(sys.argv) > 6 else ""
+execution_link = sys.argv[7] if len(sys.argv) > 7 else ""
+try:
+    commit_count = int(sys.argv[8]) if len(sys.argv) > 8 and sys.argv[8] else 0
+except ValueError:
+    commit_count = 0
+
+
+def _read(path):
+    p = pathlib.Path(path)
+    if not p.is_file():
+        return ""
+    try:
+        return p.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _from_result():
+    path = pathlib.Path("/workspace/result.json")
+    if not path.is_file():
+        return "", ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    pr = data.get("pull_request")
+    pr = pr if isinstance(pr, dict) else {}
+
+    def _s(*values):
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    title = _s(
+        data.get("pr_title"),
+        data.get("pull_request_title"),
+        pr.get("title"),
+    )
+    body = _s(
+        data.get("pr_body"),
+        data.get("pr_description"),
+        data.get("pull_request_description"),
+        pr.get("body"),
+        pr.get("description"),
+    )
+    return title, body
+
+
+def _attribution():
+    if flow_name and execution_link:
+        return f"Automated changes from Preloop flow: [{flow_name}]({execution_link})"
+    if flow_name:
+        return f"Automated changes from Preloop flow: {flow_name}"
+    if execution_link:
+        return f"Automated changes from Preloop flow: {execution_link}"
+    return ""
+
+
+def _commit_fallback_title():
+    if commit_count > 1 and flow_name:
+        return f"[Preloop] {flow_name}"
+    return _read("/tmp/preloop-commit-pr-title.txt")
+
+
+def _commit_fallback_body():
+    attr = _attribution()
+    if commit_count > 1:
+        commit_list = _read("/tmp/preloop-commit-pr-list.txt")
+        listed = f"**Commits:**\n{commit_list}" if commit_list else ""
+        return "\n\n".join(p for p in (attr, listed) if p)
+    commit_body = _read("/tmp/preloop-commit-pr-body.txt")
+    return "\n\n".join(p for p in (attr, commit_body) if p)
+
+
+result_title, result_body = _from_result()
+title = (
+    result_title
+    or _read("/tmp/preloop-flow-pr-title.txt")
+    or _commit_fallback_title()
+    or "Automated changes"
+)
+body = (
+    result_body
+    or _read("/tmp/preloop-flow-pr-body.txt")
+    or _commit_fallback_body()
+)
+if issue_number and f"#{issue_number}" not in body:
+    body = (body + "\n\n" if body else "") + f"Closes #{issue_number}"
+if kind == "gitlab":
+    payload = {
+        "source_branch": head,
+        "target_branch": base,
+        "title": title,
+        "description": body,
+    }
+else:
+    payload = {"title": title, "body": body, "head": head, "base": base}
+pathlib.Path(out_path).write_text(
+    json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+)
+"""
 
 
 def build_github_pr_capture_shell(
@@ -158,6 +293,159 @@ def build_gitlab_mr_capture_shell(
       echo "No merge request URL could be resolved for branch {branch}"
     fi
 """
+
+
+def _lookup_trigger_path(root: Any, path: str) -> Optional[str]:
+    """Return a dotted path from a trigger dict as a string, if present."""
+
+    value: Any = root
+    for key in path.split("."):
+        if not isinstance(value, dict) or key not in value:
+            return None
+        value = value[key]
+    if value is None or isinstance(value, (dict, list)):
+        return None
+    return str(value)
+
+
+def interpolate_git_config_text(
+    text: Optional[str], trigger_data: Optional[Dict[str, Any]]
+) -> str:
+    """Resolve ``{{trigger_event.payload...}}`` placeholders in git config.
+
+    Unresolved placeholders (still containing ``{{``) are treated as empty so
+    they cannot become a PR title. GitLab ``object_attributes.*`` paths also
+    read GitHub ``issue.*`` so the shipped implementer preset works on both.
+    """
+
+    if not text or not isinstance(text, str):
+        return ""
+    trigger = trigger_data if isinstance(trigger_data, dict) else {}
+    payload = trigger.get("payload", trigger)
+    if not isinstance(payload, dict):
+        payload = {}
+
+    def repl(match: re.Match) -> str:
+        raw = match.group(1)
+        parts = raw.split(".")
+        if parts and parts[0] == "trigger_event":
+            parts = parts[1:]
+        if parts and parts[0] == "payload":
+            parts = parts[1:]
+        path = ".".join(parts)
+        if not path:
+            return match.group(0)
+        candidates = (path,) + _GIT_CONFIG_PATH_ALIASES.get(path, ())
+        for candidate in candidates:
+            found = _lookup_trigger_path(payload, candidate)
+            if found is None:
+                found = _lookup_trigger_path(trigger, candidate)
+            if found is not None:
+                return found
+        return match.group(0)
+
+    resolved = _GIT_CONFIG_PLACEHOLDER_RE.sub(repl, text)
+    if "{{" in resolved:
+        return ""
+    return resolved.strip()
+
+
+def build_write_pr_payload_shell(
+    *,
+    head: str,
+    base: str,
+    kind: str,
+    issue_number: str = "",
+    flow_name: str = "",
+    execution_link: str = "",
+) -> str:
+    """Shell that JSON-encodes the create-PR/MR body from files + result.json."""
+
+    argv = " ".join(
+        [
+            PR_PAYLOAD_FILE,
+            shlex.quote(head),
+            shlex.quote(base),
+            shlex.quote(kind),
+            shlex.quote(issue_number),
+            shlex.quote(flow_name),
+            shlex.quote(execution_link),
+            '"$COMMIT_COUNT"',
+        ]
+    )
+    return f"""
+    if command -v python3 >/dev/null 2>&1; then
+      PRELOOP_PR_PY=python3
+    elif command -v python >/dev/null 2>&1; then
+      PRELOOP_PR_PY=python
+    else
+      PRELOOP_PR_PY=
+    fi
+    if [ -z "$PRELOOP_PR_PY" ]; then
+      echo "Cannot encode PR payload: python3 is required in the agent image"
+    else
+      $PRELOOP_PR_PY - {argv} <<'PRELOOP_PR_PY'
+{WRITE_PR_PAYLOAD_PY}
+PRELOOP_PR_PY
+    fi
+"""
+
+
+def build_flow_pr_text_files_shell(*, title: str, body: str) -> str:
+    """Write flow-configured PR title/body into files via base64 (newline-safe)."""
+
+    title_b64 = base64.b64encode(title.encode("utf-8")).decode("ascii")
+    body_b64 = base64.b64encode(body.encode("utf-8")).decode("ascii")
+    return f"""
+    printf '%s' '{title_b64}' | base64 -d > {FLOW_PR_TITLE_FILE} 2>/dev/null || : > {FLOW_PR_TITLE_FILE}
+    printf '%s' '{body_b64}' | base64 -d > {FLOW_PR_BODY_FILE} 2>/dev/null || : > {FLOW_PR_BODY_FILE}
+"""
+
+
+def build_commit_pr_text_files_shell(*, source_branch: str) -> str:
+    """Capture the commit subject/body/list for the PR fallback title and body."""
+
+    safe_source = _validated_git_ref(source_branch) or "main"
+    return f"""
+    git log -1 --format=%s origin/{safe_source}..HEAD > {COMMIT_PR_TITLE_FILE} 2>/dev/null \\
+      || git log -1 --format=%s {safe_source}..HEAD > {COMMIT_PR_TITLE_FILE} 2>/dev/null \\
+      || git log -1 --format=%s > {COMMIT_PR_TITLE_FILE} 2>/dev/null \\
+      || : > {COMMIT_PR_TITLE_FILE}
+    git log -1 --format=%b origin/{safe_source}..HEAD > {COMMIT_PR_BODY_FILE} 2>/dev/null \\
+      || git log -1 --format=%b {safe_source}..HEAD > {COMMIT_PR_BODY_FILE} 2>/dev/null \\
+      || git log -1 --format=%b > {COMMIT_PR_BODY_FILE} 2>/dev/null \\
+      || : > {COMMIT_PR_BODY_FILE}
+    git log --format="- %s" origin/{safe_source}..HEAD > {COMMIT_PR_LIST_FILE} 2>/dev/null \\
+      || git log --format="- %s" {safe_source}..HEAD > {COMMIT_PR_LIST_FILE} 2>/dev/null \\
+      || : > {COMMIT_PR_LIST_FILE}
+"""
+
+
+def extract_issue_number_from_trigger(
+    trigger_data: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Return the triggering issue/MR number when the payload has one."""
+
+    if not isinstance(trigger_data, dict):
+        return None
+    payload = trigger_data.get("payload", trigger_data)
+    if not isinstance(payload, dict):
+        return None
+    issue = payload.get("issue")
+    if isinstance(issue, dict) and issue.get("number") is not None:
+        number = str(issue["number"]).strip()
+        if number.isdigit():
+            return number
+    obj_attrs = payload.get("object_attributes")
+    if isinstance(obj_attrs, dict):
+        for key in ("iid", "number"):
+            value = obj_attrs.get(key)
+            if value is None:
+                continue
+            number = str(value).strip()
+            if number.isdigit():
+                return number
+    return None
 
 
 # Bounded tail for terminal-path pod log reads on Kubernetes. The artifact
@@ -2779,10 +3067,14 @@ class ContainerAgentExecutor(AgentExecutor):
                 source_branch = "main"
 
             if not target_branch:
-                flow_name = execution_context.get("flow_name", "flow")
                 execution_id = execution_context.get("execution_id", "exec")
-                safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
-                target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
+                issue_number = extract_issue_number_from_trigger(trigger_data)
+                if issue_number:
+                    target_branch = f"preloop/issue-{issue_number}-{execution_id[:8]}"
+                else:
+                    flow_name = execution_context.get("flow_name", "flow")
+                    safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
+                    target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
 
         commit_sha = self._extract_commit_sha_from_trigger(trigger_data)
         if commit_sha:
@@ -3400,6 +3692,141 @@ true
             self.logger.error(f"Error preparing git clone command: {e}", exc_info=True)
             return ""
 
+    def _build_pr_or_mr_create_shell(
+        self,
+        *,
+        execution_context: Dict[str, Any],
+        git_config: Dict[str, Any],
+        token_ref: str,
+        tracker_type: Optional[str],
+        host_kind: Optional[str],
+        repo_url: Optional[str],
+        safe_target: str,
+        safe_source: str,
+    ) -> str:
+        """Build post-push PR/MR creation. JSON is encoded by python in-container."""
+
+        effective_type = (
+            tracker_type if tracker_type in {"github", "gitlab"} else host_kind
+        )
+        if effective_type not in {"github", "gitlab"} or not token_ref or not repo_url:
+            if git_config.get("create_pull_request"):
+                self.logger.warning(
+                    "create_pull_request is enabled but PR/MR creation was skipped "
+                    "(tracker_type=%r host_kind=%r repo_url=%s)",
+                    tracker_type,
+                    host_kind,
+                    repo_url_log_location(repo_url) if repo_url else "missing",
+                )
+            return ""
+
+        trigger_data = execution_context.get("trigger_event_data") or {}
+        flow_title = interpolate_git_config_text(
+            git_config.get("pull_request_title"), trigger_data
+        )
+        flow_body = interpolate_git_config_text(
+            git_config.get("pull_request_description"), trigger_data
+        )
+        issue_number = extract_issue_number_from_trigger(trigger_data) or ""
+        flow_name = execution_context.get("flow_name") or "Automated changes"
+        preloop_url = os.getenv("PRELOOP_URL", "http://localhost:8000").rstrip("/")
+        execution_id = str(execution_context.get("execution_id") or "")
+        execution_link = (
+            f"{preloop_url}/console/flows/executions/{execution_id}"
+            if execution_id
+            else ""
+        )
+
+        prepare = (
+            build_flow_pr_text_files_shell(title=flow_title, body=flow_body)
+            + build_commit_pr_text_files_shell(source_branch=safe_source)
+            + build_write_pr_payload_shell(
+                head=safe_target,
+                base=safe_source,
+                kind=effective_type,
+                issue_number=issue_number,
+                flow_name=flow_name,
+                execution_link=execution_link,
+            )
+        )
+        if effective_type == "github":
+            repo_parts = strip_url_credentials(repo_url).rstrip("/").split("/")
+            if len(repo_parts) < 2:
+                return ""
+            owner = repo_parts[-2]
+            repo = repo_parts[-1].replace(".git", "")
+            curl_cmd = f"""
+    echo "Creating pull request on GitHub..."
+    if [ ! -s {PR_PAYLOAD_FILE} ]; then
+      echo "PR payload was not written; skipping create"
+    else
+      HTTP_CODE=$(curl -sS -o {PR_RESPONSE_FILE} -w "%{{http_code}}" \\
+        -X POST \\
+        -H "Authorization: token {token_ref}" \\
+        -H "Accept: application/vnd.github.v3+json" \\
+        -H "Content-Type: application/json" \\
+        --data-binary @{PR_PAYLOAD_FILE} \\
+        https://api.github.com/repos/{owner}/{repo}/pulls \\
+        || echo "000")
+      echo "PR create HTTP $HTTP_CODE"
+      if [ "$HTTP_CODE" != "201" ]; then
+        echo "PR create response:"
+        cat {PR_RESPONSE_FILE} 2>/dev/null || true
+      fi
+    fi
+"""
+            return (
+                prepare
+                + curl_cmd
+                + build_github_pr_capture_shell(
+                    token_ref=token_ref,
+                    owner=owner,
+                    repo=repo,
+                    branch=safe_target,
+                )
+            )
+
+        from urllib.parse import quote, urlparse
+
+        parsed_url = urlparse(strip_url_credentials(repo_url))
+        gitlab_host = parsed_url.netloc
+        if "@" in gitlab_host:
+            gitlab_host = gitlab_host.split("@")[-1]
+        repo_path = (parsed_url.path or "").lstrip("/").replace(".git", "")
+        if not gitlab_host or not repo_path:
+            return ""
+        encoded_path = quote(repo_path, safe="")
+        self.logger.info("Creating GitLab MR (create_pr=%s)", True)
+        curl_cmd = f"""
+    echo "Creating Merge Request on {gitlab_host}..."
+    if [ ! -s {PR_PAYLOAD_FILE} ]; then
+      echo "MR payload was not written; skipping create"
+    else
+      HTTP_CODE=$(curl -sS -o {PR_RESPONSE_FILE} -w "%{{http_code}}" \\
+        -X POST \\
+        -H "PRIVATE-TOKEN: {token_ref}" \\
+        -H "Content-Type: application/json" \\
+        --data-binary @{PR_PAYLOAD_FILE} \\
+        https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests \\
+        || echo "000")
+      echo "MR create HTTP $HTTP_CODE"
+      if [ "$HTTP_CODE" != "201" ]; then
+        echo "MR create response:"
+        cat {PR_RESPONSE_FILE} 2>/dev/null || true
+      fi
+    fi
+"""
+        return (
+            prepare
+            + curl_cmd
+            + build_gitlab_mr_capture_shell(
+                token_ref=token_ref,
+                gitlab_host=gitlab_host,
+                encoded_path=encoded_path,
+                branch=safe_target,
+            )
+        )
+
     def _prepare_git_post_execution_commands(
         self, execution_context: Dict[str, Any]
     ) -> str:
@@ -3536,226 +3963,18 @@ true
 
                 # Add PR/MR creation if enabled
                 if create_pr and token:
-                    # Get Preloop URL for execution link
-                    import os
-
-                    preloop_url = os.getenv("PRELOOP_URL", "http://localhost:8000")
-                    execution_id = execution_context.get("execution_id", "")
-                    flow_name = execution_context.get("flow_name", "Automated changes")
-
-                    # Check if user provided custom title/description
-                    custom_pr_title = git_config.get("pull_request_title")
-                    custom_pr_description = git_config.get("pull_request_description")
-
-                    # Only use custom values if they're actually set (not None or empty)
-                    use_custom = custom_pr_title and custom_pr_title.strip()
-
-                    if tracker_type == "github":
-                        # Extract owner/repo from URL
-                        repo_url = self._extract_repo_url_from_trigger(
-                            execution_context.get("trigger_event_data", {})
-                        )
-
-                        # If no URL from trigger, try to get from project configuration
-                        if not repo_url:
-                            project_id = repo_config.get("project_id")
-                            if not project_id:
-                                project_id = execution_context.get("trigger_project_id")
-                            if project_id:
-                                repo_url = self._get_repo_url_from_project(
-                                    project_id, execution_context.get("account_id")
-                                )
-                                if repo_url:
-                                    self.logger.info(
-                                        f"Using repo URL from project {project_id} for PR creation"
-                                    )
-
-                        if repo_url:
-                            # Parse owner/repo from URL like https://github.com/owner/repo
-                            repo_parts = repo_url.rstrip("/").split("/")
-                            if len(repo_parts) >= 2:
-                                owner = repo_parts[-2]
-                                repo = repo_parts[-1].replace(".git", "")
-
-                                # Build PR creation command with dynamic title/description
-                                if use_custom:
-                                    # Use custom title and description
-                                    pr_create_cmd = f"""
-    curl -sS -X POST \\
-      -H "Authorization: token {token_ref}" \\
-      -H "Accept: application/vnd.github.v3+json" \\
-      -o {PR_RESPONSE_FILE} \\
-      https://api.github.com/repos/{owner}/{repo}/pulls \\
-      -d "$(cat <<'PREOF'
-{{
-  "title": "{custom_pr_title}",
-  "body": "{custom_pr_description or ""}",
-  "head": "{target_branch}",
-  "base": "{source_branch}"
-}}
-PREOF
-)" \\
-      || echo "Failed to create PR (may already exist)"
-""" + build_github_pr_capture_shell(
-                                        token_ref=token_ref,
-                                        owner=owner,
-                                        repo=repo,
-                                        branch=target_branch,
-                                    )
-                                else:
-                                    # Build title and description from commits
-                                    execution_link = f"{preloop_url}/console/flows/executions/{execution_id}"
-                                    pr_create_cmd = f"""
-    # Build PR title and description based on commit count
-    if [ "$COMMIT_COUNT" -eq "1" ]; then
-      # Single commit - use commit message
-      PR_TITLE=$(git log -1 --format=%s {source_branch}..{target_branch})
-      COMMIT_BODY=$(git log -1 --format=%b {source_branch}..{target_branch})
-      PR_BODY="Automated changes from Preloop flow: [{flow_name}]({execution_link})\\n\\n$COMMIT_BODY"
-    else
-      # Multiple commits - use flow name and list commits
-      PR_TITLE="[Preloop] {flow_name}"
-      COMMIT_LIST=$(git log --format="- %s" {source_branch}..{target_branch})
-      PR_BODY="Automated changes from Preloop flow: [{flow_name}]({execution_link})\\n\\n**Commits:**\\n$COMMIT_LIST"
-    fi
-
-    # Create PR with dynamic title/body
-    curl -sS -X POST \\
-      -H "Authorization: token {token_ref}" \\
-      -H "Accept: application/vnd.github.v3+json" \\
-      -o {PR_RESPONSE_FILE} \\
-      https://api.github.com/repos/{owner}/{repo}/pulls \\
-      -d "$(cat <<PREOF
-{{
-  "title": "$PR_TITLE",
-  "body": "$PR_BODY",
-  "head": "{target_branch}",
-  "base": "{source_branch}"
-}}
-PREOF
-)" \\
-      || echo "Failed to create PR (may already exist)"
-""" + build_github_pr_capture_shell(
-                                        token_ref=token_ref,
-                                        owner=owner,
-                                        repo=repo,
-                                        branch=target_branch,
-                                    )
-                                repo_post_commands.append(pr_create_cmd)
-
-                    elif tracker_type == "gitlab":
-                        # Extract project path and GitLab host from URL
-                        repo_url = self._extract_repo_url_from_trigger(
-                            execution_context.get("trigger_event_data", {})
-                        )
-
-                        # If no URL from trigger, try to get from project configuration
-                        if not repo_url:
-                            project_id = repo_config.get("project_id")
-                            if not project_id:
-                                project_id = execution_context.get("trigger_project_id")
-                            if project_id:
-                                repo_url = self._get_repo_url_from_project(
-                                    project_id, execution_context.get("account_id")
-                                )
-                                if repo_url:
-                                    self.logger.info(
-                                        f"Using repo URL from project {project_id} for MR creation"
-                                    )
-
-                        if repo_url:
-                            # Parse GitLab host from URL (e.g., gitlab.spacecode.ai or gitlab.com)
-                            from urllib.parse import urlparse
-
-                            parsed_url = urlparse(repo_url)
-                            gitlab_host = parsed_url.netloc
-                            # Remove credentials if present (e.g., gitlab-ci-token:xxx@host)
-                            if "@" in gitlab_host:
-                                gitlab_host = gitlab_host.split("@")[-1]
-
-                            # Parse project path from URL
-                            repo_path = repo_url.rstrip("/").split("://")[-1]
-                            repo_path = repo_path.split("/", 1)[-1].replace(".git", "")
-                            # Remove credentials from path if present
-                            if "@" in repo_path:
-                                repo_path = repo_path.split("@", 1)[-1]
-
-                            # URL encode the project path
-                            import urllib.parse
-
-                            encoded_path = urllib.parse.quote(repo_path, safe="")
-
-                            self.logger.info(
-                                "Creating GitLab MR (create_pr=%s)",
-                                create_pr,
-                            )
-
-                            # Build MR creation command with dynamic title/description
-                            if use_custom:
-                                # Use custom title and description
-                                mr_create_cmd = f"""
-    echo "Creating Merge Request on {gitlab_host}..."
-    curl -sS -X POST \\
-      -H "PRIVATE-TOKEN: {token_ref}" \\
-      -H "Content-Type: application/json" \\
-      -o {PR_RESPONSE_FILE} \\
-      https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests \\
-      -d "$(cat <<'MREOF'
-{{
-  "source_branch": "{target_branch}",
-  "target_branch": "{source_branch}",
-  "title": "{custom_pr_title}",
-  "description": "{custom_pr_description or ""}"
-}}
-MREOF
-)" \\
-      || echo "Failed to create MR (may already exist)"
-""" + build_gitlab_mr_capture_shell(
-                                    token_ref=token_ref,
-                                    gitlab_host=gitlab_host,
-                                    encoded_path=encoded_path,
-                                    branch=target_branch,
-                                )
-                            else:
-                                # Build title and description from commits
-                                execution_link = f"{preloop_url}/console/flows/executions/{execution_id}"
-                                mr_create_cmd = f"""
-    # Build MR title and description based on commit count
-    if [ "$COMMIT_COUNT" -eq "1" ]; then
-      # Single commit - use commit message
-      MR_TITLE=$(git log -1 --format=%s {source_branch}..{target_branch})
-      COMMIT_BODY=$(git log -1 --format=%b {source_branch}..{target_branch})
-      MR_DESCRIPTION="Automated changes from Preloop flow: [{flow_name}]({execution_link})\\n\\n$COMMIT_BODY"
-    else
-      # Multiple commits - use flow name and list commits
-      MR_TITLE="[Preloop] {flow_name}"
-      COMMIT_LIST=$(git log --format="- %s" {source_branch}..{target_branch})
-      MR_DESCRIPTION="Automated changes from Preloop flow: [{flow_name}]({execution_link})\\n\\n**Commits:**\\n$COMMIT_LIST"
-    fi
-
-    echo "Creating Merge Request on {gitlab_host}..."
-    curl -sS -X POST \\
-      -H "PRIVATE-TOKEN: {token_ref}" \\
-      -H "Content-Type: application/json" \\
-      -o {PR_RESPONSE_FILE} \\
-      https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests \\
-      -d "$(cat <<MREOF
-{{
-  "source_branch": "{target_branch}",
-  "target_branch": "{source_branch}",
-  "title": "$MR_TITLE",
-  "description": "$MR_DESCRIPTION"
-}}
-MREOF
-)" \\
-      || echo "Failed to create MR (may already exist)"
-""" + build_gitlab_mr_capture_shell(
-                                    token_ref=token_ref,
-                                    gitlab_host=gitlab_host,
-                                    encoded_path=encoded_path,
-                                    branch=target_branch,
-                                )
-                            repo_post_commands.append(mr_create_cmd)
+                    pr_create_cmd = self._build_pr_or_mr_create_shell(
+                        execution_context=execution_context,
+                        git_config=git_config,
+                        token_ref=token_ref,
+                        tracker_type=tracker_type,
+                        host_kind=host_kind,
+                        repo_url=repo_url,
+                        safe_target=safe_target,
+                        safe_source=safe_source,
+                    )
+                    if pr_create_cmd:
+                        repo_post_commands.append(pr_create_cmd)
 
                 repo_post_commands.extend(
                     [

@@ -410,6 +410,29 @@ describe('ConsoleShell', () => {
     expect(toolsLink).to.exist;
   });
 
+  it('lists Models before Tools in the sidebar', async () => {
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector('a[href="/console/ai-models"]') !== null,
+      'Sidebar models link did not render'
+    );
+
+    const hrefs = Array.from(
+      el.shadowRoot?.querySelectorAll('a.sidebar-link') ?? []
+    ).map((link) => link.getAttribute('href'));
+    const models = hrefs.indexOf('/console/ai-models');
+    const tools = hrefs.indexOf('/console/tools');
+    expect(models, 'models link is in the sidebar').to.be.greaterThan(-1);
+    expect(tools, 'tools link is in the sidebar').to.be.greaterThan(-1);
+    // Models is the everyday destination; Tools (and Policies under it) is
+    // configuration, so it reads after Models.
+    expect(models).to.be.lessThan(tools);
+  });
+
   describe('Policies preview gate', () => {
     /** Re-stub fetch with a chosen policies_console flag and superuser bit. */
     function stubShell(
