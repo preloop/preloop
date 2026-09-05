@@ -100,6 +100,7 @@ from preloop.services.account_realtime import (
     build_account_event,
     emit_account_event,
 )
+from preloop.services.agent_control_presence import control_heartbeat_is_fresh
 from preloop.services.account_governance_cache import (
     invalidate_account_governance_cache,
 )
@@ -647,6 +648,7 @@ def _managed_agent_control_fields(
     )
     snapshot: dict = {}
     agent_id = str(summary.get("id") or "")
+    heartbeat_at = summary.get("control_last_heartbeat_at")
     if ws_connected is None and agent_id:
         try:
             from preloop.api.endpoints.agent_control import agent_control_snapshot
@@ -654,22 +656,13 @@ def _managed_agent_control_fields(
             snapshot = agent_control_snapshot(agent_id)
         except (ImportError, AttributeError, RuntimeError):
             snapshot = {}
-        ws_connected = bool(snapshot.get("online"))
-        if not ws_connected:
-            # Sidecar heartbeats persist last_seen_at *and* session mode.
-            # Enrollment and gateway usage also stamp last_seen_at, so recency
-            # alone would mark a freshly onboarded agent online. Require a
-            # persisted sidecar mode so a REST worker that did not accept the
-            # WebSocket can still report online.
-            persisted_mode = summary.get("control_session_mode")
-            seen = summary.get("last_seen_at")
-            if persisted_mode in {"local", "remote", "queued"} and seen is not None:
-                if getattr(seen, "tzinfo", None) is None:
-                    seen = seen.replace(tzinfo=UTC)
-                try:
-                    ws_connected = datetime.now(UTC) - seen <= timedelta(seconds=45)
-                except TypeError:
-                    ws_connected = False
+        # This process may not be the one holding the agent's WebSocket: cloud
+        # runs more than one api replica. The socket writes a heartbeat
+        # timestamp on every frame, so every replica reaches the same verdict
+        # instead of the badge toggling with whichever pod answered.
+        ws_connected = bool(snapshot.get("online")) or control_heartbeat_is_fresh(
+            heartbeat_at
+        )
     control_online = bool(control_enabled and ws_connected)
     if control_online:
         control_state = AGENT_CONTROL_STATE_PLUGIN_CONNECTED
@@ -704,6 +697,7 @@ def _managed_agent_control_fields(
         "supports_voice": control_enabled,
         "supports_interrupt": supports_interrupt,
         "control_session_mode": session_mode,
+        "control_last_heartbeat_at": heartbeat_at,
         "supported_input_modes": (
             list(AGENT_CONTROL_INPUT_MODES) if control_enabled else []
         ),
