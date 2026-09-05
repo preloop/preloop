@@ -26,3 +26,23 @@ def test_account_details_response_includes_default_runner_pool() -> None:
     assert body.default_runner_pool == "server"
     dumped = body.model_dump()
     assert dumped["default_runner_pool"] == "server"
+
+
+def test_account_details_response_includes_hosted_minutes_remaining() -> None:
+    body = AccountDetailsResponse(
+        id="11111111-1111-4111-8111-111111111111",
+        organization_name="Example Org",
+        created_at="2026-09-04T00:00:00",
+        updated_at="2026-09-04T00:00:00",
+    )
+    assert body.hosted_minutes_remaining is None
+    assert body.model_dump()["hosted_minutes_remaining"] is None
+
+    with_minutes = AccountDetailsResponse(
+        id="11111111-1111-4111-8111-111111111111",
+        organization_name="Example Org",
+        hosted_minutes_remaining=340,
+        created_at="2026-09-04T00:00:00",
+        updated_at="2026-09-04T00:00:00",
+    )
+    assert with_minutes.hosted_minutes_remaining == 340

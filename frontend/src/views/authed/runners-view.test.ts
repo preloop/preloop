@@ -1,4 +1,5 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import type SlSelect from '@shoelace-style/shoelace/dist/components/select/select.js';
 import sinon from 'sinon';
 
 import '../../components/view-header.ts';
@@ -13,21 +14,41 @@ describe('RunnersView', () => {
 
   function createFetchStub(
     runners: unknown[] = [],
-    account: { default_runner_pool?: string | null } = {}
+    account: { default_runner_pool?: string | null } = {},
+    options: { failPatch?: boolean } = {}
   ) {
     return sinon
       .stub(window, 'fetch')
-      .callsFake(async (input: RequestInfo | URL) => {
+      .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
-        const json = (data: unknown) =>
+        const json = (data: unknown, status = 200) =>
           new Response(JSON.stringify(data), {
-            status: 200,
+            status,
             headers: { 'Content-Type': 'application/json' },
           });
         if (url.includes('/api/v1/runners')) {
           return json(runners);
         }
         if (url.includes('/api/v1/account/details')) {
+          const method = String(init?.method || 'GET').toUpperCase();
+          if (method === 'PATCH') {
+            if (options.failPatch) {
+              return json(
+                { detail: 'Failed to update account organization' },
+                400
+              );
+            }
+            const body = JSON.parse(String(init?.body || '{}')) as {
+              default_runner_pool?: string | null;
+            };
+            return json({
+              id: 'acct-1',
+              organization_name: 'Example Org',
+              default_runner_pool: body.default_runner_pool ?? null,
+              created_at: '2026-09-04T00:00:00Z',
+              updated_at: '2026-09-04T00:00:00Z',
+            });
+          }
           return json({
             id: 'acct-1',
             organization_name: 'Example Org',
@@ -89,14 +110,14 @@ describe('RunnersView', () => {
     expect(element.shadowRoot?.textContent).to.contain('office-mac');
     expect(element.shadowRoot?.textContent).to.contain('ops@example.com');
     expect(element.shadowRoot?.textContent).to.contain('local');
-    const select = element.shadowRoot?.querySelector(
-      'sl-select[label="Default runner pool"]'
+    const control = element.shadowRoot?.querySelector(
+      'preloop-runner-pool-select'
     );
-    expect(select).to.exist;
-    expect(element.shadowRoot?.textContent).to.contain(
-      'Any online private runner (default)'
+    expect(control).to.exist;
+    expect(control?.shadowRoot?.textContent).to.contain(
+      'Auto (default): private runners first, then Preloop hosted'
     );
-    expect(element.shadowRoot?.textContent).to.contain('Preloop hosted');
+    expect(control?.shadowRoot?.textContent).to.contain('Preloop hosted only');
   });
 
   it('shows empty state when no runners', async () => {
@@ -184,9 +205,10 @@ describe('RunnersView', () => {
     );
     await element.updateComplete;
 
-    const select = element.shadowRoot?.querySelector(
-      'sl-select[label="Default runner pool"]'
-    ) as HTMLSelectElement;
+    const control = element.shadowRoot?.querySelector(
+      'preloop-runner-pool-select'
+    ) as HTMLElement;
+    const select = control.shadowRoot?.querySelector('sl-select') as SlSelect;
     select.value = 'server';
     select.dispatchEvent(new CustomEvent('sl-change'));
     await waitUntil(() =>
@@ -217,14 +239,94 @@ describe('RunnersView', () => {
     );
     await element.updateComplete;
 
-    const select = element.shadowRoot?.querySelector(
-      'sl-select[label="Default runner pool"]'
-    ) as HTMLSelectElement;
+    const control = element.shadowRoot?.querySelector(
+      'preloop-runner-pool-select'
+    ) as HTMLElement;
+    const select = control.shadowRoot?.querySelector('sl-select') as SlSelect;
     const values = Array.from(select.querySelectorAll('sl-option')).map(
       (option) => option.getAttribute('value')
     );
     expect(values).to.include('office-mac');
     expect(select.value).to.equal('office-mac');
+  });
+
+  it('saves Auto as a null account default runner pool', async () => {
+    fetchStub = createFetchStub([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'office-mac',
+        hostname: 'mac.local',
+        os: 'darwin',
+        arch: 'arm64',
+        labels: ['local'],
+        status: 'online',
+        last_heartbeat: '2026-08-17T10:00:00Z',
+        current_execution_id: null,
+      },
+    ]);
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+
+    const control = element.shadowRoot?.querySelector(
+      'preloop-runner-pool-select'
+    ) as HTMLElement;
+    const select = control.shadowRoot?.querySelector('sl-select') as SlSelect;
+    select.value = 'auto';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some(
+          (call) => String(call.args[1]?.method || '').toUpperCase() === 'PATCH'
+        )
+    );
+    const patch = fetchStub.getCalls().find((call) => {
+      const init = call.args[1] as RequestInit | undefined;
+      return String(init?.method || '').toUpperCase() === 'PATCH';
+    });
+    expect(
+      JSON.parse(String((patch?.args[1] as RequestInit).body))
+    ).to.deep.equal({ default_runner_pool: null });
+  });
+
+  it('restores the saved default when the PATCH fails', async () => {
+    fetchStub = createFetchStub(
+      [],
+      { default_runner_pool: 'office-mac' },
+      {
+        failPatch: true,
+      }
+    );
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+
+    const control = element.shadowRoot?.querySelector(
+      'preloop-runner-pool-select'
+    ) as HTMLElement;
+    const select = control.shadowRoot?.querySelector('sl-select') as SlSelect;
+    expect(select.value).to.equal('office-mac');
+    select.value = 'server';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(() =>
+      Boolean(
+        element.shadowRoot?.textContent?.includes(
+          'Failed to update account organization'
+        )
+      )
+    );
+    await element.updateComplete;
+    const restored = control.shadowRoot?.querySelector('sl-select') as SlSelect;
+    expect(restored.value).to.equal('office-mac');
   });
 
   it('shows registered-by email for a runner that arrives over websocket', async () => {

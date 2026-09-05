@@ -6,8 +6,6 @@ import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
-import '@shoelace-style/shoelace/dist/components/select/select.js';
-import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '../../components/view-header.ts';
 import {
   getAccountOrganization,
@@ -17,7 +15,8 @@ import {
 } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { formatLocalDateTime } from '../../utils/date';
-import { buildRunnerPoolOptions } from '../../utils/runner-pool';
+import { AUTO_RUNNER_POOL } from '../../utils/runner-pool';
+import '../../components/preloop-runner-pool-select';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
 @customElement('runners-view')
@@ -33,6 +32,9 @@ export class RunnersView extends LitElement {
 
   @state()
   private defaultRunnerPool: string | null = null;
+
+  @state()
+  private hostedMinutesLeft: number | null = null;
 
   @state()
   private savingDefault = false;
@@ -208,6 +210,7 @@ export class RunnersView extends LitElement {
       ]);
       this.runners = runners;
       this.defaultRunnerPool = account?.default_runner_pool ?? null;
+      this.hostedMinutesLeft = account?.hosted_minutes_remaining ?? null;
     } catch (err) {
       this.error =
         err instanceof Error ? err.message : 'Failed to load runners';
@@ -216,9 +219,13 @@ export class RunnersView extends LitElement {
     }
   }
 
-  private async handleDefaultPoolChange(event: Event) {
-    const target = event.target as HTMLSelectElement;
-    const next = (target.value || '').trim() || null;
+  private async handleDefaultPoolChange(
+    event: CustomEvent<{ value: string | null }>
+  ) {
+    const raw = (event.detail?.value || '').trim();
+    const next = !raw || raw === AUTO_RUNNER_POOL ? null : raw;
+    const previous = this.defaultRunnerPool;
+    this.defaultRunnerPool = next;
     this.savingDefault = true;
     this.defaultError = null;
     try {
@@ -227,6 +234,7 @@ export class RunnersView extends LitElement {
       });
       this.defaultRunnerPool = updated.default_runner_pool ?? null;
     } catch (err) {
+      this.defaultRunnerPool = previous;
       this.defaultError =
         err instanceof Error ? err.message : 'Failed to save default runner';
     } finally {
@@ -235,25 +243,19 @@ export class RunnersView extends LitElement {
   }
 
   private renderDefaultPoolControl() {
-    const options = buildRunnerPoolOptions(this.runners);
-    const current = (this.defaultRunnerPool || '').trim();
-    if (current && !options.some((option) => option.value === current)) {
-      options.push({ value: current, label: current });
-    }
     return html`
       <div class="default-pool">
-        <sl-select
+        <preloop-runner-pool-select
           label="Default runner pool"
-          help-text="Used when a flow does not pin a runner. Private runners are preferred when one is online."
-          .value=${this.defaultRunnerPool || ''}
+          .helpText=${'Applies to every flow that does not pin a runner.'}
+          context="account"
+          .value=${this.defaultRunnerPool}
+          .runners=${this.runners}
+          .accountPool=${this.defaultRunnerPool}
+          .hostedMinutesLeft=${this.hostedMinutesLeft}
           ?disabled=${this.savingDefault}
-          @sl-change=${this.handleDefaultPoolChange}
-        >
-          ${options.map(
-            (option) =>
-              html`<sl-option value=${option.value}>${option.label}</sl-option>`
-          )}
-        </sl-select>
+          @pool-change=${this.handleDefaultPoolChange}
+        ></preloop-runner-pool-select>
         ${
           this.defaultError
             ? html`<p class="muted">${this.defaultError}</p>`

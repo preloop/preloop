@@ -15,16 +15,13 @@ import {
 } from '../api';
 import type { Flow } from '../types';
 import { defaultFlowNotifications } from '../types';
-import {
-  buildRunnerPoolOptions,
-  describeNextRunnerPool,
-} from '../utils/runner-pool';
 import { getAgentControlState } from '../utils/agent-control';
 import { getTrackerEventOptions } from '../constants/tracker-event-types';
 import consoleStyles from '../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../styles/console-dialog';
 import './add-tracker-modal';
 import './add-ai-model-modal';
+import './preloop-runner-pool-select';
 import './schedule-config-editor';
 import { defaultScheduleConfig } from './schedule-config-editor';
 import './preloop-flow-preset-picker';
@@ -96,17 +93,6 @@ export class PreloopFlowForm extends LitElement {
       sl-textarea.prompt {
         max-height: 50rem;
         overflow: auto;
-      }
-
-      .runner-pool-hint {
-        margin: 0 0 var(--sl-spacing-medium);
-        color: var(--sl-color-neutral-600);
-        font-size: 0.85rem;
-        line-height: 1.45;
-      }
-
-      .runner-pool-custom {
-        margin-top: calc(-1 * var(--sl-spacing-small));
       }
 
       .card-header-title {
@@ -212,7 +198,7 @@ export class PreloopFlowForm extends LitElement {
   private accountDefaultRunnerPool: string | null = null;
 
   @state()
-  private customRunnerPool = '';
+  private hostedMinutesLeft: number | null = null;
 
   @state()
   private isAddingAIModel = false;
@@ -309,6 +295,7 @@ export class PreloopFlowForm extends LitElement {
       this.presets = presets;
       this.runners = runners;
       this.accountDefaultRunnerPool = account?.default_runner_pool ?? null;
+      this.hostedMinutesLeft = account?.hosted_minutes_remaining ?? null;
 
       if (
         restoredFromOAuth &&
@@ -720,66 +707,27 @@ export class PreloopFlowForm extends LitElement {
   }
 
   private normalizedFlowRunnerPool(): string | null {
-    const typed = (this.customRunnerPool || '').trim();
-    if (typed) {
-      return typed;
-    }
     const selected = (this.flow.runner_pool || '').trim();
     return selected || null;
   }
 
-  private runnerPoolSelectValue(): string {
-    return (this.flow.runner_pool || '').trim();
-  }
-
-  private handleRunnerPoolSelect(event: Event) {
-    const target = event.target as HTMLSelectElement;
-    const value = (target.value || '').trim();
-    this.flow.runner_pool = value || null;
-    this.customRunnerPool = '';
-    this.requestUpdate();
-  }
-
-  private handleCustomRunnerPool(event: Event) {
-    const target = event.target as HTMLInputElement;
-    const value = target.value;
-    this.customRunnerPool = value;
-    this.flow.runner_pool = value.trim() || null;
+  private handleRunnerPoolChange(event: CustomEvent<{ value: string | null }>) {
+    this.flow.runner_pool = event.detail.value;
     this.requestUpdate();
   }
 
   private renderRunnerPoolField() {
-    const options = buildRunnerPoolOptions(this.runners);
-    const current = (this.flow.runner_pool || '').trim();
-    const known = new Set(options.map((option) => option.value));
-    if (current && !known.has(current)) {
-      options.push({ value: current, label: current });
-    }
-    const hint = describeNextRunnerPool({
-      flowPool: this.normalizedFlowRunnerPool(),
-      accountPool: this.accountDefaultRunnerPool,
-      runners: this.runners,
-    });
     return html`
-      <sl-select
+      <preloop-runner-pool-select
         label="Runner pool"
-        help-text="Pin a private runner, a label, or Preloop hosted. Leave the default to follow the account setting."
-        .value=${this.runnerPoolSelectValue()}
-        @sl-change=${this.handleRunnerPoolSelect}
-      >
-        ${options.map(
-          (option) =>
-            html`<sl-option value=${option.value}>${option.label}</sl-option>`
-        )}
-      </sl-select>
-      <sl-input
-        class="runner-pool-custom"
-        label="Or type a runner label"
-        placeholder="gpu"
-        .value=${this.customRunnerPool}
-        @sl-input=${this.handleCustomRunnerPool}
-      ></sl-input>
-      <p class="runner-pool-hint">${hint}</p>
+        .helpText=${'Where the next run executes. Leave the account default unless this flow needs a particular machine.'}
+        context="flow"
+        .value=${this.normalizedFlowRunnerPool()}
+        .runners=${this.runners}
+        .accountPool=${this.accountDefaultRunnerPool}
+        .hostedMinutesLeft=${this.hostedMinutesLeft}
+        @pool-change=${this.handleRunnerPoolChange}
+      ></preloop-runner-pool-select>
     `;
   }
 

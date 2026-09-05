@@ -5,6 +5,8 @@ import {
   html,
   oneEvent,
 } from '@open-wc/testing';
+import type SlInput from '@shoelace-style/shoelace/dist/components/input/input.js';
+import type SlSelect from '@shoelace-style/shoelace/dist/components/select/select.js';
 import sinon, { SinonSandbox } from 'sinon';
 import './preloop-flow-form.ts';
 import type { PreloopFlowForm } from './preloop-flow-form';
@@ -20,16 +22,16 @@ before(async () => {
 });
 
 describe('PreloopFlowForm runner pool field', () => {
-  it('renders a runner pool select and custom label input', () => {
-    expect(source).to.include('label="Runner pool"');
-    expect(source).to.include('Or type a runner label');
+  it('renders a shared runner pool select', () => {
+    expect(source).to.include('preloop-runner-pool-select');
     expect(source).to.include('renderRunnerPoolField()');
     expect(source).to.include('runner_pool: this.normalizedFlowRunnerPool()');
   });
 
-  it('shows a next-execution hint from current online runners', () => {
-    expect(source).to.include('describeNextRunnerPool');
-    expect(source).to.include('runner-pool-hint');
+  it('passes runners and hosted minutes through to the shared select', () => {
+    expect(source).to.include('preloop-runner-pool-select');
+    expect(source).to.include('hostedMinutesLeft');
+    expect(source).to.include('context="flow"');
   });
 });
 
@@ -60,6 +62,7 @@ describe('PreloopFlowForm runner pool behaviour', () => {
             id: 'acct-1',
             organization_name: 'Example Org',
             default_runner_pool: null,
+            hosted_minutes_remaining: null,
             created_at: '2026-09-04T00:00:00Z',
             updated_at: '2026-09-04T00:00:00Z',
           })
@@ -96,6 +99,10 @@ describe('PreloopFlowForm runner pool behaviour', () => {
     return event.detail.flow;
   };
 
+  const poolSelect = (element: PreloopFlowForm) =>
+    element.shadowRoot?.querySelector('preloop-runner-pool-select') as
+      (HTMLElement & { shadowRoot: ShadowRoot }) | null;
+
   it('lists online runners and submits a selected pool', async () => {
     const element = await mount({
       id: 'flow-1',
@@ -103,18 +110,18 @@ describe('PreloopFlowForm runner pool behaviour', () => {
       prompt_template: 'review',
       agent_type: 'codex',
     });
-    expect(element.shadowRoot?.textContent).to.contain(
-      'Any online private runner (default)'
+    const control = poolSelect(element);
+    expect(control).to.exist;
+    expect(control?.shadowRoot?.textContent).to.contain(
+      'Account default: Auto (private runners first, then Preloop hosted)'
     );
-    expect(element.shadowRoot?.textContent).to.contain('Preloop hosted');
-    expect(element.shadowRoot?.textContent).to.contain('office-mac');
-    expect(element.shadowRoot?.textContent).to.contain(
-      'Next execution will use any online private runner (currently office-mac).'
+    expect(control?.shadowRoot?.textContent).to.contain('Preloop hosted only');
+    expect(control?.shadowRoot?.textContent).to.contain('office-mac');
+    expect(control?.shadowRoot?.textContent).to.contain(
+      'Next run: a private runner (office-mac online). Falls back to Preloop hosted when none is free.'
     );
 
-    const select = element.shadowRoot?.querySelector(
-      'sl-select[label="Runner pool"]'
-    ) as HTMLSelectElement;
+    const select = control?.shadowRoot?.querySelector('sl-select') as SlSelect;
     expect(select).to.exist;
     select.value = 'office-mac';
     select.dispatchEvent(new CustomEvent('sl-change'));
@@ -132,18 +139,27 @@ describe('PreloopFlowForm runner pool behaviour', () => {
       agent_type: 'codex',
       runner_pool: 'server',
     });
-    expect(element.shadowRoot?.textContent).to.contain(
-      'Next execution will use Preloop hosted.'
+    const control = poolSelect(element);
+    expect(control?.shadowRoot?.textContent).to.contain(
+      'Next run: Preloop hosted.'
     );
 
-    const custom = element.shadowRoot?.querySelector(
-      'sl-input[label="Or type a runner label"]'
-    ) as HTMLInputElement;
+    const custom = control?.shadowRoot?.querySelector('sl-input') as SlInput;
     custom.value = 'gpu';
     custom.dispatchEvent(new CustomEvent('sl-input'));
     await element.updateComplete;
 
     const payload = await submit(element);
     expect(payload.runner_pool).to.equal('gpu');
+  });
+
+  it('submits runner_pool null when a new flow is untouched', async () => {
+    const element = await mount({
+      name: 'Review',
+      prompt_template: 'review',
+      agent_type: 'codex',
+    });
+    const payload = await submit(element);
+    expect(payload.runner_pool).to.equal(null);
   });
 });

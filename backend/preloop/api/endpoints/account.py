@@ -1024,6 +1024,13 @@ class AccountDetailsResponse(BaseModel):
             "online private runner."
         ),
     )
+    hosted_minutes_remaining: Optional[int] = Field(
+        default=None,
+        description=(
+            "Hosted runner minutes remaining for this account. "
+            "Null when quota is not configured."
+        ),
+    )
     created_at: str
     updated_at: str
 
@@ -1077,6 +1084,7 @@ async def get_account_details(
         id=str(account.id),
         organization_name=account.organization_name,
         default_runner_pool=getattr(account, "default_runner_pool", None),
+        hosted_minutes_remaining=getattr(account, "hosted_minutes_remaining", None),
         created_at=account.created_at.isoformat(),
         updated_at=account.updated_at.isoformat(),
     )
@@ -1108,6 +1116,9 @@ async def update_account_details(
         id=str(updated_account.id),
         organization_name=updated_account.organization_name,
         default_runner_pool=getattr(updated_account, "default_runner_pool", None),
+        hosted_minutes_remaining=getattr(
+            updated_account, "hosted_minutes_remaining", None
+        ),
         created_at=updated_account.created_at.isoformat(),
         updated_at=updated_account.updated_at.isoformat(),
     )
