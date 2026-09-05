@@ -28,6 +28,10 @@ from preloop.services.model_runtime_resolver import (
 # How many allowlist entries a denial message spells out before eliding.
 MAX_LISTED_ALLOWED_MODELS = 5
 
+# OpenAI-shaped ``error.code`` for an allowlist denial. Distinct from
+# ``budget_limit_exceeded`` because the fix is a policy edit, not spend.
+MODEL_NOT_ALLOWED_ERROR_CODE = "model_not_allowed"
+
 
 def normalize_allowed_models(entries: Optional[Iterable[object]]) -> list[str]:
     """Return the trimmed, non-empty allowlist entries in their stored order.

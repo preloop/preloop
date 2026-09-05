@@ -592,3 +592,49 @@ def test_display_name_of_a_sibling_row_does_not_cover_a_different_import(
 
     assert result.hard_limit_exceeded is True
     assert result.enforcement_reason == "subject_model_not_allowed"
+
+
+def test_enforce_or_raise_names_model_and_allowlist_when_not_allowed(
+    db_session, test_user
+):
+    """The bare "budget exceeded" message is gone: the 403 says what to fix."""
+    ai_model = _governed_model(
+        db_session,
+        test_user,
+        name="OpenCode moonshotai/kimi-k3",
+        provider_name="openai",
+        model_identifier="kimi-k3",
+        meta_data={
+            "gateway": {"enabled": True, "model_alias": "moonshotai/kimi-k3"},
+            "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
+        },
+    )
+    api_key = _key_scoped_allowlist(db_session, test_user, ["GLM 5.3 Flash", "Kimi K3"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.enforce_or_raise(
+            ai_model, {"model": "moonshotai/kimi-k3", "input": "hi"}
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == (
+        "Model 'moonshotai/kimi-k3' is not in this agent's allowed models "
+        "(GLM 5.3 Flash, Kimi K3). Edit the agent's governance in the Preloop "
+        "console or pick an allowed model."
+    )
+
+
+def test_enforce_or_raise_elides_long_allowlists(db_session, test_user):
+    """More than five entries collapse to five plus an ellipsis."""
+    ai_model = _governed_model(db_session, test_user)
+    api_key = _key_scoped_allowlist(
+        db_session, test_user, [f"model-{index}" for index in range(8)]
+    )
+    service = _governed_service(db_session, test_user, api_key)
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.enforce_or_raise(ai_model, {"model": "claude-opus-4-1"})
+
+    assert "(model-0, model-1, model-2, model-3, model-4, ...)" in exc_info.value.detail
+    assert "model-5" not in exc_info.value.detail

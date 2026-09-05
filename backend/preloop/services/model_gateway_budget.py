@@ -22,6 +22,7 @@ from preloop.models.models.ai_model import AIModel
 from preloop.models.models.flow import Flow
 from preloop.services.model_allowlist import (
     allowlist_permits_model,
+    format_model_not_allowed_detail,
     normalize_allowed_models,
     requested_model_label,
 )
@@ -259,7 +260,11 @@ class ModelGatewayBudgetService:
         result = self.preflight_check(ai_model, payload)
         if result.hard_limit_exceeded:
             detail = "Model gateway budget exceeded"
-            if result.enforcement_reason == "account_budget_exceeded":
+            if result.enforcement_reason == "subject_model_not_allowed":
+                detail = format_model_not_allowed_detail(
+                    result.requested_model or "unknown", result.allowed_models
+                )
+            elif result.enforcement_reason == "account_budget_exceeded":
                 detail = "Model gateway budget exceeded: account monthly limit reached"
             elif result.enforcement_reason == "flow_budget_exceeded":
                 detail = "Model gateway budget exceeded: flow monthly limit reached"

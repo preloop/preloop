@@ -82,6 +82,11 @@ from preloop.services.model_gateway_auth import (
     compute_authorized_model_ids,
     resolve_managed_agent_id_for_context,
 )
+from preloop.services.model_allowlist import (
+    MODEL_NOT_ALLOWED_ERROR_CODE,
+    format_model_not_allowed_detail,
+    is_model_not_allowed_detail,
+)
 from preloop.services.model_gateway_budget import (
     BudgetCheckResult,
     ModelGatewayBudgetService,
@@ -1128,6 +1133,7 @@ class OpenAIGatewayService:
                 provider="openai",
                 status_code=403,
                 message=detail,
+                code=self._budget_denial_code(budget_result),
             )
 
         try:
@@ -1269,6 +1275,7 @@ class OpenAIGatewayService:
                 provider="openai",
                 status_code=403,
                 message=detail,
+                code=self._budget_denial_code(budget_result),
             )
         try:
             self._emit_gateway_request_started(
@@ -1410,6 +1417,7 @@ class OpenAIGatewayService:
                 provider="anthropic",
                 status_code=403,
                 message=detail,
+                code=self._budget_denial_code(budget_result),
             )
 
         try:
@@ -1567,6 +1575,7 @@ class OpenAIGatewayService:
                 provider="anthropic",
                 status_code=403,
                 message=detail,
+                code=self._budget_denial_code(budget_result),
             )
 
         passthrough_connection: Optional[tuple[httpx.Client, httpx.Response]] = None
@@ -2009,6 +2018,7 @@ class OpenAIGatewayService:
                 provider="openai",
                 status_code=403,
                 message=detail,
+                code=self._budget_denial_code(budget_result),
             )
 
         try:
@@ -2295,6 +2305,7 @@ class OpenAIGatewayService:
                 provider="openai",
                 status_code=403,
                 message=detail,
+                code=self._budget_denial_code(budget_result),
             )
 
         try:
@@ -8238,12 +8249,23 @@ class OpenAIGatewayService:
 
     @staticmethod
     def _budget_denial_detail(budget_result: BudgetCheckResult) -> str:
+        if budget_result.enforcement_reason == "subject_model_not_allowed":
+            return format_model_not_allowed_detail(
+                budget_result.requested_model or "unknown",
+                budget_result.allowed_models,
+            )
         if budget_result.enforcement_reason == "account_budget_exceeded":
             return "Model gateway budget exceeded: account monthly limit reached"
         if budget_result.enforcement_reason == "flow_budget_exceeded":
             return "Model gateway budget exceeded: flow monthly limit reached"
         if budget_result.enforcement_reason == "trial_hosted_model_budget_exceeded":
             return "Model gateway budget exceeded: trial hosted model limit reached"
+        if budget_result.enforcement_reason == "free_hosted_model_budget_exceeded":
+            return (
+                "Model gateway budget exceeded: free-tier hosted model limit "
+                "reached. Configure your own OpenAI/Anthropic API key or upgrade "
+                "your plan."
+            )
         if (
             budget_result.enforcement_reason
             == "pricing_required_for_budget_enforcement"
@@ -8255,7 +8277,20 @@ class OpenAIGatewayService:
         return "Model gateway budget exceeded"
 
     @staticmethod
+    def _budget_denial_code(budget_result: BudgetCheckResult) -> Optional[str]:
+        """OpenAI-shaped ``error.code`` for a preflight denial.
+
+        Allowlist denials are policy, not spend, so they get their own code;
+        every other reason keeps the historical (unset) code.
+        """
+        if budget_result.enforcement_reason == "subject_model_not_allowed":
+            return MODEL_NOT_ALLOWED_ERROR_CODE
+        return None
+
+    @staticmethod
     def _audit_outcome(status_code: int, error_detail: Optional[str]) -> str:
+        # Allowlist denials share the budget_denied outcome: that is the only
+        # denial vocabulary the audit views and activity feeds understand.
         if (
             status_code == 403
             and error_detail
@@ -8263,6 +8298,7 @@ class OpenAIGatewayService:
                 "budget exceeded" in error_detail.lower()
                 or "budget enforcement requires pricing information"
                 in error_detail.lower()
+                or is_model_not_allowed_detail(error_detail)
             )
         ):
             return "budget_denied"
@@ -8270,6 +8306,8 @@ class OpenAIGatewayService:
 
     @staticmethod
     def _audit_error_type(status_code: int, error_detail: Optional[str]) -> str:
+        if status_code == 403 and is_model_not_allowed_detail(error_detail):
+            return MODEL_NOT_ALLOWED_ERROR_CODE
         if (
             status_code == 403
             and error_detail
