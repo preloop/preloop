@@ -183,8 +183,9 @@ export class PreloopFlowPresetPicker extends LitElement {
         margin-bottom: 0;
       }
 
-      .listbox {
-        outline: none;
+      .listbox:focus-visible {
+        outline: 2px solid var(--sl-color-primary-600);
+        outline-offset: 2px;
       }
 
       .group-label {
@@ -220,6 +221,10 @@ export class PreloopFlowPresetPicker extends LitElement {
           var(--sl-color-primary-600) 16%,
           transparent
         );
+      }
+
+      .row.active {
+        box-shadow: inset 0 0 0 2px var(--sl-color-primary-600);
       }
 
       .row-icon {
@@ -308,6 +313,16 @@ export class PreloopFlowPresetPicker extends LitElement {
 
   @state()
   private activeId: string = BLANK_PRESET_ID;
+
+  willUpdate(changedProperties: Map<string | number | symbol, unknown>): void {
+    if (
+      changedProperties.has('selectedId') &&
+      this.selectedId &&
+      this.visibleOptionIds().includes(this.selectedId)
+    ) {
+      this.activeId = this.selectedId;
+    }
+  }
 
   private filteredGroups(): PresetGroup[] {
     const query = this.search.trim().toLowerCase();
@@ -426,10 +441,11 @@ export class PreloopFlowPresetPicker extends LitElement {
     preset?: FlowPresetRecord;
   }) {
     const selected = this.selectedId === options.optionId;
+    const active = this.activeId === options.optionId;
     return html`
       <div
         id=${`preset-option-${options.optionId}`}
-        class=${classMap({ row: true, selected })}
+        class=${classMap({ row: true, selected, active })}
         role="option"
         data-preset-id=${options.optionId}
         aria-selected=${selected ? 'true' : 'false'}

@@ -1,4 +1,5 @@
-import { expect, fixture, html } from '@open-wc/testing';
+import { expect, fixture, html, oneEvent } from '@open-wc/testing';
+import type SlInput from '@shoelace-style/shoelace/dist/components/input/input.js';
 
 import './preloop-flow-preset-picker';
 import {
@@ -175,7 +176,7 @@ describe('preloop-flow-preset-picker', () => {
         .presets=${CATALOG}
       ></preloop-flow-preset-picker>`
     );
-    const search = el.shadowRoot!.querySelector('sl-input') as HTMLInputElement;
+    const search = el.shadowRoot!.querySelector('sl-input') as SlInput;
     search.value = 'sbom';
     search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
     await el.updateComplete;
@@ -202,6 +203,7 @@ describe('preloop-flow-preset-picker', () => {
     expect(row).to.exist;
     expect(row.getAttribute('aria-selected')).to.equal('true');
     expect(row.classList.contains('selected')).to.be.true;
+    expect(row.classList.contains('active')).to.be.true;
     expect(row.getAttribute('role')).to.equal('option');
     expect(el.shadowRoot!.querySelector('[role="listbox"]')).to.exist;
   });
@@ -243,6 +245,38 @@ describe('preloop-flow-preset-picker', () => {
     );
     const text = el.shadowRoot!.textContent || '';
     expect(text).to.not.include('\u2014');
-    expect(text).to.not.include('—');
+  });
+
+  it('moves the active row with ArrowDown and selects it with Enter', async () => {
+    const el = await fixture<PreloopFlowPresetPicker>(
+      html`<preloop-flow-preset-picker
+        .presets=${CATALOG}
+      ></preloop-flow-preset-picker>`
+    );
+    const listbox = el.shadowRoot!.querySelector(
+      '[role="listbox"]'
+    ) as HTMLElement;
+    listbox.focus();
+
+    listbox.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })
+    );
+    await el.updateComplete;
+    listbox.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })
+    );
+    await el.updateComplete;
+
+    const row = el.shadowRoot!.querySelector(
+      '[data-preset-id="preset-002"]'
+    ) as HTMLElement;
+    expect(row.classList.contains('active')).to.be.true;
+
+    const selected = oneEvent(el, 'preset-select');
+    listbox.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    const event = await selected;
+    expect(event.detail.presetId).to.equal('preset-002');
   });
 });
