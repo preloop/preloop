@@ -2,7 +2,7 @@ import asyncio
 import uuid
 import secrets
 from datetime import datetime
-from typing import Any, Dict, List, NoReturn, Optional, cast
+from typing import Annotated, Any, Dict, List, NoReturn, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
@@ -22,6 +22,7 @@ from preloop.api.auth import get_current_active_user
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.user import User
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
+from preloop.services.execution_metrics import project_execution_totals
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.utils.hashing import compute_content_hash
 from preloop.utils.audit import log_config_change
@@ -156,6 +157,17 @@ def read_flows(
     db: Session = Depends(get_db),
     skip: int = 0,
     limit: int = 100,
+    stats_since: Annotated[
+        Optional[datetime],
+        Query(
+            description=(
+                "When set, execution_stats also carries the counts for the "
+                "window starting at this time: runs, failed, cost and "
+                "last_run_at. The flows list states one period and needs runs "
+                "and spend measured over the same one."
+            )
+        ),
+    ] = None,
     current_user: User = Depends(get_current_active_user),
 ):
     """Retrieve flows for the account."""
@@ -165,7 +177,22 @@ def read_flows(
 
     if flows:
         flow_ids = [f.id for f in flows]
-        stats = crud_flow_execution.get_execution_stats_for_flows(db, flow_ids)
+        stats = crud_flow_execution.get_execution_stats_for_flows(
+            db, flow_ids, start_date=stats_since
+        )
+
+        def _window_fields(stat: Any = None) -> Dict[str, Any]:
+            """The per-window counts, only when a window was asked for."""
+            if stats_since is None:
+                return {}
+            last_run_at = getattr(stat, "last_run_at", None) if stat else None
+            return {
+                "since": stats_since.isoformat(),
+                "runs": int(getattr(stat, "runs", 0) or 0) if stat else 0,
+                "failed": int(getattr(stat, "failed", 0) or 0) if stat else 0,
+                "cost": float(getattr(stat, "cost", 0.0) or 0.0) if stat else 0.0,
+                "last_run_at": last_run_at.isoformat() if last_run_at else None,
+            }
 
         stats_map = {
             s.flow_id: {
@@ -173,6 +200,7 @@ def read_flows(
                 "running_execs": int(s.running_execs or 0),
                 "last_seen_at": s.last_seen_at.isoformat() if s.last_seen_at else None,
                 "estimated_cost": float(s.estimated_cost or 0.0),
+                **_window_fields(s),
             }
             for s in stats
         }
@@ -185,6 +213,7 @@ def read_flows(
                     "running_execs": 0,
                     "last_seen_at": None,
                     "estimated_cost": 0.0,
+                    **_window_fields(),
                 },
             )
 
@@ -429,6 +458,9 @@ def read_flow_executions(
 
     _project_models_used(db, executions)
     _project_execution_runners(db, executions)
+    # Tool calls and cost from the same aggregation the execution page shows,
+    # so a row and the page it opens never state different numbers.
+    project_execution_totals(db, executions)
 
     return executions
 
@@ -642,6 +674,9 @@ def read_flow_execution(
     # projects, so the detail page and the table never disagree.
     _project_models_used(db, [execution])
     _project_execution_runners(db, [execution], resolve_pool_from_flow=True)
+    # Same for tool calls and cost: the page hydrates its strip from this row
+    # before /metrics answers, and the number must not change under the user.
+    project_execution_totals(db, [execution])
 
     return execution
 
@@ -1474,6 +1509,22 @@ def read_flow(
     flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
+    # The same lifetime counts the list carries. The detail page shows ten
+    # recent runs and has to be able to say how many there are in total; a
+    # link that reads "View all executions" over 95 of them tells the operator
+    # nothing about whether it is worth the click.
+    stats = crud_flow_execution.get_execution_stats_for_flows(db, [flow.id])
+    stat = stats[0] if stats else None
+    flow.execution_stats = {
+        "total_execs": int(getattr(stat, "total_execs", 0) or 0),
+        "running_execs": int(getattr(stat, "running_execs", 0) or 0),
+        "last_seen_at": (
+            stat.last_seen_at.isoformat()
+            if stat and getattr(stat, "last_seen_at", None)
+            else None
+        ),
+        "estimated_cost": float(getattr(stat, "estimated_cost", 0.0) or 0.0),
+    }
     return flow
 
 

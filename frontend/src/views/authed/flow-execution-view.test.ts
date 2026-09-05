@@ -3,7 +3,13 @@ import sinon from 'sinon';
 
 import './flow-execution-view';
 import type { FlowExecutionView } from './flow-execution-view';
+import { liftLogfmtErrorField } from './flow-execution-view';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import {
+  FINISHED_EXECUTION,
+  FINISHED_EXECUTION_COST,
+  FINISHED_EXECUTION_TOOL_CALLS,
+} from './test-finished-execution';
 
 describe('FlowExecutionView', () => {
   let fetchStub: sinon.SinonStub;
@@ -168,6 +174,94 @@ describe('FlowExecutionView', () => {
           );
         }
 
+        // A run the provider refused: one 402 model call, and an execution
+        // message that is a logfmt record whose last field is the only part
+        // that says what happened.
+        if (
+          url.includes('/api/v1/flows/executions/exec-failed/gateway-events') &&
+          method === 'GET'
+        ) {
+          return new Response(
+            JSON.stringify({
+              logs: [
+                {
+                  execution_id: 'exec-failed',
+                  timestamp: '2026-03-09T21:32:43Z',
+                  type: 'model_gateway_call',
+                  payload: {
+                    api_usage_id: 'usage-402',
+                    model_alias: 'deepseek/deepseek-v4-pro',
+                    provider_name: 'deepseek',
+                    outcome: 'error',
+                    status_code: 402,
+                    duration_ms: 804,
+                    method: 'POST',
+                    endpoint: '/v1/chat/completions',
+                    error_detail: 'Insufficient Balance',
+                  },
+                },
+              ],
+              source: 'database',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (
+          url.includes('/api/v1/flows/executions/exec-failed/logs') &&
+          method === 'GET'
+        ) {
+          return new Response(
+            JSON.stringify({ logs: [], source: 'database' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (
+          url.endsWith('/api/v1/flows/executions/exec-failed/metrics') &&
+          method === 'GET'
+        ) {
+          return new Response(
+            JSON.stringify({
+              tool_calls: 0,
+              api_requests: 1,
+              token_usage: {
+                total_tokens: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+              },
+              estimated_cost: null,
+              has_pricing: false,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (
+          url.endsWith('/api/v1/flows/executions/exec-failed') &&
+          method === 'GET'
+        ) {
+          return new Response(
+            JSON.stringify({
+              id: 'exec-failed',
+              flow_id: 'flow-1',
+              status: 'FAILED',
+              start_time: '2026-03-09T21:32:21Z',
+              end_time: '2026-03-09T21:32:52Z',
+              failure_category: 'model_transient',
+              error_message:
+                'timestamp=2026-03-09T21:32:45Z level=error component=agent ' +
+                'msg="model call failed" ' +
+                'error.error="AI_APICallError: Insufficient Balance"',
+              trigger_event_details: {
+                source: 'github',
+                type: 'issue_comment',
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
         if (
           url.includes(
             '/api/v1/flows/executions/exec-running/gateway-events'
@@ -233,6 +327,20 @@ describe('FlowExecutionView', () => {
               headers: { 'Content-Type': 'application/json' },
             }
           );
+        }
+
+        // The row as the list serves it: the aggregation the page shows,
+        // already on the execution record. Nothing else answers for this id,
+        // so the strip has only the row to go on, which is the moment the two
+        // views used to disagree.
+        if (
+          url.endsWith(`/api/v1/flows/executions/${FINISHED_EXECUTION.id}`) &&
+          method === 'GET'
+        ) {
+          return new Response(JSON.stringify(FINISHED_EXECUTION), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
         }
 
         if (url.endsWith('/api/v1/flows/flow-1') && method === 'GET') {
@@ -473,6 +581,23 @@ describe('FlowExecutionView', () => {
     expect(content).to.contain('search_issues');
     expect(content).to.contain('get_issue');
     expect(stripValue(element, 'strip-tools')).to.equal('3');
+  });
+
+  it('states the tool calls and cost the executions list prints', async () => {
+    // The other half of this pair lives in flow-executions-view.test.ts, over
+    // the same fixture: one run, one pair of numbers. The row now carries the
+    // aggregation the page shows, so the strip lands on exactly what the
+    // table printed even before /metrics answers (here it never does).
+    const element = await load(FINISHED_EXECUTION.id);
+
+    expect((element as any).toolCalls).to.equal(FINISHED_EXECUTION_TOOL_CALLS);
+    expect((element as any).budgetUsed).to.equal(FINISHED_EXECUTION_COST);
+    expect(stripValue(element, 'strip-tools')).to.contain(
+      String(FINISHED_EXECUTION_TOOL_CALLS)
+    );
+    expect(stripValue(element, 'strip-cost')).to.contain(
+      `$${FINISHED_EXECUTION_COST.toFixed(2)}`
+    );
   });
 
   it('does not claim pricing when a stored cost is a placeholder zero', async () => {
@@ -1293,6 +1418,54 @@ describe('FlowExecutionView', () => {
       expect(calls).to.have.length(2);
       expect(calls[0]).to.contain('metadata_only=true');
       expect(calls[1]).to.not.contain('metadata_only');
+    });
+
+    it('leads the error line with the gateway message, not the log prefix', async () => {
+      const element = await load('exec-failed');
+      await waitUntil(
+        () => (element as any).gatewayEvents.length > 0,
+        'The gateway events never arrived'
+      );
+      await element.updateComplete;
+
+      const line = element.shadowRoot?.querySelector(
+        '[data-testid="error-line"]'
+      );
+      const text = (line?.textContent || '').replace(/\s+/g, ' ').trim();
+      // The provider's own sentence first, then how it arrived.
+      expect(text).to.equal('Insufficient Balance (HTTP 402 from deepseek)');
+      // It wraps now instead of being cut at the viewport.
+      const clamped = line?.querySelector('.error-text') as HTMLElement;
+      expect(getComputedStyle(clamped).whiteSpace).to.equal('normal');
+    });
+
+    it('lifts the logfmt error.error field to the front of the line', () => {
+      const lifted = liftLogfmtErrorField(
+        'timestamp=2026-03-09T21:32:45Z level=error component=agent ' +
+          'msg="model call failed" ' +
+          'error.error="AI_APICallError: Insufficient Balance"'
+      );
+      expect(lifted).to.match(/^AI_APICallError: Insufficient Balance/);
+      // Nothing is thrown away: the rest of the record follows.
+      expect(lifted).to.contain('level=error');
+    });
+
+    it('drops the retry promise when the model calls came back 4xx', async () => {
+      const element = await load('exec-failed');
+      await waitUntil(
+        () => (element as any).gatewayEvents.length > 0,
+        'The gateway events never arrived'
+      );
+      await element.updateComplete;
+
+      const chip = element.shadowRoot?.querySelector(
+        '[data-testid="strip-failure-category"] sl-badge'
+      );
+      expect((chip?.textContent || '').trim()).to.equal('Model transient');
+      const tooltip =
+        chip?.closest('sl-tooltip')?.getAttribute('content') || '';
+      expect(tooltip).to.not.contain('usually works on a retry');
+      expect(tooltip).to.contain('4xx');
     });
 
     it('keeps no debug logging in the execution page', async () => {

@@ -1,5 +1,6 @@
 import uuid
-from typing import List, Optional, Any
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session, joinedload, load_only, with_expression
 from sqlalchemy.future import select
@@ -424,14 +425,35 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         return query.all()
 
     def get_execution_stats_for_flows(
-        self, db: Session, flow_ids: List[Any]
+        self, db: Session, flow_ids: List[Any], start_date: Optional[datetime] = None
     ) -> List[Any]:
-        """Get execution statistics for a list of flow IDs."""
+        """Get execution statistics for a list of flow IDs.
+
+        Args:
+            db: Database session.
+            flow_ids: Flows to aggregate.
+            start_date: When given, each row also carries the counts for that
+                window (``runs``, ``failed``, ``cost``, ``last_run_at``,
+                ``since``). The flows list states one period in its header
+                ("in the last 30d") and used to fill it from two sources: runs
+                counted client-side from a sample of the 200 most recent
+                executions, spend from a per-range usage endpoint. A flow
+                whose runs fell outside the sample then read "No run in the
+                last 30d" beside a real spend. These fields answer runs,
+                failures and spend for the same window, from the database.
+                The all-time fields keep their meaning either way, because
+                other callers (the agents view) show lifetime totals.
+
+        Returns:
+            One row per flow that has ever executed.
+        """
         if not flow_ids:
             return []
 
         from sqlalchemy import func, case
+        from preloop.models.crud.api_usage import exclude_replay_usage_condition
         from preloop.models.models.api_usage import ApiUsage
+        from preloop.services.flow_failure_category import FAILURE_STATUSES
 
         # Fetch execution stats
         exec_stats = (
@@ -467,12 +489,71 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             .filter(
                 ApiUsage.flow_id.in_(flow_ids),
                 ApiUsage.action_type == "model_gateway",
+                # Replay-validation traffic is not the flow's spend. The
+                # Overview usage summary and the per-execution aggregation
+                # both exclude it, so this had to as well or the same window
+                # would read differently in two places.
+                exclude_replay_usage_condition(),
             )
             .group_by(ApiUsage.flow_id)
             .all()
         )
 
         cost_map = {str(row.flow_id): row.estimated_cost for row in cost_stats}
+
+        window_map: Dict[str, Dict[str, Any]] = {}
+        if start_date is not None:
+            window_stats = (
+                db.query(
+                    self.model.flow_id,
+                    func.count(self.model.id).label("runs"),
+                    func.sum(
+                        case(
+                            (self.model.status.in_(FAILURE_STATUSES), 1),
+                            else_=0,
+                        )
+                    ).label("failed"),
+                    func.max(self.model.start_time).label("last_run_at"),
+                )
+                .filter(
+                    self.model.flow_id.in_(flow_ids),
+                    self.model.start_time >= start_date,
+                )
+                .group_by(self.model.flow_id)
+                .all()
+            )
+            # Spend belongs to the run, so the window is the run's
+            # start_time, not the usage row's timestamp. A long run, a
+            # delayed gateway write, or a backdated start_time would
+            # otherwise print cost for a period the runs count does not.
+            window_cost = (
+                db.query(
+                    self.model.flow_id,
+                    func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
+                        "estimated_cost"
+                    ),
+                )
+                .join(self.model, ApiUsage.flow_execution_id == self.model.id)
+                .filter(
+                    self.model.flow_id.in_(flow_ids),
+                    self.model.start_time >= start_date,
+                    ApiUsage.action_type == "model_gateway",
+                    exclude_replay_usage_condition(),
+                )
+                .group_by(self.model.flow_id)
+                .all()
+            )
+            window_cost_map = {
+                str(row.flow_id): float(row.estimated_cost or 0.0)
+                for row in window_cost
+            }
+            for row in window_stats:
+                window_map[str(row.flow_id)] = {
+                    "runs": int(row.runs or 0),
+                    "failed": int(row.failed or 0),
+                    "last_run_at": row.last_run_at,
+                    "cost": window_cost_map.get(str(row.flow_id), 0.0),
+                }
 
         class FlowStatResponse:
             def __init__(self, row):
@@ -481,6 +562,14 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 self.running_execs = row.running_execs
                 self.last_seen_at = row.last_seen_at
                 self.estimated_cost = cost_map.get(str(row.flow_id), 0.0)
+                self.since = start_date
+                window = window_map.get(str(row.flow_id))
+                # A flow with no run in the window is a real answer (0 runs,
+                # 0 failed, no spend), not a missing one.
+                self.runs = window["runs"] if window else 0
+                self.failed = window["failed"] if window else 0
+                self.last_run_at = window["last_run_at"] if window else None
+                self.cost = window["cost"] if window else 0.0
 
         return [FlowStatResponse(row) for row in exec_stats]
 

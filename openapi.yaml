@@ -7380,6 +7380,22 @@ paths:
           type: integer
           default: 100
           title: Limit
+      - name: stats_since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: 'When set, execution_stats also carries the counts for the
+            window starting at this time: runs, failed, cost and last_run_at. The
+            flows list states one period and needs runs and spend measured over the
+            same one.'
+          title: Stats Since
+        description: 'When set, execution_stats also carries the counts for the window
+          starting at this time: runs, failed, cost and last_run_at. The flows list
+          states one period and needs runs and spend measured over the same one.'
       responses:
         '200':
           description: Successful Response
@@ -13845,9 +13861,10 @@ components:
           title: Failure Category
           description: 'Coarse machine-readable reason a terminal execution did not
             succeed: one of runner_conflict, runner_error, model_transient, model_auth,
-            model_quota, model_config, no_confirmation, tool_error, agent_error, timeout,
-            cancelled, unknown. Null for successful or still-running executions, and
-            for executions that predate this field.'
+            provider_billing, model_quota (legacy, superseded by provider_billing),
+            model_config, no_confirmation, setup_failed, tool_error, agent_error,
+            timeout, cancelled, unknown. Null for successful or still-running executions,
+            and for executions that predate this field.'
         retry_of_execution_id:
           anyOf:
           - type: string

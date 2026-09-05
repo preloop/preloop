@@ -30,8 +30,15 @@ it*, not about severity:
 ``model_auth``
     Credentials were rejected upstream (or by the gateway). Retrying is
     hopeless until a key/subscription is fixed.
+``provider_billing``
+    The provider refused the call on billing, credit or quota grounds (HTTP
+    402, or a 429 whose body names a quota). Hopeless until the account is
+    topped up, which is exactly what ``model_transient`` used to promise the
+    opposite of: staging showed HTTP 402 "Insufficient Balance" runs chipped
+    "model transient: usually works on a retry".
 ``model_quota``
-    Hard quota/credit exhaustion upstream. Also hopeless until refilled.
+    Superseded by ``provider_billing``, which is written instead. Kept in the
+    vocabulary so executions classified before it still read as something.
 ``model_config``
     The model rejected the request as configured (unsupported parameters,
     model not bound to the caller's credentials).
@@ -77,6 +84,7 @@ FAILURE_CATEGORY_RUNNER_ERROR = "runner_error"
 FAILURE_CATEGORY_MODEL_TRANSIENT = "model_transient"
 FAILURE_CATEGORY_MODEL_AUTH = "model_auth"
 FAILURE_CATEGORY_MODEL_QUOTA = "model_quota"
+FAILURE_CATEGORY_PROVIDER_BILLING = "provider_billing"
 FAILURE_CATEGORY_MODEL_CONFIG = "model_config"
 FAILURE_CATEGORY_NO_CONFIRMATION = "no_confirmation"
 FAILURE_CATEGORY_SETUP_FAILED = "setup_failed"
@@ -91,6 +99,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_RUNNER_ERROR,
     FAILURE_CATEGORY_MODEL_TRANSIENT,
     FAILURE_CATEGORY_MODEL_AUTH,
+    FAILURE_CATEGORY_PROVIDER_BILLING,
     FAILURE_CATEGORY_MODEL_QUOTA,
     FAILURE_CATEGORY_MODEL_CONFIG,
     FAILURE_CATEGORY_NO_CONFIRMATION,
@@ -108,8 +117,11 @@ FAILURE_CATEGORY_MAX_LENGTH = 32
 # Statuses that get a category. Deliberately a positive list: a status this
 # module does not recognise (a new in-flight stage, a future terminal state)
 # yields no category rather than a fabricated one. An empty status is allowed
-# so callers holding only an exception can still classify it.
-_FAILURE_STATUSES = frozenset({"FAILED", "ERROR", "TIMEOUT", "TIMED_OUT"})
+# so callers holding only an exception can still classify it. The flows-list
+# window ``failed`` count uses the same set so a TIMEOUT is not a silent
+# success next to a FAILED.
+FAILURE_STATUSES = frozenset({"FAILED", "ERROR", "TIMEOUT", "TIMED_OUT"})
+_FAILURE_STATUSES = FAILURE_STATUSES
 _CANCELLED_STATUSES = frozenset({"STOPPED", "CANCELLED", "CANCELED"})
 
 # Upstream taxonomy -> category. Keeps the gateway's vocabulary and the
@@ -120,7 +132,7 @@ _ERROR_CLASS_CATEGORIES = {
     ERROR_CLASS_UPSTREAM_RATE_LIMITED: FAILURE_CATEGORY_MODEL_TRANSIENT,
     ERROR_CLASS_UPSTREAM_DISCONNECT: FAILURE_CATEGORY_MODEL_TRANSIENT,
     ERROR_CLASS_STREAM_ABANDONED: FAILURE_CATEGORY_MODEL_TRANSIENT,
-    ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED: FAILURE_CATEGORY_MODEL_QUOTA,
+    ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED: FAILURE_CATEGORY_PROVIDER_BILLING,
     ERROR_CLASS_UPSTREAM_AUTH: FAILURE_CATEGORY_MODEL_AUTH,
 }
 
@@ -164,10 +176,19 @@ _MODEL_AUTH_RE = re.compile(
     r"|invalid api key|incorrect api key",
     re.IGNORECASE,
 )
-# 'insufficient_quota', 'exceeded your current quota', 'credit balance'
-_MODEL_QUOTA_RE = re.compile(
+# 'insufficient_quota', 'exceeded your current quota', 'credit balance',
+# 'AI_APICallError: Insufficient Balance' (deepseek, HTTP 402). A refusal on
+# money is not a hiccup: it identifies the failing layer whatever else the
+# logs say, so it is matched structurally, before the executor's verdict.
+# The status code is only read when it is written as a status: a bare 402 is
+# just as likely to be a pod name, a line number or an issue number, and this
+# rule runs before the runner and setup rules.
+_PROVIDER_BILLING_RE = re.compile(
     r"insufficient_quota|exceeded your current quota|credit balance"
-    r"|quota exhausted|out of credits",
+    r"|quota exhausted|out of credits|insufficient balance"
+    r"|payment required"
+    r"|\bhttp[ /]?402\b|\b402 payment required\b"
+    r"|status(?:_code)?[ =:]+402\b",
     re.IGNORECASE,
 )
 # "zai does not support parameters: ['parallel_tool_calls']",
@@ -234,6 +255,7 @@ _AGENT_ERROR_RE = re.compile(
 # the completion contract is that thing even if the logs also contain a
 # transient blip the executor's analyser latched onto.
 _STRUCTURAL_MESSAGE_RULES = (
+    (_PROVIDER_BILLING_RE, FAILURE_CATEGORY_PROVIDER_BILLING),
     (_SETUP_FAILED_RE, FAILURE_CATEGORY_SETUP_FAILED),
     (_RUNNER_CONFLICT_RE, FAILURE_CATEGORY_RUNNER_CONFLICT),
     (_RUNNER_ERROR_RE, FAILURE_CATEGORY_RUNNER_ERROR),
@@ -247,7 +269,6 @@ _STRUCTURAL_MESSAGE_RULES = (
 # the message is a lossy summary of it.
 _PROVIDER_MESSAGE_RULES = (
     (_MODEL_AUTH_RE, FAILURE_CATEGORY_MODEL_AUTH),
-    (_MODEL_QUOTA_RE, FAILURE_CATEGORY_MODEL_QUOTA),
     (_MODEL_CONFIG_RE, FAILURE_CATEGORY_MODEL_CONFIG),
     (_MODEL_TRANSIENT_RE, FAILURE_CATEGORY_MODEL_TRANSIENT),
     (_TOOL_ERROR_RE, FAILURE_CATEGORY_TOOL_ERROR),
@@ -273,6 +294,10 @@ def _from_failure_analysis(analysis: Any) -> Optional[str]:
     if isinstance(status, int):
         if status in (401, 403):
             return FAILURE_CATEGORY_MODEL_AUTH
+        # 402 Payment Required is the provider saying "pay first", which no
+        # retry can satisfy. It used to fall through to ``transient``.
+        if status == 402:
+            return FAILURE_CATEGORY_PROVIDER_BILLING
         if status in (400, 404, 422):
             return FAILURE_CATEGORY_MODEL_CONFIG
     if transient:

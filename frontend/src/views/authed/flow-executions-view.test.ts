@@ -6,6 +6,11 @@ import { FlowExecutionsView } from './flow-executions-view';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import type { ConfirmDialog } from '../../components/confirm-dialog';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import {
+  FINISHED_EXECUTION,
+  FINISHED_EXECUTION_COST,
+  FINISHED_EXECUTION_TOOL_CALLS,
+} from './test-finished-execution';
 
 const tick = (ms = 150) => new Promise((r) => setTimeout(r, ms));
 
@@ -112,6 +117,75 @@ describe('FlowExecutionsView', () => {
 
     // The runs that carry no category look exactly as they did.
     expect(cells[1].querySelectorAll('sl-badge').length).to.equal(1);
+  });
+
+  it('fits the table inside its wrapper at 1440', async () => {
+    // 1125px is the content width the console gives this table at a 1440
+    // viewport, where the content-sized layout measured 1250px and pushed
+    // the cost column and the kebab off-screen.
+    fetchStub = stub([
+      {
+        id: 'exec-dddddddd-4',
+        flow_id: 'flow-4',
+        flow_name: 'A flow with a decidedly long name for one column',
+        status: 'SUCCEEDED',
+        start_time: '2026-03-09T10:00:00Z',
+        end_time: '2026-03-09T10:05:00Z',
+        tool_calls_count: 16,
+        estimated_cost: 0.08,
+        trigger_subject:
+          'preloop/preloop #138 · Pull request opened · 949d625b',
+        model_alias: 'deepseek/deepseek-v4-pro',
+        provider_name: 'deepseek',
+        runner: { kind: 'hosted', pool: 'hosted' },
+      },
+      ...EXECUTIONS,
+    ]);
+    const host = (await fixture(
+      html`<div style="width: 1125px;">
+        <flow-executions-view></flow-executions-view>
+      </div>`
+    )) as HTMLElement;
+    const el = host.querySelector('flow-executions-view') as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const wrapper = el.shadowRoot!.querySelector(
+      '.table-wrapper'
+    ) as HTMLElement;
+    const table = wrapper.querySelector('table') as HTMLElement;
+    expect(table.scrollWidth).to.be.at.most(wrapper.clientWidth);
+
+    // The column that went off-screen was the last one, so state it: the
+    // kebab's own header ends inside the wrapper, not past its right edge.
+    const headers = [...table.querySelectorAll('thead th')];
+    const actions = headers[headers.length - 1] as HTMLElement;
+    const wrapperBox = wrapper.getBoundingClientRect();
+    expect(
+      actions.getBoundingClientRect().right,
+      'the actions column ends inside the wrapper'
+    ).to.be.at.most(wrapperBox.left + wrapper.clientWidth + 1);
+  });
+
+  it('prints the tool calls and cost the execution page states', async () => {
+    // The row is the same fixture the execution page test opens. On staging
+    // the two said 0 vs 16 tool calls and $0.03 vs $0.08 for one run, because
+    // the table printed the stored rollups and the page showed the
+    // aggregation; the server now projects the aggregation onto the row.
+    fetchStub = stub([FINISHED_EXECUTION]);
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const cells = [
+      ...el.shadowRoot!.querySelectorAll('tbody tr td.numeric'),
+    ].map((cell) => (cell.textContent || '').trim());
+    expect(cells).to.deep.equal([
+      String(FINISHED_EXECUTION_TOOL_CALLS),
+      `$${FINISHED_EXECUTION_COST.toFixed(2)}`,
+    ]);
   });
 
   it('preselects the status and flow filters from the query string', async () => {
