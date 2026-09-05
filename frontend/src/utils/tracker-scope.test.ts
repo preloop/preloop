@@ -31,6 +31,14 @@ describe('describeTrackerScope', () => {
     },
   ];
 
+  it('describes an empty rule set without an em dash', () => {
+    const summary = describeTrackerScope(undefined, orgs, []);
+    expect(summary).to.equal(
+      'No scope configured. Sync to discover groups and projects from your tracker.'
+    );
+    expect(summary).to.not.include('\u2014');
+  });
+
   it('describes org-wide scope with human-readable group names', () => {
     const summary = describeTrackerScope(
       [
