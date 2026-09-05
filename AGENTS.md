@@ -14,7 +14,8 @@ Use the Lit.dev framework for frontend code. If you create new web components en
 - **Lint**: `ruff check .`
 - **Format**: `ruff format .`
 - **Type check**: `mypy backend tests`
-- **Docker development**: `docker-compose up`
+- **Docker development**: `docker compose up`
+- **Native (no Docker)**: `docs/native-dev.md` (single VM or host)
 - **Install pre-commit**: `pre-commit install`
 - **PostgreSQL access**: `docker compose exec postgres psql -U postgres -d preloop`
 - **Database migrations**: `alembic upgrade head` (from backend/preloop/models)
@@ -75,3 +76,10 @@ To use pre-commit:
 3. The hooks will run automatically on git commit
 4. To run hooks manually: `pre-commit run --all-files`
 5. Activate venv before committing or running pre-commit
+
+## Cursor Cloud specific instructions
+
+This is a native VM (no Docker). Follow `docs/native-dev.md`.
+`.cursor/environment.json` builds `Dockerfile.dev` (system packages only),
+runs `scripts/native-dev-install.sh` to refresh app deps, and
+`scripts/native-dev-deps.sh` to start PostgreSQL and NATS.

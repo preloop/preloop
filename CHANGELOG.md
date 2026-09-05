@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Native (no Docker) dev environment**: `docs/native-dev.md` describes
+  running PostgreSQL, NATS, the API, and Vite on one host. `Dockerfile.dev`
+  installs those system packages without copying the app;
+  `.cursor/environment.json` uses it for Cursor Cloud.
+
 - **Per-flow timeout budget**: `timeout_seconds` on a flow (create/update
   API, preset YAML, 60..86400 seconds) sets the wall-clock budget for one
   execution; unset keeps the deployment default
