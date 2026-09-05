@@ -718,6 +718,15 @@ export class ConsoleShell extends LitElement {
                       `
                     )}
                     ${this._renderNavLink(
+                      '/console/ai-models',
+                      html`
+                        <sl-menu-item>
+                          <sl-icon name="cpu" slot="prefix"></sl-icon>
+                          <span class="sidebar-label">Models</span>
+                        </sl-menu-item>
+                      `
+                    )}
+                    ${this._renderNavLink(
                       '/console/tools',
                       html`
                         <sl-menu-item>
@@ -751,15 +760,6 @@ export class ConsoleShell extends LitElement {
                             slot="prefix"
                           ></sl-icon>
                           <span class="sidebar-label">Trackers</span>
-                        </sl-menu-item>
-                      `
-                    )}
-                    ${this._renderNavLink(
-                      '/console/ai-models',
-                      html`
-                        <sl-menu-item>
-                          <sl-icon name="cpu" slot="prefix"></sl-icon>
-                          <span class="sidebar-label">Models</span>
                         </sl-menu-item>
                       `
                     )}
