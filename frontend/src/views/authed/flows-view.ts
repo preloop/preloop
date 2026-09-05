@@ -1611,9 +1611,12 @@ export class FlowsView extends LitElement {
               : html`<span class="muted-cell">0</span>`
           }
         </td>
+        <!-- Only a server that measured this window can state a spend for
+             it. Without stats_since the cost is unknown, and "-" says that;
+             "$0.00" would be a figure the page made up. -->
         <td class="numeric" title=${`Estimated spend, last ${this.rangeLabel}`}>
           ${
-            row.runs > 0
+            row.countsFromServer && row.runs > 0
               ? this.formatMoney(row.cost)
               : html`<span class="muted-cell">-</span>`
           }
@@ -1784,7 +1787,7 @@ export class FlowsView extends LitElement {
             runs${row.failed > 0 ? `, ${row.failed} failed` : ''}
           </span>
           ${
-            row.runs > 0
+            row.countsFromServer && row.runs > 0
               ? html`<span class="stat-item"
                   >${this.formatMoney(row.cost)} est.</span
                 >`

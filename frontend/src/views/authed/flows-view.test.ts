@@ -678,6 +678,67 @@ describe('FlowsView', () => {
       expect(text).to.not.contain('$0.00');
     });
 
+    it('states no spend when the server did not measure this window', async () => {
+      // A server without `stats_since` answers lifetime stats only, so the
+      // runs are counted from the executions sample and there is no figure
+      // for this window. "-" says that; "$0.00" would claim the flow spent
+      // nothing, which the page has no way of knowing.
+      fetchStub = sinon
+        .stub(window, 'fetch')
+        .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          const method = (init?.method || 'GET').toUpperCase();
+          const json = (data: unknown) =>
+            new Response(JSON.stringify(data), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          if (url.includes('/api/v1/flows/presets')) return json([]);
+          if (url.includes('/api/v1/flows/executions')) {
+            return json(url.includes('status=') ? [] : EXECUTIONS);
+          }
+          if (url.includes('/api/v1/flows') && method === 'GET') {
+            return json([
+              {
+                id: 'flow-review',
+                name: 'Pull Request Reviewer',
+                is_enabled: true,
+                trigger_event_source: 'webhook',
+                execution_stats: {
+                  total_execs: 9,
+                  running_execs: 0,
+                  estimated_cost: 4.5,
+                },
+              },
+            ]);
+          }
+          if (url.includes('/api/v1/trackers')) return json([]);
+          return json({ detail: `Unhandled: ${method} ${url}` });
+        });
+      const element = (await fixture(
+        html`<flows-view></flows-view>`
+      )) as FlowsView;
+      await waitUntil(
+        () => !(element as any).isLoading,
+        'Flows view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const row = element.rows.find(
+        (candidate: FlowListRow) => candidate.id === 'flow-review'
+      );
+      expect(row?.countsFromServer).to.equal(false);
+      expect(row?.runs).to.be.greaterThan(0);
+
+      const cells = [
+        ...(element.shadowRoot?.querySelectorAll(
+          'tbody tr.flow-row td.numeric'
+        ) || []),
+      ];
+      const cost = cells[cells.length - 1];
+      expect((cost?.textContent || '').trim()).to.equal('-');
+    });
+
     it('offers open, run, edit, pause and a separated danger delete in the kebab', async () => {
       const element = await renderFlows();
       const actions = element.shadowRoot?.querySelector(
