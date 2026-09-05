@@ -13,6 +13,8 @@ import type {
   Project,
   Organization,
   Issue,
+  IssueListItem,
+  IssueListResponse,
   DuplicatePair,
   DuplicatesResponse,
   IssueComplianceResult,
@@ -294,6 +296,30 @@ async function refreshToken(): Promise<RefreshResult> {
  * coalescer, not a cache, and no caller can ever read a stale body.
  */
 const inFlightGets = new Map<string, Promise<Response>>();
+
+export async function fetchWithTimeout(
+  input: string,
+  init: RequestInit = {},
+  ms = 45000
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetchWithAuth(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    const aborted =
+      (error instanceof DOMException && error.name === 'AbortError') ||
+      (error instanceof Error && error.name === 'AbortError');
+    if (aborted) {
+      const timeoutError = new Error('Request timed out');
+      timeoutError.name = 'TimeoutError';
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
 
 export async function fetchWithAuth(
   url: string,
@@ -2081,6 +2107,51 @@ export async function getIssueCount(): Promise<{ total_issues: number }> {
   return response.json();
 }
 
+export async function listIssues(params: {
+  project_id?: string;
+  tracker_id?: string;
+  status?: 'open' | 'closed' | 'all';
+  q?: string;
+  skip?: number;
+  limit?: number;
+  sort?: 'updated_desc';
+}): Promise<IssueListResponse> {
+  const query = new URLSearchParams();
+  if (params.project_id) query.set('project_id', params.project_id);
+  if (params.tracker_id) query.set('tracker_id', params.tracker_id);
+  if (params.status) query.set('status', params.status);
+  if (params.q) query.set('q', params.q);
+  if (params.skip !== undefined) query.set('skip', String(params.skip));
+  if (params.limit !== undefined) query.set('limit', String(params.limit));
+  if (params.sort) query.set('sort', params.sort);
+  const response = await fetchWithAuth(`/api/v1/issues?${query.toString()}`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch issues');
+  }
+  return response.json();
+}
+
+export async function getIssue(issueId: string): Promise<IssueListItem> {
+  const response = await fetchWithAuth(
+    `/api/v1/issues/${encodeURIComponent(issueId)}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch issue');
+  }
+  return response.json();
+}
+
+export async function getIssueDuplicateAiStatus(): Promise<{
+  configured: boolean;
+  model_name: string | null;
+}> {
+  const response = await fetchWithAuth('/api/v1/issue-duplicates/ai-status');
+  if (!response.ok) {
+    throw new Error('Failed to fetch AI status');
+  }
+  return response.json();
+}
+
 export async function searchIssues(
   params: FetchIssuesListParams
 ): Promise<any[]> {
@@ -2947,6 +3018,82 @@ export async function triggerFlowExecution(
   return response.json();
 }
 
+export type RunPresetSlug =
+  'automated-issue-implementation' | 'pull-request-reviewer';
+
+export interface RunPresetTarget {
+  kind: 'issue' | 'pull_request';
+  issue_id?: string;
+  project_id?: string;
+  number?: number;
+}
+
+export interface RunPresetResponse {
+  execution_id: string | null;
+  flow_id: string;
+  flow_name: string;
+  flow_created: boolean;
+  execution_url: string | null;
+}
+
+export class RunPresetError extends Error {
+  status: number;
+  code?: string;
+  flowName?: string;
+  flowId?: string;
+
+  constructor(
+    message: string,
+    status: number,
+    extras?: { code?: string; flowName?: string; flowId?: string }
+  ) {
+    super(message);
+    this.name = 'RunPresetError';
+    this.status = status;
+    this.code = extras?.code;
+    this.flowName = extras?.flowName;
+    this.flowId = extras?.flowId;
+  }
+}
+
+export async function runPresetOnTarget(body: {
+  preset_slug: RunPresetSlug;
+  target: RunPresetTarget;
+  confirm_create?: boolean;
+}): Promise<RunPresetResponse> {
+  const response = await fetchWithAuth('/api/v1/flows/run-preset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      preset_slug: body.preset_slug,
+      target: body.target,
+      confirm_create: body.confirm_create ?? false,
+    }),
+  });
+  if (response.ok) {
+    return response.json();
+  }
+  const errorData = await response.json().catch(() => ({}));
+  const detail = errorData?.detail;
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    throw new RunPresetError(
+      detail.message ||
+        detail.code ||
+        extractErrorMessage(errorData, 'Run failed'),
+      response.status,
+      {
+        code: detail.code,
+        flowName: detail.flow_name,
+        flowId: detail.flow_id,
+      }
+    );
+  }
+  throw new RunPresetError(
+    extractErrorMessage(errorData, 'Failed to run preset'),
+    response.status
+  );
+}
+
 export async function getRunners(): Promise<RunnerRecord[]> {
   const response = await fetchWithAuth('/api/v1/runners');
   if (!response.ok) {
@@ -3141,12 +3288,56 @@ export async function listIssueDuplicates(
   return response.json();
 }
 
+export type VerdictErrorCode = 'no_default_ai_model' | 'timeout' | 'failed';
+
+export class VerdictError extends Error {
+  code: VerdictErrorCode;
+  status: number;
+
+  constructor(code: VerdictErrorCode, status: number, message?: string) {
+    super(message ?? code);
+    this.name = 'VerdictError';
+    this.code = code;
+    this.status = status;
+  }
+}
+
+function verdictErrorFromBody(status: number, body: unknown): VerdictError {
+  const detail =
+    body && typeof body === 'object' && 'detail' in body
+      ? (body as { detail: unknown }).detail
+      : undefined;
+  if (
+    detail &&
+    typeof detail === 'object' &&
+    'code' in detail &&
+    (detail as { code: unknown }).code === 'no_default_ai_model'
+  ) {
+    return new VerdictError('no_default_ai_model', status);
+  }
+  return new VerdictError('failed', status);
+}
+
 export async function checkAIVerdict(issue1_id: string, issue2_id: string) {
-  const response = await fetchWithAuth(
-    `/api/v1/issue-duplicates/check?issue1_id=${issue1_id}&issue2_id=${issue2_id}`
-  );
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(
+      `/api/v1/issue-duplicates/check?issue1_id=${issue1_id}&issue2_id=${issue2_id}`
+    );
+  } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      throw new VerdictError('timeout', 0);
+    }
+    throw error;
+  }
   if (!response.ok) {
-    throw new Error('Failed to fetch AI verdict');
+    let body: unknown = null;
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+    throw verdictErrorFromBody(response.status, body);
   }
   return response.json();
 }

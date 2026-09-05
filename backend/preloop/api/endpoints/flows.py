@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 import secrets
 from datetime import datetime
@@ -335,69 +336,51 @@ def clone_preset(
         db, preset, current_user.account_id
     )
 
-    # Build dict excluding fields we want to override or that aren't in FlowCreate
-    # Note: is_enabled is excluded so cloned flows start enabled (presets are disabled)
-    # Also exclude template tracking fields - we set these explicitly
-    preset_dict = {
-        k: v
-        for k, v in preset.__dict__.items()
-        if k
-        not in [
-            "_sa_instance_state",
-            "id",
-            "created_at",
-            "updated_at",
-            "name",
-            "is_preset",
-            "is_enabled",
-            "account_id",
-            # Model binding - resolved for this account above
-            "ai_model_id",
-            # Template tracking fields - set explicitly below
-            "source_preset_id",
-            "source_prompt_hash",
-            "source_tools_hash",
-            "prompt_customized",
-            "tools_customized",
-            "preset_update_available",
-        ]
-    }
+    from preloop.services.flow_presets_service import clone_preset_for_account
 
-    # Generate a unique name for the cloned flow
-    base_name = f"Copy of {preset.name}"
-    final_name = base_name
-    suffix = 1
-
-    while crud_flow.get_by_name_and_account(
-        db, name=final_name, account_id=current_user.account_id
-    ):
-        suffix += 1
-        final_name = f"{base_name} ({suffix})"
-
-    # Compute hashes of the preset's current prompt and tools
-    # These are used to detect if the user customizes the flow later
-    source_prompt_hash = compute_content_hash(preset.prompt_template)
-    source_tools_hash = compute_content_hash(preset.allowed_mcp_tools or [])
-
-    cloned_flow_in = schemas.FlowCreate(
-        **preset_dict,
-        name=final_name,
-        is_preset=False,
-        is_enabled=True,  # Cloned flows start enabled
-        account_id=str(current_user.account_id),
-        ai_model_id=bound_ai_model_id,
-        # Template tracking: link to source preset
-        source_preset_id=str(preset.id),
-        source_prompt_hash=source_prompt_hash,
-        source_tools_hash=source_tools_hash,
-        prompt_customized=False,
-        tools_customized=False,
-        preset_update_available=False,
+    return clone_preset_for_account(
+        db,
+        preset,
+        current_user.account_id,
+        name=None,
+        bound_ai_model_id=bound_ai_model_id,
+        flow_crud=crud_flow,
     )
-    cloned_flow = crud_flow.create(
-        db=db, flow_in=cloned_flow_in, account_id=current_user.account_id
-    )
-    return cloned_flow
+
+
+@router.post("/flows/run-preset", response_model=schemas.RunPresetResponse)
+@require_permission("execute_flows")
+def run_preset(
+    *,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    body: schemas.RunPresetRequest,
+) -> schemas.RunPresetResponse:
+    """Run a catalog preset on an issue, creating the account flow on first use.
+
+    ``confirm_create=false`` resolves only: 409 ``flow_missing`` when the
+    account has no clone, or 200 with flow metadata and no execution when
+    one exists. ``confirm_create=true`` creates if needed (requires
+    ``create_flows``) and starts the run.
+    """
+    # Sync handler: an async def would hold Session on the event loop and
+    # fail test_async_sync_session_route_count_does_not_grow.
+    from preloop.services.preset_runner import PresetRunnerError, run_preset_on_target
+
+    try:
+        result = asyncio.run(
+            run_preset_on_target(
+                db,
+                current_user=current_user,
+                preset_slug=body.preset_slug,
+                target=body.target,
+                confirm_create=body.confirm_create,
+                triggered_by=_display_name(current_user),
+            )
+        )
+    except PresetRunnerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return schemas.RunPresetResponse(**result)
 
 
 def _normalize_status_filters(status: Optional[List[str]]) -> Optional[List[str]]:

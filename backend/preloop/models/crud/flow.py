@@ -147,6 +147,34 @@ class CRUDFlow(CRUDBase[models.Flow]):
             .first()
         )
 
+    def get_by_source_preset(
+        self,
+        db: Session,
+        account_id: Union[str, UUID],
+        source_preset_id: Union[str, UUID],
+    ) -> Optional[models.Flow]:
+        """Return the account flow cloned from ``source_preset_id``.
+
+        Enabled flows win, then the oldest ``created_at``. A disabled clone
+        is still returned so callers can refuse a second create.
+        """
+        account_id_str = str(account_id) if isinstance(account_id, UUID) else account_id
+        preset_id_str = (
+            str(source_preset_id)
+            if isinstance(source_preset_id, UUID)
+            else source_preset_id
+        )
+        return (
+            db.query(self.model)
+            .filter(
+                cast(self.model.account_id, String) == account_id_str,
+                cast(self.model.source_preset_id, String) == preset_id_str,
+                self.model.is_preset.is_(False),
+            )
+            .order_by(self.model.is_enabled.desc(), self.model.created_at.asc())
+            .first()
+        )
+
     def get_by_trigger(
         self,
         db: Session,

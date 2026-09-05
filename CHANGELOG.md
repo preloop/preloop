@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Issue-duplicates AI errors use `{code, message}`**: `GET /issue-duplicates/check` and `POST /ai-suggestion` return `detail` as `{code, message}` instead of a string. `no_default_ai_model` is HTTP 422; `ai_model_error` (model-call failure) is still HTTP 500. Clients that parsed `detail` as a string need to read `detail.message`.
+
 - **GitHub merged PRs emit `pull_request_merged`**: a closed-and-merged pull request is no longer normalized as `pull_request_closed`. GitLab Job Hooks expose `build_name` / `build_status`, and GitHub issue close exposes `state_reason`, so flows can filter `deploy:staging` success and merge-completed closes. The event pickers list Job Event and Deployment.
 
 - **GitHub backend CI uses 8 pytest-split shards**: group 1 of 4 was the

@@ -16,6 +16,7 @@ from preloop.api.endpoints.issue_duplicates import (
     find_issue_duplicates,
     get_duplicate_issues,
     check_or_create_issue_duplicate,
+    get_issue_duplicate_ai_status,
     propose_issue_duplicate_resolution,
     get_resolution_suggestion,
     get_projects_duplicate_stats,
@@ -1293,8 +1294,8 @@ def test_get_resolution_suggestion_no_default_model(mocker: MockerFixture) -> No
             settings=MagicMock(),
         )
 
-    assert excinfo.value.status_code == 500
-    assert "No default active AI model" in excinfo.value.detail
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.detail["code"] == "no_default_ai_model"
 
 
 def test_get_resolution_suggestion_prompt_not_configured(mocker: MockerFixture) -> None:
@@ -1490,6 +1491,8 @@ def test_get_resolution_suggestion_resolves_vault_credentials(
     mock_openai_class.assert_called_once_with(
         api_key="sk-resolved-from-vault",
         base_url="https://custom.example.com/v1",
+        timeout=30.0,
+        max_retries=0,
     )
 
 
@@ -1705,3 +1708,118 @@ def test_check_or_create_duplicate_persistent_429_surfaces_retry_after(
     assert excinfo.value.headers is not None
     assert excinfo.value.headers.get("Retry-After") == "3"
     assert mock_openai_class.return_value.chat.completions.create.call_count == 2
+
+
+def test_check_or_create_duplicate_no_default_model_returns_422_code(
+    mocker: MockerFixture,
+) -> None:
+    """A missing default model is a 422 with code no_default_ai_model."""
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_issue_duplicate.get_by_issue_ids",
+        return_value=None,
+    )
+    mock_issue = MagicMock()
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_issue.get",
+        side_effect=[mock_issue, mock_issue],
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_ai_model.get_default_active_model",
+        return_value=None,
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        check_or_create_issue_duplicate(
+            db=MagicMock(),
+            issue1_id=str(uuid4()),
+            issue2_id=str(uuid4()),
+            current_user=MagicMock(account_id=uuid4()),
+            settings=MagicMock(),
+        )
+
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.detail["code"] == "no_default_ai_model"
+
+
+@patch("preloop.api.endpoints.issue_duplicates.openai.OpenAI")
+def test_check_or_create_duplicate_openai_client_bounded(
+    mock_openai_class: MagicMock, mocker: MockerFixture
+) -> None:
+    """The OpenAI client is constructed with a 30s timeout and no SDK retries."""
+    completion = MagicMock(
+        choices=[
+            MagicMock(
+                message=MagicMock(
+                    content=(
+                        '{"classification": "UNRELATED", "reason": "different",'
+                        ' "suggestion": null}'
+                    )
+                )
+            )
+        ]
+    )
+    created = SimpleNamespace(
+        id=uuid4(),
+        issue1_id=uuid4(),
+        issue2_id=uuid4(),
+        decision="unrelated",
+        reason="different",
+        suggestion=None,
+    )
+    _setup_check_or_create_duplicate(
+        mocker,
+        mock_openai_class,
+        create_side_effect=[completion],
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_issue_duplicate.create",
+        return_value=created,
+    )
+
+    check_or_create_issue_duplicate(
+        db=MagicMock(),
+        issue1_id=str(uuid4()),
+        issue2_id=str(uuid4()),
+        current_user=MagicMock(account_id=uuid4()),
+        settings=MagicMock(PROMPTS_FILE="prompts.yaml"),
+    )
+
+    mock_openai_class.assert_called_once()
+    kwargs = mock_openai_class.call_args.kwargs
+    assert kwargs["timeout"] == 30.0
+    assert kwargs["max_retries"] == 0
+
+
+def test_ai_status_reports_unconfigured(mocker: MockerFixture) -> None:
+    """ai-status reports configured=false when no default model exists."""
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_ai_model.get_default_active_model",
+        return_value=None,
+    )
+
+    result = get_issue_duplicate_ai_status(
+        db=MagicMock(),
+        current_user=MagicMock(account_id=uuid4()),
+    )
+
+    assert result.configured is False
+    assert result.model_name is None
+
+
+def test_ai_status_reports_model_name(mocker: MockerFixture) -> None:
+    """ai-status reports the default model name when one is configured."""
+    model = MagicMock()
+    model.name = "Account default"
+    model.model_identifier = "gpt-5.4"
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_ai_model.get_default_active_model",
+        return_value=model,
+    )
+
+    result = get_issue_duplicate_ai_status(
+        db=MagicMock(),
+        current_user=MagicMock(account_id=uuid4()),
+    )
+
+    assert result.configured is True
+    assert result.model_name == "Account default"

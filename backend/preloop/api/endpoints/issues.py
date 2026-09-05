@@ -2,15 +2,18 @@
 
 import asyncio
 import logging
-from typing import Optional, List, Dict
+from typing import Literal, Optional, List, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from datetime import datetime
+from uuid import UUID
+
 from preloop.api.common import get_tracker_client
 from preloop.schemas.issue import (
     IssueCreate,
+    IssueListResponse,
     IssueResponse,
     IssueUpdate,
 )
@@ -965,6 +968,124 @@ async def create_issue(
     except Exception as e:
         logger.error(f"Error creating issue: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error creating issue: {str(e)}")
+
+
+def _issue_to_list_item(issue: Issue, current_user: User, db: Session) -> IssueResponse:
+    """Build an IssueResponse for a stored issue.
+
+    Args:
+        issue: Persisted issue, optionally with project/organization loaded.
+        current_user: Authenticated user (account scoping).
+        db: Database session.
+
+    Returns:
+        IssueResponse for the list/detail clients.
+    """
+    project = getattr(issue, "project", None)
+    if project is None:
+        # Project scopes through organization.tracker; account_id is a no-op.
+        project = crud_project.get(db, id=issue.project_id)
+    organization = None
+    if project is not None:
+        organization = getattr(project, "organization", None)
+        if organization is None:
+            organization = crud_organization.get(
+                db,
+                id=project.organization_id,
+                account_id=current_user.account_id,
+            )
+
+    metadata_dict = dict(issue.meta_data) if issue.meta_data else {}
+    external_url = metadata_dict.get("url") or issue.external_url
+    if not external_url:
+        external_url = f"https://{settings.preloop_url}/issues/{issue.id}"
+
+    return IssueResponse(
+        id=issue.id,
+        external_id=issue.external_id,
+        key=issue.key or (issue.external_id or str(issue.id)),
+        organization=organization.name if organization else "Unknown Org",
+        project=project.name if project else "Unknown Project",
+        project_id=issue.project_id,
+        project_identifier=((project.identifier or project.slug) if project else None),
+        title=issue.title,
+        description=issue.description,
+        status=issue.status,
+        priority=issue.priority,
+        url=external_url,
+        created_at=issue.created_at,
+        updated_at=issue.updated_at,
+        meta_data=metadata_dict,
+        labels=extract_label_strings(metadata_dict.get("labels", [])),
+        assignee=metadata_dict.get("assignee"),
+    )
+
+
+@router.get("/issues", response_model=IssueListResponse)
+@require_permission("view_issues")
+def list_issues(
+    project_id: Optional[UUID] = Query(
+        None, description="Project ID (UUID). Required in v1 unless tracker_id is set."
+    ),
+    tracker_id: Optional[UUID] = Query(
+        None, description="Optional tracker ID alternative to project_id."
+    ),
+    status: Literal["open", "closed", "all"] = Query(
+        "open", description="Filter by issue status"
+    ),
+    q: Optional[str] = Query(None, description="Optional ILIKE filter on key or title"),
+    skip: int = Query(0, ge=0, description="Number of issues to skip"),
+    limit: int = Query(20, ge=1, le=100, description="Page size"),
+    sort: Literal["updated_desc"] = Query(
+        "updated_desc", description="Sort order (updated_desc only)"
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> IssueListResponse:
+    """List issues for a visible project (or tracker) newest updated first."""
+    del sort  # only updated_desc is accepted
+    if project_id is None and tracker_id is None:
+        raise HTTPException(
+            status_code=422, detail="project_id or tracker_id is required"
+        )
+
+    user_trackers = crud_tracker.get_for_account(db, account_id=current_user.account_id)
+    tracker_ids = {str(t.id) for t in user_trackers}
+    if not tracker_ids:
+        raise HTTPException(status_code=404, detail="No trackers found for user")
+
+    scoped_project_id: Optional[str] = None
+    scoped_tracker_id: Optional[str] = None
+
+    if project_id is not None:
+        project = crud_project.get(db, id=str(project_id))
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        organization = crud_organization.get(db, id=project.organization_id)
+        if not organization or str(organization.tracker_id) not in tracker_ids:
+            raise HTTPException(status_code=404, detail="Project not found")
+        scoped_project_id = str(project.id)
+    else:
+        if str(tracker_id) not in tracker_ids:
+            raise HTTPException(status_code=404, detail="Tracker not found")
+        scoped_tracker_id = str(tracker_id)
+
+    issues, total = crud_issue.list_filtered(
+        db,
+        project_id=scoped_project_id,
+        tracker_id=scoped_tracker_id,
+        status=status,
+        q=q,
+        skip=skip,
+        limit=limit,
+        account_id=current_user.account_id,
+    )
+    return IssueListResponse(
+        items=[_issue_to_list_item(issue, current_user, db) for issue in issues],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.get(

@@ -6,10 +6,8 @@ import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
-import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
-import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
@@ -20,6 +18,7 @@ import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
+import '../../components/list-toolbar.ts';
 import '../../components/view-header.ts';
 import '../../components/preloop-agent-deployer.ts';
 import '../../components/preloop-deploy-wizard.ts';
@@ -61,6 +60,14 @@ import {
 } from '../../utils/agent-display';
 import { formatRelativeTime } from '../../utils/date';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+import {
+  AGENTS_VIEW_MODES,
+  loadViewMode,
+  saveViewMode,
+  subscribeNarrowViewport,
+  type ListViewMode,
+  type NarrowViewportSubscription,
+} from '../../utils/view-mode';
 
 const AVAILABLE_AGENT_KINDS = [
   { value: 'openclaw', label: 'OpenClaw' },
@@ -119,27 +126,6 @@ function persistAgentKinds(selected: string[]): void {
 export type AgentsViewMode = 'list' | 'cards' | 'canvas';
 
 const VIEW_MODE_KEY = 'preloop.agents.view_mode';
-const AGENTS_VIEW_MODES: AgentsViewMode[] = ['list', 'cards', 'canvas'];
-
-/**
- * The list is the default: a table answers "which agents do I have and are
- * they healthy" at a glance, where cards and canvas answer "show me one" and
- * "show me the topology". A previously persisted choice still wins.
- */
-const DEFAULT_AGENTS_VIEW: AgentsViewMode = 'list';
-
-function loadInitialViewMode(): AgentsViewMode {
-  try {
-    const saved = localStorage.getItem(VIEW_MODE_KEY);
-    if (saved && (AGENTS_VIEW_MODES as string[]).includes(saved)) {
-      return saved as AgentsViewMode;
-    }
-  } catch (e) {}
-  return DEFAULT_AGENTS_VIEW;
-}
-
-/** Below this width the table cannot show its columns, so cards take over. */
-const LIST_TO_CARDS_BREAKPOINT = '(max-width: 640px)';
 
 export type AgentListSortKey =
   'agent' | 'status' | 'owner' | 'model' | 'requests' | 'spend' | 'last_seen';
@@ -341,15 +327,15 @@ export class AgentsView extends LitElement {
   private hasAutoOpenedOnboarding = false;
 
   // Switcher state
-  @state() private currentView: AgentsViewMode = loadInitialViewMode();
+  @state() private currentView: AgentsViewMode = loadViewMode(
+    VIEW_MODE_KEY,
+    AGENTS_VIEW_MODES
+  );
   @state() private sortKey: AgentListSortKey = 'last_seen';
   @state() private sortDirection: SortDirection = 'desc';
   /** True on phone-width viewports, where the table falls back to cards. */
   @state() private narrowViewport = false;
-  private narrowViewportQuery: MediaQueryList | null = null;
-  private handleNarrowViewportChange = (event: MediaQueryListEvent) => {
-    this.narrowViewport = event.matches;
-  };
+  private narrowViewportSubscription: NarrowViewportSubscription | null = null;
 
   // VM Provisioning state variables
   @state() private computeFeatureEnabled = false;
@@ -427,63 +413,6 @@ export class AgentsView extends LitElement {
         gap: var(--sl-spacing-large);
         height: 100%;
         overflow-y: auto;
-      }
-      .filters {
-        display: flex;
-        gap: var(--sl-spacing-medium);
-        flex-wrap: wrap;
-        align-items: end;
-      }
-      .filters sl-input,
-      .filters sl-select {
-        min-width: 180px;
-      }
-      .filters sl-input {
-        flex: 1 1 280px;
-      }
-      .agents-toolbar {
-        display: flex;
-        align-items: end;
-        justify-content: space-between;
-        gap: var(--sl-spacing-medium);
-        flex-wrap: wrap;
-        width: 100%;
-      }
-      .agents-toolbar .filters {
-        flex: 1 1 520px;
-        min-width: 0;
-      }
-      .view-switcher-group {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-medium);
-        margin: auto;
-      }
-      .view-switcher-group sl-radio-group {
-        white-space: nowrap;
-      }
-      /* Says how many rows the filters matched, right where the eye already
-         goes to switch views. */
-      .results-count {
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
-        font-variant-numeric: tabular-nums;
-        white-space: nowrap;
-      }
-      .toolbar-divider {
-        width: 1px;
-        height: 32px;
-        background: var(--sl-color-neutral-300);
-      }
-      @media (max-width: 900px) {
-        .view-switcher-group {
-          margin-left: 0;
-          width: 100%;
-          justify-content: flex-end;
-        }
-        .toolbar-divider {
-          display: none;
-        }
       }
       .cards {
         display: grid;
@@ -1178,16 +1107,10 @@ export class AgentsView extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
 
-    // Restore saved view preference (the default is applied at field init so
-    // the very first render already knows which view to paint).
-    this.currentView = loadInitialViewMode();
-
-    this.narrowViewportQuery = window.matchMedia(LIST_TO_CARDS_BREAKPOINT);
-    this.narrowViewport = this.narrowViewportQuery.matches;
-    this.narrowViewportQuery.addEventListener(
-      'change',
-      this.handleNarrowViewportChange
-    );
+    this.narrowViewportSubscription = subscribeNarrowViewport((narrow) => {
+      this.narrowViewport = narrow;
+    });
+    this.narrowViewport = this.narrowViewportSubscription.matches;
 
     // Restore saved node positions
     try {
@@ -1264,9 +1187,12 @@ export class AgentsView extends LitElement {
   /**
    * The view actually painted. On phone widths a seven-column table would
    * either scroll sideways or crush every cell, so `list` renders as cards.
+   * Canvas is remapped too: the toolbar hides the switcher below 640, and
+   * DESIGN.md says cards render regardless. The stored preference is left
+   * alone.
    */
   private get effectiveView(): AgentsViewMode {
-    if (this.currentView === 'list' && this.narrowViewport) {
+    if (this.narrowViewport && this.currentView !== 'cards') {
       return 'cards';
     }
     return this.currentView;
@@ -1275,11 +1201,8 @@ export class AgentsView extends LitElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     this.unsubscribeRealtime?.();
-    this.narrowViewportQuery?.removeEventListener(
-      'change',
-      this.handleNarrowViewportChange
-    );
-    this.narrowViewportQuery = null;
+    this.narrowViewportSubscription?.disconnect();
+    this.narrowViewportSubscription = null;
     this.resizeObserver.disconnect();
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
@@ -2101,9 +2024,8 @@ export class AgentsView extends LitElement {
     this.animatePositionFrameId = requestAnimationFrame(animate);
   }
 
-  private handleSearchInput(event: Event): void {
-    const target = event.target as HTMLInputElement;
-    this.searchQuery = target.value;
+  private handleSearchChange(event: CustomEvent<{ value: string }>): void {
+    this.searchQuery = event.detail.value;
 
     // Add debounce for search query filtering
     if ((this as any)._searchTimeout)
@@ -2111,11 +2033,6 @@ export class AgentsView extends LitElement {
     (this as any)._searchTimeout = setTimeout(() => {
       void this.loadAgents();
     }, 400);
-  }
-
-  private handleSearchSubmit(event: Event): void {
-    event.preventDefault();
-    void this.loadAgents();
   }
 
   private handleAgentKindChange(kind: string, checked: boolean): void {
@@ -2888,11 +2805,9 @@ export class AgentsView extends LitElement {
     }
   }
 
-  private setCurrentView(view: AgentsViewMode) {
-    this.currentView = view;
-    try {
-      localStorage.setItem(VIEW_MODE_KEY, view);
-    } catch (e) {}
+  private handleViewChange(event: CustomEvent<{ value: ListViewMode }>) {
+    this.currentView = event.detail.value;
+    saveViewMode(VIEW_MODE_KEY, event.detail.value);
   }
 
   /**
@@ -4468,113 +4383,72 @@ export class AgentsView extends LitElement {
             </div>
           </view-header>
 
-          <div class="agents-toolbar">
-            <form class="filters" @submit=${this.handleSearchSubmit}>
-              <sl-input
-                placeholder="Search name, tags:env=prod, owner:username"
-                clearable
-                .value=${this.searchQuery}
-                @sl-input=${this.handleSearchInput}
+          <list-toolbar
+            .search=${this.searchQuery}
+            searchPlaceholder="Search name, tags:env=prod, owner:username"
+            toggleLabel="Agents view"
+            .view=${this.currentView}
+            .views=${AGENTS_VIEW_MODES}
+            @search-change=${this.handleSearchChange}
+            @view-change=${this.handleViewChange}
+          >
+            <sl-dropdown stay-open-on-select>
+              <sl-button slot="trigger" caret variant="default">
+                Agent Kinds
+                (${
+                  this.agentKinds.length === AVAILABLE_AGENT_KINDS.length
+                    ? 'All'
+                    : this.agentKinds.length
+                })
+              </sl-button>
+              <div
+                style="padding: var(--sl-spacing-medium); background: var(--sl-panel-background-color); border: solid 1px var(--sl-panel-border-color); border-radius: var(--sl-border-radius-medium); box-shadow: var(--sl-shadow-large); display: flex; flex-direction: column; gap: var(--sl-spacing-small); min-width: 200px;"
               >
-                <sl-icon name="search" slot="prefix"></sl-icon>
-              </sl-input>
-
-              <sl-dropdown stay-open-on-select>
-                <sl-button slot="trigger" caret variant="default">
-                  Agent Kinds
-                  (${
+                <sl-checkbox
+                  .checked=${
                     this.agentKinds.length === AVAILABLE_AGENT_KINDS.length
-                      ? 'All'
-                      : this.agentKinds.length
-                  })
-                </sl-button>
-                <div
-                  style="padding: var(--sl-spacing-medium); background: var(--sl-panel-background-color); border: solid 1px var(--sl-panel-border-color); border-radius: var(--sl-border-radius-medium); box-shadow: var(--sl-shadow-large); display: flex; flex-direction: column; gap: var(--sl-spacing-small); min-width: 200px;"
+                  }
+                  .indeterminate=${
+                    this.agentKinds.length > 0 &&
+                    this.agentKinds.length < AVAILABLE_AGENT_KINDS.length
+                  }
+                  @sl-change=${(e: any) =>
+                    this.handleAgentKindChange('all', e.target.checked)}
                 >
-                  <sl-checkbox
-                    .checked=${
-                      this.agentKinds.length === AVAILABLE_AGENT_KINDS.length
-                    }
-                    .indeterminate=${
-                      this.agentKinds.length > 0 &&
-                      this.agentKinds.length < AVAILABLE_AGENT_KINDS.length
-                    }
-                    @sl-change=${(e: any) =>
-                      this.handleAgentKindChange('all', e.target.checked)}
-                  >
-                    Select All
-                  </sl-checkbox>
-                  <sl-divider
-                    style="margin: var(--sl-spacing-x-small) 0;"
-                  ></sl-divider>
-                  ${AVAILABLE_AGENT_KINDS.map(
-                    (kind) => html`
-                      <sl-checkbox
-                        .checked=${this.agentKinds.includes(kind.value)}
-                        @sl-change=${(e: any) =>
-                          this.handleAgentKindChange(
-                            kind.value,
-                            e.target.checked
-                          )}
-                      >
-                        ${kind.label}
-                      </sl-checkbox>
-                    `
-                  )}
-                </div>
-              </sl-dropdown>
-
-              <sl-select
-                value=${this.lastSeenAfter}
-                @sl-change=${this.handleLastSeenAfterChange}
-              >
-                <sl-option value="all">All Time</sl-option>
-                <sl-option value="last_10_minutes">Last 10 minutes</sl-option>
-                <sl-option value="last_1_hour">Last 1 hour</sl-option>
-                <sl-option value="last_24_hours">Last 24 hours</sl-option>
-                <sl-option value="last_7_days">Last 7 days</sl-option>
-              </sl-select>
-            </form>
-
-            <div class="view-switcher-group">
-              <span class="results-count" aria-live="polite"
-                >${this.resultsLabel}</span
-              >
-              <span class="toolbar-divider" aria-hidden="true"></span>
-              <sl-button-group label="Agents view">
-                ${[
-                  { value: 'list' as const, label: 'List', icon: 'list-ul' },
-                  {
-                    value: 'cards' as const,
-                    label: 'Cards',
-                    icon: 'grid-3x3-gap',
-                  },
-                  {
-                    value: 'canvas' as const,
-                    label: 'Canvas',
-                    icon: 'diagram-3',
-                  },
-                ].map(
-                  (option) => html`
-                    <sl-button
-                      size="small"
-                      data-view=${option.value}
-                      variant=${
-                        this.currentView === option.value
-                          ? 'primary'
-                          : 'default'
-                      }
-                      aria-pressed=${this.currentView === option.value}
-                      @click=${() => this.setCurrentView(option.value)}
+                  Select All
+                </sl-checkbox>
+                <sl-divider
+                  style="margin: var(--sl-spacing-x-small) 0;"
+                ></sl-divider>
+                ${AVAILABLE_AGENT_KINDS.map(
+                  (kind) => html`
+                    <sl-checkbox
+                      .checked=${this.agentKinds.includes(kind.value)}
+                      @sl-change=${(e: any) =>
+                        this.handleAgentKindChange(
+                          kind.value,
+                          e.target.checked
+                        )}
                     >
-                      <sl-icon slot="prefix" name=${option.icon}></sl-icon>
-                      ${option.label}
-                    </sl-button>
+                      ${kind.label}
+                    </sl-checkbox>
                   `
                 )}
-              </sl-button-group>
-            </div>
-          </div>
+              </div>
+            </sl-dropdown>
+
+            <sl-select
+              value=${this.lastSeenAfter}
+              @sl-change=${this.handleLastSeenAfterChange}
+            >
+              <sl-option value="all">All Time</sl-option>
+              <sl-option value="last_10_minutes">Last 10 minutes</sl-option>
+              <sl-option value="last_1_hour">Last 1 hour</sl-option>
+              <sl-option value="last_24_hours">Last 24 hours</sl-option>
+              <sl-option value="last_7_days">Last 7 days</sl-option>
+            </sl-select>
+            <span slot="count">${this.resultsLabel}</span>
+          </list-toolbar>
           ${
             this.error
               ? html`<sl-alert open variant="danger" class="mx-6 mb-4"

@@ -420,22 +420,29 @@ describe('FlowsView', () => {
       expect(element.shadowRoot?.querySelector('.flows-grid')).to.not.exist;
       expect(rowNames(element)).to.have.lengthOf(3);
       expect(
-        element.shadowRoot?.querySelector('.results-count')?.textContent?.trim()
+        element.shadowRoot
+          ?.querySelector('list-toolbar [slot="count"]')
+          ?.textContent?.trim()
       ).to.equal('3 flows');
     });
 
     it('filters by the search box and says how many of how many are left', async () => {
       const element = await renderFlows();
-      const search = element.shadowRoot?.querySelector(
-        '.search-input'
-      ) as HTMLInputElement & { value: string };
-      search.value = 'nightly';
-      search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+      const toolbar = element.shadowRoot?.querySelector('list-toolbar');
+      toolbar?.dispatchEvent(
+        new CustomEvent('search-change', {
+          detail: { value: 'nightly' },
+          bubbles: true,
+          composed: true,
+        })
+      );
       await element.updateComplete;
 
       expect(rowNames(element)).to.deep.equal(['Nightly Report']);
       expect(
-        element.shadowRoot?.querySelector('.results-count')?.textContent?.trim()
+        element.shadowRoot
+          ?.querySelector('list-toolbar [slot="count"]')
+          ?.textContent?.trim()
       ).to.equal('1 of 3 flows');
     });
 
@@ -472,11 +479,14 @@ describe('FlowsView', () => {
 
     it('says so when the filters match nothing', async () => {
       const element = await renderFlows();
-      const search = element.shadowRoot?.querySelector(
-        '.search-input'
-      ) as HTMLInputElement & { value: string };
-      search.value = 'no such flow';
-      search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+      const toolbar = element.shadowRoot?.querySelector('list-toolbar');
+      toolbar?.dispatchEvent(
+        new CustomEvent('search-change', {
+          detail: { value: 'no such flow' },
+          bubbles: true,
+          composed: true,
+        })
+      );
       await element.updateComplete;
 
       expect(
@@ -486,7 +496,8 @@ describe('FlowsView', () => {
 
     it('switches to cards and remembers the choice for the next visit', async () => {
       const element = await renderFlows();
-      const cardsButton = element.shadowRoot?.querySelector(
+      const toolbar = element.shadowRoot?.querySelector('list-toolbar');
+      const cardsButton = toolbar?.shadowRoot?.querySelector(
         'sl-button[data-view="cards"]'
       ) as HTMLElement;
       cardsButton.click();

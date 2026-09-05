@@ -5131,12 +5131,14 @@ paths:
 
         - Slug (organization/project)'
       operationId: create_issue_api_v1_issues_post
+      security:
+      - bearerAuth: []
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/IssueCreate'
-        required: true
       responses:
         '201':
           description: Successful Response
@@ -5150,8 +5152,104 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Issues
+      summary: List Issues
+      description: List issues for a visible project (or tracker) newest updated first.
+      operationId: list_issues_api_v1_issues_get
       security:
       - bearerAuth: []
+      parameters:
+      - name: project_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Project ID (UUID). Required in v1 unless tracker_id is set.
+          title: Project Id
+        description: Project ID (UUID). Required in v1 unless tracker_id is set.
+      - name: tracker_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Optional tracker ID alternative to project_id.
+          title: Tracker Id
+        description: Optional tracker ID alternative to project_id.
+      - name: status
+        in: query
+        required: false
+        schema:
+          enum:
+          - open
+          - closed
+          - all
+          type: string
+          description: Filter by issue status
+          default: open
+          title: Status
+        description: Filter by issue status
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Optional ILIKE filter on key or title
+          title: Q
+        description: Optional ILIKE filter on key or title
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Number of issues to skip
+          default: 0
+          title: Skip
+        description: Number of issues to skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          description: Page size
+          default: 20
+          title: Limit
+        description: Page size
+      - name: sort
+        in: query
+        required: false
+        schema:
+          const: updated_desc
+          type: string
+          description: Sort order (updated_desc only)
+          default: updated_desc
+          title: Sort
+        description: Sort order (updated_desc only)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/issues/{issue_id}:
     get:
       tags:
@@ -7329,6 +7427,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/run-preset:
+    post:
+      tags:
+      - Flows
+      summary: Run Preset
+      description: 'Run a catalog preset on an issue, creating the account flow on
+        first use.
+
+
+        ``confirm_create=false`` resolves only: 409 ``flow_missing`` when the
+
+        account has no clone, or 200 with flow metadata and no execution when
+
+        one exists. ``confirm_create=true`` creates if needed (requires
+
+        ``create_flows``) and starts the run.'
+      operationId: run_preset_api_v1_flows_run_preset_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunPresetRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunPresetResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/flows/executions:
     get:
       tags:
@@ -15248,6 +15384,34 @@ components:
       - title
       title: IssueCreate
       description: Model for creating a new issue.
+    IssueListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/IssueResponse'
+          type: array
+          title: Items
+          description: Issue list items
+        total:
+          type: integer
+          title: Total
+          description: Total number of matching issues
+        skip:
+          type: integer
+          title: Skip
+          description: Number of issues skipped
+        limit:
+          type: integer
+          title: Limit
+          description: Page size
+      type: object
+      required:
+      - items
+      - total
+      - skip
+      - limit
+      title: IssueListResponse
+      description: Paginated list of issues for a project or tracker.
     IssueResponse:
       properties:
         title:
@@ -18205,6 +18369,81 @@ components:
       - EXCLUDE
       title: RuleType
       description: Enum for rule types.
+    RunPresetRequest:
+      properties:
+        preset_slug:
+          type: string
+          title: Preset Slug
+        target:
+          $ref: '#/components/schemas/RunPresetTarget'
+        confirm_create:
+          type: boolean
+          title: Confirm Create
+          default: false
+      type: object
+      required:
+      - preset_slug
+      - target
+      title: RunPresetRequest
+      description: Body for POST /flows/run-preset.
+    RunPresetResponse:
+      properties:
+        execution_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Execution Id
+        flow_id:
+          type: string
+          title: Flow Id
+        flow_name:
+          type: string
+          title: Flow Name
+        flow_created:
+          type: boolean
+          title: Flow Created
+        execution_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Execution Url
+      type: object
+      required:
+      - flow_id
+      - flow_name
+      - flow_created
+      title: RunPresetResponse
+      description: Result of resolving (and optionally starting) a preset run.
+    RunPresetTarget:
+      properties:
+        kind:
+          type: string
+          enum:
+          - issue
+          - pull_request
+          title: Kind
+        issue_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Issue Id
+        project_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Project Id
+        number:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Number
+      type: object
+      required:
+      - kind
+      title: RunPresetTarget
+      description: Issue or pull-request target for an ad hoc preset run.
     RunnerFleetSummary:
       properties:
         runner_count:

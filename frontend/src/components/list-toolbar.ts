@@ -15,13 +15,15 @@ const VIEW_OPTIONS: Array<{
 }> = [
   { value: 'list', label: 'List', icon: 'list-ul' },
   { value: 'cards', label: 'Cards', icon: 'grid-3x3-gap' },
+  { value: 'canvas', label: 'Canvas', icon: 'diagram-3' },
 ];
 
 /**
  * Shared collection toolbar: search, a slot for page filters, and the
- * list/cards switcher. Spacing and the 900px / 640px collapse match the
- * Flows filter bar pixel-for-pixel so Trackers and Models feel like the
- * same product.
+ * list/cards/canvas switcher. Spacing and the 900px / 640px collapse match
+ * the Flows filter bar pixel-for-pixel so collection pages feel like the
+ * same product. Pages pass `views` to choose which buttons appear. The
+ * default is list and cards; Agents adds canvas in the same group.
  *
  * @fires search-change - `{ detail: { value } }` when the search input changes
  * @fires view-change - `{ detail: { value } }` when a view button is pressed

@@ -88,6 +88,9 @@ def _load_yaml_file(path: Path) -> Dict[str, Any]:
     return data
 
 
+_PRESET_SLUGS: Dict[str, str] = {}
+
+
 @lru_cache()
 def load_flow_presets() -> List[Dict[str, Any]]:
     """Load flow preset configurations from the layered preset directories.
@@ -129,11 +132,21 @@ def load_flow_presets() -> List[Dict[str, Any]]:
             merged[slug] = (_extract_order(path.stem), slug, path, config)
 
     catalog: List[Dict[str, Any]] = []
-    for _, _, _, config in sorted(merged.values(), key=lambda e: (e[0], e[1])):
+    slugs: Dict[str, str] = {}
+    for _, slug, _, config in sorted(merged.values(), key=lambda e: (e[0], e[1])):
         if config.pop("disabled", False):
             continue  # Tombstone: suppress this slug entirely.
+        name = config.get("name")
+        if isinstance(name, str) and name:
+            slugs[slug] = name
         catalog.append(config)
+    _PRESET_SLUGS.clear()
+    _PRESET_SLUGS.update(slugs)
     return catalog
 
 
 FLOW_PRESETS: List[Dict[str, Any]] = load_flow_presets()
+# slug -> catalog name. The YAML ``slug`` is stripped from FLOW_PRESETS
+# (loader-internal); this map is how API callers resolve a slug to the
+# global preset row (looked up by name).
+PRESET_SLUGS: Dict[str, str] = dict(_PRESET_SLUGS)

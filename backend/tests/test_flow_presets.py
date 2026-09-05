@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from preloop.flow_presets import (
+    PRESET_SLUGS,
     _derive_slug,
     _extract_order,
     _load_yaml_file,
@@ -94,6 +95,19 @@ trigger_event_types:
 
 class TestLoadFlowPresets:
     """Tests for load_flow_presets function."""
+
+    def test_preset_slugs_is_import_snapshot(self, tmp_path: Path):
+        """Temp catalog reloads must not mutate the imported PRESET_SLUGS map."""
+        before = dict(PRESET_SLUGS)
+        presets_dir = tmp_path / "presets"
+        presets_dir.mkdir()
+        (presets_dir / "001-temp-only.yaml").write_text(
+            yaml.dump({"name": "Temp Only", "slug": "temp-only"})
+        )
+        result = _load_from([presets_dir])
+        assert result[0]["name"] == "Temp Only"
+        assert PRESET_SLUGS == before
+        assert "temp-only" not in PRESET_SLUGS
 
     def test_empty_presets_dir(self, tmp_path: Path):
         """Test that empty presets directory returns empty list."""
