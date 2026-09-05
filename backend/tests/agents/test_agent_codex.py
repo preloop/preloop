@@ -429,3 +429,97 @@ class TestCodexDynamicModelListing:
         )
         assert 'model = "claude-sonnet-4"' in auth_block
         assert "[models]" not in auth_block
+
+
+class TestCodexCliSession:
+    """Native CLI session capture/restore blocks in the generated script."""
+
+    def _context(self, **extra):
+        context = {
+            "prompt": "test",
+            "codex_model": "gpt-5.4",
+            "execution_id": "exec-1",
+            "flow_name": "test-flow",
+        }
+        context.update(extra)
+        return context
+
+    def test_cold_start_has_no_resume_args(self):
+        """A non-resume run sets empty resume args and still captures/packs."""
+        script = CodexAgent({})._build_codex_script(self._context())
+        assert "PRELOOP_CLI_SESSION_ID=''" in script
+        assert 'CODEX_RESUME_ARGS=""' in script
+        assert 'echo "PRELOOP_AGENT_SESSION codex $_pl_codex_sid"' in script
+        assert "/workspace/.preloop-agent-session/codex" in script
+        assert "--exclude=auth.json" in script
+
+    def test_run_command_expands_resume_args(self):
+        script = CodexAgent({})._build_codex_script(self._context())
+        assert "codex exec $CODEX_RESUME_ARGS --skip-git-repo-check" in script
+
+    def test_resume_metadata_uses_resume_subcommand(self):
+        script = CodexAgent({})._build_codex_script(
+            self._context(
+                trigger_event_data={
+                    "_resume": {
+                        "cli_session": {
+                            "agent_type": "codex",
+                            "session_id": "0f0e1d2c-3b4a-4568-8778-aabbccddeeff",
+                        }
+                    }
+                }
+            )
+        )
+        assert "PRELOOP_CLI_SESSION_ID='0f0e1d2c-3b4a-4568-8778-aabbccddeeff'" in script
+        assert 'CODEX_RESUME_ARGS="resume $PRELOOP_CLI_SESSION_ID"' in script
+
+    def test_capture_block_extracts_rollout_uuid(self):
+        script = CodexAgent({})._build_codex_script(self._context())
+        assert 'find "$CODEX_HOME/sessions"' in script
+        assert "rollout-*.jsonl" in script
+        assert "/tmp/preloop-cli-session-id" not in script
+
+    def test_confirmation_nudge_never_restores(self):
+        script = CodexAgent({})._build_codex_script(
+            self._context(
+                confirmation_nudge=True,
+                trigger_event_data={
+                    "_resume": {
+                        "cli_session": {
+                            "agent_type": "codex",
+                            "session_id": "0f0e1d2c-3b4a-4568-8778-aabbccddeeff",
+                        }
+                    }
+                },
+            )
+        )
+        assert "PRELOOP_CLI_SESSION_RESTORED" not in script
+        assert "PRELOOP_CLI_SESSION_ID=" not in script
+        assert 'echo "PRELOOP_AGENT_SESSION codex $_pl_codex_sid"' in script
+
+    def test_mismatched_agent_type_starts_cold(self):
+        script = CodexAgent({})._build_codex_script(
+            self._context(
+                trigger_event_data={
+                    "_resume": {
+                        "cli_session": {
+                            "agent_type": "opencode",
+                            "session_id": "ses_ab12cd34",
+                        }
+                    }
+                }
+            )
+        )
+        assert "PRELOOP_CLI_SESSION_ID=''" in script
+        # No recorded id is ever embedded for a mismatched agent type.
+        assert "PRELOOP_CLI_SESSION_ID='ses_" not in script
+
+    def test_embedded_archive_is_decoded_into_the_workspace(self):
+        import base64
+
+        script = CodexAgent({})._build_codex_script(
+            self._context(cli_session_restore_archive=b"tar-gz-bytes")
+        )
+        assert "base64 -d | tar xzf -" in script
+        encoded = script.split("echo '")[1].split("'")[0]
+        assert base64.b64decode(encoded) == b"tar-gz-bytes"

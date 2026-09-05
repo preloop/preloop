@@ -19,10 +19,27 @@ from .completion_nudge import (
     completion_nudge_enabled,
     completion_nudge_timeout_seconds,
 )
+from .cli_session import (
+    AGENT_SESSION_MARKER,
+    build_session_archive_decode_shell,
+    build_session_pack_shell,
+    build_session_restore_shell,
+    resume_cli_session,
+)
 from .container import ContainerAgentExecutor
 from .images import default_agent_image
+from .kubernetes import detect_kubernetes_environment
 
 logger = logging.getLogger(__name__)
+
+# Where the JSON log filter records the session id of the current run.
+OPENCODE_SESSION_ID_PATH = "/tmp/preloop-cli-session-id"
+
+# Shell expression for OpenCode's session storage (not the full data dir,
+# which also holds the pinned runtime under bin/ and LLM caches). Matches
+# OpenCode's XDG resolution so packing and restoring land the storage
+# exactly where the CLI looks for it.
+OPENCODE_STORAGE_DIR_EXPR = '"${XDG_DATA_HOME:-$HOME/.local/share}/opencode/storage"'
 
 
 def _opencode_llm_timeout_ms() -> int:
@@ -120,44 +137,8 @@ class OpenCodeAgent(ContainerAgentExecutor):
         )
 
     def _detect_kubernetes_environment(self) -> bool:
-        """
-        Auto-detect if running in Kubernetes environment.
-
-        Checks for:
-        1. Explicit USE_KUBERNETES environment variable
-        2. Kubernetes service account token (in-cluster detection)
-        3. KUBERNETES_SERVICE_HOST environment variable
-
-        Returns:
-            True if Kubernetes environment detected, False otherwise
-        """
-        # Check explicit environment variable first
-        env_value = os.getenv("USE_KUBERNETES", "").lower()
-        if env_value == "true":
-            logger.info("Kubernetes mode enabled via USE_KUBERNETES=true")
-            return True
-        elif env_value == "false":
-            logger.info("Kubernetes mode disabled via USE_KUBERNETES=false")
-            return False
-
-        # Auto-detect: Check for Kubernetes service account token (in-cluster)
-        k8s_token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-        if os.path.exists(k8s_token_path):
-            logger.info(
-                f"Kubernetes environment detected (found service account token at {k8s_token_path})"
-            )
-            return True
-
-        # Auto-detect: Check for Kubernetes service host
-        if os.getenv("KUBERNETES_SERVICE_HOST"):
-            logger.info(
-                "Kubernetes environment detected (KUBERNETES_SERVICE_HOST present)"
-            )
-            return True
-
-        # Default to Docker if no Kubernetes indicators found
-        logger.info("No Kubernetes environment detected, defaulting to Docker mode")
-        return False
+        """Auto-detect Kubernetes vs Docker. See detect_kubernetes_environment."""
+        return detect_kubernetes_environment()
 
     async def start(self, execution_context: Dict[str, Any]) -> str:
         """
@@ -349,6 +330,71 @@ class OpenCodeAgent(ContainerAgentExecutor):
             )
             raise RuntimeError(f"Failed to start OpenCode CLI container: {e}")
 
+    def _build_cli_session_blocks(
+        self, execution_context: Dict[str, Any]
+    ) -> Dict[str, str]:
+        """Shell blocks for native CLI session persistence.
+
+        Returns ``decode`` (unpack an embedded session pack on runners that
+        cannot seed the filesystem pre-start), ``restore`` (relocate the
+        packed storage into OpenCode's session storage), ``args`` (the resume flag
+        for the recorded session id), ``marker`` (report THIS run's session
+        id to the orchestrator) and ``pack`` (copy the storage into
+        /workspace so the workspace snapshot carries it). Everything except
+        ``marker``/``pack`` is empty on a cold start, so non-resume scripts
+        behave exactly as before. The confirmation nudge runs in its own
+        container and must be its own session, so it never restores.
+        """
+        blocks: Dict[str, str] = {
+            "decode": "",
+            "restore": "",
+            "args": "",
+            "marker": "",
+            "pack": "",
+        }
+        blocks["marker"] = f"""
+if [ -s {OPENCODE_SESSION_ID_PATH} ]; then
+    _pl_sid=$(head -n 1 {OPENCODE_SESSION_ID_PATH} | tr -d '[:space:]')
+    if [ -n "$_pl_sid" ]; then
+        echo "{AGENT_SESSION_MARKER} opencode $_pl_sid"
+    fi
+fi
+"""
+        blocks["pack"] = build_session_pack_shell(
+            "opencode",
+            OPENCODE_STORAGE_DIR_EXPR,
+            excludes=("auth.json", "log", "logs"),
+        )
+        if execution_context.get("confirmation_nudge"):
+            return blocks
+
+        cli_session_archive = execution_context.get("cli_session_restore_archive")
+        if isinstance(cli_session_archive, (bytes, bytearray)) and cli_session_archive:
+            blocks["decode"] = build_session_archive_decode_shell(
+                bytes(cli_session_archive)
+            )
+        blocks["restore"] = build_session_restore_shell(
+            "opencode", OPENCODE_STORAGE_DIR_EXPR
+        )
+        session_id = resume_cli_session(execution_context, "opencode")
+        # Single quotes are safe: the id passed strict validation and cannot
+        # contain quote characters.
+        session_id_literal = f"'{session_id}'" if session_id else "''"
+        blocks["args"] = f"""
+PRELOOP_CLI_SESSION_ID={session_id_literal}
+OPENCODE_RESUME_ARGS=""
+if [ "$PRELOOP_CLI_SESSION_RESTORED" -eq 1 ] && [ -n "$PRELOOP_CLI_SESSION_ID" ]; then
+    if opencode run --help 2>&1 | grep -q -- '--session'; then
+        OPENCODE_RESUME_ARGS="--session $PRELOOP_CLI_SESSION_ID"
+    else
+        OPENCODE_RESUME_ARGS="--continue"
+    fi
+elif [ "$PRELOOP_CLI_SESSION_RESTORED" -eq 1 ]; then
+    OPENCODE_RESUME_ARGS="--continue"
+fi
+"""
+        return blocks
+
     def _build_opencode_script(self, execution_context: Dict[str, Any]) -> str:
         """
         Build the OpenCode initialization and execution script.
@@ -414,6 +460,9 @@ fi
         # the shell script without heredoc delimiter injection risk.
         prompt_b64 = base64.b64encode(prompt.encode()).decode()
 
+        # Native CLI session persistence blocks (all empty on a cold start).
+        session_blocks = self._build_cli_session_blocks(execution_context)
+
         # In-place completion nudge, emitted BEFORE the post-execution git
         # block so it can never re-run a push. `opencode run --continue`
         # re-enters the session that just ran, in this container and this
@@ -474,6 +523,11 @@ echo ""
 # Run initialization commands (git clone, custom commands) if any
 {init_commands}
 
+# Restore a prior CLI session (correlated PR-comment resume), if the
+# workspace snapshot carried one.
+{session_blocks["decode"]}
+{session_blocks["restore"]}
+
 # Configure git to trust all directories (needed for cloned repos)
 git config --global --add safe.directory '*'
 
@@ -490,11 +544,40 @@ OPENCODE_CONFIG_EOF
 
 cat > /tmp/opencode-json-log-filter.js <<'JS'
 const readline = require("node:readline");
+const fs = require("node:fs");
 
 const SENTINEL = "FLOW_EXECUTION_SUCCESS";
 
+// The orchestrator persists this id on the execution (PRELOOP_AGENT_SESSION
+// marker) so a later PR-comment resume can re-enter the same session.
+const SESSION_FILE = "/tmp/preloop-cli-session-id";
+let sessionSaved = false;
+
 function eventName(event) {{
   return String(event.type || event.event || "").toLowerCase();
+}}
+
+// Persist the parent session only. OpenCode's JSON stream also carries
+// nested subagent ids (task tool, child sessions); a recursive scan would
+// first-win those and a later `--session` resume would re-enter the wrong
+// context. Match the Python OPENCODE_SESSION_ID_RE length floor ({{4,}}).
+function isSessionId(value) {{
+  return typeof value === "string" && /^ses_[A-Za-z0-9]{{4,}}$/.test(value);
+}}
+
+function parentSessionId(event) {{
+  if (!event || typeof event !== "object") {{
+    return null;
+  }}
+  const name = eventName(event);
+  if (name !== "session.idle" && name !== "session.created") {{
+    return null;
+  }}
+  const info = event.properties && event.properties.info;
+  if (!info || typeof info !== "object") {{
+    return null;
+  }}
+  return isSessionId(info.id) ? info.id : null;
 }}
 
 function collectTextValues(value, name, output) {{
@@ -545,6 +628,16 @@ rl.on("line", (line) => {{
     return;
   }}
 
+  if (!sessionSaved) {{
+    const sessionId = parentSessionId(event);
+    if (sessionId) {{
+      try {{
+        fs.writeFileSync(SESSION_FILE, sessionId + "\\n");
+        sessionSaved = true;
+      }} catch {{}}
+    }}
+  }}
+
   const seen = new Set();
   const values = [];
   collectTextValues(event, eventName(event), values);
@@ -574,6 +667,10 @@ echo "=============================="
 # and could contain arbitrary text including shell metacharacters.
 echo '{prompt_b64}' | base64 -d > /tmp/prompt.txt
 
+# Resume the prior CLI session when a correlated restart restored one;
+# expands to nothing on a cold start.
+{session_blocks["args"]}
+
 # Signal to the orchestrator that the agent is about to start.
 # Sentinel detection is suppressed until this marker is seen in logs.
 echo "PRELOOP_AGENT_EXEC_START"
@@ -591,7 +688,7 @@ echo "PRELOOP_AGENT_EXEC_START"
 # through verbatim, so stderr text reaches the execution log in order.
 set +e
 : > "{AGENT_OUTPUT_LOG_PATH}"
-opencode run --format json --print-logs --log-level WARN --model {opencode_model_arg} --dangerously-skip-permissions -- "$(cat /tmp/prompt.txt)" 2>&1 | node /tmp/opencode-json-log-filter.js | tee -a "{AGENT_OUTPUT_LOG_PATH}"
+opencode run $OPENCODE_RESUME_ARGS --format json --print-logs --log-level WARN --model {opencode_model_arg} --dangerously-skip-permissions -- "$(cat /tmp/prompt.txt)" 2>&1 | node /tmp/opencode-json-log-filter.js | tee -a "{AGENT_OUTPUT_LOG_PATH}"
 PIPE_CODES=("${{PIPESTATUS[@]}}")
 OPENCODE_EXIT_CODE=${{PIPE_CODES[0]}}
 FILTER_EXIT_CODE=${{PIPE_CODES[1]:-0}}
@@ -603,11 +700,15 @@ if [ "$OPENCODE_EXIT_CODE" -ne "0" ]; then
     echo "OpenCode command failed; see CLI output above."
 fi
 
+# Report this run's CLI session id so the orchestrator persists it for a
+# later PR-comment resume.
+{session_blocks["marker"]}
+
 echo ""
 echo "=================================================="
 echo "OpenCode CLI exited with code: $OPENCODE_EXIT_CODE"
 echo "=================================================="
-{completion_nudge_block}{post_exec_block}
+{completion_nudge_block}{session_blocks["pack"]}{post_exec_block}
 # Exit with opencode's exit code
 exit $OPENCODE_EXIT_CODE
 """

@@ -10,6 +10,7 @@ from preloop.services.flow_pr_binding import (
     flow_requires_pr_comment_resume,
     merge_result_preserving_pr_binding,
     normalize_pr_url,
+    record_cli_session,
     record_opened_pr,
 )
 
@@ -266,3 +267,104 @@ class TestFindAndBind:
             db.commit.assert_called_once()
         finally:
             mod.crud_flow_execution.get = original
+
+
+class TestRecordCliSession:
+    def test_records_session_on_the_execution(self):
+        execution = MagicMock()
+        db = MagicMock()
+        from preloop.services import flow_pr_binding as mod
+
+        original_get = mod.crud_flow_execution.get
+        original_set = mod.crud_flow_execution.set_cli_session
+        mod.crud_flow_execution.get = MagicMock(return_value=execution)
+        mod.crud_flow_execution.set_cli_session = MagicMock()
+        try:
+            record_cli_session(
+                db,
+                "exec-1",
+                {"agent_type": "opencode", "session_id": "ses_ab12cd34"},
+            )
+            mod.crud_flow_execution.set_cli_session.assert_called_once_with(
+                db,
+                db_obj=execution,
+                cli_session={
+                    "agent_type": "opencode",
+                    "session_id": "ses_ab12cd34",
+                },
+            )
+            db.commit.assert_called_once()
+        finally:
+            mod.crud_flow_execution.get = original_get
+            mod.crud_flow_execution.set_cli_session = original_set
+
+    def test_ignores_missing_session_id(self):
+        db = MagicMock()
+        from preloop.services import flow_pr_binding as mod
+
+        original_get = mod.crud_flow_execution.get
+        mod.crud_flow_execution.get = MagicMock()
+        try:
+            record_cli_session(db, "exec-1", {"agent_type": "opencode"})
+            mod.crud_flow_execution.get.assert_not_called()
+            db.commit.assert_not_called()
+        finally:
+            mod.crud_flow_execution.get = original_get
+
+    def test_ignores_non_dict_payload(self):
+        db = MagicMock()
+        from preloop.services import flow_pr_binding as mod
+
+        original_get = mod.crud_flow_execution.get
+        mod.crud_flow_execution.get = MagicMock()
+        try:
+            record_cli_session(db, "exec-1", "opencode ses_x")
+            mod.crud_flow_execution.get.assert_not_called()
+        finally:
+            mod.crud_flow_execution.get = original_get
+
+
+class TestBindResumeCarriesCliSession:
+    def _bind(self, execution):
+        flow = MagicMock()
+        flow.id = uuid4()
+        db = MagicMock()
+        event = {
+            "payload": {
+                "issue": {
+                    "pull_request": {
+                        "html_url": "https://github.com/preloop/preloop/pull/353",
+                    }
+                }
+            }
+        }
+        from preloop.services import flow_pr_binding as mod
+
+        original = mod.find_bound_execution
+        mod.find_bound_execution = MagicMock(return_value=execution)
+        try:
+            return bind_resume_or_skip(db, flow, event)
+        finally:
+            mod.find_bound_execution = original
+
+    def test_resume_includes_prior_cli_session(self):
+        execution = MagicMock()
+        execution.id = uuid4()
+        execution.result = {"pr_url": "https://github.com/preloop/preloop/pull/353"}
+        execution.cli_session = {
+            "agent_type": "opencode",
+            "session_id": "ses_ab12cd34",
+        }
+        resume = self._bind(execution)
+        assert resume["cli_session"] == {
+            "agent_type": "opencode",
+            "session_id": "ses_ab12cd34",
+        }
+
+    def test_resume_without_cli_session_omits_the_key(self):
+        execution = MagicMock()
+        execution.id = uuid4()
+        execution.result = {"pr_url": "https://github.com/preloop/preloop/pull/353"}
+        execution.cli_session = None
+        resume = self._bind(execution)
+        assert "cli_session" not in resume
