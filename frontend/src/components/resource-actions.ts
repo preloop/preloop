@@ -242,7 +242,7 @@ export class ResourceActions extends LitElement {
     // which the width heuristic below never counted, so on a phone it was
     // pushed straight out of the hidden overflow. Below 640px it moves into
     // the menu instead; above it, its margin joins the measurement.
-    const SEPARATED_MARGIN = 24; // --sl-spacing-large
+    const SEPARATED_MARGIN = 20; // --sl-spacing-large (1.25rem)
     const foldSeparated =
       this.narrowViewport &&
       !this.menuOnly &&
