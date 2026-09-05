@@ -2,15 +2,16 @@
 
 import uuid
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from sqlalchemy.orm import Session
 
-from preloop.models.crud import crud_approval_request
+from preloop.models.crud import crud_approval_event, crud_approval_request
 from preloop.models.db.session import get_async_db_session, get_db_session
+from preloop.models.schemas.approval_request import ApprovalEventPublic
 from preloop.services.approval_service import ApprovalService
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,8 @@ class ApprovalRequestPublic(BaseModel):
     status: str
     requested_at: str
     expires_at: Optional[str]
+    resolved_at: Optional[str] = None
+    history: List[ApprovalEventPublic] = []
 
 
 @router.get("/{request_id}/data")
@@ -70,6 +73,34 @@ def get_approval_request_public(
     # Return public data only (redact tool_args for display)
     from preloop.utils.redaction import redact_dict
 
+    # Track that the link was opened (one anonymous timeline entry per
+    # request; no actor identity is available on the token path).
+    try:
+        if not crud_approval_event.has_event(
+            db,
+            approval_request_id=approval_request.id,
+            event_type="viewed",
+            actor_is_null=True,
+        ):
+            crud_approval_event.record(
+                db,
+                approval_request_id=approval_request.id,
+                account_id=approval_request.account_id,
+                event_type="viewed",
+                detail="Approval link opened (token link)",
+            )
+    except Exception:
+        # View tracking must never break reading the request.
+        logger.debug(
+            "Failed to record token view for approval %s",
+            approval_request.id,
+            exc_info=True,
+        )
+
+    history = crud_approval_event.get_by_request(
+        db, approval_request_id=approval_request.id
+    )
+
     return ApprovalRequestPublic(
         id=str(approval_request.id),
         tool_name=approval_request.tool_name,
@@ -80,6 +111,18 @@ def get_approval_request_public(
         expires_at=approval_request.expires_at.isoformat()
         if approval_request.expires_at
         else None,
+        resolved_at=approval_request.resolved_at.isoformat()
+        if approval_request.resolved_at
+        else None,
+        history=[
+            ApprovalEventPublic(
+                event_type=event.event_type,
+                detail=event.detail,
+                comment=event.comment,
+                timestamp=event.timestamp,
+            )
+            for event in history
+        ],
     )
 
 
@@ -134,12 +177,12 @@ async def decide_approval_request_public(
         if decision.action == "approve":
             logger.info(f"Approving request {request_id}")
             updated_request = await approval_service.approve_request(
-                request_id, decision.comment
+                request_id, decision.comment, channel="token link"
             )
         elif decision.action == "decline":
             logger.info(f"Declining request {request_id}")
             updated_request = await approval_service.decline_request(
-                request_id, decision.comment
+                request_id, decision.comment, channel="token link"
             )
         else:
             raise HTTPException(
@@ -164,5 +207,8 @@ async def decide_approval_request_public(
             requested_at=updated_request.requested_at.isoformat(),
             expires_at=updated_request.expires_at.isoformat()
             if updated_request.expires_at
+            else None,
+            resolved_at=updated_request.resolved_at.isoformat()
+            if updated_request.resolved_at
             else None,
         )

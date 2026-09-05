@@ -3949,6 +3949,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/approval-requests/{request_id}/history:
+    get:
+      tags:
+      - Approval Requests
+      - approval_requests
+      summary: Get Approval Request History
+      description: "Get the workflow-history timeline of an approval request.\n\n\
+        Returns every lifecycle event in order: request creation, per-channel\nnotification\
+        \ fan-outs, opens, votes (with actor), escalations, and the\nfinal resolution\
+        \ or expiry.\n\nArgs:\n    request_id: Approval request ID\n    current_user:\
+        \ Current authenticated user\n    db: Database session\n\nReturns:\n    Timeline\
+        \ events ordered by timestamp\n\nRaises:\n    HTTPException: If request not\
+        \ found or unauthorized"
+      operationId: get_approval_request_history_api_v1_approval_requests__request_id__history_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Request Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ApprovalEventResponse'
+                title: Response Get Approval Request History Api V1 Approval Requests  Request
+                  Id  History Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/approval-requests:
     get:
       tags:
@@ -11348,6 +11389,54 @@ components:
       - approved
       title: ApprovalDecision
       description: Schema for an approval decision or a question answer.
+    ApprovalEventResponse:
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+          description: Event ID
+        event_type:
+          type: string
+          title: Event Type
+          description: approval_requested, notification_sent, viewed, vote_received,
+            escalation_triggered, approval_complete, expired, ...
+        detail:
+          type: string
+          title: Detail
+          description: Human-readable description of the event
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+          description: Approver comment attached to the event
+        actor_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Actor Id
+          description: User who triggered the event (None for system/token)
+        actor_email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Actor Email
+          description: Resolved display identity of the actor, when known
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+          description: When the event occurred
+      type: object
+      required:
+      - id
+      - event_type
+      - detail
+      - timestamp
+      title: ApprovalEventResponse
+      description: One entry in an approval request's workflow-history timeline.
     ApprovalRequestResponse:
       properties:
         tool_name:

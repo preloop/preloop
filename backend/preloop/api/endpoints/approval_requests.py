@@ -1,21 +1,23 @@
 """API endpoints for approval requests."""
 
+import logging
 import os
 import uuid
-from typing import Optional
+from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
 from preloop.services.approval_service import ApprovalService
-from preloop.models.crud import crud_approval_request
+from preloop.models.crud import crud_approval_event, crud_approval_request
 from preloop.models.db.session import get_async_db_session, get_db_session
 from preloop.models.models import ApprovalRequest
 from preloop.models.models.user import User
 from preloop.models.schemas.approval_request import (
     ApprovalRequestResponse,
     ApprovalDecision,
+    ApprovalEventResponse,
 )
 from preloop.utils.permissions import require_permission
 
@@ -23,6 +25,46 @@ router = APIRouter(
     prefix="/approval-requests",
     tags=["approval_requests"],
 )
+
+logger = logging.getLogger(__name__)
+
+#: Channel label recorded on the timeline for decisions made through the
+#: authenticated API (web console and mobile app sessions).
+AUTHENTICATED_DECISION_CHANNEL = "console"
+
+
+def _record_viewed_event(
+    db: Session, approval_request: ApprovalRequest, actor_id: Union[uuid.UUID, None]
+) -> None:
+    """Append one ``viewed`` timeline entry per viewer (best-effort).
+
+    Deduped so refreshing the page does not flood the history; anonymous
+    (token) views are recorded by the public endpoint instead.
+    """
+    try:
+        already_viewed = crud_approval_event.has_event(
+            db,
+            approval_request_id=approval_request.id,
+            event_type="viewed",
+            actor_id=actor_id,
+        )
+        if not already_viewed:
+            crud_approval_event.record(
+                db,
+                approval_request_id=approval_request.id,
+                account_id=approval_request.account_id,
+                event_type="viewed",
+                detail="Approval request opened",
+                actor_id=actor_id,
+            )
+    except Exception:
+        db.rollback()
+        # View tracking must never break reading the request.
+        logger.debug(
+            "Failed to record viewed event for approval %s",
+            approval_request.id,
+            exc_info=True,
+        )
 
 
 @router.get("/{request_id}", response_model=ApprovalRequestResponse)
@@ -53,7 +95,71 @@ def get_approval_request(
     if not approval_request:
         raise HTTPException(status_code=404, detail="Approval request not found")
 
+    # Track who opened the request (one timeline entry per viewer).
+    _record_viewed_event(db, approval_request, current_user.id)
+
     return approval_request
+
+
+@router.get("/{request_id}/history", response_model=list[ApprovalEventResponse])
+@require_permission("view_approvals")
+def get_approval_request_history(
+    request_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> list[ApprovalEventResponse]:
+    """Get the workflow-history timeline of an approval request.
+
+    Returns every lifecycle event in order: request creation, per-channel
+    notification fan-outs, opens, votes (with actor), escalations, and the
+    final resolution or expiry.
+
+    Args:
+        request_id: Approval request ID
+        current_user: Current authenticated user
+        db: Database session
+
+    Returns:
+        Timeline events ordered by timestamp
+
+    Raises:
+        HTTPException: If request not found or unauthorized
+    """
+    approval_request = crud_approval_request.get(
+        db, id=str(request_id), account_id=current_user.account_id
+    )
+    if not approval_request:
+        raise HTTPException(status_code=404, detail="Approval request not found")
+
+    events = crud_approval_event.get_by_request(
+        db, approval_request_id=approval_request.id
+    )
+
+    # Resolve actor identities in one query so the timeline can show WHO
+    # voted without exposing a bare UUID.
+    actor_ids = {event.actor_id for event in events if event.actor_id is not None}
+    actors: dict = {}
+    if actor_ids:
+        actors = {
+            user.id: user
+            for user in db.query(User).filter(User.id.in_(actor_ids)).all()
+        }
+
+    response: list[ApprovalEventResponse] = []
+    for event in events:
+        actor = actors.get(event.actor_id) if event.actor_id else None
+        response.append(
+            ApprovalEventResponse(
+                id=event.id,
+                event_type=event.event_type,
+                detail=event.detail,
+                comment=event.comment,
+                actor_id=event.actor_id,
+                actor_email=(actor.email or actor.username) if actor else None,
+                timestamp=event.timestamp,
+            )
+        )
+    return response
 
 
 @router.get("", response_model=list[ApprovalRequestResponse])
@@ -141,7 +247,10 @@ async def approve_request(
 
         # Approve (pass user_id for quorum tracking)
         updated = await approval_service.approve_request(
-            request_id, decision.effective_comment, user_id=current_user.id
+            request_id,
+            decision.effective_comment,
+            user_id=current_user.id,
+            channel=AUTHENTICATED_DECISION_CHANNEL,
         )
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to approve request")
@@ -203,7 +312,10 @@ async def decline_request(
 
         # Decline (pass user_id for quorum tracking)
         updated = await approval_service.decline_request(
-            request_id, decision.effective_comment, user_id=current_user.id
+            request_id,
+            decision.effective_comment,
+            user_id=current_user.id,
+            channel=AUTHENTICATED_DECISION_CHANNEL,
         )
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to decline request")
@@ -269,11 +381,17 @@ async def decide_request(
         # Approve or decline based on decision (pass user_id for quorum tracking)
         if decision.approved:
             updated = await approval_service.approve_request(
-                request_id, decision.effective_comment, user_id=current_user.id
+                request_id,
+                decision.effective_comment,
+                user_id=current_user.id,
+                channel=AUTHENTICATED_DECISION_CHANNEL,
             )
         else:
             updated = await approval_service.decline_request(
-                request_id, decision.effective_comment, user_id=current_user.id
+                request_id,
+                decision.effective_comment,
+                user_id=current_user.id,
+                channel=AUTHENTICATED_DECISION_CHANNEL,
             )
 
         if not updated:

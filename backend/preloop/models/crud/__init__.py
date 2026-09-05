@@ -79,6 +79,7 @@ from .approval_bypass import (
     record_bypass_use_async,
 )
 from .approval_request import CRUDApprovalRequest, crud_approval_request
+from .approval_event import CRUDApprovalEvent, crud_approval_event
 from .tool_access_rule import CRUDToolAccessRule
 from .gateway_usage_search_document import CRUDGatewayUsageSearchDocument
 from .plan import (
@@ -278,6 +279,8 @@ __all__ = [
     "crud_mcp_tool",
     "crud_approval_workflow",
     "crud_approval_request",
+    "CRUDApprovalEvent",
+    "crud_approval_event",
     "CRUDApprovalBypass",
     "crud_approval_bypass",
     "get_active_bypass_async",

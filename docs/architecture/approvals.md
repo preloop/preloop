@@ -74,6 +74,8 @@ graph TD
    - Direct API call to Preloop
 5. On approval, tool execution proceeds; on decline, error is returned to client
 
+**Approval links.** Emitted links point at the console SPA route `/console/approval/<id>` (token-free for in-session agent notices; email/webhook links append `?token=` so a signed-out recipient can still be answered through the public token endpoints). A bare `/approval/<id>` is served by a backend shim that redirects to the console page, keeping previously emitted links working. Every lifecycle transition is persisted as an `ApprovalEvent` (creation, per-channel notification fan-outs with recipients, opens, votes with actor and channel, escalations, AI/bypass resolutions, expiry) and rendered as a workflow-history timeline on the console approval page and the public token page.
+
 **API Endpoints:**
 - `GET /api/v1/tool-configurations` - List all tool configurations for account
 - `POST /api/v1/tool-configurations` - Create new tool configuration
@@ -82,7 +84,8 @@ graph TD
 - `GET /api/v1/approval-workflows` - List approval workflows
 - `POST /api/v1/approval-workflows` - Create approval workflow
 - `GET /api/v1/approval-requests` - List approval requests
-- `GET /approval/{id}/data` - Public endpoint for getting approval request details (token-based)
+- `GET /api/v1/approval-requests/{id}/history` - Workflow-history timeline for one request (events for request creation, per-channel notification fan-outs, opens, votes with actor, escalations, resolution/expiry)
+- `GET /approval/{id}/data` - Public endpoint for getting approval request details (token-based; includes the same timeline without actor identities)
 - `POST /approval/{id}/decide` - Public endpoint for approval responses (token-based)
 - `POST /api/v1/agents/permission-check` - Lets an onboarded agent raise an approval for one of its **native/built-in** tool calls (not just MCP tools), authenticated with the agent's managed-runtime credential. It reuses `ApprovalService.create_and_notify` → `wait_for_approval` and blocks until decided, returning `{"decision":"allow"|"deny","reason","request_id","timed_out"}` (deny is the safe default). `timed_out: true` marks a deny that is only the expiry of an unanswered approval request, not a human decision, so hook adapters whose host has a native "ask" verdict (e.g. Claude Code PreToolUse hooks) can hand the prompt back to the agent's local UI instead of hard-denying; adapters without an ask verdict keep the fail-closed deny. The request's non-sensitive originating adapter travels as a `_preloop_source` marker inside `tool_args` so approver surfaces can distinguish e.g. a Cursor-originated `Write` from a Claude Code one without a schema migration. A client `deny` is honoured before native access rules so a Preloop allow cannot widen the host agent's policy. Rules then run before the hook's `client_decision` allow is honoured, and a matching rule wins (a blocked tool is denied without creating an approval). Only scoped rules whose stored `source` is `agent` or absent are honoured, so per-agent MCP rules named like native tools do not fire.
 

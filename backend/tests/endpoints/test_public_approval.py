@@ -1,7 +1,7 @@
 """Tests for public approval API endpoints (token-based, no auth required)."""
 
 import uuid
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -274,3 +274,134 @@ class TestPublicApprovalPage:
         location = response.headers.get("location", "")
         assert location == ""
         assert "evil.example" not in location
+
+
+class TestPublicApprovalExpiredAndHistory:
+    """Expired requests must stay viewable and expose their timeline (#335)."""
+
+    def _make_request(
+        self,
+        db_session,
+        test_user,
+        *,
+        status: str,
+        token: str,
+    ):
+        from preloop.models.models.approval_event import ApprovalEvent
+
+        workflow = crud_approval_workflow.create(
+            db_session,
+            obj_in=ApprovalWorkflowCreate(name="WF " + status, approval_type="manual"),
+            account_id=str(test_user.account_id),
+        )
+        db_session.flush()
+
+        tool_config = ToolConfiguration(
+            tool_name="test_tool",
+            tool_source="builtin",
+            account_id=test_user.account_id,
+            approval_workflow_id=workflow.id,
+        )
+        db_session.add(tool_config)
+        db_session.flush()
+
+        approval_request = ApprovalRequest(
+            account_id=test_user.account_id,
+            tool_configuration_id=tool_config.id,
+            approval_workflow_id=workflow.id,
+            tool_name="test_tool",
+            tool_args={"arg1": "value1"},
+            status=status,
+            requested_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC) - timedelta(minutes=1)
+            if status == "expired"
+            else datetime.now(UTC) + timedelta(minutes=5),
+            resolved_at=datetime.now(UTC) if status != "pending" else None,
+            approval_token=token,
+        )
+        db_session.add(approval_request)
+        db_session.flush()
+
+        db_session.add(
+            ApprovalEvent(
+                approval_request_id=approval_request.id,
+                account_id=test_user.account_id,
+                event_type="approval_requested",
+                detail="Approval requested for tool 'test_tool'",
+            )
+        )
+        db_session.add(
+            ApprovalEvent(
+                approval_request_id=approval_request.id,
+                account_id=test_user.account_id,
+                event_type="expired",
+                detail="Expired: no response within the approval window",
+            )
+        )
+        db_session.flush()
+        return approval_request
+
+    def test_get_approval_data_returns_expired_request(
+        self, client: TestClient, db_session, test_user
+    ):
+        """An expired request is retrievable with its token — not an error."""
+        approval_request = self._make_request(
+            db_session, test_user, status="expired", token="expired-token-1"
+        )
+
+        response = client.get(
+            f"/approval/{approval_request.id}/data",
+            params={"token": "expired-token-1"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "expired"
+        assert data["resolved_at"] is not None
+
+    def test_get_approval_data_includes_history(
+        self, client: TestClient, db_session, test_user
+    ):
+        """The public payload carries the timeline (without actor identities)."""
+        approval_request = self._make_request(
+            db_session, test_user, status="expired", token="expired-token-2"
+        )
+
+        response = client.get(
+            f"/approval/{approval_request.id}/data",
+            params={"token": "expired-token-2"},
+        )
+        assert response.status_code == 200
+        history = response.json()["history"]
+        types = [event["event_type"] for event in history]
+        assert "approval_requested" in types
+        assert "expired" in types
+        assert all("actor_id" not in event for event in history)
+
+    def test_get_approval_data_records_viewed_event(
+        self, client: TestClient, db_session, test_user
+    ):
+        """Opening the link lands a single anonymous `viewed` entry."""
+        approval_request = self._make_request(
+            db_session, test_user, status="pending", token="viewed-token-1"
+        )
+
+        response = client.get(
+            f"/approval/{approval_request.id}/data",
+            params={"token": "viewed-token-1"},
+        )
+        assert response.status_code == 200
+        assert "viewed" in [event["event_type"] for event in response.json()["history"]]
+
+        # Second load is deduped: still exactly one viewed entry.
+        client.get(
+            f"/approval/{approval_request.id}/data",
+            params={"token": "viewed-token-1"},
+        )
+        response = client.get(
+            f"/approval/{approval_request.id}/data",
+            params={"token": "viewed-token-1"},
+        )
+        viewed_count = sum(
+            1 for event in response.json()["history"] if event["event_type"] == "viewed"
+        )
+        assert viewed_count == 1

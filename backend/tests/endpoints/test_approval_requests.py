@@ -258,6 +258,7 @@ class TestApproveRequest:
                         mock_approval_request.id,
                         decision.comment,
                         user_id=mock_user.id,
+                        channel=approval_requests.AUTHENTICATED_DECISION_CHANNEL,
                     )
 
     @pytest.mark.asyncio
@@ -434,6 +435,7 @@ class TestDeclineRequest:
                         mock_approval_request.id,
                         decision.comment,
                         user_id=mock_user.id,
+                        channel=approval_requests.AUTHENTICATED_DECISION_CHANNEL,
                     )
 
     @pytest.mark.asyncio
@@ -614,3 +616,179 @@ class TestDecideRequest:
                     )
 
                 assert exc_info.value.status_code == 500
+
+
+class TestGetApprovalRequestHistory:
+    """Tests for the workflow-history timeline endpoint (issue #335)."""
+
+    def _mock_event(self, event_type: str, detail: str, actor_id=None):
+        event = MagicMock()
+        event.id = uuid.uuid4()
+        event.event_type = event_type
+        event.detail = detail
+        event.comment = None
+        event.actor_id = actor_id
+        event.timestamp = datetime.now(UTC)
+        return event
+
+    def test_history_success(self, mock_user, mock_approval_request, mock_db_session):
+        """Events are returned ordered with actor identities resolved."""
+        actor_id = uuid.uuid4()
+        events = [
+            self._mock_event("approval_requested", "Approval requested"),
+            self._mock_event("vote_received", "Approved by actor", actor_id=actor_id),
+        ]
+        actor = MagicMock()
+        actor.id = actor_id
+        actor.email = "approver@example.com"
+        mock_db_session.query.return_value.filter.return_value.all.return_value = [
+            actor
+        ]
+
+        with (
+            patch(
+                "preloop.api.endpoints.approval_requests.crud_approval_request"
+            ) as mock_crud,
+            patch(
+                "preloop.api.endpoints.approval_requests.crud_approval_event"
+            ) as mock_event_crud,
+        ):
+            mock_crud.get.return_value = mock_approval_request
+            mock_event_crud.get_by_request.return_value = events
+
+            result = approval_requests.get_approval_request_history(
+                request_id=mock_approval_request.id,
+                current_user=mock_user,
+                db=mock_db_session,
+            )
+
+        assert len(result) == 2
+        assert result[0].event_type == "approval_requested"
+        assert result[0].actor_email is None
+        assert result[1].actor_email == "approver@example.com"
+        mock_event_crud.get_by_request.assert_called_once_with(
+            mock_db_session, approval_request_id=mock_approval_request.id
+        )
+
+    def test_history_request_not_found(self, mock_user, mock_db_session):
+        """404 when the request is missing or outside the account."""
+        with patch(
+            "preloop.api.endpoints.approval_requests.crud_approval_request"
+        ) as mock_crud:
+            mock_crud.get.return_value = None
+
+            with pytest.raises(HTTPException) as exc_info:
+                approval_requests.get_approval_request_history(
+                    request_id=uuid.uuid4(),
+                    current_user=mock_user,
+                    db=mock_db_session,
+                )
+
+        assert exc_info.value.status_code == 404
+
+    def test_history_unknown_actor_left_unresolved(
+        self, mock_user, mock_approval_request, mock_db_session
+    ):
+        """An actor that no longer resolves still renders the event."""
+        events = [
+            self._mock_event(
+                "vote_received", "Approved by former user", actor_id=uuid.uuid4()
+            )
+        ]
+        mock_db_session.query.return_value.filter.return_value.all.return_value = []
+
+        with (
+            patch(
+                "preloop.api.endpoints.approval_requests.crud_approval_request"
+            ) as mock_crud,
+            patch(
+                "preloop.api.endpoints.approval_requests.crud_approval_event"
+            ) as mock_event_crud,
+        ):
+            mock_crud.get.return_value = mock_approval_request
+            mock_event_crud.get_by_request.return_value = events
+
+            result = approval_requests.get_approval_request_history(
+                request_id=mock_approval_request.id,
+                current_user=mock_user,
+                db=mock_db_session,
+            )
+
+        assert len(result) == 1
+        assert result[0].actor_email is None
+
+
+class TestViewedEventRecording:
+    """Opening an approval must land one `viewed` entry per viewer."""
+
+    def test_viewed_event_recorded_once_per_actor(
+        self, mock_user, mock_approval_request, mock_db_session
+    ):
+        with (
+            patch(
+                "preloop.api.endpoints.approval_requests.crud_approval_request"
+            ) as mock_crud,
+            patch(
+                "preloop.api.endpoints.approval_requests.crud_approval_event"
+            ) as mock_event_crud,
+        ):
+            mock_crud.get.return_value = mock_approval_request
+            mock_event_crud.has_event.return_value = False
+
+            approval_requests.get_approval_request(
+                request_id=mock_approval_request.id,
+                current_user=mock_user,
+                db=mock_db_session,
+            )
+
+            mock_event_crud.record.assert_called_once()
+            kwargs = mock_event_crud.record.call_args.kwargs
+            assert kwargs["event_type"] == "viewed"
+            assert kwargs["actor_id"] == mock_user.id
+            assert kwargs["approval_request_id"] == mock_approval_request.id
+
+    def test_viewed_event_deduped(
+        self, mock_user, mock_approval_request, mock_db_session
+    ):
+        """A repeat view by the same viewer does not add another entry."""
+        with (
+            patch(
+                "preloop.api.endpoints.approval_requests.crud_approval_request"
+            ) as mock_crud,
+            patch(
+                "preloop.api.endpoints.approval_requests.crud_approval_event"
+            ) as mock_event_crud,
+        ):
+            mock_crud.get.return_value = mock_approval_request
+            mock_event_crud.has_event.return_value = True
+
+            approval_requests.get_approval_request(
+                request_id=mock_approval_request.id,
+                current_user=mock_user,
+                db=mock_db_session,
+            )
+
+            mock_event_crud.record.assert_not_called()
+
+    def test_view_tracking_failure_does_not_break_read(
+        self, mock_user, mock_approval_request, mock_db_session
+    ):
+        """A failing timeline write must not fail the request read."""
+        with (
+            patch(
+                "preloop.api.endpoints.approval_requests.crud_approval_request"
+            ) as mock_crud,
+            patch(
+                "preloop.api.endpoints.approval_requests.crud_approval_event"
+            ) as mock_event_crud,
+        ):
+            mock_crud.get.return_value = mock_approval_request
+            mock_event_crud.has_event.side_effect = Exception("db down")
+
+            result = approval_requests.get_approval_request(
+                request_id=mock_approval_request.id,
+                current_user=mock_user,
+                db=mock_db_session,
+            )
+
+        assert result == mock_approval_request

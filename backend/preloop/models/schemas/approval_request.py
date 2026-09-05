@@ -204,6 +204,55 @@ class ApprovalRequestResponse(ApprovalRequestBase):
         return str(value) if value else None
 
 
+class ApprovalEventResponse(BaseModel):
+    """One entry in an approval request's workflow-history timeline."""
+
+    id: UUID = Field(..., description="Event ID")
+    event_type: str = Field(
+        ...,
+        description=(
+            "approval_requested, notification_sent, viewed, vote_received, "
+            "escalation_triggered, approval_complete, expired, ..."
+        ),
+    )
+    detail: str = Field(..., description="Human-readable description of the event")
+    comment: Optional[str] = Field(
+        None, description="Approver comment attached to the event"
+    )
+    actor_id: Optional[UUID] = Field(
+        None, description="User who triggered the event (None for system/token)"
+    )
+    actor_email: Optional[str] = Field(
+        None,
+        description="Resolved display identity of the actor, when known",
+    )
+    timestamp: datetime = Field(..., description="When the event occurred")
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("id", "actor_id")
+    def serialize_uuid(self, value: Optional[UUID]) -> Optional[str]:
+        """Serialize UUID to string."""
+        return str(value) if value else None
+
+
+class ApprovalEventPublic(BaseModel):
+    """Timeline entry for the public (token) approval page.
+
+    Deliberately excludes actor ids/emails: a token link is a bearer secret
+    and must not leak other approvers' identities.
+    """
+
+    event_type: str = Field(..., description="Timeline event type")
+    detail: str = Field(..., description="Human-readable description of the event")
+    comment: Optional[str] = Field(
+        None, description="Approver comment attached to the event"
+    )
+    timestamp: datetime = Field(..., description="When the event occurred")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ApprovalDecision(BaseModel):
     """Schema for an approval decision or a question answer."""
 

@@ -55,6 +55,8 @@ describe('ApprovalView', () => {
     opts: {
       request?: Record<string, unknown> | null;
       getFails?: boolean;
+      history?: Array<Record<string, unknown>>;
+      publicData?: Record<string, unknown>;
     } = {}
   ) {
     return sinon
@@ -74,6 +76,53 @@ describe('ApprovalView', () => {
             return json(null);
           }
           return json(opts.request ?? pendingRequest());
+        }
+
+        if (/\/history$/.test(url) && method === 'GET') {
+          if (opts.history === null) {
+            return json({ detail: 'none' }, 404);
+          }
+          return json(
+            opts.history ?? [
+              {
+                id: 'ev-1',
+                event_type: 'approval_requested',
+                detail: "Approval requested for tool 'shell_command'",
+                comment: null,
+                actor_id: null,
+                actor_email: null,
+                timestamp: '2026-06-01T10:00:00Z',
+              },
+              {
+                id: 'ev-2',
+                event_type: 'notification_sent',
+                detail: 'Notification via email to jane@example.com (sent)',
+                comment: null,
+                actor_id: null,
+                actor_email: null,
+                timestamp: '2026-06-01T10:00:01Z',
+              },
+            ]
+          );
+        }
+
+        if (/\/approval\/req-1\/data/.test(url) && method === 'GET') {
+          if (opts.publicData === null) {
+            return json({ detail: 'invalid token' }, 404);
+          }
+          return json(
+            opts.publicData ?? {
+              id: 'req-1',
+              tool_name: 'shell_command',
+              tool_args: { command: 'ls -la' },
+              agent_reasoning: null,
+              status: 'pending',
+              requested_at: '2026-06-01T10:00:00Z',
+              expires_at: '2026-06-01T11:00:00Z',
+              resolved_at: null,
+              history: [],
+            }
+          );
         }
 
         if (url.includes('/approve') && method === 'POST') {
@@ -151,6 +200,140 @@ describe('ApprovalView', () => {
     expect(element.shadowRoot?.textContent).to.contain('Looks safe');
     // No decision buttons once resolved.
     expect(element.shadowRoot?.querySelector('.actions')).to.not.exist;
+  });
+
+  it('renders an explicit expired state, not an error', async () => {
+    fetchStub = createFetchStub({
+      request: pendingRequest({
+        status: 'expired',
+        resolved_at: '2026-06-01T11:00:00Z',
+      }),
+    });
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.textContent).to.contain('TIMED OUT');
+    expect(element.shadowRoot?.textContent).to.contain(
+      'no response within the window'
+    );
+    expect(element.shadowRoot?.querySelector('.expired-banner')).to.exist;
+    expect(element.shadowRoot?.querySelector('.actions')).to.not.exist;
+  });
+
+  it('renders the workflow-history timeline', async () => {
+    fetchStub = createFetchStub({ request: pendingRequest() });
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await waitUntil(
+      () => (element as any).history?.length === 2,
+      'history did not load'
+    );
+    await element.updateComplete;
+
+    const timeline = element.shadowRoot?.querySelector('.timeline');
+    expect(timeline).to.exist;
+    expect(element.shadowRoot?.textContent).to.contain('Workflow History');
+    expect(element.shadowRoot?.textContent).to.contain(
+      "Approval requested for tool 'shell_command'"
+    );
+    expect(element.shadowRoot?.textContent).to.contain(
+      'Notification via email'
+    );
+    // Timeline items carry their timestamps.
+    expect(
+      element.shadowRoot?.querySelectorAll('.timeline li').length
+    ).to.equal(2);
+  });
+
+  it('falls back to the public token payload when the account read fails', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/console/approval/req-1?token=tok-123'
+    );
+    fetchStub = createFetchStub({
+      request: null,
+      publicData: {
+        id: 'req-1',
+        tool_name: 'shell_command',
+        tool_args: { command: 'ls -la' },
+        agent_reasoning: null,
+        status: 'expired',
+        requested_at: '2026-06-01T10:00:00Z',
+        expires_at: '2026-06-01T11:00:00Z',
+        resolved_at: '2026-06-01T11:00:00Z',
+        history: [
+          {
+            event_type: 'expired',
+            detail: 'Expired: no response within the approval window',
+            comment: null,
+            timestamp: '2026-06-01T11:00:00Z',
+          },
+        ],
+      },
+    });
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await element.updateComplete;
+
+    expect((element as any).publicOnly).to.be.true;
+    expect(element.shadowRoot?.textContent).to.contain('TIMED OUT');
+    expect(element.shadowRoot?.textContent).to.contain('Workflow History');
+    expect(element.shadowRoot?.textContent).to.contain(
+      'Expired: no response within the approval window'
+    );
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('submits public decisions through the token endpoint', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/console/approval/req-1?token=tok-123'
+    );
+    fetchStub = createFetchStub({
+      request: null,
+      publicData: {
+        id: 'req-1',
+        tool_name: 'shell_command',
+        tool_args: { command: 'ls -la' },
+        agent_reasoning: null,
+        status: 'pending',
+        requested_at: '2026-06-01T10:00:00Z',
+        expires_at: '2026-06-01T11:00:00Z',
+        resolved_at: null,
+        history: [],
+      },
+    });
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await element.updateComplete;
+
+    (element as any).comment = 'approved from the link';
+    await (element as any).handleApprove();
+    await element.updateComplete;
+
+    const decideCall = fetchStub
+      .getCalls()
+      .find((c) => String(c.args[0]).includes('/decide'));
+    expect(decideCall, 'expected a POST to the token decide endpoint').to.exist;
+    const body = JSON.parse(String((decideCall!.args[1] as RequestInit).body));
+    expect(body.action).to.equal('approve');
+    expect(body.comment).to.equal('approved from the link');
+    window.history.replaceState({}, '', '/');
   });
 
   it('shows a not-found warning when the request is missing', async () => {
