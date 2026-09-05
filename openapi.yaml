@@ -4949,6 +4949,69 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/projects/{project_id}/pull-requests:
+    get:
+      tags:
+      - Projects
+      summary: List Project Pull Requests
+      description: List open pull requests (GitHub) or merge requests (GitLab) for
+        a project.
+      operationId: list_project_pull_requests_api_v1_projects__project_id__pull_requests_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Project Id
+      - name: state
+        in: query
+        required: false
+        schema:
+          const: open
+          type: string
+          default: open
+          title: State
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 50
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: refresh
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Refresh
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PullRequestListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/issues/search:
     get:
       tags:
@@ -18050,6 +18113,99 @@ components:
       - deleted_count
       title: PruneResponse
       description: Response from a prune operation.
+    PullRequestItem:
+      properties:
+        number:
+          type: integer
+          title: Number
+        iid:
+          type: integer
+          title: Iid
+        title:
+          type: string
+          title: Title
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        url:
+          type: string
+          title: Url
+        author:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Author
+        source_branch:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Branch
+        target_branch:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Branch
+        state:
+          type: string
+          title: State
+        draft:
+          type: boolean
+          title: Draft
+          default: false
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - number
+      - iid
+      - title
+      - url
+      - state
+      title: PullRequestItem
+      description: One open pull request or merge request from the tracker.
+    PullRequestListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/PullRequestItem'
+          type: array
+          title: Items
+        page:
+          type: integer
+          title: Page
+        limit:
+          type: integer
+          title: Limit
+        has_more:
+          type: boolean
+          title: Has More
+        supported:
+          type: boolean
+          title: Supported
+        fetched_at:
+          type: string
+          title: Fetched At
+          description: ISO timestamp of the fetch
+      type: object
+      required:
+      - items
+      - page
+      - limit
+      - has_more
+      - supported
+      - fetched_at
+      title: PullRequestListResponse
+      description: Paginated live list of open pull/merge requests.
     QRCodeResponse:
       properties:
         token:

@@ -21,6 +21,7 @@ __all__ = [
     "policies",
     "projects",
     "public_approval",
+    "pull_requests",
     "roles",
     "search",
     "tools",
