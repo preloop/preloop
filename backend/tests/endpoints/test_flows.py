@@ -2425,6 +2425,7 @@ async def test_run_preset_creates_and_triggers(
     assert result.execution_id == str(execution_id)
     assert result.execution_url == f"/console/flows/executions/{execution_id}"
     trigger.assert_awaited_once()
+    assert trigger.await_args.kwargs["test_mode"] is False
 
 
 @pytest.mark.asyncio

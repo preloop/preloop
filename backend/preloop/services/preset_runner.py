@@ -72,16 +72,30 @@ def _tracker_host(tracker: Any, fallback: str) -> str:
     return parsed.netloc or parsed.path or fallback
 
 
+def _github_web_host(tracker: Any) -> str:
+    """Public GitHub host, not the API base stored on the tracker."""
+    host = _tracker_host(tracker, "github.com")
+    if host in ("github.com", "api.github.com"):
+        return "github.com"
+    return host
+
+
 def _issue_number(issue: Any) -> int:
+    """Prefer ``owner/repo#42`` from ``issue.key``; ``external_id`` is the global id."""
+    key = getattr(issue, "key", "") or ""
+    if "#" in str(key):
+        suffix = str(key).rsplit("#", 1)[-1]
+        try:
+            return int(suffix)
+        except (TypeError, ValueError):
+            pass
     external_id = getattr(issue, "external_id", None)
     if external_id is not None:
         try:
             return int(str(external_id))
         except (TypeError, ValueError):
             pass
-    key = getattr(issue, "key", "") or ""
-    digits = "".join(ch for ch in str(key) if ch.isdigit())
-    return int(digits) if digits else 0
+    return 0
 
 
 def _issue_url(issue: Any) -> str:
@@ -95,10 +109,15 @@ def _issue_assignee(issue: Any) -> str:
     meta = (
         issue.meta_data if isinstance(getattr(issue, "meta_data", None), dict) else {}
     )
-    assignee = meta.get("assignee")
-    if isinstance(assignee, dict):
-        return str(assignee.get("login") or assignee.get("name") or "")
-    return str(assignee or "")
+    assignees = meta.get("assignees")
+    first: Any = None
+    if isinstance(assignees, list) and assignees:
+        first = assignees[0]
+    if isinstance(first, dict):
+        return str(first.get("login") or first.get("name") or "")
+    if first is not None:
+        return str(first or "")
+    return ""
 
 
 def _issue_labels(issue: Any) -> List[str]:
@@ -140,7 +159,7 @@ def _repository_clone_fields(project: Any, tracker: Any) -> Dict[str, Any]:
             "http_url_to_repo": clone_url,
             "default_branch": default_branch,
         }
-    host = _tracker_host(tracker, "github.com")
+    host = _github_web_host(tracker)
     scheme = (
         urlparse(getattr(tracker, "url", None) or "https://github.com").scheme
         or "https"
@@ -200,7 +219,11 @@ def resolve_or_create_flow(
         if not existing.is_enabled:
             raise _http(
                 409,
-                {"code": "flow_disabled", "flow_id": str(existing.id)},
+                {
+                    "code": "flow_disabled",
+                    "flow_id": str(existing.id),
+                    "flow_name": existing.name,
+                },
             )
         return existing, False
 
@@ -287,6 +310,9 @@ def build_issue_trigger_payload(
     return {
         "type": "issue_run",
         "source": source,
+        "project_id": str(project.id),
+        "tracker_id": str(tracker.id),
+        "account_id": str(tracker.account_id),
         "payload": payload,
     }
 
@@ -339,6 +365,7 @@ async def run_preset_on_target(
                 "Use an issue target."
             ),
         )
+    # Schema-validated at the API; these 400s exist for direct callers.
     if kind != "issue":
         raise _http(400, "target.kind must be issue or pull_request")
 
@@ -396,7 +423,7 @@ async def run_preset_on_target(
     trigger_service = FlowTriggerService(db)
     result = await trigger_service.trigger_flow(
         flow_id=flow.id,
-        test_mode=True,
+        test_mode=False,
         trigger_event_data=trigger_event_data,
         triggered_by=triggered_by,
     )
