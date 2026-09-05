@@ -372,6 +372,22 @@ describe('NotificationPreferencesView', () => {
       expect((el as any).successMessage).to.contain('iOS');
     });
 
+    it('announces a registration stamped inside the clock-skew tolerance', async () => {
+      fetchStub = stubPrefs(PREFS);
+      const el = await mount();
+
+      // A server clock half a minute behind this browser still produces news.
+      handler!({
+        type: 'device_registered',
+        platform: 'ios',
+        registered_at: new Date(Date.now() - 30_000).toISOString(),
+      });
+      await tick();
+      await el.updateComplete;
+
+      expect((el as any).successMessage).to.contain('iOS');
+    });
+
     it('announces a registration this page asked for even without a timestamp', async () => {
       fetchStub = stubPrefs(PREFS);
       const el = await mount();

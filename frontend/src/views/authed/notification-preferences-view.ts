@@ -95,6 +95,16 @@ export class NotificationPreferencesView extends AuthedElement {
    */
   private pageOpenedAt = 0;
 
+  /**
+   * How far the server clock is allowed to trail this browser's clock before
+   * a genuinely fresh registration would be mistaken for a replay. The stamp
+   * comes from the server (datetime.now(UTC)) and the comparison from the
+   * browser, so the two can disagree; one minute of slack costs us nothing
+   * (a replayed event is minutes to days old) and keeps a slightly skewed
+   * server from silencing a real registration.
+   */
+  private static readonly REPLAY_CLOCK_SKEW_MS = 60_000;
+
   @state()
   private testResult: TestPushResult | null = null;
 
@@ -400,14 +410,18 @@ export class NotificationPreferencesView extends AuthedElement {
           );
 
           // A registration this page asked for (the QR dialog is open) is
-          // always news. Anything else that is stamped before this page opened
-          // is a replay of an old event and must not announce itself.
+          // always news. Anything else that is stamped well before this page
+          // opened is a replay of an old event and must not announce itself.
+          // "Well before" allows for clock skew between server and browser.
           const initiatedHere = this.showQRDialog;
           const registeredAt = Date.parse(message?.registered_at ?? '');
+          const replayCutoff =
+            this.pageOpenedAt -
+            NotificationPreferencesView.REPLAY_CLOCK_SKEW_MS;
           if (
             !initiatedHere &&
             Number.isFinite(registeredAt) &&
-            registeredAt < this.pageOpenedAt
+            registeredAt < replayCutoff
           ) {
             console.debug(
               '[NotificationPrefs] Ignoring device_registered event from before page open'
