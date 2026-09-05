@@ -70,11 +70,11 @@ Every console background comes from one surface ladder declared per theme at doc
 
 ### Tools Page (`src/views/authed/tools-view.ts`)
 
-The Tools page has been redesigned from a card-based layout to a tree-style list view:
+The Tools page is MCP and Native tabs, a summary strip of filterable counts, and the shared `list-toolbar`:
 
-*   **Summary stats table:** Interactive statistics panel showing tool counts (total, available/unavailable, enabled/disabled, built-in/proxied, with rules/no rules, require approval/no approval, approval workflows). Each stat is a clickable filter link.
-*   **Unified filter system:** Single active filter at a time, text search, and approval workflow filter dropdown.
-*   **Tool groups:** Tools grouped by source — external MCP servers listed first, then HTTP tools, then built-in tools.
+*   **Tabs:** MCP (proxied and built-in tools) is the default, restored from `?tab=` or `localStorage`. Native is the agent-source catalogue (Bash, Edit, Write, and others). The Native list body ships in a follow-up; this page keeps the tab, the Native defaults card, and a zero count until then.
+*   **Summary strip:** Clickable counts (total, available, enabled, with rules, require approval). Each button is `aria-pressed` and toggles a single filter. The count slot is `aria-live="polite"`. Unavailable reasons stay in the tool-row tooltip.
+*   **Toolbar:** Search plus Status, Server, Rules, and Workflow filters on `list-toolbar`, matching Models and Trackers. The List/Cards toggle is hidden (`views=['cards']`) until the flat table lands, so a stored view choice cannot change the page.
 *   **Import/Export:** Full configuration export/import as YAML.
 *   **Key components:**
     *   `tool-list-item.ts` — Individual tool row with expand/collapse, enable/disable toggle, rule summary badges, and drag-and-drop rule reordering.
