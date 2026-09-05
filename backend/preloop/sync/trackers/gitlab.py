@@ -1561,6 +1561,96 @@ class GitLabTracker(BaseTracker):
             logger.error(f"Error getting merge request {mr_iid}: {e}")
             raise TrackerResponseError(f"Failed to get merge request: {e}")
 
+    async def list_merge_requests(
+        self,
+        state: str = "open",
+        limit: int = 20,
+        page: int = 1,
+    ) -> Dict[str, Any]:
+        """List merge requests for the connected GitLab project.
+
+        Args:
+            state: Normalized state (open maps to GitLab opened).
+            limit: Page size (per_page).
+            page: 1-based page number.
+
+        Returns:
+            Dict with normalized ``items`` and ``has_more``. ``has_more`` is
+            a peek at the next page (``per_page=1``) so consecutive pages
+            stay contiguous. Fetching ``limit + 1`` on a page-based API
+            would skip every ``(limit + 1)``-th merge request.
+        """
+        project_id = self._get_project_id()
+        gitlab_state = "opened" if state == "open" else state
+        project = await self._make_request(self.gl.projects.get, project_id)
+        mrs = await self._make_request(
+            project.mergerequests.list,
+            state=gitlab_state,
+            order_by="updated_at",
+            sort="desc",
+            per_page=limit,
+            page=page,
+        )
+        rows = list(mrs or [])
+        has_more = False
+        if len(rows) == limit:
+            nxt = await self._make_request(
+                project.mergerequests.list,
+                state=gitlab_state,
+                order_by="updated_at",
+                sort="desc",
+                per_page=1,
+                page=page + 1,
+            )
+            has_more = bool(list(nxt or []))
+        items = [self._normalize_listed_merge_request(mr) for mr in rows]
+        return {"items": items, "has_more": has_more}
+
+    def _normalize_listed_merge_request(self, mr: Any) -> Dict[str, Any]:
+        """Map a python-gitlab MR object (or dict) to the shared PR list shape."""
+        if isinstance(mr, dict):
+            data = mr
+        else:
+            data = getattr(mr, "attributes", None)
+            if not isinstance(data, dict):
+                data = {
+                    "iid": getattr(mr, "iid", None),
+                    "title": getattr(mr, "title", None),
+                    "description": getattr(mr, "description", None),
+                    "web_url": getattr(mr, "web_url", None),
+                    "author": getattr(mr, "author", None),
+                    "source_branch": getattr(mr, "source_branch", None),
+                    "target_branch": getattr(mr, "target_branch", None),
+                    "state": getattr(mr, "state", None),
+                    "draft": getattr(mr, "draft", None),
+                    "work_in_progress": getattr(mr, "work_in_progress", None),
+                    "created_at": getattr(mr, "created_at", None),
+                    "updated_at": getattr(mr, "updated_at", None),
+                }
+        author = data.get("author")
+        if isinstance(author, dict):
+            author_name = author.get("username") or author.get("name") or ""
+        else:
+            author_name = author or ""
+        iid = int(data.get("iid") or 0)
+        raw_state = str(data.get("state") or "open")
+        state = "open" if raw_state in ("opened", "open") else raw_state
+        draft = bool(data.get("draft") or data.get("work_in_progress") or False)
+        return {
+            "number": iid,
+            "iid": iid,
+            "title": data.get("title") or "",
+            "description": data.get("description") or "",
+            "url": data.get("web_url") or data.get("url") or "",
+            "author": author_name,
+            "source_branch": data.get("source_branch") or "",
+            "target_branch": data.get("target_branch") or "",
+            "state": state,
+            "draft": draft,
+            "created_at": data.get("created_at"),
+            "updated_at": data.get("updated_at"),
+        }
+
     async def update_merge_request(
         self,
         mr_identifier: str,

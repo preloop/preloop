@@ -1438,6 +1438,30 @@ export interface IssueListResponse {
   limit: number;
 }
 
+export interface PullRequestListItem {
+  number: number;
+  iid: number;
+  title: string;
+  description?: string | null;
+  url: string;
+  author?: string | null;
+  source_branch?: string | null;
+  target_branch?: string | null;
+  state: string;
+  draft: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface PullRequestListResponse {
+  items: PullRequestListItem[];
+  page: number;
+  limit: number;
+  has_more: boolean;
+  supported: boolean;
+  fetched_at: string;
+}
+
 export type VerdictStatus =
   'checking' | 'done' | 'failed' | 'timeout' | 'no_model';
 

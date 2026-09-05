@@ -15,6 +15,7 @@ import type {
   Issue,
   IssueListItem,
   IssueListResponse,
+  PullRequestListResponse,
   DuplicatePair,
   DuplicatesResponse,
   IssueComplianceResult,
@@ -2127,6 +2128,29 @@ export async function listIssues(params: {
   const response = await fetchWithAuth(`/api/v1/issues?${query.toString()}`);
   if (!response.ok) {
     throw new Error('Failed to fetch issues');
+  }
+  return response.json();
+}
+
+export async function listProjectPullRequests(
+  projectId: string,
+  params?: {
+    state?: 'open';
+    limit?: number;
+    page?: number;
+    refresh?: boolean;
+  }
+): Promise<PullRequestListResponse> {
+  const query = new URLSearchParams();
+  query.set('state', params?.state || 'open');
+  if (params?.limit !== undefined) query.set('limit', String(params.limit));
+  if (params?.page !== undefined) query.set('page', String(params.page));
+  if (params?.refresh) query.set('refresh', '1');
+  const response = await fetchWithAuth(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/pull-requests?${query.toString()}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch pull requests');
   }
   return response.json();
 }

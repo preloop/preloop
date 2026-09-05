@@ -47,6 +47,7 @@ from preloop.api.endpoints import (
     policies,
     projects,
     public_approval,
+    pull_requests,
     roles,
     search as search_router,
     security_screen,
@@ -982,6 +983,12 @@ def create_app() -> FastAPI:
         )
         app.include_router(
             projects.router,
+            prefix="/api/v1",
+            tags=["Projects"],
+            dependencies=[Depends(get_current_active_user)],
+        )
+        app.include_router(
+            pull_requests.router,
             prefix="/api/v1",
             tags=["Projects"],
             dependencies=[Depends(get_current_active_user)],
