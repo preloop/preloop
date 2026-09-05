@@ -1786,6 +1786,155 @@ class TestResolveGitBranchPlan:
         assert source == "main"
         assert target == "preloop/automated-issue-implementation-83021dcc"
 
+    def test_issue_trigger_names_branch_from_issue_number(self, container_executor):
+        source, target, _, _, _ = container_executor._resolve_git_branch_plan(
+            {
+                "flow_name": "Automated Issue Implementation",
+                "execution_id": "08095fd6-f861-4939-997d-2600d1ec5a80",
+                "trigger_event_data": {
+                    "payload": {
+                        "issue": {
+                            "number": 356,
+                            "title": "Persist OpenCode/Codex session IDs",
+                        }
+                    }
+                },
+            },
+            {"source_branch": None, "target_branch": None},
+        )
+        assert source == "main"
+        assert target == "preloop/issue-356-08095fd6"
+
+
+class TestInterpolateGitConfigText:
+    def test_github_issue_aliases_object_attributes_paths(self):
+        from preloop.agents.container import interpolate_git_config_text
+
+        trigger = {
+            "payload": {
+                "issue": {
+                    "number": 356,
+                    "title": "Persist session ids",
+                    "body": "Wanted",
+                }
+            }
+        }
+        assert (
+            interpolate_git_config_text(
+                "Implements: {{trigger_event.payload.object_attributes.title}}",
+                trigger,
+            )
+            == "Implements: Persist session ids"
+        )
+        assert (
+            interpolate_git_config_text(
+                "Closes #{{trigger_event.payload.object_attributes.number}}",
+                trigger,
+            )
+            == "Closes #356"
+        )
+
+    def test_unresolved_placeholder_is_empty(self):
+        from preloop.agents.container import interpolate_git_config_text
+
+        assert interpolate_git_config_text("Implements: {{missing.title}}", {}) == ""
+
+
+class TestWritePrPayloadPy:
+    def test_json_roundtrip_survives_quotes_and_newlines(self):
+        import json
+
+        body = (
+            "A restart used to start a cold\n"
+            'agent: files die with "PRELOOP_AGENT_SESSION".'
+        )
+        encoded = json.dumps(
+            {
+                "title": "Persist ids so resumes can use native --resume",
+                "body": body,
+                "head": "preloop/issue-356-08095fd6",
+                "base": "main",
+            },
+            ensure_ascii=False,
+        )
+        parsed = json.loads(encoded)
+        assert parsed["body"] == body
+        assert "\n" not in encoded.replace("\\n", "")
+
+
+class TestPostExecutionPullRequest:
+    """The wrapper used to interpolate title/body into JSON, so a multi-line
+    pull_request_description (preset 011) or a commit body with quotes made
+    GitHub reject the create call after a successful push.
+    """
+
+    def _context(self, **overrides):
+        context = {
+            "flow_id": "flow-1",
+            "execution_id": "08095fd6-f861-4939-997d-2600d1ec5a80",
+            "flow_name": "Automated Issue Implementation",
+            "_git_target_branch": "preloop/issue-356-08095fd6",
+            "_git_source_branch": "main",
+            "git_clone_config": {
+                "enabled": True,
+                "create_pull_request": True,
+                "pull_request_title": (
+                    "Implements: {{trigger_event.payload.object_attributes.title}}"
+                ),
+                "pull_request_description": (
+                    "Automated implementation for "
+                    "#{{trigger_event.payload.object_attributes.number}}\n\n"
+                    "Closes #{{trigger_event.payload.object_attributes.number}}"
+                ),
+                "repositories": [
+                    {
+                        "repository_url": "https://github.com/acme/private.git",
+                        "clone_path": "/workspace",
+                        "tracker_id": "tracker-1",
+                    }
+                ],
+            },
+            "git_credentials_map": {
+                "tracker-1": {
+                    "token": "github_pat_11ABCDEFG0aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789",
+                    "tracker_type": "github",
+                }
+            },
+            "trigger_event_data": {
+                "payload": {
+                    "issue": {"number": 356, "title": "Persist session ids"},
+                    "repository": {"clone_url": "https://github.com/acme/private.git"},
+                }
+            },
+        }
+        context.update(overrides)
+        return context
+
+    def test_multiline_description_is_not_raw_json(self, container_executor):
+        commands = container_executor._prepare_git_post_execution_commands(
+            self._context()
+        )
+        assert "json.dumps" in commands
+        assert "/workspace/result.json" in commands
+        assert "https://api.github.com/repos/acme/private/pulls" in commands
+        assert '  "body": "Automated implementation' not in commands
+        assert "Closes #356" in commands or "base64 -d" in commands
+        assert "${PRELOOP_GIT_TOKEN_1}" in commands
+        assert "github_pat_11ABCDEFG" not in commands
+
+    def test_host_kind_creates_pr_when_tracker_type_missing(self, container_executor):
+        context = self._context()
+        context["git_credentials_map"]["tracker-1"]["tracker_type"] = None
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "https://api.github.com/repos/acme/private/pulls" in commands
+
+    def test_result_json_fields_are_consulted(self, container_executor):
+        commands = container_executor._prepare_git_post_execution_commands(
+            self._context()
+        )
+        assert "pr_title" in commands
+        assert "pr_body" in commands
+
 
 class TestExtractMergeRequestRef:
     def test_github_pr_comment_issue_stub(self, container_executor):
