@@ -135,6 +135,8 @@ class TestRestoreShell:
     def test_pack_block_excludes_credentials(self):
         shell = build_session_pack_shell("opencode", '"$HOME/.local/x"')
         assert "--exclude=auth.json" in shell
+        assert "--exclude=log" in shell
+        assert "--exclude=logs" in shell
         assert shlex.quote(SESSION_PACK_ROOT + "/opencode") in shell
 
     def test_pack_block_custom_excludes(self):

@@ -34,10 +34,11 @@ logger = logging.getLogger(__name__)
 # Where the JSON log filter records the session id of the current run.
 OPENCODE_SESSION_ID_PATH = "/tmp/preloop-cli-session-id"
 
-# Shell expression for OpenCode's data directory (session storage lives
-# there). Matches OpenCode's XDG resolution, so packing and restoring land
-# the storage exactly where the CLI looks for it.
-OPENCODE_DATA_DIR_EXPR = '"${XDG_DATA_HOME:-$HOME/.local/share}/opencode"'
+# Shell expression for OpenCode's session storage (not the full data dir,
+# which also holds the pinned runtime under bin/ and LLM caches). Matches
+# OpenCode's XDG resolution so packing and restoring land the storage
+# exactly where the CLI looks for it.
+OPENCODE_STORAGE_DIR_EXPR = '"${XDG_DATA_HOME:-$HOME/.local/share}/opencode/storage"'
 
 
 def _opencode_llm_timeout_ms() -> int:
@@ -371,7 +372,7 @@ class OpenCodeAgent(ContainerAgentExecutor):
 
         Returns ``decode`` (unpack an embedded session pack on runners that
         cannot seed the filesystem pre-start), ``restore`` (relocate the
-        packed storage into OpenCode's data dir), ``args`` (the resume flag
+        packed storage into OpenCode's session storage), ``args`` (the resume flag
         for the recorded session id), ``marker`` (report THIS run's session
         id to the orchestrator) and ``pack`` (copy the storage into
         /workspace so the workspace snapshot carries it). Everything except
@@ -394,7 +395,11 @@ if [ -s {OPENCODE_SESSION_ID_PATH} ]; then
     fi
 fi
 """
-        blocks["pack"] = build_session_pack_shell("opencode", OPENCODE_DATA_DIR_EXPR)
+        blocks["pack"] = build_session_pack_shell(
+            "opencode",
+            OPENCODE_STORAGE_DIR_EXPR,
+            excludes=("auth.json", "log", "logs"),
+        )
         if execution_context.get("confirmation_nudge"):
             return blocks
 
@@ -404,7 +409,7 @@ fi
                 bytes(cli_session_archive)
             )
         blocks["restore"] = build_session_restore_shell(
-            "opencode", OPENCODE_DATA_DIR_EXPR
+            "opencode", OPENCODE_STORAGE_DIR_EXPR
         )
         session_id = resume_cli_session(execution_context, "opencode")
         # Single quotes are safe: the id passed strict validation and cannot
@@ -583,33 +588,31 @@ const SENTINEL = "FLOW_EXECUTION_SUCCESS";
 const SESSION_FILE = "/tmp/preloop-cli-session-id";
 let sessionSaved = false;
 
-function findSessionId(value) {{
-  if (!value || typeof value !== "object" || sessionSaved) {{
-    return null;
-  }}
-  if (Array.isArray(value)) {{
-    for (const item of value) {{
-      const found = findSessionId(item);
-      if (found) return found;
-    }}
-    return null;
-  }}
-  for (const [key, val] of Object.entries(value)) {{
-    if (
-      typeof val === "string" &&
-      /^ses_[A-Za-z0-9]+$/.test(val) &&
-      (key === "id" || /session/i.test(key))
-    ) {{
-      return val;
-    }}
-    const found = findSessionId(val);
-    if (found) return found;
-  }}
-  return null;
-}}
-
 function eventName(event) {{
   return String(event.type || event.event || "").toLowerCase();
+}}
+
+// Persist the parent session only. OpenCode's JSON stream also carries
+// nested subagent ids (task tool, child sessions); a recursive scan would
+// first-win those and a later `--session` resume would re-enter the wrong
+// context. Match the Python OPENCODE_SESSION_ID_RE length floor ({{4,}}).
+function isSessionId(value) {{
+  return typeof value === "string" && /^ses_[A-Za-z0-9]{{4,}}$/.test(value);
+}}
+
+function parentSessionId(event) {{
+  if (!event || typeof event !== "object") {{
+    return null;
+  }}
+  const name = eventName(event);
+  if (name !== "session.idle" && name !== "session.created") {{
+    return null;
+  }}
+  const info = event.properties && event.properties.info;
+  if (!info || typeof info !== "object") {{
+    return null;
+  }}
+  return isSessionId(info.id) ? info.id : null;
 }}
 
 function collectTextValues(value, name, output) {{
@@ -661,7 +664,7 @@ rl.on("line", (line) => {{
   }}
 
   if (!sessionSaved) {{
-    const sessionId = findSessionId(event);
+    const sessionId = parentSessionId(event);
     if (sessionId) {{
       try {{
         fs.writeFileSync(SESSION_FILE, sessionId + "\\n");

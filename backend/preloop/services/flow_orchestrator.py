@@ -1,4 +1,5 @@
 import logging
+import os
 import uuid
 import json
 import asyncio
@@ -2625,16 +2626,35 @@ class FlowExecutionOrchestrator:
         )
         return bytes(snapshot)
 
+    def _needs_embedded_cli_session_archive(self) -> bool:
+        """True when the runner cannot unpack the pack via volume restore.
+
+        Hosted Docker ``put_archive``s the workspace snapshot before start, so
+        ``.preloop-agent-session`` is already on disk. Kubernetes emptyDir
+        cannot be seeded pre-start and needs the pack embedded in the script.
+        """
+        env_value = os.getenv("USE_KUBERNETES", "").lower()
+        if env_value == "true":
+            return True
+        if env_value == "false":
+            return False
+        token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        if os.path.exists(token_path) or os.getenv("KUBERNETES_SERVICE_HOST"):
+            return True
+        return False
+
     def _resolve_cli_session_restore_archive(self) -> Optional[bytes]:
         """Extract the prior execution's packed CLI session from its snapshot.
 
         Returns a tar.gz of the ``.preloop-agent-session`` subtree (or None)
         for runs started from a PR comment on an execution that recorded a
-        native CLI session. The archive is embedded into the agent script on
-        runners that cannot seed the filesystem pre-start (Kubernetes); on
-        Docker the workspace restore already unpacks it into the volume, so
-        it is unused there but harmless.
+        native CLI session. Built only for runners that cannot seed the
+        filesystem pre-start (Kubernetes). Hosted Docker already unpacks the
+        pack via workspace volume restore, so scanning the snapshot there is
+        skipped.
         """
+        if not self._needs_embedded_cli_session_archive():
+            return None
         resume = (self.trigger_event_data or {}).get("_resume")
         if not isinstance(resume, dict):
             return None

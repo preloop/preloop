@@ -675,6 +675,7 @@ class TestAgentCliSessionMarker:
         return out.getvalue()
 
     def test_restore_archive_extracted_from_prior_snapshot(self, monkeypatch):
+        monkeypatch.setenv("USE_KUBERNETES", "true")
         orchestrator = self._orchestrator()
         prior = MagicMock()
         prior.flow_id = orchestrator.flow.id
@@ -700,7 +701,31 @@ class TestAgentCliSessionMarker:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
             assert tar.getnames() == ["opencode/s/a.json"]
 
+    def test_docker_runner_skips_snapshot_scan(self, monkeypatch):
+        monkeypatch.setenv("USE_KUBERNETES", "false")
+        orchestrator = self._orchestrator()
+        prior = MagicMock()
+        prior.flow_id = orchestrator.flow.id
+        prior.workspace_snapshot = self._snapshot_with_pack()
+        getter = MagicMock(return_value=prior)
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.crud_flow_execution.get",
+            getter,
+        )
+        orchestrator.trigger_event_data = {
+            "_resume": {
+                "execution_id": str(uuid4()),
+                "cli_session": {
+                    "agent_type": "opencode",
+                    "session_id": "ses_ab12cd34",
+                },
+            }
+        }
+        assert orchestrator._resolve_cli_session_restore_archive() is None
+        getter.assert_not_called()
+
     def test_no_cli_session_in_resume_means_no_archive(self, monkeypatch):
+        monkeypatch.setenv("USE_KUBERNETES", "true")
         orchestrator = self._orchestrator()
         prior = MagicMock()
         prior.flow_id = orchestrator.flow.id
@@ -713,6 +738,7 @@ class TestAgentCliSessionMarker:
         assert orchestrator._resolve_cli_session_restore_archive() is None
 
     def test_flow_mismatch_refuses_the_archive(self, monkeypatch):
+        monkeypatch.setenv("USE_KUBERNETES", "true")
         orchestrator = self._orchestrator()
         prior = MagicMock()
         prior.flow_id = uuid4()

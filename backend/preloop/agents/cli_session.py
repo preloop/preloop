@@ -204,7 +204,7 @@ fi
 def build_session_pack_shell(
     agent_dir: str,
     data_dir_expr: str,
-    excludes: tuple[str, ...] = ("auth.json", "log"),
+    excludes: tuple[str, ...] = ("auth.json", "log", "logs"),
 ) -> str:
     """Shell that copies the CLI data dir into SESSION_PACK_ROOT.
 

@@ -727,7 +727,10 @@ class TestOpenCodeCliSession:
         # resume's starting point.
         assert 'echo "PRELOOP_AGENT_SESSION opencode $_pl_sid"' in script
         assert "/workspace/.preloop-agent-session/opencode" in script
+        assert 'opencode/storage"' in script or "/opencode/storage" in script
         assert "--exclude=auth.json" in script
+        assert "--exclude=log" in script
+        assert "--exclude=logs" in script
         assert "/tmp/preloop-cli-session-id" in script
 
     def test_run_command_expands_resume_args(self):
@@ -830,7 +833,7 @@ class TestOpenCodeLogFilterJs:
             }
         )
         js = self._extract_filter_js(script)
-        assert "findSessionId" in js
+        assert "parentSessionId" in js
         assert "/tmp/preloop-cli-session-id" in js
         js_path = tmp_path / "filter.js"
         js_path.write_text(js)
@@ -842,7 +845,7 @@ class TestOpenCodeLogFilterJs:
         assert result.returncode == 0, result.stderr
 
     def test_filter_js_detects_session_ids(self, tmp_path):
-        """The filter writes the first ses_* id it sees to the session file."""
+        """The filter writes the parent session.idle/created id, not nested ones."""
         import json
         import subprocess
 
@@ -878,7 +881,46 @@ class TestOpenCodeLogFilterJs:
         run_filter(js, json.dumps(event))
         assert session_file.read_text().strip() == "ses_ab12cd34"
 
-        # Non-session ids are ignored.
         session_file.unlink()
+        run_filter(
+            js,
+            json.dumps(
+                {
+                    "type": "session.created",
+                    "properties": {
+                        "info": {"id": "ses_parent0001"},
+                        "child": {"id": "ses_child0001"},
+                    },
+                }
+            ),
+        )
+        assert session_file.read_text().strip() == "ses_parent0001"
+
+        session_file.unlink()
+        run_filter(
+            js,
+            json.dumps(
+                {
+                    "type": "tool",
+                    "properties": {
+                        "info": {"id": "ses_child0001"},
+                        "sessionID": "ses_child0001",
+                    },
+                }
+            ),
+        )
+        assert not session_file.exists()
+
         run_filter(js, json.dumps({"type": "message", "id": "msg_01"}))
+        assert not session_file.exists()
+
+        run_filter(
+            js,
+            json.dumps(
+                {
+                    "type": "session.idle",
+                    "properties": {"info": {"id": "ses_ab"}},
+                }
+            ),
+        )
         assert not session_file.exists()
