@@ -284,13 +284,6 @@ export class DashboardView extends AuthedElement {
    */
   @state() private updatingUsage = false;
   @state() private fetchingRecentExecutions = true;
-  /**
-   * Flows, their runs, the resolved approvals and the gateway call log: the
-   * cards below the fold. They are fetched after the first paint, so the
-   * Inventory tabs that read them say "still coming" while the tabs that are
-   * already filled show their rows.
-   */
-  @state() private fetchingInventory = true;
   @state() private fetchingApprovals = true;
   @state() private fetchingAudit = true;
   @state() private fetchingMCPAndTools = true;
@@ -365,6 +358,12 @@ export class DashboardView extends AuthedElement {
   @state() private gatewayTimeRange: 'day' | 'week' | 'month' | 'year' =
     'month';
   @state() private fetchingBudget = false;
+  /**
+   * Starts true so Next steps and the welcome wizard stay hidden before the
+   * first fold. `!this.loading` used to be the checklist gate; the lists
+   * now run next to wave 1, so this flag is what keeps an empty agents
+   * array from reading as "the account has nothing".
+   */
   @state() private fetchingAgents = true;
   @state() private showSetupDialog = false;
   @state() private showBudgetDialog = false;
@@ -1618,6 +1617,20 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
+   * Welcome chrome can paint before the fold; the deploy wizard must not.
+   * Empty agents on first paint are not "not onboarded", and mounting
+   * the wizard then fired a second `GET /ai-models` next to
+   * {@link fetchModelsList}.
+   */
+  private get showWelcomeCard(): boolean {
+    return !this.welcomeCardDismissed && !this.isOnboarded;
+  }
+
+  private get mountDeployWizard(): boolean {
+    return this.showWelcomeCard && !this.fetchingAgents;
+  }
+
+  /**
    * True once the cheap lists the checklist reads (agents, tools) plus
    * budget policies and the feature flags have all answered. Usage columns
    * are not an input: an account with agents is finished with "Onboard an
@@ -2025,7 +2038,6 @@ export class DashboardView extends AuthedElement {
     if (!options.preserveLoadingState) {
       this.fetchingGatewaySummary = true;
       this.fetchingRecentExecutions = true;
-      this.fetchingInventory = true;
       this.fetchingApprovals = true;
       this.fetchingAgents = true;
       this.fetchingBudget = true;
@@ -2157,17 +2169,11 @@ export class DashboardView extends AuthedElement {
       this.fetchingGatewaySummary = false;
       this.updatingUsage = false;
       this.fetchingRecentExecutions = false;
-      this.fetchingInventory = false;
       this.fetchingApprovals = false;
       this.fetchingAgents = false;
       this.fetchingBudget = false;
       this.fetchingAudit = false;
       this.fetchingMCPAndTools = false;
-      this.fetchingFlows = false;
-      this.fetchingModels = false;
-      this.fetchingTools = false;
-      this.fetchingFlowUsage = false;
-      this.fetchingModelUsage = false;
       this.loading = false;
     } finally {
       this.refreshInFlight = false;
@@ -2298,7 +2304,6 @@ export class DashboardView extends AuthedElement {
 
   /** Flow runs, resolved approvals and the gateway call log. */
   private async fetchInventoryData(startDateStr: string): Promise<void> {
-    this.fetchingInventory = true;
     this.fetchingRecentExecutions = true;
     this.fetchingFlowUsage = true;
     try {
@@ -2327,7 +2332,6 @@ export class DashboardView extends AuthedElement {
     } catch (error) {
       console.error('Failed to load the Inventory data', error);
     } finally {
-      this.fetchingInventory = false;
       this.fetchingRecentExecutions = false;
       this.fetchingFlowUsage = false;
     }
@@ -2933,7 +2937,7 @@ export class DashboardView extends AuthedElement {
   }
 
   private renderWelcomeCard() {
-    if (this.welcomeCardDismissed) {
+    if (!this.showWelcomeCard) {
       return nothing;
     }
 
@@ -2967,16 +2971,21 @@ export class DashboardView extends AuthedElement {
           class="welcome-content"
           style="width: 100%; display: flex; flex-direction: column; align-items: center;"
         >
-          <preloop-deploy-wizard
-            .aiModels=${this.aiModels}
-            .computeFeatureEnabled=${this.computeFeatureEnabled}
-            .isEnterprise=${this.isEnterprise}
-            .isAdmin=${this.isAdmin}
-            hide-cancel
-            @deploy-agent-success=${this.handleDeployAgentSuccess}
-            @deploy-flow-success=${this.handleDeployFlowSuccess}
-            @deploy-wizard-done=${this.handleDeployWizardDone}
-          ></preloop-deploy-wizard>
+          ${
+            this.mountDeployWizard
+              ? html`<preloop-deploy-wizard
+                  .aiModels=${this.aiModels}
+                  .modelsFromHost=${true}
+                  .computeFeatureEnabled=${this.computeFeatureEnabled}
+                  .isEnterprise=${this.isEnterprise}
+                  .isAdmin=${this.isAdmin}
+                  hide-cancel
+                  @deploy-agent-success=${this.handleDeployAgentSuccess}
+                  @deploy-flow-success=${this.handleDeployFlowSuccess}
+                  @deploy-wizard-done=${this.handleDeployWizardDone}
+                ></preloop-deploy-wizard>`
+              : nothing
+          }
         </div>
       </div>
     `;
@@ -3817,7 +3826,7 @@ export class DashboardView extends AuthedElement {
   }
 
   render() {
-    if (!this.isOnboarded && !this.welcomeCardDismissed) {
+    if (this.showWelcomeCard) {
       return html`
         <div
           class="extra-wide"

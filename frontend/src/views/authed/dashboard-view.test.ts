@@ -1708,6 +1708,13 @@ describe('DashboardView', () => {
         'cold load never finished'
       );
 
+      // Same filter the report quotes next to the 30 from code reading.
+      // Child widgets own: activity-feed /audit-logs and /users (the
+      // feed also falls back after HOST_USERS_WAIT_MS), invite-dialog
+      // /teams /roles. The 30 includes three page audit-logs this
+      // filter drops, so the measured set is 27. /ai-models is the
+      // Inventory list once; preloop-deploy-wizard does not mount on
+      // an onboarded account.
       const pageUrls = fetchStub
         .getCalls()
         .map((call) => String(call.args[0]))
@@ -1715,11 +1722,10 @@ describe('DashboardView', () => {
           (url) =>
             !url.startsWith('/api/v1/audit-logs') &&
             !url.startsWith('/api/v1/teams') &&
-            !url.startsWith('/api/v1/roles')
+            !url.startsWith('/api/v1/roles') &&
+            !url.startsWith('/api/v1/users')
         );
-      // Same unique page URLs as d66122c3 (30), plus none. The identity
-      // lists moved earlier; they did not multiply.
-      expect(pageUrls.length, pageUrls.join('\n')).to.be.at.most(30);
+      expect(pageUrls.length, pageUrls.join('\n')).to.equal(27);
       expect(pageUrls.filter((url) => url === '/api/v1/flows').length).to.equal(
         1
       );
@@ -1728,7 +1734,7 @@ describe('DashboardView', () => {
       );
       expect(
         pageUrls.filter((url) => url === '/api/v1/ai-models').length
-      ).to.be.at.least(1);
+      ).to.equal(1);
       expect(
         pageUrls.filter((url) => url.startsWith('/api/v1/ai-models/overview'))
           .length
@@ -1736,6 +1742,31 @@ describe('DashboardView', () => {
       expect(
         pageUrls.filter((url) => url.startsWith('/api/v1/agents')).length
       ).to.equal(1);
+      expect(
+        element.shadowRoot?.querySelector('preloop-deploy-wizard'),
+        'wizard stays unmounted on an onboarded account'
+      ).to.not.exist;
+    });
+
+    it('does not clear inventory list flags when the fold fails', async () => {
+      let releaseModels = () => {};
+      aiModelsGate = new Promise<void>((resolve) => {
+        releaseModels = resolve;
+      });
+      const proto = customElements.get('dashboard-view')!
+        .prototype as unknown as Record<string, unknown>;
+      const apply = sinon
+        .stub(proto, 'applyAgentsList')
+        .throws(new Error('fold boom'));
+      try {
+        const element = await mountDashboard();
+        await waitUntil(() => element['error'] != null, 'fold never failed');
+        expect(element['fetchingModels'], 'models list still in flight').to.be
+          .true;
+      } finally {
+        apply.restore();
+        releaseModels();
+      }
     });
 
     it('dims the usage numbers over a range change rather than blanking them', async () => {
@@ -2048,7 +2079,10 @@ describe('DashboardView', () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 300));
 
-      const urls = fetchStub.getCalls().map((call) => String(call.args[0]));
+      const urls = fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((url) => !url.startsWith('/api/v1/users'));
       expect(urls.length, urls.join('\n')).to.be.at.most(4);
       expect(urls.some((url) => url.startsWith('/api/v1/flows'))).to.be.false;
       expect(urls.some((url) => url.includes('include_breakdown=true'))).to.be

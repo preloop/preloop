@@ -199,6 +199,18 @@ describe('PreloopDeployWizard custom agent path', () => {
     return el;
   }
 
+  it('does not fetch /ai-models when the host already owns that list', async () => {
+    await fixture(
+      html`<preloop-deploy-wizard
+        ?modelsFromHost=${true}
+      ></preloop-deploy-wizard>`
+    );
+    const modelCalls = fetchStub
+      .getCalls()
+      .filter((call) => String(call.args[0]).includes('/api/v1/ai-models'));
+    expect(modelCalls).to.eql([]);
+  });
+
   function findCardByText(
     el: PreloopDeployWizard,
     text: string
