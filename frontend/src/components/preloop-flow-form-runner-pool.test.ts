@@ -5,6 +5,8 @@ import {
   html,
   oneEvent,
 } from '@open-wc/testing';
+import type SlInput from '@shoelace-style/shoelace/dist/components/input/input.js';
+import type SlSelect from '@shoelace-style/shoelace/dist/components/select/select.js';
 import sinon, { SinonSandbox } from 'sinon';
 import './preloop-flow-form.ts';
 import type { PreloopFlowForm } from './preloop-flow-form';
@@ -119,9 +121,7 @@ describe('PreloopFlowForm runner pool behaviour', () => {
       'Next run: a private runner (office-mac online). Falls back to Preloop hosted when none is free.'
     );
 
-    const select = control?.shadowRoot?.querySelector(
-      'sl-select'
-    ) as HTMLSelectElement;
+    const select = control?.shadowRoot?.querySelector('sl-select') as SlSelect;
     expect(select).to.exist;
     select.value = 'office-mac';
     select.dispatchEvent(new CustomEvent('sl-change'));
@@ -144,9 +144,7 @@ describe('PreloopFlowForm runner pool behaviour', () => {
       'Next run: Preloop hosted.'
     );
 
-    const custom = control?.shadowRoot?.querySelector(
-      'sl-input'
-    ) as HTMLInputElement;
+    const custom = control?.shadowRoot?.querySelector('sl-input') as SlInput;
     custom.value = 'gpu';
     custom.dispatchEvent(new CustomEvent('sl-input'));
     await element.updateComplete;

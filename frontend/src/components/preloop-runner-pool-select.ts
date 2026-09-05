@@ -5,10 +5,14 @@ import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
+import type SlDetails from '@shoelace-style/shoelace/dist/components/details/details.js';
+import type SlInput from '@shoelace-style/shoelace/dist/components/input/input.js';
+import type SlSelect from '@shoelace-style/shoelace/dist/components/select/select.js';
 import {
   AUTO_RUNNER_POOL,
   buildRunnerPoolGroups,
   describeNextRunnerPool,
+  isSelectableToken,
   type RunnerPoolSource,
 } from '../utils/runner-pool';
 import consoleStyles from '../styles/console-styles.css?inline';
@@ -85,34 +89,46 @@ export class PreloopRunnerPoolSelect extends LitElement {
   disabled = false;
 
   @state()
-  private localValue: string | null = null;
-
-  @state()
   private customDraft = '';
+
+  private customDraftFromUser = false;
 
   protected willUpdate(
     changedProperties: Map<string | number | symbol, unknown>
   ): void {
-    if (changedProperties.has('value')) {
-      this.localValue = this.value;
-      const current = (this.value || '').trim();
-      const known = new Set(
-        this.groupsFor(current).flatMap((group) =>
-          group.options
-            .filter((option) => !option.label.endsWith('(not registered)'))
-            .map((option) => option.value)
-        )
-      );
-      if (!current || known.has(current)) {
-        this.customDraft = '';
-      } else if (!this.customDraft) {
-        this.customDraft = current;
-      }
+    if (!changedProperties.has('value') || this.customDraftFromUser) {
+      return;
+    }
+    const current = (this.value || '').trim();
+    const known = new Set(
+      this.groupsFor(current).flatMap((group) =>
+        group.options
+          .filter((option) => !option.label.endsWith('(not registered)'))
+          .map((option) => option.value)
+      )
+    );
+    if (!current || known.has(current)) {
+      this.customDraft = '';
+    } else if (!this.customDraft) {
+      this.customDraft = current;
     }
   }
 
-  private effectiveValue(): string | null {
-    return this.localValue !== null ? this.localValue : this.value;
+  protected updated(
+    changedProperties: Map<string | number | symbol, unknown>
+  ): void {
+    if (!changedProperties.has('value') || this.customDraftFromUser) {
+      return;
+    }
+    const current = (this.value || '').trim();
+    if (this.customDraft && !isSelectableToken(current)) {
+      const details = this.renderRoot.querySelector(
+        'sl-details'
+      ) as SlDetails | null;
+      if (details) {
+        details.open = true;
+      }
+    }
   }
 
   private groupsFor(current: string | null) {
@@ -126,7 +142,7 @@ export class PreloopRunnerPoolSelect extends LitElement {
   }
 
   private selectValue(): string {
-    const current = (this.effectiveValue() || '').trim();
+    const current = (this.value || '').trim();
     if (this.context === 'account') {
       return current || AUTO_RUNNER_POOL;
     }
@@ -134,7 +150,6 @@ export class PreloopRunnerPoolSelect extends LitElement {
   }
 
   private emitValue(value: string | null): void {
-    this.localValue = value;
     this.dispatchEvent(
       new CustomEvent('pool-change', {
         detail: { value },
@@ -145,14 +160,19 @@ export class PreloopRunnerPoolSelect extends LitElement {
   }
 
   private handleSelect(event: Event): void {
-    const target = event.target as HTMLSelectElement;
-    const value = (target.value || '').trim();
+    const target = event.target as SlSelect;
+    const raw = Array.isArray(target.value)
+      ? target.value[0] || ''
+      : target.value || '';
+    const value = raw.trim();
+    this.customDraftFromUser = false;
     this.customDraft = '';
     this.emitValue(value || null);
   }
 
   private handleCustom(event: Event): void {
-    const target = event.target as HTMLInputElement;
+    const target = event.target as SlInput;
+    this.customDraftFromUser = true;
     this.customDraft = target.value;
     const value = (target.value || '').trim();
     this.emitValue(value || null);
@@ -160,7 +180,7 @@ export class PreloopRunnerPoolSelect extends LitElement {
 
   private hintText(): string {
     if (this.context === 'account') {
-      const pool = (this.effectiveValue() || '').trim() || AUTO_RUNNER_POOL;
+      const pool = (this.value || '').trim() || AUTO_RUNNER_POOL;
       return describeNextRunnerPool({
         flowPool: pool,
         accountPool: pool,
@@ -169,7 +189,7 @@ export class PreloopRunnerPoolSelect extends LitElement {
       });
     }
     return describeNextRunnerPool({
-      flowPool: this.effectiveValue(),
+      flowPool: this.value,
       accountPool: this.accountPool,
       runners: this.runners,
       hostedMinutesLeft: this.hostedMinutesLeft,
@@ -177,7 +197,7 @@ export class PreloopRunnerPoolSelect extends LitElement {
   }
 
   render() {
-    const current = this.effectiveValue();
+    const current = this.value;
     const groups = this.groupsFor(current);
     return html`
       <sl-select
@@ -210,6 +230,7 @@ export class PreloopRunnerPoolSelect extends LitElement {
       </sl-select>
       <sl-details summary="Type a label or runner id">
         <sl-input
+          label="Label or runner id"
           placeholder="gpu"
           .value=${this.customDraft}
           ?disabled=${this.disabled}

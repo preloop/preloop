@@ -10,7 +10,6 @@ import {
   HOSTED_ONLY_LABEL,
   SERVER_RUNNER_POOL,
   buildRunnerPoolGroups,
-  buildRunnerPoolOptions,
   describeNextRunnerPool,
   isSelectableToken,
   resolveAccountPoolLabel,
@@ -60,7 +59,6 @@ describe('runner-pool options', () => {
     });
     expect(flattenValues(groups)).to.not.include(AUTO_RUNNER_POOL);
     expect(flattenLabels(groups)).to.not.include(FLOW_AUTO_OVERRIDE_LABEL);
-    expect(buildRunnerPoolOptions([OFFICE])[0]).to.deep.equal(first);
   });
 
   it('flow context, account default server: inherit hosted and offer explicit auto', () => {
@@ -158,6 +156,19 @@ describe('runner-pool options', () => {
       value: 'legacy-pin',
       label: 'legacy-pin (not registered)',
     });
+  });
+
+  it('skips the not registered row when the current value has whitespace', () => {
+    const groups = buildRunnerPoolGroups({
+      runners: [OFFICE],
+      context: 'flow',
+      current: 'office gpu',
+    });
+    const labels = flattenLabels(groups);
+    expect(labels.some((label) => label.includes('(not registered)'))).to.equal(
+      false
+    );
+    expect(flattenValues(groups)).to.not.include('office gpu');
   });
 
   it('disables the hosted row when hosted minutes are exhausted', () => {
@@ -275,7 +286,20 @@ describe('runner-pool next-run hint', () => {
       'Next run: Preloop hosted. (account default) Hosted minutes left: 340.'
     );
     expect(hints[1]).to.equal(
-      'Next run: a private runner (lab-1, office-mac online). No hosted minutes left, so the run queues if none is free. Hosted minutes left: 0.'
+      'Next run: a private runner (lab-1, office-mac online). No hosted minutes left, so the run queues if none is free.'
+    );
+  });
+
+  it('does not restate hosted minutes left when the exhausted clause is already present', () => {
+    expect(
+      describeNextRunnerPool({
+        flowPool: 'auto',
+        accountPool: null,
+        runners: [OFFICE, LAB],
+        hostedMinutesLeft: 0,
+      })
+    ).to.equal(
+      'Next run: a private runner (lab-1, office-mac online). No hosted minutes left, so the run queues if none is free.'
     );
   });
 });

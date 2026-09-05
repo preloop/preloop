@@ -261,27 +261,17 @@ export function buildRunnerPoolGroups(
   }
 
   const current = normalizedPool(args.current);
-  if (current && !isKnownCurrent(current, optionValues(groups))) {
+  if (
+    current &&
+    isSelectableToken(current) &&
+    !isKnownCurrent(current, optionValues(groups))
+  ) {
     groups.push({
       options: [{ value: current, label: `${current} (not registered)` }],
     });
   }
 
   return groups;
-}
-
-export function buildRunnerPoolOptions(
-  runners: RunnerPoolSource[],
-  extras?: Omit<BuildRunnerPoolGroupsArgs, 'runners'>
-): RunnerPoolOption[] {
-  const groups = buildRunnerPoolGroups({
-    runners,
-    context: extras?.context ?? 'flow',
-    accountPool: extras?.accountPool,
-    current: extras?.current,
-    hostedMinutesLeft: extras?.hostedMinutesLeft,
-  });
-  return groups.flatMap((group) => group.options);
 }
 
 function onlinePrivateNames(runners: RunnerPoolSource[]): string[] {
@@ -320,6 +310,12 @@ function withHostedMinutes(
   hostedCapable?: boolean
 ): string {
   if (!hostedCapable || typeof hostedMinutesLeft !== 'number') {
+    return text;
+  }
+  if (
+    hostedMinutesLeft === 0 &&
+    text.includes('No hosted minutes left, so the run queues if none is free.')
+  ) {
     return text;
   }
   return `${text} Hosted minutes left: ${hostedMinutesLeft}.`;

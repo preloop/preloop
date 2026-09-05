@@ -224,6 +224,8 @@ export class RunnersView extends LitElement {
   ) {
     const raw = (event.detail?.value || '').trim();
     const next = !raw || raw === AUTO_RUNNER_POOL ? null : raw;
+    const previous = this.defaultRunnerPool;
+    this.defaultRunnerPool = next;
     this.savingDefault = true;
     this.defaultError = null;
     try {
@@ -232,6 +234,7 @@ export class RunnersView extends LitElement {
       });
       this.defaultRunnerPool = updated.default_runner_pool ?? null;
     } catch (err) {
+      this.defaultRunnerPool = previous;
       this.defaultError =
         err instanceof Error ? err.message : 'Failed to save default runner';
     } finally {
