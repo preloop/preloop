@@ -106,7 +106,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pr_title` / `pr_body` from `/workspace/result.json` when the agent
   writes them, interpolates git-config placeholders (GitHub `issue.*`
   aliases GitLab `object_attributes.*`), names new branches
-  `preloop/issue-{n}-{exec[:8]}`, and logs the HTTP status.
+  `preloop/issue-{n}-{exec[:8]}`, logs the HTTP status, and restores the
+  non-custom fallback body (flow execution link, plus a `**Commits:**`
+  list on multi-commit pushes).
 - **Cursor permission hook raised two approvals per shell command**:
   `preloop agents onboard Cursor --approvals` installs the same hook for
   `beforeShellExecution`, `beforeMCPExecution`, and `preToolUse`, and

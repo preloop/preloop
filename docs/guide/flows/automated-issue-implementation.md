@@ -87,8 +87,9 @@ faked.
 
 The flow opens the pull request after the agent exits. When `pr_title` and
 `pr_body` are present it uses those; otherwise it uses interpolated
-`git_clone_config.pull_request_title` / `pull_request_description`, then the
-commit subject and body. New branches are named
+`git_clone_config.pull_request_title` / `pull_request_description`, then a
+flow-attribution fallback (execution link, and a `**Commits:**` list when
+more than one commit landed). New branches are named
 `preloop/issue-{number}-{execution[:8]}` when the trigger carries an issue
 number.
 

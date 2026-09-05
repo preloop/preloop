@@ -104,6 +104,7 @@ FLOW_PR_TITLE_FILE = "/tmp/preloop-flow-pr-title.txt"
 FLOW_PR_BODY_FILE = "/tmp/preloop-flow-pr-body.txt"
 COMMIT_PR_TITLE_FILE = "/tmp/preloop-commit-pr-title.txt"
 COMMIT_PR_BODY_FILE = "/tmp/preloop-commit-pr-body.txt"
+COMMIT_PR_LIST_FILE = "/tmp/preloop-commit-pr-list.txt"
 
 # GitHub issue webhooks store title/number under ``issue.*``. The
 # automated-issue-implementation preset templates use GitLab's
@@ -118,7 +119,9 @@ _GIT_CONFIG_PATH_ALIASES = {
 
 # Builds the GitHub/GitLab create payload in the container so title and body
 # can contain quotes and newlines. Reads, in order: result.json (agent),
-# flow-configured title/body, then the commit subject/body.
+# flow-configured title/body, then the commit subject/body (with a flow
+# execution link, and a **Commits:** list when the push is more than one
+# commit).
 WRITE_PR_PAYLOAD_PY = r"""
 import json
 import pathlib
@@ -126,6 +129,12 @@ import sys
 
 out_path, head, base, kind = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 issue_number = sys.argv[5] if len(sys.argv) > 5 else ""
+flow_name = sys.argv[6] if len(sys.argv) > 6 else ""
+execution_link = sys.argv[7] if len(sys.argv) > 7 else ""
+try:
+    commit_count = int(sys.argv[8]) if len(sys.argv) > 8 and sys.argv[8] else 0
+except ValueError:
+    commit_count = 0
 
 
 def _read(path):
@@ -172,17 +181,43 @@ def _from_result():
     return title, body
 
 
+def _attribution():
+    if flow_name and execution_link:
+        return f"Automated changes from Preloop flow: [{flow_name}]({execution_link})"
+    if flow_name:
+        return f"Automated changes from Preloop flow: {flow_name}"
+    if execution_link:
+        return f"Automated changes from Preloop flow: {execution_link}"
+    return ""
+
+
+def _commit_fallback_title():
+    if commit_count > 1 and flow_name:
+        return f"[Preloop] {flow_name}"
+    return _read("/tmp/preloop-commit-pr-title.txt")
+
+
+def _commit_fallback_body():
+    attr = _attribution()
+    if commit_count > 1:
+        commit_list = _read("/tmp/preloop-commit-pr-list.txt")
+        listed = f"**Commits:**\n{commit_list}" if commit_list else ""
+        return "\n\n".join(p for p in (attr, listed) if p)
+    commit_body = _read("/tmp/preloop-commit-pr-body.txt")
+    return "\n\n".join(p for p in (attr, commit_body) if p)
+
+
 result_title, result_body = _from_result()
 title = (
     result_title
     or _read("/tmp/preloop-flow-pr-title.txt")
-    or _read("/tmp/preloop-commit-pr-title.txt")
+    or _commit_fallback_title()
     or "Automated changes"
 )
 body = (
     result_body
     or _read("/tmp/preloop-flow-pr-body.txt")
-    or _read("/tmp/preloop-commit-pr-body.txt")
+    or _commit_fallback_body()
 )
 if issue_number and f"#{issue_number}" not in body:
     body = (body + "\n\n" if body else "") + f"Closes #{issue_number}"
@@ -316,10 +351,28 @@ def interpolate_git_config_text(
 
 
 def build_write_pr_payload_shell(
-    *, head: str, base: str, kind: str, issue_number: str = ""
+    *,
+    head: str,
+    base: str,
+    kind: str,
+    issue_number: str = "",
+    flow_name: str = "",
+    execution_link: str = "",
 ) -> str:
     """Shell that JSON-encodes the create-PR/MR body from files + result.json."""
 
+    argv = " ".join(
+        [
+            PR_PAYLOAD_FILE,
+            shlex.quote(head),
+            shlex.quote(base),
+            shlex.quote(kind),
+            shlex.quote(issue_number),
+            shlex.quote(flow_name),
+            shlex.quote(execution_link),
+            '"$COMMIT_COUNT"',
+        ]
+    )
     return f"""
     if command -v python3 >/dev/null 2>&1; then
       PRELOOP_PR_PY=python3
@@ -331,7 +384,7 @@ def build_write_pr_payload_shell(
     if [ -z "$PRELOOP_PR_PY" ]; then
       echo "Cannot encode PR payload: python3 is required in the agent image"
     else
-      $PRELOOP_PR_PY - {PR_PAYLOAD_FILE} {shlex.quote(head)} {shlex.quote(base)} {shlex.quote(kind)} {shlex.quote(issue_number)} <<'PRELOOP_PR_PY'
+      $PRELOOP_PR_PY - {argv} <<'PRELOOP_PR_PY'
 {WRITE_PR_PAYLOAD_PY}
 PRELOOP_PR_PY
     fi
@@ -350,7 +403,7 @@ def build_flow_pr_text_files_shell(*, title: str, body: str) -> str:
 
 
 def build_commit_pr_text_files_shell(*, source_branch: str) -> str:
-    """Capture the commit subject/body for the PR fallback title and body."""
+    """Capture the commit subject/body/list for the PR fallback title and body."""
 
     safe_source = _validated_git_ref(source_branch) or "main"
     return f"""
@@ -362,6 +415,9 @@ def build_commit_pr_text_files_shell(*, source_branch: str) -> str:
       || git log -1 --format=%b {safe_source}..HEAD > {COMMIT_PR_BODY_FILE} 2>/dev/null \\
       || git log -1 --format=%b > {COMMIT_PR_BODY_FILE} 2>/dev/null \\
       || : > {COMMIT_PR_BODY_FILE}
+    git log --format="- %s" origin/{safe_source}..HEAD > {COMMIT_PR_LIST_FILE} 2>/dev/null \\
+      || git log --format="- %s" {safe_source}..HEAD > {COMMIT_PR_LIST_FILE} 2>/dev/null \\
+      || : > {COMMIT_PR_LIST_FILE}
 """
 
 
@@ -3672,6 +3728,14 @@ true
             git_config.get("pull_request_description"), trigger_data
         )
         issue_number = extract_issue_number_from_trigger(trigger_data) or ""
+        flow_name = execution_context.get("flow_name") or "Automated changes"
+        preloop_url = os.getenv("PRELOOP_URL", "http://localhost:8000").rstrip("/")
+        execution_id = str(execution_context.get("execution_id") or "")
+        execution_link = (
+            f"{preloop_url}/console/flows/executions/{execution_id}"
+            if execution_id
+            else ""
+        )
 
         prepare = (
             build_flow_pr_text_files_shell(title=flow_title, body=flow_body)
@@ -3681,6 +3745,8 @@ true
                 base=safe_source,
                 kind=effective_type,
                 issue_number=issue_number,
+                flow_name=flow_name,
+                execution_link=execution_link,
             )
         )
         if effective_type == "github":
