@@ -11,10 +11,29 @@ export interface ToolWithRules extends Tool {
   access_rules?: AccessRuleSummary[];
 }
 
+export const NATIVE_ADAPTERS: ReadonlyArray<{
+  value: string;
+  label: string;
+}> = [
+  { value: 'claude-code', label: 'Claude Code' },
+  { value: 'codex-cli', label: 'Codex CLI' },
+  { value: 'cursor', label: 'Cursor' },
+  { value: 'openclaw', label: 'OpenClaw' },
+  { value: 'hermes', label: 'Hermes' },
+];
+
+export const NATIVE_ADAPTER_LABELS = NATIVE_ADAPTERS.map(
+  (adapter) => adapter.label
+);
+
+export const SEEN_FROM_AGENTS_LABEL = 'Seen from agents';
+
+export type ToolsEditorFamily = 'mcp' | 'native';
+
 interface ToolGroup {
   id: string;
   name: string;
-  type: 'builtin' | 'mcp' | 'http';
+  type: 'builtin' | 'mcp' | 'http' | 'agent';
   server?: any;
   tools: ToolWithRules[];
   collapsed: boolean;
@@ -36,6 +55,7 @@ export class ToolsEditorComponent extends LitElement {
   @property({ type: String }) mode: 'global' | 'scoped' = 'global';
   @property({ type: Boolean }) hasDefaultAIModel: boolean = false;
   @property({ type: Boolean }) collapseByDefault: boolean = false;
+  @property({ type: String }) family: ToolsEditorFamily = 'mcp';
   @property({ type: Object }) toolStats: Record<string, GatewayUsageByTool> =
     {};
 
@@ -72,6 +92,10 @@ export class ToolsEditorComponent extends LitElement {
       for (const server of this.mcpServers) groupsToCollapse.add(server.id);
       groupsToCollapse.add('builtin');
       groupsToCollapse.add('http');
+      for (const adapter of NATIVE_ADAPTER_LABELS) {
+        groupsToCollapse.add(`agent:${adapter}`);
+      }
+      groupsToCollapse.add(`agent:${SEEN_FROM_AGENTS_LABEL}`);
       this.collapsedGroups = groupsToCollapse;
       try {
         sessionStorage.setItem(
@@ -160,8 +184,15 @@ export class ToolsEditorComponent extends LitElement {
   }
 
   private _getToolGroups(): ToolGroup[] {
+    if (this.family === 'native') {
+      return this._getNativeToolGroups();
+    }
+    return this._getMcpToolGroups();
+  }
+
+  private _getMcpToolGroups(): ToolGroup[] {
     const groups: ToolGroup[] = [];
-    const tools = this.tools;
+    const tools = this.tools.filter((t) => t.source !== 'agent');
 
     for (const server of this.mcpServers) {
       const serverTools = tools.filter(
@@ -200,6 +231,65 @@ export class ToolsEditorComponent extends LitElement {
           collapsed: this.collapsedGroups.has('builtin'),
         });
       }
+    }
+
+    return groups;
+  }
+
+  private _adapterGroupName(adapter: string | undefined): string {
+    const name = (adapter || '').trim();
+    return name || SEEN_FROM_AGENTS_LABEL;
+  }
+
+  private _getNativeToolGroups(): ToolGroup[] {
+    const groups: ToolGroup[] = [];
+    const tools = this.tools.filter((t) => t.source === 'agent');
+    const byAdapter = new Map<string, ToolWithRules[]>();
+
+    for (const tool of tools) {
+      const adapters =
+        tool.adapters && tool.adapters.length > 0
+          ? tool.adapters
+          : [SEEN_FROM_AGENTS_LABEL];
+      const seen = new Set<string>();
+      for (const adapter of adapters) {
+        const name = this._adapterGroupName(adapter);
+        if (seen.has(name)) {
+          continue;
+        }
+        seen.add(name);
+        const list = byAdapter.get(name) || [];
+        list.push(tool);
+        byAdapter.set(name, list);
+      }
+    }
+
+    const extraNames = [...byAdapter.keys()]
+      .filter(
+        (name) =>
+          !(NATIVE_ADAPTER_LABELS as readonly string[]).includes(name) &&
+          name !== SEEN_FROM_AGENTS_LABEL
+      )
+      .sort((a, b) => a.localeCompare(b));
+    const order = [
+      ...NATIVE_ADAPTER_LABELS,
+      ...extraNames,
+      SEEN_FROM_AGENTS_LABEL,
+    ];
+
+    for (const name of order) {
+      const adapterTools = byAdapter.get(name);
+      if (!adapterTools || adapterTools.length === 0) {
+        continue;
+      }
+      const id = `agent:${name}`;
+      groups.push({
+        id,
+        name,
+        type: 'agent',
+        tools: adapterTools,
+        collapsed: this.collapsedGroups.has(id),
+      });
     }
 
     return groups;
@@ -257,7 +347,11 @@ export class ToolsEditorComponent extends LitElement {
           ></sl-icon>
           <span class="section-title">${group.name}</span>
           <span class="section-meta">
-            ${enabledCount}/${totalCount} enabled
+            ${
+              group.type === 'agent'
+                ? `${enabledCount}/${totalCount}`
+                : `${enabledCount}/${totalCount} enabled`
+            }
           </span>
           <div class="section-line"></div>
           ${
@@ -414,9 +508,13 @@ export class ToolsEditorComponent extends LitElement {
                 style="padding: 2rem; text-align: center; color: var(--sl-color-neutral-400);"
               >
                 ${
-                  this.mode === 'global'
-                    ? 'No tools found. Add an MCP server to get started.'
-                    : 'No managed tools found for this scope.'
+                  this.family === 'native'
+                    ? this.filterText
+                      ? 'No native tools matching filter.'
+                      : 'No native tools found.'
+                    : this.mode === 'global'
+                      ? 'No tools found. Add an MCP server to get started.'
+                      : 'No managed tools found for this scope.'
                 }
               </div>`
             : repeat(
