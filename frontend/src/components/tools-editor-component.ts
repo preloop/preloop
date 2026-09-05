@@ -69,6 +69,12 @@ export class ToolsEditorComponent extends LitElement {
   @property({ type: Boolean }) hasDefaultAIModel: boolean = false;
   @property({ type: Boolean }) collapseByDefault: boolean = false;
   @property({ type: String }) family: ToolsEditorFamily = 'mcp';
+  /**
+   * Account default for native tool calls, stated on every native row.
+   * `null` while unread or after a load failure — rows must not claim
+   * "allowed" until this is a boolean.
+   */
+  @property({ attribute: false }) accountAsksByDefault: boolean | null = null;
   @property({ type: Object }) toolStats: Record<string, GatewayUsageByTool> =
     {};
 
@@ -491,6 +497,9 @@ export class ToolsEditorComponent extends LitElement {
                                 .usageStat=${this.toolStats[tool.name] || null}
                                 .accessRules=${rules}
                                 .rulesInherited=${rulesInherited}
+                                .accountAsksByDefault=${
+                                  this.accountAsksByDefault
+                                }
                                 .policies=${this.approvalPolicies}
                                 .features=${this.features}
                                 .expanded=${this.expandedTools.has(

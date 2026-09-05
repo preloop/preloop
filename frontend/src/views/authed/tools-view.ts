@@ -224,11 +224,13 @@ export class ToolsView extends LitElement {
         color: var(--sl-color-primary-700);
       }
 
-      .context-tax {
+      /* Meta note at the end of a summary strip (token cost on MCP, the
+         account default on Native). */
+      .strip-note {
         color: var(--console-meta-color, var(--sl-color-neutral-600));
       }
 
-      .context-tax strong {
+      .strip-note strong {
         font-variant-numeric: tabular-nums;
         color: var(--sl-color-neutral-900);
       }
@@ -774,6 +776,9 @@ export class ToolsView extends LitElement {
   ): boolean {
     if (rule === 'blocked') {
       return !tool.is_enabled;
+    }
+    if (rule === 'allowed') {
+      return tool.is_enabled;
     }
     return this._toolMatchesRuleFilter(tool, rule);
   }
@@ -1486,6 +1491,16 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     this.nativeFilters = { ...this.nativeFilters, ...patch };
   }
 
+  private _clearNativeFilters() {
+    this.nativeFilters = { ...EMPTY_NATIVE_FILTERS };
+  }
+
+  private _toggleSingleNativeFilter(value: string) {
+    const current = this.nativeFilters.rules;
+    const already = current.length === 1 && current[0] === value;
+    this._setNativeFilterValues({ rules: already ? [] : [value] });
+  }
+
   private _handleNativeSearchChange(event: CustomEvent<{ value: string }>) {
     this._setNativeFilterValues({ query: event.detail.value });
   }
@@ -1554,6 +1569,19 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     } finally {
       this.savingGovernanceDefaults = false;
     }
+  }
+
+  /**
+   * Account default for a native tool with no rule of its own.
+   * `true` asks a human, `false` runs without asking, `null` is unread or
+   * failed to load — the backend treats an unset default as enforce, so we
+   * must not claim "allowed" until this value is known.
+   */
+  private _nativeAsksByDefault(): boolean | null {
+    if (!this.governanceDefaults) {
+      return null;
+    }
+    return this.governanceDefaults.native_tool_approvals !== 'off';
   }
 
   private _defaultWorkflowLabel(): string {
@@ -1712,8 +1740,12 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     `;
   }
 
+  private _toolNoun(count: number): string {
+    return count === 1 ? 'tool' : 'tools';
+  }
+
   private _resultsLabel(shown: number, total: number): string {
-    const noun = total === 1 ? 'tool' : 'tools';
+    const noun = this._toolNoun(total);
     if (shown === total) {
       return `${shown} ${noun}`;
     }
@@ -1764,7 +1796,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
 
     return html`
       <div class="summary-strip">
-        ${this._renderStripCount(stats.total, 'tools', {
+        ${this._renderStripCount(stats.total, this._toolNoun(stats.total), {
           active: noFilters,
           onClick: () => this._clearFilters(),
         })}
@@ -1786,7 +1818,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         ${
           stats.contextTaxTokens > 0
             ? html`<span class="strip-sep" aria-hidden="true">·</span>
-                <span class="context-tax">
+                <span class="strip-note">
                   Enabled tools add
                   <strong
                     >~${stats.contextTaxTokens.toLocaleString()} tokens</strong
@@ -1955,6 +1987,67 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     `;
   }
 
+  private _getNativeStats() {
+    const all = this._nativeTools();
+    const blocked = all.filter((tool) => !tool.is_enabled);
+    const withRules = all.filter((tool) => this._toolHasRules(tool));
+    return {
+      total: all.length,
+      allowed: all.length - blocked.length,
+      blocked: blocked.length,
+      withRules: withRules.length,
+    };
+  }
+
+  /**
+   * The Native tab had no summary strip while MCP did, so the same page ran
+   * two toolbar patterns and never stated the account default in the list
+   * itself (B-T2).
+   */
+  private _renderNativeSummaryStrip() {
+    const stats = this._getNativeStats();
+    const rule = this.nativeFilters.rules[0] || '';
+    const noFilters =
+      this.nativeFilters.agents.length === 0 &&
+      this.nativeFilters.rules.length === 0 &&
+      !this.nativeFilters.query;
+    return html`
+      <div class="summary-strip native-summary-strip">
+        ${this._renderStripCount(stats.total, this._toolNoun(stats.total), {
+          active: noFilters,
+          onClick: () => this._clearNativeFilters(),
+        })}
+        <span class="strip-sep" aria-hidden="true">·</span>
+        ${this._renderStripCount(stats.allowed, 'allowed', {
+          active: rule === 'allowed',
+          onClick: () => this._toggleSingleNativeFilter('allowed'),
+        })}
+        <span class="strip-sep" aria-hidden="true">·</span>
+        ${this._renderStripCount(stats.blocked, 'blocked', {
+          active: rule === 'blocked',
+          onClick: () => this._toggleSingleNativeFilter('blocked'),
+        })}
+        <span class="strip-sep" aria-hidden="true">·</span>
+        ${this._renderStripCount(stats.withRules, 'with rules', {
+          active: rule === 'with_rules',
+          onClick: () => this._toggleSingleNativeFilter('with_rules'),
+        })}
+        ${
+          this.governanceDefaults
+            ? html`<span class="strip-sep" aria-hidden="true">·</span>
+                <span class="strip-note"
+                  >${
+                    this._nativeAsksByDefault() === true
+                      ? 'asks a human by default'
+                      : 'runs without asking by default'
+                  }</span
+                >`
+            : ''
+        }
+      </div>
+    `;
+  }
+
   private _renderNativeToolbar() {
     const filtered = this._getFilteredNativeTools();
     const total = this._nativeTools().length;
@@ -1995,6 +2088,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
             <sl-option value="with_rules">With rules</sl-option>
             <sl-option value="no_rules">No rules</sl-option>
             <sl-option value="require_approval">Requires approval</sl-option>
+            <sl-option value="allowed">Allowed</sl-option>
             <sl-option value="blocked">Blocked</sl-option>
           </sl-select>
           <span slot="count"
@@ -2010,6 +2104,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
       <tools-editor-component
         family="native"
         .tools=${this._getFilteredNativeTools()}
+        .accountAsksByDefault=${this._nativeAsksByDefault()}
         .approvalPolicies=${this.approvalPolicies}
         .features=${this.features}
         mode="global"
@@ -2040,7 +2135,8 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
                 Write calls will show up here.
               </p>
             `
-          : html`${this._renderNativeToolbar()} ${this._renderNativeEditor()}`
+          : html`${this._renderNativeSummaryStrip()}
+            ${this._renderNativeToolbar()} ${this._renderNativeEditor()}`
       }
     `;
   }
