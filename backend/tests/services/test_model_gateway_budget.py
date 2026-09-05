@@ -438,3 +438,157 @@ def test_account_without_allowlist_is_unaffected(db_session, test_user):
         result = service.preflight_check(ai_model, {**payload, "input": "hi"})
         assert result.hard_limit_exceeded is False
         assert result.enforcement_reason is None
+
+
+def test_allowlist_accepts_display_name_entry(db_session, test_user):
+    """The console stored display names; ``Kimi K3`` must govern its row."""
+    ai_model = _governed_model(
+        db_session,
+        test_user,
+        name="Kimi K3",
+        provider_name="moonshot",
+        model_identifier="kimi-k3",
+    )
+    api_key = _key_scoped_allowlist(db_session, test_user, ["GLM 5.3 Flash", "Kimi K3"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(
+        ai_model, {"model": "moonshot/kimi-k3", "input": "hi"}
+    )
+
+    assert result.hard_limit_exceeded is False
+    assert result.enforcement_reason is None
+
+
+def test_allowlist_display_name_match_is_case_insensitive_and_trimmed(
+    db_session, test_user
+):
+    """Hand-typed names differ in case and whitespace from the stored row."""
+    ai_model = _governed_model(db_session, test_user, name="Kimi K3")
+    api_key = _key_scoped_allowlist(db_session, test_user, ["  kimi k3 "])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(ai_model, {"model": "claude-opus-4-1"})
+
+    assert result.hard_limit_exceeded is False
+
+
+def test_allowlist_accepts_model_id_entry(db_session, test_user):
+    """The deploy wizard persists AIModel ids; those must govern too."""
+    ai_model = _governed_model(db_session, test_user)
+    api_key = _key_scoped_allowlist(db_session, test_user, [str(ai_model.id)])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(
+        ai_model, {"model": "anthropic/claude-opus-4-1", "input": "hi"}
+    )
+
+    assert result.hard_limit_exceeded is False
+
+
+def test_allowlist_accepts_configured_gateway_alias_entry(db_session, test_user):
+    """An explicit ``meta_data.gateway.model_alias`` is the preferred key."""
+    ai_model = _governed_model(
+        db_session,
+        test_user,
+        meta_data={
+            "gateway": {"enabled": True, "model_alias": "team/opus"},
+            "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
+        },
+    )
+    api_key = _key_scoped_allowlist(db_session, test_user, ["team/opus"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(ai_model, {"model": "team/opus", "input": "hi"})
+
+    assert result.hard_limit_exceeded is False
+
+
+def test_allowlist_unrelated_display_name_still_denies(db_session, test_user):
+    """Naming a different model by display name must not open the gate."""
+    ai_model = _governed_model(db_session, test_user, name="Governed Opus")
+    _governed_model(
+        db_session,
+        test_user,
+        name="Kimi K3",
+        provider_name="moonshot",
+        model_identifier="kimi-k3",
+    )
+    api_key = _key_scoped_allowlist(db_session, test_user, ["Kimi K3"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(
+        ai_model, {"model": "anthropic/claude-opus-4-1", "input": "hi"}
+    )
+
+    assert result.hard_limit_exceeded is True
+    assert result.enforcement_reason == "subject_model_not_allowed"
+    assert result.allowed_models == ["Kimi K3"]
+    assert result.requested_model == "anthropic/claude-opus-4-1"
+
+
+def test_allowlist_denial_names_alias_when_request_omits_model(db_session, test_user):
+    """Without a wire model the denial quotes the resolved gateway alias."""
+    ai_model = _governed_model(db_session, test_user)
+    api_key = _key_scoped_allowlist(db_session, test_user, ["Kimi K3"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(ai_model, {"input": "hi"})
+
+    assert result.hard_limit_exceeded is True
+    assert result.requested_model == "anthropic/claude-opus-4-1"
+
+
+def test_empty_allowlist_allows_every_model(db_session, test_user):
+    """An empty list is "unrestricted", not "nothing allowed"."""
+    ai_model = _governed_model(db_session, test_user)
+    api_key = _key_scoped_allowlist(db_session, test_user, [])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(
+        ai_model, {"model": "anthropic/claude-opus-4-1", "input": "hi"}
+    )
+
+    assert result.hard_limit_exceeded is False
+    assert result.enforcement_reason is None
+    assert result.allowed_models is None
+
+
+def test_display_name_of_a_sibling_row_does_not_cover_a_different_import(
+    db_session, test_user
+):
+    """``Kimi K3`` names the moonshot row only, not a separate openai-provider import.
+
+    This is the founder's prod shape: the OpenCode onboarding created a second
+    row ``moonshotai/kimi-k3`` next to the existing ``Kimi K3``
+    (``moonshot/kimi-k3``). Governance keys on rows, so the allowlist must be
+    extended (step 4 in the CLI offers that) or the request must pick the
+    listed row's alias.
+    """
+    _governed_model(
+        db_session,
+        test_user,
+        name="Kimi K3",
+        provider_name="moonshot",
+        model_identifier="kimi-k3",
+    )
+    opencode_import = _governed_model(
+        db_session,
+        test_user,
+        name="OpenCode moonshotai/kimi-k3",
+        provider_name="openai",
+        model_identifier="kimi-k3",
+        meta_data={
+            "gateway": {"enabled": True, "model_alias": "moonshotai/kimi-k3"},
+            "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
+        },
+    )
+    api_key = _key_scoped_allowlist(db_session, test_user, ["GLM 5.3 Flash", "Kimi K3"])
+    service = _governed_service(db_session, test_user, api_key)
+
+    result = service.preflight_check(
+        opencode_import, {"model": "moonshotai/kimi-k3", "input": "hi"}
+    )
+
+    assert result.hard_limit_exceeded is True
+    assert result.enforcement_reason == "subject_model_not_allowed"

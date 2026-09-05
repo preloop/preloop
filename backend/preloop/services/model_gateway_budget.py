@@ -20,6 +20,11 @@ from preloop.models.crud import (
 from preloop.models.crud.plan import subscription as crud_subscription
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.flow import Flow
+from preloop.services.model_allowlist import (
+    allowlist_permits_model,
+    normalize_allowed_models,
+    requested_model_label,
+)
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_pricing import estimate_ai_model_usage_cost
 from preloop.services.model_runtime_resolver import gateway_model_alias_candidates
@@ -85,6 +90,10 @@ class BudgetCheckResult:
     enforcement_reason: Optional[str]
     pricing_available: bool
     reset_at: Optional[datetime] = None
+    # Populated for ``subject_model_not_allowed`` so renderers can name the
+    # requested model and the allowlist that denied it.
+    requested_model: Optional[str] = None
+    allowed_models: Optional[list[str]] = None
 
 
 class ModelGatewayBudgetService:
@@ -120,9 +129,15 @@ class ModelGatewayBudgetService:
         trial_hosted_model_current_spend_usd = None
         trial_hosted_model_estimated_total_usd = None
         governed_model_spellings = self._governed_model_spellings(ai_model, payload)
+        denied_allowed_models: Optional[list[str]] = None
 
-        # 1. Check legacy allowed models for subject
-        scoped_allowed_models: list[set[str]] = []
+        # 1. Check subject allowed models. Every scope in the chain (API key,
+        # then managed agent) must permit the resolved model; an entry may be
+        # a gateway alias, an AIModel id, or an AIModel display name (the
+        # console persisted display names historically). Fail closed: an
+        # allowlist that names neither the resolved model nor any of its
+        # spellings denies the request, including the degenerate case where
+        # the request names no model at all.
         if account is not None:
             for subject_type, subject_id in subject_scope_chain(subject_context):
                 config = get_subject_governance(
@@ -130,24 +145,22 @@ class ModelGatewayBudgetService:
                     subject_type=subject_type,
                     subject_id=subject_id,
                 )
-                allowed_models = config.get("allowed_models")
-                if isinstance(allowed_models, list) and allowed_models:
-                    scoped_allowed_models.append(
-                        {
-                            str(item).strip()
-                            for item in allowed_models
-                            if str(item).strip()
-                        }
-                    )
-
-        if scoped_allowed_models:
-            allowed_model_set = set.intersection(*scoped_allowed_models)
-            # Fail closed: an allowlist that matches none of the resolved
-            # model's spellings denies the request, including the degenerate
-            # case where the request names no model at all.
-            if not governed_model_spellings & allowed_model_set:
-                hard_limit_exceeded = True
-                enforcement_reason = "subject_model_not_allowed"
+                allowed_models = normalize_allowed_models(
+                    config.get("allowed_models")
+                    if isinstance(config.get("allowed_models"), list)
+                    else None
+                )
+                if not allowed_models:
+                    continue
+                if not allowlist_permits_model(
+                    allowed_models,
+                    ai_model,
+                    requested_spellings=governed_model_spellings,
+                ):
+                    hard_limit_exceeded = True
+                    enforcement_reason = "subject_model_not_allowed"
+                    denied_allowed_models = allowed_models
+                    break
 
         # 2. Check trial mode limitation
         subscription = crud_subscription.get_active_for_account(
@@ -235,6 +248,8 @@ class ModelGatewayBudgetService:
             enforcement_reason=enforcement_reason,
             pricing_available=pricing_available,
             reset_at=reset_at,
+            requested_model=requested_model_label(ai_model, payload.get("model")),
+            allowed_models=denied_allowed_models,
         )
 
     def enforce_or_raise(
