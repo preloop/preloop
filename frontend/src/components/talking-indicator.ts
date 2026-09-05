@@ -71,9 +71,16 @@ export class TalkingIndicator extends LitElement {
       width: 7px;
     }
 
+    /* A phone header has little room, but a chip with the name hidden is an
+       empty grey pill that says nothing about which agent is talking. The
+       name stays and takes an ellipsis instead. */
     @media (max-width: 640px) {
+      .chip {
+        max-width: 7rem;
+      }
+
       .name {
-        display: none;
+        max-width: 5rem;
       }
     }
   `;
