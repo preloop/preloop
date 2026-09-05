@@ -48,7 +48,7 @@ export function unescapeCelString(value: string): string {
  * A double-star followed by a slash becomes a non-capturing optional
  * prefix that matches zero or more directories. A trailing double-star
  * becomes ".*". A single star becomes "[^/]*". A question mark becomes
- * ".". Other regex metacharacters are escaped. The result is wrapped
+ * "[^/]". Other regex metacharacters are escaped. The result is wrapped
  * with "(^|/)" and "$" so ".github/**" matches a path segment, not a
  * substring.
  */
@@ -70,7 +70,7 @@ export function globToAnchoredRegex(glob: string): string {
     if (ch === '*') {
       out += '[^/]*';
     } else if (ch === '?') {
-      out += '.';
+      out += '[^/]';
     } else if (/[.+^${}()|[\]\\]/.test(ch)) {
       out += '\\' + ch;
     } else {
@@ -649,13 +649,14 @@ export class ToolRuleEditor extends LitElement {
   private _globDescriptionFallback(): string | null {
     if (this._hasAdvancedConditions && !this._useCelEditor) {
       const globs = this._conditions
-        .filter((c) => c.operator === 'glob' && c.value)
+        .filter((c) => c.operator === 'glob' && c.field && c.value)
         .map((c) => `Path pattern: ${c.value}`);
       return globs.length ? globs.join(', ') : null;
     }
     if (
       !this._hasAdvancedConditions &&
       this._simpleOperator === 'glob' &&
+      this._simpleField &&
       this._simpleValue
     ) {
       return `Path pattern: ${this._simpleValue}`;
@@ -699,7 +700,45 @@ export class ToolRuleEditor extends LitElement {
     this._conditionOperator = this._conditionOperator === 'AND' ? 'OR' : 'AND';
   }
 
+  private _invalidPatternMessage(): string | null {
+    const rows: SimpleCondition[] =
+      this._hasAdvancedConditions && !this._useCelEditor
+        ? this._conditions
+        : [
+            {
+              field: this._simpleField,
+              operator: this._simpleOperator,
+              value: this._simpleValue,
+            },
+          ];
+    for (const row of rows) {
+      if (!row.field || !row.value) {
+        continue;
+      }
+      if (row.operator === 'matches') {
+        try {
+          new RegExp(row.value);
+        } catch {
+          return 'That regex does not compile.';
+        }
+      }
+      if (row.operator === 'glob') {
+        try {
+          new RegExp(globToAnchoredRegex(row.value));
+        } catch {
+          return 'That path pattern does not compile.';
+        }
+      }
+    }
+    return null;
+  }
+
   private _handleSave() {
+    const patternError = this._invalidPatternMessage();
+    if (patternError) {
+      this._error = patternError;
+      return;
+    }
     let conditionExpr: string | null = null;
 
     if (this._hasAdvancedConditions) {
