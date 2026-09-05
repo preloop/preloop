@@ -1196,7 +1196,6 @@ describe('DashboardView', () => {
     // every step looks undone, so a finished account used to watch the card
     // appear and vanish on every refresh.
     it('does not flash next steps while the page is still loading', async () => {
-      localStorage.setItem('dashboard_next_steps_all_done', 'true');
       const element = await mountDashboard();
 
       // Mid-load: agents, policies and tools have not answered yet.
@@ -1220,10 +1219,6 @@ describe('DashboardView', () => {
     });
 
     it('hides next steps while inventory lists are in flight, even for an unfinished account', async () => {
-      // Last visit said the checklist was still open. Empty arrays before
-      // the lists answer used to paint "Onboard an agent" over an account
-      // that already had one.
-      localStorage.setItem('dashboard_next_steps_all_done', 'false');
       let releaseTools = () => {};
       toolsGate = new Promise<void>((resolve) => {
         releaseTools = resolve;
@@ -1248,15 +1243,6 @@ describe('DashboardView', () => {
       // Fixture has an agent, budget policies and a gated tool: done.
       expect(element.shadowRoot?.querySelector('.next-steps-card')).to.not
         .exist;
-    });
-
-    it('remembers that the checklist is finished', async () => {
-      localStorage.removeItem('dashboard_next_steps_all_done');
-      await mountLoaded();
-
-      expect(localStorage.getItem('dashboard_next_steps_all_done')).to.equal(
-        'true'
-      );
     });
 
     it('lists the open steps for a new account, with the done ones ticked', async () => {

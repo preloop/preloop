@@ -91,6 +91,7 @@ async function card(
     loading: boolean;
     usageLoading: boolean;
     usageLoadingFlows: boolean;
+    usageLoadingFlowCost: boolean;
     usageLoadingModels: boolean;
     usageLoadingTools: boolean;
     flowRunsCapped: boolean;
@@ -113,6 +114,7 @@ async function card(
       .loading=${props.loading ?? false}
       .usageLoading=${props.usageLoading ?? false}
       .usageLoadingFlows=${props.usageLoadingFlows ?? null}
+      .usageLoadingFlowCost=${props.usageLoadingFlowCost ?? null}
       .usageLoadingModels=${props.usageLoadingModels ?? null}
       .usageLoadingTools=${props.usageLoadingTools ?? null}
       rangeLabel="30d"
@@ -357,6 +359,20 @@ describe('inventory-card', () => {
         ?.getAttribute('href')
     ).to.equal('/console/flows/executions?flow_id=flow-1');
     expect(sort.hasAttribute('disabled')).to.be.false;
+  });
+
+  it('fills Runs when executions land while $ still waits on the breakdown', async () => {
+    const el = await card({
+      usageLoadingFlows: false,
+      usageLoadingFlowCost: true,
+      flowRows: [flowRow({ runs: 12, failed: 1, cost: 0 })],
+    });
+    await showTab(el, 'flows');
+    const row = el.shadowRoot!.querySelector('tbody tr')!;
+    const runsCell = row.querySelector('td[data-label="Runs"]')!;
+    expect(runsCell.querySelector('a')).to.exist;
+    expect(runsCell.querySelector('sl-skeleton')).to.not.exist;
+    expect(row.querySelector('sl-skeleton'), 'cost still pending').to.exist;
   });
 
   it('names a model and a tool before their usage lands', async () => {

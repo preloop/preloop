@@ -294,6 +294,7 @@ export class InventoryCard extends LitElement {
    * as it did when every usage column waited on the same breakdown.
    */
   @property({ type: Boolean }) usageLoadingFlows: boolean | null = null;
+  @property({ type: Boolean }) usageLoadingFlowCost: boolean | null = null;
   @property({ type: Boolean }) usageLoadingModels: boolean | null = null;
   @property({ type: Boolean }) usageLoadingTools: boolean | null = null;
   /** The page range, already worded ("30d"), shown but not editable here. */
@@ -715,6 +716,16 @@ export class InventoryCard extends LitElement {
     return perTab === null || perTab === undefined ? this.usageLoading : perTab;
   }
 
+  private isFlowCostLoading(): boolean {
+    if (
+      this.usageLoadingFlowCost !== null &&
+      this.usageLoadingFlowCost !== undefined
+    ) {
+      return this.usageLoadingFlowCost;
+    }
+    return this.isUsageLoading('flows');
+  }
+
   private countFor(tab: InventoryTab): number {
     if (tab === 'agents') return this.agentsTotal;
     if (tab === 'flows') return this.flowsTotal;
@@ -813,6 +824,10 @@ export class InventoryCard extends LitElement {
       return rows;
     }
     const sort = this.sorts.flows;
+    if (sort === 'spend' && this.isFlowCostLoading()) {
+      rows.sort((a, b) => a.name.localeCompare(b.name));
+      return rows;
+    }
     if (sort === 'runs') {
       rows.sort((a, b) => b.runs - a.runs);
     } else if (sort === 'spend') {
@@ -870,7 +885,10 @@ export class InventoryCard extends LitElement {
 
   private renderHeader() {
     const options = SORT_OPTIONS[this.activeTab];
-    const sortHeld = this.isUsageLoading(this.activeTab);
+    const sortHeld =
+      this.activeTab === 'flows'
+        ? this.isUsageLoading('flows') || this.isFlowCostLoading()
+        : this.isUsageLoading(this.activeTab);
     return html`
       <div slot="header" class="card-head">
         <span class="title">Inventory</span>
@@ -1174,7 +1192,7 @@ export class InventoryCard extends LitElement {
                         <td class="num">
                           ${this.renderUsageCell(
                             this.formatCurrency(row.cost),
-                            this.isUsageLoading('flows')
+                            this.isFlowCostLoading()
                           )}
                         </td>
                       </tr>

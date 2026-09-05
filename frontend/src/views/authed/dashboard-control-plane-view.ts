@@ -244,15 +244,8 @@ interface TopModelSubjectGroup {
 export const NEXT_STEPS_DISMISSED_KEY = 'dashboard_next_steps_dismissed';
 
 /**
- * What the last completed load concluded about the checklist. The card is
- * derived from four separate fetches; before they land, every step looks
- * undone, which is how a finished account saw "Next steps" flash back on
- * every refresh. Remembering the answer means the page can stay quiet until
- * it knows better.
+ * The wire formats the model gateway speaks, as URL prefixes.
  */
-export const NEXT_STEPS_DONE_KEY = 'dashboard_next_steps_all_done';
-
-/** The wire formats the model gateway speaks, as URL prefixes. */
 type GatewayFormat = '/openai/v1' | '/anthropic/v1' | '/google/v1';
 
 interface NextStep {
@@ -1645,24 +1638,6 @@ export class DashboardView extends AuthedElement {
     );
   }
 
-  /** `null` when no load has ever finished on this browser. */
-  private readCoreStepsDone(): boolean | null {
-    try {
-      const stored = localStorage.getItem(NEXT_STEPS_DONE_KEY);
-      return stored === null ? null : stored === 'true';
-    } catch {
-      return null;
-    }
-  }
-
-  private rememberCoreStepsDone(done: boolean): void {
-    try {
-      localStorage.setItem(NEXT_STEPS_DONE_KEY, done ? 'true' : 'false');
-    } catch {
-      // Private mode: the card behaves as it did before, one refresh late.
-    }
-  }
-
   private dismissNextSteps(): void {
     this.nextStepsDismissed = true;
     try {
@@ -3002,14 +2977,13 @@ export class DashboardView extends AuthedElement {
     }
     // Empty arrays before the lists answer are not "the account has
     // nothing". Hide until agents, tools, budget and the flags resolve, then
-    // decide. A finished account stays finished because allDone writes the
-    // remember flag and the next load still waits for that resolve (D31).
+    // decide. A finished account stays finished because allDone hides the
+    // card after that resolve, without a localStorage flash guard (D31).
     if (!this.nextStepsInputsResolved) {
       return nothing;
     }
     const steps = this.nextSteps;
     const allDone = steps.every((step) => step.done || step.optional);
-    this.rememberCoreStepsDone(allDone);
     if (allDone) {
       return nothing;
     }
@@ -3762,14 +3736,11 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
-   * Flows usage is two requests: executions (runs / last / failed) and the
-   * breakdown (`usage_by_flow` for $). Either one still in flight, with
-   * nothing already on screen, keeps those cells as skeletons.
+   * Flows run/fail cells wait on executions. The $ cell waits on the
+   * breakdown, which is a slower sibling, so the two flags stay separate.
    */
   private get flowUsagePending(): boolean {
-    const runsPending =
-      this.fetchingFlowUsage && this.flowExecutions.length === 0;
-    return runsPending || this.usageColumnsPending;
+    return this.fetchingFlowUsage && this.flowExecutions.length === 0;
   }
 
   private get modelUsagePending(): boolean {
@@ -3804,6 +3775,7 @@ export class DashboardView extends AuthedElement {
         .loadingUsers=${this.fetchingUsers}
         ?usageLoading=${this.usageColumnsPending}
         .usageLoadingFlows=${this.flowUsagePending}
+        .usageLoadingFlowCost=${this.usageColumnsPending}
         .usageLoadingModels=${this.modelUsagePending}
         .usageLoadingTools=${this.usageColumnsPending}
       ></inventory-card>
