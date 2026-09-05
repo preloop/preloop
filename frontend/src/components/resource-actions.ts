@@ -7,6 +7,11 @@ import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import consoleStyles from '../styles/console-styles.css?inline';
+import {
+  LIST_TO_CARDS_BREAKPOINT,
+  subscribeNarrowViewport,
+  type NarrowViewportSubscription,
+} from '../utils/view-mode';
 
 export interface ResourceAction {
   id: string;
@@ -55,7 +60,10 @@ export class ResourceActions extends LitElement {
   collapseOverflow = true;
 
   @state() private containerWidth = 0;
+  /** True below 640px, where a separated button has no room beside the rest. */
+  @state() private narrowViewport = false;
   private resizeObserver!: ResizeObserver;
+  private narrowViewportSubscription?: NarrowViewportSubscription;
 
   @query('.actions-container') container!: HTMLElement;
   @query('.measure-container') measureContainer!: HTMLElement;
@@ -84,6 +92,12 @@ export class ResourceActions extends LitElement {
         gap: var(--sl-spacing-small);
         width: max-content;
       }
+      /* The host cell can be right-aligned (table action cells are), and the
+         menu inherits that through the slot, which parks every label far from
+         its icon. The menu sets its own alignment. */
+      sl-menu {
+        text-align: left;
+      }
       sl-menu-item::part(base) {
         display: flex;
         align-items: center;
@@ -104,6 +118,10 @@ export class ResourceActions extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
+    this.narrowViewportSubscription = subscribeNarrowViewport((narrow) => {
+      this.narrowViewport = narrow;
+    }, LIST_TO_CARDS_BREAKPOINT);
+    this.narrowViewport = this.narrowViewportSubscription.matches;
     this.resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         if (entry.target === this.container) {
@@ -126,6 +144,8 @@ export class ResourceActions extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this.resizeObserver.disconnect();
+    this.narrowViewportSubscription?.disconnect();
+    this.narrowViewportSubscription = undefined;
   }
 
   private getEffectiveActions(): ResourceAction[] {
@@ -218,43 +238,69 @@ export class ResourceActions extends LitElement {
       return html`<div class="actions-container"></div>`;
     }
 
+    // A separated action (Remove) is pushed away by `--sl-spacing-large`,
+    // which the width heuristic below never counted, so on a phone it was
+    // pushed straight out of the hidden overflow. Below 640px it moves into
+    // the menu instead; above it, its margin joins the measurement.
+    const SEPARATED_MARGIN = 20; // --sl-spacing-large (1.25rem)
+    const foldSeparated =
+      this.narrowViewport &&
+      !this.menuOnly &&
+      this.collapseOverflow &&
+      effectiveActions.length > 1 &&
+      effectiveActions.some((action) => action.separated);
+    const inlineActions = foldSeparated
+      ? effectiveActions.filter((action) => !action.separated)
+      : effectiveActions;
+    const foldedActions = foldSeparated
+      ? effectiveActions.filter((action) => action.separated)
+      : [];
+
     // Heuristics for fitting: a button is approx 120px on average. Gap is 12px (sl-spacing-small).
     // Dropdown toggle is ~40px.
     // If containerWidth is 0 (initial), render all or wait.
-    let visibleCount = effectiveActions.length;
+    let visibleCount = inlineActions.length;
     if (this.menuOnly) {
       visibleCount = 0;
     }
 
+    const separatedMargins =
+      inlineActions.filter((action) => action.separated).length *
+      SEPARATED_MARGIN;
+
     // We can do a rudimentary calculation based on container width.
     if (!this.menuOnly && this.collapseOverflow && this.containerWidth > 0) {
       // Let's assume average button width + gap is 120px
-      const estimatedTotalWidth = effectiveActions.length * 120;
+      const estimatedTotalWidth = inlineActions.length * 120 + separatedMargins;
 
       if (
         estimatedTotalWidth > this.containerWidth &&
-        effectiveActions.length > 1
+        inlineActions.length > 1
       ) {
         // Space reserved for overflow dropdown button (~50px)
-        const availableWidthForButtons = this.containerWidth - 50;
+        const availableWidthForButtons =
+          this.containerWidth - 50 - separatedMargins;
         visibleCount = Math.max(0, Math.floor(availableWidthForButtons / 120));
       }
     }
 
-    const overflowCount = effectiveActions.length - visibleCount;
-    let visibleActions = effectiveActions.slice(overflowCount);
-    const overflowActions = effectiveActions.slice(0, overflowCount);
+    const overflowCount = inlineActions.length - visibleCount;
+    let visibleActions = inlineActions.slice(overflowCount);
+    let overflowActions = inlineActions.slice(0, overflowCount);
 
     // If there is only 1 overflow action and it would fit in the overflow dropdown,
     // it's sometimes better to just show it if `visibleCount` allows. But we rely on the math.
     // However, if we drop exactly 1, the "..." button takes up space anyway.
     if (
       overflowActions.length === 1 &&
-      visibleCount * 120 + 120 <= this.containerWidth
+      foldedActions.length === 0 &&
+      visibleCount * 120 + 120 + separatedMargins <= this.containerWidth
     ) {
-      visibleActions = effectiveActions;
-      overflowActions.length = 0;
+      visibleActions = inlineActions;
+      overflowActions = [];
     }
+    // Destructive actions stay last in the menu, as they are on the row.
+    overflowActions = [...overflowActions, ...foldedActions];
 
     return html`
       <div class="actions-container" part="container">

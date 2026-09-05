@@ -614,4 +614,27 @@ describe('RuntimeSessionsView', () => {
     const content = getDeepText(element).replace(/\s+/g, ' ');
     expect(content).to.contain('openai/gpt-5');
   });
+
+  describe('reader-facing copy', () => {
+    it('uses no em dash in the page copy', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+
+      // This view's own template only. Nested components own their copy and
+      // are checked in their own suites.
+      const text = element.shadowRoot!.textContent || '';
+      expect(text).to.not.contain('\u2014');
+      const header = element.shadowRoot!.querySelector('view-header')!;
+      const description = header.getAttribute('description') || '';
+      expect(description).to.not.contain('\u2014');
+      expect(description).to.contain(
+        'Everything your agents did, as it happened'
+      );
+    });
+  });
 });

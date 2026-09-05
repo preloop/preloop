@@ -9,6 +9,7 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
 import { fetchWithAuth } from '../api';
+import { humaniseAction } from '../utils/outcome-label';
 import { showToast } from './confirm-dialog';
 import consoleStyles from '../styles/console-styles.css?inline';
 import {
@@ -199,31 +200,10 @@ export interface AuditGroupLike {
   outcome?: string;
 }
 
-const ACRONYMS: Record<string, string> = {
-  api: 'API',
-  ai: 'AI',
-  mcp: 'MCP',
-  id: 'ID',
-  url: 'URL',
-  sso: 'SSO',
-  oauth: 'OAuth',
-  ip: 'IP',
-};
-
-/** `api_key_created` reads as "API key created", not "api key created". */
-export function humaniseAction(action: string): string {
-  const words = (action || '')
-    .replace(/[_-]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .map((word) => ACRONYMS[word.toLowerCase()] || word);
-  if (words.length === 0) return '';
-  const first = words[0];
-  words[0] = ACRONYMS[first.toLowerCase()]
-    ? first
-    : first.charAt(0).toUpperCase() + first.slice(1);
-  return words.join(' ');
-}
+// Enum wording lives in utils/outcome-label so components that are not the
+// feed can use it; re-exported here because the feed is where callers found
+// it first.
+export { humaniseAction, outcomeLabel } from '../utils/outcome-label';
 
 const PAST_TENSE = new Set([
   'created',

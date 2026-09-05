@@ -2,6 +2,11 @@ import { aTimeout, expect, fixture, html, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import { invalidateApiCaches } from '../../api';
+import {
+  PHONE_WIDTH,
+  createPhoneFrame,
+  type EmptyPhoneFrame,
+} from '../../test-helpers/phone-frame';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import '../../components/view-header.ts';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
@@ -197,6 +202,45 @@ describe('AttentionView', () => {
 
   const text = (el: AttentionView) =>
     el.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+
+  // A media query answers to the viewport, so the phone layout is only real
+  // inside a 390px frame. The frame borrows the stubbed fetch from this
+  // window and never opens a socket.
+  let phoneFrame: EmptyPhoneFrame | undefined;
+  const mountOnPhone = async (): Promise<AttentionView> => {
+    phoneFrame = await createPhoneFrame({
+      moduleUrl: new URL('./attention-view.ts', import.meta.url).href,
+      tagName: 'attention-view',
+    });
+    const frameWindow = phoneFrame.frameWindow as unknown as {
+      fetch: typeof window.fetch;
+      WebSocket: unknown;
+    };
+    frameWindow.fetch = (...args: Parameters<typeof window.fetch>) =>
+      window.fetch(...args);
+    frameWindow.WebSocket = class {
+      close() {}
+      send() {}
+      addEventListener() {}
+      removeEventListener() {}
+    };
+    const el = phoneFrame.frameDocument.createElement(
+      'attention-view'
+    ) as AttentionView;
+    phoneFrame.frameDocument.body.appendChild(el);
+    await waitUntil(
+      () => !el.shadowRoot!.querySelector('sl-spinner'),
+      'attention view finished loading on the phone'
+    );
+    await phoneFrame.settle(el);
+    await phoneFrame.settle(el);
+    return el;
+  };
+
+  afterEach(() => {
+    phoneFrame?.cleanup();
+    phoneFrame = undefined;
+  });
 
   it('groups items into sections with counts and actions', async () => {
     const el = await mount();
@@ -727,6 +771,169 @@ describe('AttentionView', () => {
     expect(dismissalWrites[0].method).to.equal('PUT');
     expect(dismissalWrites[0].url).to.contain('pricing%3Azero-priced');
     expect(dismissalWrites[0].body.reason).to.equal('expected');
+  });
+
+  it('drops the log prefix from the error it shows and groups by', async () => {
+    // Runners hand the executor a logfmt line: nine of twelve runs in the
+    // round-4 review showed nothing but "timestamp=2026-09-03T19:32:45.726Z".
+    executionsResponse = [
+      {
+        id: 'execution-1',
+        flow_id: 'flow-1',
+        flow_name: 'PR Reviewer',
+        status: 'FAILED',
+        start_time: new Date(Date.now() - 3_600_000).toISOString(),
+        error_message:
+          'timestamp=2026-09-03T19:32:45.726Z level=error Failed to start agent Job: (409) Conflict',
+      },
+      {
+        id: 'execution-2',
+        flow_id: 'flow-1',
+        flow_name: 'PR Reviewer',
+        status: 'FAILED',
+        start_time: new Date(Date.now() - 7_200_000).toISOString(),
+        error_message:
+          'timestamp=2026-09-03T18:02:11.100Z level=ERROR\nFailed to start agent Job: (409) Conflict\n  at x.py',
+      },
+    ];
+    const el = await mount();
+
+    const evidence = el.shadowRoot!.querySelector('#flows .row-evidence')!;
+    const errorCells = Array.from(
+      evidence.querySelectorAll('td.error-cell')
+    ).map((cell) => cell.textContent!.trim());
+    expect(errorCells).to.eql([
+      'Failed to start agent Job: (409) Conflict',
+      'Failed to start agent Job: (409) Conflict',
+    ]);
+    // The raw line stays in the title: the console is still the record.
+    expect(
+      evidence.querySelector('td.error-cell')!.getAttribute('title')
+    ).to.contain('timestamp=');
+
+    // Both runs now group as one cause instead of two timestamps.
+    const common = evidence.querySelector('.evidence-line')!.textContent!;
+    expect(common.replace(/\s+/g, ' ')).to.contain(
+      'Most common: Failed to start agent Job: (409) Conflict (2 of 2)'
+    );
+    expect(common).to.not.contain('timestamp=');
+    expect(common).to.not.contain('level=');
+  });
+
+  it('keeps the category chip clear of Open run at 390px', async () => {
+    executionsResponse = [
+      {
+        id: 'execution-1',
+        flow_id: 'flow-1',
+        flow_name: 'PR Reviewer',
+        status: 'FAILED',
+        start_time: new Date(Date.now() - 3_600_000).toISOString(),
+        end_time: new Date(Date.now() - 3_500_000).toISOString(),
+        error_message: 'Read timed out',
+        failure_category: 'model_transient',
+      },
+      {
+        id: 'execution-2',
+        flow_id: 'flow-1',
+        flow_name: 'PR Reviewer',
+        status: 'FAILED',
+        start_time: new Date(Date.now() - 7_200_000).toISOString(),
+        error_message: 'Read timed out',
+        failure_category: 'model_transient',
+      },
+    ];
+    const el = await mountOnPhone();
+    const view = phoneFrame!.frameWindow;
+
+    await waitUntil(
+      () => el.shadowRoot!.querySelector('#flows .row-evidence'),
+      'flow evidence rendered'
+    );
+    const evidence = el.shadowRoot!.querySelector('#flows .row-evidence')!;
+    const started = evidence.querySelector('td.started-cell') as HTMLElement;
+    expect(view.getComputedStyle(started).display).to.equal('none');
+
+    const row = evidence.querySelector('tbody tr') as HTMLElement;
+    const chip = row.querySelector('.category-cell sl-badge') as HTMLElement;
+    const open = row.querySelector('.open-cell a') as HTMLElement;
+    const chipBox = chip.getBoundingClientRect();
+    const openBox = open.getBoundingClientRect();
+    expect(chipBox.width, 'chip is rendered').to.be.greaterThan(0);
+    expect(openBox.width, 'Open run is rendered').to.be.greaterThan(0);
+    expect(Math.round(chipBox.right), 'chip clears Open run').to.be.at.most(
+      Math.round(openBox.left)
+    );
+    expect(Math.round(openBox.right)).to.be.at.most(PHONE_WIDTH);
+  });
+
+  it('keeps the pricing evidence headers in their own columns at 390px', async () => {
+    usageByModel = [
+      {
+        ai_model_id: 'model-2',
+        model_alias: 'openrouter/z-ai/glm-4.6',
+        provider_name: 'openrouter',
+        request_count: 2100,
+        token_usage: {
+          prompt_tokens: 40,
+          completion_tokens: 40,
+          total_tokens: 95_592_073,
+        },
+        estimated_cost: 0,
+        unpriced_request_count: 0,
+        zero_priced_request_count: 2100,
+        last_request_at: new Date(Date.now() - 60_000).toISOString(),
+      },
+    ];
+    const el = await mountOnPhone();
+    const view = phoneFrame!.frameWindow;
+
+    await waitUntil(
+      () => el.shadowRoot!.querySelector('.pricing-table'),
+      'pricing evidence rendered'
+    );
+    const table = el.shadowRoot!.querySelector(
+      '.pricing-table'
+    ) as HTMLTableElement;
+    expect(table, 'pricing evidence table').to.exist;
+
+    // Tokens and Last request are on the model page; the phone keeps Model,
+    // Requests and the action.
+    expect(
+      view.getComputedStyle(
+        table.querySelector('th.tokens-cell') as HTMLElement
+      ).display
+    ).to.equal('none');
+    expect(
+      view.getComputedStyle(
+        table.querySelector('th.last-request-cell') as HTMLElement
+      ).display
+    ).to.equal('none');
+
+    // The provider rides under the alias instead of in a column of its own.
+    expect(
+      view.getComputedStyle(
+        table.querySelector('th.provider-cell') as HTMLElement
+      ).display
+    ).to.equal('none');
+    const stacked = table.querySelector('.stacked-provider') as HTMLElement;
+    expect(view.getComputedStyle(stacked).display).to.equal('block');
+    expect(stacked.textContent!.trim()).to.equal('openrouter');
+
+    const headers = Array.from(table.querySelectorAll('th')).filter(
+      (th) => view.getComputedStyle(th).display !== 'none'
+    );
+    for (let index = 1; index < headers.length; index += 1) {
+      const previous = headers[index - 1].getBoundingClientRect();
+      const current = headers[index].getBoundingClientRect();
+      expect(
+        Math.round(previous.right),
+        `${headers[index - 1].textContent!.trim()} overprints ${headers[
+          index
+        ].textContent!.trim()}`
+      ).to.be.at.most(Math.round(current.left));
+    }
+    const last = headers[headers.length - 1].getBoundingClientRect();
+    expect(Math.round(last.right)).to.be.at.most(PHONE_WIDTH);
   });
 
   it('links a zero-priced model to its pricing editor', async () => {

@@ -3,6 +3,7 @@ import sinon from 'sinon';
 
 import './talking-indicator';
 import type { TalkingIndicator } from './talking-indicator';
+import { PHONE_WIDTH, renderInPhoneFrame } from '../test-helpers/phone-frame';
 import { TALK_STALE_MS } from '../utils/talk-channel';
 import { resetTalkWindowsForTests } from '../utils/talk-window';
 
@@ -102,6 +103,43 @@ describe('talking-indicator', () => {
     await el.updateComplete;
     expect(el.shadowRoot!.querySelector('[data-testid="talking-chip"]')).to.not
       .exist;
+  });
+
+  it('keeps the agent name on a phone, ellipsised instead of hidden', async () => {
+    // Hiding .name left an empty grey pill in the phone header that said
+    // nothing about who is talking.
+    const { element, frameWindow, cleanup } =
+      await renderInPhoneFrame<TalkingIndicator>({
+        moduleUrl: new URL('./talking-indicator.ts', import.meta.url).href,
+        tagName: 'talking-indicator',
+        markup: '<talking-indicator></talking-indicator>',
+      });
+
+    try {
+      element.receive({
+        type: 'open',
+        agentId: 'a1',
+        agentName: 'Hermes the long-named reviewer',
+        sessionId: 's1',
+        at: Date.now(),
+      });
+      await element.updateComplete;
+
+      const name = element.shadowRoot!.querySelector('.name') as HTMLElement;
+      const styles = frameWindow.getComputedStyle(name);
+      expect(styles.display).to.not.equal('none');
+      expect(styles.textOverflow).to.equal('ellipsis');
+      expect(name.getBoundingClientRect().width).to.be.greaterThan(0);
+
+      const chip = element.shadowRoot!.querySelector(
+        '[data-testid="talking-chip"]'
+      ) as HTMLElement;
+      const box = chip.getBoundingClientRect();
+      expect(box.width).to.be.greaterThan(0);
+      expect(box.right).to.be.at.most(PHONE_WIDTH);
+    } finally {
+      cleanup();
+    }
   });
 
   it('removes the chip when the window closes', async () => {

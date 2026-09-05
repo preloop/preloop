@@ -5,6 +5,7 @@ import {
   FEED_CAP,
   feedEventFromAuditGroup,
   feedEventFromRealtime,
+  outcomeLabel,
 } from './activity-feed';
 import type { ActivityFeed, AuditGroupLike } from './activity-feed';
 
@@ -980,6 +981,25 @@ describe('activity-feed', () => {
         (dot) => dot.className.replace('dot ', '')
       );
       expect(tones).to.eql(['success', 'warning', 'danger', 'neutral']);
+    });
+  });
+
+  describe('outcomeLabel', () => {
+    it('turns a status enum into a word a reader recognises', () => {
+      expect(outcomeLabel('success')).to.equal('Succeeded');
+      expect(outcomeLabel('SUCCESS')).to.equal('Succeeded');
+      expect(outcomeLabel('error')).to.equal('Failed');
+      expect(outcomeLabel('budget_denied')).to.equal('Denied by budget');
+      expect(outcomeLabel('timeout')).to.equal('Timed out');
+    });
+
+    it('humanises an enum it does not know and skips an empty one', () => {
+      // Better a readable guess than a raw token: an unknown value still
+      // reads as English rather than as snake_case.
+      expect(outcomeLabel('rate_limited')).to.equal('Rate limited');
+      expect(outcomeLabel('')).to.equal('');
+      expect(outcomeLabel(null)).to.equal('');
+      expect(outcomeLabel(undefined)).to.equal('');
     });
   });
 });
