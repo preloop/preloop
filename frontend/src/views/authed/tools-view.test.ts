@@ -1,4 +1,5 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import type { LitElement } from 'lit';
 import sinon from 'sinon';
 
 import './tools-view';
@@ -1167,7 +1168,7 @@ describe('ToolsView – tabs and toolbar', () => {
 
     const nativeEditor = el.shadowRoot?.querySelector(
       'sl-tab-panel[name="native"] tools-editor-component'
-    ) as HTMLElement & { family: string; tools: { name: string }[] };
+    ) as LitElement & { family: string; tools: { name: string }[] };
     expect(nativeEditor).to.exist;
     expect(nativeEditor.family).to.equal('native');
     expect(nativeEditor.tools.map((tool) => tool.name)).to.deep.equal([
@@ -1180,9 +1181,8 @@ describe('ToolsView – tabs and toolbar', () => {
       ...(nativeEditor.shadowRoot?.querySelectorAll('tool-list-item') || []),
     ].find(
       (item) =>
-        (item as HTMLElement & { tool?: { name: string } }).tool?.name ===
-        'Bash'
-    ) as HTMLElement | undefined;
+        (item as LitElement & { tool?: { name: string } }).tool?.name === 'Bash'
+    ) as (LitElement & { tool?: { name: string } }) | undefined;
     expect(bashItem).to.exist;
     (
       bashItem!.shadowRoot?.querySelector('.tool-header') as HTMLElement
@@ -1193,7 +1193,7 @@ describe('ToolsView – tabs and toolbar', () => {
 
     const ruleSet = bashItem!.shadowRoot?.querySelector(
       'governance-rule-set-editor'
-    ) as HTMLElement & {
+    ) as LitElement & {
       toolSchema?: { properties?: Record<string, unknown> };
     };
     expect(ruleSet).to.exist;
@@ -1266,14 +1266,13 @@ describe('ToolsView – tabs and toolbar', () => {
 
     const nativeEditor = el.shadowRoot?.querySelector(
       'sl-tab-panel[name="native"] tools-editor-component'
-    ) as HTMLElement;
+    ) as LitElement;
     const bashItem = [
       ...(nativeEditor.shadowRoot?.querySelectorAll('tool-list-item') || []),
     ].find(
       (item) =>
-        (item as HTMLElement & { tool?: { name: string } }).tool?.name ===
-        'Bash'
-    ) as HTMLElement;
+        (item as LitElement & { tool?: { name: string } }).tool?.name === 'Bash'
+    ) as LitElement;
     expect(bashItem).to.exist;
 
     bashItem.dispatchEvent(
@@ -1345,15 +1344,15 @@ describe('ToolsView – tabs and toolbar', () => {
 
     const nativeEditor = el.shadowRoot?.querySelector(
       'sl-tab-panel[name="native"] tools-editor-component'
-    ) as HTMLElement;
+    ) as LitElement;
     const bashItem = [
       ...(nativeEditor.shadowRoot?.querySelectorAll('tool-list-item') || []),
     ].find(
       (item) =>
-        (item as HTMLElement & { tool?: { name: string } }).tool?.name ===
-        'Bash'
-    ) as HTMLElement;
+        (item as LitElement & { tool?: { name: string } }).tool?.name === 'Bash'
+    ) as LitElement;
     expect(bashItem).to.exist;
+    expect(bashItem.shadowRoot?.querySelector('sl-menu-item')).to.equal(null);
 
     const blockedSwitch = bashItem.shadowRoot?.querySelector('sl-switch') as
       (HTMLElement & { checked: boolean }) | null;

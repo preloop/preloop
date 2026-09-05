@@ -537,22 +537,30 @@ export class ToolListItem extends LitElement {
             >
           </div>
 
-          <div @click=${(e: Event) => e.stopPropagation()}>
-            <sl-dropdown>
-              <sl-icon-button
-                slot="trigger"
-                name="three-dots-vertical"
-                label="Tool settings"
-                style="font-size: 1.2rem;"
-              ></sl-icon-button>
-              <sl-menu>
-                <sl-menu-item @click=${() => this._openJustificationDialog()}>
-                  <sl-icon slot="prefix" name="shield-shaded"></sl-icon>
-                  Justification settings
-                </sl-menu-item>
-              </sl-menu>
-            </sl-dropdown>
-          </div>
+          ${
+            this._isNativeTool()
+              ? ''
+              : html`
+                  <div @click=${(e: Event) => e.stopPropagation()}>
+                    <sl-dropdown>
+                      <sl-icon-button
+                        slot="trigger"
+                        name="three-dots-vertical"
+                        label="Tool settings"
+                        style="font-size: 1.2rem;"
+                      ></sl-icon-button>
+                      <sl-menu>
+                        <sl-menu-item
+                          @click=${() => this._openJustificationDialog()}
+                        >
+                          <sl-icon slot="prefix" name="shield-shaded"></sl-icon>
+                          Justification settings
+                        </sl-menu-item>
+                      </sl-menu>
+                    </sl-dropdown>
+                  </div>
+                `
+          }
         </div>
 
         ${this.expanded ? this._renderExpandedContent() : ''}

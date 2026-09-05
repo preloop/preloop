@@ -509,9 +509,7 @@ export class ToolsEditorComponent extends LitElement {
               >
                 ${
                   this.family === 'native'
-                    ? this.filterText
-                      ? 'No native tools matching filter.'
-                      : 'No native tools found.'
+                    ? 'No native tools match these filters.'
                     : this.mode === 'global'
                       ? 'No tools found. Add an MCP server to get started.'
                       : 'No managed tools found for this scope.'

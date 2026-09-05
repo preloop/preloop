@@ -221,4 +221,19 @@ describe('ToolsEditorComponent – native family', () => {
     expect(names).to.not.include('github_search');
     expect(names).to.not.include('example_tool');
   });
+
+  it('uses one empty-state string when no native rows remain', async () => {
+    const editor = (await fixture(html`
+      <tools-editor-component
+        family="native"
+        .tools=${[]}
+      ></tools-editor-component>
+    `)) as ToolsEditorComponent;
+    await editor.updateComplete;
+
+    const copy = editor.shadowRoot?.textContent || '';
+    expect(copy).to.contain('No native tools match these filters.');
+    expect(copy).to.not.contain('No native tools matching filter.');
+    expect(copy).to.not.contain('No native tools found.');
+  });
 });
