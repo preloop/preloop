@@ -34,12 +34,9 @@ import type { MCPServer } from '../../components/mcp-server-card';
 import type { AccessRuleSummary } from '../../components/governance-rule-set-editor';
 import type { RuleFormData } from '../../components/tool-rule-editor';
 import {
-  effectiveViewMode,
   loadViewMode,
   saveViewMode,
-  subscribeNarrowViewport,
   type ListViewMode,
-  type NarrowViewportSubscription,
 } from '../../utils/view-mode';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
@@ -155,9 +152,6 @@ export class ToolsView extends LitElement {
   // Approval workflow dialog
   @state() private showPolicyDialog = false;
   @state() private editingPolicy: ApprovalWorkflow | null = null;
-
-  @state() private narrowViewport = false;
-  private narrowViewportSubscription: NarrowViewportSubscription | null = null;
 
   static styles = [
     consoleDialogStyles,
@@ -463,10 +457,6 @@ export class ToolsView extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.activeTab = this._resolveInitialTab();
-    this.narrowViewportSubscription = subscribeNarrowViewport((narrow) => {
-      this.narrowViewport = narrow;
-    });
-    this.narrowViewport = this.narrowViewportSubscription.matches;
 
     // Check for OAuth callback hash (#setup_mcp=success or #setup_mcp=error)
     if (window.location.hash) {
@@ -492,12 +482,6 @@ export class ToolsView extends LitElement {
 
     this._rememberTab(this.activeTab);
     this.loadData();
-  }
-
-  disconnectedCallback() {
-    super.disconnectedCallback();
-    this.narrowViewportSubscription?.disconnect();
-    this.narrowViewportSubscription = null;
   }
 
   private _resolveInitialTab(): ToolsTab {
@@ -1406,10 +1390,6 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
 
   private _handleSearchChange(event: CustomEvent<{ value: string }>) {
     this._setFilterValues({ query: event.detail.value });
-  }
-
-  private get effectiveView(): ListViewMode {
-    return effectiveViewMode(this.viewMode, this.narrowViewport);
   }
 
   private _handleViewChange(event: CustomEvent<{ value: ListViewMode }>) {
