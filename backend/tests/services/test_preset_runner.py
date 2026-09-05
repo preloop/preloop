@@ -1,22 +1,25 @@
 """Tests for resolve-or-create and issue trigger payloads."""
 
 import uuid
-from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 
 from preloop.services.preset_runner import (
     IMPLEMENTER_SLUG,
+    REVIEWER_SLUG,
     PresetRunnerError,
     _load_visible_issue,
     build_issue_trigger_payload,
     build_pull_request_trigger_payload,
     resolve_or_create_flow,
+    run_preset_on_target,
 )
 from preloop.services.prompt_resolvers.base import ResolverContext
 from preloop.services.prompt_resolvers.trigger_event import TriggerEventResolver
+from preloop.sync.exceptions import TrackerResponseError
 
 
 class _Simple:
@@ -448,6 +451,7 @@ def _gitlab_project_tracker():
 def _github_pr_payload(*, tracker_url: str = "https://github.com") -> dict:
     project, tracker = _github_project_tracker(tracker_url=tracker_url)
     pr = {
+        "id": "2451234567",
         "number": 12,
         "title": "Add login",
         "description": "Please review the login form",
@@ -464,6 +468,7 @@ def _github_pr_payload(*, tracker_url: str = "https://github.com") -> dict:
 def _gitlab_mr_payload() -> dict:
     project, tracker = _gitlab_project_tracker()
     mr = {
+        "id": "2451234567",
         "iid": 7,
         "title": "Fix login",
         "description": "Login 401",
@@ -503,6 +508,7 @@ async def test_github_pr_payload_resolves_object_attributes():
         "payload.object_attributes.target_branch", context
     )
     trigger = await resolver.resolve("type", context)
+    number = await resolver.resolve("payload.object_attributes.number", context)
     assert title == "Add login"
     assert description == "Please review the login form"
     assert author == "janedoe"
@@ -510,6 +516,8 @@ async def test_github_pr_payload_resolves_object_attributes():
     assert source_branch == "feature"
     assert target_branch == "main"
     assert trigger == "pull_request_run"
+    assert int(number) == 12
+    assert event["payload"]["pull_request"]["number"] == 12
 
 
 @pytest.mark.asyncio
@@ -520,6 +528,7 @@ async def test_gitlab_mr_payload_branches_and_url():
     normalized = resolver._normalize_event_data(event)
     attrs = normalized["payload"]["object_attributes"]
     assert attrs["iid"] == 7
+    assert attrs["number"] == 7
     assert attrs["source_branch"] == "feature"
     assert attrs["target_branch"] == "main"
     assert attrs["url"] == (
@@ -550,3 +559,126 @@ def test_pr_payload_sets_top_level_project_id_and_web_host_clone_fields():
     assert repo["clone_url"] == "https://github.com/example/repo.git"
     assert repo["html_url"] == "https://github.com/example/repo"
     assert event["payload"]["pull_request"]["user"]["login"] == "janedoe"
+
+
+@pytest.mark.asyncio
+async def test_run_preset_on_pull_request_probe_then_trigger() -> None:
+    account_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+    flow = _account_flow(name="Pull Request Reviewer")
+    project, tracker = _github_project_tracker()
+    organization = MagicMock()
+    organization.id = uuid.uuid4()
+    user = _user(account_id)
+    target = _Simple(kind="pull_request", project_id=project_id, number=12)
+    tracker_client = MagicMock()
+    tracker_client.get_pull_request = AsyncMock(
+        return_value={
+            "id": "2451234567",
+            "number": 12,
+            "title": "Add login",
+            "description": "Please review",
+            "url": "https://github.com/example/repo/pull/12",
+            "author": {"login": "janedoe"},
+            "source_branch": "feature",
+            "target_branch": "main",
+            "state": "open",
+            "is_draft": False,
+        }
+    )
+    trigger = AsyncMock(return_value={"id": str(uuid.uuid4())})
+
+    with (
+        patch(
+            "preloop.services.preset_runner._load_visible_project",
+            return_value=(project, tracker, organization),
+        ),
+        patch(
+            "preloop.services.preset_runner.resolve_or_create_flow",
+            return_value=(flow, False),
+        ),
+        patch(
+            "preloop.api.common.get_tracker_client",
+            new_callable=AsyncMock,
+            return_value=tracker_client,
+        ),
+        patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService.trigger_flow",
+            trigger,
+        ),
+    ):
+        probe = await run_preset_on_target(
+            MagicMock(),
+            current_user=user,
+            preset_slug=REVIEWER_SLUG,
+            target=target,
+            confirm_create=False,
+            triggered_by="Jane Doe",
+        )
+        assert probe["execution_id"] is None
+        tracker_client.get_pull_request.assert_not_awaited()
+        trigger.assert_not_awaited()
+
+        confirmed = await run_preset_on_target(
+            MagicMock(),
+            current_user=user,
+            preset_slug=REVIEWER_SLUG,
+            target=target,
+            confirm_create=True,
+            triggered_by="Jane Doe",
+        )
+
+    tracker_client.get_pull_request.assert_awaited_once_with("12")
+    trigger.assert_awaited_once()
+    assert trigger.await_args.kwargs["test_mode"] is False
+    payload = trigger.await_args.kwargs["trigger_event_data"]["payload"]
+    assert payload["pull_request"]["number"] == 12
+    assert confirmed["execution_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_run_preset_on_pull_request_502_when_tracker_fails() -> None:
+    account_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+    flow = _account_flow(name="Pull Request Reviewer")
+    project, tracker = _github_project_tracker()
+    organization = MagicMock()
+    organization.id = uuid.uuid4()
+    user = _user(account_id)
+    target = _Simple(kind="pull_request", project_id=project_id, number=12)
+    tracker_client = MagicMock()
+    tracker_client.get_pull_request = AsyncMock(
+        side_effect=TrackerResponseError("GitHub API error: 502")
+    )
+
+    with (
+        patch(
+            "preloop.services.preset_runner._load_visible_project",
+            return_value=(project, tracker, organization),
+        ),
+        patch(
+            "preloop.services.preset_runner.resolve_or_create_flow",
+            return_value=(flow, False),
+        ),
+        patch(
+            "preloop.api.common.get_tracker_client",
+            new_callable=AsyncMock,
+            return_value=tracker_client,
+        ),
+        patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService.trigger_flow",
+        ) as trigger,
+    ):
+        with pytest.raises(PresetRunnerError) as exc:
+            await run_preset_on_target(
+                MagicMock(),
+                current_user=user,
+                preset_slug=REVIEWER_SLUG,
+                target=target,
+                confirm_create=True,
+                triggered_by="Jane Doe",
+            )
+
+    assert exc.value.status_code == 502
+    assert exc.value.detail == "Tracker request failed"
+    trigger.assert_not_awaited()

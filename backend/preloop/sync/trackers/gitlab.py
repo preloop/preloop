@@ -44,23 +44,6 @@ from preloop.schemas.tracker_models import (
 )
 
 
-def _gitlab_has_next_page(gl: Any) -> bool:
-    """Return True when the last GitLab response has a next page.
-
-    python-gitlab stores the last HTTP response as ``http_last_response``
-    (or ``_http_last_response`` on older clients). ``X-Next-Page`` is set
-    when another page exists.
-    """
-    response = getattr(gl, "http_last_response", None) or getattr(
-        gl, "_http_last_response", None
-    )
-    if response is None:
-        return False
-    headers = getattr(response, "headers", None) or {}
-    next_page = headers.get("X-Next-Page") or headers.get("x-next-page")
-    return bool(str(next_page).strip()) if next_page is not None else False
-
-
 def _discussion_notes(discussion: Any) -> List[Any]:
     """Return discussion notes from python-gitlab list or manager objects."""
     notes = getattr(discussion, "notes", [])
@@ -1592,7 +1575,9 @@ class GitLabTracker(BaseTracker):
             page: 1-based page number.
 
         Returns:
-            Dict with normalized ``items`` and ``has_more`` from X-Next-Page.
+            Dict with normalized ``items`` and ``has_more``. python-gitlab
+            7.0.0 discards the paginated list object when ``page`` is set,
+            so ``has_more`` is computed by requesting one extra item.
         """
         project_id = self._get_project_id()
         gitlab_state = "opened" if state == "open" else state
@@ -1602,11 +1587,13 @@ class GitLabTracker(BaseTracker):
             state=gitlab_state,
             order_by="updated_at",
             sort="desc",
-            per_page=limit,
+            per_page=limit + 1,
             page=page,
         )
-        items = [self._normalize_listed_merge_request(mr) for mr in mrs or []]
-        return {"items": items, "has_more": _gitlab_has_next_page(self.gl)}
+        rows = list(mrs or [])
+        has_more = len(rows) > limit
+        items = [self._normalize_listed_merge_request(mr) for mr in rows[:limit]]
+        return {"items": items, "has_more": has_more}
 
     def _normalize_listed_merge_request(self, mr: Any) -> Dict[str, Any]:
         """Map a python-gitlab MR object (or dict) to the shared PR list shape."""

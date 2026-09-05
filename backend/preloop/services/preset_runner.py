@@ -695,7 +695,7 @@ async def _run_preset_on_pull_request(
     trigger_service = FlowTriggerService(db)
     result = await trigger_service.trigger_flow(
         flow_id=flow.id,
-        test_mode=True,
+        test_mode=False,
         trigger_event_data=trigger_event_data,
         triggered_by=triggered_by,
     )
