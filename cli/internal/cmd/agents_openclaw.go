@@ -5681,24 +5681,24 @@ func findManagedClaudeCodeOAuthSibling(
 		if strings.TrimSpace(model.CredentialsSecretID) == "" {
 			continue
 		}
-		if agentID != "" {
-			modelAgentID := ""
-			if model.MetaData != nil {
-				modelAgentID, _ = model.MetaData["managed_agent_id"].(string)
-				modelAgentID = strings.TrimSpace(modelAgentID)
-			}
-			if modelAgentID == agentID {
-				return model
-			}
-			if modelAgentID != "" {
-				continue
-			}
-			if fallback == nil {
-				fallback = model
-			}
+		modelAgentID := ""
+		if model.MetaData != nil {
+			modelAgentID, _ = model.MetaData["managed_agent_id"].(string)
+			modelAgentID = strings.TrimSpace(modelAgentID)
+		}
+		if agentID != "" && modelAgentID == agentID {
+			return model
+		}
+		// A row tagged with a different managed agent belongs to another
+		// machine's login; never attach to (or overwrite) that lineage.
+		// This also holds when the caller has no managed agent yet: only
+		// untagged rows are eligible then.
+		if modelAgentID != "" {
 			continue
 		}
-		return model
+		if fallback == nil {
+			fallback = model
+		}
 	}
 	return fallback
 }
@@ -5803,7 +5803,11 @@ func syncManagedGatewayAIModel(
 		if !equalJSONMap(target.MetaData, metaData) {
 			update["meta_data"] = metaData
 		}
-		if upstream.APIKey != "" && !target.HasAPIKey {
+		// An OAuth upstream is seeded via credential_type/credential_payload
+		// or a shared credentials_secret_id below; sending api_key alongside
+		// either would be rejected by the backend validator.
+		if upstream.APIKey != "" && !target.HasAPIKey &&
+			!isOAuthCredentialType(upstream.CredentialType) {
 			update["api_key"] = upstream.APIKey
 		}
 		// Re-seed the stored credential on re-onboard when the upstream

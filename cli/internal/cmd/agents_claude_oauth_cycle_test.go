@@ -793,3 +793,110 @@ func TestPrintClaudeCodeOAuthOffboardNote(t *testing.T) {
 		t.Fatalf("expected no note for a fresh local bundle, got %q", out.String())
 	}
 }
+
+func TestFindManagedClaudeCodeOAuthSiblingNilAgentOnlyMatchesUntaggedRows(t *testing.T) {
+	// Review finding 2: with no managed agent yet, the finder must never
+	// attach to a row tagged with some other machine's managed_agent_id.
+	tagged := claudeManagedOAuthSiblingForTest(
+		"tagged-sonnet",
+		"claude-sonnet-4-5",
+		"anthropic/claude-sonnet-4-5",
+		"secret-other-machine",
+	)
+	untagged := claudeManagedOAuthSiblingForTest(
+		"untagged-haiku",
+		"claude-haiku-4-5",
+		"anthropic/claude-haiku-4-5",
+		"secret-untagged",
+	)
+	delete(untagged.MetaData, "managed_agent_id")
+
+	got := findManagedClaudeCodeOAuthSibling(
+		[]aiModelResponse{tagged},
+		AgentConfig{Name: "Claude Code"},
+		nil,
+		"oauth_anthropic_claude_code",
+		"",
+	)
+	if got != nil {
+		t.Fatalf("nil managed agent must not match a row tagged for another agent, got %#v", got)
+	}
+
+	got = findManagedClaudeCodeOAuthSibling(
+		[]aiModelResponse{tagged, untagged},
+		AgentConfig{Name: "Claude Code"},
+		nil,
+		"oauth_anthropic_claude_code",
+		"",
+	)
+	if got == nil || got.ID != "untagged-haiku" {
+		t.Fatalf("nil managed agent should fall back to the untagged row only, got %#v", got)
+	}
+
+	got = findManagedClaudeCodeOAuthSibling(
+		[]aiModelResponse{tagged, untagged},
+		AgentConfig{Name: "Claude Code"},
+		&managedAgentSummary{ID: "agent-1"},
+		"oauth_anthropic_claude_code",
+		"",
+	)
+	if got == nil || got.ID != "tagged-sonnet" {
+		t.Fatalf("matching managed agent should still win over the untagged fallback, got %#v", got)
+	}
+}
+
+func TestSyncManagedGatewayAIModelUpdateOmitsAPIKeyForOAuthUpstream(t *testing.T) {
+	// Review finding 3: an upstream carrying both a stray api_key and an
+	// OAuth credential type must not put api_key and credentials_secret_id
+	// on the same PUT; the backend validator rejects that combination.
+	fable := claudeManagedOAuthSiblingForTest(
+		"target-fable",
+		"claude-fable-5-1",
+		"anthropic/claude-fable-5-1",
+		"",
+	)
+	fable.HasAPIKey = false
+	fable.CredentialType = ""
+	sibling := claudeManagedOAuthSiblingForTest(
+		"sibling-sonnet",
+		"claude-sonnet-4-5",
+		"anthropic/claude-sonnet-4-5",
+		"secret-live",
+	)
+	writes := []recordedAIModelWrite{}
+	server := newClaudeFamilyLineageServer(t, []aiModelResponse{fable, sibling}, &writes)
+	defer server.Close()
+
+	staleExpiry := time.Now().UTC().Add(-24 * time.Hour).UnixMilli()
+	upstream := claudeFableUpstreamForTest(map[string]interface{}{
+		"access":  "sk-ant-oat01-stale",
+		"refresh": "sk-ant-ort01-stale",
+		"expires": staleExpiry,
+	})
+	upstream.APIKey = "sk-ant-api-stray"
+
+	if _, _, err := syncManagedGatewayAIModel(
+		api.NewClientWithToken(server.URL, "tok"),
+		&managedAgentSummary{ID: "agent-1"},
+		AgentConfig{Name: "Claude Code"},
+		upstream,
+		server.URL+"/openai/v1",
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	attached := false
+	for _, write := range writes {
+		if !strings.HasSuffix(write.Path, "/target-fable") {
+			continue
+		}
+		if _, ok := write.Body["api_key"]; ok {
+			t.Fatalf("OAuth upstream must not send api_key alongside a shared secret; got %#v", write.Body)
+		}
+		if write.Body["credentials_secret_id"] == "secret-live" {
+			attached = true
+		}
+	}
+	if !attached {
+		t.Fatalf("expected a PUT attaching the sibling secret to the fable row; writes: %#v", writes)
+	}
+}

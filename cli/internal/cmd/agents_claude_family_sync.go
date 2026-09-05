@@ -210,10 +210,7 @@ func ensureClaudeFamilyAIModel(
 		)
 		metaData["managed_by"] = "preloop agents onboard"
 		metaData["source_agent"] = siblingUpstream.SourceAgent
-		primarySecret := ""
-		if primaryModel != nil {
-			primarySecret = strings.TrimSpace(primaryModel.CredentialsSecretID)
-		}
+		primarySecret := strings.TrimSpace(primaryModel.CredentialsSecretID)
 		sameSecret := primarySecret != "" &&
 			strings.TrimSpace(target.CredentialsSecretID) == primarySecret
 		if equalJSONMap(target.MetaData, metaData) && target.HasAPIKey && sameSecret {
