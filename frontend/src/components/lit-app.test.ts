@@ -66,7 +66,10 @@ describe('LitApp routing', () => {
     );
 
     expect(window.location.pathname).to.equal('/console/agents');
+    // The onboarding view was deleted; the redirect is the only thing left of
+    // that route, so nothing must render the old element.
     expect(document.querySelector('onboarding-view')).to.equal(null);
+    expect(customElements.get('onboarding-view')).to.equal(undefined);
   });
 
   it('registers markdown pages from BRAND_CONFIG.static_markdown_pages', async () => {

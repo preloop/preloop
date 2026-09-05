@@ -1637,18 +1637,19 @@ class ApprovalService:
             )
             return False
 
-        # Generate approval links. All actions happen on the console approval
-        # page (SPA route /console/approval/:requestId); the approval token is
-        # carried along so the page can fall back to the public token read for
-        # recipients who are not signed in. Never point these at the bare
+        # Generate the approval link. All actions happen on the console
+        # approval page (SPA route /console/approval/:requestId); the token
+        # is carried so the page can fall back to the public token read for
+        # recipients who are not signed in. Never point this at the bare
         # /approval/<id> path: nginx proxies that prefix to the API (issue #335).
+        # A chat message offers exactly one action because there is exactly
+        # one: opening the page. Separate "Approve" and "Decline" links
+        # pointed at this same URL and neither of them decided anything.
         token = approval_request.approval_token
-        approve_url = urljoin(
+        review_url = urljoin(
             self.base_url,
             f"/console/approval/{approval_request.id}?token={token}",
         )
-        decline_url = approve_url
-        view_url = approve_url
 
         # Format tool arguments for display (redact sensitive fields)
         from preloop.utils.redaction import redact_dict
@@ -1660,7 +1661,7 @@ class ApprovalService:
 
         # Create message based on approval type
         if approval_workflow.approval_type in ["slack", "mattermost"]:
-            # Build message text with all details — summary first when present
+            # Build message text with all details: summary first when present
             if ask_text:
                 message_text = f"⚠️ **{ask_text}**\n\n"
             else:
@@ -1676,10 +1677,7 @@ class ApprovalService:
                 )
 
             message_text += f"**Arguments:**\n```json\n{tool_args_formatted}\n```\n\n"
-            message_text += "**Actions:**\n"
-            message_text += f"• [✅ Approve]({approve_url})\n"
-            message_text += f"• [❌ Decline]({decline_url})\n"
-            message_text += f"• [👁️ View Details]({view_url})\n"
+            message_text += f"[Review this request]({review_url})\n"
 
             # Mattermost/Slack compatible message with attachments
             message = {
@@ -1689,7 +1687,7 @@ class ApprovalService:
                         "color": "#f2c744",
                         "fallback": headline,
                         "title": f"⚠️ {headline}",
-                        "title_link": view_url,
+                        "title_link": review_url,
                         "fields": [
                             {
                                 "title": "Tool",
@@ -1706,20 +1704,9 @@ class ApprovalService:
                         "actions": [
                             {
                                 "type": "button",
-                                "text": "✅ Approve",
-                                "url": approve_url,
+                                "text": "Review",
+                                "url": review_url,
                                 "style": "primary",
-                            },
-                            {
-                                "type": "button",
-                                "text": "❌ Decline",
-                                "url": decline_url,
-                                "style": "danger",
-                            },
-                            {
-                                "type": "button",
-                                "text": "👁️ View Details",
-                                "url": view_url,
                             },
                         ],
                     }
@@ -1752,10 +1739,17 @@ class ApprovalService:
                     if approval_request.expires_at
                     else None
                 ),
+                # "review" is the honest name: the link opens the approval
+                # page, it does not decide anything. Decisions are taken with
+                # POST /api/v1/approval-requests/{id}/approve or /decline.
+                # "approve", "decline" and "view" are the same URL and always
+                # were; they stay for receivers that read those keys today and
+                # are deprecated, to be removed once no integration reads them.
                 "actions": {
-                    "approve": approve_url,
-                    "decline": decline_url,
-                    "view": view_url,
+                    "review": review_url,
+                    "approve": review_url,  # deprecated, same page as review
+                    "decline": review_url,  # deprecated, same page as review
+                    "view": review_url,  # deprecated, same page as review
                 },
             }
 

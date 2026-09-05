@@ -433,6 +433,35 @@ describe('SessionReplayPanel', () => {
     );
   });
 
+  it('says what a request did in words, not the stored enum', async () => {
+    // The Replay view's per-message metric pill is the badge that printed the
+    // gateway's stored `outcome` verbatim. Drive the real render path.
+    const events: FlowGatewayEvent[] = [
+      previewEvent('e1', '2026-06-07T12:00:00Z', [
+        { role: 'user', text: 'OUTCOME_ME' },
+      ]),
+    ];
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="replay"
+        .session=${SESSION}
+        .events=${events}
+      ></session-replay-panel>
+    `);
+    await waitUntil(
+      () => Boolean(element.shadowRoot?.querySelector('.message-metrics')),
+      'request metrics did not render'
+    );
+
+    const pill = element.shadowRoot?.querySelector(
+      '.message-metrics .metric-pill'
+    ) as HTMLElement;
+    const pillText = (pill.textContent || '').replace(/\s+/g, ' ').trim();
+    expect(pillText).to.include('Succeeded');
+    expect(pillText).to.not.include('success');
+    expect(pill.classList.contains('success')).to.be.true;
+  });
+
   // --- Fix 1: per-message "show full message" toggle ------------------------
 
   it('expands and collapses a single long message per-message', async () => {

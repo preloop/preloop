@@ -234,8 +234,11 @@ export class AgentTalkView extends LitElement {
     );
     void this.load();
     this.connectRealtime();
-    this.openChannel();
     if (this.windowMode) {
+      // DESIGN "Awareness lives in the header": one chip per open talk
+      // *window*. The in-page form is the page the operator is reading, so a
+      // chip for it would point at the current tab and say nothing.
+      this.openChannel();
       // The operator who drags this window to the right size and place has
       // said where they want it; the next open should land there.
       window.addEventListener('resize', this.handleWindowResize);

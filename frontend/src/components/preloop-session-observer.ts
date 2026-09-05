@@ -54,6 +54,7 @@ import {
   formatNumber,
   normalizeObservedSessions,
 } from '../utils/session-observer';
+import { confirmDialog } from './confirm-dialog';
 import { reducedMotionStyles } from '../styles/reduced-motion';
 import './session-chat-view';
 import './talk-button';
@@ -206,7 +207,7 @@ export class PreloopSessionObserver extends LitElement {
   private sidebarCollapsed = false;
 
   // Transitional state while the sidebar column animates shut or open. An
-  // instant swap read as "magical" — the list just vanished — so the column
+  // instant swap read as "magical" (the list just vanished), so the column
   // visibly shrinks/grows to teach where it went. null when at rest.
   @state()
   private sidebarAnimating: 'collapsing' | 'expanding' | null = null;
@@ -463,6 +464,12 @@ export class PreloopSessionObserver extends LitElement {
         justify-content: flex-end;
       }
 
+      /* DESIGN "Destructive actions": a large gap before the destructive
+         button so it is not next to the button beside it. */
+      .mode-row .destructive {
+        margin-left: var(--sl-spacing-large);
+      }
+
       .content {
         display: flex;
         flex-direction: column;
@@ -605,7 +612,7 @@ export class PreloopSessionObserver extends LitElement {
     super.connectedCallback();
     this.replayMode = this.replayModeFromUrl() ?? this.defaultReplayMode;
     // An invalid/unavailable ?replay= value (e.g. a stale optimize link with
-    // the feature off) falls back to the default mode above — clean the
+    // the feature off) falls back to the default mode above. Clean the
     // param up front so the URL never advertises a mode that is not active.
     this.syncReplayModeToUrl();
     this.connectRealtime();
@@ -774,7 +781,7 @@ export class PreloopSessionObserver extends LitElement {
   private async loadSessions(
     options: { preserveSelection?: boolean; soft?: boolean } = {}
   ): Promise<void> {
-    // Parent views often pass `.sessions` — reuse them and skip a second list
+    // Parent views often pass `.sessions`: reuse them and skip a second list
     // fetch (events still load on selection).
     if (this.sessions) {
       this.applySessions(this.sessions, options.preserveSelection ?? true);
@@ -853,9 +860,9 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   // Animated collapse: shrink the sidebar column shut first, THEN swap in the
-  // compact picker bar. The staging teaches new users where the list went —
-  // an instant swap read as the list simply vanishing. Reduced-motion users
-  // get the immediate swap they asked for.
+  // compact picker bar. The staging teaches new users where the list went,
+  // because an instant swap read as the list simply vanishing. Reduced-motion
+  // users get the immediate swap they asked for.
   private collapseSidebar(): void {
     if (this.sidebarCollapsed || this.hideSidebar) return;
     this.clearSidebarAnimationTimer();
@@ -1172,7 +1179,7 @@ export class PreloopSessionObserver extends LitElement {
     this.loadingOptimizationForSessionId = sessionId;
     try {
       const optimization = await optimizeRuntimeSession(sessionId, options);
-      // A cache-only miss means nothing was generated before — leave the
+      // A cache-only miss means nothing was generated before, leave the
       // session unloaded so the panel shows the "generate" prompt instead of an
       // empty-suggestions state.
       if (optimization.cache_miss) return;
@@ -1432,7 +1439,20 @@ export class PreloopSessionObserver extends LitElement {
 
   private async endActiveSession(): Promise<void> {
     if (!this.activeSession || !this.activeSession.canLoadEvents) return;
-    if (!window.confirm(`End session "${this.activeSession.title}"?`)) return;
+    // DESIGN "Destructive actions": the shared dialog, never window.confirm.
+    const confirmed = await confirmDialog({
+      title: 'End session',
+      message: `End session "${this.activeSession.title}"?`,
+      // What the backend `end` action does (api/endpoints/account.py,
+      // update_account_runtime_session): stamp ended_at, deactivate the
+      // session's runtime keys, unbind the managed agent. It does not stop an
+      // agent process, so the dialog does not promise that.
+      detail:
+        'Its runtime keys are revoked and nothing more is recorded. What it did so far stays.',
+      confirmLabel: 'End session',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     try {
       await updateAccountRuntimeSession(this.activeSession.id, {
         action: 'end',
@@ -1681,8 +1701,32 @@ export class PreloopSessionObserver extends LitElement {
     `;
   }
 
+  /**
+   * A session that has finished, or has gone quiet long enough that the
+   * server no longer calls it active. Nothing streams into it, so there is
+   * nothing to follow and (once it has ended) nothing to end. Same rule as a
+   * finished run on the execution page: it shows neither.
+   *
+   * A session summary is only ever `ended`, `active_now` or `idle` (models
+   * crud/runtime_session.py, _row_to_summary; `recently_active` is managed
+   * agent vocabulary, not session vocabulary). `active_now` means a request
+   * inside the server's 10 minute window, so Follow and Pause go away while a
+   * session is quiet and come back when it wakes.
+   */
+  private isSessionLive(session: ObservedSession | null): boolean {
+    if (!session) return true;
+    if (session.status === 'ended' || session.endedAt) return false;
+    return session.status === 'active_now';
+  }
+
+  private isSessionEnded(session: ObservedSession | null): boolean {
+    if (!session) return false;
+    return session.status === 'ended' || Boolean(session.endedAt);
+  }
+
   private renderToolbar() {
     const session = this.activeSession;
+    const live = this.isSessionLive(session);
 
     // With no sessions there is nothing to follow, pause, replay, filter or
     // refresh, so the full toolbar is six controls that all do nothing. Show
@@ -1703,13 +1747,17 @@ export class PreloopSessionObserver extends LitElement {
       <div class="toolbar">
         <div>
           <div class="summary-row">
-            <span
-              class="live-indicator ${this.livePulse ? 'pulsing' : ''}"
-              title="Realtime session updates"
-            >
-              <span class="live-dot"></span>
-              ${this.followLive ? 'Following live' : 'Paused'}
-            </span>
+            ${
+              live
+                ? html`<span
+                    class="live-indicator ${this.livePulse ? 'pulsing' : ''}"
+                    title="Realtime session updates"
+                  >
+                    <span class="live-dot"></span>
+                    ${this.followLive ? 'Following live' : 'Paused'}
+                  </span>`
+                : nothing
+            }
             ${
               session
                 ? html`
@@ -1724,7 +1772,7 @@ export class PreloopSessionObserver extends LitElement {
         </div>
         <div class="mode-row">
           ${
-            this.enabledFeatures.liveFollow
+            this.enabledFeatures.liveFollow && live
               ? html`
                   <sl-button
                     size="small"
@@ -1786,12 +1834,17 @@ export class PreloopSessionObserver extends LitElement {
             Refresh
           </sl-button>
           ${
-            this.enabledFeatures.endSession && session?.canLoadEvents
+            this.enabledFeatures.endSession &&
+            session?.canLoadEvents &&
+            !this.isSessionEnded(session)
               ? html`
+                  <!-- DESIGN "Destructive actions": danger outline, last in
+                       the row, and gone once there is nothing left to end. -->
                   <sl-button
+                    class="destructive"
                     size="small"
-                    variant="warning"
-                    ?disabled=${session.status === 'ended'}
+                    variant="danger"
+                    outline
                     @click=${this.endActiveSession}
                   >
                     End session

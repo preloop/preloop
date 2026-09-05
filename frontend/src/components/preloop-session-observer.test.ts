@@ -1,6 +1,7 @@
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
+import { resetConfirmDialogForTests } from './confirm-dialog';
 import './preloop-session-observer';
 import type { PreloopSessionObserver } from './preloop-session-observer';
 
@@ -1051,6 +1052,128 @@ describe('PreloopSessionObserver', () => {
         .shadowRoot!.querySelector('talk-button')!
         .querySelector('sl-button');
       expect(button!.hasAttribute('disabled')).to.be.true;
+    });
+  });
+
+  describe('finished sessions', () => {
+    const endedSession = {
+      ...session,
+      id: 'runtime-session-ended',
+      ended_at: '2026-03-09T21:00:00Z',
+      is_active_now: false,
+      activity_status: 'ended',
+      last_activity_at: '2026-03-09T21:00:00Z',
+    };
+
+    function toolbarText(el: PreloopSessionObserver): string {
+      return deepText(el.shadowRoot!.querySelector('.toolbar'));
+    }
+
+    it('offers follow and End session while the session runs', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+          .features=${{ endSession: true }}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+
+      const text = toolbarText(el);
+      expect(text).to.include('Following live');
+      expect(text).to.include('End session');
+      expect(el.shadowRoot!.querySelector('.toolbar .live-indicator')).to.exist;
+    });
+
+    it('shows neither follow nor End session once the session has ended', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[endedSession]}
+          .features=${{ endSession: true }}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        '',
+        { timeout: 3000 }
+      );
+
+      const text = toolbarText(el);
+      expect(text).to.not.include('Following live');
+      expect(text).to.not.include('Pause follow');
+      expect(text).to.not.include('Follow live');
+      expect(text).to.not.include('End session');
+      expect(el.shadowRoot!.querySelector('.toolbar .live-indicator')).to.not
+        .exist;
+      // The rest of the toolbar is still there: a finished session is still
+      // readable.
+      expect(text).to.include('Refresh');
+    });
+
+    it('asks for confirmation in the console dialog, not window.confirm', async () => {
+      const confirmStub = sinon.stub(window, 'confirm').returns(false);
+      try {
+        const el = (await fixture(
+          html`<preloop-session-observer
+            .sessions=${[session]}
+            .features=${{ endSession: true }}
+          ></preloop-session-observer>`
+        )) as PreloopSessionObserver;
+
+        await waitUntil(
+          () => deepText(el.shadowRoot).includes('Build a widget'),
+          '',
+          { timeout: 3000 }
+        );
+
+        const endButton = Array.from(
+          el.shadowRoot!.querySelectorAll('.toolbar sl-button')
+        ).find((button) => (button.textContent || '').includes('End session'));
+        expect(endButton, 'End session button').to.exist;
+        expect(endButton!.getAttribute('variant')).to.equal('danger');
+        expect(endButton!.hasAttribute('outline')).to.be.true;
+
+        // DESIGN "Destructive actions": a larger gap than the row's own, so
+        // End session is not a neighbour of Refresh. The Shoelace theme is
+        // not loaded in the test page, so the spacing tokens are set here.
+        el.style.setProperty('--sl-spacing-small', '12px');
+        el.style.setProperty('--sl-spacing-large', '20px');
+        await el.updateComplete;
+        const row = endButton!.closest('.mode-row') as HTMLElement;
+        const rowGap = parseFloat(getComputedStyle(row).columnGap || '0');
+        const gapBefore = parseFloat(
+          getComputedStyle(endButton as HTMLElement).marginLeft || '0'
+        );
+        expect(rowGap).to.equal(12);
+        expect(gapBefore).to.be.greaterThan(rowGap);
+
+        (endButton as HTMLElement).click();
+        await waitUntil(
+          () => Boolean(document.body.querySelector('confirm-dialog')),
+          '',
+          { timeout: 3000 }
+        );
+
+        expect(confirmStub.called).to.be.false;
+        const dialog = document.body.querySelector('confirm-dialog')!;
+        await (dialog as unknown as { updateComplete: Promise<void> })
+          .updateComplete;
+        const dialogText = deepText(dialog.shadowRoot);
+        expect(dialogText).to.include('End session');
+        // The dialog describes the end action the API performs and no more:
+        // it revokes the session's runtime keys, it does not stop an agent.
+        expect(dialogText).to.include('Its runtime keys are revoked');
+        expect(dialogText).to.include('What it did so far stays.');
+        expect(dialogText).to.not.include('The agent stops running it');
+      } finally {
+        confirmStub.restore();
+        resetConfirmDialogForTests();
+      }
     });
   });
 });

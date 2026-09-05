@@ -707,7 +707,7 @@ export class RuntimeSessionsView extends LitElement {
         this.syncUrl();
       }
       // Paint the session list immediately. Detail/activity/events are owned by
-      // <preloop-session-observer> and load after selection — do not block the
+      // <preloop-session-observer> and load after selection, do not block the
       // list on getAccountRuntimeSessionDetail.
     } catch (error) {
       console.error('Failed to load sessions:', error);
@@ -990,41 +990,6 @@ export class RuntimeSessionsView extends LitElement {
     }).format(new Date(value));
   }
 
-  private getActivityBadgeVariant(status: string | null | undefined) {
-    if (!status) {
-      return 'neutral';
-    }
-    if (status === 'failed' || status === 'error') {
-      return 'danger';
-    }
-    if (status === 'info' || status === 'completed') {
-      return 'neutral';
-    }
-    return 'success';
-  }
-
-  private formatAuthAttribution(
-    item:
-      | GatewayUsageSearchResultItem
-      | RuntimeSessionActivityItem
-      | null
-      | undefined
-  ): string | null {
-    if (!item) {
-      return null;
-    }
-    if (item.api_key_name) {
-      return `API token ${item.api_key_name}`;
-    }
-    if (item.api_key_id) {
-      return `API token ${item.api_key_id}`;
-    }
-    if (item.auth_subject_type === 'api_key') {
-      return 'API token';
-    }
-    return null;
-  }
-
   private getSessionDisplayName(session: RuntimeSessionSummary): string {
     return (
       session.runtime_principal_name ??
@@ -1109,84 +1074,6 @@ export class RuntimeSessionsView extends LitElement {
       : 'No sessions yet. A session is recorded automatically the first time an onboarded agent makes a model or tool call through the gateway. Onboard an agent from the Agents page to see your first one.';
   }
 
-  private renderSessionList() {
-    if (!this.sessions || this.sessions.items.length === 0) {
-      return html`
-        <div class="empty-state">
-          <sl-icon name="collection"></sl-icon>
-          <div>${this.emptySessionsText()}</div>
-        </div>
-      `;
-    }
-
-    return html`
-      ${
-        !this.isPremium
-          ? html`
-              <button
-                class="titles-upsell-hint"
-                @click=${() =>
-                  window.dispatchEvent(
-                    new CustomEvent('show-upgrade-modal', {
-                      detail: {
-                        code: 'upgrade_required',
-                        feature: 'session_titles',
-                      },
-                      bubbles: true,
-                      composed: true,
-                    })
-                  )}
-              >
-                <sl-icon name="stars"></sl-icon>
-                Sessions are shown with fallback names — AI titles are a Teams
-                feature. Upgrade to enable.
-              </button>
-            `
-          : ''
-      }
-      <div class="session-list">
-        ${this.sessions.items.map(
-          (session) => html`
-            <button
-              class="session-item ${
-                session.id === this.selectedSessionId ? 'selected' : ''
-              }"
-              @click=${() => this.selectSession(session.id)}
-            >
-              <div
-                style="display: flex; justify-content: space-between; gap: var(--sl-spacing-small); align-items: start;"
-              >
-                <div class="session-item-title">
-                  ${this.getSessionDisplayName(session)}
-                </div>
-                <sl-badge variant=${this.getSessionVariant(session)}>
-                  ${this.getSessionLabel(session)}
-                </sl-badge>
-              </div>
-              <div class="session-item-meta">
-                ${this.getSourceLabel(session.session_source_type)} ·
-                ${session.latest_model_alias || 'No model recorded'}
-              </div>
-              <div class="session-item-meta">
-                ${this.formatNumber(session.total_requests)} requests ·
-                ${this.formatNumber(session.token_usage.total_tokens)} tokens ·
-                ${this.formatCost(session.estimated_cost)}
-              </div>
-              <div class="session-item-meta">
-                Last activity
-                ${this.formatDateTime(
-                  session.last_request_at ||
-                    session.last_activity_at ||
-                    session.started_at
-                )}
-              </div>
-            </button>
-          `
-        )}
-      </div>
-    `;
-  }
-
   private renderModelBreakdown(models: GatewayUsageByModel[]) {
     if (models.length === 0) {
       return html`
@@ -1224,204 +1111,6 @@ export class RuntimeSessionsView extends LitElement {
               </div>
               <div class="cell-numeric">
                 ${this.formatCost(model.estimated_cost)}
-              </div>
-            </div>
-          `
-        )}
-      </div>
-    `;
-  }
-
-  private renderInteractions(
-    items: GatewayUsageSearchResultItem[] | undefined,
-    loading: boolean
-  ) {
-    if (loading) {
-      return html`
-        <div class="empty-state">
-          <sl-spinner
-            style="font-size: 2rem; margin-bottom: 1rem;"
-          ></sl-spinner>
-          <div class="empty-state-subtitle">Loading interactions...</div>
-        </div>
-      `;
-    }
-    const query = this.interactionQuery.trim();
-    if (!items || items.length === 0) {
-      return html`
-        <div class="empty-state">
-          <sl-icon name="search"></sl-icon>
-          <div>
-            ${
-              query
-                ? `No captured interactions matched "${query}".`
-                : 'No captured interactions matched this session filter.'
-            }
-          </div>
-        </div>
-      `;
-    }
-
-    return html`
-      <div class="interaction-list">
-        <div class="search-summary">
-          Showing ${items.length} captured
-          interaction${items.length === 1 ? '' : 's'}${
-            query ? ` for "${query}"` : ''
-          }.
-        </div>
-        ${items.map(
-          (item) => html`
-            <div class="interaction-row">
-              <div class="interaction-header">
-                <div>
-                  <div class="interaction-title">
-                    ${item.model_alias || 'Unknown model'}
-                    ${item.provider_name ? html`· ${item.provider_name}` : ''}
-                  </div>
-                  <div class="interaction-meta">
-                    ${item.method} ${item.endpoint} ·
-                    ${this.formatDateTime(item.timestamp)}
-                  </div>
-                </div>
-                <sl-badge
-                  variant=${item.outcome === 'error' ? 'danger' : 'success'}
-                >
-                  ${item.outcome}
-                </sl-badge>
-              </div>
-              <div class="interaction-excerpt">${item.excerpt}</div>
-              <div class="interaction-meta">
-                ${this.formatNumber(item.token_usage.total_tokens)} tokens ·
-                ${this.formatCost(item.estimated_cost)}
-                ${
-                  this.formatAuthAttribution(item)
-                    ? html` · ${this.formatAuthAttribution(item)}`
-                    : ''
-                }
-              </div>
-            </div>
-          `
-        )}
-      </div>
-    `;
-  }
-
-  private renderActivityTimeline(
-    items: RuntimeSessionActivityItem[] | null,
-    loading: boolean
-  ) {
-    if (loading) {
-      return html`
-        <div class="empty-state">
-          <sl-spinner
-            style="font-size: 2rem; margin-bottom: 1rem;"
-          ></sl-spinner>
-          <div class="empty-state-subtitle">Loading activity timeline...</div>
-        </div>
-      `;
-    }
-    if (!items || items.length === 0) {
-      return html`
-        <div class="empty-state">
-          <sl-icon name="clock-history"></sl-icon>
-          <div>No activity has been captured for this session yet.</div>
-        </div>
-      `;
-    }
-
-    return html`
-      <div class="interaction-list">
-        ${items.map(
-          (item) => html`
-            <div class="interaction-row">
-              <div class="interaction-header">
-                <div>
-                  <div class="interaction-title">${item.title}</div>
-                  <div class="interaction-meta">
-                    ${
-                      item.activity_type === 'tool_call'
-                        ? html`
-                            Tool call
-                            ${item.server_name ? html`· ${item.server_name}` : ''}
-                          `
-                        : item.activity_type === 'session_started'
-                          ? html`Session lifecycle`
-                          : item.activity_type === 'session_ended'
-                            ? html`Session lifecycle`
-                            : html`Model interaction`
-                    }
-                    · ${this.formatDateTime(item.timestamp)}
-                  </div>
-                </div>
-                ${
-                  item.status
-                    ? html`
-                        <sl-badge
-                          variant=${this.getActivityBadgeVariant(item.status)}
-                        >
-                          ${item.status}
-                        </sl-badge>
-                      `
-                    : ''
-                }
-              </div>
-              ${
-                item.summary
-                  ? html`<div class="interaction-excerpt">${item.summary}</div>`
-                  : ''
-              }
-              <div class="interaction-meta">
-                ${
-                  item.total_tokens !== null && item.total_tokens !== undefined
-                    ? html`${this.formatNumber(item.total_tokens)} tokens`
-                    : ''
-                }
-                ${
-                  item.total_tokens !== null &&
-                  item.total_tokens !== undefined &&
-                  item.estimated_cost !== null &&
-                  item.estimated_cost !== undefined
-                    ? html` · `
-                    : ''
-                }
-                ${
-                  item.estimated_cost !== null &&
-                  item.estimated_cost !== undefined
-                    ? html`${this.formatCost(item.estimated_cost)}`
-                    : ''
-                }
-                ${
-                  this.formatAuthAttribution(item)
-                    ? html`
-                        ${
-                          (item.total_tokens !== null &&
-                            item.total_tokens !== undefined) ||
-                          (item.estimated_cost !== null &&
-                            item.estimated_cost !== undefined)
-                            ? html` · `
-                            : ''
-                        }
-                        ${this.formatAuthAttribution(item)}
-                      `
-                    : ''
-                }
-                ${
-                  item.is_retry || (item.gateway_attempt || 1) > 1
-                    ? html`
-                        ${
-                          (item.total_tokens !== null &&
-                            item.total_tokens !== undefined) ||
-                          (item.estimated_cost !== null &&
-                            item.estimated_cost !== undefined) ||
-                          this.formatAuthAttribution(item)
-                            ? html` · `
-                            : ''
-                        }
-                        retry #${item.gateway_attempt || 2}
-                      `
-                    : ''
-                }
               </div>
             </div>
           `
@@ -1886,7 +1575,7 @@ export class RuntimeSessionsView extends LitElement {
     return html`
       <view-header
         headerText="Sessions"
-        description="Everything your agents did, as it happened — prompts, responses, tool calls, and cost per session. Follow live or replay later."
+        description="Everything your agents did, as it happened: prompts, responses, tool calls, and cost per session. Follow live or replay later."
         width="extra-wide"
       ></view-header>
       <div class="dashboard extra-wide">

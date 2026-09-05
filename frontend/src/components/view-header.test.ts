@@ -2,6 +2,7 @@ import { html, fixture, expect } from '@open-wc/testing';
 
 import './view-header';
 import type { ViewHeader } from './view-header';
+import { PHONE_WIDTH, renderInPhoneFrame } from '../test-helpers/phone-frame';
 
 describe('ViewHeader', () => {
   it('renders the headerText as the page title', async () => {
@@ -56,6 +57,81 @@ describe('ViewHeader', () => {
     expect(slot.assignedElements()[0]?.textContent).to.equal(
       'Updated just now'
     );
+  });
+
+  it('wraps the actions onto their own row on a phone', async () => {
+    // Agents slots two buttons in one nowrap flex row; at 390px they used to
+    // run off the right edge with only the "+" of the primary visible.
+    const { element, frameWindow, cleanup } =
+      await renderInPhoneFrame<ViewHeader>({
+        moduleUrl: new URL('./view-header.ts', import.meta.url).href,
+        tagName: 'view-header',
+        markup: `
+        <view-header headerText="Agents">
+          <div
+            slot="main-column"
+            style="display: flex; gap: 12px; align-items: center;"
+          >
+            <button style="width: 200px">Deploy new agent</button>
+            <button id="primary" style="width: 220px">
+              Onboard existing agent
+            </button>
+          </div>
+        </view-header>
+      `,
+      });
+
+    try {
+      const header = element.shadowRoot?.querySelector(
+        '.header'
+      ) as HTMLElement;
+      expect(frameWindow.getComputedStyle(header).flexWrap).to.equal('wrap');
+
+      const actions = element.querySelector(
+        '[slot="main-column"]'
+      ) as HTMLElement;
+      // The actions row owns the full phone width, so it can wrap inside.
+      expect(Math.round(actions.getBoundingClientRect().width)).to.equal(
+        PHONE_WIDTH
+      );
+      expect(frameWindow.getComputedStyle(actions).flexWrap).to.equal('wrap');
+
+      const primary = element.querySelector('#primary') as HTMLElement;
+      const box = primary.getBoundingClientRect();
+      expect(box.left).to.be.at.least(0);
+      expect(box.right).to.be.at.most(PHONE_WIDTH);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('keeps the actions beside the title on a desktop viewport', async () => {
+    const { element, frameWindow, cleanup } =
+      await renderInPhoneFrame<ViewHeader>({
+        moduleUrl: new URL('./view-header.ts', import.meta.url).href,
+        tagName: 'view-header',
+        width: 1024,
+        markup: `
+        <view-header headerText="Agents">
+          <div slot="main-column" style="display: flex; gap: 12px;">
+            <button style="width: 200px">Deploy new agent</button>
+          </div>
+        </view-header>
+      `,
+      });
+
+    try {
+      const header = element.shadowRoot?.querySelector(
+        '.header'
+      ) as HTMLElement;
+      expect(frameWindow.getComputedStyle(header).flexWrap).to.equal('nowrap');
+      const actions = element.querySelector(
+        '[slot="main-column"]'
+      ) as HTMLElement;
+      expect(actions.getBoundingClientRect().width).to.be.below(1024);
+    } finally {
+      cleanup();
+    }
   });
 
   it('renders no description element when description is not set', async () => {

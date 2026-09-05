@@ -588,7 +588,7 @@ function mostCommonError(
 ): { message: string; count: number; total: number } | undefined {
   const counts = new Map<string, number>();
   for (const run of runs) {
-    const message = firstLine(run.errorMessage);
+    const message = errorHeadline(run.errorMessage);
     if (!message) continue;
     counts.set(message, (counts.get(message) || 0) + 1);
   }
@@ -604,6 +604,45 @@ function mostCommonError(
 /** Errors arrive with stack traces attached; the row shows the first line. */
 export function firstLine(text: string | null | undefined): string {
   return (text || '').split('\n')[0].trim();
+}
+
+/**
+ * Log plumbing at the head of a line: `timestamp=2026-09-03T19:32:45.726Z`
+ * and `level=error`, quoted or bare. Runners hand the executor a logfmt line,
+ * so the error a run recorded often starts with the two fields that say the
+ * least: the timestamp is already in the Started column and the level is
+ * always "error" on a failed run.
+ */
+const LOG_PREFIX_TOKEN =
+  /^(?:timestamp|time|ts|level|lvl|severity)=(?:"[^"]*"|'[^']*'|\S*)\s*/i;
+
+/** Strip the leading logfmt plumbing from one line. */
+export function stripLogPrefix(text: string | null | undefined): string {
+  let rest = (text || '').trim();
+  let previous = '';
+  while (rest && rest !== previous) {
+    previous = rest;
+    rest = rest.replace(LOG_PREFIX_TOKEN, '').trim();
+  }
+  return rest;
+}
+
+/**
+ * The one line that says what went wrong: the first line of the error with
+ * its log prefix removed. A line that is nothing but prefix ("timestamp=...
+ * level=error") is skipped for the next line that carries words; if every
+ * line is plumbing the raw first line is kept, because a console that hides
+ * what it cannot parse stops being a record.
+ */
+export function errorHeadline(text: string | null | undefined): string {
+  const lines = (text || '').split('\n');
+  for (const line of lines) {
+    const stripped = stripLogPrefix(line);
+    if (stripped) {
+      return stripped;
+    }
+  }
+  return firstLine(text);
 }
 
 function modelItems(
