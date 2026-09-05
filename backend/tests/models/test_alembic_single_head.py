@@ -104,4 +104,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert notifications.down_revision == "20260904_flow_exec_workspace"
     cli_session = script.get_revision("20260905_flow_cli_session")
     assert cli_session.down_revision == "20260904_flow_notifications"
-    assert script.get_heads() == ["20260905_flow_cli_session"]
+    heartbeat = script.get_revision("20260905_control_heartbeat")
+    assert heartbeat.down_revision == "20260905_flow_cli_session"
+    assert script.get_heads() == ["20260905_control_heartbeat"]

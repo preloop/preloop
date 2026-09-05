@@ -1,7 +1,7 @@
 """Dedicated Agent Control heartbeat timestamp on managed agents.
 
 Revision ID: 20260905_control_heartbeat
-Revises: 20260904_flow_notifications
+Revises: 20260905_flow_cli_session
 Create Date: 2026-09-05
 """
 

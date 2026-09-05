@@ -454,6 +454,9 @@ export class SessionChatView extends LitElement {
     window.addEventListener('pointercancel', this.handlePointerUp);
     // The release half of a scrollbar-thumb drag is a `mouseup` as well.
     window.addEventListener('mouseup', this.handlePointerUp);
+    // A drag released outside the window never fires up events; blur unlatches
+    // `pointerDown` so a later layout scroll is not treated as a gesture.
+    window.addEventListener('blur', this.handlePointerUp);
   }
 
   updated(changed: PropertyValues<this>): void {
@@ -482,6 +485,7 @@ export class SessionChatView extends LitElement {
     window.removeEventListener('pointerup', this.handlePointerUp);
     window.removeEventListener('pointercancel', this.handlePointerUp);
     window.removeEventListener('mouseup', this.handlePointerUp);
+    window.removeEventListener('blur', this.handlePointerUp);
     this.releaseThread();
     this.contentObserver?.disconnect();
     this.contentObserver = null;

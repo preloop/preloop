@@ -587,6 +587,35 @@ describe('session-chat-view in the talk window', () => {
     ).to.not.exist;
   });
 
+  it('clears a latched pointer on window blur so layout can re-stick', async () => {
+    // Releasing a scrollbar thumb outside the window never fires mouseup /
+    // pointerup. Without blur, pointerDown stays true and every later layout
+    // scroll is treated as the reader dragging away.
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view
+        scrollable
+        followLive
+        style="height: 200px"
+        .events=${manyEvents(12)}
+      ></session-chat-view>`
+    );
+    await el.updateComplete;
+    const thread = el.shadowRoot!.querySelector('.thread') as HTMLElement;
+
+    thread.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    window.dispatchEvent(new Event('blur'));
+    await new Promise((resolve) => setTimeout(resolve, 750));
+
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new Event('scroll'));
+    await el.updateComplete;
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="jump-latest"]'),
+      'layout must not switch following off after a drag leaves the window'
+    ).to.not.exist;
+    expect(distanceFromBottom(thread)).to.be.lessThan(2);
+  });
+
   it('rebinds the thread after a session switch empties it', async () => {
     const el = await fixture<SessionChatView>(
       html`<session-chat-view

@@ -65,12 +65,11 @@ EVICTION_CLOSE_CODE: int = 4000
 # agent, and how many of those windows may pass in silence before the socket is
 # closed.
 #
-# Two windows is 120s, past the 90s presence TTL. A half-open socket (a closed
-# laptop lid, a network that dropped without sending a FIN) would otherwise keep
-# this replica answering "online" from its in-process registry for as long as
-# the kernel holds the connection, while every other replica has already timed
-# the heartbeat out. Closing runs the disconnect path, which drops the registry
-# entry and clears the heartbeat, so all replicas agree again.
+# Presence itself is retired by the ~90s heartbeat TTL, independent of this
+# close. Two windows is 120s: that is how long a half-open socket (a closed
+# laptop lid, a network that dropped without sending a FIN) can occupy this
+# replica. Closing frees the dead connection so a wedged plugin can reconnect,
+# and the disconnect path can drop the registry entry and clear the heartbeat.
 AGENT_CONTROL_RECEIVE_TIMEOUT_SECONDS: float = 60.0
 AGENT_CONTROL_MAX_SILENT_RECEIVES: int = 2
 
