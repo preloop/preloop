@@ -1155,6 +1155,16 @@ class GeneratePolicyRequest(BaseModel):
             "for the LLM (recommended for more accurate generation)"
         ),
     )
+    scope_mcp_server_name: Optional[str] = Field(
+        None,
+        description=(
+            "When set, starter-policy generation scopes LLM context and "
+            "raw model output to this MCP server. The merge still restores "
+            "all current tools so the diff preview only shows this "
+            "server's changes. Older clients that omit the field fall "
+            "back to matching the prompt text."
+        ),
+    )
 
 
 class GeneratePolicyFromAuditRequest(BaseModel):
@@ -1232,7 +1242,10 @@ async def generate_policy(
         # are not thread-safe and must not be shared across threads.
         model = service._resolve_model()
         context_block = (
-            service._build_context_block(request.prompt)
+            service._build_context_block(
+                request.prompt,
+                scope_mcp_server_name=request.scope_mcp_server_name,
+            )
             if request.include_current_config
             else ""
         )
@@ -1250,7 +1263,9 @@ async def generate_policy(
         )
         if request.include_current_config:
             yaml_output = service._merge_preserving_unrelated(
-                yaml_output, request.prompt
+                yaml_output,
+                request.prompt,
+                scope_mcp_server_name=request.scope_mcp_server_name,
             )
         warnings = service._validate_output(yaml_output)
         result = {"yaml": yaml_output, "warnings": warnings}
