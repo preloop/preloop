@@ -22,10 +22,13 @@ import {
 import { getAgentControlState } from '../utils/agent-control';
 import { getTrackerEventOptions } from '../constants/tracker-event-types';
 import consoleStyles from '../styles/console-styles.css?inline';
+import { consoleDialogStyles } from '../styles/console-dialog';
 import './add-tracker-modal';
 import './add-ai-model-modal';
 import './schedule-config-editor';
 import { defaultScheduleConfig } from './schedule-config-editor';
+import './preloop-flow-preset-picker';
+import { BLANK_PRESET_ID } from './preloop-flow-preset-picker';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
@@ -39,11 +42,13 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
+import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 
 @customElement('preloop-flow-form')
 export class PreloopFlowForm extends LitElement {
   static styles = [
     unsafeCSS(consoleStyles),
+    consoleDialogStyles,
     css`
       :host {
         display: block;
@@ -117,31 +122,6 @@ export class PreloopFlowForm extends LitElement {
         color: var(--sl-color-neutral-600);
         font-size: var(--sl-font-size-small);
       }
-
-      .creation-mode-toggle {
-        margin-bottom: var(--sl-spacing-large);
-        padding: var(--sl-spacing-medium);
-        background: var(--sl-color-neutral-50);
-        border-radius: 8px;
-        border: 1px solid var(--sl-color-neutral-200);
-      }
-      .creation-mode-toggle h3 {
-        margin: 0 0 var(--sl-spacing-small) 0;
-        font-size: 1rem;
-      }
-      .preset-card {
-        cursor: pointer;
-        transition:
-          transform 0.2s ease,
-          box-shadow 0.2s ease;
-      }
-      .preset-card::part(base) {
-        height: 100%;
-      }
-      .preset-card:hover {
-        transform: translateY(-2px);
-        box-shadow: var(--sl-shadow-large);
-      }
     `,
   ];
 
@@ -200,10 +180,24 @@ export class PreloopFlowForm extends LitElement {
   private presets: any[] = [];
 
   @state()
-  private creationMode: 'scratch' | 'preset' = 'preset';
+  private sourcePresetId: string | null = null;
 
   @state()
-  private sourcePresetId: string | null = null;
+  private pickerSelectedId = '';
+
+  @state()
+  private pickerCollapsed = false;
+
+  @state()
+  private replaceEditsOpen = false;
+
+  private pendingPresetId: string | null = null;
+
+  private presetSnapshot: {
+    prompt_template: string;
+    tools: string;
+    trigger: string;
+  } | null = null;
 
   @state()
   private isAddingTracker = false;
@@ -229,9 +223,6 @@ export class PreloopFlowForm extends LitElement {
 
   willUpdate(changedProperties: Map<string | number | symbol, unknown>) {
     if (changedProperties.has('flow')) {
-      if (this.flow?.id) {
-        this.creationMode = 'scratch';
-      }
       void this.syncTriggerStateFromFlow();
     }
   }
@@ -254,9 +245,6 @@ export class PreloopFlowForm extends LitElement {
       'github-oauth-starting',
       this.handleGithubOauthStarting
     );
-    if (this.flow && this.flow.id) {
-      this.creationMode = 'scratch';
-    }
     await this.loadReferenceData();
   }
 
@@ -334,11 +322,18 @@ export class PreloopFlowForm extends LitElement {
       // Check if preset_id URL parameter is present
       const urlParams = new URLSearchParams(window.location.search);
       const presetId = urlParams.get('preset_id');
-      if (presetId && this.presets.length > 0) {
+      if (presetId) {
         const preset = this.presets.find((p) => p.id === presetId);
         if (preset) {
-          this.selectPreset(preset);
+          await this.selectPreset(preset);
+          this.pickerSelectedId = preset.id;
+          this.pickerCollapsed = true;
+        } else {
+          this.pickerSelectedId = presetId;
+          this.pickerCollapsed = false;
         }
+      } else {
+        this.capturePresetSnapshot();
       }
 
       // Check if agent_id URL parameter is present
@@ -346,7 +341,6 @@ export class PreloopFlowForm extends LitElement {
       if (urlAgentId) {
         this.targetAgentId = urlAgentId;
         this.flowExecutionPath = 'persistent';
-        this.creationMode = 'scratch';
       }
 
       // Initialize flow fields if empty
@@ -845,28 +839,139 @@ export class PreloopFlowForm extends LitElement {
     this.requestUpdate();
   }
 
-  private selectPreset(preset: any) {
-    this.flow = { ...preset };
-    this.sourcePresetId = preset.id;
+  private mapPresetTools(
+    tools: unknown
+  ): Array<{ server_name: string; tool_name: string }> {
+    if (!Array.isArray(tools)) {
+      return [];
+    }
+    return tools.map((tool) => {
+      if (tool && typeof tool === 'object') {
+        const rec = tool as {
+          name?: string;
+          tool_name?: string;
+          server_name?: string;
+        };
+        return {
+          server_name: rec.server_name || 'preloop-mcp',
+          tool_name: rec.tool_name || rec.name || '',
+        };
+      }
+      return { server_name: 'preloop-mcp', tool_name: String(tool) };
+    });
+  }
 
-    if (preset.allowed_mcp_tools && Array.isArray(preset.allowed_mcp_tools)) {
-      this.flow.allowed_mcp_tools = preset.allowed_mcp_tools.map(
-        (tool: { name: string }) => ({
-          server_name: 'preloop-mcp',
-          tool_name: tool.name,
-        })
-      );
+  private capturePresetSnapshot() {
+    this.presetSnapshot = {
+      prompt_template: this.flow.prompt_template || '',
+      tools: JSON.stringify(this.flow.allowed_mcp_tools || []),
+      trigger: JSON.stringify(this.flow.trigger_event_types || []),
+    };
+  }
+
+  private hasPresetEdits(): boolean {
+    if (!this.presetSnapshot) {
+      return false;
+    }
+    return (
+      (this.flow.prompt_template || '') !==
+        this.presetSnapshot.prompt_template ||
+      JSON.stringify(this.flow.allowed_mcp_tools || []) !==
+        this.presetSnapshot.tools ||
+      JSON.stringify(this.flow.trigger_event_types || []) !==
+        this.presetSnapshot.trigger
+    );
+  }
+
+  private handlePickerSelect(event: CustomEvent<{ presetId: string }>) {
+    const presetId = event.detail?.presetId;
+    if (!presetId || presetId === this.pickerSelectedId) {
+      return;
+    }
+    if (this.hasPresetEdits()) {
+      this.pendingPresetId = presetId;
+      this.replaceEditsOpen = true;
+      return;
+    }
+    void this.applyPresetSelection(presetId);
+  }
+
+  private handlePickerChangeRequest() {
+    this.pickerCollapsed = false;
+  }
+
+  private keepEditing() {
+    this.replaceEditsOpen = false;
+    this.pendingPresetId = null;
+  }
+
+  private confirmSwitchPreset() {
+    const presetId = this.pendingPresetId;
+    this.replaceEditsOpen = false;
+    this.pendingPresetId = null;
+    if (presetId) {
+      void this.applyPresetSelection(presetId);
+    }
+  }
+
+  private async applyPresetSelection(presetId: string) {
+    if (presetId === BLANK_PRESET_ID) {
+      this.selectBlankFlow();
     } else {
-      this.flow.allowed_mcp_tools = [];
+      const preset = this.presets.find((item) => item.id === presetId);
+      if (!preset) {
+        return;
+      }
+      await this.selectPreset(preset);
+    }
+    this.pickerSelectedId = presetId;
+    this.pickerCollapsed = true;
+  }
+
+  private selectBlankFlow() {
+    this.sourcePresetId = null;
+    this.flow = {
+      allowed_mcp_servers: ['preloop-mcp'],
+      allowed_mcp_tools: [],
+      git_clone_config: { enabled: false },
+      notifications: defaultFlowNotifications(),
+      is_enabled: true,
+    };
+    this.triggerType = 'webhook';
+    this.capturePresetSnapshot();
+  }
+
+  private async selectPreset(preset: any) {
+    const servers = Array.isArray(preset.allowed_mcp_servers)
+      ? [...preset.allowed_mcp_servers]
+      : [];
+    if (!servers.includes('preloop-mcp')) {
+      servers.push('preloop-mcp');
     }
 
-    if (!this.flow.allowed_mcp_servers?.includes('preloop-mcp')) {
-      this.flow.allowed_mcp_servers = ['preloop-mcp'];
-    }
-
-    this.flow.is_enabled = true;
-    this._autoPopulatePresetFields();
-    this.creationMode = 'scratch';
+    this.flow = {
+      name: preset.name,
+      description: preset.description,
+      icon: preset.icon,
+      prompt_template: preset.prompt_template,
+      trigger_event_types: Array.isArray(preset.trigger_event_types)
+        ? [...preset.trigger_event_types]
+        : undefined,
+      trigger_config: preset.trigger_config ?? undefined,
+      allowed_mcp_servers: servers,
+      allowed_mcp_tools: this.mapPresetTools(preset.allowed_mcp_tools),
+      agent_type: preset.agent_type,
+      agent_config: preset.agent_config,
+      git_clone_config: preset.git_clone_config,
+      timeout_seconds: preset.timeout_seconds,
+      max_iterations: preset.max_iterations,
+      max_budget: preset.max_budget,
+      custom_commands: preset.custom_commands,
+      is_enabled: true,
+    };
+    this.sourcePresetId = preset.id;
+    await this._autoPopulatePresetFields();
+    this.capturePresetSnapshot();
   }
 
   private async _autoPopulatePresetFields() {
@@ -875,16 +980,18 @@ export class PreloopFlowForm extends LitElement {
       this.flow.trigger_event_source = tracker.id;
       this.triggerType = 'tracker';
 
-      if (tracker.tracker_type === 'github') {
-        this.flow.trigger_event_types = [
-          'pull_request_opened',
-          'pull_request_updated',
-        ];
-      } else if (tracker.tracker_type === 'gitlab') {
-        this.flow.trigger_event_types = [
-          'merge_request_opened',
-          'merge_request_updated',
-        ];
+      if (!this.flow.trigger_event_types?.length) {
+        if (tracker.tracker_type === 'github') {
+          this.flow.trigger_event_types = [
+            'pull_request_opened',
+            'pull_request_updated',
+          ];
+        } else if (tracker.tracker_type === 'gitlab') {
+          this.flow.trigger_event_types = [
+            'merge_request_opened',
+            'merge_request_updated',
+          ];
+        }
       }
 
       const allOrganizations = await listOrganizations().catch(() => []);
@@ -934,82 +1041,6 @@ export class PreloopFlowForm extends LitElement {
     }
 
     this.requestUpdate();
-  }
-
-  private renderCreationModeSelector() {
-    return html`
-      <div class="creation-mode-toggle">
-        <h3
-          style="margin: 0 0 var(--sl-spacing-small) 0; font-size: 1rem; font-weight: 600;"
-        >
-          How would you like to start?
-        </h3>
-        <p
-          style="margin: 0 0 var(--sl-spacing-small) 0; color: var(--sl-color-neutral-600); font-size: var(--sl-font-size-small);"
-        >
-          Choose whether to build a flow from scratch or start from a preset
-          template.
-        </p>
-        <sl-radio-group
-          value=${this.creationMode}
-          @sl-change=${(event: CustomEvent) => {
-            this.creationMode = (event.target as HTMLInputElement).value as
-              'scratch' | 'preset';
-            this.requestUpdate();
-          }}
-        >
-          <sl-radio value="scratch">Create from scratch</sl-radio>
-          <sl-radio value="preset">Use a preset template</sl-radio>
-        </sl-radio-group>
-      </div>
-    `;
-  }
-
-  private renderPresets() {
-    const sortedPresets = [...this.presets].sort((a, b) => {
-      const aIsPR = a.name?.toLowerCase().includes('pull request reviewer')
-        ? 0
-        : 1;
-      const bIsPR = b.name?.toLowerCase().includes('pull request reviewer')
-        ? 0
-        : 1;
-      return aIsPR - bIsPR;
-    });
-
-    return html`
-      ${this.renderCreationModeSelector()}
-      <h2
-        style="font-size: var(--sl-font-size-large); font-weight: 600; color: var(--sl-color-neutral-800); margin: var(--sl-spacing-large) 0 var(--sl-spacing-medium) 0;"
-      >
-        Select a Preset
-      </h2>
-      <div class="form-grid" style="margin-bottom: var(--sl-spacing-large);">
-        ${sortedPresets.map(
-          (preset) => html`
-            <sl-card
-              class="preset-card"
-              @click=${() => this.selectPreset(preset)}
-            >
-              <div slot="header" style="font-weight: 600;">${preset.name}</div>
-              ${preset.description}
-            </sl-card>
-          `
-        )}
-      </div>
-      <div
-        style="display: flex; gap: var(--sl-spacing-medium); justify-content: flex-end; margin-bottom: var(--sl-spacing-2x-large);"
-      >
-        <sl-button variant="default" @click=${this.handleCancel}>
-          Cancel
-        </sl-button>
-        <sl-button
-          variant="primary"
-          @click=${() => (this.creationMode = 'scratch')}
-        >
-          Create from scratch
-        </sl-button>
-      </div>
-    `;
   }
 
   private renderEventFilters() {
@@ -1422,10 +1453,6 @@ export class PreloopFlowForm extends LitElement {
       `;
     }
 
-    if (!this.flow.id && this.creationMode === 'preset') {
-      return this.renderPresets();
-    }
-
     let selectableModels = this.models.filter(
       (m) => m.model_kind !== 'stt' && m.model_kind !== 'tts'
     );
@@ -1461,9 +1488,53 @@ export class PreloopFlowForm extends LitElement {
         @close-modal=${this.closeAIModelDialog}
       ></add-ai-model-modal>
 
-      ${!this.flow.id ? this.renderCreationModeSelector() : ''}
+      ${
+        this.replaceEditsOpen
+          ? html`
+              <sl-dialog
+                label="Replace your edits?"
+                open
+                @sl-request-close=${this.keepEditing}
+              >
+                <p>
+                  Switching presets replaces the prompt, tools and trigger you
+                  changed.
+                </p>
+                <sl-button
+                  slot="footer"
+                  variant="default"
+                  type="button"
+                  @click=${this.keepEditing}
+                >
+                  Keep editing
+                </sl-button>
+                <sl-button
+                  slot="footer"
+                  variant="primary"
+                  type="button"
+                  @click=${this.confirmSwitchPreset}
+                >
+                  Switch preset
+                </sl-button>
+              </sl-dialog>
+            `
+          : nothing
+      }
 
       <form @submit=${this.handleFormSubmit}>
+        ${
+          !this.flow.id
+            ? html`
+                <preloop-flow-preset-picker
+                  .presets=${this.presets}
+                  .selectedId=${this.pickerSelectedId}
+                  ?collapsed=${this.pickerCollapsed}
+                  @preset-select=${this.handlePickerSelect}
+                  @preset-change-request=${this.handlePickerChangeRequest}
+                ></preloop-flow-preset-picker>
+              `
+            : nothing
+        }
         <sl-card>
           <div slot="header" class="card-header-title">
             <sl-icon name="info-circle"></sl-icon> Flow Information
