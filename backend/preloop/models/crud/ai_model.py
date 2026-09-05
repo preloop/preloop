@@ -635,6 +635,16 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 if self._model_kind(existing_model) == target_model_kind:
                     existing_model.is_default = False
 
+        # An explicit ``credentials_secret_id: null`` survives ``exclude_unset``
+        # and would otherwise NULL the column and garbage-collect the secret
+        # it pointed at. Detaching a credential is not an update operation;
+        # treat null as "unchanged" so a stray PUT cannot destroy a live
+        # OAuth lineage shared by sibling rows.
+        if "credentials_secret_id" in obj_data and (
+            obj_data["credentials_secret_id"] is None
+        ):
+            obj_data.pop("credentials_secret_id")
+
         previous_secret_id = db_obj.credentials_secret_id
         self._apply_secret_reference_fields(
             db,

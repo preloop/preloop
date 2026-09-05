@@ -142,3 +142,39 @@ def test_update_repoint_rejects_secret_from_another_account(
 
     db_session.refresh(stray)
     assert stray.credentials_secret_id != owned.credentials_secret_id
+
+
+def test_update_with_null_credentials_secret_id_keeps_secret(
+    db_session: Session, create_account
+):
+    """An explicit ``credentials_secret_id: null`` must not detach or GC the secret.
+
+    Review finding 1: now that the field survives ``exclude_unset``, a raw
+    ``PUT {"credentials_secret_id": null}`` would NULL the column and reap the
+    orphaned SecretReference, destroying a live OAuth lineage. It must stay a
+    no-op, as it was before the field existed on the update schema.
+    """
+    account: Account = create_account()
+
+    model = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Claude Sonnet",
+            "provider_name": "anthropic",
+            "model_identifier": "claude-sonnet-4-5",
+            "api_key": "sonnet-lineage-key",
+        },
+        account_id=account.id,
+    )
+    secret_id = model.credentials_secret_id
+    assert secret_id is not None
+
+    updated = crud_ai_model.update(
+        db=db_session,
+        db_obj=model,
+        obj_in={"credentials_secret_id": None, "name": "Claude Sonnet (renamed)"},
+    )
+
+    assert updated.name == "Claude Sonnet (renamed)"
+    assert updated.credentials_secret_id == secret_id
+    assert db_session.get(SecretReference, secret_id) is not None
