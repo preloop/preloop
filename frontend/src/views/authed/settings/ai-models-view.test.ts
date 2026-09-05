@@ -215,10 +215,12 @@ describe('AIModelsView', () => {
     expect(
       filterModels(models, '', 'OpenAI', '').map((m) => m.id)
     ).to.deep.equal(['model-2']);
+    expect(isGatewayEnabled(models[0])).to.equal(false);
+    expect(isGatewayEnabled(secondModel as AIModel)).to.equal(false);
     expect(
       filterModels(models, '', '', 'disabled').map((m) => m.id)
-    ).to.deep.equal(['model-2']);
-    expect(isGatewayEnabled(secondModel as AIModel)).to.equal(false);
+    ).to.deep.equal(['model-1', 'model-2']);
+    expect(filterModels(models, '', '', 'enabled')).to.deep.equal([]);
   });
 
   it('narrows list rows when search matches one model', async () => {

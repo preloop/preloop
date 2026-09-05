@@ -39,9 +39,9 @@ const VIEW_MODE_KEY = 'preloop.models.view_mode';
 export function isGatewayEnabled(model: AIModel): boolean {
   const gateway = model.meta_data?.gateway;
   if (!gateway || typeof gateway !== 'object') {
-    return true;
+    return false;
   }
-  return (gateway as { enabled?: boolean }).enabled !== false;
+  return (gateway as { enabled?: boolean }).enabled === true;
 }
 
 export function filterModels(
