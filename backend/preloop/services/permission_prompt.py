@@ -13,12 +13,15 @@ JSON-stringified decision in Claude's behavior schema::
 
 This module implements the decision logic behind the ``permission_prompt``
 builtin (registered in ``initialize_mcp.py``; metadata in
-``tools/builtin_defs.py``). It reuses the exact machinery of the agents
-permission-check endpoint (``agent_permission_service``): workflow resolution
-(per-agent subject-governance pin -> account default -> auto-created "Agent
-Tool Approvals"), ToolConfiguration rows under ``tool_source="agent"`` so
-these approvals share analytics/policy with the PreToolUse-hook path, and the
-``native_tool_approvals: "off"`` standing bypass (recorded, auto-approved).
+``tools/builtin_defs.py``). It reuses the machinery of the agents
+permission-check endpoint (``agent_permission_service``): native access
+rules on the agent-source configuration (a matching rule wins, including
+deny without creating a request), workflow resolution (per-agent
+subject-governance pin -> account default -> auto-created "Agent Tool
+Approvals"), ToolConfiguration rows under ``tool_source="agent"`` so
+these approvals share analytics/policy with the PreToolUse-hook path, and
+the ``native_tool_approvals: "off"`` standing bypass (recorded,
+auto-approved) when no rule matches.
 
 Timeout mismatch — the explicit design decision
 -----------------------------------------------
@@ -64,6 +67,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from preloop.models import models
 from preloop.models.db.session import get_async_db_session
 from preloop.services.agent_permission_service import (
+    apply_native_access_rules,
     native_tool_approvals_disabled,
     resolve_tool_config,
     resolve_workflow,
@@ -311,6 +315,36 @@ async def evaluate_permission_prompt(
             db, account_id, user_id, managed_agent_id=managed_agent_id
         )
         config = await resolve_tool_config(db, account_id, tool_name, workflow.id)
+        rule_outcome = await apply_native_access_rules(
+            db,
+            config=config,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            account_id=account_id,
+            user_id=user_id,
+            managed_agent_id=managed_agent_id,
+            runtime_session_id=runtime_session_id,
+        )
+        if rule_outcome is not None:
+            action, reason, rule_wf_id, rule_ctx = rule_outcome
+            if action == "deny":
+                return _deny(reason)
+            if action == "allow":
+                return _allow(tool_input)
+            if action == "require_approval" and rule_wf_id is not None:
+                rule_wf_result = await db.execute(
+                    select(models.ApprovalWorkflow)
+                    .where(
+                        models.ApprovalWorkflow.id == rule_wf_id,
+                        models.ApprovalWorkflow.account_id == account_id,
+                    )
+                    .limit(1)
+                )
+                rule_workflow = rule_wf_result.scalars().first()
+                if rule_workflow is not None:
+                    workflow = rule_workflow
+        else:
+            rule_ctx = None
 
         tool_args = dict(tool_input)
         tool_args[FINGERPRINT_KEY] = fingerprint
@@ -334,15 +368,19 @@ async def evaluate_permission_prompt(
             managed_agent_name=managed_agent_name,
             standing_bypass_reason=(
                 models.AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF
-                if approvals_off
+                if approvals_off and rule_outcome is None
                 else None
             ),
-            # The agent's own permission prompt escalated this; no Preloop
-            # access rule was evaluated. State that plainly.
-            rule_context=build_rule_context(
-                source=SOURCE_AGENT_PERMISSION_HOOK,
-                decision="require_approval",
-                rule_name="Agent permission prompt",
+            # A matching require_approval rule carries its own context.
+            # Otherwise the permission prompt escalated and no rule decided.
+            rule_context=(
+                rule_ctx
+                if rule_outcome is not None and rule_ctx is not None
+                else build_rule_context(
+                    source=SOURCE_AGENT_PERMISSION_HOOK,
+                    decision="require_approval",
+                    rule_name="Agent permission prompt",
+                )
             ),
         )
         request_id = str(approval.id)
