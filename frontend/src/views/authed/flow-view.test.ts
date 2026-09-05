@@ -262,6 +262,12 @@ describe('FlowView detail page language', () => {
       expect(row.querySelectorAll('td')[2].getAttribute('title')).to.be.a(
         'string'
       );
+      // The row click is a convenience on top of a real anchor: without it a
+      // keyboard user and cmd-click have no route from this card to a run.
+      const runLink = row.querySelector('td:nth-child(3) a.row-link')!;
+      expect(runLink.getAttribute('href')).to.equal(
+        '/console/flows/executions/dee1da93-6d1e-4c0e-9f3a-2b1d0c4e5f60'
+      );
 
       const link = element.shadowRoot!.querySelector('.all-executions a')!;
       expect((link.textContent || '').trim()).to.equal(
