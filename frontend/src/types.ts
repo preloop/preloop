@@ -514,6 +514,8 @@ export interface ManagedAgentSummary {
   supports_voice?: boolean;
   supports_interrupt?: boolean;
   control_session_mode?: 'local' | 'remote' | 'queued' | 'offline' | string;
+  /** Last Agent Control heartbeat, so the age of the presence signal is readable. */
+  control_last_heartbeat_at?: string | null;
   supported_input_modes?: string[];
   supported_output_modes?: string[];
 }
