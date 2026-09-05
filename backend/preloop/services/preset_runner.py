@@ -137,7 +137,7 @@ def _repository_clone_fields(project: Any, tracker: Any) -> Dict[str, Any]:
     which builds ``https://{host}/{slug}.git``.
     """
     slug = project.slug or project.name or ""
-    name = project.name or slug.split("/")[-1] if slug else ""
+    name = project.name or (slug.split("/")[-1] if slug else "")
     tracker_type = (getattr(tracker, "tracker_type", "") or "").lower()
     default_branch = _default_branch(project)
     if "gitlab" in tracker_type:
@@ -244,20 +244,36 @@ def resolve_or_create_flow(
 
     try:
         created = clone_preset_for_account(
-            db, preset, account_id, name=preset.name, flow_crud=crud
+            db,
+            preset,
+            account_id,
+            name=preset.name,
+            flow_crud=crud,
+            clear_event_triggers=True,
         )
     except HTTPException as exc:
         raise _http(exc.status_code, exc.detail) from exc
     return created, True
 
 
+def _git_tracker_kind(tracker: Any) -> str:
+    """Return ``github`` or ``gitlab``, or raise 400 for other tracker types."""
+    tracker_type = (getattr(tracker, "tracker_type", "") or "").lower()
+    if "gitlab" in tracker_type:
+        return "gitlab"
+    if "github" in tracker_type:
+        return "github"
+    raise _http(
+        400,
+        "Run implementer is only available for GitHub and GitLab issues",
+    )
+
+
 def build_issue_trigger_payload(
     issue: Any, project: Any, tracker: Any
 ) -> Dict[str, Any]:
     """Build ``trigger_event_data`` for an implementer run on ``issue``."""
-    tracker_type = (getattr(tracker, "tracker_type", "") or "github").lower()
-    if tracker_type not in ("github", "gitlab"):
-        tracker_type = "github" if "gitlab" not in tracker_type else "gitlab"
+    tracker_type = _git_tracker_kind(tracker)
 
     repo = _repository_clone_fields(project, tracker)
     issue_url = _issue_url(issue)
@@ -427,7 +443,10 @@ async def run_preset_on_target(
         trigger_event_data=trigger_event_data,
         triggered_by=triggered_by,
     )
-    execution_id = str(result.get("id") or result.get("execution_id"))
+    raw_execution_id = result.get("id") or result.get("execution_id")
+    if raw_execution_id is None:
+        raise _http(500, "Flow trigger did not return an execution id")
+    execution_id = str(raw_execution_id)
     return {
         "execution_id": execution_id,
         "flow_id": str(flow.id),

@@ -2344,8 +2344,7 @@ def _run_preset_body(
     )
 
 
-@pytest.mark.asyncio
-async def test_run_preset_409_when_flow_missing_without_confirm(
+def test_run_preset_409_when_flow_missing_without_confirm(
     mock_account: Account, mocker: MockerFixture
 ):
     from preloop.services.preset_runner import PresetRunnerError
@@ -2364,12 +2363,10 @@ async def test_run_preset_409_when_flow_missing_without_confirm(
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await maybe_await(
-            flows.run_preset(
-                db=MagicMock(),
-                current_user=mock_account,
-                body=_run_preset_body(issue_id),
-            )
+        flows.run_preset(
+            db=MagicMock(),
+            current_user=mock_account,
+            body=_run_preset_body(issue_id),
         )
 
     assert exc_info.value.status_code == 409
@@ -2377,8 +2374,7 @@ async def test_run_preset_409_when_flow_missing_without_confirm(
     assert exc_info.value.detail["flow_name"] == "Automated Issue Implementation"
 
 
-@pytest.mark.asyncio
-async def test_run_preset_creates_and_triggers(
+def test_run_preset_creates_and_triggers(
     mock_account: Account, mocker: MockerFixture
 ):
     issue_id = uuid.uuid4()
@@ -2412,12 +2408,10 @@ async def test_run_preset_creates_and_triggers(
         trigger,
     )
 
-    result = await maybe_await(
-        flows.run_preset(
-            db=MagicMock(),
-            current_user=mock_account,
-            body=_run_preset_body(issue_id, confirm_create=True),
-        )
+    result = flows.run_preset(
+        db=MagicMock(),
+        current_user=mock_account,
+        body=_run_preset_body(issue_id, confirm_create=True),
     )
 
     assert result.flow_created is True
@@ -2428,8 +2422,7 @@ async def test_run_preset_creates_and_triggers(
     assert trigger.await_args.kwargs["test_mode"] is False
 
 
-@pytest.mark.asyncio
-async def test_run_preset_requires_create_flows_to_create(
+def test_run_preset_requires_create_flows_to_create(
     mock_account: Account, mocker: MockerFixture
 ):
     from preloop.services.preset_runner import PresetRunnerError
@@ -2449,39 +2442,33 @@ async def test_run_preset_requires_create_flows_to_create(
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await maybe_await(
-            flows.run_preset(
-                db=MagicMock(),
-                current_user=mock_account,
-                body=_run_preset_body(issue_id, confirm_create=True),
-            )
+        flows.run_preset(
+            db=MagicMock(),
+            current_user=mock_account,
+            body=_run_preset_body(issue_id, confirm_create=True),
         )
 
     assert exc_info.value.status_code == 403
     assert "not create them" in str(exc_info.value.detail)
 
 
-@pytest.mark.asyncio
-async def test_run_preset_unknown_slug_404(
+def test_run_preset_unknown_slug_404(
     mock_account: Account, mocker: MockerFixture
 ):
     issue_id = uuid.uuid4()
 
     with pytest.raises(HTTPException) as exc_info:
-        await maybe_await(
-            flows.run_preset(
-                db=MagicMock(),
-                current_user=mock_account,
-                body=_run_preset_body(issue_id, slug="not-a-real-preset"),
-            )
+        flows.run_preset(
+            db=MagicMock(),
+            current_user=mock_account,
+            body=_run_preset_body(issue_id, slug="not-a-real-preset"),
         )
 
     assert exc_info.value.status_code == 404
     assert "Preset not found" in str(exc_info.value.detail)
 
 
-@pytest.mark.asyncio
-async def test_run_preset_pull_request_target_400(
+def test_run_preset_pull_request_target_400(
     mock_account: Account, mocker: MockerFixture
 ):
     body = schemas.RunPresetRequest(
@@ -2495,9 +2482,7 @@ async def test_run_preset_pull_request_target_400(
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await maybe_await(
-            flows.run_preset(db=MagicMock(), current_user=mock_account, body=body)
-        )
+        flows.run_preset(db=MagicMock(), current_user=mock_account, body=body)
 
     assert exc_info.value.status_code == 400
     assert "pull request" in str(exc_info.value.detail).lower()

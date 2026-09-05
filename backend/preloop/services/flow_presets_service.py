@@ -159,6 +159,7 @@ def clone_preset_for_account(
     *,
     bound_ai_model_id: Optional[UUID] = None,
     flow_crud: Any = None,
+    clear_event_triggers: bool = False,
 ) -> Any:
     """Clone a global preset into an account-owned enabled flow.
 
@@ -174,6 +175,9 @@ def clone_preset_for_account(
         flow_crud: CRUD object. Defaults to the module ``crud_flow``. The
             clone endpoint passes its own instance so existing tests keep
             patching ``preloop.api.endpoints.flows.crud_flow``.
+        clear_event_triggers: When True, the clone has no tracker event
+            trigger (empty types, no source). Used by ad-hoc run-preset so
+            the first run does not also subscribe to ``issue_labeled``.
 
     Returns:
         The created flow row.
@@ -192,6 +196,10 @@ def clone_preset_for_account(
         for key, value in preset.__dict__.items()
         if key not in _CLONE_EXCLUDE
     }
+    if clear_event_triggers:
+        preset_dict["trigger_event_types"] = []
+        preset_dict["trigger_event_source"] = None
+        preset_dict["trigger_project_ids"] = None
 
     if name and not crud.get_by_name_and_account(db, name=name, account_id=account_id):
         final_name = name

@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Router } from '@vaadin/router';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
@@ -527,6 +527,11 @@ export class TrackerDetailView extends LitElement {
     void this._loadIssues(false);
   }
 
+  private _isGitTracker(): boolean {
+    const type = this._tracker?.tracker_type?.toLowerCase() || '';
+    return type.includes('github') || type.includes('gitlab');
+  }
+
   private _runImplementer(issue: IssueListItem) {
     void openRunPresetDialog({
       presetSlug: 'automated-issue-implementation',
@@ -786,11 +791,18 @@ export class TrackerDetailView extends LitElement {
                                 ${formatRelativeTime(issue.updated_at)}
                               </td>
                               <td>
-                                <sl-button
-                                  size="small"
-                                  @click=${() => this._runImplementer(issue)}
-                                  >Run implementer</sl-button
-                                >
+                                ${
+                                  this._isGitTracker()
+                                    ? html`
+                                        <sl-button
+                                          size="small"
+                                          @click=${() =>
+                                            this._runImplementer(issue)}
+                                          >Run implementer</sl-button
+                                        >
+                                      `
+                                    : nothing
+                                }
                               </td>
                             </tr>
                           `

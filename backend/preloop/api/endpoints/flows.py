@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 import secrets
 from datetime import datetime
@@ -349,7 +350,7 @@ def clone_preset(
 
 @router.post("/flows/run-preset", response_model=schemas.RunPresetResponse)
 @require_permission("execute_flows")
-async def run_preset(
+def run_preset(
     *,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
@@ -361,17 +362,22 @@ async def run_preset(
     account has no clone, or 200 with flow metadata and no execution when
     one exists. ``confirm_create=true`` creates if needed (requires
     ``create_flows``) and starts the run.
+
+    Synchronous so the handler does not hold a ``Session`` on the event loop
+    (``test_async_sync_session_route_count_does_not_grow``).
     """
     from preloop.services.preset_runner import PresetRunnerError, run_preset_on_target
 
     try:
-        result = await run_preset_on_target(
-            db,
-            current_user=current_user,
-            preset_slug=body.preset_slug,
-            target=body.target,
-            confirm_create=body.confirm_create,
-            triggered_by=_display_name(current_user),
+        result = asyncio.run(
+            run_preset_on_target(
+                db,
+                current_user=current_user,
+                preset_slug=body.preset_slug,
+                target=body.target,
+                confirm_create=body.confirm_create,
+                triggered_by=_display_name(current_user),
+            )
         )
     except PresetRunnerError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

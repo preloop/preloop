@@ -146,6 +146,7 @@ def test_create_flow_uses_preset_name_and_default_model():
     assert flow is created_flow
     clone.assert_called_once()
     assert clone.call_args.kwargs["name"] == preset.name
+    assert clone.call_args.kwargs["clear_event_triggers"] is True
 
 
 def test_create_flow_403_without_create_flows():
@@ -331,6 +332,17 @@ async def test_github_issue_payload_resolves_object_attributes():
     assert int(number) == 42
     assert url == "https://github.com/example/repo/issues/42"
     assert event["payload"]["issue"]["user"]["login"] == "janedoe"
+
+
+def test_jira_issue_payload_is_rejected():
+    issue = MagicMock()
+    project = MagicMock()
+    tracker = MagicMock()
+    tracker.tracker_type = "jira"
+    with pytest.raises(PresetRunnerError) as exc:
+        build_issue_trigger_payload(issue, project, tracker)
+    assert exc.value.status_code == 400
+    assert "GitHub and GitLab" in str(exc.value.detail)
 
 
 @pytest.mark.asyncio

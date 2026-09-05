@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -127,6 +127,11 @@ export class TrackerIssueView extends LitElement {
     };
   }
 
+  private _isGitTracker(): boolean {
+    const type = this._tracker?.tracker_type?.toLowerCase() || '';
+    return type.includes('github') || type.includes('gitlab');
+  }
+
   private _runImplementer() {
     if (!this._issue) return;
     void openRunPresetDialog({
@@ -211,13 +216,19 @@ export class TrackerIssueView extends LitElement {
           <span>${issue.key}</span>
         </div>
         <div slot="main-column" class="header-actions">
-          <sl-button
-            size="small"
-            variant="primary"
-            @click=${() => this._runImplementer()}
-          >
-            Run implementer
-          </sl-button>
+          ${
+            this._isGitTracker()
+              ? html`
+                  <sl-button
+                    size="small"
+                    variant="primary"
+                    @click=${() => this._runImplementer()}
+                  >
+                    Run implementer
+                  </sl-button>
+                `
+              : nothing
+          }
           <sl-button
             size="small"
             variant="text"
