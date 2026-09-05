@@ -1550,16 +1550,13 @@ class ApprovalService:
             )
             return False
 
-        # Generate public approval links with token (no authentication required)
+        # One public link with a token (no authentication required). A chat
+        # message offers exactly one action because there is exactly one:
+        # opening the approval page. Separate "Approve" and "Decline" links
+        # pointed at this same URL and neither of them decided anything, so
+        # the reader clicked "Approve" and still had to decide on the page.
         token = approval_request.approval_token
-        # All links go to the same approval page - user decides there
-        approve_url = urljoin(
-            self.base_url, f"/approval/{approval_request.id}?token={token}"
-        )
-        decline_url = urljoin(
-            self.base_url, f"/approval/{approval_request.id}?token={token}"
-        )
-        view_url = urljoin(
+        review_url = urljoin(
             self.base_url, f"/approval/{approval_request.id}?token={token}"
         )
 
@@ -1573,7 +1570,7 @@ class ApprovalService:
 
         # Create message based on approval type
         if approval_workflow.approval_type in ["slack", "mattermost"]:
-            # Build message text with all details — summary first when present
+            # Build message text with all details: summary first when present
             if ask_text:
                 message_text = f"⚠️ **{ask_text}**\n\n"
             else:
@@ -1589,10 +1586,7 @@ class ApprovalService:
                 )
 
             message_text += f"**Arguments:**\n```json\n{tool_args_formatted}\n```\n\n"
-            message_text += "**Actions:**\n"
-            message_text += f"• [✅ Approve]({approve_url})\n"
-            message_text += f"• [❌ Decline]({decline_url})\n"
-            message_text += f"• [👁️ View Details]({view_url})\n"
+            message_text += f"[Review this request]({review_url})\n"
 
             # Mattermost/Slack compatible message with attachments
             message = {
@@ -1602,7 +1596,7 @@ class ApprovalService:
                         "color": "#f2c744",
                         "fallback": headline,
                         "title": f"⚠️ {headline}",
-                        "title_link": view_url,
+                        "title_link": review_url,
                         "fields": [
                             {
                                 "title": "Tool",
@@ -1619,20 +1613,9 @@ class ApprovalService:
                         "actions": [
                             {
                                 "type": "button",
-                                "text": "✅ Approve",
-                                "url": approve_url,
+                                "text": "Review",
+                                "url": review_url,
                                 "style": "primary",
-                            },
-                            {
-                                "type": "button",
-                                "text": "❌ Decline",
-                                "url": decline_url,
-                                "style": "danger",
-                            },
-                            {
-                                "type": "button",
-                                "text": "👁️ View Details",
-                                "url": view_url,
                             },
                         ],
                     }
@@ -1665,10 +1648,11 @@ class ApprovalService:
                     if approval_request.expires_at
                     else None
                 ),
+                # One key, because one thing happens: the link opens the
+                # approval page. Decisions are taken with
+                # POST /api/v1/approval-requests/{id}/approve or /decline.
                 "actions": {
-                    "approve": approve_url,
-                    "decline": decline_url,
-                    "view": view_url,
+                    "review": review_url,
                 },
             }
 
