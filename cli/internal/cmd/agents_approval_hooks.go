@@ -21,6 +21,29 @@ const permissionHookCredentialFileName = "permission_hook.json"
 // so install is idempotent and offboard removes only our entries.
 const permissionHookCommandMarker = "agents permission-hook"
 
+// usageHookCommandMarker identifies the Cursor usage/session hook entries
+// installed by onboarding, kept distinct from the permission hook marker so
+// each set is upserted and removed independently.
+const usageHookCommandMarker = "usage hook"
+
+// cursorUsageHookTimeoutSeconds bounds each usage hook process. The hook
+// posts once with a 3s client timeout and is fail-open, so 5s is ample.
+const cursorUsageHookTimeoutSeconds = 5
+
+// cursorUsageHookEvents are the Cursor hook events wired to
+// `preloop usage hook --from cursor`. beforeSubmitPrompt is included only
+// so the first prompt line can become the session title; the command never
+// posts for it and ignores the prompt otherwise.
+var cursorUsageHookEvents = []string{
+	"sessionStart",
+	"sessionEnd",
+	"subagentStart",
+	"subagentStop",
+	"stop",
+	"preCompact",
+	"beforeSubmitPrompt",
+}
+
 // approvalHookTimeoutSeconds is the legacy fallback name kept for callers that
 // still reference a constant; prefer resolveApprovalHookTimeoutSeconds().
 const approvalHookTimeoutSeconds = defaultApprovalHookTimeoutSeconds
@@ -369,6 +392,10 @@ func removeApprovalHooks(agent AgentConfig, out io.Writer) error {
 		); err != nil {
 			return err
 		}
+		// Offboarding removes the usage/session hooks installed alongside.
+		if err := removeCursorUsageHooks(agent, out); err != nil {
+			return err
+		}
 	}
 
 	if err := removePermissionHookCredential(agent); err != nil {
@@ -376,6 +403,103 @@ func removeApprovalHooks(agent AgentConfig, out io.Writer) error {
 	}
 	if out != nil {
 		fmt.Fprintf(out, "  Mobile approvals: removed %s hook\n", source) //nolint:errcheck
+	}
+	return nil
+}
+
+// cursorUsageHookCommand is the hooks.json command for the usage hook. The
+// opt-in flag is persisted in the command itself so the choice survives
+// without a credential file.
+func cursorUsageHookCommand(storeTranscript bool) string {
+	command := fmt.Sprintf("%s usage hook --from cursor", preloopExecutableForHooks())
+	if storeTranscript {
+		command += " --store-transcript"
+	}
+	return command
+}
+
+// installCursorUsageHooks wires `preloop usage hook` into Cursor's
+// lifecycle events so conversations are stored as runtime sessions with a
+// transcript-derived token estimate. Idempotent: re-running replaces our
+// entries. Non-Cursor agents are a no-op.
+func installCursorUsageHooks(agent AgentConfig, storeTranscript bool, out io.Writer) error {
+	if permissionSourceForAgent(agent) != permissionSourceCursor {
+		return nil
+	}
+	configPath, err := approvalHookConfigPath(permissionSourceCursor)
+	if err != nil {
+		return err
+	}
+	if err := upsertFlatCommandHookMarked(
+		configPath,
+		cursorUsageHookEvents,
+		cursorUsageHookCommand(storeTranscript),
+		cursorUsageHookTimeoutSeconds,
+		usageHookCommandMarker,
+	); err != nil {
+		return err
+	}
+	if err := setPermissionHookCredentialStoreTranscript(agent, storeTranscript); err != nil {
+		return err
+	}
+	if out != nil {
+		fmt.Fprintf(out, "  Usage hooks: installed Cursor session and token-estimate hooks (%s)\n", configPath) //nolint:errcheck
+		if storeTranscript {
+			fmt.Fprintln(out, "  Transcript storage: on (transcript text is shipped as session activities)") //nolint:errcheck
+		} else {
+			fmt.Fprintln(out, "  Transcript storage: off (counts, title and a short summary only; re-run with --store-transcript to opt in)") //nolint:errcheck
+		}
+	}
+	return nil
+}
+
+// removeCursorUsageHooks removes the usage hook entries installed by
+// installCursorUsageHooks, leaving any other entries (including our
+// permission hooks) untouched.
+func removeCursorUsageHooks(agent AgentConfig, out io.Writer) error {
+	if permissionSourceForAgent(agent) != permissionSourceCursor {
+		return nil
+	}
+	configPath, err := approvalHookConfigPath(permissionSourceCursor)
+	if err != nil {
+		return err
+	}
+	if err := removeFlatCommandHookMarked(configPath, cursorUsageHookEvents, usageHookCommandMarker, true); err != nil {
+		return err
+	}
+	if out != nil {
+		fmt.Fprintln(out, "  Usage hooks: removed Cursor session and token-estimate hooks") //nolint:errcheck
+	}
+	return nil
+}
+
+// setPermissionHookCredentialStoreTranscript records the transcript opt-in
+// in the per-agent credential file when one exists (approvals onboarding
+// writes it). Without a credential file the hooks.json command carries the
+// flag, so a missing file is not an error.
+func setPermissionHookCredentialStoreTranscript(agent AgentConfig, storeTranscript bool) error {
+	path, err := permissionHookCredentialPath(agent)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read permission hook credential: %w", err)
+	}
+	var cred permissionHookCredential
+	if err := json.Unmarshal(data, &cred); err != nil {
+		return fmt.Errorf("failed to parse permission hook credential: %w", err)
+	}
+	cred.StoreTranscript = &storeTranscript
+	encoded, err := json.MarshalIndent(cred, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to encode permission hook credential: %w", err)
+	}
+	if err := os.WriteFile(path, encoded, 0600); err != nil {
+		return fmt.Errorf("failed to write permission hook credential: %w", err)
 	}
 	return nil
 }
@@ -490,8 +614,15 @@ func removeNestedCommandHook(path, eventKey string, deleteFileIfEmpty bool) erro
 }
 
 // upsertFlatCommandHook installs flat {"command": ...} entries (used by Cursor),
-// replacing any existing Preloop entries for each event key.
+// replacing any existing Preloop permission-hook entries for each event key.
 func upsertFlatCommandHook(path string, eventKeys []string, command string, timeoutSeconds int) error {
+	return upsertFlatCommandHookMarked(path, eventKeys, command, timeoutSeconds, permissionHookCommandMarker)
+}
+
+// upsertFlatCommandHookMarked is upsertFlatCommandHook for an arbitrary
+// ownership marker: only entries whose command contains marker are
+// replaced, so the permission and usage hook sets never clobber each other.
+func upsertFlatCommandHookMarked(path string, eventKeys []string, command string, timeoutSeconds int, marker string) error {
 	doc, err := loadJSONDocumentOrEmpty(path)
 	if err != nil {
 		return err
@@ -501,7 +632,7 @@ func upsertFlatCommandHook(path string, eventKeys []string, command string, time
 	}
 	hooks := ensureObjectChild(doc, "hooks")
 	for _, key := range eventKeys {
-		list := stripPreloopFlatEntries(asArrayValue(hooks[key]))
+		list := stripFlatEntriesMatching(asArrayValue(hooks[key]), marker)
 		entry := map[string]interface{}{"command": command}
 		if timeoutSeconds > 0 {
 			entry["timeout"] = timeoutSeconds
@@ -512,6 +643,10 @@ func upsertFlatCommandHook(path string, eventKeys []string, command string, time
 }
 
 func removeFlatCommandHook(path string, eventKeys []string, deleteFileIfEmpty bool) error {
+	return removeFlatCommandHookMarked(path, eventKeys, permissionHookCommandMarker, deleteFileIfEmpty)
+}
+
+func removeFlatCommandHookMarked(path string, eventKeys []string, marker string, deleteFileIfEmpty bool) error {
 	doc, existed, err := loadJSONDocumentIfExists(path)
 	if err != nil || !existed {
 		return err
@@ -521,7 +656,7 @@ func removeFlatCommandHook(path string, eventKeys []string, deleteFileIfEmpty bo
 		return nil
 	}
 	for _, key := range eventKeys {
-		list := stripPreloopFlatEntries(asArrayValue(hooks[key]))
+		list := stripFlatEntriesMatching(asArrayValue(hooks[key]), marker)
 		if len(list) == 0 {
 			delete(hooks, key)
 		} else {
@@ -571,6 +706,10 @@ func stripPreloopNestedEntries(list []interface{}) []interface{} {
 }
 
 func stripPreloopFlatEntries(list []interface{}) []interface{} {
+	return stripFlatEntriesMatching(list, permissionHookCommandMarker)
+}
+
+func stripFlatEntriesMatching(list []interface{}, marker string) []interface{} {
 	out := make([]interface{}, 0, len(list))
 	for _, item := range list {
 		entry, ok := asObjectMap(item)
@@ -579,7 +718,7 @@ func stripPreloopFlatEntries(list []interface{}) []interface{} {
 			continue
 		}
 		command, _ := entry["command"].(string)
-		if strings.Contains(command, permissionHookCommandMarker) {
+		if strings.Contains(command, marker) {
 			continue
 		}
 		out = append(out, item)

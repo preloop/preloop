@@ -303,6 +303,14 @@ type managedEnrollmentOptions struct {
 	// would-prompt tool calls to Preloop's mobile/watch approval flow. Off by
 	// default; enabled via `preloop agents onboard --approvals`.
 	Approvals bool
+	// NoUsageHooks skips the Cursor usage/session hooks that onboarding
+	// installs by default (`preloop agents onboard Cursor --no-usage-hooks`).
+	// Other agents are unaffected.
+	NoUsageHooks bool
+	// StoreTranscript opts the Cursor usage hooks into shipping transcript
+	// text as session activities (`--store-transcript`). Off by default:
+	// only counts, the title and a short summary leave the machine.
+	StoreTranscript bool
 	// PreferredModel is the operator-selected managed model alias from
 	// ``--model``. When set, the interactive model picker is skipped and this
 	// alias is used for gateway onboarding.
@@ -928,6 +936,14 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 				// Non-fatal: hook-based approvals above already applied.
 				fmt.Fprintf(output, "  Warning: %v\n", err) //nolint:errcheck
 			}
+		}
+	}
+	if !opts.NoUsageHooks && permissionSourceForAgent(agent) == permissionSourceCursor {
+		// Sessions and token estimates for Cursor come only from its hooks,
+		// so they are on by default. A hooks.json problem must not fail an
+		// enrollment whose MCP and model configuration already applied.
+		if err := installCursorUsageHooks(agent, opts.StoreTranscript, output); err != nil {
+			fmt.Fprintf(output, "  Warning: Cursor usage hooks not installed: %v\n", err) //nolint:errcheck
 		}
 	}
 	pluginInstallResult := installAgentControlRuntimePlugin(agent, output)

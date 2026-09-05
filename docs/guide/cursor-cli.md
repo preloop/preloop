@@ -52,7 +52,9 @@ Structured usage is not available in this mode. Cursor's CLI documents
 `--output-format` as valid only with `--print` (non-interactive). v1
 does not try to scrape the TUI.
 
-To record editor chats as they happen, wire `preloop usage hook` instead.
+To record editor chats as they happen, onboard Cursor instead:
+`preloop agents onboard Cursor` installs the `preloop usage hook` entries
+that store each conversation as a runtime session with a token estimate.
 
 ## Headless capture: `preloop cursor run`
 
@@ -124,7 +126,9 @@ know this run was spawned from another conversation.
 
 ## Related commands
 
-- `preloop usage hook` ships editor hook lifecycle events (no tokens).
+- `preloop usage hook` ships editor hook lifecycle events with a
+  transcript-derived token estimate and stores conversations as runtime
+  sessions (installed by `preloop agents onboard Cursor`).
 - `preloop usage import` records billed Cursor dashboard exports as
   imported spend. Reconciled per-conversation amounts supersede these
   estimates in Cost analytics summaries; the two bases are never summed.
