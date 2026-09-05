@@ -663,6 +663,70 @@ async def test_apply_native_access_rules_no_match_sentinel_returns_none() -> Non
 
 
 @pytest.mark.asyncio
+async def test_apply_native_access_rules_legacy_workflow_is_not_a_match() -> None:
+    """approval_workflow_id with no rules is not a native match.
+
+    Runs the real ``evaluate_policy_async`` so ``SOURCE_TOOL_DEFAULT_WORKFLOW``
+    is produced the same way production does. Honouring that decision would
+    defeat ``native_tool_approvals=off`` after the first auto-created config.
+    """
+    from preloop.services.approval_rule_context import SOURCE_TOOL_DEFAULT_WORKFLOW
+    from preloop.services.policy_evaluator import evaluate_policy_async
+
+    workflow_id = uuid.uuid4()
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+    tool_config.is_enabled = True
+    tool_config.approval_workflow_id = workflow_id
+    account_id = uuid.uuid4()
+    kwargs = _native_rule_kwargs(account_id=str(account_id))
+    with (
+        patch(
+            "preloop.services.policy_evaluator.get_meta_data_async",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.is_tool_enabled_for_subject",
+            return_value=True,
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_scoped_tool_rules",
+            return_value=[],
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_tool_config_by_id_async",
+            new=AsyncMock(return_value=tool_config),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_tool_config_by_tool_name_async",
+            new=AsyncMock(return_value=tool_config),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_default_approval_workflow_async",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_multi_by_config_async",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch("preloop.services.policy_evaluator._log_policy_decision_async"),
+    ):
+        result = await apply_native_access_rules(
+            AsyncMock(), config=tool_config, **kwargs
+        )
+        decision = await evaluate_policy_async(
+            AsyncMock(),
+            tool_name=kwargs["tool_name"],
+            tool_args=kwargs["tool_input"],
+            account_id=account_id,
+        )
+
+    assert result is None
+    assert decision.action == "require_approval"
+    assert decision.source == SOURCE_TOOL_DEFAULT_WORKFLOW
+
+
+@pytest.mark.asyncio
 async def test_apply_native_access_rules_blocked_config_short_circuits() -> None:
     """is_enabled=false denies without calling the evaluator."""
     tool_config = MagicMock()

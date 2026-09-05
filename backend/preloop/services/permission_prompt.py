@@ -325,6 +325,7 @@ async def evaluate_permission_prompt(
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
         )
+        rule_ctx = None
         if rule_outcome is not None:
             action, reason, rule_wf_id, rule_ctx = rule_outcome
             if action == "deny":
@@ -343,8 +344,6 @@ async def evaluate_permission_prompt(
                 rule_workflow = rule_wf_result.scalars().first()
                 if rule_workflow is not None:
                     workflow = rule_workflow
-        else:
-            rule_ctx = None
 
         tool_args = dict(tool_input)
         tool_args[FINGERPRINT_KEY] = fingerprint

@@ -381,7 +381,15 @@ def _honour_native_policy_decision(decision: Any) -> bool:
     if action == "deny":
         return True
     if action == "require_approval":
-        return True
+        # The evaluator's legacy "tool default workflow" path is not a
+        # matching rule. Honouring it here would defeat
+        # native_tool_approvals=off once resolve_tool_config pins a
+        # workflow id on an otherwise empty agent-source config.
+        return source in {
+            SOURCE_TOOL_ACCESS_RULE,
+            SOURCE_SUBJECT_SCOPED_RULE,
+            SOURCE_RULE_EVALUATION_ERROR,
+        }
     if action != "allow":
         return False
     if source in {

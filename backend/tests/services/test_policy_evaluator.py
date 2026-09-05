@@ -591,6 +591,15 @@ class TestEvaluateSimpleExpression:
             {"file_path": ".github/workflows/ci.yml"},
         )
 
+    def test_simple_matches_parser_is_linear_on_backslash_runs(self):
+        """Unclosed matches() with many \\\\a sequences must fail fast."""
+        payload = "\\\\a" * 80
+        with pytest.raises(ValueError, match="Unsupported"):
+            evaluate_simple_expression(
+                f'args.command.matches("{payload}',
+                {"command": "x"},
+            )
+
 
 class TestEvaluateCelExpression:
     """Test CEL condition evaluation."""

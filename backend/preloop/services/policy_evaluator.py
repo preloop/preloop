@@ -49,6 +49,24 @@ logger = logging.getLogger(__name__)
 SIMPLE_MATCHES_PATTERN_MAX_LEN = 512
 
 
+def _parse_simple_matches_call(expression: str) -> Optional[tuple[str, str]]:
+    """Parse ``field.matches("pattern")`` without nested backtracking.
+
+    Two linear alternatives (double-quoted, then single-quoted) replace a
+    backreference-plus-negative-lookahead matcher. A long run of ``\\\\a``
+    must stay O(n), not exponential.
+    """
+    for quote in ('"', "'"):
+        pattern = (
+            rf"^(\w+(?:\.\w+)*)\.matches\s*\(\s*{quote}"
+            rf"((?:[^{quote}\\]|\\.)*){quote}\s*\)$"
+        )
+        match = re.match(pattern, expression)
+        if match:
+            return match.group(1), match.group(2)
+    return None
+
+
 @functools.lru_cache(maxsize=128)
 def _compile_simple_matches_pattern(pattern: str) -> re.Pattern[str]:
     """Compile a simple-evaluator ``matches()`` pattern (LRU-cached)."""
@@ -63,7 +81,8 @@ def _decode_simple_matches_literal(text: str) -> str:
 
     CEL decodes those sequences in a quoted argument. The stored text must
     mean the same in simple mode, so ``\\\\.github`` becomes ``\\.github``.
-    Other backslash sequences are left unchanged.
+    Other CEL escapes (``\\uXXXX``, ``\\xHH``, octal) are left unchanged
+    here; author those patterns in CEL mode if they need that decoding.
     """
     decoded: list[str] = []
     index = 0
@@ -882,14 +901,12 @@ def _evaluate_simple_condition(expression: str, tool_args: Dict[str, Any]) -> bo
             return substring in value
         return False
 
-    matches_pattern = (
-        r"^args\.(\w+(?:\.\w+)*)\.matches\s*\(\s*(['\"])"
-        r"((?:\\.|(?!\2).)*)\2\s*\)$"
+    matches_parsed = _parse_simple_matches_call(
+        expression[5:] if expression.startswith("args.") else expression
     )
-    matches_match = re.match(matches_pattern, expression)
-    if matches_match:
-        field_path = matches_match.group(1)
-        pattern = _decode_simple_matches_literal(matches_match.group(3))
+    if matches_parsed:
+        field_path, raw_pattern = matches_parsed
+        pattern = _decode_simple_matches_literal(raw_pattern)
         value = _get_nested_value(tool_args, field_path)
         return _simple_matches(value, pattern)
 
@@ -1103,13 +1120,10 @@ def _evaluate_simple_condition_on_bindings(
             return substring in value
         return False
 
-    matches_pattern = (
-        r"^(\w+(?:\.\w+)*)\.matches\s*\(\s*(['\"])((?:\\.|(?!\2).)*)\2\s*\)$"
-    )
-    matches_match = re.match(matches_pattern, expression)
-    if matches_match:
-        field_path = matches_match.group(1)
-        pattern = _decode_simple_matches_literal(matches_match.group(3))
+    matches_parsed = _parse_simple_matches_call(expression)
+    if matches_parsed:
+        field_path, raw_pattern = matches_parsed
+        pattern = _decode_simple_matches_literal(raw_pattern)
         value = _get_nested_value(bindings, field_path)
         return _simple_matches(value, pattern)
 

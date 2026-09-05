@@ -469,6 +469,15 @@ async def test_agent_permission_hook_records_that_no_rule_was_evaluated(
     monkeypatch.setattr(
         agent_permission_service, "resolve_tool_config", AsyncMock(return_value=config)
     )
+    monkeypatch.setattr(
+        "preloop.models.crud.tool_configuration.get_tool_config_by_name_and_source_async",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        agent_permission_service,
+        "apply_native_access_rules",
+        AsyncMock(return_value=None),
+    )
 
     class _FakeSession:
         async def __aenter__(self):
