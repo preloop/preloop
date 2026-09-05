@@ -37,9 +37,10 @@ describe('ToolsEditorComponent – MCP server actions', () => {
     await el.updateComplete;
 
     const events: string[] = [];
+    let scannedId: string | undefined;
     el.addEventListener('scan-server', (event: Event) => {
       events.push('scan-server');
-      expect((event as CustomEvent).detail).to.equal('srv-1');
+      scannedId = (event as CustomEvent).detail;
     });
     el.addEventListener('suggest-starter-policy', () => {
       events.push('suggest-starter-policy');
@@ -49,8 +50,15 @@ describe('ToolsEditorComponent – MCP server actions', () => {
       'sl-icon-button[name="arrow-clockwise"]'
     ) as HTMLElement | null;
     expect(refresh).to.exist;
+    expect(refresh!.getAttribute('label')).to.equal('Scan for new tools');
+    const magic = el.shadowRoot?.querySelector(
+      'sl-icon-button[name="magic"]'
+    ) as HTMLElement | null;
+    expect(magic).to.exist;
+    expect(magic!.getAttribute('label')).to.equal('Suggest starter policy');
     refresh!.click();
 
     expect(events).to.deep.equal(['scan-server']);
+    expect(scannedId).to.equal('srv-1');
   });
 });

@@ -270,6 +270,7 @@ export class ToolsEditorComponent extends LitElement {
                     <sl-tooltip content="Scan for new tools">
                       <sl-icon-button
                         name="arrow-clockwise"
+                        label="Scan for new tools"
                         @click=${() =>
                           this.dispatchEvent(
                             new CustomEvent('scan-server', {
@@ -287,6 +288,7 @@ export class ToolsEditorComponent extends LitElement {
                     >
                       <sl-icon-button
                         name="magic"
+                        label="Suggest starter policy"
                         @click=${() =>
                           this.dispatchEvent(
                             new CustomEvent('suggest-starter-policy', {

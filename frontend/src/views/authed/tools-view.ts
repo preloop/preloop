@@ -1265,6 +1265,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
       const result = await generatePolicy({
         prompt: this._buildStarterPolicyPrompt(server, tools),
         includeCurrentConfig: true,
+        scopeMcpServerName: server.name,
       });
       this.starterPolicyYaml = result.yaml;
       this.starterPolicyWarnings = result.warnings || [];

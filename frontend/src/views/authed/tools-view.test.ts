@@ -923,6 +923,7 @@ describe('ToolsView – starter policy suggestions', () => {
       (generateCall!.args[1] as RequestInit).body as string
     );
     expect(body.include_current_config).to.equal(true);
+    expect(body.scope_mcp_server_name).to.equal('GitHub MCP');
     expect(body.prompt).to.include('GitHub MCP');
     expect(body.prompt).to.include('github_search_issues');
     expect((el as any).starterPolicyDiff).to.deep.equal(generatedDiff);
