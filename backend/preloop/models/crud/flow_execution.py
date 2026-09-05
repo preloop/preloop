@@ -211,6 +211,20 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.flush()
         return db_obj
 
+    def set_cli_session(
+        self, db: Session, *, db_obj: FlowExecution, cli_session: Optional[dict]
+    ) -> FlowExecution:
+        """Persist (or clear) the agent CLI session reference.
+
+        Separate from ``update`` because the value is written from the log
+        streaming task the moment the agent reports it (and from the terminal
+        rescan fallback), outside any FlowExecutionUpdate round trip. Shape:
+        ``{"agent_type": "opencode", "session_id": "ses_..."}``.
+        """
+        db_obj.cli_session = cli_session  # type: ignore[assignment]
+        db.flush()
+        return db_obj
+
     def get_by_flow(
         self,
         db: Session,

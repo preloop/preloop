@@ -55,6 +55,19 @@ commits again on the same branch. It never opens a second pull request.
 
 Comments on unrelated issues or pull requests do not start a cold run.
 
+### Native CLI session resume
+
+The correlation above is also the trigger for native session resume. While
+the agent runs, the container reports the OpenCode/Codex session id on its
+log stream (`PRELOOP_AGENT_SESSION <agent> <id>`), and the execution stores
+it together with a packed copy of the session files inside the workspace
+snapshot. A correlated restart hands both back to the agent container, which
+restores the session storage and invokes the CLI resume flag for the recorded
+session (`opencode run --session <id>`, `codex exec resume <id>`) instead of
+starting a fresh context window. Anything missing — no recorded id, a
+snapshot that was reaped, or a pack that is too large to embed in a pod
+script — degrades to the cold start the flow used before, never to a failure.
+
 ## Unclear issues
 
 The agent asks a human only when a critical decision is missing and guessing

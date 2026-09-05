@@ -477,6 +477,8 @@ class TestQueueOneFollowUp:
             }
         )
         orchestrator = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
+        orchestrator._agent_session = None
+        orchestrator._opened_pr = None
         orchestrator.db = MagicMock()
         orchestrator.nats_client = MagicMock()
         orchestrator.flow = _flow()
@@ -509,6 +511,8 @@ class TestQueueOneFollowUp:
         from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 
         orchestrator = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
+        orchestrator._agent_session = None
+        orchestrator._opened_pr = None
         orchestrator.db = MagicMock()
         orchestrator.nats_client = MagicMock()
         orchestrator.flow = _flow()
@@ -555,3 +559,175 @@ class TestQueueOneFollowUp:
         assert resume["execution_id"] == str(orchestrator.execution_log.id)
         assert resume["resume_index"] == 1
         assert orchestrator.execution_log.result["resume_count"] == 1
+
+
+class TestAgentCliSessionMarker:
+    """PRELOOP_AGENT_SESSION marker: capture, persistence, restore archive."""
+
+    def _orchestrator(self):
+        from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+        orchestrator = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
+        orchestrator._agent_session = None
+        orchestrator._opened_pr = None
+        orchestrator.db = MagicMock()
+        orchestrator.execution_log = MagicMock()
+        orchestrator.execution_log.id = uuid4()
+        orchestrator.execution_logger = MagicMock()
+        orchestrator.flow = MagicMock()
+        orchestrator.flow.id = uuid4()
+        orchestrator.trigger_event_data = {}
+        return orchestrator
+
+    def test_note_agent_session_persists_immediately(self, monkeypatch):
+        orchestrator = self._orchestrator()
+        calls = []
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.record_cli_session",
+            lambda db, execution_id, cli: calls.append((str(execution_id), cli)),
+        )
+        orchestrator._note_agent_session("PRELOOP_AGENT_SESSION opencode ses_ab12cd34")
+        assert calls == [
+            (
+                str(orchestrator.execution_log.id),
+                {
+                    "agent_type": "opencode",
+                    "session_id": "ses_ab12cd34",
+                },
+            )
+        ]
+        assert orchestrator._agent_session == {
+            "agent_type": "opencode",
+            "session_id": "ses_ab12cd34",
+        }
+        orchestrator.execution_logger.log_milestone.assert_called_once_with(
+            "cli_session_captured",
+            {"agent_type": "opencode", "session_id": "ses_ab12cd34"},
+        )
+
+    def test_first_marker_wins_within_an_attempt(self, monkeypatch):
+        orchestrator = self._orchestrator()
+        calls = []
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.record_cli_session",
+            lambda db, execution_id, cli: calls.append(cli),
+        )
+        orchestrator._note_agent_session("PRELOOP_AGENT_SESSION opencode ses_first001")
+        orchestrator._note_agent_session("PRELOOP_AGENT_SESSION opencode ses_second01")
+        assert calls == [{"agent_type": "opencode", "session_id": "ses_first001"}]
+
+    def test_garbled_marker_is_ignored(self, monkeypatch):
+        orchestrator = self._orchestrator()
+        calls = []
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.record_cli_session",
+            lambda db, execution_id, cli: calls.append(cli),
+        )
+        orchestrator._note_agent_session("PRELOOP_AGENT_SESSION opencode")
+        orchestrator._note_agent_session("PRELOOP_AGENT_SESSION opencode bad;id")
+        assert calls == []
+        assert orchestrator._agent_session is None
+
+    def test_terminal_rescan_rescues_a_missed_line(self, monkeypatch):
+        orchestrator = self._orchestrator()
+        calls = []
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.record_cli_session",
+            lambda db, execution_id, cli: calls.append(cli),
+        )
+        orchestrator._bind_cli_session(
+            "installing...\n"
+            "PRELOOP_AGENT_SESSION codex 0f0e1d2c-3b4a-4568-8778-aabbccddeeff\n"
+            "done\n"
+        )
+        assert calls == [
+            {
+                "agent_type": "codex",
+                "session_id": "0f0e1d2c-3b4a-4568-8778-aabbccddeeff",
+            }
+        ]
+
+    def test_terminal_rescan_skips_when_stream_already_captured(self, monkeypatch):
+        orchestrator = self._orchestrator()
+        calls = []
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.record_cli_session",
+            lambda db, execution_id, cli: calls.append(cli),
+        )
+        orchestrator._agent_session = {
+            "agent_type": "opencode",
+            "session_id": "ses_live00001",
+        }
+        orchestrator._bind_cli_session("PRELOOP_AGENT_SESSION opencode ses_fromfile")
+        assert calls == []
+
+    def _snapshot_with_pack(self):
+        import io
+        import tarfile
+
+        out = io.BytesIO()
+        with tarfile.open(fileobj=out, mode="w:gz") as tar:
+            info = tarfile.TarInfo(
+                name="workspace/.preloop-agent-session/opencode/s/a.json"
+            )
+            info.size = 2
+            tar.addfile(info, io.BytesIO(b"{}"))
+        return out.getvalue()
+
+    def test_restore_archive_extracted_from_prior_snapshot(self, monkeypatch):
+        orchestrator = self._orchestrator()
+        prior = MagicMock()
+        prior.flow_id = orchestrator.flow.id
+        prior.workspace_snapshot = self._snapshot_with_pack()
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.crud_flow_execution.get",
+            MagicMock(return_value=prior),
+        )
+        orchestrator.trigger_event_data = {
+            "_resume": {
+                "execution_id": str(uuid4()),
+                "cli_session": {
+                    "agent_type": "opencode",
+                    "session_id": "ses_ab12cd34",
+                },
+            }
+        }
+        archive = orchestrator._resolve_cli_session_restore_archive()
+        assert archive is not None
+        import io
+        import tarfile
+
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+            assert tar.getnames() == ["opencode/s/a.json"]
+
+    def test_no_cli_session_in_resume_means_no_archive(self, monkeypatch):
+        orchestrator = self._orchestrator()
+        prior = MagicMock()
+        prior.flow_id = orchestrator.flow.id
+        prior.workspace_snapshot = self._snapshot_with_pack()
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.crud_flow_execution.get",
+            MagicMock(return_value=prior),
+        )
+        orchestrator.trigger_event_data = {"_resume": {"execution_id": "x"}}
+        assert orchestrator._resolve_cli_session_restore_archive() is None
+
+    def test_flow_mismatch_refuses_the_archive(self, monkeypatch):
+        orchestrator = self._orchestrator()
+        prior = MagicMock()
+        prior.flow_id = uuid4()
+        prior.workspace_snapshot = self._snapshot_with_pack()
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.crud_flow_execution.get",
+            MagicMock(return_value=prior),
+        )
+        orchestrator.trigger_event_data = {
+            "_resume": {
+                "execution_id": str(uuid4()),
+                "cli_session": {
+                    "agent_type": "opencode",
+                    "session_id": "ses_ab12cd34",
+                },
+            }
+        }
+        assert orchestrator._resolve_cli_session_restore_archive() is None
