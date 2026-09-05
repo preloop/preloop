@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 from preloop.services.policy_evaluator import (
+    _evaluate_simple_condition_on_bindings,
     evaluate_policy,
     evaluate_policy_async,
     evaluate_simple_expression,
@@ -551,8 +552,16 @@ class TestEvaluateSimpleExpression:
             {"command": "git push origin main"},
         )
         assert evaluate_simple_expression(
-            r'args.file_path.matches("(^|/)\.github/")',
+            'args.file_path.matches("(^|/)\\\\.github/")',
             {"file_path": ".github/workflows/ci.yml"},
+        )
+        assert not evaluate_simple_expression(
+            'args.file_path.matches("(^|/)\\\\.github/")',
+            {"file_path": "\\xgithub/workflows/ci.yml"},
+        )
+        assert evaluate_simple_expression(
+            'args.file_path.matches("a\\"b")',
+            {"file_path": 'a"b'},
         )
 
     def test_simple_matches_missing_field_is_false(self):
@@ -574,6 +583,13 @@ class TestEvaluateSimpleExpression:
                 f'args.command.matches("{oversized}")',
                 {"command": "a"},
             )
+
+    def test_simple_matches_on_bindings_decodes_founder_path_escape(self):
+        """The bindings evaluator decodes the same stored .github/ text."""
+        assert _evaluate_simple_condition_on_bindings(
+            'file_path.matches("(^|/)\\\\.github/")',
+            {"file_path": ".github/workflows/ci.yml"},
+        )
 
 
 class TestEvaluateCelExpression:

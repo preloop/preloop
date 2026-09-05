@@ -55,6 +55,34 @@ def _compile_simple_matches_pattern(pattern: str) -> re.Pattern[str]:
     return re.compile(pattern)
 
 
+_SIMPLE_MATCHES_ESCAPES = frozenset({"\\", '"', "'"})
+
+
+def _decode_simple_matches_literal(text: str) -> str:
+    """Decode ``\\\\``, ``\\\"``, and ``\\\\'`` in a ``matches()`` literal.
+
+    CEL decodes those sequences in a quoted argument. The stored text must
+    mean the same in simple mode, so ``\\\\.github`` becomes ``\\.github``.
+    Other backslash sequences are left unchanged.
+    """
+    decoded: list[str] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if (
+            char == "\\"
+            and index + 1 < length
+            and text[index + 1] in _SIMPLE_MATCHES_ESCAPES
+        ):
+            decoded.append(text[index + 1])
+            index += 2
+            continue
+        decoded.append(char)
+        index += 1
+    return "".join(decoded)
+
+
 def _simple_matches(value: Any, pattern: str) -> bool:
     """Return whether ``pattern`` occurs in ``value`` via ``re.search``.
 
@@ -92,6 +120,12 @@ class PolicyDecision(tuple):
         rule_context: JSON-serialisable snapshot of the rule that produced a
             ``require_approval`` decision, or None when nothing gated the call
             (allow/deny) or no rule identity exists.
+        source: Why this decision was produced (``tool_access_rule``,
+            ``subject_scoped_rule``, ``rule_evaluation_error``, ...). Set
+            whenever a rule wins, including allow and deny, so callers do
+            not have to read ``rule_context``.
+        stored_source: For a scoped rule, the rule dict's own ``source``
+            field (``agent``, ``mcp``, ...), or None when absent.
     """
 
     # No __slots__: CPython rejects a nonempty __slots__ on a tuple subclass,
@@ -103,12 +137,20 @@ class PolicyDecision(tuple):
         approval_workflow_id: Optional[Any],
         rule_description: Optional[str],
         rule_context: Optional[Dict[str, Any]] = None,
+        *,
+        source: Optional[str] = None,
+        stored_source: Optional[str] = None,
     ) -> "PolicyDecision":
         """Build the 3-tuple and attach the rule context."""
         decision = super().__new__(
             cls, (action, approval_workflow_id, rule_description)
         )
         decision.rule_context = rule_context
+        if source is None and isinstance(rule_context, dict):
+            raw_source = rule_context.get("source")
+            source = raw_source if isinstance(raw_source, str) else None
+        decision.source = source
+        decision.stored_source = stored_source
         return decision
 
     @property
@@ -372,7 +414,19 @@ def _evaluate_rule_candidates(
                         else getattr(rule, "priority", None)
                     ),
                 )
-            return PolicyDecision(action, approval_workflow_id, rule_desc, rule_context)
+            stored_source = None
+            if isinstance(rule, dict):
+                raw_source = rule.get("source")
+                if isinstance(raw_source, str) and raw_source:
+                    stored_source = raw_source
+            return PolicyDecision(
+                action,
+                approval_workflow_id,
+                rule_desc,
+                rule_context,
+                source=SOURCE_SUBJECT_SCOPED_RULE,
+                stored_source=stored_source,
+            )
         except Exception as e:
             error_desc = f"Rule evaluation error: {e} (failing closed)"
             _log_policy_decision_async(
@@ -534,6 +588,7 @@ def _evaluate_loaded_access_rules(
                     approval_workflow_id,
                     rule_desc,
                     rule_context,
+                    source=SOURCE_TOOL_ACCESS_RULE,
                 )
 
         except Exception as e:
@@ -827,11 +882,14 @@ def _evaluate_simple_condition(expression: str, tool_args: Dict[str, Any]) -> bo
             return substring in value
         return False
 
-    matches_pattern = r"^args\.(\w+(?:\.\w+)*)\.matches\s*\(\s*(['\"])(.*)\2\s*\)$"
+    matches_pattern = (
+        r"^args\.(\w+(?:\.\w+)*)\.matches\s*\(\s*(['\"])"
+        r"((?:\\.|(?!\2).)*)\2\s*\)$"
+    )
     matches_match = re.match(matches_pattern, expression)
     if matches_match:
         field_path = matches_match.group(1)
-        pattern = matches_match.group(3)
+        pattern = _decode_simple_matches_literal(matches_match.group(3))
         value = _get_nested_value(tool_args, field_path)
         return _simple_matches(value, pattern)
 
@@ -1045,11 +1103,13 @@ def _evaluate_simple_condition_on_bindings(
             return substring in value
         return False
 
-    matches_pattern = r"^(\w+(?:\.\w+)*)\.matches\s*\(\s*(['\"])(.*)\2\s*\)$"
+    matches_pattern = (
+        r"^(\w+(?:\.\w+)*)\.matches\s*\(\s*(['\"])((?:\\.|(?!\2).)*)\2\s*\)$"
+    )
     matches_match = re.match(matches_pattern, expression)
     if matches_match:
         field_path = matches_match.group(1)
-        pattern = matches_match.group(3)
+        pattern = _decode_simple_matches_literal(matches_match.group(3))
         value = _get_nested_value(bindings, field_path)
         return _simple_matches(value, pattern)
 
