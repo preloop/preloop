@@ -26,6 +26,7 @@ import {
   syncTracker,
   type FeaturesResponse,
 } from '../../api';
+import { openRunPresetDialog } from '../../components/run-preset-dialog';
 import type { IssueListItem, Organization, Project } from '../../types';
 import {
   describeTrackerScope,
@@ -517,6 +518,15 @@ export class TrackerDetailView extends LitElement {
     void this._loadIssues(false);
   }
 
+  private _runImplementer(issue: IssueListItem) {
+    void openRunPresetDialog({
+      presetSlug: 'automated-issue-implementation',
+      target: { kind: 'issue', issue_id: issue.id },
+      issueKey: issue.key,
+      role: 'implementer',
+    });
+  }
+
   private async _loadData() {
     this._loading = true;
     this._error = null;
@@ -737,6 +747,7 @@ export class TrackerDetailView extends LitElement {
                           <th>Title</th>
                           <th>Status</th>
                           <th>Updated</th>
+                          <th></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -762,6 +773,13 @@ export class TrackerDetailView extends LitElement {
                               </td>
                               <td title=${issue.updated_at}>
                                 ${formatRelativeTime(issue.updated_at)}
+                              </td>
+                              <td>
+                                <sl-button
+                                  size="small"
+                                  @click=${() => this._runImplementer(issue)}
+                                  >Run implementer</sl-button
+                                >
                               </td>
                             </tr>
                           `

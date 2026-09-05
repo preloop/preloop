@@ -3018,6 +3018,82 @@ export async function triggerFlowExecution(
   return response.json();
 }
 
+export type RunPresetSlug =
+  'automated-issue-implementation' | 'pull-request-reviewer';
+
+export interface RunPresetTarget {
+  kind: 'issue' | 'pull_request';
+  issue_id?: string;
+  project_id?: string;
+  number?: number;
+}
+
+export interface RunPresetResponse {
+  execution_id: string | null;
+  flow_id: string;
+  flow_name: string;
+  flow_created: boolean;
+  execution_url: string | null;
+}
+
+export class RunPresetError extends Error {
+  status: number;
+  code?: string;
+  flowName?: string;
+  flowId?: string;
+
+  constructor(
+    message: string,
+    status: number,
+    extras?: { code?: string; flowName?: string; flowId?: string }
+  ) {
+    super(message);
+    this.name = 'RunPresetError';
+    this.status = status;
+    this.code = extras?.code;
+    this.flowName = extras?.flowName;
+    this.flowId = extras?.flowId;
+  }
+}
+
+export async function runPresetOnTarget(body: {
+  preset_slug: RunPresetSlug;
+  target: RunPresetTarget;
+  confirm_create?: boolean;
+}): Promise<RunPresetResponse> {
+  const response = await fetchWithAuth('/api/v1/flows/run-preset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      preset_slug: body.preset_slug,
+      target: body.target,
+      confirm_create: body.confirm_create ?? false,
+    }),
+  });
+  if (response.ok) {
+    return response.json();
+  }
+  const errorData = await response.json().catch(() => ({}));
+  const detail = errorData?.detail;
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    throw new RunPresetError(
+      detail.message ||
+        detail.code ||
+        extractErrorMessage(errorData, 'Run failed'),
+      response.status,
+      {
+        code: detail.code,
+        flowName: detail.flow_name,
+        flowId: detail.flow_id,
+      }
+    );
+  }
+  throw new RunPresetError(
+    extractErrorMessage(errorData, 'Failed to run preset'),
+    response.status
+  );
+}
+
 export async function getRunners(): Promise<RunnerRecord[]> {
   const response = await fetchWithAuth('/api/v1/runners');
   if (!response.ok) {

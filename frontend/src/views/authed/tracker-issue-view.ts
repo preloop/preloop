@@ -8,6 +8,7 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '../../components/view-header.ts';
 import '../../components/single-issue-detail-view.ts';
 import { fetchWithAuth, getIssue } from '../../api';
+import { openRunPresetDialog } from '../../components/run-preset-dialog';
 import type { Issue, IssueListItem } from '../../types';
 import { formatRelativeTime } from '../../utils/date';
 import { getStatusVariant } from '../../utils/verdict';
@@ -126,6 +127,16 @@ export class TrackerIssueView extends LitElement {
     };
   }
 
+  private _runImplementer() {
+    if (!this._issue) return;
+    void openRunPresetDialog({
+      presetSlug: 'automated-issue-implementation',
+      target: { kind: 'issue', issue_id: this._issue.id },
+      issueKey: this._issue.key,
+      role: 'implementer',
+    });
+  }
+
   private _similarIssuesHref(): string {
     const projectId = this._issue?.project_id || '';
     const shortId = projectId.split('-')[0];
@@ -200,6 +211,13 @@ export class TrackerIssueView extends LitElement {
           <span>${issue.key}</span>
         </div>
         <div slot="main-column" class="header-actions">
+          <sl-button
+            size="small"
+            variant="primary"
+            @click=${() => this._runImplementer()}
+          >
+            Run implementer
+          </sl-button>
           <sl-button
             size="small"
             variant="text"
