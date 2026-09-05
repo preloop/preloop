@@ -1,5 +1,4 @@
 import logging
-import os
 import uuid
 import json
 import asyncio
@@ -34,6 +33,7 @@ from preloop.agents import (
     AgentStatus,
 )
 from preloop.agents.container import AGENT_SESSION_SUFFIX_KEY
+from preloop.agents.kubernetes import detect_kubernetes_environment
 from preloop.agents.cli_session import (
     AGENT_SESSION_MARKER,
     extract_session_pack,
@@ -2633,15 +2633,7 @@ class FlowExecutionOrchestrator:
         ``.preloop-agent-session`` is already on disk. Kubernetes emptyDir
         cannot be seeded pre-start and needs the pack embedded in the script.
         """
-        env_value = os.getenv("USE_KUBERNETES", "").lower()
-        if env_value == "true":
-            return True
-        if env_value == "false":
-            return False
-        token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-        if os.path.exists(token_path) or os.getenv("KUBERNETES_SERVICE_HOST"):
-            return True
-        return False
+        return detect_kubernetes_environment()
 
     def _resolve_cli_session_restore_archive(self) -> Optional[bytes]:
         """Extract the prior execution's packed CLI session from its snapshot.
