@@ -232,6 +232,48 @@ describe('ApprovalView', () => {
       );
     });
 
+    it('ignores the A key while the deny confirm is open', async () => {
+      await renderRequest(pendingRequest());
+
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'd' }));
+      await waitUntil(
+        () => !!document.querySelector('confirm-dialog'),
+        'no confirm dialog'
+      );
+
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+      await aTimeout(0);
+      expect(
+        decisionCall('approve'),
+        'A approved behind the open deny confirmation'
+      ).to.be.undefined;
+      expect(
+        document.querySelectorAll('confirm-dialog').length,
+        'the confirmation should still be the only thing asking'
+      ).to.equal(1);
+    });
+
+    it('ignores a held-down D key', async () => {
+      await renderRequest(pendingRequest());
+
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'd' }));
+      await waitUntil(
+        () => !!document.querySelector('confirm-dialog'),
+        'no confirm dialog'
+      );
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'd', repeat: true })
+      );
+      await aTimeout(0);
+
+      const dialog = document.querySelector('confirm-dialog') as HTMLElement;
+      const confirm = dialog.shadowRoot?.querySelector(
+        '[data-testid="confirm-dialog-confirm"]'
+      ) as HTMLElement;
+      confirm.click();
+      await waitUntil(() => !!decisionCall('decline'), 'no decline call');
+    });
+
     it('leaves the keys alone while a comment is being typed', async () => {
       const element = await renderRequest(pendingRequest());
 
@@ -249,6 +291,27 @@ describe('ApprovalView', () => {
 
       expect(decisionCall('approve'), 'a typed "a" approved the request').to.be
         .undefined;
+    });
+
+    it('does not toast twice when the websocket echoes this page own decision', async () => {
+      const element = await renderRequest(pendingRequest());
+
+      await (element as any).handleApprove();
+      await element.updateComplete;
+      const afterDecision = document.querySelectorAll('sl-alert').length;
+
+      (element as any).handleWebSocketMessage({
+        type: 'approval_approved',
+        approval_request_id: 'req-1',
+        status: 'approved',
+        resolved_at: new Date().toISOString(),
+      });
+      await element.updateComplete;
+
+      expect(
+        document.querySelectorAll('sl-alert').length,
+        'the echoed websocket update toasted the same decision again'
+      ).to.equal(afterDecision);
     });
 
     it('points at the next waiting request once a decision is taken', async () => {

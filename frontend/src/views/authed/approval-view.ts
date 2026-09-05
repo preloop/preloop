@@ -66,6 +66,13 @@ export class ApprovalView extends AuthedElement {
   @state()
   private waitingNext: ApprovalRequest[] = [];
 
+  /**
+   * True while the deny confirmation is on screen. The decision keys listen on
+   * the document, so without this an A pressed over an open "Deny this
+   * request?" dialog would approve behind it.
+   */
+  private confirming = false;
+
   private unsubscribe?: () => void;
   private tickTimer?: ReturnType<typeof setInterval>;
 
@@ -352,6 +359,11 @@ export class ApprovalView extends AuthedElement {
 
   private handleKeyDown = (event: KeyboardEvent) => {
     if (!this.isLive || this.isQuestion || this.submitting) return;
+    // A confirmation is a question in its own right: answer it with the mouse
+    // or the dialog's own keys, not with the page shortcuts underneath it.
+    if (this.confirming) return;
+    // Holding the key down would re-ask the confirmation on every repeat.
+    if (event.repeat) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     const target = event.composedPath()[0] as HTMLElement | undefined;
     const tag = target?.tagName?.toLowerCase() ?? '';
@@ -402,7 +414,10 @@ export class ApprovalView extends AuthedElement {
         resolved_at: message.resolved_at || this.approvalRequest.resolved_at,
       };
 
-      // Report the change the way the rest of the console reports results.
+      // Report the change the way the rest of the console reports results,
+      // unless this page took the decision: submitDecision already said so and
+      // a broadcast echoed back here would toast the same thing twice.
+      if (this.decisionTaken) return;
       if (message.type === 'approval_approved') {
         showToast('This request was approved.', 'success');
       } else if (message.type === 'approval_declined') {
@@ -532,17 +547,23 @@ export class ApprovalView extends AuthedElement {
   /** Denying stops the agent, so it confirms first (DESIGN.md destructive). */
   private async handleDeny() {
     const request = this.approvalRequest;
-    if (!request) return;
-    const confirmed = await confirmDialog({
-      title: 'Deny this request?',
-      message: `${request.tool_name} will not run.`,
-      detail: `${formatApprovalRequester(
-        request.managed_agent_name,
-        request.tool_args
-      )} is told no and continues without it.`,
-      confirmLabel: 'Deny',
-      variant: 'danger',
-    });
+    if (!request || this.confirming) return;
+    this.confirming = true;
+    let confirmed = false;
+    try {
+      confirmed = await confirmDialog({
+        title: 'Deny this request?',
+        message: `${request.tool_name} will not run.`,
+        detail: `${formatApprovalRequester(
+          request.managed_agent_name,
+          request.tool_args
+        )} is told no and continues without it.`,
+        confirmLabel: 'Deny',
+        variant: 'danger',
+      });
+    } finally {
+      this.confirming = false;
+    }
     if (!confirmed) return;
     await this.submitDecision(
       'decline',
