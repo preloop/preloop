@@ -2329,3 +2329,174 @@ def test_preview_request_accepts_legacy_cron_shape():
     )
     assert req.schedule_config.type == "cron"
     assert req.schedule_config.expr == "0 2 * * *"
+
+
+def _run_preset_body(
+    issue_id: uuid.UUID,
+    *,
+    confirm_create: bool = False,
+    slug: str = "automated-issue-implementation",
+):
+    return schemas.RunPresetRequest(
+        preset_slug=slug,
+        target=schemas.RunPresetTarget(kind="issue", issue_id=issue_id),
+        confirm_create=confirm_create,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_preset_409_when_flow_missing_without_confirm(
+    mock_account: Account, mocker: MockerFixture
+):
+    from preloop.services.preset_runner import PresetRunnerError
+
+    issue_id = uuid.uuid4()
+    mocker.patch(
+        "preloop.services.preset_runner._load_visible_issue",
+        return_value=(MagicMock(), MagicMock(), MagicMock()),
+    )
+    mocker.patch(
+        "preloop.services.preset_runner.resolve_or_create_flow",
+        side_effect=PresetRunnerError(
+            409,
+            {"code": "flow_missing", "flow_name": "Automated Issue Implementation"},
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.run_preset(
+                db=MagicMock(),
+                current_user=mock_account,
+                body=_run_preset_body(issue_id),
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "flow_missing"
+    assert exc_info.value.detail["flow_name"] == "Automated Issue Implementation"
+
+
+@pytest.mark.asyncio
+async def test_run_preset_creates_and_triggers(
+    mock_account: Account, mocker: MockerFixture
+):
+    issue_id = uuid.uuid4()
+    flow_id = uuid.uuid4()
+    execution_id = uuid.uuid4()
+    flow = MagicMock()
+    flow.id = flow_id
+    flow.name = "Automated Issue Implementation"
+
+    mocker.patch(
+        "preloop.services.preset_runner._load_visible_issue",
+        return_value=(MagicMock(), MagicMock(), MagicMock()),
+    )
+    mocker.patch(
+        "preloop.services.preset_runner.resolve_or_create_flow",
+        return_value=(flow, True),
+    )
+    mocker.patch(
+        "preloop.services.preset_runner.build_issue_trigger_payload",
+        return_value={"type": "issue_run", "source": "github", "payload": {}},
+    )
+    trigger = mocker.AsyncMock(
+        return_value={
+            "id": str(execution_id),
+            "status": "PENDING",
+            "flow_id": str(flow_id),
+        }
+    )
+    mocker.patch(
+        "preloop.services.flow_trigger_service.FlowTriggerService.trigger_flow",
+        trigger,
+    )
+
+    result = await maybe_await(
+        flows.run_preset(
+            db=MagicMock(),
+            current_user=mock_account,
+            body=_run_preset_body(issue_id, confirm_create=True),
+        )
+    )
+
+    assert result.flow_created is True
+    assert result.flow_id == str(flow_id)
+    assert result.execution_id == str(execution_id)
+    assert result.execution_url == f"/console/flows/executions/{execution_id}"
+    trigger.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_preset_requires_create_flows_to_create(
+    mock_account: Account, mocker: MockerFixture
+):
+    from preloop.services.preset_runner import PresetRunnerError
+
+    issue_id = uuid.uuid4()
+    mocker.patch(
+        "preloop.services.preset_runner._load_visible_issue",
+        return_value=(MagicMock(), MagicMock(), MagicMock()),
+    )
+    mocker.patch(
+        "preloop.services.preset_runner.resolve_or_create_flow",
+        side_effect=PresetRunnerError(
+            403,
+            "You can run flows but not create them. Ask an admin to add the "
+            "Automated Issue Implementation flow.",
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.run_preset(
+                db=MagicMock(),
+                current_user=mock_account,
+                body=_run_preset_body(issue_id, confirm_create=True),
+            )
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "not create them" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_run_preset_unknown_slug_404(
+    mock_account: Account, mocker: MockerFixture
+):
+    issue_id = uuid.uuid4()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.run_preset(
+                db=MagicMock(),
+                current_user=mock_account,
+                body=_run_preset_body(issue_id, slug="not-a-real-preset"),
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+    assert "Preset not found" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_run_preset_pull_request_target_400(
+    mock_account: Account, mocker: MockerFixture
+):
+    body = schemas.RunPresetRequest(
+        preset_slug="automated-issue-implementation",
+        target=schemas.RunPresetTarget(
+            kind="pull_request",
+            project_id=uuid.uuid4(),
+            number=12,
+        ),
+        confirm_create=True,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maybe_await(
+            flows.run_preset(db=MagicMock(), current_user=mock_account, body=body)
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "pull request" in str(exc_info.value.detail).lower()
