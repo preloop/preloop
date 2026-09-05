@@ -41,7 +41,7 @@ export function trackerKindLabel(kind: string): string {
   return KIND_LABELS[kind.toLowerCase()] || kind;
 }
 
-export function trackerProjectsCount(tracker: Tracker): number | null {
+export function trackerProjectsCount(tracker: Tracker): number | 'all' {
   const rules = tracker.scope_rules ?? [];
   const projectIncludes = rules.filter(
     (rule) =>
@@ -51,13 +51,11 @@ export function trackerProjectsCount(tracker: Tracker): number | null {
   if (projectIncludes.length > 0) {
     return projectIncludes.length;
   }
-  return null;
+  return 'all';
 }
 
-export function trackerLastSyncAt(tracker: Tracker): string | null {
-  return (
-    tracker.last_validation || tracker.last_updated || tracker.created || null
-  );
+export function trackerLastCheckedAt(tracker: Tracker): string | null {
+  return tracker.last_validation ?? null;
 }
 
 export function filterTrackers(
@@ -451,6 +449,18 @@ export class TrackerList extends LitElement {
         clip: rect(0 0 0 0);
         white-space: nowrap;
       }
+
+      sl-select::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
     `,
   ];
 
@@ -460,13 +470,14 @@ export class TrackerList extends LitElement {
         <list-toolbar
           .search=${this.search}
           searchPlaceholder="Search trackers"
+          toggleLabel="Trackers view"
           .view=${this.currentView}
-          .views=${['list', 'cards']}
           @search-change=${this.handleSearchChange}
           @view-change=${this.handleViewChange}
         >
           <sl-select
             class="kind-filter"
+            label="Kind"
             clearable
             placeholder="All kinds"
             .value=${this.kindFilter}
@@ -495,7 +506,7 @@ export class TrackerList extends LitElement {
               <th>Kind</th>
               <th class="numeric">Projects</th>
               <th>Sync</th>
-              <th>Last sync</th>
+              <th>Last checked</th>
               <th class="actions-cell">
                 <span class="visually-hidden">Actions</span>
               </th>
@@ -515,7 +526,7 @@ export class TrackerList extends LitElement {
 
   private renderListRow(tracker: Tracker) {
     const projects = trackerProjectsCount(tracker);
-    const lastSync = trackerLastSyncAt(tracker);
+    const lastChecked = trackerLastCheckedAt(tracker);
     const connected = tracker.is_valid !== false;
     return html`
       <tr
@@ -542,8 +553,8 @@ export class TrackerList extends LitElement {
         </td>
         <td class="numeric">
           ${
-            projects === null
-              ? html`<span class="muted-cell">None</span>`
+            projects === 'all'
+              ? html`<span class="muted-cell">All</span>`
               : projects
           }
         </td>
@@ -553,7 +564,7 @@ export class TrackerList extends LitElement {
           </sl-badge>
         </td>
         <td class="muted-cell">
-          ${lastSync ? formatRelativeTime(lastSync) : html`<span>Never</span>`}
+          ${lastChecked ? formatRelativeTime(lastChecked) : nothing}
         </td>
         <td class="actions-cell">
           <div
@@ -605,7 +616,7 @@ export class TrackerList extends LitElement {
   }
 
   render() {
-    if (this.isLoading) {
+    if (this.isLoading && this.trackers.length === 0) {
       return html`<div class="loading-indicator">
         <sl-spinner></sl-spinner>
       </div>`;
@@ -646,8 +657,11 @@ export class TrackerList extends LitElement {
     }
 
     const visible = this.visibleTrackers;
-    const body =
-      visible.length === 0
+    const body = this.isLoading
+      ? html`<div class="loading-indicator">
+          <sl-spinner></sl-spinner>
+        </div>`
+      : visible.length === 0
         ? html`<div class="filter-empty">No trackers match these filters.</div>`
         : this.effectiveView === 'cards'
           ? this.renderCardsView(visible)

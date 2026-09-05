@@ -314,6 +314,17 @@ export class AIModelsView extends LitElement {
         gap: var(--sl-spacing-x-small);
         justify-content: flex-end;
       }
+      sl-select::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
     `,
   ];
 
@@ -667,7 +678,11 @@ export class AIModelsView extends LitElement {
                 ? null
                 : this.renderFleetOverview()
             }
-            ${this.models.length > 0 ? this.renderToolbar() : null}
+            ${
+              !this.error && this.models.length > 0
+                ? this.renderToolbar()
+                : null
+            }
             ${renderContent()}
           </div>
         </div>
@@ -689,13 +704,14 @@ export class AIModelsView extends LitElement {
         <list-toolbar
           .search=${this.search}
           searchPlaceholder="Search models"
+          toggleLabel="Models view"
           .view=${this.currentView}
-          .views=${['list', 'cards']}
           @search-change=${this.handleSearchChange}
           @view-change=${this.handleViewChange}
         >
           <sl-select
             class="provider-filter"
+            label="Provider"
             clearable
             placeholder="All providers"
             .value=${this.providerFilter}
@@ -708,6 +724,7 @@ export class AIModelsView extends LitElement {
           </sl-select>
           <sl-select
             class="status-filter"
+            label="Status"
             clearable
             placeholder="Any status"
             .value=${this.statusFilter}

@@ -16,6 +16,7 @@ describe('AIModelsView', () => {
   let subscribeStub: sinon.SinonStub;
 
   beforeEach(() => {
+    localStorage.removeItem('preloop.models.view_mode');
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
@@ -105,6 +106,7 @@ describe('AIModelsView', () => {
     fetchStub.restore();
     connectStub.restore();
     subscribeStub.restore();
+    localStorage.removeItem('preloop.models.view_mode');
     localStorage.clear();
   });
 
@@ -152,6 +154,34 @@ describe('AIModelsView', () => {
     expect(viewButton).to.not.equal(null);
     expect(connectStub).to.have.been.calledOnce;
     expect(subscribeStub.callCount).to.equal(5);
+
+    const providerSelect = element.shadowRoot?.querySelector(
+      'sl-select.provider-filter'
+    );
+    const statusSelect = element.shadowRoot?.querySelector(
+      'sl-select.status-filter'
+    );
+    expect(providerSelect?.getAttribute('label')).to.equal('Provider');
+    expect(statusSelect?.getAttribute('label')).to.equal('Status');
+  });
+
+  it('hides the toolbar when a refresh fails with models still loaded', async () => {
+    const element = (await fixture(
+      html`<ai-models-view></ai-models-view>`
+    )) as AIModelsView;
+
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'AI models view did not finish loading'
+    );
+    await element.updateComplete;
+    expect(element.shadowRoot?.querySelector('list-toolbar')).to.exist;
+
+    (element as any).error = 'Failed to refresh models';
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.querySelector('list-toolbar')).to.equal(null);
+    expect(element.shadowRoot?.querySelector('sl-alert')).to.exist;
   });
 
   const secondModel = {

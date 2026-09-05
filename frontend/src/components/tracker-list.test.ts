@@ -5,6 +5,7 @@ import './tracker-list';
 import {
   filterTrackers,
   trackerKindLabel,
+  trackerLastCheckedAt,
   trackerProjectsCount,
   type TrackerList,
 } from './tracker-list';
@@ -72,7 +73,37 @@ describe('filterTrackers', () => {
         ],
       })
     ).to.equal(2);
-    expect(trackerProjectsCount(trackers[0])).to.equal(null);
+    expect(trackerProjectsCount(trackers[0])).to.equal('all');
+    expect(
+      trackerProjectsCount({
+        ...trackers[0],
+        scope_rules: [
+          {
+            scope_type: 'ORGANIZATION',
+            rule_type: 'INCLUDE',
+            identifier: 'ORG',
+          },
+        ],
+      })
+    ).to.equal('all');
+  });
+
+  it('uses last_validation only for last checked', () => {
+    expect(trackerLastCheckedAt(trackers[0])).to.equal(null);
+    expect(
+      trackerLastCheckedAt({
+        ...trackers[0],
+        last_updated: '2024-06-01T00:00:00Z',
+        created: '2024-01-01T00:00:00Z',
+      })
+    ).to.equal(null);
+    expect(
+      trackerLastCheckedAt({
+        ...trackers[0],
+        last_validation: '2024-03-15T12:00:00Z',
+        last_updated: '2024-06-01T00:00:00Z',
+      })
+    ).to.equal('2024-03-15T12:00:00Z');
   });
 });
 
@@ -97,12 +128,14 @@ describe('TrackerList', () => {
   ];
 
   beforeEach(() => {
+    localStorage.removeItem('preloop.trackers.view_mode');
     localStorage.setItem('accessToken', 'test-access-token');
     fetchStub = sinon.stub(window, 'fetch');
   });
 
   afterEach(() => {
     fetchStub.restore();
+    localStorage.removeItem('preloop.trackers.view_mode');
     localStorage.clear();
   });
 
@@ -151,6 +184,54 @@ describe('TrackerList', () => {
     const rows = el.shadowRoot?.querySelectorAll('.tracker-row');
     expect(rows).to.have.lengthOf(2);
     expect(el.shadowRoot?.querySelector('list-toolbar')).to.exist;
+    expect(el.shadowRoot?.textContent).to.contain('Last checked');
+    expect(el.shadowRoot?.textContent).to.contain('All');
+    expect(el.shadowRoot?.textContent).to.not.contain('None');
+    expect(el.shadowRoot?.textContent).to.not.contain('Never');
+    const kindSelect = el.shadowRoot?.querySelector('sl-select.kind-filter');
+    expect(kindSelect?.getAttribute('label')).to.equal('Kind');
+  });
+
+  it('keeps the toolbar while refetching existing trackers', async () => {
+    fetchStub.resolves(
+      new Response(JSON.stringify(mockTrackers), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+
+    const el = (await fixture(
+      html`<tracker-list></tracker-list>`
+    )) as TrackerList;
+
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('.tracker-row') !== null,
+      'Tracker list did not render'
+    );
+
+    let resolveFetch!: (value: Response) => void;
+    fetchStub.resetBehavior();
+    fetchStub.returns(
+      new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      })
+    );
+
+    const refetch = el.fetchTrackers();
+    await el.updateComplete;
+
+    expect(el.shadowRoot?.querySelector('list-toolbar')).to.exist;
+    expect(el.shadowRoot?.querySelector('sl-spinner')).to.exist;
+
+    resolveFetch(
+      new Response(JSON.stringify(mockTrackers), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    await refetch;
+    await el.updateComplete;
+    expect(el.shadowRoot?.querySelector('.tracker-row')).to.exist;
   });
 
   it('switches to the existing cards template', async () => {

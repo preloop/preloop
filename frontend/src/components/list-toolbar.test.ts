@@ -12,6 +12,7 @@ describe('list-toolbar', () => {
       <list-toolbar
         search=${props.search ?? ''}
         searchPlaceholder=${props.searchPlaceholder ?? 'Search'}
+        toggleLabel=${props.toggleLabel ?? 'View'}
         view=${props.view ?? 'list'}
         .views=${props.views ?? ['list', 'cards']}
       >
@@ -28,8 +29,15 @@ describe('list-toolbar', () => {
     const input = element.shadowRoot!.querySelector('sl-input.search-input')!;
     expect(input).to.exist;
     expect(input.getAttribute('placeholder')).to.equal('Search trackers');
+    expect(input.getAttribute('label')).to.equal('Search trackers');
     const icon = input.querySelector('sl-icon[name="search"]');
     expect(icon).to.exist;
+  });
+
+  it('names the view switcher from toggleLabel', async () => {
+    const element = await render({ toggleLabel: 'Trackers view' });
+    const group = element.shadowRoot!.querySelector('sl-button-group');
+    expect(group?.getAttribute('label')).to.equal('Trackers view');
   });
 
   it('projects page-specific filters into the default slot', async () => {

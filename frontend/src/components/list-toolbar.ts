@@ -32,11 +32,25 @@ export class ListToolbar extends LitElement {
   @property({ type: String }) searchPlaceholder = 'Search';
   @property({ type: String }) view: ListViewMode = 'list';
   @property({ type: Array }) views: ListViewMode[] = ['list', 'cards'];
+  @property({ type: String }) toggleLabel = 'View';
 
   static styles = css`
     :host {
       display: block;
       width: 100%;
+    }
+
+    /* Names the search field for assistive tech without a visible label. */
+    sl-input::part(form-control-label) {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
     }
 
     /* --- Filter bar (copied from flows-view) --- */
@@ -163,6 +177,7 @@ export class ListToolbar extends LitElement {
         >
           <sl-input
             class="search-input"
+            label=${this.searchPlaceholder}
             placeholder=${this.searchPlaceholder}
             clearable
             .value=${this.search}
@@ -182,7 +197,7 @@ export class ListToolbar extends LitElement {
             this.showToggle
               ? html`
                   <span class="toolbar-divider" aria-hidden="true"></span>
-                  <sl-button-group label="View">
+                  <sl-button-group label=${this.toggleLabel}>
                     ${VIEW_OPTIONS.filter((option) =>
                       this.visibleViews.includes(option.value)
                     ).map(

@@ -78,6 +78,7 @@ describe('TrackersView', () => {
   }
 
   beforeEach(async () => {
+    localStorage.removeItem('preloop.trackers.view_mode');
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
@@ -98,6 +99,7 @@ describe('TrackersView', () => {
 
   afterEach(() => {
     fetchStub.restore();
+    localStorage.removeItem('preloop.trackers.view_mode');
     localStorage.clear();
     sessionStorage.clear();
     // Reset URL
