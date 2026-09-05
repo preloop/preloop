@@ -1157,6 +1157,7 @@ func TestResolvePermissionDecisionCursorPreToolUseDedupe(t *testing.T) {
 		Source:        permissionSourceCursor,
 		WorkspaceRoot: "/repo",
 	})
+	writeCursorPreloopHookEvents(t, home, "beforeShellExecution", "beforeMCPExecution", "preToolUse")
 
 	cases := []struct {
 		name         string
@@ -1262,10 +1263,31 @@ func TestResolvePermissionDecisionCursorPreToolUseDedupe(t *testing.T) {
 	}
 }
 
+func writeCursorPreloopHookEvents(t *testing.T, home string, events ...string) {
+	t.Helper()
+	hooks := map[string]interface{}{}
+	for _, event := range events {
+		hooks[event] = []interface{}{
+			map[string]interface{}{"command": "preloop agents permission-hook --source cursor"},
+		}
+	}
+	path := filepath.Join(home, ".cursor", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatalf("mkdir hooks dir: %v", err)
+	}
+	if err := writeJSONDocument(path, map[string]interface{}{"version": 1, "hooks": hooks}); err != nil {
+		t.Fatalf("write hooks.json: %v", err)
+	}
+}
+
 // cursorPreToolUseDuplicateDecision must only short-circuit preToolUse events
-// for tools that have a dedicated before* hook; every other event falls
-// through to the normal evaluation path.
+// for tools that have a dedicated before* hook that is still installed;
+// every other event falls through to the normal evaluation path.
 func TestCursorPreToolUseDuplicateDecision(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	writeCursorPreloopHookEvents(t, home, "beforeShellExecution", "beforeMCPExecution", "preToolUse")
+
 	cases := []struct {
 		name string
 		raw  string
@@ -1316,5 +1338,40 @@ func TestCursorMCPServerNameHonorsDocumentedKey(t *testing.T) {
 	preloop := map[string]interface{}{"mcp_server_name": "preloop", "command": "npx preloop-mcp"}
 	if !isPreloopMCPTool(preloop, "list_issues", "") {
 		t.Error("isPreloopMCPTool should detect Preloop via mcp_server_name")
+	}
+	if got := cursorMCPServerName(map[string]interface{}{"mcp_server_url": "https://mcp.example.com/sse"}); got != "https://mcp.example.com/sse" {
+		t.Errorf("mcp_server_url alias = %q", got)
+	}
+	if got := cursorMCPServerName(map[string]interface{}{"server": "legacy"}); got != "legacy" {
+		t.Errorf("server alias = %q", got)
+	}
+}
+
+func TestCursorPreToolUseDuplicateRequiresInstalledBeforeHook(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	raw := []byte(`{"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"ls"}}`)
+
+	if _, got := cursorPreToolUseDuplicateDecision(raw); got {
+		t.Fatal("missing hooks.json must not locally allow Shell preToolUse")
+	}
+
+	writeCursorPreloopHookEvents(t, home, "preToolUse")
+	if _, got := cursorPreToolUseDuplicateDecision(raw); got {
+		t.Fatal("preToolUse-only install must not locally allow Shell")
+	}
+
+	writeCursorPreloopHookEvents(t, home, "beforeShellExecution")
+	if _, got := cursorPreToolUseDuplicateDecision(raw); !got {
+		t.Fatal("beforeShellExecution install should locally allow Shell preToolUse")
+	}
+
+	mcpRaw := []byte(`{"hook_event_name":"preToolUse","tool_name":"search","mcp_server_name":"linear"}`)
+	if _, got := cursorPreToolUseDuplicateDecision(mcpRaw); got {
+		t.Fatal("Shell before-hook must not locally allow MCP preToolUse")
+	}
+	writeCursorPreloopHookEvents(t, home, "beforeMCPExecution")
+	if _, got := cursorPreToolUseDuplicateDecision(mcpRaw); !got {
+		t.Fatal("beforeMCPExecution install should locally allow MCP preToolUse")
 	}
 }

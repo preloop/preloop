@@ -269,10 +269,17 @@ func matchCursorMCPAllowlist(allowlist []string, event map[string]interface{}, t
 	return false
 }
 
+// cursorMCPServerNameKeys are JSON fields that name the MCP server on a
+// Cursor hook event. mcp_server_name is documented; the rest are aliases.
+var cursorMCPServerNameKeys = []string{
+	"mcp_server_name", "server_name", "mcp_server", "mcp_server_url", "server",
+}
+
 func cursorMCPServerName(event map[string]interface{}) string {
 	// mcp_server_name is the key Cursor documents for beforeMCPExecution; the
-	// rest are aliases seen in older payloads.
-	if name := firstStringField(event, "mcp_server_name", "server_name", "server", "mcp_server"); name != "" {
+	// rest are aliases seen in older payloads. Keep this list in lockstep with
+	// cursorToolHasDedicatedBeforeHook.
+	if name := firstStringField(event, cursorMCPServerNameKeys...); name != "" {
 		return name
 	}
 	if command := firstStringField(event, "command"); command != "" {
