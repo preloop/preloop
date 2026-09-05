@@ -1061,8 +1061,12 @@ func TestEnablePermissionPromptBuiltin(t *testing.T) {
 
 	client := api.NewClientWithToken(server.URL, "test-token")
 	var out strings.Builder
-	if err := enablePermissionPromptBuiltin(client, "agent-123", &out); err != nil {
+	created, err := enablePermissionPromptBuiltin(client, "agent-123", &out)
+	if err != nil {
 		t.Fatalf("enablePermissionPromptBuiltin: %v", err)
+	}
+	if !created {
+		t.Fatal("expected created=true when the row is new")
 	}
 
 	if captured["tool_name"] != "permission_prompt" {
@@ -1098,8 +1102,12 @@ func TestEnablePermissionPromptBuiltinToleratesExistingRow(t *testing.T) {
 
 	client := api.NewClientWithToken(server.URL, "test-token")
 	var out strings.Builder
-	if err := enablePermissionPromptBuiltin(client, "agent-123", &out); err != nil {
+	created, err := enablePermissionPromptBuiltin(client, "agent-123", &out)
+	if err != nil {
 		t.Fatalf("expected already-exists to be tolerated, got %v", err)
+	}
+	if created {
+		t.Fatal("expected created=false when the row already exists")
 	}
 	if !strings.Contains(out.String(), "already configured") {
 		t.Fatalf("expected already-configured note, got:\n%s", out.String())
@@ -1115,7 +1123,7 @@ func TestEnablePermissionPromptBuiltinPropagatesServerErrors(t *testing.T) {
 	defer server.Close()
 
 	client := api.NewClientWithToken(server.URL, "test-token")
-	if err := enablePermissionPromptBuiltin(client, "agent-123", nil); err == nil {
+	if _, err := enablePermissionPromptBuiltin(client, "agent-123", nil); err == nil {
 		t.Fatal("expected server error to propagate")
 	}
 }
@@ -1202,6 +1210,7 @@ func TestInstallRemoveApprovalHooksOpenCode(t *testing.T) {
 		"preloop-opencode-plugin verify --config " + configPath,
 		"Approval wait timeout: 600s",
 		"regardless of OpenCode's own permission config",
+		"permissions were tightened to 0600",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("expected %q in onboarding output, got:\n%s", want, out.String())

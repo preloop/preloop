@@ -128,7 +128,7 @@ export { PreloopPlugin as default } from "@preloop-ai/opencode-plugin";
 Written by `preloop agents onboard OpenCode --approvals` under
 `preloop.control` in `~/.config/opencode/opencode.json` (the CLI keeps its
 MCP server entry in the legacy `~/.config/opencode/config.json`; OpenCode
-loads both files):
+also reads `opencode.json`, which is where this block lives):
 
 ```json
 {

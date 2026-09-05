@@ -257,8 +257,11 @@ func installOpenCodeApprovalPlugin(agent AgentConfig, baseURL, token string, out
 		fmt.Fprintln(out, "  Mobile approvals: every OpenCode native tool call (bash, edit, write, read, webfetch, ...) is routed to Preloop") //nolint:errcheck
 		fmt.Fprintln(out, "    regardless of OpenCode's own permission config; account tool rules decide, unmatched calls ask a human.")       //nolint:errcheck
 		fmt.Fprintln(out, "    Read-only shell commands (ls, cat, git status, ...) run without approval (safe_read_auto_allow).")              //nolint:errcheck
+		if existed {
+			fmt.Fprintf(out, "  Note: %s now carries the Preloop runtime token, so its permissions were tightened to 0600.\n", configPath) //nolint:errcheck
+		}
 		if jsoncNote {
-			fmt.Fprintf(out, "  Note: found %s; the CLI never edits JSONC, so it wrote %s (OpenCode loads both).\n", openCodeUserConfigJSONCPath(), configPath) //nolint:errcheck
+			fmt.Fprintf(out, "  Note: found %s; the CLI never edits JSONC, so it wrote %s, which OpenCode also reads.\n", openCodeUserConfigJSONCPath(), configPath) //nolint:errcheck
 		}
 		fmt.Fprintln(out, "  Restart OpenCode to load the plugin (OpenCode installs npm plugins on startup).")                                              //nolint:errcheck
 		fmt.Fprintf(out, "  Verify with: npm install -g %s && %s verify --config %s\n", openCodePluginPackageName, openCodePluginVerifyCommand, configPath) //nolint:errcheck

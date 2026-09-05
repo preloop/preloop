@@ -925,17 +925,19 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			// Headless (claude -p) governance: enable the default-disabled
 			// permission_prompt builtin for exactly this agent so the rest
 			// of the account's MCP clients keep paying zero context for it.
-			if err := enablePermissionPromptBuiltin(client, managedAgent.ID, output); err != nil {
+			if _, err := enablePermissionPromptBuiltin(client, managedAgent.ID, output); err != nil {
 				// Non-fatal: hook-based approvals above already applied.
 				fmt.Fprintf(output, "  Warning: %v\n", err) //nolint:errcheck
 			}
 		case permissionSourceOpenCode:
 			// Same agent-scoped builtin so the backend treats this agent as
 			// approvals-governed; the claude -p hint does not apply, so the
-			// call stays quiet and prints its own line.
-			if err := enablePermissionPromptBuiltin(client, managedAgent.ID, nil); err != nil {
+			// call stays quiet and the line prints only when the row is
+			// actually created (not on an idempotent re-onboard).
+			created, err := enablePermissionPromptBuiltin(client, managedAgent.ID, nil)
+			if err != nil {
 				fmt.Fprintf(output, "  Warning: %v\n", err) //nolint:errcheck
-			} else {
+			} else if created {
 				fmt.Fprintln(output, "  Approvals governance: enabled the permission_prompt builtin (scoped to this agent only)") //nolint:errcheck
 			}
 		}
