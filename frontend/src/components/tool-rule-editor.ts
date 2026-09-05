@@ -32,6 +32,55 @@ interface SimpleCondition {
   value: string;
 }
 
+/** Escape backslashes and quotes for a CEL double-quoted string. */
+export function escapeCelString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/** Reverse `escapeCelString` for builder round-trips. */
+export function unescapeCelString(value: string): string {
+  return value.replace(/\\(["\\])/g, '$1');
+}
+
+/**
+ * Translate a glob path pattern to an anchored regex.
+ *
+ * A double-star followed by a slash becomes a non-capturing optional
+ * prefix that matches zero or more directories. A trailing double-star
+ * becomes ".*". A single star becomes "[^/]*". A question mark becomes
+ * "[^/]". Other regex metacharacters are escaped. The result is wrapped
+ * with "(^|/)" and "$" so ".github/**" matches a path segment, not a
+ * substring.
+ */
+export function globToAnchoredRegex(glob: string): string {
+  let out = '';
+  let i = 0;
+  while (i < glob.length) {
+    if (glob.startsWith('**', i)) {
+      if (glob[i + 2] === '/') {
+        out += '(?:.*/)?';
+        i += 3;
+      } else {
+        out += '.*';
+        i += 2;
+      }
+      continue;
+    }
+    const ch = glob[i];
+    if (ch === '*') {
+      out += '[^/]*';
+    } else if (ch === '?') {
+      out += '[^/]';
+    } else if (/[.+^${}()|[\]\\]/.test(ch)) {
+      out += '\\' + ch;
+    } else {
+      out += ch;
+    }
+    i += 1;
+  }
+  return `(^|/)${out}$`;
+}
+
 @customElement('tool-rule-editor')
 export class ToolRuleEditor extends LitElement {
   @property({ type: Boolean }) open = false;
@@ -466,6 +515,18 @@ export class ToolRuleEditor extends LitElement {
       };
     }
 
+    // Match: args.FIELD.matches("...") (glob rows reopen as regex)
+    const matchesMatch = expr
+      .trim()
+      .match(/^args\.(\w+)\.matches\("((?:\\.|[^"\\])*)"\)$/);
+    if (matchesMatch) {
+      return {
+        field: matchesMatch[1],
+        operator: 'matches',
+        value: unescapeCelString(matchesMatch[2]),
+      };
+    }
+
     return null;
   }
 
@@ -556,9 +617,51 @@ export class ToolRuleEditor extends LitElement {
         return `${fieldRef}.startsWith("${value}")`;
       case 'ends_with':
         return `${fieldRef}.endsWith("${value}")`;
+      case 'matches':
+        return `${fieldRef}.matches("${escapeCelString(value)}")`;
+      case 'glob':
+        return `${fieldRef}.matches("${escapeCelString(globToAnchoredRegex(value))}")`;
       default:
         return `${fieldRef} ${operator} "${value}"`;
     }
+  }
+
+  private _activeOperators(): string[] {
+    if (this._useCelEditor) {
+      return [];
+    }
+    if (this._hasAdvancedConditions) {
+      return this._conditions.map((c) => c.operator);
+    }
+    return [this._simpleOperator];
+  }
+
+  private _usesGlobOperator(): boolean {
+    return this._activeOperators().some((op) => op === 'glob');
+  }
+
+  /**
+   * Keep the glob text in description when the user leaves it empty so
+   * the saved row still reads as written after the pattern is stored as
+   * an anchored regex. Each pattern is a short sentence so a deny
+   * reason is not the raw glob.
+   */
+  private _globDescriptionFallback(): string | null {
+    if (this._hasAdvancedConditions && !this._useCelEditor) {
+      const globs = this._conditions
+        .filter((c) => c.operator === 'glob' && c.field && c.value)
+        .map((c) => `Path pattern: ${c.value}`);
+      return globs.length ? globs.join(', ') : null;
+    }
+    if (
+      !this._hasAdvancedConditions &&
+      this._simpleOperator === 'glob' &&
+      this._simpleField &&
+      this._simpleValue
+    ) {
+      return `Path pattern: ${this._simpleValue}`;
+    }
+    return null;
   }
 
   private _buildMultiConditionExpression(): string {
@@ -597,7 +700,45 @@ export class ToolRuleEditor extends LitElement {
     this._conditionOperator = this._conditionOperator === 'AND' ? 'OR' : 'AND';
   }
 
+  private _invalidPatternMessage(): string | null {
+    const rows: SimpleCondition[] =
+      this._hasAdvancedConditions && !this._useCelEditor
+        ? this._conditions
+        : [
+            {
+              field: this._simpleField,
+              operator: this._simpleOperator,
+              value: this._simpleValue,
+            },
+          ];
+    for (const row of rows) {
+      if (!row.field || !row.value) {
+        continue;
+      }
+      if (row.operator === 'matches') {
+        try {
+          new RegExp(row.value);
+        } catch {
+          return 'That regex does not compile.';
+        }
+      }
+      if (row.operator === 'glob') {
+        try {
+          new RegExp(globToAnchoredRegex(row.value));
+        } catch {
+          return 'That path pattern does not compile.';
+        }
+      }
+    }
+    return null;
+  }
+
   private _handleSave() {
+    const patternError = this._invalidPatternMessage();
+    if (patternError) {
+      this._error = patternError;
+      return;
+    }
     let conditionExpr: string | null = null;
 
     if (this._hasAdvancedConditions) {
@@ -629,7 +770,7 @@ export class ToolRuleEditor extends LitElement {
       action: this._action,
       condition_expression: conditionExpr,
       condition_type: conditionExpr ? 'cel' : 'simple',
-      description: this._description.trim() || null,
+      description: this._description.trim() || this._globDescriptionFallback(),
       is_enabled: this._isEnabled,
       approval_workflow_id: approvalWorkflowId,
     };
@@ -671,8 +812,20 @@ export class ToolRuleEditor extends LitElement {
         <sl-option value="contains">contains</sl-option>
         <sl-option value="starts_with">starts with</sl-option>
         <sl-option value="ends_with">ends with</sl-option>
+        <sl-option value="matches">matches regex</sl-option>
+        <sl-option value="glob">matches path pattern</sl-option>
       </sl-select>
     `;
+  }
+
+  private _renderMatcherHints() {
+    const globNote = this._usesGlobOperator()
+      ? html`<div class="hint">
+          Path patterns are stored as an anchored regex. Reopening a rule shows
+          them as matches regex.
+        </div>`
+      : '';
+    return html`${globNote}`;
   }
 
   private _renderFieldInput(value: string, onChange: (val: string) => void) {
@@ -741,6 +894,7 @@ export class ToolRuleEditor extends LitElement {
                 </div>`
               : ''
           }
+          ${this._renderMatcherHints()}
         </div>
       `;
     }
@@ -856,6 +1010,7 @@ export class ToolRuleEditor extends LitElement {
               </div>`
             : ''
         }
+        ${this._renderMatcherHints()}
       </div>
     `;
   }
@@ -987,7 +1142,7 @@ export class ToolRuleEditor extends LitElement {
                       ${
                         aiWorkflows.length === 0
                           ? html`<sl-option disabled value=""
-                              >No AI workflows — create one below</sl-option
+                              >No AI workflows - create one below</sl-option
                             >`
                           : aiWorkflows.map(
                               (p) =>
@@ -1001,7 +1156,7 @@ export class ToolRuleEditor extends LitElement {
                       ${
                         humanWorkflows.length === 0
                           ? html`<sl-option disabled value=""
-                              >No workflows — create one below</sl-option
+                              >No workflows - create one below</sl-option
                             >`
                           : humanWorkflows.map(
                               (p) =>
@@ -1080,7 +1235,7 @@ export class ToolRuleEditor extends LitElement {
     return html`
       <sl-dialog
         label="${this._isEditing ? 'Edit' : 'Add'} Access Rule${
-          this.toolName ? ` — ${this.toolName}` : ''
+          this.toolName ? ` - ${this.toolName}` : ''
         }"
         ?open=${this.open}
         @sl-request-close=${this._handleClose}
