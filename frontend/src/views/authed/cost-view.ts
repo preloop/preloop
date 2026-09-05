@@ -389,6 +389,13 @@ export class CostView extends AuthedElement {
         color: var(--sl-color-neutral-600);
       }
 
+      /* The previous range's answers, on their way out: readable, clearly not
+         current, and in exactly the place the new ones will appear. */
+      .results.is-updating {
+        opacity: 0.6;
+        pointer-events: none;
+      }
+
       .analytics-card::part(body) {
         padding: var(--sl-spacing-large);
       }
@@ -2657,11 +2664,16 @@ export class CostView extends AuthedElement {
   }
 
   render() {
+    // A slower call never blanks a card that already has an answer: the first
+    // load gets the spinner, a range change keeps the previous numbers at 60%
+    // with aria-busy until the new ones arrive.
+    const hasAnswer = this.summary !== null;
+    const updating = this.loading && hasAnswer;
     return html`
       <div class="page">
         <view-header
           headerText="Cost Analytics"
-          description="Understand gateway spend by model, agent, session, flow, and API key."
+          description="Understand gateway spend by agent, tool, session and user."
         ></view-header>
 
         <div class="toolbar">
@@ -2693,7 +2705,7 @@ export class CostView extends AuthedElement {
             : null
         }
         ${
-          this.loading
+          this.loading && !hasAnswer
             ? html`<sl-card>
                 <div
                   class="loading-state"
@@ -2706,13 +2718,18 @@ export class CostView extends AuthedElement {
                 </div>
               </sl-card>`
             : html`
-                ${this.renderMetrics()} ${this.renderCatalogInfo()}
-                ${this.renderUnpricedNotice()}
-                <div class="column-layout dashboard extra-wide">
-                  <div class="main-column">
-                    ${this.renderBreakdown()} ${this.renderImportedUsage()}
+                <div
+                  class="results ${updating ? 'is-updating' : ''}"
+                  aria-busy=${updating ? 'true' : 'false'}
+                >
+                  ${this.renderMetrics()} ${this.renderCatalogInfo()}
+                  ${this.renderUnpricedNotice()}
+                  <div class="column-layout dashboard extra-wide">
+                    <div class="main-column">
+                      ${this.renderBreakdown()} ${this.renderImportedUsage()}
+                    </div>
+                    <div class="side-column">${this.renderControls()}</div>
                   </div>
-                  <div class="side-column">${this.renderControls()}</div>
                 </div>
               `
         }

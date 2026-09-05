@@ -180,6 +180,64 @@ describe('CostView', () => {
     expect(loading).to.exist;
   });
 
+  it('keeps the previous numbers on screen while a range change loads', async () => {
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element.updateComplete;
+
+    const spendBefore = element.shadowRoot?.querySelector(
+      '[aria-label="Cost summary metrics"]'
+    )?.textContent;
+    expect(spendBefore).to.contain('$8.50');
+
+    // The in-flight state of a range change: loading is true and an answer
+    // from the previous range is already on screen.
+    (element as unknown as { loading: boolean }).loading = true;
+    await element.updateComplete;
+
+    const metrics = element.shadowRoot?.querySelector(
+      '[aria-label="Cost summary metrics"]'
+    );
+    expect(metrics, 'the metrics stay in the DOM while loading').to.exist;
+    expect(metrics?.textContent).to.contain('$8.50');
+    expect(
+      element.shadowRoot?.querySelector('.results[aria-busy="true"]'),
+      'the results region is marked busy'
+    ).to.exist;
+    expect(
+      element.shadowRoot?.querySelector('.results.is-updating'),
+      'the results region is dimmed rather than replaced'
+    ).to.exist;
+    expect(element.shadowRoot?.textContent).to.not.contain(
+      'Loading cost analytics'
+    );
+  });
+
+  it('describes the page with the tabs it actually has', async () => {
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element.updateComplete;
+
+    const description = element.shadowRoot
+      ?.querySelector('view-header')
+      ?.getAttribute('description');
+    expect(description).to.equal(
+      'Understand gateway spend by agent, tool, session and user.'
+    );
+
+    const tabs = Array.from(
+      element.shadowRoot?.querySelectorAll('sl-tab[slot="nav"]') || []
+    ).map((tab) => tab.textContent?.trim());
+    expect(tabs).to.deep.equal(['Agents', 'Tools', 'Sessions', 'Users']);
+    for (const promised of ['model', 'flow', 'API key']) {
+      expect(description).to.not.contain(promised);
+    }
+  });
+
   describe('imported usage section', () => {
     const importedUsage = {
       event_count: 4,
@@ -441,7 +499,7 @@ describe('CostView', () => {
 
     const description = header?.shadowRoot?.querySelector('.description');
     expect(description?.textContent).to.contain(
-      'Understand gateway spend by model, agent, session, flow, and API key.'
+      'Understand gateway spend by agent, tool, session and user.'
     );
   });
 
