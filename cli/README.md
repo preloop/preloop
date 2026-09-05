@@ -33,6 +33,11 @@ cd preloop/cli
 make install   # or: make build && ./build/preloop --help
 ```
 
+To run a checkout as your everyday `preloop` (for example at
+`~/.local/bin/preloop`), use `make install-local`; see
+[Installing a dev build](#installing-a-dev-build) below. Never `cp` a build
+onto an existing binary.
+
 ### Pre-built Binaries
 
 Download the latest release from [GitHub Releases](https://github.com/preloop/preloop/releases)
@@ -258,6 +263,13 @@ in place. The daily update notice asks whether to upgrade when stdin is a
 TTY and the binary is writable; otherwise it stays silent. Version lookup
 is skipped when `PRELOOP_DISABLE_TELEMETRY` is set.
 
+A dev build made with `make build` reports the `git describe` form
+(`v0.15.0-678-g5c9e8bc3`, N commits past the last tag). That counts as newer
+than the `0.15.0` release: `preloop update --check` prints
+`newer than latest release` and the daily notice stays quiet. Real
+prereleases (`0.15.0-beta.1`, `0.15.0-rc1`) still count as older than the
+release.
+
 ### Self-hosted runner
 
 ```bash
@@ -327,6 +339,40 @@ make fmt
 # Run linter
 make lint
 ```
+
+### Installing a dev build
+
+The only sanctioned way to update a local dev CLI is:
+
+```bash
+make install-local                      # build, then install(1) to ~/.local/bin/preloop
+make install-local BINDIR=/opt/bin      # or PREFIX=... ; INSTALL_MODE=555 for a read-only file
+```
+
+Never `cp build/preloop ~/.local/bin/preloop`. `cp` writes into the existing
+file's inode, and on macOS the next exec of that binary is killed with
+`SIGKILL (Code Signature Invalid)` because the kernel's cached signature no
+longer matches the bytes. `install(1)` unlinks the target and creates a new
+file, which is what keeps the signature cache valid.
+
+Never `go build -o ~/.local/bin/preloop` either. It skips the version
+ldflags, so the binary reports the compiled-in fallback version (`0.15.0`
+today) and is indistinguishable from the release to the update check, and it
+replaces the file even when the target is read-only.
+
+On macOS dev machines, guard the installed binary:
+
+```bash
+chmod a-w ~/.local/bin/preloop          # or: make install-local INSTALL_MODE=555
+```
+
+A read-only target still installs (unlinking needs directory write access,
+not file write access), a stray `cp` fails with "Permission denied" instead
+of corrupting it, and `preloop update` honours the guard: it checks whether
+the binary is writable and stays silent (or, when invoked directly, refuses)
+rather than replacing a dev build with the release. `make install-local`
+recreates the file with `INSTALL_MODE` (default 755), so re-apply the
+`chmod` afterwards or install with `INSTALL_MODE=555`.
 
 ### Project Structure
 

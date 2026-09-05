@@ -456,12 +456,7 @@ def record_opened_pr(
         execution.result = current
         flag_modified(execution, "result")
         db.commit()
-        logger.info(
-            "Recorded opened PR %s (branch=%s) on execution %s",
-            stored_url,
-            source_branch,
-            execution_id,
-        )
+        logger.info("Recorded opened PR on execution %s", execution_id)
     except Exception:
         logger.warning(
             "Failed to record opened PR on execution %s",

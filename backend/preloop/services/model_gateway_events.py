@@ -24,6 +24,7 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.services.cache_accounting import reported_cache_miss_tokens
+from preloop.services.model_allowlist import is_model_not_allowed_detail
 from preloop.sync.services.event_bus import get_nats_client
 from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
 from preloop.utils.request_fingerprint import public_request_fingerprint
@@ -347,10 +348,15 @@ class ModelGatewayEventEmitter:
 
     @staticmethod
     def _derive_outcome(status_code: int, error_detail: Optional[str]) -> str:
+        # Allowlist denials reuse budget_denied: it is the only denial outcome
+        # the transcript, replay, and audit surfaces know how to render.
         if (
             status_code == 403
             and error_detail
-            and "budget exceeded" in error_detail.lower()
+            and (
+                "budget exceeded" in error_detail.lower()
+                or is_model_not_allowed_detail(error_detail)
+            )
         ):
             return "budget_denied"
         if status_code >= 400:
