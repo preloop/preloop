@@ -1,7 +1,11 @@
 import { html, fixture, expect } from '@open-wc/testing';
 
 import './tool-rule-editor';
-import type { ToolRuleEditor } from './tool-rule-editor';
+import {
+  globToAnchoredRegex,
+  unescapeCelString,
+  type ToolRuleEditor,
+} from './tool-rule-editor';
 
 describe('ToolRuleEditor', () => {
   it('renders dialog when open', async () => {
@@ -161,6 +165,8 @@ describe('ToolRuleEditor', () => {
       'foo"bar\\baz'
     );
     expect(expr).to.equal('args.command.matches("foo\\"bar\\\\baz")');
+    expect(unescapeCelString('a\\nb')).to.equal('a\\nb');
+    expect(unescapeCelString('\\d+')).to.equal('\\d+');
   });
 
   it('translates a path pattern into an anchored regex', async () => {
@@ -180,6 +186,12 @@ describe('ToolRuleEditor', () => {
     expect(
       (el as any)._buildConditionExpression('file_path', 'glob', '*.env')
     ).to.equal('args.file_path.matches("(^|/)[^/]*\\\\.env$")');
+    expect(
+      (el as any)._buildConditionExpression('file_path', 'glob', '**/*.env')
+    ).to.equal('args.file_path.matches("(^|/)(?:.*/)?[^/]*\\\\.env$")');
+    const envRegex = new RegExp(globToAnchoredRegex('**/*.env'));
+    expect(envRegex.test('.env')).to.be.true;
+    expect(envRegex.test('a/b/.env')).to.be.true;
   });
 
   it('parses an existing matches expression back into the builder', async () => {
@@ -219,9 +231,14 @@ describe('ToolRuleEditor', () => {
     expect(parsed.conditions[0].operator).to.equal('matches');
     expect(parsed.conditions[0].field).to.equal('file_path');
     expect(parsed.conditions[0].value).to.equal('(^|/)\\.github/.*$');
+    expect(
+      (el as any)._parseSingleCondition(
+        'args.command.matches("foo\\"bar\\\\baz")'
+      ).value
+    ).to.equal('foo"bar\\baz');
   });
 
-  it('keeps matches available in simple mode and marks condition_type simple', async () => {
+  it('keeps matches available in simple mode and saves the matches expression', async () => {
     const el = (await fixture(
       html`<tool-rule-editor
         .open=${true}
@@ -246,11 +263,7 @@ describe('ToolRuleEditor', () => {
     (el as any)._simpleValue = 'rm -rf';
     await el.updateComplete;
 
-    const hint = el.shadowRoot?.querySelector('.advanced-conditions-hint');
-    expect(hint).to.exist;
-    expect(hint?.textContent).to.include('Advanced conditions');
-
-    let saveDetail: { rule: unknown; formData: unknown } | null = null;
+    let saveDetail = null as { rule: unknown; formData: unknown } | null;
     el.addEventListener('save-rule', ((e: CustomEvent) => {
       saveDetail = e.detail;
     }) as EventListener);
@@ -258,14 +271,46 @@ describe('ToolRuleEditor', () => {
     (el as any)._handleSave();
     await el.updateComplete;
 
-    expect(saveDetail).to.exist;
-    const formData = saveDetail?.formData as {
+    expect(saveDetail).to.not.equal(null);
+    const formData = (saveDetail as { rule: unknown; formData: unknown })
+      .formData as {
       condition_type: string;
       condition_expression: string;
     };
-    expect(formData.condition_type).to.equal('simple');
+    expect(formData.condition_type).to.equal('cel');
     expect(formData.condition_expression).to.equal(
       'args.command.matches("rm -rf")'
     );
+  });
+
+  it('falls back to a Path pattern sentence when the glob description is empty', async () => {
+    const el = (await fixture(
+      html`<tool-rule-editor
+        .open=${true}
+        .workflows=${[]}
+        .features=${{}}
+      ></tool-rule-editor>`
+    )) as ToolRuleEditor;
+
+    await el.updateComplete;
+
+    (el as any)._simpleField = 'file_path';
+    (el as any)._simpleOperator = 'glob';
+    (el as any)._simpleValue = '.github/**';
+    (el as any)._description = '';
+    await el.updateComplete;
+
+    let saveDetail = null as { rule: unknown; formData: unknown } | null;
+    el.addEventListener('save-rule', ((e: CustomEvent) => {
+      saveDetail = e.detail;
+    }) as EventListener);
+
+    (el as any)._handleSave();
+    await el.updateComplete;
+
+    expect(saveDetail).to.not.equal(null);
+    const formData = (saveDetail as { rule: unknown; formData: unknown })
+      .formData as { description: string };
+    expect(formData.description).to.equal('Path pattern: .github/**');
   });
 });

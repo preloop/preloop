@@ -39,23 +39,31 @@ export function escapeCelString(value: string): string {
 
 /** Reverse `escapeCelString` for builder round-trips. */
 export function unescapeCelString(value: string): string {
-  return value.replace(/\\(.)/g, '$1');
+  return value.replace(/\\(["\\])/g, '$1');
 }
 
 /**
  * Translate a glob path pattern to an anchored regex.
  *
- * `**` becomes `.*`, `*` becomes `[^/]*`, `?` becomes `.`. Other regex
- * metacharacters are escaped. The result is wrapped with `(^|/)` and `$`
- * so `.github/**` matches a path segment, not a substring.
+ * A double-star followed by a slash becomes a non-capturing optional
+ * prefix that matches zero or more directories. A trailing double-star
+ * becomes ".*". A single star becomes "[^/]*". A question mark becomes
+ * ".". Other regex metacharacters are escaped. The result is wrapped
+ * with "(^|/)" and "$" so ".github/**" matches a path segment, not a
+ * substring.
  */
 export function globToAnchoredRegex(glob: string): string {
   let out = '';
   let i = 0;
   while (i < glob.length) {
     if (glob.startsWith('**', i)) {
-      out += '.*';
-      i += 2;
+      if (glob[i + 2] === '/') {
+        out += '(?:.*/)?';
+        i += 3;
+      } else {
+        out += '.*';
+        i += 2;
+      }
       continue;
     }
     const ch = glob[i];
@@ -619,16 +627,13 @@ export class ToolRuleEditor extends LitElement {
   }
 
   private _activeOperators(): string[] {
-    if (this._hasAdvancedConditions && !this._useCelEditor) {
+    if (this._useCelEditor) {
+      return [];
+    }
+    if (this._hasAdvancedConditions) {
       return this._conditions.map((c) => c.operator);
     }
     return [this._simpleOperator];
-  }
-
-  private _usesMatchesOperator(): boolean {
-    return this._activeOperators().some(
-      (op) => op === 'matches' || op === 'glob'
-    );
   }
 
   private _usesGlobOperator(): boolean {
@@ -638,13 +643,14 @@ export class ToolRuleEditor extends LitElement {
   /**
    * Keep the glob text in description when the user leaves it empty so
    * the saved row still reads as written after the pattern is stored as
-   * an anchored regex.
+   * an anchored regex. Each pattern is a short sentence so a deny
+   * reason is not the raw glob.
    */
   private _globDescriptionFallback(): string | null {
     if (this._hasAdvancedConditions && !this._useCelEditor) {
       const globs = this._conditions
         .filter((c) => c.operator === 'glob' && c.value)
-        .map((c) => c.value);
+        .map((c) => `Path pattern: ${c.value}`);
       return globs.length ? globs.join(', ') : null;
     }
     if (
@@ -652,7 +658,7 @@ export class ToolRuleEditor extends LitElement {
       this._simpleOperator === 'glob' &&
       this._simpleValue
     ) {
-      return this._simpleValue;
+      return `Path pattern: ${this._simpleValue}`;
     }
     return null;
   }
@@ -724,8 +730,7 @@ export class ToolRuleEditor extends LitElement {
     const formData: RuleFormData = {
       action: this._action,
       condition_expression: conditionExpr,
-      condition_type:
-        this._hasAdvancedConditions && conditionExpr ? 'cel' : 'simple',
+      condition_type: conditionExpr ? 'cel' : 'simple',
       description: this._description.trim() || this._globDescriptionFallback(),
       is_enabled: this._isEnabled,
       approval_workflow_id: approvalWorkflowId,
@@ -781,17 +786,7 @@ export class ToolRuleEditor extends LitElement {
           them as matches regex.
         </div>`
       : '';
-    // No prior "advanced conditions" hint lived in this editor. Warn while
-    // advanced_approvals is off; PR 5 accepts simple .matches().
-    const advancedHint =
-      !this._hasAdvancedConditions && this._usesMatchesOperator()
-        ? html`<div class="hint advanced-conditions-hint">
-            Advanced conditions: regex matching is saved as a simple condition.
-            The backend will accept .matches() once simple evaluator support
-            lands.
-          </div>`
-        : '';
-    return html`${globNote}${advancedHint}`;
+    return html`${globNote}`;
   }
 
   private _renderFieldInput(value: string, onChange: (val: string) => void) {
