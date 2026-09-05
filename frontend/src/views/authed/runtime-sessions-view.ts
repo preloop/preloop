@@ -14,6 +14,7 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '../../components/view-header.ts';
 import '../../components/json-tree.ts';
 import '../../components/preloop-session-observer.ts';
+import { outcomeLabel } from '../../components/activity-feed';
 import {
   getAccountRuntimeSessionDetail,
   getAccountRuntimeSessions,
@@ -707,7 +708,7 @@ export class RuntimeSessionsView extends LitElement {
         this.syncUrl();
       }
       // Paint the session list immediately. Detail/activity/events are owned by
-      // <preloop-session-observer> and load after selection — do not block the
+      // <preloop-session-observer> and load after selection, do not block the
       // list on getAccountRuntimeSessionDetail.
     } catch (error) {
       console.error('Failed to load sessions:', error);
@@ -1138,7 +1139,7 @@ export class RuntimeSessionsView extends LitElement {
                   )}
               >
                 <sl-icon name="stars"></sl-icon>
-                Sessions are shown with fallback names — AI titles are a Teams
+                Sessions are shown with fallback names. AI titles are a Teams
                 feature. Upgrade to enable.
               </button>
             `
@@ -1287,7 +1288,7 @@ export class RuntimeSessionsView extends LitElement {
                 <sl-badge
                   variant=${item.outcome === 'error' ? 'danger' : 'success'}
                 >
-                  ${item.outcome}
+                  ${outcomeLabel(item.outcome)}
                 </sl-badge>
               </div>
               <div class="interaction-excerpt">${item.excerpt}</div>
@@ -1360,7 +1361,7 @@ export class RuntimeSessionsView extends LitElement {
                         <sl-badge
                           variant=${this.getActivityBadgeVariant(item.status)}
                         >
-                          ${item.status}
+                          ${outcomeLabel(item.status)}
                         </sl-badge>
                       `
                     : ''
@@ -1886,7 +1887,7 @@ export class RuntimeSessionsView extends LitElement {
     return html`
       <view-header
         headerText="Sessions"
-        description="Everything your agents did, as it happened — prompts, responses, tool calls, and cost per session. Follow live or replay later."
+        description="Everything your agents did, as it happened: prompts, responses, tool calls, and cost per session. Follow live or replay later."
         width="extra-wide"
       ></view-header>
       <div class="dashboard extra-wide">

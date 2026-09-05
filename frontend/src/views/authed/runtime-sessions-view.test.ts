@@ -1,5 +1,6 @@
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
+import { render } from 'lit';
 import sinon from 'sinon';
 
 import './runtime-sessions-view';
@@ -613,5 +614,122 @@ describe('RuntimeSessionsView', () => {
 
     const content = getDeepText(element).replace(/\s+/g, ' ');
     expect(content).to.contain('openai/gpt-5');
+  });
+
+  describe('reader-facing copy', () => {
+    it('labels outcomes and statuses in words, not raw enums', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      try {
+        render(
+          (element as any).renderInteractions(
+            [
+              {
+                api_usage_id: 'usage-1',
+                timestamp: '2026-03-09T20:00:00Z',
+                status_code: 200,
+                outcome: 'success',
+                endpoint: '/v1/chat/completions',
+                method: 'POST',
+                provider_name: 'anthropic',
+                model_alias: 'claude-sonnet-4',
+                flow_id: null,
+                flow_name: null,
+                flow_execution_id: null,
+                runtime_session_id: 'runtime-session-1',
+                session_source_type: 'claude_code',
+                session_source_id: 'workspace-42',
+                session_reference: 'claude-session-42',
+                runtime_principal_type: 'claude_code',
+                runtime_principal_id: 'workspace-42',
+                runtime_principal_name: 'Claude Workspace',
+                auth_subject_type: null,
+                api_key_id: null,
+                api_key_name: null,
+                estimated_cost: 0.01,
+                token_usage: {
+                  prompt_tokens: 10,
+                  completion_tokens: 5,
+                  total_tokens: 15,
+                },
+                excerpt: 'Build a widget',
+                meta_data: {},
+              },
+            ],
+            false
+          ),
+          host
+        );
+        const outcomeBadge = host.querySelector('sl-badge')!;
+        expect(outcomeBadge.textContent!.trim()).to.equal('Succeeded');
+
+        render(
+          (element as any).renderActivityTimeline(
+            [
+              {
+                activity_type: 'model_interaction',
+                timestamp: '2026-03-09T20:00:00Z',
+                title: 'Model interaction',
+                summary: 'POST /v1/chat/completions',
+                status: 'success',
+                api_usage_id: 'usage-1',
+                tool_name: null,
+                server_name: null,
+                auth_subject_type: null,
+              },
+            ],
+            false
+          ),
+          host
+        );
+        const statusBadge = host.querySelector('sl-badge')!;
+        expect(statusBadge.textContent!.trim()).to.equal('Succeeded');
+      } finally {
+        host.remove();
+      }
+    });
+
+    it('uses no em dash in the page copy', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+
+      // This view's own template only. Nested components own their copy and
+      // are checked in their own suites.
+      const text = element.shadowRoot!.textContent || '';
+      expect(text).to.not.contain('\u2014');
+      const header = element.shadowRoot!.querySelector('view-header')!;
+      const description = header.getAttribute('description') || '';
+      expect(description).to.not.contain('\u2014');
+      expect(description).to.contain(
+        'Everything your agents did, as it happened'
+      );
+
+      // The free-plan titles hint sits in the session list.
+      (element as any).isPremium = false;
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      try {
+        render((element as any).renderSessionList(), host);
+        const hint = host.querySelector('.titles-upsell-hint')!;
+        const hintText = hint.textContent!.replace(/\s+/g, ' ').trim();
+        expect(hintText).to.not.contain('\u2014');
+        expect(hintText).to.contain('AI titles are a Teams feature.');
+      } finally {
+        host.remove();
+      }
+    });
   });
 });
