@@ -33,6 +33,12 @@ from preloop.agents import (
     AgentStatus,
 )
 from preloop.agents.container import AGENT_SESSION_SUFFIX_KEY
+from preloop.agents.kubernetes import detect_kubernetes_environment
+from preloop.agents.cli_session import (
+    AGENT_SESSION_MARKER,
+    extract_session_pack,
+    parse_agent_session_marker,
+)
 from preloop.agents.completion_nudge import (
     COMPLETION_NUDGE_MARKER,
     COMPLETION_NUDGE_RESULT_MARKER,
@@ -56,7 +62,9 @@ from preloop.services.flow_pr_binding import (
     merge_result_preserving_pr_binding,
     note_resume_started,
     parse_pr_opened_marker,
+    record_cli_session,
     record_opened_pr,
+    resume_cli_session_of,
     resume_count,
     take_pending_followup,
 )
@@ -414,6 +422,10 @@ class FlowExecutionOrchestrator:
         # PR/MR the container wrapper opened in its post-execution step, read
         # from the PRELOOP_PR_OPENED log line and bound at terminal status.
         self._opened_pr: Optional[Dict[str, str]] = None
+        # Native CLI agent session (opencode/codex) reported by the container
+        # via the PRELOOP_AGENT_SESSION marker, persisted on the execution so
+        # a correlated PR-comment resume can invoke the CLI resume flag.
+        self._agent_session: Optional[Dict[str, str]] = None
         self._agent_exec_started = (
             False  # Set when AGENT_EXEC_START_MARKER seen in logs
         )
@@ -2018,6 +2030,13 @@ class FlowExecutionOrchestrator:
         if restore_archive is not None:
             execution_context["workspace_restore_archive"] = restore_archive
 
+        # Correlated resume: extract the prior execution's packed CLI session
+        # from its workspace snapshot so the agent script can restore it into
+        # runners that cannot seed the filesystem pre-start (Kubernetes).
+        cli_session_archive = self._resolve_cli_session_restore_archive()
+        if cli_session_archive is not None:
+            execution_context["cli_session_restore_archive"] = cli_session_archive
+
         # Prepare git credentials if repositories are configured
         if self.flow.git_clone_config:
             repositories = self.flow.git_clone_config.get("repositories", [])
@@ -2188,6 +2207,11 @@ class FlowExecutionOrchestrator:
                 # channel (MCP create_pull_request binds directly instead).
                 if PR_OPENED_MARKER in stripped_line:
                     self._note_opened_pr(stripped_line)
+
+                # Native CLI session id reported by the agent script, so a
+                # later PR-comment resume can invoke the CLI resume flag.
+                if AGENT_SESSION_MARKER in stripped_line:
+                    self._note_agent_session(stripped_line)
 
                 # In-place completion nudge markers printed by the agent
                 # script. Order matters: the result marker shares the start
@@ -2602,6 +2626,73 @@ class FlowExecutionOrchestrator:
         )
         return bytes(snapshot)
 
+    def _needs_embedded_cli_session_archive(self) -> bool:
+        """True when the runner cannot unpack the pack via volume restore.
+
+        Hosted Docker ``put_archive``s the workspace snapshot before start, so
+        ``.preloop-agent-session`` is already on disk. Kubernetes emptyDir
+        cannot be seeded pre-start and needs the pack embedded in the script.
+        """
+        return detect_kubernetes_environment()
+
+    def _resolve_cli_session_restore_archive(self) -> Optional[bytes]:
+        """Extract the prior execution's packed CLI session from its snapshot.
+
+        Returns a tar.gz of the ``.preloop-agent-session`` subtree (or None)
+        for runs started from a PR comment on an execution that recorded a
+        native CLI session. Built only for runners that cannot seed the
+        filesystem pre-start (Kubernetes). Hosted Docker already unpacks the
+        pack via workspace volume restore, so scanning the snapshot there is
+        skipped.
+        """
+        if not self._needs_embedded_cli_session_archive():
+            return None
+        resume = (self.trigger_event_data or {}).get("_resume")
+        if not isinstance(resume, dict):
+            return None
+        if not isinstance(resume.get("cli_session"), dict):
+            return None
+        prior_id = resume.get("execution_id")
+        if not prior_id:
+            return None
+        try:
+            prior = crud_flow_execution.get(db=self.db, id=prior_id)
+        except Exception as e:
+            logger.warning(
+                f"Could not load prior execution {prior_id} for CLI session "
+                f"restore: {e}"
+            )
+            return None
+        if prior is None:
+            return None
+        if getattr(prior, "flow_id", None) != getattr(self.flow, "id", None):
+            logger.warning(
+                "Refusing CLI session restore from execution %s: flow mismatch",
+                prior_id,
+            )
+            return None
+        snapshot = getattr(prior, "workspace_snapshot", None)
+        if not snapshot:
+            logger.info(
+                "No workspace snapshot stored for prior execution %s; "
+                "CLI session cannot be restored",
+                prior_id,
+            )
+            return None
+        archive = extract_session_pack(bytes(snapshot))
+        if archive is None:
+            logger.info(
+                "Prior execution %s carries no usable CLI session pack",
+                prior_id,
+            )
+            return None
+        logger.info(
+            "Extracted CLI session pack from execution %s (%d bytes)",
+            prior_id,
+            len(archive),
+        )
+        return archive
+
     async def _capture_result_artifact(
         self, agent_executor: Any, session_reference: str
     ) -> Optional[Dict[str, Any]]:
@@ -2732,6 +2823,41 @@ class FlowExecutionOrchestrator:
             },
         )
 
+    def _note_agent_session(self, line: str) -> None:
+        """Remember the CLI session the agent reported (first per attempt).
+
+        Persisted the moment it is seen so a later crash still leaves the
+        session id on the row; a retried attempt resets ``_agent_session``
+        and overwrites the record with the new session.
+        """
+        parsed = parse_agent_session_marker(line)
+        if not parsed:
+            return
+        if self._agent_session is not None:
+            return
+        self._agent_session = parsed
+        logger.info(
+            "Agent reported CLI session %s (%s)",
+            parsed.get("session_id"),
+            parsed.get("agent_type"),
+        )
+        self.execution_logger.log_milestone("cli_session_captured", dict(parsed))
+        if self.execution_log is not None:
+            record_cli_session(self.db, self.execution_log.id, parsed)
+
+    def _bind_cli_session(self, output_summary: Optional[str]) -> None:
+        """Persist the agent CLI session on the terminal path.
+
+        Rescans ``output_summary`` when the live stream missed the marker
+        (reconnects can drop the tail). ``_note_agent_session`` does the
+        actual persistence, so this only rescues a missed line.
+        """
+        if self._agent_session is None and output_summary:
+            for line in output_summary.splitlines():
+                if AGENT_SESSION_MARKER in line:
+                    self._note_agent_session(line)
+                    break
+
     def _bind_opened_pr(self, output_summary: Optional[str]) -> None:
         """Persist the wrapper-opened PR on this execution's result.
 
@@ -2769,6 +2895,15 @@ class FlowExecutionOrchestrator:
             event_data = dict(self.execution_log.trigger_event_details or {})
             resume = dict(event_data.get("_resume") or {})
             resume["execution_id"] = str(self.execution_log.id)
+            # The session to resume is the one this execution just ran; a
+            # fresh capture replaces whatever older id the metadata carried.
+            # The in-memory capture wins: it is authoritative for this run
+            # even when the row write was skipped or the object is stale.
+            cli_session = self._agent_session or resume_cli_session_of(
+                self.execution_log
+            )
+            if isinstance(cli_session, dict) and cli_session.get("session_id"):
+                resume["cli_session"] = dict(cli_session)
             if followup.get("pr_url"):
                 resume["pr_url"] = followup["pr_url"]
             if followup.get("source_branch"):
@@ -4025,6 +4160,9 @@ class FlowExecutionOrchestrator:
             execution_context[AGENT_SESSION_SUFFIX_KEY] = (
                 f"a{attempt}" if attempt > 1 else None
             )
+            # Each attempt runs its own CLI session; forget the previous
+            # attempt's marker so the retry's session overwrites it.
+            self._agent_session = None
             session_reference, agent_executor = await self._start_agent_session(
                 execution_context
             )
@@ -4250,6 +4388,9 @@ class FlowExecutionOrchestrator:
             # reaches Python; bind it here, before the refresh below, so the
             # merged result keeps pr_url for comment-driven resume.
             self._bind_opened_pr(output_summary)
+            # Same channel pattern for the native CLI session id: rescued
+            # from the output summary when the live stream missed it.
+            self._bind_cli_session(output_summary)
 
             # MCP create_pull_request writes pr_url onto result in another
             # session. Refresh so a None agent result cannot wipe the binding.

@@ -10,6 +10,13 @@ from aiodocker.exceptions import DockerError
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.services.model_runtime_resolver import gateway_url_for_api
 
+from .cli_session import (
+    AGENT_SESSION_MARKER,
+    build_session_archive_decode_shell,
+    build_session_pack_shell,
+    build_session_restore_shell,
+    resume_cli_session,
+)
 from .completion_nudge import (
     AGENT_OUTPUT_LOG_PATH,
     NUDGE_PROMPT_PATH,
@@ -19,6 +26,7 @@ from .completion_nudge import (
 )
 from .container import ContainerAgentExecutor
 from .images import default_agent_image
+from .kubernetes import detect_kubernetes_environment
 
 logger = logging.getLogger(__name__)
 
@@ -63,44 +71,8 @@ class CodexAgent(ContainerAgentExecutor):
         )
 
     def _detect_kubernetes_environment(self) -> bool:
-        """
-        Auto-detect if running in Kubernetes environment.
-
-        Checks for:
-        1. Explicit USE_KUBERNETES environment variable
-        2. Kubernetes service account token (in-cluster detection)
-        3. KUBERNETES_SERVICE_HOST environment variable
-
-        Returns:
-            True if Kubernetes environment detected, False otherwise
-        """
-        # Check explicit environment variable first
-        env_value = os.getenv("USE_KUBERNETES", "").lower()
-        if env_value == "true":
-            logger.info("Kubernetes mode enabled via USE_KUBERNETES=true")
-            return True
-        elif env_value == "false":
-            logger.info("Kubernetes mode disabled via USE_KUBERNETES=false")
-            return False
-
-        # Auto-detect: Check for Kubernetes service account token (in-cluster)
-        k8s_token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-        if os.path.exists(k8s_token_path):
-            logger.info(
-                f"Kubernetes environment detected (found service account token at {k8s_token_path})"
-            )
-            return True
-
-        # Auto-detect: Check for Kubernetes service host
-        if os.getenv("KUBERNETES_SERVICE_HOST"):
-            logger.info(
-                "Kubernetes environment detected (KUBERNETES_SERVICE_HOST present)"
-            )
-            return True
-
-        # Default to Docker if no Kubernetes indicators found
-        logger.info("No Kubernetes environment detected, defaulting to Docker mode")
-        return False
+        """Auto-detect Kubernetes vs Docker. See detect_kubernetes_environment."""
+        return detect_kubernetes_environment()
 
     async def start(self, execution_context: Dict[str, Any]) -> str:
         """
@@ -297,6 +269,68 @@ class CodexAgent(ContainerAgentExecutor):
             )
             raise RuntimeError(f"Failed to start Codex CLI container: {e}")
 
+    def _build_cli_session_blocks(
+        self, execution_context: Dict[str, Any]
+    ) -> Dict[str, str]:
+        """Shell blocks for native CLI session persistence (Codex flavor).
+
+        See OpenCodeAgent._build_cli_session_blocks for the shared design.
+        Codex differences: the session id comes from the newest rollout file
+        under ``$CODEX_HOME/sessions`` (its filename embeds the session
+        uuid), and the resume flag is the ``codex exec resume`` subcommand.
+        """
+        blocks: Dict[str, str] = {
+            "decode": "",
+            "restore": "",
+            "args": "",
+            "capture": "",
+            "pack": "",
+        }
+        blocks["capture"] = f"""
+# Extract this run's session id from the newest rollout file so the
+# orchestrator can persist it for a later PR-comment resume.
+_pl_codex_sid=""
+if [ -d "$CODEX_HOME/sessions" ]; then
+    _pl_rollout=$(find "$CODEX_HOME/sessions" -type f -name 'rollout-*.jsonl' 2>/dev/null | sort | tail -n 1)
+    if [ -n "$_pl_rollout" ]; then
+        _pl_codex_sid=$(printf '%s\\n' "$_pl_rollout" | grep -oE '[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}' | tail -n 1)
+    fi
+fi
+if [ -n "$_pl_codex_sid" ]; then
+    echo "{AGENT_SESSION_MARKER} codex $_pl_codex_sid"
+fi
+"""
+        blocks["pack"] = build_session_pack_shell(
+            "codex", '"$CODEX_HOME/sessions"', excludes=("auth.json",)
+        )
+        if execution_context.get("confirmation_nudge"):
+            return blocks
+
+        cli_session_archive = execution_context.get("cli_session_restore_archive")
+        if isinstance(cli_session_archive, (bytes, bytearray)) and cli_session_archive:
+            blocks["decode"] = build_session_archive_decode_shell(
+                bytes(cli_session_archive)
+            )
+        blocks["restore"] = build_session_restore_shell(
+            "codex", '"$CODEX_HOME/sessions"'
+        )
+        session_id = resume_cli_session(execution_context, "codex")
+        # Single quotes are safe: the id passed strict validation and cannot
+        # contain quote characters.
+        session_id_literal = f"'{session_id}'" if session_id else "''"
+        blocks["args"] = f"""
+PRELOOP_CLI_SESSION_ID={session_id_literal}
+CODEX_RESUME_ARGS=""
+if [ "$PRELOOP_CLI_SESSION_RESTORED" -eq 1 ] && [ -n "$PRELOOP_CLI_SESSION_ID" ] \\
+    && codex exec --help 2>&1 | grep -qw resume; then
+    CODEX_RESUME_ARGS="resume $PRELOOP_CLI_SESSION_ID"
+elif [ "$PRELOOP_CLI_SESSION_RESTORED" -eq 1 ] \\
+    && codex exec --help 2>&1 | grep -qw resume; then
+    CODEX_RESUME_ARGS="resume --last"
+fi
+"""
+        return blocks
+
     def _build_codex_script(self, execution_context: Dict[str, Any]) -> str:
         """
         Build the Codex initialization and execution script.
@@ -401,6 +435,9 @@ fi
             model, model_provider, model_endpoint
         )
 
+        # Native CLI session persistence blocks (mostly empty on cold start).
+        session_blocks = self._build_cli_session_blocks(execution_context)
+
         # Create the full script
         script = f"""
 set -e
@@ -438,6 +475,12 @@ echo ""
 # Run initialization commands (git clone, custom commands) if any
 {init_commands}
 
+# Restore a prior CLI session (correlated PR-comment resume), if the
+# workspace snapshot carried one.
+{session_blocks["decode"]}
+CODEX_HOME="${{CODEX_HOME:-$HOME/.codex}}"
+{session_blocks["restore"]}
+
 # Configure git to trust all directories (needed for cloned repos)
 git config --global --add safe.directory '*'
 
@@ -465,6 +508,10 @@ echo "Provider: {model_provider}"
 echo "MCP Server: $PRELOOP_MCP_URL"
 echo "=========================="
 
+# Resume the prior CLI session when a correlated restart restored one;
+# expands to nothing on a cold start.
+{session_blocks["args"]}
+
 # Signal to the orchestrator that the agent is about to start.
 # Sentinel detection is suppressed until this marker is seen in logs.
 echo "PRELOOP_AGENT_EXEC_START"
@@ -475,11 +522,12 @@ echo "PRELOOP_AGENT_EXEC_START"
 # PIPESTATUS[1] is codex's own exit code (echo | codex | tee).
 set +e
 : > "{AGENT_OUTPUT_LOG_PATH}"
-echo "{escaped_prompt}" | codex exec --skip-git-repo-check --model "{model}" --sandbox workspace-write --yolo 2>&1 | tee -a "{AGENT_OUTPUT_LOG_PATH}"
+echo "{escaped_prompt}" | codex exec $CODEX_RESUME_ARGS --skip-git-repo-check --model "{model}" --sandbox workspace-write --yolo 2>&1 | tee -a "{AGENT_OUTPUT_LOG_PATH}"
 CODEX_PIPE_CODES=("${{PIPESTATUS[@]}}")
 CODEX_EXIT_CODE=${{CODEX_PIPE_CODES[1]:-0}}
 set -e
-{completion_nudge_block}{post_exec_block}
+{session_blocks["capture"]}
+{completion_nudge_block}{session_blocks["pack"]}{post_exec_block}
 # Exit with codex's exit code
 exit $CODEX_EXIT_CODE
 """

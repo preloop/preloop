@@ -1,5 +1,6 @@
 """Tests for OpenCode agent implementation."""
 
+import base64
 import os
 from unittest.mock import patch, AsyncMock
 
@@ -702,3 +703,224 @@ class TestOpenCodeMultiModelConfig:
         config = agent._build_opencode_config("model-a", "custom", context, 600000)
         models = config["provider"]["custom"]["models"]
         assert models == {"model-a": {"name": "model-a"}}
+
+
+class TestOpenCodeCliSession:
+    """Native CLI session capture/restore blocks in the generated script."""
+
+    def _context(self, **extra):
+        context = {
+            "prompt": "test",
+            "opencode_model": "model-1",
+            "execution_id": "exec-1",
+            "flow_name": "test-flow",
+        }
+        context.update(extra)
+        return context
+
+    def test_cold_start_has_no_resume_args(self):
+        """A non-resume run sets empty resume args and still captures/packs."""
+        script = OpenCodeAgent({})._build_opencode_script(self._context())
+        assert "PRELOOP_CLI_SESSION_ID=''" in script
+        assert 'OPENCODE_RESUME_ARGS=""' in script
+        # Capture + packing are always on: this run's session is a future
+        # resume's starting point.
+        assert 'echo "PRELOOP_AGENT_SESSION opencode $_pl_sid"' in script
+        assert "/workspace/.preloop-agent-session/opencode" in script
+        assert 'opencode/storage"' in script or "/opencode/storage" in script
+        assert "--exclude=auth.json" in script
+        assert "--exclude=log" in script
+        assert "--exclude=logs" in script
+        assert "/tmp/preloop-cli-session-id" in script
+
+    def test_run_command_expands_resume_args(self):
+        script = OpenCodeAgent({})._build_opencode_script(self._context())
+        assert "opencode run $OPENCODE_RESUME_ARGS --format json" in script
+
+    def test_resume_metadata_passes_session_flag(self):
+        script = OpenCodeAgent({})._build_opencode_script(
+            self._context(
+                trigger_event_data={
+                    "_resume": {
+                        "cli_session": {
+                            "agent_type": "opencode",
+                            "session_id": "ses_ab12cd34",
+                        }
+                    }
+                }
+            )
+        )
+        assert "PRELOOP_CLI_SESSION_ID='ses_ab12cd34'" in script
+        assert 'OPENCODE_RESUME_ARGS="--session $PRELOOP_CLI_SESSION_ID"' in script
+
+    def test_mismatched_agent_type_starts_cold(self):
+        script = OpenCodeAgent({})._build_opencode_script(
+            self._context(
+                trigger_event_data={
+                    "_resume": {
+                        "cli_session": {
+                            "agent_type": "codex",
+                            "session_id": "abc",
+                        }
+                    }
+                }
+            )
+        )
+        assert "PRELOOP_CLI_SESSION_ID='ses_" not in script
+        assert "PRELOOP_CLI_SESSION_ID=''" in script
+
+    def test_confirmation_nudge_never_restores(self):
+        """The confirmation nudge is its own session in its own container."""
+        agent = OpenCodeAgent({})
+        script = agent._build_opencode_script(
+            self._context(
+                confirmation_nudge=True,
+                trigger_event_data={
+                    "_resume": {
+                        "cli_session": {
+                            "agent_type": "opencode",
+                            "session_id": "ses_ab12cd34",
+                        }
+                    }
+                },
+            )
+        )
+        assert "PRELOOP_CLI_SESSION_RESTORED" not in script
+        assert "PRELOOP_CLI_SESSION_ID=" not in script
+        # ... but it still reports and packs its own (empty) session state.
+        assert 'echo "PRELOOP_AGENT_SESSION opencode $_pl_sid"' in script
+
+    def test_restore_block_runs_after_init(self):
+        script = OpenCodeAgent({})._build_opencode_script(self._context())
+        restore_idx = script.find("PRELOOP_CLI_SESSION_RESTORED=0")
+        filter_idx = script.find("opencode-json-log-filter.js")
+        exec_start_idx = script.find('echo "PRELOOP_AGENT_EXEC_START"')
+        assert 0 < restore_idx < filter_idx < exec_start_idx
+
+    def test_embedded_archive_is_decoded_into_the_workspace(self):
+        agent = OpenCodeAgent({})
+        script = agent._build_opencode_script(
+            self._context(cli_session_restore_archive=b"tar-gz-bytes")
+        )
+        assert "base64 -d | tar xzf -" in script
+        encoded = script.split("echo '")[1].split("'")[0]
+        assert base64.b64decode(encoded) == b"tar-gz-bytes"
+
+    def test_docker_run_without_archive_has_no_decode_block(self):
+        script = OpenCodeAgent({})._build_opencode_script(self._context())
+        assert "base64 -d | tar xzf -" not in script
+
+
+class TestOpenCodeLogFilterJs:
+    """The embedded JSON log filter must stay parseable JavaScript."""
+
+    def _extract_filter_js(self, script: str) -> str:
+        marker = "<<'JS'\n"
+        start = script.find(marker) + len(marker)
+        end = script.find("\nJS\n", start)
+        assert start > len(marker) and end > start, "filter heredoc not found"
+        return script[start:end]
+
+    def test_filter_js_is_valid_javascript(self, tmp_path):
+        import subprocess
+
+        script = OpenCodeAgent({})._build_opencode_script(
+            {
+                "prompt": "test",
+                "opencode_model": "model-1",
+                "execution_id": "exec-1",
+                "flow_name": "test-flow",
+            }
+        )
+        js = self._extract_filter_js(script)
+        assert "parentSessionId" in js
+        assert "/tmp/preloop-cli-session-id" in js
+        js_path = tmp_path / "filter.js"
+        js_path.write_text(js)
+        result = subprocess.run(
+            ["node", "--check", str(js_path)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_filter_js_detects_session_ids(self, tmp_path):
+        """The filter writes the parent session.idle/created id, not nested ones."""
+        import json
+        import subprocess
+
+        session_file = tmp_path / "session-id"
+
+        def run_filter(js: str, event_line: str):
+            # Run the filter body with the session file redirected into tmp.
+            patched = js.replace(
+                '"/tmp/preloop-cli-session-id"', json.dumps(str(session_file))
+            )
+            subprocess.run(
+                ["node", "-e", patched],
+                input=event_line + "\n",
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+        script = OpenCodeAgent({})._build_opencode_script(
+            {
+                "prompt": "test",
+                "opencode_model": "model-1",
+                "execution_id": "exec-1",
+                "flow_name": "test-flow",
+            }
+        )
+        js = self._extract_filter_js(script)
+
+        event = {
+            "type": "session.idle",
+            "properties": {"info": {"id": "ses_ab12cd34", "type": "session"}},
+        }
+        run_filter(js, json.dumps(event))
+        assert session_file.read_text().strip() == "ses_ab12cd34"
+
+        session_file.unlink()
+        run_filter(
+            js,
+            json.dumps(
+                {
+                    "type": "session.created",
+                    "properties": {
+                        "info": {"id": "ses_parent0001"},
+                        "child": {"id": "ses_child0001"},
+                    },
+                }
+            ),
+        )
+        assert session_file.read_text().strip() == "ses_parent0001"
+
+        session_file.unlink()
+        run_filter(
+            js,
+            json.dumps(
+                {
+                    "type": "tool",
+                    "properties": {
+                        "info": {"id": "ses_child0001"},
+                        "sessionID": "ses_child0001",
+                    },
+                }
+            ),
+        )
+        assert not session_file.exists()
+
+        run_filter(js, json.dumps({"type": "message", "id": "msg_01"}))
+        assert not session_file.exists()
+
+        run_filter(
+            js,
+            json.dumps(
+                {
+                    "type": "session.idle",
+                    "properties": {"info": {"id": "ses_ab"}},
+                }
+            ),
+        )
+        assert not session_file.exists()

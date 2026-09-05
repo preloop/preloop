@@ -106,6 +106,13 @@ class FlowExecution(Base):
     agent_session_reference = Column(
         String, nullable=True
     )  # e.g., agent session ID, K8s job ID, Docker container ID, process ID
+    # Native CLI agent session (OpenCode/Codex) captured from the container
+    # log stream via the PRELOOP_AGENT_SESSION marker:
+    # {"agent_type": "opencode", "session_id": "ses_..."}. A correlated
+    # PR-comment resume hands it back to the agent script so it can restore
+    # the packed session storage and invoke the CLI resume flag. Deliberately
+    # NOT exposed on the execution response schemas.
+    cli_session = Column(JSONB, nullable=True)
     error_message = Column(Text, nullable=True)
     # Coarse machine-readable reason a terminal execution did not succeed, from
     # the closed vocabulary in preloop.services.flow_failure_category (e.g.

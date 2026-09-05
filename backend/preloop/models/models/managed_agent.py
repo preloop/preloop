@@ -77,6 +77,10 @@ class ManagedAgent(Base):
     control_session_mode: Mapped[Optional[str]] = mapped_column(
         String(16), nullable=True
     )
+    # Written only by the Agent Control WebSocket. last_seen_at is stamped by
+    # enrollment and by gateway traffic too, so it cannot answer "is the
+    # plugin connected" for a process that does not hold the socket.
+    control_last_heartbeat_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     account: Mapped["Account"] = relationship(
         "Account", back_populates="managed_agents"

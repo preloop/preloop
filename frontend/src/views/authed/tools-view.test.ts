@@ -296,7 +296,7 @@ describe('ToolsView (approvals + conditions)', () => {
     ) as HTMLButtonElement | null;
     expect(unavailableButton?.getAttribute('aria-pressed')).to.equal('false');
 
-    const contextTax = el.shadowRoot?.querySelector('.context-tax');
+    const contextTax = el.shadowRoot?.querySelector('.strip-note');
     expect(contextTax).to.exist;
     // Only enabled+supported tools contribute (1200), not unavailable (800).
     expect(contextTax?.textContent?.replace(/\s+/g, ' ')).to.contain(
@@ -659,6 +659,10 @@ describe('ToolsView – tabs and toolbar', () => {
   let fetchStub: sinon.SinonStub;
   let tools: Record<string, unknown>[];
   let workflows: Record<string, unknown>[];
+  let governanceDefaults: Record<string, unknown>;
+  let failGovernanceGet: boolean;
+  let holdGovernanceGet: Promise<Response> | null;
+  let releaseHeldGovernance: ((response: Response) => void) | null;
 
   function makeTool(
     overrides: Record<string, unknown> = {}
@@ -723,12 +727,18 @@ describe('ToolsView – tabs and toolbar', () => {
           });
         }
         if (url.endsWith('/api/v1/account/governance-defaults')) {
+          if (holdGovernanceGet) {
+            return holdGovernanceGet;
+          }
+          if (failGovernanceGet) {
+            return new Response(
+              JSON.stringify({ detail: 'Simulated GET failure' }),
+              { status: 500, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
           return new Response(
             JSON.stringify({
-              defaults: {
-                native_tool_approvals: null,
-                approval_workflow_id: null,
-              },
+              defaults: governanceDefaults,
               override_agent_ids: [],
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -769,6 +779,13 @@ describe('ToolsView – tabs and toolbar', () => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
     tools = [makeTool()];
+    failGovernanceGet = false;
+    holdGovernanceGet = null;
+    releaseHeldGovernance = null;
+    governanceDefaults = {
+      native_tool_approvals: null,
+      approval_workflow_id: null,
+    };
     workflows = [
       {
         id: 'policy-1',
@@ -790,6 +807,16 @@ describe('ToolsView – tabs and toolbar', () => {
   });
 
   afterEach(() => {
+    if (releaseHeldGovernance) {
+      releaseHeldGovernance(
+        new Response(JSON.stringify({ detail: 'teardown' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+      releaseHeldGovernance = null;
+    }
+    holdGovernanceGet = null;
     fetchStub.restore();
     localStorage.removeItem('preloop.tools.view_mode');
     localStorage.clear();
@@ -1065,8 +1092,9 @@ describe('ToolsView – tabs and toolbar', () => {
 
     const toolsCount = [
       ...(el.shadowRoot?.querySelectorAll('.strip-count') || []),
-    ].find((button) => /^\s*\d+\s+tools\s*$/.test(button.textContent || '')) as
-      HTMLButtonElement | undefined;
+    ].find((button) =>
+      /^\s*\d+\s+tools?\s*$/.test(button.textContent || '')
+    ) as HTMLButtonElement | undefined;
     expect(toolsCount).to.exist;
     toolsCount!.click();
     await el.updateComplete;
@@ -1107,6 +1135,27 @@ describe('ToolsView – tabs and toolbar', () => {
       access_rules: [],
       ...overrides,
     };
+  }
+
+  async function nativeNoRulesText(el: ToolsView): Promise<string | undefined> {
+    await waitUntil(() => {
+      const nativeEditor = el.shadowRoot?.querySelector(
+        'sl-tab-panel[name="native"] tools-editor-component'
+      ) as LitElement | null;
+      return Boolean(nativeEditor?.shadowRoot?.querySelector('tool-list-item'));
+    }, 'Native tool row did not render');
+    const nativeEditor = el.shadowRoot?.querySelector(
+      'sl-tab-panel[name="native"] tools-editor-component'
+    ) as LitElement;
+    await nativeEditor.updateComplete;
+    const item = nativeEditor.shadowRoot?.querySelector(
+      'tool-list-item'
+    ) as LitElement;
+    await item.updateComplete;
+    return item.shadowRoot
+      ?.querySelector('.no-rules')
+      ?.textContent?.replace(/\s+/g, ' ')
+      .trim();
   }
 
   it('native tab lists agent-source tools from the API and opens the rule editor with the tool parameters', async () => {
@@ -1164,7 +1213,7 @@ describe('ToolsView – tabs and toolbar', () => {
     );
 
     const strip = el.shadowRoot?.querySelector('.summary-strip');
-    expect(strip?.textContent?.replace(/\s+/g, ' ')).to.contain('1 tools');
+    expect(strip?.textContent?.replace(/\s+/g, ' ')).to.contain('1 tool ');
 
     const nativeEditor = el.shadowRoot?.querySelector(
       'sl-tab-panel[name="native"] tools-editor-component'
@@ -1247,6 +1296,142 @@ describe('ToolsView – tabs and toolbar', () => {
       ) || []),
     ].map((option) => option.getAttribute('value'));
     expect(options).to.deep.equal(['command', 'description', 'timeout']);
+  });
+
+  it('native tab summary strip states the counts and the account default', async () => {
+    // B-T2: the Native tab ran a different toolbar pattern from MCP and never
+    // stated the default that governs a ruleless row.
+    tools = [
+      makeNativeTool(),
+      makeNativeTool({ name: 'Edit' }),
+      makeNativeTool({ name: 'Write', is_enabled: false }),
+    ];
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => !(el as any).loading && (el as any).governanceDefaults !== null,
+      'Governance defaults did not load'
+    );
+    await el.updateComplete;
+
+    const strip = el.shadowRoot?.querySelector('.native-summary-strip');
+    expect(strip?.textContent?.replace(/\s+/g, ' ').trim()).to.equal(
+      '3 tools · 2 allowed · 1 blocked · 0 with rules · asks a human by default'
+    );
+
+    // The counts filter the list, as they do on the MCP strip.
+    const blocked = [...(strip?.querySelectorAll('.strip-count') || [])].find(
+      (button) => /^\s*1\s+blocked\s*$/.test(button.textContent || '')
+    ) as HTMLButtonElement | undefined;
+    expect(blocked).to.exist;
+    blocked!.click();
+    await el.updateComplete;
+    expect((el as any).nativeFilters.rules).to.deep.equal(['blocked']);
+  });
+
+  it('native summary strip says so when the account default is off', async () => {
+    tools = [makeNativeTool()];
+    governanceDefaults = {
+      native_tool_approvals: 'off',
+      approval_workflow_id: null,
+    };
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => !(el as any).loading && (el as any).governanceDefaults !== null,
+      'Governance defaults did not load'
+    );
+    await el.updateComplete;
+
+    expect(
+      el.shadowRoot
+        ?.querySelector('.native-summary-strip')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).to.equal(
+      '1 tool · 1 allowed · 0 blocked · 0 with rules · runs without asking by default'
+    );
+  });
+
+  it('ruleless native rows claim no effect while governance defaults are unread', async () => {
+    holdGovernanceGet = new Promise((resolve) => {
+      releaseHeldGovernance = resolve;
+    });
+    tools = [makeNativeTool()];
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => !(el as any).loading && (el as any).tools?.length === 1,
+      'Tools did not load'
+    );
+    await el.updateComplete;
+
+    expect((el as any).governanceDefaults).to.equal(null);
+    expect((el as any)._nativeAsksByDefault()).to.equal(null);
+    expect(await nativeNoRulesText(el)).to.equal('No rules');
+    expect(await nativeNoRulesText(el)).to.not.include('allowed');
+    expect(await nativeNoRulesText(el)).to.not.include('asks a human');
+
+    releaseHeldGovernance!(
+      new Response(
+        JSON.stringify({
+          defaults: governanceDefaults,
+          override_agent_ids: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+    releaseHeldGovernance = null;
+    holdGovernanceGet = null;
+    await waitUntil(
+      () => (el as any).governanceDefaults !== null,
+      'Governance defaults did not load after release'
+    );
+    await el.updateComplete;
+    expect(await nativeNoRulesText(el)).to.equal(
+      'No rules · asks a human (account default)'
+    );
+  });
+
+  it('ruleless native rows do not claim allowed when governance defaults fail to load', async () => {
+    failGovernanceGet = true;
+    tools = [makeNativeTool()];
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => !(el as any).loading && (el as any).governanceLoadFailed,
+      'Governance load failure was not recorded'
+    );
+    await el.updateComplete;
+
+    expect((el as any)._nativeAsksByDefault()).to.equal(null);
+    expect(
+      el.shadowRoot?.querySelector('#native-approvals-defaults-card')
+        ?.textContent
+    ).to.include('Could not load this setting');
+    expect(await nativeNoRulesText(el)).to.equal('No rules');
+    expect(await nativeNoRulesText(el)).to.not.include('allowed');
+    expect(await nativeNoRulesText(el)).to.not.include('asks a human');
   });
 
   it('saving a native rule creates an agent-source configuration without a server id', async () => {
@@ -1357,7 +1542,9 @@ describe('ToolsView – tabs and toolbar', () => {
     const blockedSwitch = bashItem.shadowRoot?.querySelector('sl-switch') as
       (HTMLElement & { checked: boolean }) | null;
     expect(blockedSwitch).to.exist;
-    expect(blockedSwitch!.textContent).to.contain('Blocked');
+    // B-T1: the switch is labelled with the verb, not with a state that read
+    // as "this tool is blocked" beside an off switch.
+    expect(blockedSwitch!.textContent?.trim()).to.equal('Block');
     expect(blockedSwitch!.checked).to.equal(false);
 
     blockedSwitch!.checked = true;

@@ -1,7 +1,7 @@
 """Unique partial indexes making viewed-event inserts idempotent.
 
 Revision ID: 20260906_ae_viewed_uniq
-Revises: 20260904_flow_notifications
+Revises: 20260905_control_heartbeat
 Create Date: 2026-09-06
 
 Console GET and the public token GET both do has_event() then record() for
@@ -21,7 +21,7 @@ from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
 revision: str = "20260906_ae_viewed_uniq"
-down_revision: Union[str, None] = "20260904_flow_notifications"
+down_revision: Union[str, None] = "20260905_control_heartbeat"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

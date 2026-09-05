@@ -16992,6 +16992,12 @@ components:
           type: string
           title: Control Session Mode
           default: offline
+        control_last_heartbeat_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Control Last Heartbeat At
         supported_input_modes:
           items:
             type: string

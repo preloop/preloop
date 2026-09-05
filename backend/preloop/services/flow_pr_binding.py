@@ -2,8 +2,10 @@
 
 Issue-implementation flows persist the opened PR URL on
 ``FlowExecution.result`` so a later ``comment_created`` on that PR can start
-a new execution of the same flow with ``_resume`` metadata. Native CLI
-session resume (``--resume``) is a separate follow-up.
+a new execution of the same flow with ``_resume`` metadata. The resume
+metadata also carries the prior execution's native CLI session (see
+``preloop.agents.cli_session``) so the new run can invoke the CLI resume flag
+instead of starting a cold agent.
 """
 
 from __future__ import annotations
@@ -427,6 +429,66 @@ def merge_result_preserving_pr_binding(
     return merged
 
 
+def record_cli_session(db: Session, execution_id: Any, cli_session: Any) -> None:
+    """Persist the agent CLI session reference on the execution. Never raises.
+
+    ``cli_session`` is ``{"agent_type": ..., "session_id": ...}`` as parsed
+    from the PRELOOP_AGENT_SESSION marker. Overwrites so a retried attempt's
+    session replaces the failed attempt's.
+    """
+
+    try:
+        if not execution_id or not isinstance(cli_session, dict):
+            return
+        if not cli_session.get("session_id"):
+            return
+        execution = crud_flow_execution.get(db, id=execution_id)
+        if execution is None:
+            logger.warning(
+                "Cannot record CLI session: execution %s not found", execution_id
+            )
+            return
+        crud_flow_execution.set_cli_session(
+            db,
+            db_obj=execution,
+            cli_session={
+                "agent_type": cli_session.get("agent_type"),
+                "session_id": cli_session.get("session_id"),
+            },
+        )
+        db.commit()
+        logger.info(
+            "Recorded CLI session on execution %s (%s)",
+            execution_id,
+            cli_session.get("agent_type"),
+        )
+    except Exception:
+        logger.warning(
+            "Failed to record CLI session on execution %s",
+            execution_id,
+            exc_info=True,
+        )
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug(
+                "Could not roll back after a failed CLI session write",
+                exc_info=True,
+            )
+
+
+def resume_cli_session_of(execution: Any) -> Optional[Dict[str, Any]]:
+    """CLI session stored on ``execution``, shaped for the resume metadata."""
+
+    cli = getattr(execution, "cli_session", None)
+    if not isinstance(cli, dict) or not cli.get("session_id"):
+        return None
+    return {
+        "agent_type": cli.get("agent_type"),
+        "session_id": cli.get("session_id"),
+    }
+
+
 def record_opened_pr(
     db: Session,
     execution_id: Any,
@@ -583,6 +645,9 @@ def bind_resume_or_skip(
         "resume_index": note_resume_started(db, execution),
         "comment_url": extract_comment_url(event_data),
     }
+    cli_session = resume_cli_session_of(execution)
+    if cli_session:
+        resume["cli_session"] = cli_session
     if marker_flow_id:
         resume["review_flow_id"] = marker_flow_id
     event_data["_resume"] = resume
