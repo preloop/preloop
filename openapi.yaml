@@ -7775,16 +7775,19 @@ paths:
       tags:
       - Flows
       summary: Get Flow Execution Logs
-      description: "Get execution logs from the container (if running) or database\
-        \ (if finished).\n\nFor running executions, fetches logs directly from the\
-        \ Docker/Kubernetes container.\nFor finished executions, returns persisted\
-        \ logs from the database.\n\nArgs:\n    execution_id: ID of the execution\n\
-        \    tail: Number of recent log lines to retrieve, or None for all logs\n\
-        \    skip: Number of logs to skip (for pagination)\n    limit: Number of logs\
-        \ to return (for pagination)\n\nReturns:\n    Dictionary with:\n    - logs:\
-        \ List of log lines\n    - source: Where logs were fetched from (\"container\"\
-        \ or \"database\")\n    - has_more: Boolean indicating if there are more logs\
-        \ (if paginated)"
+      description: "Get execution logs from the live container or from persisted database\
+        \ rows.\n\nFor running container-backed executions, fetches logs directly\
+        \ from the\nDocker/Kubernetes container. Runner-backed executions (lease references\n\
+        such as ``runner:{runner_id}:{execution_id}``) always return persisted\ndatabase\
+        \ logs, even while they are still running, because their output\narrives over\
+        \ the runner WebSocket rather than a container log stream.\nFor finished executions,\
+        \ returns persisted logs from the database.\n\nArgs:\n    execution_id: ID\
+        \ of the execution\n    tail: Number of recent log lines to retrieve, or None\
+        \ for all logs\n    skip: Number of logs to skip (for pagination)\n    limit:\
+        \ Number of logs to return (for pagination)\n\nReturns:\n    Dictionary with:\n\
+        \    - logs: List of log lines\n    - source: Where logs were fetched from\
+        \ (\"container\" or \"database\")\n    - has_more: Boolean indicating if there\
+        \ are more logs (if paginated)"
       operationId: get_flow_execution_logs_api_v1_flows_executions__execution_id__logs_get
       security:
       - bearerAuth: []

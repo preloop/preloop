@@ -769,9 +769,13 @@ async def get_flow_execution_logs(
     skip: int = 0,
     limit: int | None = None,
 ) -> Dict[str, Any]:
-    """Get execution logs from the container (if running) or database (if finished).
+    """Get execution logs from the live container or from persisted database rows.
 
-    For running executions, fetches logs directly from the Docker/Kubernetes container.
+    For running container-backed executions, fetches logs directly from the
+    Docker/Kubernetes container. Runner-backed executions (lease references
+    such as ``runner:{runner_id}:{execution_id}``) always return persisted
+    database logs, even while they are still running, because their output
+    arrives over the runner WebSocket rather than a container log stream.
     For finished executions, returns persisted logs from the database.
 
     Args:
@@ -798,7 +802,22 @@ async def get_flow_execution_logs(
     # Check if execution is running
     is_running = execution.status in ["RUNNING", "STARTING", "INITIALIZING", "PENDING"]
 
-    if is_running and execution.agent_session_reference:
+    # Runner-backed executions carry a lease reference
+    # (``runner:{runner_id}:{execution_id}`` or
+    # ``runner:queued:{pool}:{execution_id}``), not a container or Job name.
+    # Their output arrives over the runner WebSocket into flow_execution_log,
+    # so the container path would only build an invalid Kubernetes selector
+    # (HTTP 400) and return an empty list that hides the database logs.
+    session_reference = execution.agent_session_reference
+    runner_backed = bool(
+        session_reference
+        and (
+            runner_id_from_session_reference(session_reference) is not None
+            or pool_from_session_reference(session_reference) is not None
+        )
+    )
+
+    if is_running and session_reference and not runner_backed:
         # Fetch logs directly from container
         agent = None
         try:
@@ -1109,13 +1128,36 @@ async def send_execution_command(
 
     # Handle stop command - stop container directly
     if command_data.command == "stop":
-        # Stop the container if it's running
-        if execution.agent_session_reference and execution.status in [
+        session_reference = execution.agent_session_reference
+        stoppable = execution.status in [
             "RUNNING",
             "STARTING",
             "INITIALIZING",
             "PENDING",
-        ]:
+        ]
+        runner_id = runner_id_from_session_reference(session_reference)
+        queued_pool = pool_from_session_reference(session_reference)
+        if runner_id is not None and stoppable:
+            # Runner-backed execution: the lease reference is not a container
+            # or Job name, so a container executor cannot see or stop the
+            # runner's process (and only builds an invalid Kubernetes
+            # selector trying). Flag the halt so the runner stops the job
+            # itself; its output already streams into flow_execution_log.
+            runner = crud_flow_runner.get(db, id=runner_id)
+            if runner:
+                runner.halt_requested = True
+                db.add(runner)
+                db.commit()
+                logger.info(
+                    f"Requested halt on runner {runner_id} for execution {execution_id}"
+                )
+        elif queued_pool is not None and stoppable:
+            # Queued for a private pool: nothing runs yet, so there is no
+            # container, Job, or runner to stop. The status update below is
+            # all that is needed.
+            pass
+        # Stop the container if it's running
+        elif session_reference and stoppable:
             try:
                 # Get the flow to determine agent type
                 flow = crud_flow.get(

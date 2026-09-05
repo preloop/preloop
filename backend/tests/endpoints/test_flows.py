@@ -1323,6 +1323,242 @@ async def test_send_execution_command_stop_success(
 
 
 @pytest.mark.asyncio
+async def test_send_execution_command_stop_runner_backed_halts_runner(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Stopping a runner-leased execution flags the runner halt and never
+    builds a container executor (the lease reference is not a Job name)."""
+    # Arrange
+    execution_id = uuid.uuid4()
+    runner_id = uuid.uuid4()
+
+    mock_execution = MagicMock()
+    mock_execution.id = execution_id
+    mock_execution.flow_id = uuid.uuid4()
+    mock_execution.status = "RUNNING"
+    mock_execution.agent_session_reference = f"runner:{runner_id}:{execution_id}"
+
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_flow_execution.get.return_value = mock_execution
+    mock_crud_flow_execution.update.return_value = mock_execution
+
+    mock_runner = MagicMock()
+    mock_runner.halt_requested = False
+    mock_crud_flow_runner = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_runner",
+        new_callable=MagicMock,
+    )
+    mock_crud_flow_runner.get.return_value = mock_runner
+
+    mock_nats_client = MagicMock()
+    mocker.patch(
+        "preloop.sync.services.event_bus.get_nats_client",
+        return_value=mock_nats_client,
+    )
+    mock_codex_agent = mocker.patch("preloop.agents.codex.CodexAgent")
+    mock_container_executor = mocker.patch(
+        "preloop.agents.container.ContainerAgentExecutor"
+    )
+    mocker.patch(
+        "preloop.services.flow_orchestrator.FlowExecutionOrchestrator.send_command",
+        new=mocker.AsyncMock(),
+    )
+
+    command_data = schemas.FlowExecutionCommand(command="stop", payload={})
+
+    # Act
+    result = await maybe_await(
+        flows.send_execution_command(
+            db=MagicMock(),
+            execution_id=execution_id,
+            command_data=command_data,
+            current_user=mock_account,
+        )
+    )
+
+    # Assert
+    assert result == {"status": "stopped"}
+    mock_crud_flow_runner.get.assert_called_once()
+    assert mock_crud_flow_runner.get.call_args.kwargs["id"] == runner_id
+    assert mock_runner.halt_requested is True
+    mock_codex_agent.assert_not_called()
+    mock_container_executor.assert_not_called()
+    final_call = mock_crud_flow_execution.update.call_args
+    assert final_call.kwargs["obj_in"].status == "STOPPED"
+
+
+@pytest.mark.asyncio
+async def test_send_execution_command_stop_queued_runner_touches_nothing(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Stopping a queued (not yet leased) execution skips both the runner
+    halt and the container path; the status update alone releases it."""
+    # Arrange
+    execution_id = uuid.uuid4()
+
+    mock_execution = MagicMock()
+    mock_execution.id = execution_id
+    mock_execution.flow_id = uuid.uuid4()
+    mock_execution.status = "RUNNING"
+    mock_execution.agent_session_reference = f"runner:queued:default:{execution_id}"
+
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_flow_execution.get.return_value = mock_execution
+    mock_crud_flow_execution.update.return_value = mock_execution
+
+    mock_crud_flow_runner = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_runner",
+        new_callable=MagicMock,
+    )
+
+    mock_nats_client = MagicMock()
+    mocker.patch(
+        "preloop.sync.services.event_bus.get_nats_client",
+        return_value=mock_nats_client,
+    )
+    mock_codex_agent = mocker.patch("preloop.agents.codex.CodexAgent")
+    mock_container_executor = mocker.patch(
+        "preloop.agents.container.ContainerAgentExecutor"
+    )
+    mocker.patch(
+        "preloop.services.flow_orchestrator.FlowExecutionOrchestrator.send_command",
+        new=mocker.AsyncMock(),
+    )
+
+    command_data = schemas.FlowExecutionCommand(command="stop", payload={})
+
+    # Act
+    result = await maybe_await(
+        flows.send_execution_command(
+            db=MagicMock(),
+            execution_id=execution_id,
+            command_data=command_data,
+            current_user=mock_account,
+        )
+    )
+
+    # Assert
+    assert result == {"status": "stopped"}
+    mock_crud_flow_runner.get.assert_not_called()
+    mock_codex_agent.assert_not_called()
+    mock_container_executor.assert_not_called()
+    final_call = mock_crud_flow_execution.update.call_args
+    assert final_call.kwargs["obj_in"].status == "STOPPED"
+
+
+def _mock_execution_log_row(execution_id: uuid.UUID, message: str) -> MagicMock:
+    row = MagicMock()
+    row.execution_id = execution_id
+    row.timestamp = datetime(2026, 9, 5, 12, 0, 0)
+    row.log_type = "agent_log_line"
+    row.metadata_ = {}
+    row.message = message
+    return row
+
+
+@pytest.mark.asyncio
+async def test_get_flow_execution_logs_runner_backed_reads_database(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A running execution leased to a private runner reads logs from the
+    database (streamed over the runner WebSocket), never from Kubernetes."""
+    # Arrange
+    execution_id = uuid.uuid4()
+
+    mock_execution = MagicMock()
+    mock_execution.id = execution_id
+    mock_execution.status = "RUNNING"
+    mock_execution.agent_session_reference = f"runner:{uuid.uuid4()}:{execution_id}"
+    mock_execution.execution_logs = None
+
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_flow_execution.get.return_value = mock_execution
+
+    mock_log_crud = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution_log",
+        new_callable=MagicMock,
+    )
+    mock_log_crud.get_by_execution_id.return_value = [
+        _mock_execution_log_row(execution_id, "line one"),
+        _mock_execution_log_row(execution_id, "line two"),
+    ]
+
+    mock_create_executor = mocker.patch("preloop.agents.create_agent_executor")
+
+    # Act
+    result = await maybe_await(
+        flows.get_flow_execution_logs(
+            db=MagicMock(),
+            execution_id=execution_id,
+            current_user=mock_account,
+        )
+    )
+
+    # Assert
+    assert result["source"] == "database"
+    assert [entry["payload"]["message"] for entry in result["logs"]] == [
+        "line one",
+        "line two",
+    ]
+    mock_create_executor.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_flow_execution_logs_queued_runner_reads_database(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A queued execution (no runner yet) also skips the container path, so
+    the queue-status entries in the database stay visible."""
+    # Arrange
+    execution_id = uuid.uuid4()
+
+    mock_execution = MagicMock()
+    mock_execution.id = execution_id
+    mock_execution.status = "RUNNING"
+    mock_execution.agent_session_reference = f"runner:queued:default:{execution_id}"
+    mock_execution.execution_logs = None
+
+    mock_crud_flow_execution = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution",
+        new_callable=MagicMock,
+    )
+    mock_crud_flow_execution.get.return_value = mock_execution
+
+    mock_log_crud = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow_execution_log",
+        new_callable=MagicMock,
+    )
+    mock_log_crud.get_by_execution_id.return_value = [
+        _mock_execution_log_row(execution_id, "agent_status"),
+    ]
+
+    mock_create_executor = mocker.patch("preloop.agents.create_agent_executor")
+
+    # Act
+    result = await maybe_await(
+        flows.get_flow_execution_logs(
+            db=MagicMock(),
+            execution_id=execution_id,
+            current_user=mock_account,
+        )
+    )
+
+    # Assert
+    assert result["source"] == "database"
+    assert len(result["logs"]) == 1
+    mock_create_executor.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_send_execution_command_other_command_success(
     mock_account: Account, mocker: MockerFixture
 ):
