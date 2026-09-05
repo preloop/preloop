@@ -254,9 +254,19 @@ describe('ToolsView (approvals + conditions)', () => {
     expect(stripText).to.not.contain('toolss');
     expect(stripText).to.not.contain('Total tools');
 
-    const note = el.shadowRoot?.querySelector('.unavailable-note');
-    expect(note).to.exist;
-    expect(note?.textContent).to.contain('Requires a connected tracker');
+    const tooltip = el.shadowRoot?.querySelector(
+      '.summary-strip sl-tooltip'
+    ) as HTMLElement | null;
+    expect(tooltip).to.exist;
+    expect(tooltip?.getAttribute('content')).to.contain(
+      'Requires a connected tracker'
+    );
+    expect(el.shadowRoot?.querySelector('.unavailable-note')).to.equal(null);
+
+    const unavailableButton = tooltip?.querySelector(
+      '.strip-count'
+    ) as HTMLButtonElement | null;
+    expect(unavailableButton?.getAttribute('aria-pressed')).to.equal('false');
 
     const contextTax = el.shadowRoot?.querySelector('.context-tax');
     expect(contextTax).to.exist;
@@ -698,6 +708,7 @@ describe('ToolsView – tabs and toolbar', () => {
   }
 
   beforeEach(() => {
+    localStorage.removeItem('preloop.tools.view_mode');
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
     tools = [makeTool()];
@@ -723,6 +734,7 @@ describe('ToolsView – tabs and toolbar', () => {
 
   afterEach(() => {
     fetchStub.restore();
+    localStorage.removeItem('preloop.tools.view_mode');
     localStorage.clear();
     window.history.replaceState({}, '', window.location.pathname);
     invalidateApiCaches();
@@ -810,6 +822,26 @@ describe('ToolsView – tabs and toolbar', () => {
 
     const toolbar = el.shadowRoot?.querySelector('list-toolbar') as HTMLElement;
     expect(toolbar).to.exist;
+    expect(
+      el.shadowRoot
+        ?.querySelector('sl-select.status-filter')
+        ?.getAttribute('label')
+    ).to.equal('Status');
+    expect(
+      el.shadowRoot
+        ?.querySelector('sl-select.server-filter')
+        ?.getAttribute('label')
+    ).to.equal('Server');
+    expect(
+      el.shadowRoot
+        ?.querySelector('sl-select.rules-filter')
+        ?.getAttribute('label')
+    ).to.equal('Rules');
+    expect(
+      el.shadowRoot
+        ?.querySelector('sl-select.workflow-filter')
+        ?.getAttribute('label')
+    ).to.equal('Workflow');
     toolbar.dispatchEvent(
       new CustomEvent('search-change', {
         detail: { value: 'alpha' },
@@ -878,7 +910,7 @@ describe('ToolsView – tabs and toolbar', () => {
     expect((el as any).showSetupDialog).to.equal(true);
     const dialog = el.shadowRoot?.querySelector('mcp-setup-dialog');
     expect(dialog).to.exist;
-    expect((dialog as any).open).to.not.equal(false);
+    expect((dialog as any).open).to.equal(true);
   });
 
   it('add MCP server opens the server form', async () => {
@@ -927,6 +959,64 @@ describe('ToolsView – tabs and toolbar', () => {
 
     expect((el as any).showPolicyDialog).to.equal(true);
     expect((el as any).editingPolicy).to.equal(null);
+  });
+
+  it('view toggle persists to preloop.tools.view_mode', async () => {
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(() => !(el as any).loading, 'Still loading');
+    await el.updateComplete;
+
+    const toolbar = el.shadowRoot?.querySelector(
+      'list-toolbar'
+    ) as HTMLElement & {
+      view: string;
+      views: string[];
+    };
+    expect(toolbar).to.exist;
+    expect(toolbar.views).to.deep.equal(['cards']);
+    expect(toolbar.view).to.equal('cards');
+    expect(toolbar.shadowRoot?.querySelector('sl-button-group')).to.equal(null);
+
+    toolbar.dispatchEvent(
+      new CustomEvent('view-change', {
+        detail: { value: 'list' },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await el.updateComplete;
+
+    expect(localStorage.getItem('preloop.tools.view_mode')).to.equal('list');
+    expect((el as any).viewMode).to.equal('list');
+  });
+
+  it('strip counts set and clear the matching filter', async () => {
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(() => !(el as any).loading, 'Still loading');
+    await el.updateComplete;
+
+    const enabled = [
+      ...(el.shadowRoot?.querySelectorAll('.strip-count') || []),
+    ].find((button) => button.textContent?.includes('enabled')) as
+      HTMLButtonElement | undefined;
+    expect(enabled).to.exist;
+    enabled!.click();
+    await el.updateComplete;
+
+    expect((el as any).filters.statuses).to.deep.equal(['enabled']);
+    expect(enabled!.getAttribute('aria-pressed')).to.equal('true');
+
+    const toolsCount = [
+      ...(el.shadowRoot?.querySelectorAll('.strip-count') || []),
+    ].find((button) => /^\s*\d+\s+tools\s*$/.test(button.textContent || '')) as
+      HTMLButtonElement | undefined;
+    expect(toolsCount).to.exist;
+    toolsCount!.click();
+    await el.updateComplete;
+
+    expect((el as any).filters.statuses).to.deep.equal([]);
+    expect(toolsCount!.getAttribute('aria-pressed')).to.equal('true');
+    expect(enabled!.getAttribute('aria-pressed')).to.equal('false');
   });
 });
 

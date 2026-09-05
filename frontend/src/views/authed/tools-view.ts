@@ -25,7 +25,6 @@ import {
 } from '../../api';
 import type { AccountGovernanceDefaults } from '../../types';
 import '../../components/mcp-server-form';
-import '../../components/mcp-server-card';
 import '../../components/tools-editor-component';
 import '../../components/mcp-setup-dialog';
 import '../../components/approval-workflow-dialog';
@@ -80,6 +79,9 @@ interface ToolsFilters {
 
 const TAB_STORAGE_KEY = 'preloop.tools.tab';
 const VIEW_MODE_KEY = 'preloop.tools.view_mode';
+// Cards only until the flat table lands; a List/Cards toggle would persist
+// a choice that does not change the page.
+const TOOLS_VIEWS: ListViewMode[] = ['cards'];
 const EMPTY_FILTERS: ToolsFilters = {
   query: '',
   statuses: [],
@@ -149,7 +151,6 @@ export class ToolsView extends LitElement {
   @state() private starterPolicyDiff: StarterPolicyDiff | null = null;
   @state() private starterPolicyReviewConfirmed = false;
   @state() private toolUsageStats: GatewayUsageByTool[] = [];
-  @state() private toolStatsLoading = false;
 
   // Approval workflow dialog
   @state() private showPolicyDialog = false;
@@ -212,13 +213,7 @@ export class ToolsView extends LitElement {
         color: var(--sl-color-primary-700);
       }
 
-      .strip-count.muted {
-        opacity: 0.4;
-        cursor: default;
-      }
-
-      .context-tax,
-      .unavailable-note {
+      .context-tax {
         color: var(--console-meta-color, var(--sl-color-neutral-600));
       }
 
@@ -230,6 +225,18 @@ export class ToolsView extends LitElement {
       .toolbar-wrap {
         width: 100%;
         margin-bottom: var(--sl-spacing-medium);
+      }
+
+      sl-select::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
       }
 
       .defaults-strip {
@@ -599,7 +606,6 @@ export class ToolsView extends LitElement {
   }
 
   private async _loadToolUsageStats() {
-    this.toolStatsLoading = true;
     try {
       const end = new Date();
       const start = new Date(end);
@@ -611,8 +617,6 @@ export class ToolsView extends LitElement {
       this.toolUsageStats = stats.tools || [];
     } catch {
       this.toolUsageStats = [];
-    } finally {
-      this.toolStatsLoading = false;
     }
   }
 
@@ -1658,7 +1662,6 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     label: string,
     options: {
       active?: boolean;
-      muted?: boolean;
       tooltip?: string;
       onClick?: () => void;
     } = {}
@@ -1666,11 +1669,9 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     const button = html`
       <button
         type="button"
-        class="strip-count${options.active ? ' active' : ''}${
-          options.muted ? ' muted' : ''
-        }"
-        ?disabled=${options.muted}
-        @click=${options.muted ? undefined : options.onClick}
+        class="strip-count${options.active ? ' active' : ''}"
+        aria-pressed=${String(Boolean(options.active))}
+        @click=${options.onClick}
       >
         ${count} ${label}
       </button>
@@ -1739,8 +1740,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
                   tooltip: unavailableTooltip,
                   onClick: () =>
                     this._toggleSingleFilter('statuses', 'unavailable'),
-                })}
-                <span class="unavailable-note">${unavailableTooltip}</span>`
+                })}`
             : ''
         }
       </div>
@@ -1751,9 +1751,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     const count = this.approvalPolicies.length;
     return html`
       <sl-dropdown class="workflows-menu" hoist>
-        <sl-button slot="trigger" size="small" caret>
-          Workflows (${count})
-        </sl-button>
+        <sl-button slot="trigger" caret> Workflows (${count}) </sl-button>
         <sl-menu>
           ${this.approvalPolicies.map(
             (policy) => html`
@@ -1788,13 +1786,15 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         <list-toolbar
           .search=${this.filters.query}
           searchPlaceholder="Search tools"
-          .view=${this.effectiveView}
-          .views=${['list', 'cards']}
+          toggleLabel="Tools view"
+          .view=${'cards'}
+          .views=${TOOLS_VIEWS}
           @search-change=${this._handleSearchChange}
           @view-change=${this._handleViewChange}
         >
           <sl-select
             class="status-filter"
+            label="Status"
             clearable
             placeholder="Any status"
             .value=${this.filters.statuses[0] || ''}
@@ -1806,6 +1806,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
           </sl-select>
           <sl-select
             class="server-filter"
+            label="Server"
             clearable
             placeholder="Any server"
             .value=${this.filters.servers[0] || ''}
@@ -1819,6 +1820,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
           </sl-select>
           <sl-select
             class="rules-filter"
+            label="Rules"
             clearable
             placeholder="Any rules"
             .value=${this.filters.rules[0] || ''}
@@ -1830,6 +1832,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
           </sl-select>
           <sl-select
             class="workflow-filter"
+            label="Workflow"
             clearable
             placeholder="Any workflow"
             .value=${this.filters.workflows[0] || ''}
