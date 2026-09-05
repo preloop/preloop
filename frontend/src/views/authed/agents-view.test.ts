@@ -202,9 +202,11 @@ describe('AgentsView', () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
     await waitForAgents(el);
 
+    const toolbar = el.shadowRoot?.querySelector('list-toolbar');
     const buttons = Array.from(
-      el.shadowRoot?.querySelectorAll('sl-button-group sl-button[data-view]') ||
-        []
+      toolbar?.shadowRoot?.querySelectorAll(
+        'sl-button-group sl-button[data-view]'
+      ) || []
     );
     expect(buttons.map((b) => b.getAttribute('data-view'))).to.deep.equal([
       'list',
@@ -328,7 +330,8 @@ describe('AgentsView', () => {
     // The switcher still reports List as the chosen view.
     expect(
       el.shadowRoot
-        ?.querySelector('sl-button[data-view="list"]')
+        ?.querySelector('list-toolbar')
+        ?.shadowRoot?.querySelector('sl-button[data-view="list"]')
         ?.getAttribute('aria-pressed')
     ).to.equal('true');
   });
@@ -734,7 +737,9 @@ describe('AgentsView', () => {
     await waitForAgents(el);
 
     expect(
-      el.shadowRoot?.querySelector('.results-count')?.textContent?.trim()
+      el.shadowRoot
+        ?.querySelector('list-toolbar [slot="count"]')
+        ?.textContent?.trim()
     ).to.equal('2 agents');
   });
 
