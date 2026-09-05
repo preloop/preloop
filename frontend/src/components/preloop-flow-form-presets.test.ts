@@ -4,6 +4,7 @@ import {
   fixtureCleanup,
   html,
   oneEvent,
+  waitUntil,
 } from '@open-wc/testing';
 import sinon, { SinonSandbox } from 'sinon';
 
@@ -132,16 +133,14 @@ describe('PreloopFlowForm presets', () => {
     expect(element.flow.trigger_event_source).to.equal(GITHUB_TRACKER.id);
   });
 
-  it('still applies GitHub PR defaults to a blank draft', async () => {
+  it('does not turn Observe / Eval into a PR tracker flow', async () => {
     const element = await mount();
     await (element as any).applyPresetSelection('preset-003');
     await element.updateComplete;
 
-    expect(element.flow.trigger_event_types).to.deep.equal([
-      'pull_request_opened',
-      'pull_request_updated',
-    ]);
-    expect(element.flow.trigger_event_source).to.equal(GITHUB_TRACKER.id);
+    expect(element.flow.trigger_event_types).to.deep.equal([]);
+    expect(element.flow.trigger_event_source).to.equal(undefined);
+    expect((element as any).triggerType).to.equal('webhook');
   });
 
   it('clears the prompt when Blank flow is chosen after a preset', async () => {
@@ -194,6 +193,35 @@ describe('PreloopFlowForm presets', () => {
     expect(keepEditing!.textContent).to.contain('Keep editing');
     expect((element as any).pickerSelectedId).to.equal('preset-002');
     expect(element.flow.prompt_template).to.equal('A rewritten review prompt.');
+  });
+
+  it('replaces the prompt when Switch preset is confirmed', async () => {
+    const element = await mount();
+    await (element as any).applyPresetSelection('preset-002');
+    await element.updateComplete;
+
+    element.flow = {
+      ...element.flow,
+      prompt_template: 'A rewritten review prompt.',
+    };
+    await element.updateComplete;
+
+    (element as any).handlePickerSelect(
+      new CustomEvent('preset-select', { detail: { presetId: 'preset-001' } })
+    );
+    await element.updateComplete;
+    expect(element.flow.prompt_template).to.equal('A rewritten review prompt.');
+
+    (element as any).confirmSwitchPreset();
+    await waitUntil(
+      () => (element as any).pickerSelectedId === 'preset-001',
+      'Switch preset did not apply the Issue Triage selection'
+    );
+    await element.updateComplete;
+
+    expect(element.flow.prompt_template).to.equal('Triage this issue.');
+    expect((element as any).pickerSelectedId).to.equal('preset-001');
+    expect((element as any).replaceEditsOpen).to.be.false;
   });
 
   it('collapses the picker when the already-selected row is chosen again', async () => {

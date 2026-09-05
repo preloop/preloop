@@ -219,6 +219,9 @@ describe('preloop-flow-preset-picker', () => {
     const text = (el.shadowRoot!.textContent || '').replace(/\s+/g, ' ');
     expect(text).to.include('Started from Pull Request Reviewer.');
     expect(text).to.include('Change');
+    expect(el.shadowRoot!.querySelector('a[href="/console/flows"]')).to.equal(
+      null
+    );
     const change = el.shadowRoot!.querySelector('sl-button');
     expect(change).to.exist;
     expect(change!.textContent).to.contain('Change');

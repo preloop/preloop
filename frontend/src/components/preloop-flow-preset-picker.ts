@@ -482,10 +482,7 @@ export class PreloopFlowPresetPicker extends LitElement {
     }
     return html`
       <div class="summary">
-        <span>
-          Started from
-          <a href="/console/flows">${preset.name}</a>.
-        </span>
+        <span> Started from ${preset.name}. </span>
         <sl-button
           variant="text"
           size="small"

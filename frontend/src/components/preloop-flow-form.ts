@@ -980,24 +980,15 @@ export class PreloopFlowForm extends LitElement {
   }
 
   private async _autoPopulatePresetFields() {
-    if (this.trackers.length > 0 && !this.flow.trigger_event_source) {
+    const hasTrackerEvents = Boolean(this.flow.trigger_event_types?.length);
+    if (
+      hasTrackerEvents &&
+      this.trackers.length > 0 &&
+      !this.flow.trigger_event_source
+    ) {
       const tracker = this.trackers[this.trackers.length - 1];
       this.flow.trigger_event_source = tracker.id;
       this.triggerType = 'tracker';
-
-      if (!this.flow.trigger_event_types?.length) {
-        if (tracker.tracker_type === 'github') {
-          this.flow.trigger_event_types = [
-            'pull_request_opened',
-            'pull_request_updated',
-          ];
-        } else if (tracker.tracker_type === 'gitlab') {
-          this.flow.trigger_event_types = [
-            'merge_request_opened',
-            'merge_request_updated',
-          ];
-        }
-      }
 
       const allOrganizations = await listOrganizations().catch(() => []);
       this.organizations = allOrganizations.filter(
@@ -1021,6 +1012,8 @@ export class PreloopFlowForm extends LitElement {
       } else {
         this.startPollingOrganizations(tracker.id);
       }
+    } else if (!hasTrackerEvents) {
+      this.triggerType = 'webhook';
     }
 
     if (!this.flow.ai_model_id) {
