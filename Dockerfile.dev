@@ -34,7 +34,9 @@ RUN arch="$(dpkg --print-architecture)" \
          *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
        esac \
     && curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
+    && curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
     && echo "<node-sha256>  /tmp/node.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
          | tar -xJ -C /usr/local --strip-components=1 \
     && curl -fsSL "https://github.com/nats-io/nats-server/releases/download/v${NATS_SERVER_VERSION}/nats-server-v${NATS_SERVER_VERSION}-linux-${nats_arch}.tar.gz" \
