@@ -38,9 +38,13 @@ const preloopBadgeSvg = `<svg width="20px" height="18px" viewBox="0 0 1024 914" 
 export interface Tool {
   name: string;
   description: string;
-  source: 'builtin' | 'mcp' | 'http';
+  source: 'builtin' | 'mcp' | 'http' | 'agent';
   source_id: string | null;
   source_name: string;
+  /** Agent adapters that expose this native tool (Claude Code, Cursor, ...). */
+  adapters?: string[];
+  /** Native-tool argument fields; also copied onto schema.properties by the API. */
+  parameters?: Record<string, unknown>;
   schema: any;
   is_enabled: boolean;
   requires_tracker?: boolean;

@@ -1,4 +1,5 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import type { LitElement } from 'lit';
 import sinon from 'sinon';
 
 import './tools-view';
@@ -219,14 +220,41 @@ describe('ToolsView (approvals + conditions)', () => {
       unsupported_reason: 'Requires a connected tracker',
       schema_tokens_estimate: 800,
     };
+    const agentTool = {
+      name: 'Bash',
+      description: 'Run a shell command',
+      source: 'agent',
+      source_id: null,
+      source_name: 'Agent',
+      adapters: ['Claude Code'],
+      parameters: {
+        command: { type: 'string', description: 'Shell command' },
+      },
+      schema: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'Shell command' },
+        },
+      },
+      is_enabled: true,
+      is_supported: true,
+      approval_workflow_id: null,
+      has_approval_condition: false,
+      config_id: null,
+      access_rules: [],
+      schema_tokens_estimate: 400,
+    };
 
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/api/v1/tools')) {
-        return new Response(JSON.stringify([availableTool, unavailableTool]), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return new Response(
+          JSON.stringify([availableTool, unavailableTool, agentTool]),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
       }
       if (url.endsWith('/api/v1/features')) {
         return new Response(JSON.stringify({ features: {} }), {
@@ -275,6 +303,13 @@ describe('ToolsView (approvals + conditions)', () => {
       '~1,200 tokens'
     );
     expect(contextTax?.textContent).to.contain('to every request');
+    expect(
+      el.shadowRoot?.querySelector('sl-tab[panel="native"]')?.textContent
+    ).to.contain('Native tools 1');
+    const toolbarCount = el.shadowRoot
+      ?.querySelector('list-toolbar [slot="count"]')
+      ?.textContent?.replace(/\s+/g, ' ');
+    expect(toolbarCount).to.contain('2 tools');
   });
 
   it('renders the native tool approvals account-default card with override links', async () => {
@@ -699,6 +734,28 @@ describe('ToolsView – tabs and toolbar', () => {
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           );
         }
+        if (url.endsWith('/api/v1/tool-configurations') && method === 'POST') {
+          return new Response(JSON.stringify({ id: 'cfg-native-1' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (
+          url.includes('/api/v1/tool-configurations/') &&
+          url.endsWith('/access-rules') &&
+          method === 'POST'
+        ) {
+          return new Response(
+            JSON.stringify({ id: 'rule-native-1', action: 'require_approval' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.includes('/api/v1/tool-configurations/') && method === 'PUT') {
+          return new Response(JSON.stringify({ id: 'cfg-native' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
         return new Response(JSON.stringify({}), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -1017,6 +1074,384 @@ describe('ToolsView – tabs and toolbar', () => {
     expect((el as any).filters.statuses).to.deep.equal([]);
     expect(toolsCount!.getAttribute('aria-pressed')).to.equal('true');
     expect(enabled!.getAttribute('aria-pressed')).to.equal('false');
+  });
+
+  function makeNativeTool(
+    overrides: Record<string, unknown> = {}
+  ): Record<string, unknown> {
+    return {
+      name: 'Bash',
+      description: 'Run a shell command inside the Claude Code agent.',
+      source: 'agent',
+      source_id: null,
+      source_name: 'Agent',
+      adapters: ['Claude Code'],
+      parameters: {
+        command: { type: 'string', description: 'Shell command to execute' },
+        description: { type: 'string', description: 'Short explanation' },
+        timeout: { type: 'integer', description: 'Timeout in milliseconds' },
+      },
+      schema: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'Shell command to execute' },
+          description: { type: 'string', description: 'Short explanation' },
+          timeout: { type: 'integer', description: 'Timeout in milliseconds' },
+        },
+      },
+      is_enabled: true,
+      is_supported: true,
+      approval_workflow_id: null,
+      has_approval_condition: false,
+      config_id: null,
+      access_rules: [],
+      ...overrides,
+    };
+  }
+
+  it('native tab lists agent-source tools from the API and opens the rule editor with the tool parameters', async () => {
+    tools = [
+      makeTool(),
+      makeNativeTool(),
+      makeNativeTool({
+        name: 'Edit',
+        adapters: ['Claude Code', 'Cursor'],
+        parameters: {
+          file_path: {
+            type: 'string',
+            description: 'Path of the file to edit',
+          },
+        },
+        schema: {
+          type: 'object',
+          properties: {
+            file_path: {
+              type: 'string',
+              description: 'Path of the file to edit',
+            },
+          },
+        },
+      }),
+    ];
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => (el as any).tools?.length === 3,
+      'Tools did not load'
+    );
+    await el.updateComplete;
+
+    expect(
+      el.shadowRoot?.querySelector('sl-tab[panel="native"]')?.textContent
+    ).to.contain('Native tools 2');
+    expect(
+      el.shadowRoot?.querySelector('sl-tab[panel="mcp"]')?.textContent
+    ).to.contain('MCP tools 1');
+    expect(el.shadowRoot?.querySelector('.native-empty')).to.equal(null);
+    expect(el.shadowRoot?.querySelector('.native-toolbar')).to.exist;
+    const nativeToolbar = el.shadowRoot?.querySelector(
+      '.native-toolbar list-toolbar'
+    ) as HTMLElement & { views: string[]; view: string };
+    expect(nativeToolbar.views).to.deep.equal(['cards']);
+    expect(nativeToolbar.view).to.equal('cards');
+    expect(nativeToolbar.shadowRoot?.querySelector('sl-button-group')).to.equal(
+      null
+    );
+
+    const strip = el.shadowRoot?.querySelector('.summary-strip');
+    expect(strip?.textContent?.replace(/\s+/g, ' ')).to.contain('1 tools');
+
+    const nativeEditor = el.shadowRoot?.querySelector(
+      'sl-tab-panel[name="native"] tools-editor-component'
+    ) as LitElement & { family: string; tools: { name: string }[] };
+    expect(nativeEditor).to.exist;
+    expect(nativeEditor.family).to.equal('native');
+    expect(nativeEditor.tools.map((tool) => tool.name)).to.deep.equal([
+      'Bash',
+      'Edit',
+    ]);
+    expect(nativeEditor.shadowRoot?.textContent).to.contain('Claude Code');
+
+    const bashItem = [
+      ...(nativeEditor.shadowRoot?.querySelectorAll('tool-list-item') || []),
+    ].find(
+      (item) =>
+        (item as LitElement & { tool?: { name: string } }).tool?.name === 'Bash'
+    ) as (LitElement & { tool?: { name: string } }) | undefined;
+    expect(bashItem).to.exist;
+    (
+      bashItem!.shadowRoot?.querySelector('.tool-header') as HTMLElement
+    ).click();
+    await el.updateComplete;
+    await nativeEditor.updateComplete;
+    await bashItem!.updateComplete;
+
+    const ruleSet = bashItem!.shadowRoot?.querySelector(
+      'governance-rule-set-editor'
+    ) as LitElement & {
+      toolSchema?: { properties?: Record<string, unknown> };
+    };
+    expect(ruleSet).to.exist;
+    expect(Object.keys(ruleSet.toolSchema?.properties || {})).to.deep.equal([
+      'command',
+      'description',
+      'timeout',
+    ]);
+
+    const addRule = [
+      ...(ruleSet.shadowRoot?.querySelectorAll('sl-button') || []),
+    ].find((button) => button.textContent?.includes('Add Rule')) as
+      (HTMLElement & { click: () => void }) | undefined;
+    expect(addRule).to.exist;
+    await waitUntil(
+      () => Boolean(addRule!.shadowRoot?.querySelector('button')),
+      'Add Rule button did not upgrade'
+    );
+    addRule!.click();
+    await waitUntil(
+      () =>
+        (
+          ruleSet.shadowRoot?.querySelector('tool-rule-editor') as {
+            open?: boolean;
+          } | null
+        )?.open === true,
+      'Rule editor did not open'
+    );
+    await ruleSet.updateComplete;
+
+    const ruleEditor = ruleSet.shadowRoot?.querySelector('tool-rule-editor') as
+      | (HTMLElement & {
+          open?: boolean;
+          toolSchema?: { properties?: Record<string, unknown> };
+        })
+      | null;
+    expect(ruleEditor?.open).to.equal(true);
+    expect(Object.keys(ruleEditor?.toolSchema?.properties || {})).to.include(
+      'command'
+    );
+
+    await waitUntil(() => {
+      const select = ruleEditor?.shadowRoot?.querySelector(
+        'sl-select.param-select'
+      );
+      return Boolean(select);
+    }, 'Parameter select did not render');
+    const options = [
+      ...(ruleEditor!.shadowRoot?.querySelectorAll(
+        'sl-select.param-select sl-option'
+      ) || []),
+    ].map((option) => option.getAttribute('value'));
+    expect(options).to.deep.equal(['command', 'description', 'timeout']);
+  });
+
+  it('saving a native rule creates an agent-source configuration without a server id', async () => {
+    tools = [makeTool(), makeNativeTool()];
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => (el as any).tools?.length === 2,
+      'Tools did not load'
+    );
+    await el.updateComplete;
+
+    const nativeEditor = el.shadowRoot?.querySelector(
+      'sl-tab-panel[name="native"] tools-editor-component'
+    ) as LitElement;
+    const bashItem = [
+      ...(nativeEditor.shadowRoot?.querySelectorAll('tool-list-item') || []),
+    ].find(
+      (item) =>
+        (item as LitElement & { tool?: { name: string } }).tool?.name === 'Bash'
+    ) as LitElement;
+    expect(bashItem).to.exist;
+
+    bashItem.dispatchEvent(
+      new CustomEvent('save-rule', {
+        detail: {
+          tool: (el as any).tools.find(
+            (tool: { name: string }) => tool.name === 'Bash'
+          ),
+          existingRule: null,
+          formData: {
+            action: 'require_approval',
+            condition_expression: 'args.command.matches("rm -rf")',
+            condition_type: 'simple',
+            description: 'Block recursive deletes',
+            is_enabled: true,
+            approval_workflow_id: 'policy-1',
+          },
+        },
+        bubbles: true,
+        composed: true,
+      })
+    );
+
+    await waitUntil(() => {
+      return fetchStub.getCalls().some((call) => {
+        const url = String(call.args[0]);
+        const method = String(
+          (call.args[1] as RequestInit | undefined)?.method || 'GET'
+        ).toUpperCase();
+        return url.endsWith('/api/v1/tool-configurations') && method === 'POST';
+      });
+    }, 'Native tool configuration was not created');
+
+    const createCall = fetchStub.getCalls().find((call) => {
+      const url = String(call.args[0]);
+      const method = String(
+        (call.args[1] as RequestInit | undefined)?.method || 'GET'
+      ).toUpperCase();
+      return url.endsWith('/api/v1/tool-configurations') && method === 'POST';
+    });
+    const body = JSON.parse(
+      String((createCall?.args[1] as RequestInit | undefined)?.body || '{}')
+    );
+    expect(body.tool_source).to.equal('agent');
+    expect(body.mcp_server_id).to.equal(null);
+    expect(body.tool_name).to.equal('Bash');
+  });
+
+  it('blocked switch sends is_enabled=false', async () => {
+    tools = [
+      makeTool(),
+      makeNativeTool({
+        config_id: 'cfg-native',
+        is_enabled: true,
+      }),
+    ];
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => (el as any).tools?.length === 2,
+      'Tools did not load'
+    );
+    await el.updateComplete;
+
+    const nativeEditor = el.shadowRoot?.querySelector(
+      'sl-tab-panel[name="native"] tools-editor-component'
+    ) as LitElement;
+    const bashItem = [
+      ...(nativeEditor.shadowRoot?.querySelectorAll('tool-list-item') || []),
+    ].find(
+      (item) =>
+        (item as LitElement & { tool?: { name: string } }).tool?.name === 'Bash'
+    ) as LitElement;
+    expect(bashItem).to.exist;
+    expect(bashItem.shadowRoot?.querySelector('sl-menu-item')).to.equal(null);
+
+    const blockedSwitch = bashItem.shadowRoot?.querySelector('sl-switch') as
+      (HTMLElement & { checked: boolean }) | null;
+    expect(blockedSwitch).to.exist;
+    expect(blockedSwitch!.textContent).to.contain('Blocked');
+    expect(blockedSwitch!.checked).to.equal(false);
+
+    blockedSwitch!.checked = true;
+    blockedSwitch!.dispatchEvent(
+      new CustomEvent('sl-change', { bubbles: true })
+    );
+
+    await waitUntil(() => {
+      return fetchStub.getCalls().some((call) => {
+        const url = String(call.args[0]);
+        const method = String(
+          (call.args[1] as RequestInit | undefined)?.method || 'GET'
+        ).toUpperCase();
+        return (
+          url.includes('/api/v1/tool-configurations/cfg-native') &&
+          method === 'PUT'
+        );
+      });
+    }, 'Blocked switch did not update the configuration');
+
+    const updateCall = fetchStub.getCalls().find((call) => {
+      const url = String(call.args[0]);
+      const method = String(
+        (call.args[1] as RequestInit | undefined)?.method || 'GET'
+      ).toUpperCase();
+      return (
+        url.includes('/api/v1/tool-configurations/cfg-native') &&
+        method === 'PUT'
+      );
+    });
+    const body = JSON.parse(
+      String((updateCall?.args[1] as RequestInit | undefined)?.body || '{}')
+    );
+    expect(body.is_enabled).to.equal(false);
+  });
+
+  it('blocked switch on a native tool without config_id creates an agent config', async () => {
+    tools = [makeTool(), makeNativeTool({ is_enabled: true })];
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => (el as any).tools?.length === 2,
+      'Tools did not load'
+    );
+    await el.updateComplete;
+
+    const nativeEditor = el.shadowRoot?.querySelector(
+      'sl-tab-panel[name="native"] tools-editor-component'
+    ) as LitElement;
+    const bashItem = [
+      ...(nativeEditor.shadowRoot?.querySelectorAll('tool-list-item') || []),
+    ].find(
+      (item) =>
+        (item as LitElement & { tool?: { name: string } }).tool?.name === 'Bash'
+    ) as LitElement;
+    expect(bashItem).to.exist;
+
+    const blockedSwitch = bashItem.shadowRoot?.querySelector('sl-switch') as
+      (HTMLElement & { checked: boolean }) | null;
+    expect(blockedSwitch).to.exist;
+    blockedSwitch!.checked = true;
+    blockedSwitch!.dispatchEvent(
+      new CustomEvent('sl-change', { bubbles: true })
+    );
+
+    await waitUntil(() => {
+      return fetchStub.getCalls().some((call) => {
+        const url = String(call.args[0]);
+        const method = String(
+          (call.args[1] as RequestInit | undefined)?.method || 'GET'
+        ).toUpperCase();
+        return url.endsWith('/api/v1/tool-configurations') && method === 'POST';
+      });
+    }, 'Blocked switch did not create a configuration');
+
+    const createCall = fetchStub.getCalls().find((call) => {
+      const url = String(call.args[0]);
+      const method = String(
+        (call.args[1] as RequestInit | undefined)?.method || 'GET'
+      ).toUpperCase();
+      return url.endsWith('/api/v1/tool-configurations') && method === 'POST';
+    });
+    const body = JSON.parse(
+      String((createCall?.args[1] as RequestInit | undefined)?.body || '{}')
+    );
+    expect(body.tool_source).to.equal('agent');
+    expect(body.mcp_server_id).to.equal(null);
+    expect(body.tool_name).to.equal('Bash');
+    expect(body.is_enabled).to.equal(false);
   });
 });
 

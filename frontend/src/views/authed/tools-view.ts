@@ -60,7 +60,12 @@ import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
-import type { ToolWithRules } from '../../components/tools-editor-component';
+import {
+  NATIVE_ADAPTERS,
+  nativeAdapterGroupName,
+  SEEN_FROM_AGENTS_LABEL,
+  type ToolWithRules,
+} from '../../components/tools-editor-component';
 import type { GatewayUsageByTool } from '../../types';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 
@@ -74,6 +79,12 @@ interface ToolsFilters {
   workflows: string[];
 }
 
+interface NativeFilters {
+  query: string;
+  agents: string[];
+  rules: string[];
+}
+
 const TAB_STORAGE_KEY = 'preloop.tools.tab';
 const VIEW_MODE_KEY = 'preloop.tools.view_mode';
 // Cards only until the flat table lands; a List/Cards toggle would persist
@@ -85,6 +96,11 @@ const EMPTY_FILTERS: ToolsFilters = {
   servers: [],
   rules: [],
   workflows: [],
+};
+const EMPTY_NATIVE_FILTERS: NativeFilters = {
+  query: '',
+  agents: [],
+  rules: [],
 };
 
 function isToolsTab(value: string | null | undefined): value is ToolsTab {
@@ -134,6 +150,7 @@ export class ToolsView extends LitElement {
   @state() private activeTab: ToolsTab = 'mcp';
   @state() private viewMode: ListViewMode = loadViewMode(VIEW_MODE_KEY);
   @state() private filters: ToolsFilters = { ...EMPTY_FILTERS };
+  @state() private nativeFilters: NativeFilters = { ...EMPTY_NATIVE_FILTERS };
   @state() private isExporting = false;
   @state() private oauthAlert: 'success' | 'error' | null = null;
   @state() private hasDefaultAIModel = false;
@@ -609,13 +626,15 @@ export class ToolsView extends LitElement {
   }
 
   private _isMcpTool(tool: ToolWithRules): boolean {
-    // Native rows (source "agent") arrive in PR 3. Compare as a string so
-    // this tab stays MCP-only once those rows exist.
-    return (tool.source as string) !== 'agent';
+    return tool.source !== 'agent';
   }
 
   private _mcpTools(): ToolWithRules[] {
     return this.tools.filter((tool) => this._isMcpTool(tool));
+  }
+
+  private _nativeTools(): ToolWithRules[] {
+    return this.tools.filter((tool) => tool.source === 'agent');
   }
 
   private _toolHasRules(tool: ToolWithRules): boolean {
@@ -743,6 +762,52 @@ export class ToolsView extends LitElement {
           tool.name.toLowerCase().includes(search) ||
           tool.description?.toLowerCase().includes(search) ||
           tool.source_name?.toLowerCase().includes(search)
+      );
+    }
+
+    return tools;
+  }
+
+  private _toolMatchesNativeRuleFilter(
+    tool: ToolWithRules,
+    rule: string
+  ): boolean {
+    if (rule === 'blocked') {
+      return !tool.is_enabled;
+    }
+    return this._toolMatchesRuleFilter(tool, rule);
+  }
+
+  private _getFilteredNativeTools(): ToolWithRules[] {
+    let tools = this._nativeTools();
+    const { query, agents, rules } = this.nativeFilters;
+
+    if (agents.length > 0) {
+      const wanted = new Set(
+        agents.map((agent) => nativeAdapterGroupName(agent))
+      );
+      tools = tools.filter((tool) => {
+        const names =
+          tool.adapters && tool.adapters.length > 0
+            ? tool.adapters.map((adapter) => nativeAdapterGroupName(adapter))
+            : [SEEN_FROM_AGENTS_LABEL];
+        return names.some((name) => wanted.has(name));
+      });
+    }
+    if (rules.length > 0) {
+      tools = tools.filter((tool) =>
+        rules.some((rule) => this._toolMatchesNativeRuleFilter(tool, rule))
+      );
+    }
+    if (query) {
+      const search = query.toLowerCase();
+      tools = tools.filter(
+        (tool) =>
+          tool.name.toLowerCase().includes(search) ||
+          tool.description?.toLowerCase().includes(search) ||
+          (tool.adapters || []).some((adapter) =>
+            adapter.toLowerCase().includes(search)
+          )
       );
     }
 
@@ -1417,6 +1482,24 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     this._setFilterValues({ workflows: value ? [value] : [] });
   }
 
+  private _setNativeFilterValues(patch: Partial<NativeFilters>) {
+    this.nativeFilters = { ...this.nativeFilters, ...patch };
+  }
+
+  private _handleNativeSearchChange(event: CustomEvent<{ value: string }>) {
+    this._setNativeFilterValues({ query: event.detail.value });
+  }
+
+  private _handleNativeAgentFilterChange(event: Event) {
+    const value = selectValue(event);
+    this._setNativeFilterValues({ agents: value ? [value] : [] });
+  }
+
+  private _handleNativeRulesFilterChange(event: Event) {
+    const value = selectValue(event);
+    this._setNativeFilterValues({ rules: value ? [value] : [] });
+  }
+
   private async _loadGovernanceDefaults() {
     try {
       const response = await getAccountGovernanceDefaults();
@@ -1835,6 +1918,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   private _renderMcpEditor() {
     return html`
       <tools-editor-component
+        family="mcp"
         .tools=${this._getFilteredTools()}
         .toolStats=${Object.fromEntries(this._getToolStatsMap())}
         .mcpServers=${this.mcpServers}
@@ -1871,25 +1955,99 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     `;
   }
 
+  private _renderNativeToolbar() {
+    const filtered = this._getFilteredNativeTools();
+    const total = this._nativeTools().length;
+    return html`
+      <div class="toolbar-wrap native-toolbar">
+        <list-toolbar
+          .search=${this.nativeFilters.query}
+          searchPlaceholder="Search native tools"
+          toggleLabel="Native tools view"
+          .view=${'cards'}
+          .views=${TOOLS_VIEWS}
+          @search-change=${this._handleNativeSearchChange}
+          @view-change=${this._handleViewChange}
+        >
+          <sl-select
+            class="agent-filter"
+            label="Agent"
+            clearable
+            placeholder="Any agent"
+            .value=${this.nativeFilters.agents[0] || ''}
+            @sl-change=${this._handleNativeAgentFilterChange}
+          >
+            ${NATIVE_ADAPTERS.map(
+              (adapter) =>
+                html`<sl-option value=${adapter.value}
+                  >${adapter.label}</sl-option
+                >`
+            )}
+          </sl-select>
+          <sl-select
+            class="native-rules-filter"
+            label="Rules"
+            clearable
+            placeholder="Any rules"
+            .value=${this.nativeFilters.rules[0] || ''}
+            @sl-change=${this._handleNativeRulesFilterChange}
+          >
+            <sl-option value="with_rules">With rules</sl-option>
+            <sl-option value="no_rules">No rules</sl-option>
+            <sl-option value="require_approval">Requires approval</sl-option>
+            <sl-option value="blocked">Blocked</sl-option>
+          </sl-select>
+          <span slot="count"
+            >${this._resultsLabel(filtered.length, total)}</span
+          >
+        </list-toolbar>
+      </div>
+    `;
+  }
+
+  private _renderNativeEditor() {
+    return html`
+      <tools-editor-component
+        family="native"
+        .tools=${this._getFilteredNativeTools()}
+        .approvalPolicies=${this.approvalPolicies}
+        .features=${this.features}
+        mode="global"
+        @toggle-enabled=${this._handleToggleEnabled}
+        @save-rule=${this._handleSaveRule}
+        @delete-rule=${this._handleDeleteRule}
+        @policy-created=${this._handlePolicyCreated}
+        @reorder-rules=${this._handleReorderRules}
+        @tool-updated=${() => this.loadData()}
+      ></tools-editor-component>
+    `;
+  }
+
   private _renderNativeTab() {
+    const nativeTools = this._nativeTools();
     return html`
       <p class="tab-intro">
         Built into the agent itself, such as Bash, Edit and Write. Governed by
         the Preloop hook that "preloop agents onboard --approvals" installs.
       </p>
       ${this._renderNativeApprovalDefaultsCard()}
-      <p class="native-empty">
-        No native tool calls have reached Preloop yet. Onboard an agent with
-        "preloop agents onboard --approvals" and its Bash, Edit and Write calls
-        will show up here.
-      </p>
+      ${
+        nativeTools.length === 0
+          ? html`
+              <p class="native-empty">
+                No native tool calls have reached Preloop yet. Onboard an agent
+                with "preloop agents onboard --approvals" and its Bash, Edit and
+                Write calls will show up here.
+              </p>
+            `
+          : html`${this._renderNativeToolbar()} ${this._renderNativeEditor()}`
+      }
     `;
   }
 
   private _renderTabs() {
     const mcpCount = this._mcpTools().length;
-    // Native catalogue rows arrive in PR 3. Keep the tab count at 0 until then.
-    const nativeCount = 0;
+    const nativeCount = this._nativeTools().length;
     return html`
       <sl-tab-group @sl-tab-show=${this._handleTabShow}>
         <sl-tab slot="nav" panel="mcp" ?active=${this.activeTab === 'mcp'}
