@@ -2,14 +2,31 @@
 
 Operators write allowlists in the console, which historically persisted
 whatever the model picker showed (an AI model display name such as
-``Kimi K3``), while the gateway compared those entries only against alias
-spellings (``moonshot/kimi-k3``, ``kimi-k3``). This module accepts every key an
+``Alpha Chat``), while the gateway compared those entries only against alias
+spellings (``acme/alpha-chat``, ``alpha-chat``). This module accepts every key an
 operator may reasonably have stored for one model:
 
 * a gateway alias or any spelling the gateway resolver accepts for the model
   (``gateway_model_alias_candidates``),
 * the ``AIModel`` id (uuid string), or
 * the ``AIModel`` display name (case-insensitive, trimmed).
+
+Matching contract (source of truth; CLI and console copies must stay aligned):
+
+1. Non-string entries are dropped, not stringified. After dropping, an empty
+   list is unrestricted (same as a missing allowlist). Do not coerce
+   ``null``/numbers to ``"None"``/``"3"``: that would turn ``[null]`` into a
+   deny-all.
+2. A remaining string matches a model when, after trim, it equals:
+   - any gateway alias candidate exactly (including the bare identifier tail),
+   - the AIModel id case-insensitively, or
+   - the AIModel display name case-insensitively.
+3. CLI copy: ``cli/internal/cmd/agents_allowed_models.go``
+   (``governanceAllowedModels``, ``allowedModelsCoverSelection``).
+4. Console copy: ``frontend/src/views/authed/agent-detail-view.ts``
+   (``findModelForAllowedEntry``). The console only rewrites a bare tail to a
+   gateway alias when exactly one inventory row matches that tail, so two
+   imports of the same upstream model are not silently narrowed.
 
 The gateway preflight and the console endpoints share these helpers so the
 policy that is written is the policy that is enforced.
@@ -36,17 +53,23 @@ MODEL_NOT_ALLOWED_ERROR_CODE = "model_not_allowed"
 def normalize_allowed_models(entries: Optional[Iterable[object]]) -> list[str]:
     """Return the trimmed, non-empty allowlist entries in their stored order.
 
+    Non-string values are skipped (not ``str()``-coerced) so a JSON ``null``
+    cannot become the literal ``"None"`` and fail-close the policy.
+
     Args:
         entries: The raw ``allowed_models`` value from a governance config.
 
     Returns:
         Entries with surrounding whitespace removed and blanks dropped;
-        duplicates are collapsed to their first occurrence.
+        duplicates are collapsed to their first occurrence. An empty result
+        means unrestricted.
     """
     normalized: list[str] = []
     seen: set[str] = set()
     for item in entries or []:
-        text = str(item).strip()
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
         if text and text not in seen:
             normalized.append(text)
             seen.add(text)

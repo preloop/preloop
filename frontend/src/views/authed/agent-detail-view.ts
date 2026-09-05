@@ -1431,10 +1431,10 @@ export class AgentDetailView extends LitElement {
   }
 
   /**
-   * Find the account model one stored allowlist entry refers to. Entries may
-   * be a gateway alias (or its bare tail), an AI model id, or a display name
-   * (case-insensitive): the console persisted display names historically and
-   * the backend resolves all three, so the editor must too.
+   * Find the account model one stored allowlist entry refers to.
+   * Matching contract: backend/preloop/services/model_allowlist.py
+   * Entries may be a gateway alias (or its bare tail), an AI model id, or a
+   * display name (case-insensitive).
    */
   private findModelForAllowedEntry(
     entry: string
@@ -1453,7 +1453,7 @@ export class AgentDetailView extends LitElement {
       if ((model.name || '').trim().toLowerCase() === folded) return model;
     }
     // A bare tail may be shared by two imports of the same upstream model
-    // (moonshot/kimi-k3 and moonshotai/kimi-k3). The backend honours the
+    // (acme/alpha-chat and vendor/alpha-chat). The backend honours the
     // entry for both rows, so rewriting it to one alias would silently
     // narrow the policy: only resolve when exactly one row matches.
     let tailMatch: AllowedModelCandidate | null = null;
@@ -1477,24 +1477,29 @@ export class AgentDetailView extends LitElement {
     return model ? this.gatewayAliasForModel(model) : entry.trim();
   }
 
-  /** The current allowlist expressed as gateway aliases, order preserved. */
-  private getAllowedModelAliases(): string[] {
+  /**
+   * Collect stored allowlist entries as gateway aliases, order preserved.
+   * Matching contract: backend/preloop/services/model_allowlist.py
+   * Non-string values are dropped, not stringified.
+   */
+  private collectAllowedModelAliases(entries: unknown[] | undefined): string[] {
     const aliases: string[] = [];
-    for (const entry of this.governance?.allowed_models || []) {
-      const alias = this.resolveAllowedModelEntry(String(entry));
+    for (const entry of entries || []) {
+      if (typeof entry !== 'string') continue;
+      const alias = this.resolveAllowedModelEntry(entry);
       if (alias && !aliases.includes(alias)) aliases.push(alias);
     }
     return aliases;
   }
 
+  /** The current allowlist expressed as gateway aliases, order preserved. */
+  private getAllowedModelAliases(): string[] {
+    return this.collectAllowedModelAliases(this.governance?.allowed_models);
+  }
+
   /** Comma-separated alias list shown in the manual override input. */
-  private formatAllowedModelsText(entries: string[]): string {
-    const aliases: string[] = [];
-    for (const entry of entries || []) {
-      const alias = this.resolveAllowedModelEntry(String(entry));
-      if (alias && !aliases.includes(alias)) aliases.push(alias);
-    }
-    return aliases.join(', ');
+  private formatAllowedModelsText(entries: unknown[] | undefined): string {
+    return this.collectAllowedModelAliases(entries).join(', ');
   }
 
   private saveApprovalWorkflowSelection(workflowId: string | null): void {

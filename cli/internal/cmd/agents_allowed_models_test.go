@@ -24,7 +24,7 @@ func newGovernanceTestServer(t *testing.T, allowed []string) *governanceTestServ
 	config := map[string]interface{}{
 		"allowed_models": toInterfaceSlice(allowed),
 		"model_budgets": map[string]interface{}{
-			"moonshot/kimi-k3": map[string]interface{}{"monthly_usd_limit": 25},
+			"acme/alpha-chat": map[string]interface{}{"monthly_usd_limit": 25},
 		},
 		"tool_rules":             map[string]interface{}{},
 		"tool_enabled_overrides": map[string]interface{}{},
@@ -85,17 +85,32 @@ func stringSlice(t *testing.T, value interface{}) []string {
 	return out
 }
 
+func TestGovernanceAllowedModelsDropsNonStrings(t *testing.T) {
+	got := governanceAllowedModels(map[string]interface{}{
+		"allowed_models": []interface{}{" a ", nil, 3, "", "b"},
+	})
+	want := []string{"a", "b"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	if leftover := governanceAllowedModels(map[string]interface{}{
+		"allowed_models": []interface{}{nil},
+	}); len(leftover) != 0 {
+		t.Fatalf("non-strings only must be unrestricted, got %#v", leftover)
+	}
+}
+
 func TestEnsureSelectedModelAllowedAppendsAliasWhenConfirmed(t *testing.T) {
 	t.Setenv("PRELOOP_CONFIRM", "")
-	state := newGovernanceTestServer(t, []string{"GLM 5.3 Flash", "Kimi K3"})
+	state := newGovernanceTestServer(t, []string{"Beta Flash", "Alpha Chat"})
 	client := api.NewClientWithToken(state.server.URL, "token")
 	var out bytes.Buffer
 
 	err := ensureSelectedModelAllowed(
 		client,
 		"agent-1",
-		"moonshotai/kimi-k3",
-		&aiModelResponse{ID: "m-opencode", Name: "OpenCode moonshotai/kimi-k3"},
+		"vendor/alpha-chat",
+		&aiModelResponse{ID: "m-imported", Name: "Imported alpha-chat"},
 		strings.NewReader("\n"),
 		&out,
 		true,
@@ -104,26 +119,26 @@ func TestEnsureSelectedModelAllowedAppendsAliasWhenConfirmed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	text := out.String()
-	if !strings.Contains(text, "Note: moonshotai/kimi-k3 is not in this agent's allowed models (GLM 5.3 Flash, Kimi K3).") {
+	if !strings.Contains(text, "Note: vendor/alpha-chat is not in this agent's allowed models (Beta Flash, Alpha Chat).") {
 		t.Fatalf("expected mismatch note, got %q", text)
 	}
-	if !strings.Contains(text, "Add moonshotai/kimi-k3 to the allowed models? (Y/n): ") {
+	if !strings.Contains(text, "Add vendor/alpha-chat to the allowed models? (Y/n): ") {
 		t.Fatalf("expected prompt, got %q", text)
 	}
-	if !strings.Contains(text, "Added moonshotai/kimi-k3 to the allowed models.") {
+	if !strings.Contains(text, "Added vendor/alpha-chat to the allowed models.") {
 		t.Fatalf("expected confirmation, got %q", text)
 	}
 	if state.putCount != 1 {
 		t.Fatalf("expected one PUT, got %d", state.putCount)
 	}
 	got := stringSlice(t, state.putBody["allowed_models"])
-	want := []string{"GLM 5.3 Flash", "Kimi K3", "moonshotai/kimi-k3"}
+	want := []string{"Beta Flash", "Alpha Chat", "vendor/alpha-chat"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("expected %v, got %v", want, got)
 	}
 	// Every other governance field rides along unchanged.
 	budgets, _ := state.putBody["model_budgets"].(map[string]interface{})
-	if _, ok := budgets["moonshot/kimi-k3"]; !ok {
+	if _, ok := budgets["acme/alpha-chat"]; !ok {
 		t.Fatalf("expected model_budgets preserved, got %#v", state.putBody)
 	}
 	if state.putBody["native_tool_approvals"] != "off" {
@@ -133,12 +148,12 @@ func TestEnsureSelectedModelAllowedAppendsAliasWhenConfirmed(t *testing.T) {
 
 func TestEnsureSelectedModelAllowedDeclineLeavesPolicyUnchanged(t *testing.T) {
 	t.Setenv("PRELOOP_CONFIRM", "")
-	state := newGovernanceTestServer(t, []string{"Kimi K3"})
+	state := newGovernanceTestServer(t, []string{"Alpha Chat"})
 	client := api.NewClientWithToken(state.server.URL, "token")
 	var out bytes.Buffer
 
 	err := ensureSelectedModelAllowed(
-		client, "agent-1", "moonshotai/kimi-k3", nil, strings.NewReader("n\n"), &out, true,
+		client, "agent-1", "vendor/alpha-chat", nil, strings.NewReader("n\n"), &out, true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -152,12 +167,12 @@ func TestEnsureSelectedModelAllowedDeclineLeavesPolicyUnchanged(t *testing.T) {
 }
 
 func TestEnsureSelectedModelAllowedNonInteractiveNotesOnly(t *testing.T) {
-	state := newGovernanceTestServer(t, []string{"GLM 5.3 Flash", "Kimi K3"})
+	state := newGovernanceTestServer(t, []string{"Beta Flash", "Alpha Chat"})
 	client := api.NewClientWithToken(state.server.URL, "token")
 	var out bytes.Buffer
 
 	err := ensureSelectedModelAllowed(
-		client, "agent-1", "moonshotai/kimi-k3", nil, strings.NewReader("y\n"), &out, false,
+		client, "agent-1", "vendor/alpha-chat", nil, strings.NewReader("y\n"), &out, false,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -166,7 +181,7 @@ func TestEnsureSelectedModelAllowedNonInteractiveNotesOnly(t *testing.T) {
 		t.Fatalf("non-interactive run must not write governance, got %d PUTs", state.putCount)
 	}
 	text := out.String()
-	if !strings.Contains(text, "Note: moonshotai/kimi-k3 is not in this agent's allowed models (GLM 5.3 Flash, Kimi K3).") {
+	if !strings.Contains(text, "Note: vendor/alpha-chat is not in this agent's allowed models (Beta Flash, Alpha Chat).") {
 		t.Fatalf("expected note, got %q", text)
 	}
 	if strings.Contains(text, "(Y/n)") {
@@ -194,27 +209,27 @@ func TestEnsureSelectedModelAllowedSilentWhenCoveredOrUnrestricted(t *testing.T)
 		alias   string
 		model   *aiModelResponse
 	}{
-		{name: "empty list allows all", allowed: nil, alias: "moonshotai/kimi-k3"},
-		{name: "alias listed", allowed: []string{"moonshotai/kimi-k3"}, alias: "moonshotai/kimi-k3"},
-		{name: "bare tail listed", allowed: []string{"kimi-k3"}, alias: "moonshotai/kimi-k3"},
+		{name: "empty list allows all", allowed: nil, alias: "vendor/alpha-chat"},
+		{name: "alias listed", allowed: []string{"vendor/alpha-chat"}, alias: "vendor/alpha-chat"},
+		{name: "bare tail listed", allowed: []string{"alpha-chat"}, alias: "vendor/alpha-chat"},
 		{
 			name:    "display name listed",
-			allowed: []string{"GLM 5.3 Flash", "Kimi K3"},
-			alias:   "moonshot/kimi-k3",
-			model:   &aiModelResponse{ID: "m1", Name: "kimi k3"},
+			allowed: []string{"Beta Flash", "Alpha Chat"},
+			alias:   "acme/alpha-chat",
+			model:   &aiModelResponse{ID: "m1", Name: "alpha chat"},
 		},
 		{
 			name:    "model id listed",
 			allowed: []string{"M1"},
-			alias:   "moonshot/kimi-k3",
-			model:   &aiModelResponse{ID: "m1", Name: "Kimi K3"},
+			alias:   "acme/alpha-chat",
+			model:   &aiModelResponse{ID: "m1", Name: "Alpha Chat"},
 		},
 		{
 			name:    "configured gateway alias listed",
-			allowed: []string{"team/kimi"},
-			alias:   "moonshot/kimi-k3",
+			allowed: []string{"team/alpha"},
+			alias:   "acme/alpha-chat",
 			model: &aiModelResponse{ID: "m1", MetaData: map[string]interface{}{
-				"gateway": map[string]interface{}{"model_alias": "team/kimi"},
+				"gateway": map[string]interface{}{"model_alias": "team/alpha"},
 			}},
 		},
 	}
@@ -256,7 +271,7 @@ func TestAllowedModelsLiveCheckHint(t *testing.T) {
 	agent := AgentConfig{Name: "OpenCode", DisplayName: "OpenCode (laptop)"}
 	denied := &api.APIError{
 		StatusCode: http.StatusForbidden,
-		Body:       `{"error":{"message":"Model 'moonshotai/kimi-k3' is not in this agent's allowed models (GLM 5.3 Flash, Kimi K3). Edit the agent's governance in the Preloop console or pick an allowed model.","type":"permission_error","code":"model_not_allowed"}}`,
+		Body:       `{"error":{"message":"Model 'vendor/alpha-chat' is not in this agent's allowed models (Beta Flash, Alpha Chat). Edit the agent's governance in the Preloop console or pick an allowed model.","type":"permission_error","code":"model_not_allowed"}}`,
 	}
 	hint := allowedModelsLiveCheckHint(agent, nil, denied)
 	want := "  Fix: preloop agents onboard OpenCode and accept the allow-list prompt, or edit governance in the console."

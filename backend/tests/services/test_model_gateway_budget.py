@@ -441,19 +441,19 @@ def test_account_without_allowlist_is_unaffected(db_session, test_user):
 
 
 def test_allowlist_accepts_display_name_entry(db_session, test_user):
-    """The console stored display names; ``Kimi K3`` must govern its row."""
+    """The console stored display names; ``Alpha Chat`` must govern its row."""
     ai_model = _governed_model(
         db_session,
         test_user,
-        name="Kimi K3",
-        provider_name="moonshot",
-        model_identifier="kimi-k3",
+        name="Alpha Chat",
+        provider_name="acme",
+        model_identifier="alpha-chat",
     )
-    api_key = _key_scoped_allowlist(db_session, test_user, ["GLM 5.3 Flash", "Kimi K3"])
+    api_key = _key_scoped_allowlist(db_session, test_user, ["Beta Flash", "Alpha Chat"])
     service = _governed_service(db_session, test_user, api_key)
 
     result = service.preflight_check(
-        ai_model, {"model": "moonshot/kimi-k3", "input": "hi"}
+        ai_model, {"model": "acme/alpha-chat", "input": "hi"}
     )
 
     assert result.hard_limit_exceeded is False
@@ -464,8 +464,8 @@ def test_allowlist_display_name_match_is_case_insensitive_and_trimmed(
     db_session, test_user
 ):
     """Hand-typed names differ in case and whitespace from the stored row."""
-    ai_model = _governed_model(db_session, test_user, name="Kimi K3")
-    api_key = _key_scoped_allowlist(db_session, test_user, ["  kimi k3 "])
+    ai_model = _governed_model(db_session, test_user, name="Alpha Chat")
+    api_key = _key_scoped_allowlist(db_session, test_user, ["  alpha chat "])
     service = _governed_service(db_session, test_user, api_key)
 
     result = service.preflight_check(ai_model, {"model": "claude-opus-4-1"})
@@ -510,11 +510,11 @@ def test_allowlist_unrelated_display_name_still_denies(db_session, test_user):
     _governed_model(
         db_session,
         test_user,
-        name="Kimi K3",
-        provider_name="moonshot",
-        model_identifier="kimi-k3",
+        name="Alpha Chat",
+        provider_name="acme",
+        model_identifier="alpha-chat",
     )
-    api_key = _key_scoped_allowlist(db_session, test_user, ["Kimi K3"])
+    api_key = _key_scoped_allowlist(db_session, test_user, ["Alpha Chat"])
     service = _governed_service(db_session, test_user, api_key)
 
     result = service.preflight_check(
@@ -523,14 +523,14 @@ def test_allowlist_unrelated_display_name_still_denies(db_session, test_user):
 
     assert result.hard_limit_exceeded is True
     assert result.enforcement_reason == "subject_model_not_allowed"
-    assert result.allowed_models == ["Kimi K3"]
+    assert result.allowed_models == ["Alpha Chat"]
     assert result.requested_model == "anthropic/claude-opus-4-1"
 
 
 def test_allowlist_denial_names_alias_when_request_omits_model(db_session, test_user):
     """Without a wire model the denial quotes the resolved gateway alias."""
     ai_model = _governed_model(db_session, test_user)
-    api_key = _key_scoped_allowlist(db_session, test_user, ["Kimi K3"])
+    api_key = _key_scoped_allowlist(db_session, test_user, ["Alpha Chat"])
     service = _governed_service(db_session, test_user, api_key)
 
     result = service.preflight_check(ai_model, {"input": "hi"})
@@ -557,37 +557,36 @@ def test_empty_allowlist_allows_every_model(db_session, test_user):
 def test_display_name_of_a_sibling_row_does_not_cover_a_different_import(
     db_session, test_user
 ):
-    """``Kimi K3`` names the moonshot row only, not a separate openai-provider import.
+    """A display name covers one inventory row, not a second import of the same identifier.
 
-    This is the founder's prod shape: the OpenCode onboarding created a second
-    row ``moonshotai/kimi-k3`` next to the existing ``Kimi K3``
-    (``moonshot/kimi-k3``). Governance keys on rows, so the allowlist must be
-    extended (step 4 in the CLI offers that) or the request must pick the
-    listed row's alias.
+    Two account rows can share a model identifier while using different
+    provider names and gateway aliases. Governance keys on rows, so listing
+    the first row's display name must not admit a request that resolved to
+    the sibling.
     """
     _governed_model(
         db_session,
         test_user,
-        name="Kimi K3",
-        provider_name="moonshot",
-        model_identifier="kimi-k3",
+        name="Alpha Chat",
+        provider_name="acme",
+        model_identifier="alpha-chat",
     )
-    opencode_import = _governed_model(
+    sibling_import = _governed_model(
         db_session,
         test_user,
-        name="OpenCode moonshotai/kimi-k3",
-        provider_name="openai",
-        model_identifier="kimi-k3",
+        name="Imported alpha-chat",
+        provider_name="vendor",
+        model_identifier="alpha-chat",
         meta_data={
-            "gateway": {"enabled": True, "model_alias": "moonshotai/kimi-k3"},
+            "gateway": {"enabled": True, "model_alias": "vendor/alpha-chat"},
             "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
         },
     )
-    api_key = _key_scoped_allowlist(db_session, test_user, ["GLM 5.3 Flash", "Kimi K3"])
+    api_key = _key_scoped_allowlist(db_session, test_user, ["Beta Flash", "Alpha Chat"])
     service = _governed_service(db_session, test_user, api_key)
 
     result = service.preflight_check(
-        opencode_import, {"model": "moonshotai/kimi-k3", "input": "hi"}
+        sibling_import, {"model": "vendor/alpha-chat", "input": "hi"}
     )
 
     assert result.hard_limit_exceeded is True
@@ -601,26 +600,26 @@ def test_enforce_or_raise_names_model_and_allowlist_when_not_allowed(
     ai_model = _governed_model(
         db_session,
         test_user,
-        name="OpenCode moonshotai/kimi-k3",
-        provider_name="openai",
-        model_identifier="kimi-k3",
+        name="Imported alpha-chat",
+        provider_name="vendor",
+        model_identifier="alpha-chat",
         meta_data={
-            "gateway": {"enabled": True, "model_alias": "moonshotai/kimi-k3"},
+            "gateway": {"enabled": True, "model_alias": "vendor/alpha-chat"},
             "pricing": {"input_price_per_1k": 0.01, "output_price_per_1k": 0.02},
         },
     )
-    api_key = _key_scoped_allowlist(db_session, test_user, ["GLM 5.3 Flash", "Kimi K3"])
+    api_key = _key_scoped_allowlist(db_session, test_user, ["Beta Flash", "Alpha Chat"])
     service = _governed_service(db_session, test_user, api_key)
 
     with pytest.raises(HTTPException) as exc_info:
         service.enforce_or_raise(
-            ai_model, {"model": "moonshotai/kimi-k3", "input": "hi"}
+            ai_model, {"model": "vendor/alpha-chat", "input": "hi"}
         )
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == (
-        "Model 'moonshotai/kimi-k3' is not in this agent's allowed models "
-        "(GLM 5.3 Flash, Kimi K3). Edit the agent's governance in the Preloop "
+        "Model 'vendor/alpha-chat' is not in this agent's allowed models "
+        "(Beta Flash, Alpha Chat). Edit the agent's governance in the Preloop "
         "console or pick an allowed model."
     )
 

@@ -37,6 +37,8 @@ func fetchManagedAgentGovernance(
 }
 
 // governanceAllowedModels returns the trimmed, non-empty allowed_models entries.
+// Matching contract: backend/preloop/services/model_allowlist.py
+// Non-string JSON values are dropped, not stringified.
 func governanceAllowedModels(config map[string]interface{}) []string {
 	raw, ok := config["allowed_models"].([]interface{})
 	if !ok {
@@ -54,8 +56,9 @@ func governanceAllowedModels(config map[string]interface{}) []string {
 }
 
 // allowedModelsCoverSelection reports whether any allowlist entry names the
-// chosen model. It mirrors the backend resolver: aliases (and their bare
-// tails) compare exactly, model names and ids case-insensitively.
+// chosen model. Matching contract: backend/preloop/services/model_allowlist.py
+// Aliases (and their bare tails) compare exactly; model names and ids
+// compare case-insensitively.
 func allowedModelsCoverSelection(
 	allowed []string,
 	alias string,

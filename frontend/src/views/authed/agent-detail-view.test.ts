@@ -893,7 +893,7 @@ describe('AgentDetailView', () => {
    * their gateway aliases and the stored allowlist uses the legacy keys
    * (display name, model id) the console used to persist.
    */
-  function stubDisplayNamedModels(allowedModels: string[]): void {
+  function stubDisplayNamedModels(allowedModels: unknown[]): void {
     fetchStub.callsFake(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
@@ -901,19 +901,19 @@ describe('AgentDetailView', () => {
           return new Response(
             JSON.stringify([
               {
-                id: 'model-kimi',
-                name: 'Kimi K3',
-                provider_name: 'moonshot',
-                model_identifier: 'kimi-k3',
+                id: 'model-alpha',
+                name: 'Alpha Chat',
+                provider_name: 'acme',
+                model_identifier: 'alpha-chat',
                 meta_data: {
-                  gateway: { enabled: true, model_alias: 'moonshot/kimi-k3' },
+                  gateway: { enabled: true, model_alias: 'acme/alpha-chat' },
                 },
               },
               {
-                id: 'model-glm',
-                name: 'GLM 5.3 Flash',
-                provider_name: 'zai',
-                model_identifier: 'glm-5.3-flash',
+                id: 'model-beta',
+                name: 'Beta Flash',
+                provider_name: 'other',
+                model_identifier: 'beta-flash',
                 meta_data: { gateway: { enabled: true } },
               },
             ]),
@@ -944,8 +944,7 @@ describe('AgentDetailView', () => {
 
   /**
    * Re-stub fetch so two imports of the same upstream model share one bare
-   * tail (moonshot/kimi-k3 and moonshotai/kimi-k3), the prod shape behind
-   * the ambiguous-tail review finding.
+   * tail (acme/alpha-chat and vendor/alpha-chat).
    */
   function stubSameTailModels(allowedModels: string[]): void {
     fetchStub.callsFake(
@@ -955,31 +954,31 @@ describe('AgentDetailView', () => {
           return new Response(
             JSON.stringify([
               {
-                id: 'model-kimi',
-                name: 'Kimi K3',
-                provider_name: 'moonshot',
-                model_identifier: 'kimi-k3',
+                id: 'model-alpha',
+                name: 'Alpha Chat',
+                provider_name: 'acme',
+                model_identifier: 'alpha-chat',
                 meta_data: {
-                  gateway: { enabled: true, model_alias: 'moonshot/kimi-k3' },
+                  gateway: { enabled: true, model_alias: 'acme/alpha-chat' },
                 },
               },
               {
-                id: 'model-kimi-opencode',
-                name: 'OpenCode moonshotai/kimi-k3',
-                provider_name: 'openai',
-                model_identifier: 'kimi-k3',
+                id: 'model-alpha-import',
+                name: 'Imported alpha-chat',
+                provider_name: 'vendor',
+                model_identifier: 'alpha-chat',
                 meta_data: {
                   gateway: {
                     enabled: true,
-                    model_alias: 'moonshotai/kimi-k3',
+                    model_alias: 'vendor/alpha-chat',
                   },
                 },
               },
               {
-                id: 'model-glm',
-                name: 'GLM 5.3 Flash',
-                provider_name: 'zai',
-                model_identifier: 'glm-5.3-flash',
+                id: 'model-beta',
+                name: 'Beta Flash',
+                provider_name: 'other',
+                model_identifier: 'beta-flash',
                 meta_data: { gateway: { enabled: true } },
               },
             ]),
@@ -1035,7 +1034,7 @@ describe('AgentDetailView', () => {
   }
 
   it('renders legacy display-name allowlist entries as checked models and persists aliases', async () => {
-    stubDisplayNamedModels(['Kimi K3']);
+    stubDisplayNamedModels(['Alpha Chat']);
     const element = await loadModelsTab();
 
     // Toggles are keyed by gateway alias, labelled by display name.
@@ -1046,59 +1045,69 @@ describe('AgentDetailView', () => {
     );
     expect(
       toggles.map((t: any) => t.getAttribute('data-model-allow-toggle'))
-    ).to.deep.equal(['moonshot/kimi-k3', 'zai/glm-5.3-flash']);
-    const kimiToggle = toggles[0] as any;
-    expect(kimiToggle.checked).to.be.true;
-    expect(getDeepText(kimiToggle)).to.contain('Kimi K3');
-    const glmToggle = toggles[1] as any;
-    expect(glmToggle.checked).to.be.false;
+    ).to.deep.equal(['acme/alpha-chat', 'other/beta-flash']);
+    const alphaToggle = toggles[0] as any;
+    expect(alphaToggle.checked).to.be.true;
+    expect(getDeepText(alphaToggle)).to.contain('Alpha Chat');
+    const betaToggle = toggles[1] as any;
+    expect(betaToggle.checked).to.be.false;
 
     // The manual override shows the policy as aliases, not display names.
     const overrideInput = element.shadowRoot?.querySelector(
       'sl-input[label="Allowed models"]'
     ) as any;
-    expect(overrideInput.value).to.equal('moonshot/kimi-k3');
+    expect(overrideInput.value).to.equal('acme/alpha-chat');
 
     // Checking the second model rewrites the whole list to aliases.
-    glmToggle.checked = true;
-    glmToggle.dispatchEvent(new Event('sl-change'));
+    betaToggle.checked = true;
+    betaToggle.dispatchEvent(new Event('sl-change'));
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(lastGovernancePutBody().allowed_models).to.deep.equal([
-      'moonshot/kimi-k3',
-      'zai/glm-5.3-flash',
+      'acme/alpha-chat',
+      'other/beta-flash',
     ]);
   });
 
   it('renders model-id allowlist entries as checked and converts typed names to aliases', async () => {
-    stubDisplayNamedModels(['model-glm']);
+    stubDisplayNamedModels(['model-beta']);
     const element = await loadModelsTab();
 
-    const glmToggle = element.shadowRoot?.querySelector(
-      'sl-checkbox[data-model-allow-toggle="zai/glm-5.3-flash"]'
+    const betaToggle = element.shadowRoot?.querySelector(
+      'sl-checkbox[data-model-allow-toggle="other/beta-flash"]'
     ) as any;
-    expect(glmToggle.checked).to.be.true;
-    const kimiToggle = element.shadowRoot?.querySelector(
-      'sl-checkbox[data-model-allow-toggle="moonshot/kimi-k3"]'
+    expect(betaToggle.checked).to.be.true;
+    const alphaToggle = element.shadowRoot?.querySelector(
+      'sl-checkbox[data-model-allow-toggle="acme/alpha-chat"]'
     ) as any;
-    expect(kimiToggle.checked).to.be.false;
+    expect(alphaToggle.checked).to.be.false;
 
     // Typing display names, ids, bare tails, and unknown aliases into the
     // override persists aliases where a model is known and keeps the rest.
     const overrideInput = element.shadowRoot?.querySelector(
       'sl-input[label="Allowed models"]'
     ) as any;
-    overrideInput.value = 'kimi k3, model-glm, glm-5.3-flash, other/unknown';
+    overrideInput.value = 'alpha chat, model-beta, beta-flash, other/unknown';
     overrideInput.dispatchEvent(new Event('sl-change'));
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(lastGovernancePutBody().allowed_models).to.deep.equal([
-      'moonshot/kimi-k3',
-      'zai/glm-5.3-flash',
+      'acme/alpha-chat',
+      'other/beta-flash',
       'other/unknown',
     ]);
   });
 
+  it('drops non-string allowlist entries instead of stringifying them', async () => {
+    stubDisplayNamedModels(['Alpha Chat', null, 3]);
+    const element = await loadModelsTab();
+
+    const overrideInput = element.shadowRoot?.querySelector(
+      'sl-input[label="Allowed models"]'
+    ) as any;
+    expect(overrideInput.value).to.equal('acme/alpha-chat');
+  });
+
   it('keeps an ambiguous bare-tail entry as typed instead of narrowing it to one import', async () => {
-    stubSameTailModels(['kimi-k3']);
+    stubSameTailModels(['alpha-chat']);
     const element = await loadModelsTab();
 
     // The bare tail matches two rows, so it resolves to neither alias: the
@@ -1107,8 +1116,8 @@ describe('AgentDetailView', () => {
     const overrideInput = element.shadowRoot?.querySelector(
       'sl-input[label="Allowed models"]'
     ) as any;
-    expect(overrideInput.value).to.equal('kimi-k3');
-    for (const alias of ['moonshot/kimi-k3', 'moonshotai/kimi-k3']) {
+    expect(overrideInput.value).to.equal('alpha-chat');
+    for (const alias of ['acme/alpha-chat', 'vendor/alpha-chat']) {
       const toggle = element.shadowRoot?.querySelector(
         `sl-checkbox[data-model-allow-toggle="${alias}"]`
       ) as any;
@@ -1117,15 +1126,15 @@ describe('AgentDetailView', () => {
 
     // Toggling an unrelated model must not rewrite the bare tail to one
     // import's alias.
-    const glmToggle = element.shadowRoot?.querySelector(
-      'sl-checkbox[data-model-allow-toggle="zai/glm-5.3-flash"]'
+    const betaToggle = element.shadowRoot?.querySelector(
+      'sl-checkbox[data-model-allow-toggle="other/beta-flash"]'
     ) as any;
-    glmToggle.checked = true;
-    glmToggle.dispatchEvent(new Event('sl-change'));
+    betaToggle.checked = true;
+    betaToggle.dispatchEvent(new Event('sl-change'));
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(lastGovernancePutBody().allowed_models).to.deep.equal([
-      'kimi-k3',
-      'zai/glm-5.3-flash',
+      'alpha-chat',
+      'other/beta-flash',
     ]);
   });
 });

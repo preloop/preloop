@@ -1093,8 +1093,8 @@ def test_sanitize_header_value_strips_crlf_and_caps_length():
 
 def _allowlist_denial_detail() -> str:
     return (
-        "Model 'moonshotai/kimi-k3' is not in this agent's allowed models "
-        "(GLM 5.3 Flash, Kimi K3). Edit the agent's governance in the Preloop "
+        "Model 'vendor/alpha-chat' is not in this agent's allowed models "
+        "(Beta Flash, Alpha Chat). Edit the agent's governance in the Preloop "
         "console or pick an allowed model."
     )
 
@@ -1127,8 +1127,8 @@ def test_budget_denial_detail_names_model_and_allowlist():
 
     denied = _result(
         "subject_model_not_allowed",
-        requested_model="moonshotai/kimi-k3",
-        allowed_models=["GLM 5.3 Flash", "Kimi K3"],
+        requested_model="vendor/alpha-chat",
+        allowed_models=["Beta Flash", "Alpha Chat"],
     )
     assert OpenAIGatewayService._budget_denial_detail(denied) == (
         _allowlist_denial_detail()
@@ -1177,14 +1177,14 @@ def test_chat_completions_endpoint_returns_model_not_allowed_for_allowlist_denia
     crud_ai_model.create_with_account(
         db=db_session,
         obj_in={
-            "name": "OpenCode moonshotai/kimi-k3",
-            "provider_name": "openai",
-            "model_identifier": "kimi-k3",
+            "name": "Imported alpha-chat",
+            "provider_name": "vendor",
+            "model_identifier": "alpha-chat",
             "api_key": "provider-secret",
             "meta_data": {
                 "gateway": {
                     "enabled": True,
-                    "model_alias": "moonshotai/kimi-k3",
+                    "model_alias": "vendor/alpha-chat",
                     "provider_adapter": "preloop",
                     "responses_api": "transcode",
                 },
@@ -1209,7 +1209,7 @@ def test_chat_completions_endpoint_returns_model_not_allowed_for_allowlist_denia
                 account.meta_data or {},
                 subject_type=SUBJECT_TYPE_API_KEYS,
                 subject_id=str(api_key.id),
-                config={"allowed_models": ["GLM 5.3 Flash", "Kimi K3"]},
+                config={"allowed_models": ["Beta Flash", "Alpha Chat"]},
             )
         },
     )
@@ -1222,7 +1222,7 @@ def test_chat_completions_endpoint_returns_model_not_allowed_for_allowlist_denia
             "/openai/v1/chat/completions",
             headers={"Authorization": "Bearer ignored"},
             json={
-                "model": "moonshotai/kimi-k3",
+                "model": "vendor/alpha-chat",
                 "messages": [{"role": "user", "content": "Hello"}],
             },
         )
@@ -1247,14 +1247,14 @@ def test_chat_completions_endpoint_allows_display_name_allowlist_match(
     crud_ai_model.create_with_account(
         db=db_session,
         obj_in={
-            "name": "Kimi K3",
-            "provider_name": "moonshot",
-            "model_identifier": "kimi-k3",
+            "name": "Alpha Chat",
+            "provider_name": "acme",
+            "model_identifier": "alpha-chat",
             "api_key": "provider-secret",
             "meta_data": {
                 "gateway": {
                     "enabled": True,
-                    "model_alias": "moonshot/kimi-k3",
+                    "model_alias": "acme/alpha-chat",
                     "provider_adapter": "preloop",
                     "responses_api": "transcode",
                 },
@@ -1279,7 +1279,7 @@ def test_chat_completions_endpoint_allows_display_name_allowlist_match(
                 account.meta_data or {},
                 subject_type=SUBJECT_TYPE_API_KEYS,
                 subject_id=str(api_key.id),
-                config={"allowed_models": ["GLM 5.3 Flash", "Kimi K3"]},
+                config={"allowed_models": ["Beta Flash", "Alpha Chat"]},
             )
         },
     )
@@ -1293,14 +1293,14 @@ def test_chat_completions_endpoint_allows_display_name_allowlist_match(
             "id": "mock_id",
             "choices": [{"message": {"content": "Hello", "role": "assistant"}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
-            "model": "kimi-k3",
+            "model": "alpha-chat",
         }
         mock_completion.return_value = mock_response
         response = client.post(
             "/openai/v1/chat/completions",
             headers={"Authorization": "Bearer ignored"},
             json={
-                "model": "moonshot/kimi-k3",
+                "model": "acme/alpha-chat",
                 "messages": [{"role": "user", "content": "Hello"}],
             },
         )
