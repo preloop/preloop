@@ -1,7 +1,12 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { listIssueDuplicates, checkAIVerdict } from '../api';
-import type { DuplicatePair } from '../types';
+import {
+  listIssueDuplicates,
+  checkAIVerdict,
+  getIssueDuplicateAiStatus,
+  VerdictError,
+} from '../api';
+import type { DuplicatePair, VerdictState } from '../types';
 import { AIModelVerdict, renderVerdict } from '../utils/verdict';
 import {
   DEFAULT_FETCH_CONCURRENCY,
@@ -17,7 +22,7 @@ export class SimilarIssuesWidget extends LitElement {
   @state() private _totalSuggestions = 0;
   @state() private _loading = true;
   @state() private _error: string | null = null;
-  @state() private _aiVerdicts: Record<string, AIModelVerdict> = {};
+  @state() private _verdicts: Record<string, VerdictState> = {};
 
   static styles = css`
     :host {
@@ -80,6 +85,14 @@ export class SimilarIssuesWidget extends LitElement {
       justify-content: center;
       padding: var(--sl-spacing-large);
     }
+    .no-model-line {
+      font-size: var(--console-text-meta, var(--sl-font-size-small));
+      color: var(--console-meta-color, var(--sl-color-neutral-600));
+      padding: var(--sl-spacing-small) var(--sl-spacing-large);
+    }
+    .no-model-line a {
+      color: var(--console-link-color, var(--sl-color-primary-600));
+    }
   `;
 
   async connectedCallback() {
@@ -107,64 +120,103 @@ export class SimilarIssuesWidget extends LitElement {
     }
   }
 
-  async fetchAIModelVerdicts() {
-    // 1. Set all to 'checking' and update the UI once.
-    const initialVerdicts: Record<string, AIModelVerdict> = {};
-    const pairsToFetch: DuplicatePair[] = [];
+  private _pairKey(pair: DuplicatePair): string {
+    return `${pair.issue1.id}-${pair.issue2.id}`;
+  }
 
-    for (const pair of this._topSuggestions) {
-      if (pair.similarity < 0.999) {
-        const pairKey = `${pair.issue1.id}-${pair.issue2.id}`;
-        initialVerdicts[pairKey] = { decision: 'checking' };
-        pairsToFetch.push(pair);
-      }
+  private _setVerdict(pairKey: string, next: VerdictState) {
+    this._verdicts = { ...this._verdicts, [pairKey]: next };
+  }
+
+  async fetchAIModelVerdicts() {
+    let configured = true;
+    try {
+      const status = await getIssueDuplicateAiStatus();
+      configured = status.configured;
+    } catch (error) {
+      console.error('Failed to fetch AI status:', error);
     }
-    this._aiVerdicts = initialVerdicts;
+
+    const pairsToFetch = this._topSuggestions.filter(
+      (pair) => pair.similarity < 0.999
+    );
+
+    if (!configured) {
+      const noModel: Record<string, VerdictState> = {};
+      for (const pair of pairsToFetch) {
+        noModel[this._pairKey(pair)] = { state: 'no_model' };
+      }
+      this._verdicts = noModel;
+      return;
+    }
+
+    const initial: Record<string, VerdictState> = {};
+    for (const pair of pairsToFetch) {
+      initial[this._pairKey(pair)] = { state: 'checking' };
+    }
+    this._verdicts = initial;
 
     if (pairsToFetch.length === 0) {
       return;
     }
 
-    // 2. Ask for the verdicts a few at a time. Each one is a model call the
-    // API pays for with a pooled connection, so a long suggestion list must
-    // not arrive as one burst.
-    const results = await mapWithConcurrency(
+    await mapWithConcurrency(
       pairsToFetch,
       DEFAULT_FETCH_CONCURRENCY,
-      (pair) =>
-        checkAIVerdict(pair.issue1.id, pair.issue2.id).catch((error) => {
+      async (pair) => {
+        const pairKey = this._pairKey(pair);
+        try {
+          const verdict = await checkAIVerdict(pair.issue1.id, pair.issue2.id);
+          this._setVerdict(pairKey, { state: 'done', verdict });
+        } catch (error) {
           console.error(
-            `[similar-issues-widget] fetchAIModelVerdicts: API call failed for pair ${pair.issue1.id}-${pair.issue2.id}`,
+            `[similar-issues-widget] fetchAIModelVerdicts: API call failed for pair ${pairKey}`,
             error
           );
-          // Return a specific error object so one failure does not lose the rest
-          return {
-            error: true,
-            pairKey: `${pair.issue1.id}-${pair.issue2.id}`,
-          };
-        })
-    );
-
-    // 4. Process the results and update the state a final time.
-    const finalVerdicts = { ...this._aiVerdicts };
-    results.forEach((result, index) => {
-      const pair = pairsToFetch[index];
-      const pairKey = `${pair.issue1.id}-${pair.issue2.id}`;
-
-      if (result.error) {
-        finalVerdicts[pairKey] = {
-          decision: 'undecided',
-          reason: 'Failed to load',
-        };
-      } else {
-        finalVerdicts[pairKey] = {
-          decision: result.decision || 'undecided',
-          reason: result.reason,
-        };
+          if (
+            error instanceof VerdictError &&
+            error.code === 'no_default_ai_model'
+          ) {
+            this._setVerdict(pairKey, { state: 'no_model' });
+          } else if (
+            error instanceof VerdictError &&
+            error.code === 'timeout'
+          ) {
+            this._setVerdict(pairKey, { state: 'timeout' });
+          } else {
+            this._setVerdict(pairKey, { state: 'failed' });
+          }
+        }
       }
-    });
+    );
+  }
 
-    this._aiVerdicts = finalVerdicts;
+  private _hasNoModel(): boolean {
+    return Object.values(this._verdicts).some(
+      (entry) => entry.state === 'no_model'
+    );
+  }
+
+  private _renderPairVerdict(pair: DuplicatePair) {
+    if (pair.similarity > 0.999) {
+      return html`<sl-badge
+        variant="warning"
+        style="--sl-color-warning-text: var(--sl-color-orange-50); --sl-color-warning-600: var(--sl-color-orange-700);"
+        pill
+        >Identical</sl-badge
+      >`;
+    }
+    const state = this._verdicts[this._pairKey(pair)];
+    if (!state || state.state === 'no_model') {
+      return html``;
+    }
+    if (state.state === 'checking') {
+      return renderVerdict({ decision: 'checking' });
+    }
+    if (state.state === 'done') {
+      return renderVerdict(state.verdict as AIModelVerdict | undefined);
+    }
+    return html``;
   }
 
   render() {
@@ -224,7 +276,6 @@ export class SimilarIssuesWidget extends LitElement {
         </div>
         <ul class="suggestion-list">
           ${this._topSuggestions.map((pair) => {
-            const pairKey = `${pair.issue1.id}-${pair.issue2.id}`;
             return html`
               <li class="suggestion-item">
                 <div
@@ -239,22 +290,22 @@ export class SimilarIssuesWidget extends LitElement {
                     >${(pair.similarity * 100).toFixed(0)}%</sl-badge
                   >
                   <div class="verdict-container">
-                    ${
-                      pair.similarity > 0.999
-                        ? html`<sl-badge
-                            variant="warning"
-                            style="--sl-color-warning-text: var(--sl-color-orange-50); --sl-color-warning-600: var(--sl-color-orange-700);"
-                            pill
-                            >Identical</sl-badge
-                          >`
-                        : renderVerdict(this._aiVerdicts[pairKey])
-                    }
+                    ${this._renderPairVerdict(pair)}
                   </div>
                 </div>
               </li>
             `;
           })}
         </ul>
+        ${
+          this._hasNoModel()
+            ? html`<div class="no-model-line">
+                AI review needs a default model (<a href="/console/ai-models"
+                  >Models</a
+                >)
+              </div>`
+            : ''
+        }
         ${
           this._totalSuggestions > 0
             ? html`
