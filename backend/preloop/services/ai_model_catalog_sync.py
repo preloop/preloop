@@ -13,7 +13,9 @@ API-key-backed provider gains account-wide models exactly as if an operator
 had added them in the console. Principal-bound subscription-OAuth credentials
 (Claude Code / Codex) are never used for discovery: they cannot authenticate
 server-side listing calls and their models are only authorized per managed
-agent binding, which ``preloop agents refresh`` handles client-side.
+agent binding. New identifiers on those credentials are ingested lazily by
+the model gateway on first request (Claude family and Codex family
+auto-register), not by this sync.
 """
 
 from __future__ import annotations

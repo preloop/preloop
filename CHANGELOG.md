@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Codex ChatGPT-OAuth model auto-registration**: when Codex CLI (or any
+  OpenAI-protocol client using a ChatGPT subscription-OAuth credential)
+  asks for a `gpt-*` / o-series / `chatgpt-*` model the account has not
+  registered (for example `gpt-6-astra` after a Codex update), the gateway
+  lazily creates a sibling `AIModel` sharing the same OAuth secret and
+  binds it to the requesting agent instead of answering 404. OpenAI remains
+  the authorization boundary; `preloop models sync` still cannot discover
+  against those credentials. Flag:
+  `MODEL_GATEWAY_CODEX_FAMILY_AUTOREGISTER_ENABLED` (default on).
+
 - **Native (no Docker) dev environment**: `docs/native-dev.md` describes
   running PostgreSQL, NATS, the API, and Vite on one host. `Dockerfile.dev`
   installs those system packages without copying the app;
