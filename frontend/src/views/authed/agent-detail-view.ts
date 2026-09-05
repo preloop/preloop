@@ -56,15 +56,6 @@ import type {
 } from '../../types';
 import type { AccessRuleSummary } from '../../components/governance-rule-set-editor';
 import consoleStyles from '../../styles/console-styles.css?inline';
-
-/** The subset of an account AI model the allowlist editor keys on. */
-type AllowedModelCandidate = {
-  id: string;
-  name: string;
-  provider_name?: string;
-  model_identifier?: string;
-  meta_data?: Record<string, unknown> | null;
-};
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import {
   normalizeScopedToolRules,
@@ -88,6 +79,15 @@ interface GovernanceToolDefinition {
   description?: string;
   schema?: Record<string, unknown>;
 }
+
+/** The subset of an account AI model the allowlist editor keys on. */
+type AllowedModelCandidate = {
+  id: string;
+  name: string;
+  provider_name?: string;
+  model_identifier?: string;
+  meta_data?: Record<string, unknown> | null;
+};
 
 @customElement('agent-detail-view')
 export class AgentDetailView extends LitElement {
@@ -1452,14 +1452,23 @@ export class AgentDetailView extends LitElement {
     for (const model of models) {
       if ((model.name || '').trim().toLowerCase() === folded) return model;
     }
+    // A bare tail may be shared by two imports of the same upstream model
+    // (moonshot/kimi-k3 and moonshotai/kimi-k3). The backend honours the
+    // entry for both rows, so rewriting it to one alias would silently
+    // narrow the policy: only resolve when exactly one row matches.
+    let tailMatch: AllowedModelCandidate | null = null;
+    let tailMatches = 0;
     for (const model of models) {
       const alias = this.gatewayAliasForModel(model);
       const tail = alias.includes('/')
         ? alias.split('/').slice(1).join('/')
         : '';
-      if (tail && tail === needle) return model;
+      if (tail && tail === needle) {
+        tailMatch = model;
+        tailMatches += 1;
+      }
     }
-    return null;
+    return tailMatches === 1 ? tailMatch : null;
   }
 
   /** Persisted key for an allowlist entry: its model's alias, else as typed. */
@@ -2700,6 +2709,8 @@ export class AgentDetailView extends LitElement {
     }
 
     const aggregate = this.aggregate;
+    // Resolved once per render instead of once per model row.
+    const allowedModelAliases = this.getAllowedModelAliases();
 
     return html`
       <view-header headerText=${this.agent.display_name}>
@@ -3307,13 +3318,13 @@ export class AgentDetailView extends LitElement {
                             style="display: flex; flex-direction: column; gap: var(--sl-spacing-x-small); max-height: 260px; overflow-y: auto;"
                           >
                             ${this.availableModels.map((model: any) => {
-                              const allowed = this.getAllowedModelAliases();
                               const alias = this.gatewayAliasForModel(model);
                               // While unrestricted (empty list) every box
                               // renders unchecked; checking one switches to
                               // restricted mode instead of faking "checked
                               // because everything is allowed".
-                              const isChecked = allowed.includes(alias);
+                              const isChecked =
+                                allowedModelAliases.includes(alias);
                               return html`
                                 <sl-checkbox
                                   data-model-allow-toggle=${alias}

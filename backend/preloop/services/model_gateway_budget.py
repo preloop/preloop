@@ -91,8 +91,10 @@ class BudgetCheckResult:
     enforcement_reason: Optional[str]
     pricing_available: bool
     reset_at: Optional[datetime] = None
-    # Populated for ``subject_model_not_allowed`` so renderers can name the
-    # requested model and the allowlist that denied it.
+    # ``requested_model`` is the label of the model every check ran against
+    # (alias, or the wire spelling when it differs); ``allowed_models`` is set
+    # only for ``subject_model_not_allowed`` so renderers can name the
+    # allowlist that denied it.
     requested_model: Optional[str] = None
     allowed_models: Optional[list[str]] = None
 

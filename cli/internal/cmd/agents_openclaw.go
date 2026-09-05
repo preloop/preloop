@@ -1015,10 +1015,10 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 
 	// The agent's governance may restrict allowed models. Surface a mismatch
 	// with the alias we are about to route (and offer to fix it) before the
-	// live check turns it into an opaque 403.
+	// live check turns it into an opaque 403. Dry runs returned right after
+	// printing the plan, so only the confirmation flags decide interactivity.
 	if supportsManagedGateway(agent) && strings.TrimSpace(plan.ManagedModelAlias) != "" {
-		interactiveAllowlist := !opts.DryRun &&
-			!opts.AutoApprove &&
+		interactiveAllowlist := !opts.AutoApprove &&
 			!opts.SkipConfirmation &&
 			!nonInteractiveAutoConfirm() &&
 			stdinIsTerminal()

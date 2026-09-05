@@ -942,6 +942,72 @@ describe('AgentDetailView', () => {
     );
   }
 
+  /**
+   * Re-stub fetch so two imports of the same upstream model share one bare
+   * tail (moonshot/kimi-k3 and moonshotai/kimi-k3), the prod shape behind
+   * the ambiguous-tail review finding.
+   */
+  function stubSameTailModels(allowedModels: string[]): void {
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url === '/api/v1/ai-models') {
+          return new Response(
+            JSON.stringify([
+              {
+                id: 'model-kimi',
+                name: 'Kimi K3',
+                provider_name: 'moonshot',
+                model_identifier: 'kimi-k3',
+                meta_data: {
+                  gateway: { enabled: true, model_alias: 'moonshot/kimi-k3' },
+                },
+              },
+              {
+                id: 'model-kimi-opencode',
+                name: 'OpenCode moonshotai/kimi-k3',
+                provider_name: 'openai',
+                model_identifier: 'kimi-k3',
+                meta_data: {
+                  gateway: {
+                    enabled: true,
+                    model_alias: 'moonshotai/kimi-k3',
+                  },
+                },
+              },
+              {
+                id: 'model-glm',
+                name: 'GLM 5.3 Flash',
+                provider_name: 'zai',
+                model_identifier: 'glm-5.3-flash',
+                meta_data: { gateway: { enabled: true } },
+              },
+            ]),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (
+          url === '/api/v1/agents/agent-1/governance' &&
+          (!init?.method || init.method === 'GET')
+        ) {
+          return new Response(
+            JSON.stringify({
+              subject_type: 'managed_agents',
+              subject_id: 'agent-1',
+              config: {
+                allowed_models: allowedModels,
+                model_budgets: {},
+                tool_rules: {},
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return defaultFetch(input, init);
+      }
+    );
+  }
+
   async function loadModelsTab(): Promise<AgentDetailView> {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
@@ -1028,6 +1094,38 @@ describe('AgentDetailView', () => {
       'moonshot/kimi-k3',
       'zai/glm-5.3-flash',
       'other/unknown',
+    ]);
+  });
+
+  it('keeps an ambiguous bare-tail entry as typed instead of narrowing it to one import', async () => {
+    stubSameTailModels(['kimi-k3']);
+    const element = await loadModelsTab();
+
+    // The bare tail matches two rows, so it resolves to neither alias: the
+    // override shows it unchanged and both same-tail toggles render
+    // unchecked (the backend honours the tail for both rows).
+    const overrideInput = element.shadowRoot?.querySelector(
+      'sl-input[label="Allowed models"]'
+    ) as any;
+    expect(overrideInput.value).to.equal('kimi-k3');
+    for (const alias of ['moonshot/kimi-k3', 'moonshotai/kimi-k3']) {
+      const toggle = element.shadowRoot?.querySelector(
+        `sl-checkbox[data-model-allow-toggle="${alias}"]`
+      ) as any;
+      expect(toggle.checked).to.be.false;
+    }
+
+    // Toggling an unrelated model must not rewrite the bare tail to one
+    // import's alias.
+    const glmToggle = element.shadowRoot?.querySelector(
+      'sl-checkbox[data-model-allow-toggle="zai/glm-5.3-flash"]'
+    ) as any;
+    glmToggle.checked = true;
+    glmToggle.dispatchEvent(new Event('sl-change'));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(lastGovernancePutBody().allowed_models).to.deep.equal([
+      'kimi-k3',
+      'zai/glm-5.3-flash',
     ]);
   });
 });
