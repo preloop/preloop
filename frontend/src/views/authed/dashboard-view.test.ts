@@ -30,6 +30,14 @@ describe('DashboardView', () => {
   let budgetPoliciesResponse: any[];
   /** Set by a test that wants to hold the secondary pass open. */
   let aiModelsGate: Promise<void> | null;
+  /** Holds `GET /api/v1/tools` so Next steps and the Tools tab can wait. */
+  let toolsGate: Promise<void> | null;
+  /** Holds `GET /api/v1/flows` so the Flows tab can paint identity first. */
+  let flowsGate: Promise<void> | null;
+  /** Holds flow executions so Flows usage can arrive after the list. */
+  let executionsGate: Promise<void> | null;
+  /** Holds `GET /api/v1/ai-models/overview` so Models usage can wait. */
+  let overviewGate: Promise<void> | null;
   /**
    * Holds the Overview's wave-2 breakdown call in flight. Attention also
    * asks for a 30-day copy after first paint.
@@ -43,6 +51,10 @@ describe('DashboardView', () => {
 
   beforeEach(() => {
     aiModelsGate = null;
+    toolsGate = null;
+    flowsGate = null;
+    executionsGate = null;
+    overviewGate = null;
     breakdownGate = null;
     breakdownCalls = 0;
     summaryGate = null;
@@ -476,14 +488,17 @@ describe('DashboardView', () => {
         }
 
         if (url.startsWith('/api/v1/tools')) {
+          if (toolsGate) await toolsGate;
           return json(toolsResponse);
         }
 
         if (url.startsWith('/api/v1/flows/executions')) {
+          if (executionsGate) await executionsGate;
           return json(flowExecutionsResponse);
         }
 
         if (url.startsWith('/api/v1/flows')) {
+          if (flowsGate) await flowsGate;
           return json(flowsResponse);
         }
 
@@ -496,6 +511,7 @@ describe('DashboardView', () => {
         }
 
         if (url.startsWith('/api/v1/ai-models/overview')) {
+          if (overviewGate) await overviewGate;
           return json(aiModelsOverviewResponse);
         }
 
@@ -1184,7 +1200,7 @@ describe('DashboardView', () => {
       const element = await mountDashboard();
 
       // Mid-load: agents, policies and tools have not answered yet.
-      expect(element['loading'] || element['fetchingMCPAndTools']).to.be.true;
+      expect(element['loading'] || element['fetchingTools']).to.be.true;
       expect(
         element.shadowRoot?.querySelector('.next-steps-card'),
         'no card during loading'
@@ -1195,10 +1211,41 @@ describe('DashboardView', () => {
           !element['loading'] &&
           !element['fetchingAgents'] &&
           !element['fetchingBudget'] &&
-          !element['fetchingMCPAndTools'],
+          !element['fetchingTools'],
         'dashboard did not finish loading'
       );
       await element.updateComplete;
+      expect(element.shadowRoot?.querySelector('.next-steps-card')).to.not
+        .exist;
+    });
+
+    it('hides next steps while inventory lists are in flight, even for an unfinished account', async () => {
+      // Last visit said the checklist was still open. Empty arrays before
+      // the lists answer used to paint "Onboard an agent" over an account
+      // that already had one.
+      localStorage.setItem('dashboard_next_steps_all_done', 'false');
+      let releaseTools = () => {};
+      toolsGate = new Promise<void>((resolve) => {
+        releaseTools = resolve;
+      });
+
+      const element = await mountDashboard();
+      await waitUntil(() => !element['loading'], 'fold never finished');
+      await element.updateComplete;
+
+      expect(element['fetchingTools'], 'tools list still in flight').to.be.true;
+      expect(
+        element.shadowRoot?.querySelector('.next-steps-card'),
+        'no checklist while the tools list is unanswered'
+      ).to.not.exist;
+
+      releaseTools();
+      await waitUntil(
+        () => element['nextStepsInputsResolved'],
+        'list phase never resolved'
+      );
+      await element.updateComplete;
+      // Fixture has an agent, budget policies and a gated tool: done.
       expect(element.shadowRoot?.querySelector('.next-steps-card')).to.not
         .exist;
     });
@@ -1498,14 +1545,13 @@ describe('DashboardView', () => {
       );
 
       expect(element['fetchingUsers'], 'users request finished').to.be.false;
-      expect(element['fetchingMCPAndTools'], 'tools still in flight').to.be
-        .true;
+      expect(element['fetchingModels'], 'models still in flight').to.be.true;
       expect(element['inventoryUserRows'][0].name).to.exist;
 
       releaseModels();
       await waitUntil(
-        () => !element['fetchingMCPAndTools'],
-        'second pass did not finish'
+        () => !element['fetchingModels'],
+        'models list did not finish'
       );
     });
 
@@ -1537,6 +1583,159 @@ describe('DashboardView', () => {
       await element.updateComplete;
       await inventory.updateComplete;
       expect(inventory.usageLoading).to.be.false;
+    });
+
+    it('renders inventory rows before usage arrives and fills cells without re-skeletoning rows', async () => {
+      let releaseBreakdown = () => {};
+      breakdownGate = new Promise<void>((resolve) => {
+        releaseBreakdown = resolve;
+      });
+      let releaseOverview = () => {};
+      overviewGate = new Promise<void>((resolve) => {
+        releaseOverview = resolve;
+      });
+      let releaseExecutions = () => {};
+      executionsGate = new Promise<void>((resolve) => {
+        releaseExecutions = resolve;
+      });
+      gatewaySummaryResponse.usage_by_session = [];
+      gatewaySummaryResponse.usage_by_model = [];
+      gatewaySummaryResponse.usage_by_tool = [];
+      gatewaySummaryResponse.usage_by_flow = [];
+
+      const element = await mountDashboard();
+      await waitUntil(() => !element['loading'], 'fold never finished');
+      await waitUntil(
+        () =>
+          !element['fetchingAgents'] &&
+          !element['fetchingFlows'] &&
+          !element['fetchingModels'] &&
+          !element['fetchingTools'],
+        'identity lists never landed'
+      );
+      await element.updateComplete;
+
+      const inventory = element.shadowRoot?.querySelector(
+        'inventory-card'
+      ) as any;
+      await inventory.updateComplete;
+
+      expect(element['inventoryAgentRows'][0].name).to.equal('Ops Agent');
+      expect(element['inventoryFlowRows'][0].name).to.equal('Refund Assistant');
+      expect(element['inventoryModelRows'][0].alias).to.equal('OpenAI GPT-5.4');
+      expect(
+        element['inventoryToolRows'].map((row: any) => row.name)
+      ).to.include('verify_refund_eligibility');
+
+      expect(inventory.usageLoading, 'agents usage still pending').to.be.true;
+      expect(inventory.usageLoadingFlows, 'flows usage still pending').to.be
+        .true;
+      expect(inventory.usageLoadingModels, 'models usage still pending').to.be
+        .true;
+
+      const agentRow = inventory.shadowRoot?.querySelector('tbody tr');
+      expect(agentRow?.textContent).to.contain('Ops Agent');
+      expect(agentRow?.querySelector('.skeleton-row')).to.not.exist;
+      expect(
+        agentRow?.querySelectorAll('sl-skeleton').length
+      ).to.be.greaterThan(0);
+
+      releaseExecutions();
+      releaseOverview();
+      releaseBreakdown();
+      await waitUntil(
+        () =>
+          !element['fetchingUsageBreakdown'] &&
+          !element['fetchingModelUsage'] &&
+          !element['fetchingFlowUsage'],
+        'usage never landed'
+      );
+      await element.updateComplete;
+      await inventory.updateComplete;
+
+      expect(inventory.usageLoading).to.be.false;
+      expect(inventory.usageLoadingFlows).to.be.false;
+      expect(inventory.usageLoadingModels).to.be.false;
+      const filled = inventory.shadowRoot?.querySelector('tbody tr');
+      expect(filled?.textContent).to.contain('Ops Agent');
+      expect(filled?.querySelector('sl-skeleton')).to.not.exist;
+      expect(
+        inventory.shadowRoot?.querySelectorAll('.skeleton-row').length
+      ).to.equal(0);
+    });
+
+    it('shows next steps only after a resolved empty inventory', async () => {
+      agentsResponse = { ...agentsResponse, total: 0, items: [] };
+      budgetPoliciesResponse = [];
+      toolsResponse = toolsResponse.map((tool: any) => ({
+        ...tool,
+        is_enabled: true,
+        approval_workflow_id: null,
+      }));
+      let releaseTools = () => {};
+      toolsGate = new Promise<void>((resolve) => {
+        releaseTools = resolve;
+      });
+
+      const element = await mountDashboard();
+      await waitUntil(() => !element['loading'], 'fold never finished');
+      await element.updateComplete;
+      expect(
+        element.shadowRoot?.querySelector('.next-steps-card'),
+        'hidden while the tools list is unanswered'
+      ).to.not.exist;
+
+      releaseTools();
+      await waitUntil(
+        () => element['nextStepsInputsResolved'],
+        'list phase never resolved'
+      );
+      await element.updateComplete;
+      const card = element.shadowRoot?.querySelector('.next-steps-card');
+      expect(card, 'checklist after a resolved empty inventory').to.exist;
+      expect(card?.textContent).to.contain('Onboard an agent');
+    });
+
+    it('keeps the first-paint request count at or below today', async () => {
+      const element = await mountDashboard();
+      await waitUntil(
+        () =>
+          element['attentionInputs'] != null &&
+          !element['fetchingMCPAndTools'] &&
+          !element['fetchingTools'] &&
+          !element['fetchingModels'] &&
+          !element['fetchingFlows'],
+        'cold load never finished'
+      );
+
+      const pageUrls = fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .filter(
+          (url) =>
+            !url.startsWith('/api/v1/audit-logs') &&
+            !url.startsWith('/api/v1/teams') &&
+            !url.startsWith('/api/v1/roles')
+        );
+      // Same unique page URLs as d66122c3 (30), plus none. The identity
+      // lists moved earlier; they did not multiply.
+      expect(pageUrls.length, pageUrls.join('\n')).to.be.at.most(30);
+      expect(pageUrls.filter((url) => url === '/api/v1/flows').length).to.equal(
+        1
+      );
+      expect(pageUrls.filter((url) => url === '/api/v1/tools').length).to.equal(
+        1
+      );
+      expect(
+        pageUrls.filter((url) => url === '/api/v1/ai-models').length
+      ).to.be.at.least(1);
+      expect(
+        pageUrls.filter((url) => url.startsWith('/api/v1/ai-models/overview'))
+          .length
+      ).to.equal(1);
+      expect(
+        pageUrls.filter((url) => url.startsWith('/api/v1/agents')).length
+      ).to.equal(1);
     });
 
     it('dims the usage numbers over a range change rather than blanking them', async () => {
@@ -1617,9 +1816,9 @@ describe('DashboardView', () => {
     });
 
     it('keeps the Models tab on a skeleton until the second pass lands', async () => {
-      // The models arrive in the slow secondary pass, after `loading` has
-      // cleared. Hold that pass open and the card must still be waiting, not
-      // telling a stocked account it has no models.
+      // The models list is its own request. Hold it open after the fold
+      // has cleared and the tab must still be waiting, not telling a
+      // stocked account it has no models.
       let releaseModels = () => {};
       aiModelsGate = new Promise<void>((resolve) => {
         releaseModels = resolve;
@@ -1635,7 +1834,7 @@ describe('DashboardView', () => {
       const inventory = element.shadowRoot?.querySelector(
         'inventory-card'
       ) as any;
-      expect(inventory.loading, 'card still loading mid-flight').to.be.true;
+      expect(inventory.loadingModels, 'models tab still loading').to.be.true;
       expect(element['inventoryModelRows'].length).to.equal(0);
       inventory.shadowRoot
         ?.querySelector('sl-tab[panel="models"]')
@@ -1658,12 +1857,12 @@ describe('DashboardView', () => {
 
       releaseModels();
       await waitUntil(
-        () => !element['fetchingMCPAndTools'],
-        'second pass did not finish'
+        () => !element['fetchingModels'],
+        'models list did not finish'
       );
       await element.updateComplete;
       await inventory.updateComplete;
-      expect(inventory.loading).to.be.false;
+      expect(inventory.loadingModels).to.be.false;
       expect(element['inventoryModelRows'][0].alias).to.equal('OpenAI GPT-5.4');
     });
 
@@ -1805,7 +2004,10 @@ describe('DashboardView', () => {
             !url.startsWith('/api/v1/audit-logs') &&
             !url.startsWith('/api/v1/teams') &&
             !url.startsWith('/api/v1/roles') &&
-            !url.startsWith('/api/v1/ai-models')
+            !url.startsWith('/api/v1/ai-models') &&
+            // Identity lists start with the fold but do not block it.
+            url !== '/api/v1/flows' &&
+            url !== '/api/v1/tools'
         );
       const duplicates = foldUrls.filter(
         (url, index) => foldUrls.indexOf(url) !== index
