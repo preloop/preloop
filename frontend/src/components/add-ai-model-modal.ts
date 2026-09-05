@@ -193,6 +193,15 @@ export class AddAIModelModal extends LitElement {
   @state() private _additionalModelIds: string[] = [];
   /** When true, register this model for Preloop gateway routing (requires upstream API key). */
   @state() private _preloopGatewayEnabled = true;
+
+  /**
+   * The gateway needs upstream credentials, but saying so on a form nobody has
+   * typed into yet is noise: the checkbox defaults to on, so the alert used to
+   * be the first thing on a blank Add dialog. It waits until the operator has
+   * left the API key field or pressed Save.
+   */
+  @state() private _apiKeyTouched = false;
+  @state() private _saveAttempted = false;
   /** AWS credential inputs for the bedrock provider. */
   @state() private _bedrockAccessKeyId = '';
   @state() private _bedrockSecretAccessKey = '';
@@ -229,11 +238,28 @@ export class AddAIModelModal extends LitElement {
     return (this._currentModel.model_kind || 'llm') as ServiceKind;
   }
 
+  /**
+   * The providers offered for the selected service kind, plus whatever the
+   * model already stores.
+   *
+   * Not every stored provider is one this dialog can create: `openai-codex` is
+   * written by Codex onboarding and routes through the OpenAI Responses
+   * passthrough (`backend/preloop/services/openai_responses_passthrough.py:75`,
+   * `litellm_routing.py:58`). It has no entry in PROVIDER_OPTIONS, so editing
+   * such a model opened the select empty and saving would have cleared the
+   * provider. The stored value is appended as its own option so the select
+   * preselects it and an edit that does not touch the provider keeps it.
+   */
   private get _availableProviders(): ProviderOption[] {
     const serviceKind = this._selectedServiceKind;
-    return PROVIDER_OPTIONS.filter((provider) =>
+    const offered = PROVIDER_OPTIONS.filter((provider) =>
       provider.serviceKinds.includes(serviceKind)
     );
+    const stored = (this._currentModel.provider_name || '').trim();
+    if (!stored || offered.some((provider) => provider.value === stored)) {
+      return offered;
+    }
+    return [...offered, { value: stored, label: stored, serviceKinds: [] }];
   }
 
   // ── lifecycle ────────────────────────────────────────
@@ -269,6 +295,8 @@ export class AddAIModelModal extends LitElement {
     this._additionalModelIds = [];
     this._formError = null;
     this._isSubmitting = false;
+    this._apiKeyTouched = false;
+    this._saveAttempted = false;
     this._isFetchingModels = false;
     this._modelsFetchError = null;
     this._modelsSource = null;
@@ -678,6 +706,7 @@ export class AddAIModelModal extends LitElement {
   private async _handleFormSubmit(e: Event) {
     e.preventDefault();
     this._formError = null;
+    this._saveAttempted = true;
 
     // Sync values from DOM in case event handlers missed a mutation
     this._syncFormFromDom();
@@ -840,7 +869,7 @@ export class AddAIModelModal extends LitElement {
 
     return html`
       <sl-dialog
-        label="${this._isEditing ? 'Edit' : 'Add'} AI Model"
+        label="${this._isEditing ? 'Edit model' : 'Add model'}"
         .open=${this.open}
         @sl-request-close=${this._handleRequestClose}
       >
@@ -856,7 +885,7 @@ export class AddAIModelModal extends LitElement {
         <div class="form-grid">
           <sl-input
             class="full-width"
-            label="Friendly Name"
+            label="Name"
             data-field="name"
             .value=${this._currentModel.name || ''}
             @sl-input=${(e: Event) => {
@@ -866,7 +895,7 @@ export class AddAIModelModal extends LitElement {
             ?disabled=${this._isSubmitting}
           ></sl-input>
           <sl-select
-            label="Service Kind"
+            label="Type"
             data-field="model_kind"
             .value=${this._currentModel.model_kind || 'llm'}
             @sl-change=${this._handleServiceKindChange}
@@ -998,7 +1027,7 @@ export class AddAIModelModal extends LitElement {
                   <sl-input
                     class="full-width"
                     type="password"
-                    label="API Key"
+                    label="API key"
                     data-field="api_key"
                     .value=${this._currentModel.api_key || ''}
                     @sl-input=${(e: Event) => {
@@ -1006,6 +1035,9 @@ export class AddAIModelModal extends LitElement {
                         e.target as HTMLInputElement
                       ).value;
                       this.requestUpdate();
+                    }}
+                    @sl-blur=${() => {
+                      this._apiKeyTouched = true;
                     }}
                     placeholder=${
                       this._isEditing ? 'Leave blank to keep existing key' : ''
@@ -1074,12 +1106,15 @@ export class AddAIModelModal extends LitElement {
                             this._currentModel.model_identifier
                           }</code
                         >`
-                    : html`Save provider and model id to show the gateway alias.`
+                    : // Nothing to say yet on a fresh form: the alias appears
+                      // as soon as the provider and model id are chosen.
+                      ''
               }
               ${
                 this._currentModel.model_kind === 'llm' &&
                 !this._canEnablePreloopGateway &&
-                this._preloopGatewayEnabled
+                this._preloopGatewayEnabled &&
+                (this._apiKeyTouched || this._saveAttempted)
                   ? html`
                       <sl-alert
                         variant="warning"
@@ -1096,16 +1131,17 @@ export class AddAIModelModal extends LitElement {
           </div>
 
           <div class="full-width">
+            <!-- A secondary action at natural width: full width made it read
+                 as the primary action of the form. -->
             <sl-button
               @click=${this._fetchModelsForCurrentProvider}
               ?loading=${this._isFetchingModels}
               ?disabled=${this._isSubmitting || this._isFetchingModels}
-              style="width: 100%;"
             >
               ${
                 this._modelSuggestions.length > 0
-                  ? 'Refresh Models'
-                  : 'Fetch Available Models'
+                  ? 'Refresh models'
+                  : 'Fetch models from provider'
               }
             </sl-button>
             ${
