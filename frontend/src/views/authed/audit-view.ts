@@ -788,27 +788,6 @@ export class AuditView extends AuthedElement {
     }
   }
 
-  private _getOutcomeColor(outcome: string): string {
-    switch (outcome) {
-      case 'allow':
-      case 'executed':
-      case 'approved':
-      case 'success':
-        return 'var(--sl-color-success-600)';
-      case 'deny':
-      case 'declined':
-      case 'denied':
-      case 'failed':
-      case 'failure':
-      case 'budget_denied':
-        return 'var(--sl-color-danger-600)';
-      case 'require_approval':
-        return 'var(--sl-color-warning-600)';
-      default:
-        return 'var(--sl-color-neutral-400)';
-    }
-  }
-
   private _getActionIcon(action: string): string {
     if (action === 'tool_call') return 'terminal';
     if (action === 'model_gateway_request') return 'cpu';
@@ -1222,7 +1201,6 @@ export class AuditView extends AuthedElement {
     const hasSubs = group.sub_events.length > 0;
     const canExpand = this._canExpandGroup(group);
     const badge = this._getOutcomeBadge(group.outcome);
-    const borderColor = this._getOutcomeColor(group.outcome);
     const isToolCall = event.action === 'tool_call';
     const argsSummary = isToolCall ? this._getArgsSummary(event.details) : '';
     const execTime =
@@ -1234,7 +1212,6 @@ export class AuditView extends AuthedElement {
           this._highlightedKey === key ? 'linked' : ''
         }"
         data-group-key=${key}
-        style="--group-color: ${borderColor}"
       >
         <div
           class="primary-row ${canExpand ? 'has-subs' : ''}"
@@ -1259,7 +1236,9 @@ export class AuditView extends AuthedElement {
                 ? html`<span class="exec-time">${execTime}ms</span>`
                 : nothing
             }
-            <sl-badge variant=${badge.variant} pill>${badge.label}</sl-badge>
+            <sl-badge class="status-chip" variant=${badge.variant} pill
+              >${badge.label}</sl-badge
+            >
             <span class="user-name">${this._formatActorLabel(event)}</span>
             <sl-tooltip content=${this._formatFullTimestamp(event.timestamp)}>
               <span class="timestamp"
@@ -1490,7 +1469,11 @@ export class AuditView extends AuthedElement {
             }
             <span class="sub-spacer"></span>
             ${this._renderEventCostTokens(sub.details)}
-            <sl-badge variant=${badge.variant} pill size="small"
+            <sl-badge
+              class="status-chip"
+              variant=${badge.variant}
+              pill
+              size="small"
               >${badge.label}</sl-badge
             >
             <span class="sub-actor">${this._formatActorLabel(sub)}</span>
@@ -1621,25 +1604,25 @@ export class AuditView extends AuthedElement {
       }
 
       /* ── Filter bar ────────────────────────── */
+      /* Seven controls on one line at 1440: a proportional grid keeps
+         "Max $" out of a second row, and the fields keep their order. */
       .filter-bar {
-        display: flex;
+        display: grid;
+        grid-template-columns:
+          minmax(0, 1.5fr) minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1fr)
+          minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 0.7fr);
         align-items: center;
         gap: 0.5rem;
         margin-bottom: 1rem;
-        flex-wrap: wrap;
       }
-      .filter-bar sl-input {
-        flex: 1 1 180px;
-        min-width: 140px;
-        max-width: 240px;
-      }
+      .filter-bar sl-input,
       .filter-bar sl-select {
-        flex: 0 1 170px;
-        min-width: 140px;
+        min-width: 0;
       }
-      .filter-bar sl-input[type='date'] {
-        flex: 0 1 150px;
-        min-width: 130px;
+      /* Clear takes its own row rather than an eighth column. */
+      .filter-bar sl-button {
+        grid-column: 1 / -1;
+        justify-self: start;
       }
 
       /* ── Loading / Empty ────────────────────── */
@@ -1663,8 +1646,9 @@ export class AuditView extends AuthedElement {
       }
 
       /* ── Group ─────────────────────────────── */
+      /* No coloured left rule: the outcome lives in the pill, and forty green
+         rules read as a wall of paint (DESIGN.md "Red lives in the pill"). */
       .timeline-group {
-        border-left: 3px solid var(--group-color, var(--sl-color-neutral-300));
         border-radius: 4px;
         background: var(--sl-color-neutral-0);
         transition: border-color 0.2s;
@@ -1945,13 +1929,18 @@ export class AuditView extends AuthedElement {
         .event-details {
           padding-left: 1rem;
         }
+        /* Phone: one field per row, each the full width of the bar. The old
+           rule left the date inputs at their fixed width and centred them,
+           which put ~250px of gap between From and To at 390px. */
         .filter-bar {
-          flex-direction: column;
+          grid-template-columns: minmax(0, 1fr);
         }
         .filter-bar sl-input,
-        .filter-bar sl-select {
+        .filter-bar sl-select,
+        .filter-bar sl-input[type='date'] {
+          width: 100%;
           max-width: 100%;
-          flex: 1 1 100%;
+          min-width: 0;
         }
         .sub-main-row {
           flex-wrap: wrap;
