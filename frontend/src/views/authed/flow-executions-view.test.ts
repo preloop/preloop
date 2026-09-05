@@ -155,6 +155,16 @@ describe('FlowExecutionsView', () => {
     ) as HTMLElement;
     const table = wrapper.querySelector('table') as HTMLElement;
     expect(table.scrollWidth).to.be.at.most(wrapper.clientWidth);
+
+    // The column that went off-screen was the last one, so state it: the
+    // kebab's own header ends inside the wrapper, not past its right edge.
+    const headers = [...table.querySelectorAll('thead th')];
+    const actions = headers[headers.length - 1] as HTMLElement;
+    const wrapperBox = wrapper.getBoundingClientRect();
+    expect(
+      actions.getBoundingClientRect().right,
+      'the actions column ends inside the wrapper'
+    ).to.be.at.most(wrapperBox.left + wrapper.clientWidth + 1);
   });
 
   it('prints the tool calls and cost the execution page states', async () => {
