@@ -220,6 +220,32 @@ class TestNotificationEvents:
         # The event must be committed: nothing else commits this session.
         assert db.commit.called
 
+    async def test_audit_notification_result_stores_emails_for_console(self):
+        """Authenticated timeline keeps recipient emails; public path redacts."""
+        service, db = make_service()
+        request = make_request()
+        user = MagicMock()
+        user.id = uuid.uuid4()
+        user.email = "jane@example.com"
+        user.username = "jane"
+        result = MagicMock()
+        result.scalars.return_value = [user]
+        db.execute.return_value = result
+
+        await service._audit_notification_result(
+            approval_request=request,
+            channel="email",
+            channel_result={"success": True, "sent": 1},
+            recipient_user_ids=[user.id],
+            correlation_id=None,
+        )
+
+        events = [
+            e for e in _events_added_to(db) if e.event_type == "notification_sent"
+        ]
+        assert len(events) == 1
+        assert "jane@example.com" in events[0].detail
+
     async def test_audit_notification_result_handles_recipient_lookup_failure(self):
         service, db = make_service()
         request = make_request()

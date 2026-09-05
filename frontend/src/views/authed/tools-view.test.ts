@@ -316,9 +316,9 @@ describe('ToolsView (approvals + conditions)', () => {
     const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
     await waitUntil(
       () =>
-        !(element as any).loading &&
-        (element as any).governanceDefaults !== null,
-      'Tools view did not load governance defaults'
+        element.shadowRoot?.querySelector('#native-approvals-override-list') !=
+        null,
+      'override list did not render'
     );
     await element.updateComplete;
 
@@ -444,9 +444,9 @@ describe('ToolsView (approvals + conditions)', () => {
     const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
     await waitUntil(
       () =>
-        !(element as any).loading &&
-        (element as any).governanceDefaults !== null,
-      'Tools view did not load governance defaults'
+        element.shadowRoot?.querySelector('#native-approvals-override-list') !=
+        null,
+      'override list did not render'
     );
     await element.updateComplete;
 

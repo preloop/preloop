@@ -186,6 +186,18 @@ class TestPublicApprovalDecide:
         db_session.add(approval_request)
         db_session.flush()
 
+        from preloop.models.models.approval_event import ApprovalEvent
+
+        db_session.add(
+            ApprovalEvent(
+                approval_request_id=approval_request.id,
+                account_id=test_user.account_id,
+                event_type="notification_sent",
+                detail="Notification via email to jane@example.com (sent)",
+            )
+        )
+        db_session.flush()
+
         updated_request = MagicMock()
         updated_request.id = approval_request.id
         updated_request.tool_name = "test_tool"
@@ -194,6 +206,7 @@ class TestPublicApprovalDecide:
         updated_request.status = "approved"
         updated_request.requested_at = approval_request.requested_at
         updated_request.expires_at = None
+        updated_request.resolved_at = datetime.now(UTC)
 
         with patch(
             "preloop.api.endpoints.public_approval.get_async_db_session"
@@ -217,6 +230,14 @@ class TestPublicApprovalDecide:
                 data = response.json()
                 assert data["status"] == "approved"
                 assert data["id"] == str(approval_request.id)
+                assert data["resolved_at"] is not None
+                assert isinstance(data["history"], list)
+                assert data["history"], "decide must return the existing timeline"
+                assert "jane@example.com" not in str(data)
+                notified = next(
+                    e for e in data["history"] if e["event_type"] == "notification_sent"
+                )
+                assert "1 recipient" in notified["detail"]
 
 
 class TestPublicApprovalPage:
@@ -334,6 +355,14 @@ class TestPublicApprovalExpiredAndHistory:
             ApprovalEvent(
                 approval_request_id=approval_request.id,
                 account_id=test_user.account_id,
+                event_type="notification_sent",
+                detail="Notification via email to jane@example.com (sent)",
+            )
+        )
+        db_session.add(
+            ApprovalEvent(
+                approval_request_id=approval_request.id,
+                account_id=test_user.account_id,
                 event_type="expired",
                 detail="Expired: no response within the approval window",
             )
@@ -376,6 +405,12 @@ class TestPublicApprovalExpiredAndHistory:
         assert "approval_requested" in types
         assert "expired" in types
         assert all("actor_id" not in event for event in history)
+        payload = response.json()
+        assert "jane@example.com" not in str(payload)
+        notified = next(e for e in history if e["event_type"] == "notification_sent")
+        assert "email" in notified["detail"]
+        assert "1 recipient" in notified["detail"]
+        assert "@" not in notified["detail"]
 
     def test_get_approval_data_records_viewed_event(
         self, client: TestClient, db_session, test_user
@@ -405,3 +440,44 @@ class TestPublicApprovalExpiredAndHistory:
             1 for event in response.json()["history"] if event["event_type"] == "viewed"
         )
         assert viewed_count == 1
+
+
+class TestPublicEventDetailRedaction:
+    """ApprovalEventPublic must never serialize recipient emails."""
+
+    def test_notification_sent_becomes_a_recipient_count(self):
+        from preloop.models.schemas.approval_request import public_event_detail
+
+        redacted = public_event_detail(
+            "notification_sent",
+            "Notification via email to jane@example.com (sent)",
+        )
+        assert redacted == "Notification via email to 1 recipient (sent)"
+        assert "@" not in redacted
+
+    def test_notification_sent_counts_truncated_lists(self):
+        from preloop.models.schemas.approval_request import public_event_detail
+
+        redacted = public_event_detail(
+            "notification_sent",
+            "Notification via email to a@x.com, b@x.com, c@x.com, "
+            "d@x.com, e@x.com (+2 more) (sent)",
+        )
+        assert redacted == "Notification via email to 7 recipients (sent)"
+
+    def test_notification_sent_without_recipients_unchanged_shape(self):
+        from preloop.models.schemas.approval_request import public_event_detail
+
+        redacted = public_event_detail(
+            "notification_sent", "Notification via slack (failed)"
+        )
+        assert redacted == "Notification via slack (failed)"
+
+    def test_other_events_still_strip_emails(self):
+        from preloop.models.schemas.approval_request import public_event_detail
+
+        redacted = public_event_detail(
+            "vote_received", "Approved by jane@example.com via console"
+        )
+        assert "jane@example.com" not in redacted
+        assert "[redacted]" in redacted

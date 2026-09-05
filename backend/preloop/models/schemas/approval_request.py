@@ -1,10 +1,56 @@
 """Pydantic schemas for approval requests."""
 
+import re
 from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, computed_field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    computed_field,
+    model_validator,
+)
+
+# `Notification via {channel} to {recipients} ({status})` as stored for the
+# authenticated console timeline. Recipients may be emails or usernames.
+_NOTIFICATION_DETAIL = re.compile(r"^(Notification via \S+)(?: to (.+))? \(([^)]+)\)$")
+_EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
+_MORE_RECIPIENTS = re.compile(r"\+(\d+) more")
+
+
+def _recipient_count(recipients: str) -> int:
+    """Count listed recipients, including a trailing '(+N more)' suffix."""
+    extra_match = _MORE_RECIPIENTS.search(recipients)
+    extra = int(extra_match.group(1)) if extra_match else 0
+    listed = recipients
+    if extra_match:
+        listed = recipients[: extra_match.start()]
+        listed = re.sub(r"\s*\($", "", listed).rstrip(" ,")
+    names = [part.strip() for part in listed.split(",") if part.strip()]
+    return max(len(names) + extra, 1)
+
+
+def public_event_detail(event_type: str, detail: str) -> str:
+    """Render a timeline detail that is safe to return on a token link.
+
+    The console timeline may include recipient emails; the public token page
+    must not. Notification rows become a channel + recipient count; any
+    leftover email-shaped text is stripped.
+    """
+    text = detail or ""
+    if event_type == "notification_sent":
+        match = _NOTIFICATION_DETAIL.match(text)
+        if match:
+            prefix, recipients, status = match.group(1), match.group(2), match.group(3)
+            if not recipients:
+                return f"{prefix} ({status})"
+            count = _recipient_count(recipients)
+            noun = "recipient" if count == 1 else "recipients"
+            return f"{prefix} to {count} {noun} ({status})"
+    return _EMAIL_RE.sub("[redacted]", text)
 
 
 def classify_approval_risk(
@@ -240,7 +286,8 @@ class ApprovalEventPublic(BaseModel):
     """Timeline entry for the public (token) approval page.
 
     Deliberately excludes actor ids/emails: a token link is a bearer secret
-    and must not leak other approvers' identities.
+    and must not leak other approvers' identities. ``detail`` is redacted
+    on construction so notification recipient emails cannot leak through.
     """
 
     event_type: str = Field(..., description="Timeline event type")
@@ -251,6 +298,12 @@ class ApprovalEventPublic(BaseModel):
     timestamp: datetime = Field(..., description="When the event occurred")
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="after")
+    def redact_identities(self) -> "ApprovalEventPublic":
+        """Strip recipient emails/usernames from public timeline text."""
+        self.detail = public_event_detail(self.event_type, self.detail)
+        return self
 
 
 class ApprovalDecision(BaseModel):

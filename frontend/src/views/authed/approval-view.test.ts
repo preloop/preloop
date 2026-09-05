@@ -57,6 +57,7 @@ describe('ApprovalView', () => {
       getFails?: boolean;
       history?: Array<Record<string, unknown>>;
       publicData?: Record<string, unknown>;
+      decideHistory?: Array<Record<string, unknown>>;
     } = {}
   ) {
     return sinon
@@ -123,6 +124,20 @@ describe('ApprovalView', () => {
               history: [],
             }
           );
+        }
+
+        if (/\/approval\/req-1\/decide/.test(url) && method === 'POST') {
+          return json({
+            id: 'req-1',
+            tool_name: 'shell_command',
+            tool_args: { command: 'ls -la' },
+            agent_reasoning: null,
+            status: 'approved',
+            requested_at: '2026-06-01T10:00:00Z',
+            expires_at: '2026-06-01T11:00:00Z',
+            resolved_at: '2026-06-01T10:30:00Z',
+            history: opts.decideHistory ?? [],
+          });
         }
 
         if (url.includes('/approve') && method === 'POST') {
@@ -333,6 +348,120 @@ describe('ApprovalView', () => {
     const body = JSON.parse(String((decideCall!.args[1] as RequestInit).body));
     expect(body.action).to.equal('approve');
     expect(body.comment).to.equal('approved from the link');
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('keeps workflow history after a token-path decision with empty history', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/console/approval/req-1?token=tok-123'
+    );
+    const publicHistory = [
+      {
+        event_type: 'approval_requested',
+        detail: "Approval requested for tool 'shell_command'",
+        comment: null,
+        timestamp: '2026-06-01T10:00:00Z',
+      },
+      {
+        event_type: 'notification_sent',
+        detail: 'Notification via email to 1 recipient (sent)',
+        comment: null,
+        timestamp: '2026-06-01T10:00:01Z',
+      },
+    ];
+    fetchStub = createFetchStub({
+      request: null,
+      publicData: {
+        id: 'req-1',
+        tool_name: 'shell_command',
+        tool_args: { command: 'ls -la' },
+        agent_reasoning: null,
+        status: 'pending',
+        requested_at: '2026-06-01T10:00:00Z',
+        expires_at: '2026-06-01T11:00:00Z',
+        resolved_at: null,
+        history: publicHistory,
+      },
+      decideHistory: [],
+    });
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await waitUntil(
+      () => (element as any).history?.length === 2,
+      'history did not load'
+    );
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.textContent).to.contain('Workflow History');
+    await (element as any).handleApprove();
+    await element.updateComplete;
+
+    expect((element as any).history.length).to.equal(2);
+    expect(element.shadowRoot?.textContent).to.contain('Workflow History');
+    expect(element.shadowRoot?.textContent).to.contain(
+      "Approval requested for tool 'shell_command'"
+    );
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('replaces workflow history when the decide payload includes events', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/console/approval/req-1?token=tok-123'
+    );
+    fetchStub = createFetchStub({
+      request: null,
+      publicData: {
+        id: 'req-1',
+        tool_name: 'shell_command',
+        tool_args: { command: 'ls -la' },
+        agent_reasoning: null,
+        status: 'pending',
+        requested_at: '2026-06-01T10:00:00Z',
+        expires_at: '2026-06-01T11:00:00Z',
+        resolved_at: null,
+        history: [
+          {
+            event_type: 'approval_requested',
+            detail: "Approval requested for tool 'shell_command'",
+            comment: null,
+            timestamp: '2026-06-01T10:00:00Z',
+          },
+        ],
+      },
+      decideHistory: [
+        {
+          event_type: 'approval_requested',
+          detail: "Approval requested for tool 'shell_command'",
+          comment: null,
+          timestamp: '2026-06-01T10:00:00Z',
+        },
+        {
+          event_type: 'vote_received',
+          detail: 'Approval vote received (token-based) via token link',
+          comment: null,
+          timestamp: '2026-06-01T10:30:00Z',
+        },
+      ],
+    });
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await (element as any).handleApprove();
+    await element.updateComplete;
+
+    expect((element as any).history.length).to.equal(2);
+    expect(element.shadowRoot?.textContent).to.contain(
+      'Approval vote received'
+    );
     window.history.replaceState({}, '', '/');
   });
 

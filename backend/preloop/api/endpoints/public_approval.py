@@ -2,17 +2,21 @@
 
 import uuid
 import logging
-from typing import List, Optional
+from datetime import datetime
+from typing import List, Optional, Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_approval_event, crud_approval_request
 from preloop.models.db.session import get_async_db_session, get_db_session
+from preloop.models.models.approval_event import ApprovalEvent
+from preloop.models.models.approval_request import ApprovalRequest
 from preloop.models.schemas.approval_request import ApprovalEventPublic
 from preloop.services.approval_service import ApprovalService
+from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +41,47 @@ class ApprovalRequestPublic(BaseModel):
     requested_at: str
     expires_at: Optional[str]
     resolved_at: Optional[str] = None
-    history: List[ApprovalEventPublic] = []
+    history: List[ApprovalEventPublic] = Field(default_factory=list)
+
+
+def _iso_or_none(value: object) -> Optional[str]:
+    """Serialize a datetime-like value, ignoring non-datetime mocks."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    isoformat = getattr(value, "isoformat", None)
+    if not callable(isoformat):
+        return None
+    rendered = isoformat()
+    return rendered if isinstance(rendered, str) else None
+
+
+def _to_public_request(
+    approval_request: ApprovalRequest, events: Sequence[ApprovalEvent]
+) -> ApprovalRequestPublic:
+    """Build the token-page payload, redacting secrets and identities."""
+    return ApprovalRequestPublic(
+        id=str(approval_request.id),
+        tool_name=approval_request.tool_name,
+        tool_args=redact_dict(approval_request.tool_args or {}),
+        agent_reasoning=approval_request.agent_reasoning,
+        status=approval_request.status,
+        requested_at=_iso_or_none(approval_request.requested_at) or "",
+        expires_at=_iso_or_none(approval_request.expires_at),
+        resolved_at=_iso_or_none(approval_request.resolved_at),
+        history=[
+            ApprovalEventPublic(
+                event_type=event.event_type,
+                detail=event.detail,
+                comment=event.comment,
+                timestamp=event.timestamp,
+            )
+            for event in events
+        ],
+    )
 
 
 @router.get("/{request_id}/data")
@@ -70,9 +114,6 @@ def get_approval_request_public(
             status_code=404, detail="Approval request not found or invalid token"
         )
 
-    # Return public data only (redact tool_args for display)
-    from preloop.utils.redaction import redact_dict
-
     # Track that the link was opened (one anonymous timeline entry per
     # request; no actor identity is available on the token path).
     try:
@@ -100,30 +141,7 @@ def get_approval_request_public(
     history = crud_approval_event.get_by_request(
         db, approval_request_id=approval_request.id
     )
-
-    return ApprovalRequestPublic(
-        id=str(approval_request.id),
-        tool_name=approval_request.tool_name,
-        tool_args=redact_dict(approval_request.tool_args or {}),
-        agent_reasoning=approval_request.agent_reasoning,
-        status=approval_request.status,
-        requested_at=approval_request.requested_at.isoformat(),
-        expires_at=approval_request.expires_at.isoformat()
-        if approval_request.expires_at
-        else None,
-        resolved_at=approval_request.resolved_at.isoformat()
-        if approval_request.resolved_at
-        else None,
-        history=[
-            ApprovalEventPublic(
-                event_type=event.event_type,
-                detail=event.detail,
-                comment=event.comment,
-                timestamp=event.timestamp,
-            )
-            for event in history
-        ],
-    )
+    return _to_public_request(approval_request, history)
 
 
 @router.post("/{request_id}/decide")
@@ -194,21 +212,10 @@ async def decide_approval_request_public(
                 status_code=500, detail="Failed to update approval request"
             )
 
-        from preloop.utils.redaction import redact_dict
-
-        # Return updated data. Redact tool_args to match the GET read path and
-        # the redaction policy — secrets in tool arguments must not leak here.
-        return ApprovalRequestPublic(
-            id=str(updated_request.id),
-            tool_name=updated_request.tool_name,
-            tool_args=redact_dict(updated_request.tool_args or {}),
-            agent_reasoning=updated_request.agent_reasoning,
-            status=updated_request.status,
-            requested_at=updated_request.requested_at.isoformat(),
-            expires_at=updated_request.expires_at.isoformat()
-            if updated_request.expires_at
-            else None,
-            resolved_at=updated_request.resolved_at.isoformat()
-            if updated_request.resolved_at
-            else None,
+        # Re-query the timeline so the token page keeps Workflow History
+        # after a decision instead of replacing it with the default [].
+        db_sync.expire_all()
+        history = crud_approval_event.get_by_request(
+            db_sync, approval_request_id=updated_request.id
         )
+        return _to_public_request(updated_request, history)

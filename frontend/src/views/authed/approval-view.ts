@@ -450,9 +450,11 @@ export class ApprovalView extends AuthedElement {
           status: updated.status,
           resolved_at: updated.resolved_at ?? this.approvalRequest!.resolved_at,
         };
-        this.history = Array.isArray(updated.history)
-          ? updated.history
-          : this.history;
+        // An empty array is the default when the decide payload omits
+        // history; do not wipe a timeline we already rendered.
+        if (Array.isArray(updated.history) && updated.history.length > 0) {
+          this.history = updated.history;
+        }
         this.actionResult = { type: 'success', message: successMessage };
         this.comment = '';
       } catch (err: any) {

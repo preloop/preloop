@@ -3,6 +3,7 @@
 from typing import Optional, Union
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models.approval_event import ApprovalEvent
@@ -67,20 +68,51 @@ class CRUDApprovalEvent(CRUDBase[ApprovalEvent]):
             commit: When False, flush only so callers can batch writes
 
         Returns:
-            The created ApprovalEvent row
+            The created ApprovalEvent row, or the existing viewed row when a
+            concurrent insert already won the unique index
         """
-        return self.create(
-            db,
-            obj_in={
-                "approval_request_id": approval_request_id,
-                "account_id": account_id,
-                "event_type": event_type,
-                "detail": detail,
-                "comment": comment,
-                "actor_id": actor_id,
-            },
-            commit=commit,
+        payload = {
+            "approval_request_id": approval_request_id,
+            "account_id": account_id,
+            "event_type": event_type,
+            "detail": detail,
+            "comment": comment,
+            "actor_id": actor_id,
+        }
+        event: Optional[ApprovalEvent] = None
+        try:
+            with db.begin_nested():
+                event = self.create(db, obj_in=payload, commit=False)
+        except IntegrityError:
+            if event_type != "viewed":
+                raise
+            event = self._existing_viewed_event(
+                db, approval_request_id=approval_request_id, actor_id=actor_id
+            )
+            if event is None:
+                raise
+        if commit:
+            db.commit()
+        assert event is not None
+        return event
+
+    def _existing_viewed_event(
+        self,
+        db: Session,
+        *,
+        approval_request_id: Union[str, UUID],
+        actor_id: Optional[Union[str, UUID]],
+    ) -> Optional[ApprovalEvent]:
+        """Return the viewed row the unique index would collide with."""
+        query = db.query(self.model).filter(
+            self.model.approval_request_id == approval_request_id,
+            self.model.event_type == "viewed",
         )
+        if actor_id is None:
+            query = query.filter(self.model.actor_id.is_(None))
+        else:
+            query = query.filter(self.model.actor_id == actor_id)
+        return query.first()
 
     def has_event(
         self,
