@@ -3,6 +3,7 @@ import sinon from 'sinon';
 import './notification-preferences-view';
 import { NotificationPreferencesView } from './notification-preferences-view';
 import { invalidateApiCaches } from '../../api';
+import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 
 const tick = (ms = 150) => new Promise((r) => setTimeout(r, ms));
 
@@ -306,6 +307,97 @@ describe('NotificationPreferencesView', () => {
         .to.be.a('string')
         .and.not.equal('');
       expect((el as any).isSendingTest).to.equal(null);
+    });
+  });
+
+  describe('device_registered replays (D6)', () => {
+    let subscribeStub: sinon.SinonStub;
+    let handler: ((message: unknown) => void) | null;
+
+    beforeEach(() => {
+      handler = null;
+      subscribeStub = sinon
+        .stub(unifiedWebSocketManager, 'subscribe')
+        .callsFake((type: string, cb: any) => {
+          if (type === 'device_registered') {
+            handler = cb;
+          }
+          return () => {};
+        });
+    });
+
+    afterEach(() => {
+      subscribeStub.restore();
+    });
+
+    async function mount() {
+      const el = (await fixture(
+        html`<notification-preferences-view></notification-preferences-view>`
+      )) as NotificationPreferencesView;
+      await tick();
+      await el.updateComplete;
+      return el;
+    }
+
+    it('ignores a registration stamped before the page opened', async () => {
+      fetchStub = stubPrefs(PREFS);
+      const el = await mount();
+      expect(handler, 'the view should subscribe to device_registered').to.be.a(
+        'function'
+      );
+
+      handler!({
+        type: 'device_registered',
+        platform: 'ios',
+        registered_at: '2020-01-01T00:00:00Z',
+      });
+      await tick();
+      await el.updateComplete;
+
+      expect((el as any).successMessage).to.equal('');
+    });
+
+    it('announces a registration that happens while the page is open', async () => {
+      fetchStub = stubPrefs(PREFS);
+      const el = await mount();
+
+      handler!({
+        type: 'device_registered',
+        platform: 'ios',
+        registered_at: new Date(Date.now() + 1000).toISOString(),
+      });
+      await tick();
+      await el.updateComplete;
+
+      expect((el as any).successMessage).to.contain('iOS');
+    });
+
+    it('announces a registration stamped inside the clock-skew tolerance', async () => {
+      fetchStub = stubPrefs(PREFS);
+      const el = await mount();
+
+      // A server clock half a minute behind this browser still produces news.
+      handler!({
+        type: 'device_registered',
+        platform: 'ios',
+        registered_at: new Date(Date.now() - 30_000).toISOString(),
+      });
+      await tick();
+      await el.updateComplete;
+
+      expect((el as any).successMessage).to.contain('iOS');
+    });
+
+    it('announces a registration this page asked for even without a timestamp', async () => {
+      fetchStub = stubPrefs(PREFS);
+      const el = await mount();
+      (el as any).showQRDialog = true;
+
+      handler!({ type: 'device_registered', platform: 'android' });
+      await tick();
+      await el.updateComplete;
+
+      expect((el as any).successMessage).to.contain('Android');
     });
   });
 });

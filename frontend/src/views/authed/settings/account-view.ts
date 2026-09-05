@@ -175,7 +175,37 @@ export class AccountView extends LitElement {
     if (value === null || value === undefined) {
       return 'Not configured';
     }
-    return `${this._formatUsd(value)} per additional $1.00 of built-in model usage`;
+    // "$1.00 per additional $1.00 of built-in model usage" says a dollar costs
+    // a dollar. At a 1:1 rate the honest sentence is that there is no markup.
+    if (value === 1) {
+      return 'Usage beyond the cap is billed at cost';
+    }
+    return `${this._formatUsd(value)} per $1.00 of usage beyond the cap`;
+  }
+
+  /** "Jul 27", or "Jul 27, 2025" when the year is not the current one. */
+  private _formatDate(value: string | null | undefined) {
+    if (!value) {
+      return 'Unknown';
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return 'Unknown';
+    }
+    const sameYear = date.getFullYear() === new Date().getFullYear();
+    return date.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      ...(sameYear ? {} : { year: 'numeric' }),
+    });
+  }
+
+  private _isPast(value: string | null | undefined) {
+    if (!value) {
+      return false;
+    }
+    const date = new Date(value);
+    return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
   }
 
   private async _handleSaveOrganization() {
@@ -464,6 +494,30 @@ export class AccountView extends LitElement {
         : 'Free';
     const hostedSummary = this._billingSummary?.hosted_models;
     const trialSummary = this._billingSummary?.trial;
+    // A renewal date in the past is not a renewal. Say what happened on that
+    // date instead of promising a renewal that never came. A trial does not
+    // renew either, so it never says "Renews on" in any direction.
+    const periodEnded = this._isPast(this.subscription?.current_period_end);
+    const isTrialing =
+      this.subscription?.status === 'trialing' ||
+      Boolean(trialSummary?.is_trialing);
+    const periodEndLabel = periodEnded
+      ? isTrialing
+        ? 'Trial ended'
+        : this.subscription?.status === 'pending_cancellation'
+          ? 'Cancelled on'
+          : 'Ended'
+      : this.subscription?.status === 'pending_cancellation'
+        ? 'Cancels on'
+        : isTrialing
+          ? 'Trial ends on'
+          : 'Renews on';
+    // The plans grid drops the plan the account is already on, which can leave
+    // nothing to show: a Monthly / Yearly toggle over an empty grid is a
+    // control with no subject.
+    const upgradePlans = availablePlans.filter(
+      (plan) => plan.id !== this.subscription?.plan_id
+    );
 
     return html`
       <view-header headerText="Account" width="narrow"></view-header>
@@ -553,15 +607,10 @@ export class AccountView extends LitElement {
                       this.subscription
                         ? html`
                             <div class="date">
-                              ${
-                                this.subscription.status ===
-                                'pending_cancellation'
-                                  ? 'Cancels on'
-                                  : 'Renews on'
-                              }
-                              ${new Date(
+                              ${periodEndLabel}
+                              ${this._formatDate(
                                 this.subscription.current_period_end
-                              ).toLocaleDateString()}
+                              )}
                             </div>
                           `
                         : html`<div class="date">
@@ -602,10 +651,14 @@ export class AccountView extends LitElement {
                               >
                             </div>
                             <div class="date">
-                              Current billing period ends
-                              ${new Date(
+                              ${
+                                this._isPast(hostedSummary.billing_period_end)
+                                  ? 'Billing period ended'
+                                  : 'Current billing period ends'
+                              }
+                              ${this._formatDate(
                                 hostedSummary.billing_period_end
-                              ).toLocaleDateString()}
+                              )}
                             </div>
                             <div class="usage-grid">
                               <div class="usage-metric">
@@ -696,32 +749,35 @@ export class AccountView extends LitElement {
                         `
                       : ''
                   }
-
-                  <div>
-                    <billing-toggle
-                      .interval=${this._interval}
-                      @interval-change=${(e: CustomEvent) =>
-                        (this._interval = e.detail.value)}
-                    ></billing-toggle>
-
-                    <div
-                      class="plans-grid"
-                      @signup-requested=${this._handleUpgradeRequest}
-                    >
-                      ${availablePlans
-                        .filter((p) => p.id !== this.subscription?.plan_id)
-                        .map(
-                          (plan) => html`
-                            <pricing-card
-                              .plan=${plan}
+                  ${
+                    upgradePlans.length > 0
+                      ? html`
+                          <div>
+                            <billing-toggle
                               .interval=${this._interval}
-                              .featureOrder=${this._featureOrder}
-                              .featureLabels=${this._featureLabels}
-                            ></pricing-card>
-                          `
-                        )}
-                    </div>
-                  </div>
+                              @interval-change=${(e: CustomEvent) =>
+                                (this._interval = e.detail.value)}
+                            ></billing-toggle>
+
+                            <div
+                              class="plans-grid"
+                              @signup-requested=${this._handleUpgradeRequest}
+                            >
+                              ${upgradePlans.map(
+                                (plan) => html`
+                                  <pricing-card
+                                    .plan=${plan}
+                                    .interval=${this._interval}
+                                    .featureOrder=${this._featureOrder}
+                                    .featureLabels=${this._featureLabels}
+                                  ></pricing-card>
+                                `
+                              )}
+                            </div>
+                          </div>
+                        `
+                      : ''
+                  }
                 `
               : ''
           }

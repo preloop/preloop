@@ -88,6 +88,23 @@ export class NotificationPreferencesView extends AuthedElement {
   @state()
   private isSendingTest: 'approval' | 'question' | null = null;
 
+  /**
+   * When this page connected. A device_registered event stamped before that
+   * happened before the operator opened the page, so it is history and not
+   * news: announcing it as "registered successfully" on load was wrong.
+   */
+  private pageOpenedAt = 0;
+
+  /**
+   * How far the server clock is allowed to trail this browser's clock before
+   * a genuinely fresh registration would be mistaken for a replay. The stamp
+   * comes from the server (datetime.now(UTC)) and the comparison from the
+   * browser, so the two can disagree; one minute of slack costs us nothing
+   * (a replayed event is minutes to days old) and keeps a slightly skewed
+   * server from silencing a real registration.
+   */
+  private static readonly REPLAY_CLOCK_SKEW_MS = 60_000;
+
   @state()
   private testResult: TestPushResult | null = null;
 
@@ -374,6 +391,7 @@ export class NotificationPreferencesView extends AuthedElement {
 
   async connectedCallback() {
     super.connectedCallback();
+    this.pageOpenedAt = Date.now();
     await this.loadPreferences();
     void this.fetchAdminStatus();
 
@@ -391,8 +409,28 @@ export class NotificationPreferencesView extends AuthedElement {
             message
           );
 
+          // A registration this page asked for (the QR dialog is open) is
+          // always news. Anything else that is stamped well before this page
+          // opened is a replay of an old event and must not announce itself.
+          // "Well before" allows for clock skew between server and browser.
+          const initiatedHere = this.showQRDialog;
+          const registeredAt = Date.parse(message?.registered_at ?? '');
+          const replayCutoff =
+            this.pageOpenedAt -
+            NotificationPreferencesView.REPLAY_CLOCK_SKEW_MS;
+          if (
+            !initiatedHere &&
+            Number.isFinite(registeredAt) &&
+            registeredAt < replayCutoff
+          ) {
+            console.debug(
+              '[NotificationPrefs] Ignoring device_registered event from before page open'
+            );
+            return;
+          }
+
           // Close QR dialog if open
-          if (this.showQRDialog) {
+          if (initiatedHere) {
             console.debug('[NotificationPrefs] Closing QR dialog');
             this.handleCloseQRDialog();
           }
@@ -401,7 +439,15 @@ export class NotificationPreferencesView extends AuthedElement {
           this.loadPreferences();
 
           // Show success message
-          this.successMessage = `${message.platform === 'ios' ? 'iOS' : 'Android'} device registered successfully`;
+          const platform =
+            message?.platform === 'ios'
+              ? 'iOS'
+              : message?.platform === 'android'
+                ? 'Android'
+                : null;
+          this.successMessage = platform
+            ? `${platform} device registered successfully`
+            : 'Device registered successfully';
           setTimeout(() => (this.successMessage = ''), 5000);
         }
       );
