@@ -12,6 +12,7 @@ from preloop.services.preset_runner import (
     PresetRunnerError,
     _load_visible_issue,
     build_issue_trigger_payload,
+    build_pull_request_trigger_payload,
     resolve_or_create_flow,
 )
 from preloop.services.prompt_resolvers.base import ResolverContext
@@ -410,3 +411,142 @@ def test_github_api_host_uses_github_com_clone_url():
     repo = event["payload"]["repository"]
     assert repo["clone_url"] == "https://github.com/example/repo.git"
     assert repo["html_url"] == "https://github.com/example/repo"
+
+
+def _github_project_tracker(*, tracker_url: str = "https://github.com"):
+    project = MagicMock()
+    project.id = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    project.name = "repo"
+    project.slug = "example/repo"
+    project.identifier = "99"
+    project.settings = {}
+    project.meta_data = {"default_branch": "main"}
+    tracker = MagicMock()
+    tracker.id = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+    tracker.account_id = uuid.UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+    tracker.tracker_type = "github"
+    tracker.url = tracker_url
+    return project, tracker
+
+
+def _gitlab_project_tracker():
+    project = MagicMock()
+    project.id = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    project.name = "project"
+    project.slug = "group/project"
+    project.identifier = "321"
+    project.settings = {}
+    project.meta_data = {}
+    tracker = MagicMock()
+    tracker.id = uuid.UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+    tracker.account_id = uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
+    tracker.tracker_type = "gitlab"
+    tracker.url = "https://gitlab.example.com"
+    return project, tracker
+
+
+def _github_pr_payload(*, tracker_url: str = "https://github.com") -> dict:
+    project, tracker = _github_project_tracker(tracker_url=tracker_url)
+    pr = {
+        "number": 12,
+        "title": "Add login",
+        "description": "Please review the login form",
+        "url": "https://github.com/example/repo/pull/12",
+        "author": {"login": "janedoe"},
+        "source_branch": "feature",
+        "target_branch": "main",
+        "state": "open",
+        "is_draft": False,
+    }
+    return build_pull_request_trigger_payload(pr, project, tracker)
+
+
+def _gitlab_mr_payload() -> dict:
+    project, tracker = _gitlab_project_tracker()
+    mr = {
+        "iid": 7,
+        "title": "Fix login",
+        "description": "Login 401",
+        "url": "https://gitlab.example.com/group/project/-/merge_requests/7",
+        "author": {"username": "janedoe"},
+        "source_branch": "feature",
+        "target_branch": "main",
+        "state": "opened",
+        "work_in_progress": False,
+    }
+    return build_pull_request_trigger_payload(mr, project, tracker)
+
+
+@pytest.mark.asyncio
+async def test_github_pr_payload_resolves_object_attributes():
+    event = _github_pr_payload()
+    assert event["type"] == "pull_request_run"
+    assert event["source"] == "github"
+    assert event["payload"]["project_id"] == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    resolver = TriggerEventResolver()
+    context = ResolverContext(
+        db=MagicMock(),
+        trigger_event_data=event,
+        flow_id="flow-1",
+        execution_id="exec-1",
+    )
+    title = await resolver.resolve("payload.object_attributes.title", context)
+    description = await resolver.resolve(
+        "payload.object_attributes.description", context
+    )
+    author = await resolver.resolve("payload.object_attributes.author", context)
+    url = await resolver.resolve("payload.object_attributes.url", context)
+    source_branch = await resolver.resolve(
+        "payload.object_attributes.source_branch", context
+    )
+    target_branch = await resolver.resolve(
+        "payload.object_attributes.target_branch", context
+    )
+    trigger = await resolver.resolve("type", context)
+    assert title == "Add login"
+    assert description == "Please review the login form"
+    assert author == "janedoe"
+    assert url == "https://github.com/example/repo/pull/12"
+    assert source_branch == "feature"
+    assert target_branch == "main"
+    assert trigger == "pull_request_run"
+
+
+@pytest.mark.asyncio
+async def test_gitlab_mr_payload_branches_and_url():
+    event = _gitlab_mr_payload()
+    assert event["payload"]["object_kind"] == "merge_request"
+    resolver = TriggerEventResolver()
+    normalized = resolver._normalize_event_data(event)
+    attrs = normalized["payload"]["object_attributes"]
+    assert attrs["iid"] == 7
+    assert attrs["source_branch"] == "feature"
+    assert attrs["target_branch"] == "main"
+    assert attrs["url"] == (
+        "https://gitlab.example.com/group/project/-/merge_requests/7"
+    )
+    assert attrs["author"] == "janedoe"
+    context = ResolverContext(
+        db=MagicMock(),
+        trigger_event_data=event,
+        flow_id="flow-1",
+        execution_id="exec-1",
+    )
+    source_branch = await resolver.resolve(
+        "payload.object_attributes.source_branch", context
+    )
+    url = await resolver.resolve("payload.object_attributes.url", context)
+    assert source_branch == "feature"
+    assert url == "https://gitlab.example.com/group/project/-/merge_requests/7"
+
+
+def test_pr_payload_sets_top_level_project_id_and_web_host_clone_fields():
+    event = _github_pr_payload(tracker_url="https://api.github.com")
+    assert event["project_id"] == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    assert event["tracker_id"] == "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    assert event["account_id"] == "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    assert event["payload"]["project_id"] == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    repo = event["payload"]["repository"]
+    assert repo["clone_url"] == "https://github.com/example/repo.git"
+    assert repo["html_url"] == "https://github.com/example/repo"
+    assert event["payload"]["pull_request"]["user"]["login"] == "janedoe"
