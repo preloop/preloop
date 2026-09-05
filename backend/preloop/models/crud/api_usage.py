@@ -2587,6 +2587,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         cache_read_tokens: Optional[int] = None,
         cache_creation_tokens: Optional[int] = None,
         cost_usd: Optional[float] = None,
+        cost_source: Optional[str] = None,
         cost_basis: Optional[str] = None,
         conversation_id: Optional[str] = None,
         parent_conversation_id: Optional[str] = None,
@@ -2618,8 +2619,13 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 absent.
             cache_read_tokens: Cache-read tokens reported by the source.
             cache_creation_tokens: Cache-write tokens reported by the source.
-            cost_usd: Amount the source vendor charged, in USD. Stored in
-                ``estimated_cost`` with ``cost_source='imported'``.
+            cost_usd: Amount stored in ``estimated_cost``: the source
+                vendor's charge, or a catalog estimate for hook-derived
+                records that carry tokens but no billed amount.
+            cost_source: Provenance of ``cost_usd``. Defaults to
+                ``imported`` when an amount is present (the vendor charged
+                it); usage ingest passes the pricing service's source
+                (``catalog``, ``override``) for estimated amounts.
             cost_basis: ``estimated`` or ``reconciled``; reconciled rows
                 supersede estimated rows with the same (account, source,
                 conversation_id) in imported-cost sums. NULL rows never
@@ -2686,7 +2692,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             cache_creation_tokens=cache_creation_tokens,
             estimated_cost=cost_usd,
             currency="USD" if cost_usd is not None else None,
-            cost_source="imported" if cost_usd is not None else None,
+            cost_source=(cost_source or ("imported" if cost_usd is not None else None)),
             cost_basis=cost_basis,
             conversation_id=conversation_id,
             parent_conversation_id=parent_conversation_id,

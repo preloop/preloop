@@ -37,6 +37,11 @@ from preloop.schemas.usage_import import (
     UsageIngestRecord,
     UsageIngestRecordResult,
 )
+from preloop.services.model_pricing import (
+    CostEstimate,
+    estimate_external_model_usage_cost,
+    normalize_external_model_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +231,45 @@ def ingest_events(
     return imported, skipped
 
 
+def price_estimated_record(record: UsageIngestRecord) -> Optional[CostEstimate]:
+    """Price a pushed record that carries tokens but no billed amount.
+
+    Only ``cost_basis='estimated'`` records with a model and at least one
+    non-zero token count are priced; the result lands in ``estimated_cost``
+    with the catalog's provenance as ``cost_source`` and the basis left as
+    ``estimated``, so Cost analytics shows an estimated amount that a later
+    reconciled import supersedes and never sums with. Reconciled records
+    without an amount (for example "Included" rows) are left unpriced: an
+    estimate must never masquerade as billing truth.
+
+    Args:
+        record: The pushed record.
+
+    Returns:
+        The estimate when the catalog priced the model, otherwise ``None``.
+    """
+    if record.cost_basis != "estimated" or not record.model:
+        return None
+    prompt_tokens = record.input_tokens or 0
+    completion_tokens = record.output_tokens or 0
+    if prompt_tokens <= 0 and completion_tokens <= 0:
+        return None
+    try:
+        estimate = estimate_external_model_usage_cost(
+            record.model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+    except Exception:  # noqa: BLE001 - pricing must never fail an ingest
+        logger.debug(
+            "Pricing skipped for ingested model %s", record.model, exc_info=True
+        )
+        return None
+    if estimate.cost is None:
+        return None
+    return estimate
+
+
 def push_record_fingerprint(*, source: str, external_id: str) -> str:
     """Compute the dedupe fingerprint for one pushed usage record.
 
@@ -312,6 +356,19 @@ def ingest_push_records(
             if record.metadata:
                 for key, value in record.metadata.items():
                     meta.setdefault(key, value)
+            # estimated_cost is a Float column; Decimal is request-only.
+            cost_usd = (
+                float(record.charged_cost) if record.charged_cost is not None else None
+            )
+            cost_source: Optional[str] = None
+            if cost_usd is None:
+                priced = price_estimated_record(record)
+                if priced is not None:
+                    cost_usd, cost_source = priced.cost, priced.source
+                    meta["pricing"] = {
+                        "source": priced.source,
+                        "model": normalize_external_model_name(record.model or ""),
+                    }
             row = crud_api_usage.log_imported_usage_event(
                 db,
                 account_id=account_id,
@@ -322,12 +379,8 @@ def ingest_push_records(
                 prompt_tokens=record.input_tokens,
                 completion_tokens=record.output_tokens,
                 cache_read_tokens=record.cache_read_tokens,
-                cost_usd=(
-                    # estimated_cost is a Float column; Decimal is request-only.
-                    float(record.charged_cost)
-                    if record.charged_cost is not None
-                    else None
-                ),
+                cost_usd=cost_usd,
+                cost_source=cost_source,
                 cost_basis=record.cost_basis,
                 conversation_id=record.conversation_id,
                 parent_conversation_id=record.parent_conversation_id,

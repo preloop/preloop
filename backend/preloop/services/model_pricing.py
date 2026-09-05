@@ -559,3 +559,126 @@ def _iter_litellm_model_candidates(ai_model: AIModel) -> Iterable[str]:
                 continue
             seen.add(normalized)
             yield normalized
+
+
+# ---------------------------------------------------------------------------
+# Pricing for harness-reported model names (usage ingest)
+# ---------------------------------------------------------------------------
+#
+# Records pushed by hooks (Cursor, Codex, generic harnesses) carry the model
+# string the harness reported, not an AIModel row. Cursor spells Anthropic
+# models as ``claude-4.5-sonnet`` where the price catalog uses
+# ``claude-sonnet-4-5``; the helpers below map such spellings onto catalog
+# keys and reuse the ordinary candidate resolver through a transient
+# AIModel so the same fallbacks (vendor prefixes, undated forms) apply.
+
+_EXTERNAL_CLAUDE_VERSION_FIRST = re.compile(
+    r"^claude-(\d+)(?:\.(\d+))?-(sonnet|opus|haiku)$", re.IGNORECASE
+)
+_EXTERNAL_CLAUDE_DOTTED_MINOR = re.compile(
+    r"^(claude-(?:sonnet|opus|haiku)-\d+)\.(\d+)$", re.IGNORECASE
+)
+
+_EXTERNAL_PROVIDER_HINTS = (
+    ("claude", "anthropic"),
+    ("gpt", "openai"),
+    ("chatgpt", "openai"),
+    ("o1", "openai"),
+    ("o3", "openai"),
+    ("o4", "openai"),
+    ("gemini", "gemini"),
+    ("grok", "xai"),
+    ("deepseek", "deepseek"),
+    ("kimi", "moonshot"),
+    ("mistral", "mistral"),
+)
+
+
+def normalize_external_model_name(model_name: str) -> str:
+    """Map a harness-reported model string onto the catalog's spelling.
+
+    Cursor reports Anthropic models version-first with a dotted minor
+    (``claude-4.5-sonnet``, ``claude-4-opus``); the catalog keys them
+    family-first with dashes (``claude-sonnet-4-5``, ``claude-opus-4``).
+    Anything not matching a known alias shape is returned trimmed, so an
+    unknown spelling stays honest (unpriced) rather than guessed.
+
+    Args:
+        model_name: Model string as the harness reported it.
+
+    Returns:
+        A catalog-style model name.
+    """
+    name = (model_name or "").strip()
+    match = _EXTERNAL_CLAUDE_VERSION_FIRST.match(name)
+    if match:
+        major, minor, family = match.group(1), match.group(2), match.group(3).lower()
+        normalized = f"claude-{family}-{major}"
+        if minor:
+            normalized = f"{normalized}-{minor}"
+        return normalized
+    match = _EXTERNAL_CLAUDE_DOTTED_MINOR.match(name)
+    if match:
+        return f"{match.group(1).lower()}-{match.group(2)}"
+    return name
+
+
+def infer_provider_for_model_name(model_name: str) -> str:
+    """Guess the provider a bare model name belongs to, for catalog prefixes.
+
+    Args:
+        model_name: Catalog-style or harness-reported model name.
+
+    Returns:
+        A provider name understood by :func:`_pricing_provider_prefix`;
+        ``openai`` when nothing matches.
+    """
+    lowered = (model_name or "").strip().lower()
+    vendor, separator, _rest = lowered.partition("/")
+    if separator and vendor:
+        return vendor
+    for prefix, provider in _EXTERNAL_PROVIDER_HINTS:
+        if lowered.startswith(prefix):
+            return provider
+    return "openai"
+
+
+def estimate_external_model_usage_cost(
+    model_name: str,
+    *,
+    prompt_tokens: int,
+    completion_tokens: int,
+    pricing_override: Optional[Dict[str, Any]] = None,
+) -> CostEstimate:
+    """Price token counts for a model known only by its reported name.
+
+    Builds a transient (never persisted) :class:`AIModel` so the ordinary
+    candidate resolver and catalog lookup apply unchanged. Used by usage
+    ingest to put an estimated amount on hook-derived records that carry
+    tokens but no billed cost.
+
+    Args:
+        model_name: Model string as the harness reported it.
+        prompt_tokens: Input tokens.
+        completion_tokens: Output tokens.
+        pricing_override: Resolved account pricing override, if any.
+
+    Returns:
+        The estimate with its provenance; ``unpriced`` when the catalog
+        has no entry for any candidate spelling.
+    """
+    normalized = normalize_external_model_name(model_name)
+    if not normalized:
+        return CostEstimate(cost=None, source="unpriced")
+    ai_model = AIModel(
+        provider_name=infer_provider_for_model_name(normalized),
+        model_identifier=normalized,
+    )
+    return estimate_ai_model_usage_cost_detailed(
+        ai_model,
+        prompt_tokens=max(0, int(prompt_tokens or 0)),
+        completion_tokens=max(0, int(completion_tokens or 0)),
+        total_tokens=max(0, int(prompt_tokens or 0))
+        + max(0, int(completion_tokens or 0)),
+        pricing_override=pricing_override,
+    )

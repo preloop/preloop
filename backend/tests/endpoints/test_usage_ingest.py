@@ -583,3 +583,137 @@ class TestIngestRecords:
         assert lifecycle["total_tokens"] is None
         assert lifecycle["estimated_cost"] is None
         assert lifecycle["reconciled_cost"] is None
+
+
+class TestEstimatedPricing:
+    """Estimated records with tokens and no billed amount get a catalog price."""
+
+    def _ingest_one(self, client, db_session, test_user, record):
+        _make_cursor_agent(db_session, test_user.account_id)
+        db_session.commit()
+        response = client.post(INGEST_URL, json=_payload([record]))
+        assert response.status_code == 200, response.text
+        assert response.json()["accepted"] == 1
+        row = (
+            db_session.query(ApiUsage)
+            .filter(ApiUsage.action_type == "imported_usage")
+            .one()
+        )
+        return row
+
+    def test_estimated_record_with_tokens_gets_catalog_cost(
+        self, client, db_session, test_user
+    ):
+        """gpt-5 at 1200 in / 850 out prices to $0.01 from the catalog."""
+        record = _record(external_id="turn-est", model="gpt-5")
+        del record["charged_cost"]
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        assert abs(row.estimated_cost - 0.01) < 1e-9
+        assert row.cost_source == "catalog"
+        assert row.cost_basis == "estimated"
+        assert row.currency == "USD"
+        assert row.meta_data["pricing"] == {"source": "catalog", "model": "gpt-5"}
+
+    def test_cursor_model_spelling_is_priced(self, client, db_session, test_user):
+        """Cursor's claude-4.5-sonnet is priced as the catalog's claude-sonnet-4-5."""
+        record = _record(external_id="turn-cursor", model="claude-4.5-sonnet")
+        del record["charged_cost"]
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        # 1200 * $3/Mtok + 850 * $15/Mtok
+        assert abs(row.estimated_cost - 0.01635) < 1e-9
+        assert row.cost_source == "catalog"
+        assert row.meta_data["pricing"]["model"] == "claude-sonnet-4-5"
+
+    def test_unpriced_model_stays_null(self, client, db_session, test_user):
+        """A model the catalog does not know stays unpriced: null, not $0."""
+        record = _record(external_id="turn-composer", model="composer")
+        del record["charged_cost"]
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        assert row.estimated_cost is None
+        assert row.cost_source is None
+        assert row.currency is None
+        assert "pricing" not in row.meta_data
+
+    def test_charged_cost_is_never_replaced_by_an_estimate(
+        self, client, db_session, test_user
+    ):
+        """A vendor charge on a reconciled record is stored as-is."""
+        record = _record(
+            external_id="turn-billed",
+            model="gpt-5",
+            charged_cost="0.42",
+            cost_basis="reconciled",
+        )
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        assert abs(row.estimated_cost - 0.42) < 1e-9
+        assert row.cost_source == "imported"
+        assert row.cost_basis == "reconciled"
+        assert "pricing" not in row.meta_data
+
+    def test_reconciled_without_amount_is_not_estimated(
+        self, client, db_session, test_user
+    ):
+        """An 'Included' reconciled row must not be back-filled with a guess."""
+        record = _record(
+            external_id="turn-included", model="gpt-5", cost_basis="reconciled"
+        )
+        del record["charged_cost"]
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        assert row.estimated_cost is None
+        assert row.cost_source is None
+
+    def test_cursor_hook_response_record_is_priced(self, client, db_session, test_user):
+        """The shape `preloop usage hook` ships for Cursor stop events is priced."""
+        record = {
+            "external_id": "stop:gen-1:0",
+            "conversation_id": "conv-hook",
+            "timestamp": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
+            "event_type": "response",
+            "model": "claude-4.5-sonnet",
+            "cost_basis": "estimated",
+            "input_tokens": 1200,
+            "output_tokens": 850,
+            "metadata": {
+                "hook_event_name": "stop",
+                "token_estimate": {
+                    "method": "transcript_chars",
+                    "chars_per_token": 4,
+                    "transcript_bytes": 8200,
+                },
+            },
+        }
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        assert abs(row.estimated_cost - 0.01635) < 1e-9
+        assert row.cost_source == "catalog"
+        assert row.cost_basis == "estimated"
+        assert row.meta_data["token_estimate"]["method"] == "transcript_chars"
+
+        summary = client.get(COST_SUMMARY_URL).json()
+        imported = summary["imported_usage"]
+        assert abs(imported["imported_cost"] - 0.01635) < 1e-9
+        conversation = imported["usage_by_conversation"][0]
+        assert conversation["conversation_id"] == "conv-hook"
+        assert abs(conversation["estimated_cost"] - 0.01635) < 1e-9
+        assert conversation["reconciled_cost"] is None
+
+    def test_lifecycle_record_without_tokens_is_not_priced(
+        self, client, db_session, test_user
+    ):
+        """A bare lifecycle marker with a model but no tokens stays unpriced."""
+        record = {
+            "external_id": "sessionStart:conv-x",
+            "conversation_id": "conv-x",
+            "timestamp": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
+            "event_type": "session_start",
+            "model": "gpt-5",
+        }
+        row = self._ingest_one(client, db_session, test_user, record)
+
+        assert row.estimated_cost is None
+        assert row.cost_source is None
