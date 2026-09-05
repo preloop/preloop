@@ -452,6 +452,8 @@ export class SessionChatView extends LitElement {
     this.addEventListener('keydown', this.markGesture);
     window.addEventListener('pointerup', this.handlePointerUp);
     window.addEventListener('pointercancel', this.handlePointerUp);
+    // The release half of a scrollbar-thumb drag is a `mouseup` as well.
+    window.addEventListener('mouseup', this.handlePointerUp);
   }
 
   updated(changed: PropertyValues<this>): void {
@@ -479,6 +481,7 @@ export class SessionChatView extends LitElement {
     this.removeEventListener('keydown', this.markGesture);
     window.removeEventListener('pointerup', this.handlePointerUp);
     window.removeEventListener('pointercancel', this.handlePointerUp);
+    window.removeEventListener('mouseup', this.handlePointerUp);
     this.releaseThread();
     this.contentObserver?.disconnect();
     this.contentObserver = null;
@@ -563,7 +566,12 @@ export class SessionChatView extends LitElement {
   }
 
   private markGesture = (event?: Event): void => {
-    if (event?.type === 'pointerdown') this.pointerDown = true;
+    // Chromium fires `mousedown` and no `pointerdown` when the press lands on
+    // the scrollbar itself, so a thumb drag has to hold the flag too. Without
+    // it a reader who grabs the thumb, pauses past the gesture window, then
+    // drags would be snapped back to the bottom.
+    if (event?.type === 'pointerdown' || event?.type === 'mousedown')
+      this.pointerDown = true;
     this.lastGestureAt = performance.now();
   };
 

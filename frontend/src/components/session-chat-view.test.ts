@@ -537,6 +537,56 @@ describe('session-chat-view in the talk window', () => {
     ).to.exist;
   });
 
+  it('treats a scrollbar-thumb drag as a gesture however long the pause', async () => {
+    // A press on the scrollbar itself gets a `mousedown` and no `pointerdown`
+    // in Chromium, and a reader can hold the thumb far longer than the 700ms
+    // gesture window before they move it. Both halves have to hold: the press
+    // keeps the gesture alive, the release lets layout re-stick again.
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view
+        scrollable
+        followLive
+        style="height: 200px"
+        .events=${manyEvents(12)}
+      ></session-chat-view>`
+    );
+    await el.updateComplete;
+    const thread = el.shadowRoot!.querySelector('.thread') as HTMLElement;
+
+    thread.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    // Hold past the window, then drag.
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new Event('scroll'));
+    await el.updateComplete;
+
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="jump-latest"]'),
+      'the drag detaches the reader'
+    ).to.exist;
+    expect(thread.scrollTop, 'the reader stays where they dragged to').to.equal(
+      0
+    );
+
+    // Releasing the thumb ends the gesture: back at the bottom, a later
+    // layout-driven scroll must not be mistaken for the reader again.
+    window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    (
+      el.shadowRoot!.querySelector('[data-testid="jump-latest"]') as HTMLElement
+    ).click();
+    await el.updateComplete;
+    await waitForStableScroll(thread);
+    await new Promise((resolve) => setTimeout(resolve, 750));
+
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new Event('scroll'));
+    await el.updateComplete;
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="jump-latest"]'),
+      'layout must not switch following off once the thumb is released'
+    ).to.not.exist;
+  });
+
   it('rebinds the thread after a session switch empties it', async () => {
     const el = await fixture<SessionChatView>(
       html`<session-chat-view
