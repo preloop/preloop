@@ -4,13 +4,12 @@ import { repeat } from 'lit/directives/repeat.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
-import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
-import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
+import '../../components/list-toolbar.ts';
 import '../../components/resource-actions.ts';
 import '../../components/time-range-select.ts';
 import { router } from '../../router';
@@ -42,6 +41,14 @@ import {
 import consoleStyles from '../../styles/console-styles.css?inline';
 import type { Flow } from '../../types';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+import {
+  effectiveViewMode,
+  loadViewMode,
+  saveViewMode,
+  subscribeNarrowViewport,
+  type ListViewMode,
+  type NarrowViewportSubscription,
+} from '../../utils/view-mode';
 
 /** A flow row from the list endpoints, where id and name are always present. */
 type FlowListItem = Flow & { id: string; name: string };
@@ -58,17 +65,6 @@ interface FlowExecution extends ExecutionSubjectSource {
 export type FlowsViewMode = 'list' | 'cards';
 
 const VIEW_MODE_KEY = 'preloop.flows.view_mode';
-const FLOWS_VIEW_MODES: FlowsViewMode[] = ['list', 'cards'];
-
-/**
- * List is the default (DESIGN.md, "Tables and views"): thirty flows are
- * compared, not browsed, and a table answers "which of these ran, which
- * failed and what did they cost" in one screen. A persisted choice wins.
- */
-const DEFAULT_FLOWS_VIEW: FlowsViewMode = 'list';
-
-/** Below this width seven columns cannot hold their content, so cards take over. */
-const LIST_TO_CARDS_BREAKPOINT = '(max-width: 640px)';
 
 /**
  * How many recent runs the page reads to build the in-range counts.
@@ -83,14 +79,9 @@ const EXECUTIONS_SAMPLE_LIMIT = 200;
 /** One day, for the ranges whose labels are counted in hours and days. */
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Kept for flows-view.test.ts. Storage and fallback live in view-mode.ts. */
 export function loadInitialFlowsViewMode(): FlowsViewMode {
-  try {
-    const saved = localStorage.getItem(VIEW_MODE_KEY);
-    if (saved && (FLOWS_VIEW_MODES as string[]).includes(saved)) {
-      return saved as FlowsViewMode;
-    }
-  } catch (e) {}
-  return DEFAULT_FLOWS_VIEW;
+  return loadViewMode(VIEW_MODE_KEY) as FlowsViewMode;
 }
 
 export type FlowRange = 'day' | 'week' | 'month' | 'year';
@@ -331,74 +322,6 @@ export class FlowsView extends LitElement {
     css`
       :host {
         display: block;
-      }
-
-      /* --- Filter bar --- */
-      .flows-toolbar {
-        display: flex;
-        align-items: end;
-        justify-content: space-between;
-        gap: var(--sl-spacing-medium);
-        flex-wrap: wrap;
-        width: 100%;
-      }
-      .filters {
-        display: flex;
-        gap: var(--sl-spacing-medium);
-        flex-wrap: wrap;
-        align-items: end;
-        flex: 1 1 520px;
-        min-width: 0;
-      }
-      .filters sl-input,
-      .filters sl-select {
-        min-width: 180px;
-      }
-      .filters sl-input {
-        flex: 1 1 260px;
-      }
-      .view-switcher-group {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-medium);
-        margin-left: auto;
-      }
-      /* Says how many rows the filters matched, right where the eye already
-         goes to switch views. */
-      .results-count {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-meta);
-        font-variant-numeric: tabular-nums;
-        white-space: nowrap;
-      }
-      .toolbar-divider {
-        width: 1px;
-        height: 32px;
-        background: var(--console-hairline);
-      }
-      @media (max-width: 900px) {
-        .view-switcher-group {
-          margin-left: 0;
-          width: 100%;
-          justify-content: flex-end;
-        }
-        .toolbar-divider {
-          display: none;
-        }
-      }
-      /* Phones: the filters take the full width one after another, and the
-         switcher goes away. Below this width a seven-column table cannot be
-         read, so cards are the only view on offer and a switcher that could
-         not honour a click would be a lie. Matches
-         LIST_TO_CARDS_BREAKPOINT. */
-      @media (max-width: 640px) {
-        .filters sl-input,
-        .filters sl-select {
-          flex: 1 1 100%;
-        }
-        .view-switcher-group sl-button-group {
-          display: none;
-        }
       }
 
       /* --- List view --- */
@@ -839,20 +762,15 @@ export class FlowsView extends LitElement {
   private presetsLoaded = false;
   private unsubscribe?: () => void;
   private hasInitializedPresetVisibility = false;
-  private narrowViewportQuery: MediaQueryList | null = null;
-  private handleNarrowViewportChange = (event: MediaQueryListEvent) => {
-    this.narrowViewport = event.matches;
-  };
+  private narrowViewportSubscription: NarrowViewportSubscription | null = null;
 
   async connectedCallback() {
     super.connectedCallback();
     this.currentView = loadInitialFlowsViewMode();
-    this.narrowViewportQuery = window.matchMedia(LIST_TO_CARDS_BREAKPOINT);
-    this.narrowViewport = this.narrowViewportQuery.matches;
-    this.narrowViewportQuery.addEventListener(
-      'change',
-      this.handleNarrowViewportChange
-    );
+    this.narrowViewportSubscription = subscribeNarrowViewport((narrow) => {
+      this.narrowViewport = narrow;
+    });
+    this.narrowViewport = this.narrowViewportSubscription.matches;
     await this.loadData();
     this.connectWebSocket();
   }
@@ -860,11 +778,8 @@ export class FlowsView extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this.unsubscribe?.();
-    this.narrowViewportQuery?.removeEventListener(
-      'change',
-      this.handleNarrowViewportChange
-    );
-    this.narrowViewportQuery = null;
+    this.narrowViewportSubscription?.disconnect();
+    this.narrowViewportSubscription = null;
   }
 
   /**
@@ -872,17 +787,22 @@ export class FlowsView extends LitElement {
    * scroll sideways or crush every cell, so `list` renders as cards.
    */
   private get effectiveView(): FlowsViewMode {
-    if (this.currentView === 'list' && this.narrowViewport) {
-      return 'cards';
-    }
-    return this.currentView;
+    return effectiveViewMode(
+      this.currentView,
+      this.narrowViewport
+    ) as FlowsViewMode;
   }
 
-  private setCurrentView(view: FlowsViewMode) {
-    this.currentView = view;
-    try {
-      localStorage.setItem(VIEW_MODE_KEY, view);
-    } catch (e) {}
+  private handleSearchChange(event: CustomEvent<{ value: string }>) {
+    this.filters = { ...this.filters, query: event.detail.value };
+  }
+
+  private handleViewChange(event: CustomEvent<{ value: ListViewMode }>) {
+    if (event.detail.value === 'canvas') {
+      return;
+    }
+    this.currentView = event.detail.value;
+    saveViewMode(VIEW_MODE_KEY, event.detail.value);
   }
 
   /**
@@ -1477,131 +1397,88 @@ export class FlowsView extends LitElement {
   private renderToolbar() {
     const presetOptions = this.presetOptions;
     return html`
-      <div class="flows-toolbar">
-        <form class="filters" @submit=${(e: Event) => e.preventDefault()}>
-          <sl-input
-            class="search-input"
-            placeholder="Search flows"
-            clearable
-            .value=${this.filters.query}
-            @sl-input=${(event: Event) => {
-              const input = event.target as HTMLInputElement;
-              this.filters = { ...this.filters, query: input.value };
-            }}
-            @sl-clear=${() => {
-              this.filters = { ...this.filters, query: '' };
-            }}
-          >
-            <sl-icon name="search" slot="prefix"></sl-icon>
-          </sl-input>
+      <list-toolbar
+        .search=${this.filters.query}
+        searchPlaceholder="Search flows"
+        toggleLabel="Flows view"
+        .view=${this.currentView}
+        .views=${['list', 'cards']}
+        @search-change=${this.handleSearchChange}
+        @view-change=${this.handleViewChange}
+      >
+        <sl-select
+          class="preset-filter"
+          multiple
+          clearable
+          max-options-visible="1"
+          placeholder="All types"
+          .value=${this.filters.presets}
+          @sl-change=${(event: Event) => {
+            const select = event.target as HTMLElement & {
+              value: string | string[];
+            };
+            this.filters = {
+              ...this.filters,
+              presets: Array.isArray(select.value)
+                ? [...select.value]
+                : [select.value].filter(Boolean),
+            };
+          }}
+        >
+          ${repeat(
+            presetOptions,
+            (option) => option.value,
+            (option) =>
+              html`<sl-option value=${option.value}>${option.label}</sl-option>`
+          )}
+        </sl-select>
 
-          <sl-select
-            class="preset-filter"
-            multiple
-            clearable
-            max-options-visible="1"
-            placeholder="All types"
-            .value=${this.filters.presets}
-            @sl-change=${(event: Event) => {
-              const select = event.target as HTMLElement & {
-                value: string | string[];
-              };
-              this.filters = {
-                ...this.filters,
-                presets: Array.isArray(select.value)
-                  ? [...select.value]
-                  : [select.value].filter(Boolean),
-              };
-            }}
+        <sl-select
+          class="status-filter"
+          multiple
+          clearable
+          max-options-visible="1"
+          placeholder="Any status"
+          .value=${this.filters.statuses}
+          @sl-change=${(event: Event) => {
+            const select = event.target as HTMLElement & {
+              value: string | string[];
+            };
+            const values = Array.isArray(select.value)
+              ? select.value
+              : [select.value].filter(Boolean);
+            this.filters = {
+              ...this.filters,
+              statuses: values as FlowStatusFilter[],
+            };
+          }}
+        >
+          <sl-option value="enabled">Enabled</sl-option>
+          <sl-option value="paused">Paused</sl-option>
+          <sl-option value="draft">Draft</sl-option>
+          <!-- The count behind this is the page range, like the Failed
+               column, so the option says which window it means. -->
+          <sl-option value="failing"
+            >Failed in the last ${this.rangeLabel}</sl-option
           >
-            ${repeat(
-              presetOptions,
-              (option) => option.value,
-              (option) =>
-                html`<sl-option value=${option.value}
-                  >${option.label}</sl-option
-                >`
-            )}
-          </sl-select>
+        </sl-select>
 
-          <sl-select
-            class="status-filter"
-            multiple
-            clearable
-            max-options-visible="1"
-            placeholder="Any status"
-            .value=${this.filters.statuses}
-            @sl-change=${(event: Event) => {
-              const select = event.target as HTMLElement & {
-                value: string | string[];
-              };
-              const values = Array.isArray(select.value)
-                ? select.value
-                : [select.value].filter(Boolean);
-              this.filters = {
-                ...this.filters,
-                statuses: values as FlowStatusFilter[],
-              };
-            }}
-          >
-            <sl-option value="enabled">Enabled</sl-option>
-            <sl-option value="paused">Paused</sl-option>
-            <sl-option value="draft">Draft</sl-option>
-            <!-- The count behind this is the page range, like the Failed
-                 column, so the option says which window it means. -->
-            <sl-option value="failing"
-              >Failed in the last ${this.rangeLabel}</sl-option
-            >
-          </sl-select>
-
-          <time-range-select
-            ariaLabel="Flows time range"
-            .value=${this.range}
-            .options=${[
-              { value: 'day', label: '24h' },
-              { value: 'week', label: '7d' },
-              { value: 'month', label: '30d' },
-              { value: 'year', label: '1y' },
-            ]}
-            @range-change=${(event: CustomEvent) => {
-              this.range = event.detail.value as FlowRange;
-              void this.loadCosts();
-            }}
-          ></time-range-select>
-        </form>
-
-        <div class="view-switcher-group">
-          <span class="results-count" aria-live="polite"
-            >${this.resultsLabel}</span
-          >
-          <span class="toolbar-divider" aria-hidden="true"></span>
-          <sl-button-group label="Flows view">
-            ${[
-              { value: 'list' as const, label: 'List', icon: 'list-ul' },
-              {
-                value: 'cards' as const,
-                label: 'Cards',
-                icon: 'grid-3x3-gap',
-              },
-            ].map(
-              (option) => html`
-                <sl-button
-                  size="small"
-                  data-view=${option.value}
-                  variant=${
-                    this.currentView === option.value ? 'primary' : 'default'
-                  }
-                  aria-pressed=${this.currentView === option.value}
-                  @click=${() => this.setCurrentView(option.value)}
-                >
-                  <sl-icon slot="prefix" name=${option.icon}></sl-icon>
-                  ${option.label}
-                </sl-button>
-              `
-            )}
-          </sl-button-group>
-        </div>
-      </div>
+        <time-range-select
+          ariaLabel="Flows time range"
+          .value=${this.range}
+          .options=${[
+            { value: 'day', label: '24h' },
+            { value: 'week', label: '7d' },
+            { value: 'month', label: '30d' },
+            { value: 'year', label: '1y' },
+          ]}
+          @range-change=${(event: CustomEvent) => {
+            this.range = event.detail.value as FlowRange;
+            void this.loadCosts();
+          }}
+        ></time-range-select>
+        <span slot="count">${this.resultsLabel}</span>
+      </list-toolbar>
     `;
   }
 
