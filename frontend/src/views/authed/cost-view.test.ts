@@ -213,6 +213,17 @@ describe('CostView', () => {
     expect(element.shadowRoot?.textContent).to.not.contain(
       'Loading cost analytics'
     );
+
+    // The stale answers are inert, but the side column's budget and pricing
+    // controls have nothing to do with the range, so they stay clickable.
+    expect(getComputedStyle(metrics as Element).pointerEvents).to.equal('none');
+    const sideColumn = element.shadowRoot?.querySelector(
+      '.results.is-updating .side-column'
+    );
+    expect(sideColumn, 'the controls column is rendered').to.exist;
+    expect(getComputedStyle(sideColumn as Element).pointerEvents).to.equal(
+      'auto'
+    );
   });
 
   it('describes the page with the tabs it actually has', async () => {

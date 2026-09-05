@@ -390,8 +390,13 @@ export class CostView extends AuthedElement {
       }
 
       /* The previous range's answers, on their way out: readable, clearly not
-         current, and in exactly the place the new ones will appear. */
-      .results.is-updating {
+         current, and in exactly the place the new ones will appear. Only the
+         answers dim and go inert. The side column (budgets, pricing
+         overrides) is not an answer about the range, so it stays live: no
+         opacity here on the wrapper, which would group the side column into
+         the fade. */
+      .results.is-updating > *:not(.column-layout),
+      .results.is-updating .main-column {
         opacity: 0.6;
         pointer-events: none;
       }
