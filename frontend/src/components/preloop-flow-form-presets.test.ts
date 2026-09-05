@@ -187,8 +187,33 @@ describe('PreloopFlowForm presets', () => {
     );
     expect(element.shadowRoot!.textContent).to.include('Keep editing');
     expect(element.shadowRoot!.textContent).to.include('Switch preset');
+    const keepEditing = element.shadowRoot!.querySelector(
+      'sl-button[autofocus]'
+    );
+    expect(keepEditing).to.exist;
+    expect(keepEditing!.textContent).to.contain('Keep editing');
     expect((element as any).pickerSelectedId).to.equal('preset-002');
     expect(element.flow.prompt_template).to.equal('A rewritten review prompt.');
+  });
+
+  it('collapses the picker when the already-selected row is chosen again', async () => {
+    const element = await mount();
+    await (element as any).applyPresetSelection('preset-002');
+    await element.updateComplete;
+    expect((element as any).pickerCollapsed).to.be.true;
+
+    (element as any).handlePickerChangeRequest();
+    await element.updateComplete;
+    expect((element as any).pickerCollapsed).to.be.false;
+
+    (element as any).handlePickerSelect(
+      new CustomEvent('preset-select', { detail: { presetId: 'preset-002' } })
+    );
+    await element.updateComplete;
+
+    expect((element as any).pickerCollapsed).to.be.true;
+    expect((element as any).pickerSelectedId).to.equal('preset-002');
+    expect(element.flow.prompt_template).to.equal('Review this pull request.');
   });
 
   it('collapses the picker when opened with ?preset_id=', async () => {
@@ -203,5 +228,33 @@ describe('PreloopFlowForm presets', () => {
     expect((element as any).pickerCollapsed).to.be.true;
     expect(picker(element).collapsed).to.be.true;
     expect(picker(element).selectedId).to.equal('preset-002');
+  });
+
+  it('warns on the next pick after typing into an unknown ?preset_id= draft', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/console/flows/new?preset_id=missing-preset'
+    );
+    const element = await mount();
+    expect((element as any).presetSnapshot).to.not.equal(null);
+
+    element.flow = {
+      ...element.flow,
+      prompt_template: 'A typed prompt.',
+    };
+    await element.updateComplete;
+
+    (element as any).handlePickerSelect(
+      new CustomEvent('preset-select', { detail: { presetId: 'preset-002' } })
+    );
+    await element.updateComplete;
+
+    expect(
+      element.shadowRoot!.querySelector(
+        'sl-dialog[label="Replace your edits?"]'
+      )
+    ).to.exist;
+    expect(element.flow.prompt_template).to.equal('A typed prompt.');
   });
 });

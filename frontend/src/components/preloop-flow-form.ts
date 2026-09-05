@@ -331,6 +331,7 @@ export class PreloopFlowForm extends LitElement {
         } else {
           this.pickerSelectedId = presetId;
           this.pickerCollapsed = false;
+          this.capturePresetSnapshot();
         }
       } else {
         this.capturePresetSnapshot();
@@ -885,7 +886,11 @@ export class PreloopFlowForm extends LitElement {
 
   private handlePickerSelect(event: CustomEvent<{ presetId: string }>) {
     const presetId = event.detail?.presetId;
-    if (!presetId || presetId === this.pickerSelectedId) {
+    if (!presetId) {
+      return;
+    }
+    if (presetId === this.pickerSelectedId) {
+      this.pickerCollapsed = true;
       return;
     }
     if (this.hasPresetEdits()) {
@@ -1504,6 +1509,7 @@ export class PreloopFlowForm extends LitElement {
                   slot="footer"
                   variant="default"
                   type="button"
+                  autofocus
                   @click=${this.keepEditing}
                 >
                   Keep editing
