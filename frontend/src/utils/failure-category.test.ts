@@ -19,6 +19,7 @@ describe('failure-category', () => {
       'runner_error',
       'model_transient',
       'model_auth',
+      'provider_billing',
       'model_quota',
       'model_config',
       'no_confirmation',
@@ -111,6 +112,27 @@ describe('failure-category', () => {
     expect(badge?.textContent?.trim()).to.equal('Runner conflict');
     const tooltip = el.querySelector('sl-tooltip');
     expect(tooltip?.getAttribute('content')).to.contain('same name');
+  });
+
+  it('labels a provider billing refusal and never promises a retry', () => {
+    expect(failureCategoryChipLabel('provider_billing')).to.equal(
+      'Provider billing'
+    );
+    const tooltip = failureCategoryTooltip('provider_billing');
+    expect(tooltip).to.contain('billing or quota');
+    expect(tooltip).to.contain('topped up');
+    expect(tooltip).to.not.contain('usually works on a retry');
+  });
+
+  it('drops the model transient retry promise when the page saw a 4xx', () => {
+    expect(failureCategoryTooltip('model_transient')).to.contain(
+      'usually works on a retry'
+    );
+    const doubtful = failureCategoryTooltip('model_transient', {
+      retryDoubtful: true,
+    });
+    expect(doubtful).to.not.contain('usually works on a retry');
+    expect(doubtful).to.contain('4xx');
   });
 
   it('renders nothing when the run carries no category', async () => {

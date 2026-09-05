@@ -92,11 +92,38 @@ export class FlowExecutionsView extends AuthedElement {
         overflow-x: auto;
         margin-top: 1rem;
       }
+      /* Fixed layout, because content-driven widths made this table 1250px
+         wide inside a 1125px wrapper at 1440: the cost column and the kebab
+         were off-screen behind a scrollbar that only appeared on hover. The
+         widths below are the ones the columns actually need; Subject takes
+         whatever is left and ellipsises. */
       table {
         width: 100%;
         border-collapse: collapse;
         min-width: 960px;
+        table-layout: fixed;
         font-size: var(--console-text-body);
+      }
+      th.col-flow {
+        width: 176px;
+      }
+      th.col-status {
+        width: 96px;
+      }
+      th.col-started {
+        width: 76px;
+      }
+      th.col-duration {
+        width: 72px;
+      }
+      th.col-model {
+        width: 150px;
+      }
+      th.col-tools {
+        width: 64px;
+      }
+      th.col-cost {
+        width: 60px;
       }
       /* A cell grid draws a box around every value in the table (wave 4).
          Rows are separated by a hairline and nothing else, and the header is
@@ -139,18 +166,17 @@ export class FlowExecutionsView extends AuthedElement {
       .row-link:focus-visible {
         text-decoration: underline;
       }
+      /* A table cell, not a flex row: as flex the name and the pool chip
+         shared one line, which pushed the whole row taller and the table
+         wider. The chip now sits under the name, as it does on the flows
+         list. */
       .flow-cell {
-        align-items: center;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        max-width: 280px;
+        display: table-cell;
+        overflow: hidden;
       }
-      /* The subject is the primary way to tell executions apart, so give it
-         room while keeping long repo/branch names from widening the table. */
+      /* The subject is the primary way to tell executions apart, so it gets
+         the width the fixed columns leave over. */
       .subject-cell {
-        max-width: 380px;
-        min-width: 220px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -158,11 +184,14 @@ export class FlowExecutionsView extends AuthedElement {
       .subject-cell .execution-subject.is-fallback {
         font-family: var(--sl-font-mono);
       }
+      .model-cell {
+        overflow: hidden;
+      }
       .status-cell {
         display: flex;
         align-items: center;
-        gap: 8px;
-        white-space: nowrap;
+        flex-wrap: wrap;
+        gap: 4px 8px;
       }
       /* One of the page's two ambient animations: the dot that says a run is
          still going. The chip beside it stays a soft tint. */
@@ -201,7 +230,7 @@ export class FlowExecutionsView extends AuthedElement {
         white-space: nowrap;
       }
       .actions-cell {
-        width: 48px;
+        width: 72px;
       }
       .row-actions {
         display: flex;
@@ -794,14 +823,14 @@ export class FlowExecutionsView extends AuthedElement {
                     <table>
                       <thead>
                         <tr>
-                          <th>Flow</th>
-                          <th>Subject</th>
-                          <th>Status</th>
-                          <th>Started</th>
-                          <th>Duration</th>
-                          <th>Model</th>
-                          <th class="numeric">Tool calls</th>
-                          <th class="numeric">$ est.</th>
+                          <th class="col-flow">Flow</th>
+                          <th class="col-subject">Subject</th>
+                          <th class="col-status">Status</th>
+                          <th class="col-started">Started</th>
+                          <th class="col-duration">Duration</th>
+                          <th class="col-model">Model</th>
+                          <th class="numeric col-tools">Tool calls</th>
+                          <th class="numeric col-cost">$ est.</th>
                           <th class="actions-cell"></th>
                         </tr>
                       </thead>

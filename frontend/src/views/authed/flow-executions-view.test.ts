@@ -114,6 +114,44 @@ describe('FlowExecutionsView', () => {
     expect(cells[1].querySelectorAll('sl-badge').length).to.equal(1);
   });
 
+  it('fits the table inside its wrapper at 1440', async () => {
+    // 1125px is the content width the console gives this table at a 1440
+    // viewport, where the content-sized layout measured 1250px and pushed
+    // the cost column and the kebab off-screen.
+    fetchStub = stub([
+      {
+        id: 'exec-dddddddd-4',
+        flow_id: 'flow-4',
+        flow_name: 'A flow with a decidedly long name for one column',
+        status: 'SUCCEEDED',
+        start_time: '2026-03-09T10:00:00Z',
+        end_time: '2026-03-09T10:05:00Z',
+        tool_calls_count: 16,
+        estimated_cost: 0.08,
+        trigger_subject:
+          'preloop/preloop #138 · Pull request opened · 949d625b',
+        model_alias: 'deepseek/deepseek-v4-pro',
+        provider_name: 'deepseek',
+        runner: { kind: 'hosted', pool: 'hosted' },
+      },
+      ...EXECUTIONS,
+    ]);
+    const host = (await fixture(
+      html`<div style="width: 1125px;">
+        <flow-executions-view></flow-executions-view>
+      </div>`
+    )) as HTMLElement;
+    const el = host.querySelector('flow-executions-view') as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const wrapper = el.shadowRoot!.querySelector(
+      '.table-wrapper'
+    ) as HTMLElement;
+    const table = wrapper.querySelector('table') as HTMLElement;
+    expect(table.scrollWidth).to.be.at.most(wrapper.clientWidth);
+  });
+
   it('preselects the status and flow filters from the query string', async () => {
     const requested: string[] = [];
     fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
