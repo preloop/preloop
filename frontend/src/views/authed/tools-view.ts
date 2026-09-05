@@ -62,6 +62,8 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 
 import {
   NATIVE_ADAPTERS,
+  nativeAdapterGroupName,
+  SEEN_FROM_AGENTS_LABEL,
   type ToolWithRules,
 } from '../../components/tools-editor-component';
 import type { GatewayUsageByTool } from '../../types';
@@ -781,14 +783,16 @@ export class ToolsView extends LitElement {
     const { query, agents, rules } = this.nativeFilters;
 
     if (agents.length > 0) {
-      const labels = agents.map(
-        (agent) =>
-          NATIVE_ADAPTERS.find((adapter) => adapter.value === agent)?.label ||
-          agent
+      const wanted = new Set(
+        agents.map((agent) => nativeAdapterGroupName(agent))
       );
-      tools = tools.filter((tool) =>
-        labels.some((label) => (tool.adapters || []).includes(label))
-      );
+      tools = tools.filter((tool) => {
+        const names =
+          tool.adapters && tool.adapters.length > 0
+            ? tool.adapters.map((adapter) => nativeAdapterGroupName(adapter))
+            : [SEEN_FROM_AGENTS_LABEL];
+        return names.some((name) => wanted.has(name));
+      });
     }
     if (rules.length > 0) {
       tools = tools.filter((tool) =>

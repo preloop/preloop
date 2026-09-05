@@ -1393,6 +1393,67 @@ describe('ToolsView – tabs and toolbar', () => {
     );
     expect(body.is_enabled).to.equal(false);
   });
+
+  it('blocked switch on a native tool without config_id creates an agent config', async () => {
+    tools = [makeTool(), makeNativeTool({ is_enabled: true })];
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => (el as any).tools?.length === 2,
+      'Tools did not load'
+    );
+    await el.updateComplete;
+
+    const nativeEditor = el.shadowRoot?.querySelector(
+      'sl-tab-panel[name="native"] tools-editor-component'
+    ) as LitElement;
+    const bashItem = [
+      ...(nativeEditor.shadowRoot?.querySelectorAll('tool-list-item') || []),
+    ].find(
+      (item) =>
+        (item as LitElement & { tool?: { name: string } }).tool?.name === 'Bash'
+    ) as LitElement;
+    expect(bashItem).to.exist;
+
+    const blockedSwitch = bashItem.shadowRoot?.querySelector('sl-switch') as
+      | (HTMLElement & { checked: boolean })
+      | null;
+    expect(blockedSwitch).to.exist;
+    blockedSwitch!.checked = true;
+    blockedSwitch!.dispatchEvent(
+      new CustomEvent('sl-change', { bubbles: true })
+    );
+
+    await waitUntil(() => {
+      return fetchStub.getCalls().some((call) => {
+        const url = String(call.args[0]);
+        const method = String(
+          (call.args[1] as RequestInit | undefined)?.method || 'GET'
+        ).toUpperCase();
+        return url.endsWith('/api/v1/tool-configurations') && method === 'POST';
+      });
+    }, 'Blocked switch did not create a configuration');
+
+    const createCall = fetchStub.getCalls().find((call) => {
+      const url = String(call.args[0]);
+      const method = String(
+        (call.args[1] as RequestInit | undefined)?.method || 'GET'
+      ).toUpperCase();
+      return url.endsWith('/api/v1/tool-configurations') && method === 'POST';
+    });
+    const body = JSON.parse(
+      String((createCall?.args[1] as RequestInit | undefined)?.body || '{}')
+    );
+    expect(body.tool_source).to.equal('agent');
+    expect(body.mcp_server_id).to.equal(null);
+    expect(body.tool_name).to.equal('Bash');
+    expect(body.is_enabled).to.equal(false);
+  });
 });
 
 describe('ToolsView – starter policy suggestions', () => {

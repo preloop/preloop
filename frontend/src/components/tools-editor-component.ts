@@ -28,6 +28,18 @@ export const NATIVE_ADAPTER_LABELS = NATIVE_ADAPTERS.map(
 
 export const SEEN_FROM_AGENTS_LABEL = 'Seen from agents';
 
+/** Map a wire adapter (id or display label) onto the catalogue label. */
+export function nativeAdapterGroupName(raw: string | undefined): string {
+  const name = (raw || '').trim();
+  if (!name || name === SEEN_FROM_AGENTS_LABEL) {
+    return SEEN_FROM_AGENTS_LABEL;
+  }
+  const hit = NATIVE_ADAPTERS.find(
+    (adapter) => adapter.value === name || adapter.label === name
+  );
+  return hit ? hit.label : SEEN_FROM_AGENTS_LABEL;
+}
+
 export type ToolsEditorFamily = 'mcp' | 'native';
 
 interface ToolGroup {
@@ -237,8 +249,7 @@ export class ToolsEditorComponent extends LitElement {
   }
 
   private _adapterGroupName(adapter: string | undefined): string {
-    const name = (adapter || '').trim();
-    return name || SEEN_FROM_AGENTS_LABEL;
+    return nativeAdapterGroupName(adapter);
   }
 
   private _getNativeToolGroups(): ToolGroup[] {
