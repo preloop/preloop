@@ -192,10 +192,11 @@ describe('ToolsView (approvals + conditions)', () => {
   afterEach(() => {
     fetchStub.restore();
     localStorage.clear();
+    window.history.replaceState({}, '', window.location.pathname);
     invalidateApiCaches();
   });
 
-  it('renders the summary stats with correct labels and an unavailable note', async () => {
+  it('renders the summary strip counts and the unavailable count', async () => {
     const availableTool = {
       name: 'example_tool',
       description: 'Example tool',
@@ -241,13 +242,17 @@ describe('ToolsView (approvals + conditions)', () => {
 
     const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
     await waitUntil(
-      () => el.shadowRoot?.querySelector('.summary-table') !== null,
-      'Summary table did not render'
+      () => el.shadowRoot?.querySelector('.summary-strip') !== null,
+      'Summary strip did not render'
     );
 
-    const summary = el.shadowRoot?.querySelector('.summary-table');
-    expect(summary?.textContent).to.contain('Total tools');
-    expect(summary?.textContent).to.not.contain('toolss');
+    const summary = el.shadowRoot?.querySelector('.summary-strip');
+    const stripText = summary?.textContent?.replace(/\s+/g, ' ') || '';
+    expect(stripText).to.contain('2 tools');
+    expect(stripText).to.contain('1 enabled');
+    expect(stripText).to.contain('1 unavailable');
+    expect(stripText).to.not.contain('toolss');
+    expect(stripText).to.not.contain('Total tools');
 
     const note = el.shadowRoot?.querySelector('.unavailable-note');
     expect(note).to.exist;
@@ -259,7 +264,7 @@ describe('ToolsView (approvals + conditions)', () => {
     expect(contextTax?.textContent?.replace(/\s+/g, ' ')).to.contain(
       '~1,200 tokens'
     );
-    expect(contextTax?.textContent).to.contain('to every agent request');
+    expect(contextTax?.textContent).to.contain('to every request');
   });
 
   it('renders the native tool approvals account-default card with override links', async () => {
@@ -605,10 +610,30 @@ describe('ToolsView (approvals + conditions)', () => {
   });
 });
 
-describe('ToolsView – filter persistence', () => {
+describe('ToolsView – tabs and toolbar', () => {
   let fetchStub: sinon.SinonStub;
+  let tools: Record<string, unknown>[];
+  let workflows: Record<string, unknown>[];
 
-  const STORAGE_KEY = 'preloop:tools-filter';
+  function makeTool(
+    overrides: Record<string, unknown> = {}
+  ): Record<string, unknown> {
+    return {
+      name: 'example_tool',
+      description: 'Example tool',
+      source: 'builtin',
+      source_id: null,
+      source_name: 'Built-in',
+      schema: {},
+      is_enabled: true,
+      is_supported: true,
+      approval_workflow_id: null,
+      has_approval_condition: false,
+      config_id: null,
+      access_rules: [],
+      ...overrides,
+    };
+  }
 
   function stubLoadData() {
     fetchStub.callsFake(
@@ -617,7 +642,7 @@ describe('ToolsView – filter persistence', () => {
         const method = (init?.method || 'GET').toUpperCase();
 
         if (url.endsWith('/api/v1/tools') && method === 'GET') {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(tools), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
@@ -629,7 +654,7 @@ describe('ToolsView – filter persistence', () => {
           });
         }
         if (url.endsWith('/api/v1/approval-workflows') && method === 'GET') {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(workflows), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
@@ -652,6 +677,18 @@ describe('ToolsView – filter persistence', () => {
             headers: { 'Content-Type': 'application/json' },
           });
         }
+        if (url.endsWith('/api/v1/account/governance-defaults')) {
+          return new Response(
+            JSON.stringify({
+              defaults: {
+                native_tool_approvals: null,
+                approval_workflow_id: null,
+              },
+              override_agent_ids: [],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
         return new Response(JSON.stringify({}), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -663,6 +700,23 @@ describe('ToolsView – filter persistence', () => {
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
+    tools = [makeTool()];
+    workflows = [
+      {
+        id: 'policy-1',
+        name: 'Default',
+        description: 'Default policy',
+        approval_type: 'standard',
+        is_default: true,
+      },
+      {
+        id: 'policy-2',
+        name: 'Security',
+        description: 'Security policy',
+        approval_type: 'standard',
+        is_default: false,
+      },
+    ];
     fetchStub = sinon.stub(window, 'fetch');
     stubLoadData();
   });
@@ -670,50 +724,209 @@ describe('ToolsView – filter persistence', () => {
   afterEach(() => {
     fetchStub.restore();
     localStorage.clear();
+    window.history.replaceState({}, '', window.location.pathname);
     invalidateApiCaches();
   });
 
-  it('defaults to "available" filter when no saved preference', async () => {
+  it('defaults to the MCP tab and restores the native tab from localStorage', async () => {
     const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
     await waitUntil(() => !(el as any).loading, 'Still loading');
     await el.updateComplete;
 
-    expect((el as any).activeFilter).to.equal('available');
+    expect((el as any).activeTab).to.equal('mcp');
+    const mcpTab = el.shadowRoot?.querySelector('sl-tab[panel="mcp"]');
+    expect(mcpTab?.textContent).to.contain('MCP tools');
+    el.remove();
+
+    window.history.replaceState({}, '', window.location.pathname);
+    localStorage.setItem('preloop.tools.tab', 'native');
+
+    const restored = (await fixture(
+      html`<tools-view></tools-view>`
+    )) as ToolsView;
+    await waitUntil(() => !(restored as any).loading, 'Still loading');
+    await restored.updateComplete;
+
+    expect((restored as any).activeTab).to.equal('native');
+    expect(localStorage.getItem('preloop.tools.tab')).to.equal('native');
   });
 
-  it('restores saved filter from localStorage on mount', async () => {
-    localStorage.setItem(STORAGE_KEY, 'prelooped');
+  it('?tab=native opens the native tab', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
 
     const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
     await waitUntil(() => !(el as any).loading, 'Still loading');
     await el.updateComplete;
 
-    expect((el as any).activeFilter).to.equal('prelooped');
+    expect((el as any).activeTab).to.equal('native');
+    expect(localStorage.getItem('preloop.tools.tab')).to.equal('native');
   });
 
-  it('persists filter to localStorage when changed', async () => {
+  it('native tab renders the defaults strip with the three stable ids', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => !(el as any).loading && (el as any).governanceDefaults !== null,
+      'Governance defaults did not load'
+    );
+    await el.updateComplete;
+
+    expect(el.shadowRoot?.querySelector('#native-approvals-defaults-card')).to
+      .exist;
+    expect(el.shadowRoot?.querySelector('#native-approvals-default-switch')).to
+      .exist;
+    expect(el.shadowRoot?.querySelector('#native-approvals-default-workflow'))
+      .to.exist;
+    expect((el as any).activeTab).to.equal('native');
+    expect(el.shadowRoot?.textContent).to.contain(
+      'No native tool calls have reached Preloop yet'
+    );
+    expect(
+      el.shadowRoot?.querySelector('sl-tab[panel="native"]')?.textContent
+    ).to.contain('Native tools 0');
+  });
+
+  it('toolbar search narrows the tool list', async () => {
+    tools = [
+      makeTool({ name: 'alpha_search', description: 'First' }),
+      makeTool({ name: 'beta_other', description: 'Second' }),
+    ];
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => (el as any).tools?.length === 2,
+      'Tools did not load'
+    );
+    await el.updateComplete;
+
+    const toolbar = el.shadowRoot?.querySelector('list-toolbar') as HTMLElement;
+    expect(toolbar).to.exist;
+    toolbar.dispatchEvent(
+      new CustomEvent('search-change', {
+        detail: { value: 'alpha' },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await el.updateComplete;
+
+    const names = ((el as any)._getFilteredTools() as { name: string }[]).map(
+      (tool) => tool.name
+    );
+    expect(names).to.deep.equal(['alpha_search']);
+  });
+
+  it('workflow filter shows only tools whose rules use that workflow', async () => {
+    tools = [
+      makeTool({
+        name: 'secured_tool',
+        access_rules: [
+          {
+            id: 'rule-1',
+            action: 'require_approval',
+            is_enabled: true,
+            approval_workflow_id: 'policy-2',
+          },
+        ],
+      }),
+      makeTool({ name: 'open_tool', access_rules: [] }),
+    ];
+
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => (el as any).tools?.length === 2,
+      'Tools did not load'
+    );
+    await el.updateComplete;
+
+    const select = el.shadowRoot?.querySelector(
+      'sl-select.workflow-filter'
+    ) as HTMLSelectElement;
+    expect(select).to.exist;
+    select.value = 'policy-2';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await el.updateComplete;
+
+    const names = ((el as any)._getFilteredTools() as { name: string }[]).map(
+      (tool) => tool.name
+    );
+    expect(names).to.deep.equal(['secured_tool']);
+  });
+
+  it('connect an agent opens the setup dialog', async () => {
     const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
     await waitUntil(() => !(el as any).loading, 'Still loading');
     await el.updateComplete;
 
-    (el as any)._setFilter('prelooped');
-    expect(localStorage.getItem(STORAGE_KEY)).to.equal('prelooped');
-    expect((el as any).activeFilter).to.equal('prelooped');
+    const button = Array.from(
+      el.shadowRoot!.querySelectorAll('sl-button')
+    ).find((item) => item.textContent?.includes('Connect an agent')) as
+      HTMLElement | undefined;
+    expect(button).to.exist;
+    button!.click();
+    await el.updateComplete;
+
+    expect((el as any).showSetupDialog).to.equal(true);
+    const dialog = el.shadowRoot?.querySelector('mcp-setup-dialog');
+    expect(dialog).to.exist;
+    expect((dialog as any).open).to.not.equal(false);
   });
 
-  it('survives round-trip: set filter → remount → filter restored', async () => {
-    // Mount first instance, set filter
-    const el1 = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
-    await waitUntil(() => !(el1 as any).loading, 'Still loading');
-    (el1 as any)._setFilter('mcp');
-    el1.remove();
+  it('add MCP server opens the server form', async () => {
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(() => !(el as any).loading, 'Still loading');
+    await el.updateComplete;
 
-    // Mount second instance — should pick up the saved filter
-    const el2 = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
-    await waitUntil(() => !(el2 as any).loading, 'Still loading');
-    await el2.updateComplete;
+    const button = Array.from(
+      el.shadowRoot!.querySelectorAll('sl-button')
+    ).find((item) => item.textContent?.includes('Add MCP server')) as
+      HTMLElement | undefined;
+    expect(button).to.exist;
+    button!.click();
+    await el.updateComplete;
 
-    expect((el2 as any).activeFilter).to.equal('mcp');
+    expect((el as any).isAddingMCPServer).to.equal(true);
+    expect(el.shadowRoot?.querySelector('mcp-server-form')).to.exist;
+  });
+
+  it('workflows menu opens the workflow dialog for edit and for new', async () => {
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(() => !(el as any).loading, 'Still loading');
+    await el.updateComplete;
+
+    const menu = el.shadowRoot?.querySelector('.workflows-menu sl-menu');
+    expect(menu).to.exist;
+    const editItem = menu?.querySelector(
+      'sl-menu-item[data-workflow-edit="policy-2"]'
+    ) as HTMLElement;
+    expect(editItem).to.exist;
+    editItem.click();
+    await el.updateComplete;
+
+    expect((el as any).showPolicyDialog).to.equal(true);
+    expect((el as any).editingPolicy?.id).to.equal('policy-2');
+
+    (el as any)._closePolicyDialog();
+    await el.updateComplete;
+
+    const newItem = menu?.querySelector(
+      'sl-menu-item[data-workflow-new]'
+    ) as HTMLElement;
+    expect(newItem).to.exist;
+    newItem.click();
+    await el.updateComplete;
+
+    expect((el as any).showPolicyDialog).to.equal(true);
+    expect((el as any).editingPolicy).to.equal(null);
   });
 });
 
