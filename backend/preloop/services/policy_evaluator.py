@@ -5,6 +5,7 @@ is executed, based on tool access rules. It supports allow/deny/require_approval
 actions with priority-based rule evaluation.
 """
 
+import functools
 import logging
 import re
 import uuid
@@ -40,6 +41,37 @@ from preloop.services.subject_governance import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Cap on ``.matches()`` patterns in the simple evaluator. Python ``re`` has
+# no timeout; this bound and the compiled-pattern LRU cache are the ReDoS
+# mitigation (they limit compile cost and reuse compiled objects, they do
+# not bound match time on a hostile pattern that still fits the cap).
+SIMPLE_MATCHES_PATTERN_MAX_LEN = 512
+
+
+@functools.lru_cache(maxsize=128)
+def _compile_simple_matches_pattern(pattern: str) -> re.Pattern[str]:
+    """Compile a simple-evaluator ``matches()`` pattern (LRU-cached)."""
+    return re.compile(pattern)
+
+
+def _simple_matches(value: Any, pattern: str) -> bool:
+    """Return whether ``pattern`` occurs in ``value`` via ``re.search``.
+
+    Missing or non-string fields are a non-match. Patterns longer than
+    :data:`SIMPLE_MATCHES_PATTERN_MAX_LEN` raise ValueError.
+    """
+    if not isinstance(value, str):
+        return False
+    if len(pattern) > SIMPLE_MATCHES_PATTERN_MAX_LEN:
+        raise ValueError(
+            f"matches() pattern exceeds {SIMPLE_MATCHES_PATTERN_MAX_LEN} characters"
+        )
+    try:
+        compiled = _compile_simple_matches_pattern(pattern)
+    except re.error as exc:
+        raise ValueError(f"Invalid matches() pattern: {exc}") from exc
+    return compiled.search(value) is not None
 
 
 class PolicyDecision(tuple):
@@ -744,6 +776,14 @@ def _evaluate_simple_condition(expression: str, tool_args: Dict[str, Any]) -> bo
         - args.field >= number
         - args.field <= number
         - args.field.contains('substring')
+        - args.field.matches('regex')
+
+    ``.matches()`` uses Python ``re.search``. Python's ``re`` has no
+    timeout. The 512-character pattern cap and the compiled-pattern LRU
+    cache are the ReDoS mitigation: they bound compile cost and reuse
+    compiled objects. They do not bound match time on a hostile pattern
+    that still fits the cap. Oversized patterns raise ValueError rather
+    than evaluating.
 
     Args:
         expression: Simple condition expression.
@@ -786,6 +826,14 @@ def _evaluate_simple_condition(expression: str, tool_args: Dict[str, Any]) -> bo
         elif isinstance(value, list):
             return substring in value
         return False
+
+    matches_pattern = r"^args\.(\w+(?:\.\w+)*)\.matches\s*\(\s*(['\"])(.*)\2\s*\)$"
+    matches_match = re.match(matches_pattern, expression)
+    if matches_match:
+        field_path = matches_match.group(1)
+        pattern = matches_match.group(3)
+        value = _get_nested_value(tool_args, field_path)
+        return _simple_matches(value, pattern)
 
     # Handle comparison operators
     # Order matters: >= and <= must be checked before > and <
@@ -996,6 +1044,14 @@ def _evaluate_simple_condition_on_bindings(
         if isinstance(value, list):
             return substring in value
         return False
+
+    matches_pattern = r"^(\w+(?:\.\w+)*)\.matches\s*\(\s*(['\"])(.*)\2\s*\)$"
+    matches_match = re.match(matches_pattern, expression)
+    if matches_match:
+        field_path = matches_match.group(1)
+        pattern = matches_match.group(3)
+        value = _get_nested_value(bindings, field_path)
+        return _simple_matches(value, pattern)
 
     comparison_pattern = r"^(\w+(?:\.\w+)*)\s*(==|!=|>=|<=|>|<)\s*(.+)$"
     comparison_match = re.match(comparison_pattern, expression)
