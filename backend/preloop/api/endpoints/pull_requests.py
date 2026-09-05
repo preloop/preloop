@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -90,7 +91,7 @@ def _tracker_kind(tracker_type: str) -> str:
     response_model=PullRequestListResponse,
 )
 @require_permission("view_trackers")
-async def list_project_pull_requests(
+def list_project_pull_requests(
     project_id: UUID,
     state: Literal["open"] = Query("open"),
     limit: int = Query(20, ge=1, le=50),
@@ -116,16 +117,18 @@ async def list_project_pull_requests(
         if cached is not None:
             return PullRequestListResponse.model_validate(cached)
 
-    try:
-        client = await get_tracker_client(organization.id, project.id, db, current_user)
+    async def _fetch() -> dict:
+        client = await get_tracker_client(
+            organization.id, project.id, db, current_user
+        )
         if kind == "gitlab":
-            listed = await client.list_merge_requests(
+            return await client.list_merge_requests(
                 state=state, limit=limit, page=page
             )
-        else:
-            listed = await client.list_pull_requests(
-                state=state, limit=limit, page=page
-            )
+        return await client.list_pull_requests(state=state, limit=limit, page=page)
+
+    try:
+        listed = asyncio.run(_fetch())
     except HTTPException:
         raise
     except TrackerError as exc:

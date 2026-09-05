@@ -39,6 +39,13 @@ def _opened_mr(*, iid: int) -> MagicMock:
     return mr
 
 
+def _list_slice(all_mrs: list, **kwargs: object) -> list:
+    per_page = int(kwargs["per_page"])
+    page = int(kwargs["page"])
+    start = (page - 1) * per_page
+    return all_mrs[start : start + per_page]
+
+
 @pytest.mark.asyncio
 async def test_list_opened_mrs_normalization():
     mock_gl = MagicMock(spec=gitlab.Gitlab)
@@ -47,8 +54,10 @@ async def test_list_opened_mrs_normalization():
     mock_gl.projects = MagicMock()
     mock_gl.projects.get.return_value = mock_project
 
-    mrs = [_opened_mr(iid=7 + index) for index in range(21)]
-    mock_project.mergerequests.list.return_value = mrs
+    all_mrs = [_opened_mr(iid=7 + index) for index in range(21)]
+    mock_project.mergerequests.list.side_effect = lambda **kwargs: _list_slice(
+        all_mrs, **kwargs
+    )
 
     with patch("preloop.sync.trackers.gitlab.gitlab.Gitlab", return_value=mock_gl):
         tracker = GitLabTracker(
@@ -58,13 +67,15 @@ async def test_list_opened_mrs_normalization():
         )
         result = await tracker.list_merge_requests(state="open", limit=20, page=1)
 
-    mock_project.mergerequests.list.assert_called_once_with(
-        state="opened",
-        order_by="updated_at",
-        sort="desc",
-        per_page=21,
-        page=1,
-    )
+    assert mock_project.mergerequests.list.call_args_list[0].kwargs == {
+        "state": "opened",
+        "order_by": "updated_at",
+        "sort": "desc",
+        "per_page": 20,
+        "page": 1,
+    }
+    assert mock_project.mergerequests.list.call_args_list[1].kwargs["page"] == 2
+    assert mock_project.mergerequests.list.call_args_list[1].kwargs["per_page"] == 1
     assert len(result["items"]) == 20
     item = result["items"][0]
     assert item["number"] == 7
@@ -80,10 +91,36 @@ async def test_list_opened_mrs_normalization():
     assert item["state"] == "open"
     assert item["draft"] is False
     assert result["has_more"] is True
+    assert [row["iid"] for row in result["items"]] == list(range(7, 27))
 
 
 @pytest.mark.asyncio
-async def test_list_opened_mrs_has_more_false_without_extra_item():
+async def test_list_opened_mrs_page_two_is_contiguous():
+    mock_gl = MagicMock(spec=gitlab.Gitlab)
+    mock_gl.auth.return_value = None
+    mock_project = MagicMock()
+    mock_gl.projects = MagicMock()
+    mock_gl.projects.get.return_value = mock_project
+
+    all_mrs = [_opened_mr(iid=7 + index) for index in range(21)]
+    mock_project.mergerequests.list.side_effect = lambda **kwargs: _list_slice(
+        all_mrs, **kwargs
+    )
+
+    with patch("preloop.sync.trackers.gitlab.gitlab.Gitlab", return_value=mock_gl):
+        tracker = GitLabTracker(
+            "tracker-1",
+            "token",
+            {"project_id": "99", "url": "https://gitlab.example.com"},
+        )
+        result = await tracker.list_merge_requests(state="open", limit=20, page=2)
+
+    assert [row["iid"] for row in result["items"]] == [27]
+    assert result["has_more"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_opened_mrs_has_more_false_without_full_page():
     mock_gl = MagicMock(spec=gitlab.Gitlab)
     mock_gl.auth.return_value = None
     mock_project = MagicMock()
@@ -103,7 +140,7 @@ async def test_list_opened_mrs_has_more_false_without_extra_item():
         state="opened",
         order_by="updated_at",
         sort="desc",
-        per_page=21,
+        per_page=20,
         page=1,
     )
     assert len(result["items"]) == 1

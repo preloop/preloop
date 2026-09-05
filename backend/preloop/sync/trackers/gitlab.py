@@ -1575,9 +1575,10 @@ class GitLabTracker(BaseTracker):
             page: 1-based page number.
 
         Returns:
-            Dict with normalized ``items`` and ``has_more``. python-gitlab
-            7.0.0 discards the paginated list object when ``page`` is set,
-            so ``has_more`` is computed by requesting one extra item.
+            Dict with normalized ``items`` and ``has_more``. ``has_more`` is
+            a peek at the next page (``per_page=1``) so consecutive pages
+            stay contiguous. Fetching ``limit + 1`` on a page-based API
+            would skip every ``(limit + 1)``-th merge request.
         """
         project_id = self._get_project_id()
         gitlab_state = "opened" if state == "open" else state
@@ -1587,12 +1588,22 @@ class GitLabTracker(BaseTracker):
             state=gitlab_state,
             order_by="updated_at",
             sort="desc",
-            per_page=limit + 1,
+            per_page=limit,
             page=page,
         )
         rows = list(mrs or [])
-        has_more = len(rows) > limit
-        items = [self._normalize_listed_merge_request(mr) for mr in rows[:limit]]
+        has_more = False
+        if len(rows) == limit:
+            nxt = await self._make_request(
+                project.mergerequests.list,
+                state=gitlab_state,
+                order_by="updated_at",
+                sort="desc",
+                per_page=1,
+                page=page + 1,
+            )
+            has_more = bool(list(nxt or []))
+        items = [self._normalize_listed_merge_request(mr) for mr in rows]
         return {"items": items, "has_more": has_more}
 
     def _normalize_listed_merge_request(self, mr: Any) -> Dict[str, Any]:
