@@ -1437,8 +1437,12 @@ export class PreloopSessionObserver extends LitElement {
     const confirmed = await confirmDialog({
       title: 'End session',
       message: `End session "${this.activeSession.title}"?`,
+      // What the backend `end` action does (api/endpoints/account.py,
+      // update_account_runtime_session): stamp ended_at, deactivate the
+      // session's runtime keys, unbind the managed agent. It does not stop an
+      // agent process, so the dialog does not promise that.
       detail:
-        'The agent stops running it and nothing more is recorded. What it did so far stays.',
+        'Its runtime keys are revoked and nothing more is recorded. What it did so far stays.',
       confirmLabel: 'End session',
       variant: 'danger',
     });

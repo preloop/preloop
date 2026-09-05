@@ -1151,7 +1151,11 @@ describe('PreloopSessionObserver', () => {
           .updateComplete;
         const dialogText = deepText(dialog.shadowRoot);
         expect(dialogText).to.include('End session');
+        // The dialog describes the end action the API performs and no more:
+        // it revokes the session's runtime keys, it does not stop an agent.
+        expect(dialogText).to.include('Its runtime keys are revoked');
         expect(dialogText).to.include('What it did so far stays.');
+        expect(dialogText).to.not.include('The agent stops running it');
       } finally {
         confirmStub.restore();
         resetConfirmDialogForTests();
