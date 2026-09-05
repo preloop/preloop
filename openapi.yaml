@@ -13845,9 +13845,9 @@ components:
           title: Failure Category
           description: 'Coarse machine-readable reason a terminal execution did not
             succeed: one of runner_conflict, runner_error, model_transient, model_auth,
-            model_quota, model_config, no_confirmation, tool_error, agent_error, timeout,
-            cancelled, unknown. Null for successful or still-running executions, and
-            for executions that predate this field.'
+            provider_billing, model_config, no_confirmation, tool_error, agent_error,
+            timeout, cancelled, unknown. Null for successful or still-running executions,
+            and for executions that predate this field.'
         retry_of_execution_id:
           anyOf:
           - type: string

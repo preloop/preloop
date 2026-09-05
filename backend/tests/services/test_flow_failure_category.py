@@ -47,7 +47,17 @@ STAGING_MESSAGES = [
         "model_auth",
     ),
     ("Upstream model provider rejected our credentials (HTTP 401).", "model_auth"),
-    ("insufficient_quota: You exceeded your current quota", "model_quota"),
+    ("insufficient_quota: You exceeded your current quota", "provider_billing"),
+    # The staging run that read "model transient: usually works on a retry".
+    (
+        'timestamp=2026-09-03T21:32:45Z level=error msg="model call failed" '
+        'error.error="AI_APICallError: Insufficient Balance"',
+        "provider_billing",
+    ),
+    (
+        "Upstream model provider refused the call (HTTP 402 Payment Required).",
+        "provider_billing",
+    ),
     ("zai does not support parameters: ['parallel_tool_calls']", "model_config"),
     (
         "Agent exited with code 0 but did not confirm success on either "
@@ -177,6 +187,35 @@ class TestPrecedence:
                 },
             )
             == "model_transient"
+        )
+
+    def test_402_is_billing_not_transient(self):
+        """A retry cannot pay the bill, so it must not be promised one.
+
+        This is the staging run behind C04: HTTP 402 "Insufficient Balance"
+        classified as model_transient, whose console tooltip says the run
+        "usually works on a retry".
+        """
+        assert (
+            derive_failure_category(
+                status="FAILED",
+                error_message="Agent run failed",
+                failure_analysis={"transient": True, "upstream_status": 402},
+            )
+            == "provider_billing"
+        )
+
+    def test_quota_exhausted_class_is_billing(self):
+        assert (
+            derive_failure_category(
+                status="FAILED",
+                error_message="Agent run failed",
+                failure_analysis={
+                    "transient": True,
+                    "error_class": "upstream_quota_exhausted",
+                },
+            )
+            == "provider_billing"
         )
 
     def test_analysis_status_maps_auth_before_transient(self):
