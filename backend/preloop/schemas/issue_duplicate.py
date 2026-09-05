@@ -130,11 +130,11 @@ class IssueDuplicateAiStatus(BaseModel):
 
 
 class IssueDuplicateAiErrorDetail(BaseModel):
-    """Machine-readable 422 body for issue-duplicates AI endpoints.
+    """Machine-readable error body for issue-duplicates AI endpoints.
 
-    ``detail`` on ``POST /issue-duplicates/check`` and ``POST /ai-suggestion``
-    is this object (not a string) when the account has no default model
-    (``no_default_ai_model``) or the model call failed (``ai_model_error``).
+    ``detail`` on ``GET /issue-duplicates/check`` and ``POST /ai-suggestion``
+    is this object (not a string). ``no_default_ai_model`` is HTTP 422;
+    ``ai_model_error`` is HTTP 500.
     """
 
     code: Literal["no_default_ai_model", "ai_model_error"]
@@ -142,6 +142,6 @@ class IssueDuplicateAiErrorDetail(BaseModel):
 
 
 class IssueDuplicateAiError(BaseModel):
-    """HTTP 422 envelope: FastAPI wraps the detail object."""
+    """HTTP 422 or 500 envelope: FastAPI wraps the detail object."""
 
     detail: IssueDuplicateAiErrorDetail

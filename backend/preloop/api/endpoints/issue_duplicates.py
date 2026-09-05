@@ -118,11 +118,17 @@ def get_issue_duplicate_ai_status(
         422: {
             "model": IssueDuplicateAiError,
             "description": (
-                "AI verdict cannot run. `detail.code` is `no_default_ai_model` "
-                "when no default model is configured, or `ai_model_error` when "
-                "the model call failed. `detail` is this object, not a string."
+                "No default AI model. `detail.code` is `no_default_ai_model`. "
+                "`detail` is this object, not a string."
             ),
-        }
+        },
+        500: {
+            "model": IssueDuplicateAiError,
+            "description": (
+                "The model call failed. `detail.code` is `ai_model_error`. "
+                "`detail` is this object, not a string."
+            ),
+        },
     },
 )
 def check_or_create_issue_duplicate(
@@ -909,11 +915,17 @@ def get_projects_duplicate_stats(
         422: {
             "model": IssueDuplicateAiError,
             "description": (
-                "AI suggestion cannot run. `detail.code` is `no_default_ai_model` "
-                "when no default model is configured, or `ai_model_error` when "
-                "the model call failed. `detail` is this object, not a string."
+                "No default AI model. `detail.code` is `no_default_ai_model`. "
+                "`detail` is this object, not a string."
             ),
-        }
+        },
+        500: {
+            "model": IssueDuplicateAiError,
+            "description": (
+                "The model call failed. `detail.code` is `ai_model_error`. "
+                "`detail` is this object, not a string."
+            ),
+        },
     },
 )
 def get_resolution_suggestion(
