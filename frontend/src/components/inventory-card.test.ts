@@ -327,8 +327,21 @@ describe('inventory-card', () => {
     const row = el.shadowRoot!.querySelector('tbody tr')!;
     expect(row.textContent).to.contain('Pull Request Reviewer');
     expect(row.querySelectorAll('sl-skeleton').length).to.be.greaterThan(0);
+    const runsCell = row.querySelector('td[data-label="Runs"]')!;
+    expect(runsCell.querySelector('sl-skeleton'), 'runs still pending').to
+      .exist;
+    expect(
+      runsCell.querySelector('a'),
+      'pending runs cell is not a nameless link'
+    ).to.not.exist;
     expect(el.shadowRoot?.textContent).to.not.contain('No run in range');
     expect(el.shadowRoot?.querySelectorAll('.skeleton-row').length).to.equal(0);
+
+    const sort = el.shadowRoot!.querySelector('sl-select.sort-select')!;
+    expect(sort.hasAttribute('disabled'), 'sort held until usage').to.be.true;
+    expect(sort.getAttribute('title')).to.equal(
+      'Sort is held until usage arrives'
+    );
 
     (el as any).usageLoadingFlows = false;
     (el as any).flowRows = [flowRow()];
@@ -338,6 +351,12 @@ describe('inventory-card', () => {
     );
     expect(el.shadowRoot!.querySelector('sl-skeleton')).to.not.exist;
     expect(el.shadowRoot?.textContent).to.contain('12');
+    expect(
+      el
+        .shadowRoot!.querySelector('td[data-label="Runs"] a')
+        ?.getAttribute('href')
+    ).to.equal('/console/flows/executions?flow_id=flow-1');
+    expect(sort.hasAttribute('disabled')).to.be.false;
   });
 
   it('names a model and a tool before their usage lands', async () => {

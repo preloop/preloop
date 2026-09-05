@@ -870,6 +870,7 @@ export class InventoryCard extends LitElement {
 
   private renderHeader() {
     const options = SORT_OPTIONS[this.activeTab];
+    const sortHeld = this.isUsageLoading(this.activeTab);
     return html`
       <div slot="header" class="card-head">
         <span class="title">Inventory</span>
@@ -879,6 +880,12 @@ export class InventoryCard extends LitElement {
             label="Sort ${TAB_LABELS[this.activeTab].toLowerCase()} by"
             size="small"
             hoist
+            ?disabled=${sortHeld}
+            title=${
+              sortHeld
+                ? 'Sort is held until usage arrives'
+                : `Sort ${TAB_LABELS[this.activeTab].toLowerCase()} by`
+            }
             value=${this.sorts[this.activeTab]}
             @sl-change=${(event: Event) => {
               const select = event.target as HTMLElement & { value: string };
@@ -1141,14 +1148,18 @@ export class InventoryCard extends LitElement {
                           data-label="Runs"
                           title=${this.flowCountTitle}
                         >
-                          <a
-                            class="row-name"
-                            href="/console/flows/executions?flow_id=${row.id}"
-                            >${this.renderUsageCell(
-                              this.formatCompactNumber(row.runs),
-                              this.isUsageLoading('flows')
-                            )}</a
-                          >
+                          ${
+                            this.isUsageLoading('flows')
+                              ? this.renderUsageCell(
+                                  this.formatCompactNumber(row.runs),
+                                  true
+                                )
+                              : html`<a
+                                  class="row-name"
+                                  href="/console/flows/executions?flow_id=${row.id}"
+                                  >${this.formatCompactNumber(row.runs)}</a
+                                >`
+                          }
                         </td>
                         <td
                           class="num"
