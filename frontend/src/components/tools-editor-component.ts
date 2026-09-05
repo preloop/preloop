@@ -20,6 +20,7 @@ export const NATIVE_ADAPTERS: ReadonlyArray<{
   { value: 'cursor', label: 'Cursor' },
   { value: 'openclaw', label: 'OpenClaw' },
   { value: 'hermes', label: 'Hermes' },
+  { value: 'opencode', label: 'OpenCode' },
 ];
 
 export const NATIVE_ADAPTER_LABELS = NATIVE_ADAPTERS.map(

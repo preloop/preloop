@@ -58,6 +58,8 @@ func permissionSourceForAgent(agent AgentConfig) string {
 		return permissionSourceCodexCLI
 	case strings.EqualFold(strings.TrimSpace(agent.Name), "Cursor"):
 		return permissionSourceCursor
+	case isOpenCodeAgent(agent):
+		return permissionSourceOpenCode
 	default:
 		return ""
 	}
@@ -118,6 +120,10 @@ func approvalHookConfigPath(source string) (string, error) {
 		return filepath.Join(home, ".codex", "hooks.json"), nil
 	case permissionSourceCursor:
 		return filepath.Join(home, ".cursor", "hooks.json"), nil
+	case permissionSourceOpenCode:
+		// No command hook: the plugin registration and its preloop.control
+		// block live in OpenCode's user config.
+		return filepath.Join(home, ".config", "opencode", openCodeUserConfigFileName), nil
 	default:
 		return "", fmt.Errorf("unsupported approval hook source %q", source)
 	}
@@ -229,6 +235,12 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 	if strings.TrimSpace(token) == "" {
 		return fmt.Errorf("cannot install approval hook without a durable credential token")
 	}
+	if source == permissionSourceOpenCode {
+		// OpenCode has no hook command to install: the runtime plugin gates
+		// tool calls from inside OpenCode, so onboarding registers the plugin
+		// and writes its preloop.control settings instead.
+		return installOpenCodeApprovalPlugin(agent, baseURL, token, out)
+	}
 
 	timeoutSeconds := resolveApprovalHookTimeoutSeconds()
 	workspaceRoot := workspaceRootForAgent(agent)
@@ -300,10 +312,11 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 //
 // A 400 from the create endpoint means a row for this exact scope already
 // exists (idempotent re-onboarding); an explicit operator disable is
-// deliberately not overridden.
-func enablePermissionPromptBuiltin(client *api.Client, managedAgentID string, out io.Writer) error {
+// deliberately not overridden. The returned bool reports whether the row was
+// created by this call, so quiet callers can print only on a real change.
+func enablePermissionPromptBuiltin(client *api.Client, managedAgentID string, out io.Writer) (bool, error) {
 	if client == nil || strings.TrimSpace(managedAgentID) == "" {
-		return nil
+		return false, nil
 	}
 	payload := map[string]interface{}{
 		"tool_name":        "permission_prompt",
@@ -316,7 +329,7 @@ func enablePermissionPromptBuiltin(client *api.Client, managedAgentID string, ou
 	err := client.Post("/api/v1/tool-configurations", payload, &response)
 	alreadyConfigured := err != nil && api.IsStatus(err, http.StatusBadRequest)
 	if err != nil && !alreadyConfigured {
-		return fmt.Errorf("failed to enable the permission_prompt builtin: %w", err)
+		return false, fmt.Errorf("failed to enable the permission_prompt builtin: %w", err)
 	}
 	if out != nil {
 		if alreadyConfigured {
@@ -327,7 +340,7 @@ func enablePermissionPromptBuiltin(client *api.Client, managedAgentID string, ou
 		fmt.Fprintln(out, "  For headless (claude -p) runs, route permission prompts through Preloop with:")      //nolint:errcheck
 		fmt.Fprintln(out, "    claude -p --permission-prompt-tool mcp__preloop__permission_prompt \"your task\"") //nolint:errcheck
 	}
-	return nil
+	return !alreadyConfigured, nil
 }
 
 func printAgentPolicySummary(out io.Writer, source string, policyPaths []string, workspaceRoot string) {
@@ -367,6 +380,9 @@ func removeApprovalHooks(agent AgentConfig, out io.Writer) error {
 	source := permissionSourceForAgent(agent)
 	if source == "" {
 		return nil
+	}
+	if source == permissionSourceOpenCode {
+		return removeOpenCodeApprovalPlugin(agent, out)
 	}
 
 	configPath, err := approvalHookConfigPath(source)

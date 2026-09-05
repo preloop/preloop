@@ -48,7 +48,13 @@ class AgentPermissionCheckRequest(BaseModel):
         default_factory=dict, description="Tool arguments (stored as tool_args)"
     )
     source: Optional[str] = Field(
-        None, description="Originating agent, e.g. 'claude_code'"
+        None,
+        description=(
+            "Originating agent adapter: 'claude_code', 'codex_cli', 'cursor', "
+            "'opencode', 'openclaw', or 'hermes'. Stored as the "
+            "'_preloop_source' marker inside tool_args so approver surfaces "
+            "can label the requester."
+        ),
     )
     session_id: Optional[str] = Field(None, description="Agent session id")
     cwd: Optional[str] = Field(None, description="Working directory")

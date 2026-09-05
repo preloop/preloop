@@ -15,6 +15,7 @@ import (
 	"github.com/preloop/preloop/cli/internal/api"
 
 	"github.com/preloop/preloop/cli/internal/testenv"
+	"github.com/spf13/cobra"
 )
 
 func TestOpenClawConfigPathsIncludesCurrentLocations(t *testing.T) {
@@ -1660,5 +1661,192 @@ func TestBuildOpenClawManagedProviderKeepsExplicitPromptCacheKeySetting(t *testi
 	compat := entry["compat"].(map[string]interface{})
 	if compat["supportsPromptCacheKey"] != false {
 		t.Fatalf("expected explicit false to be preserved, got %#v", compat["supportsPromptCacheKey"])
+	}
+}
+
+// --- OpenCode Agent Control channel ---
+
+func TestSupportsAgentControlChannelIncludesOpenCode(t *testing.T) {
+	if !supportsAgentControlChannel(AgentConfig{Name: "OpenCode"}) {
+		t.Fatal("OpenCode must support the Agent Control channel")
+	}
+	agent := AgentConfig{Name: "OpenCode"}
+	if got := agentControlPluginPackageName(agent); got != "@preloop-ai/opencode-plugin" {
+		t.Fatalf("package: %q", got)
+	}
+	if got := agentControlPluginVerifyCommand(agent); got != "preloop-opencode-plugin" {
+		t.Fatalf("verify: %q", got)
+	}
+	if got := agentControlPluginSourceDirName(agent); got != "opencode-preloop" {
+		t.Fatalf("source dir: %q", got)
+	}
+	// OpenCode installs npm plugins itself on startup: no installer to run
+	// and no managed sidecar to start.
+	if got := agentControlPluginInstallerCommand(agent); got != "" {
+		t.Fatalf("installer should be empty, got %q", got)
+	}
+	if got := managedAgentControlSidecarRuntime(agent); got != "" {
+		t.Fatalf("sidecar runtime should be empty, got %q", got)
+	}
+}
+
+func TestApplyManagedAgentControlConfigOpenCodeWritesUserConfig(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	t.Setenv("PATH", t.TempDir()) // no preloop-opencode-plugin bin anywhere
+	agent := AgentConfig{Name: "OpenCode", ConfigPath: filepath.Join(home, ".config", "opencode", "config.json")}
+	plan := managedMCPEnrollmentPlan{
+		Agent: agent,
+		ManagedDocument: map[string]interface{}{
+			"mcp": map[string]interface{}{"preloop": map[string]interface{}{"type": "remote"}},
+		},
+	}
+	credential := &managedAgentCredentialCreateResponse{
+		Credential: managedAgentCredentialSummary{ID: "cred-1", Name: "OpenCode durable"},
+		Token:      "agt_durable",
+	}
+
+	plan, err := applyManagedAgentControlConfig(
+		plan, "https://preloop.example", credential, &managedAgentSummary{ID: "agent-1"}, nil,
+	)
+	if err != nil {
+		t.Fatalf("applyManagedAgentControlConfig: %v", err)
+	}
+	if _, has := plan.ManagedDocument["preloop"]; has {
+		t.Fatalf("the MCP document (config.json) must not receive the token: %v", plan.ManagedDocument)
+	}
+	userConfig := filepath.Join(home, ".config", "opencode", "opencode.json")
+	doc, err := loadJSONDocument(userConfig)
+	if err != nil {
+		t.Fatalf("opencode.json not written: %v", err)
+	}
+	control := doc["preloop"].(map[string]interface{})["control"].(map[string]interface{})
+	if control["bearer_token"] != "agt_durable" || control["managed_agent_id"] != "agent-1" || control["credential_id"] != "cred-1" {
+		t.Errorf("control block incomplete: %v", control)
+	}
+	if control["native_tool_approvals"] != "off" {
+		t.Errorf("enrollment must leave the tool gate off until --approvals: %v", control["native_tool_approvals"])
+	}
+	if doc["$schema"] != "https://opencode.ai/config.json" {
+		t.Errorf("created file should carry the schema pointer: %v", doc["$schema"])
+	}
+
+	// Validation reads the block back from opencode.json, not config.json.
+	fromDoc, ok := agentControlConfigFromDocument(agent, plan.ManagedDocument)
+	if !ok || fromDoc["bearer_token"] != "agt_durable" {
+		t.Fatalf("agentControlConfigFromDocument = %v, %v", fromDoc, ok)
+	}
+	validation := validateAgentControlConfig(agent, plan.ManagedDocument, "https://preloop.example")
+	for _, key := range []string{"control_config_written", "control_ws_url_ok", "control_bearer_token_ok", "control_adapter_package_ok", "control_runtime_principal_id_ok"} {
+		if validation[key] != true {
+			t.Errorf("%s = %v, want true (%v)", key, validation[key], validation)
+		}
+	}
+	if validation["control_plugin_verification"] != "opencode_plugin_not_registered" {
+		t.Errorf("plugin verification = %v", validation["control_plugin_verification"])
+	}
+	found := false
+	for _, note := range plan.Notes {
+		if strings.Contains(note, "opencode.json") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a note about opencode.json, got %v", plan.Notes)
+	}
+	// With the block present and pointing here, batch onboarding does not
+	// re-enroll OpenCode even though the plugin cannot be verified locally.
+	if err := os.WriteFile(agent.ConfigPath, []byte("{}"), 0600); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	previousURL, previousToken := FlagURL, FlagToken
+	FlagURL, FlagToken = "https://preloop.example", "tok"
+	t.Cleanup(func() { FlagURL, FlagToken = previousURL, previousToken })
+	if agentControlNeedsOnboardingRefresh(agent) {
+		t.Error("expected no onboarding refresh once the control block is written")
+	}
+}
+
+func TestVerifyAgentControlRuntimePluginOpenCodeRegistration(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	t.Setenv("PATH", t.TempDir())
+	agent := AgentConfig{Name: "OpenCode", ConfigPath: filepath.Join(home, ".config", "opencode", "config.json")}
+
+	result := verifyAgentControlRuntimePlugin(agent)
+	if result["control_plugin_installed"] != false || result["control_plugin_verification"] != "opencode_plugin_not_registered" {
+		t.Fatalf("unexpected result without a config: %v", result)
+	}
+	if agentControlNeedsOnboardingRefresh(agent) != true {
+		t.Error("expected onboarding refresh while the control block is missing")
+	}
+
+	if err := writeJSONDocument(
+		filepath.Join(home, ".config", "opencode", "opencode.json"),
+		map[string]interface{}{"plugin": []interface{}{"@preloop-ai/opencode-plugin"}},
+	); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	result = verifyAgentControlRuntimePlugin(agent)
+	if result["control_plugin_installed"] != true || result["control_plugin_verified"] != false {
+		t.Fatalf("registered plugin should count as installed, not verified: %v", result)
+	}
+	if result["control_plugin_verification"] != "opencode_plugin_registered_restart_required" {
+		t.Fatalf("verification = %v", result["control_plugin_verification"])
+	}
+	if got := agentControlPluginStatus(result); got != "installed but not verified" {
+		t.Fatalf("status = %q", got)
+	}
+}
+
+func TestRunAgentsInstallPluginOpenCodeRegistersPlugin(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	configPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+
+	newCmd := func(dryRun bool) (*cobra.Command, *bytes.Buffer) {
+		cmd := &cobra.Command{}
+		cmd.Flags().Bool("dry-run", dryRun, "")
+		out := &bytes.Buffer{}
+		cmd.SetOut(out)
+		cmd.SetErr(out)
+		return cmd, out
+	}
+
+	cmd, out := newCmd(true)
+	if err := runAgentsInstallPlugin(cmd, []string{"OpenCode"}); err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if !strings.Contains(out.String(), `"@preloop-ai/opencode-plugin"`) || !strings.Contains(out.String(), configPath) {
+		t.Fatalf("dry run output = %q", out.String())
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatal("dry run must not write the config")
+	}
+
+	cmd, out = newCmd(false)
+	if err := runAgentsInstallPlugin(cmd, []string{"OpenCode"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	doc, err := loadJSONDocument(configPath)
+	if err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+	plugins, _ := doc["plugin"].([]interface{})
+	if len(plugins) != 1 || plugins[0] != "@preloop-ai/opencode-plugin" {
+		t.Fatalf("plugin array = %v", doc["plugin"])
+	}
+	if !strings.Contains(out.String(), "Restart OpenCode") || !strings.Contains(out.String(), "no preloop.control block yet") {
+		t.Fatalf("install output = %q", out.String())
+	}
+
+	// Re-running keeps a single entry.
+	cmd, _ = newCmd(false)
+	if err := runAgentsInstallPlugin(cmd, []string{"OpenCode"}); err != nil {
+		t.Fatalf("re-install: %v", err)
+	}
+	doc, _ = loadJSONDocument(configPath)
+	if plugins, _ := doc["plugin"].([]interface{}); len(plugins) != 1 {
+		t.Fatalf("expected one entry after re-install, got %v", plugins)
 	}
 }

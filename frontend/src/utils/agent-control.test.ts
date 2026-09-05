@@ -173,6 +173,21 @@ describe('getAgentControlState', () => {
       expect(hint.helptext).to.contain('not running the Agent Control plugin');
     });
 
+    it('treats OpenCode as a runtime with an Agent Control plugin', () => {
+      const hint = getAgentControlInstallHint({
+        ...baseAgent,
+        display_name: 'OpenCode',
+        agent_kind: 'opencode',
+        session_source_type: 'opencode',
+        control_state: 'unsupported',
+        control_enabled: false,
+        control_capabilities: [],
+      });
+
+      expect(hint.supported).to.equal(true);
+      expect(hint.command).to.equal("preloop agents install-plugin 'OpenCode'");
+    });
+
     it('has something to say with no agent at all', () => {
       const hint = getAgentControlInstallHint(null);
       expect(hint.supported).to.equal(false);

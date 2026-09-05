@@ -14,6 +14,34 @@ import {
 } from "./config.js";
 
 import { refreshModels } from "./models.js";
+import {
+  isPreloopMCPTool,
+  isSafeReadShellCommand,
+  mapOpenCodeToolName,
+  normalizeToolArgs,
+} from "./tools.js";
+
+/**
+ * Arguments OpenCode passes to the `tool.execute.before` plugin hook
+ * (https://opencode.ai/docs/plugins/): the tool id plus the session and call
+ * ids, and a mutable `args` bag. Throwing from the hook denies the call.
+ */
+export type ToolExecuteBeforeInput = {
+  tool: string;
+  sessionID?: string;
+  callID?: string;
+};
+
+export type ToolExecuteBeforeOutput = {
+  args?: Record<string, unknown>;
+};
+
+export type ToolGateOutcome = {
+  /** True when the call was allowed to run. Denials throw instead. */
+  allowed: true;
+  skipped?: "disabled" | "preloop-mcp-tool" | "safe-read" | "cached";
+  reason?: string;
+};
 
 /**
  * Structural mirror of OpenCode's permission-ask request
@@ -153,6 +181,19 @@ export class PreloopOpenCodePlugin {
    */
   private pendingApprovals: Map<string, PermissionRequest>;
 
+  /**
+   * Decisions per native tool call, keyed on `<sessionID>:<callID>`. A call
+   * can reach the plugin twice: through `tool.execute.before` (every call)
+   * and through `permission.asked` (only when OpenCode's own config says
+   * "ask"). Whichever path arrives first performs the round trip; the other
+   * reuses the (possibly still pending) decision so one tool call is never
+   * escalated to the operator twice.
+   */
+  private toolDecisions: Map<string, Promise<PermissionDecision>>;
+
+  /** Working directory reported to Preloop (OpenCode's project directory). */
+  private workingDirectory?: string;
+
   private logger?: (message: string) => void;
 
   constructor(
@@ -161,10 +202,18 @@ export class PreloopOpenCodePlugin {
   ) {
     this.seenCommandIds = new Set<string>();
     this.pendingApprovals = new Map<string, PermissionRequest>();
+    this.toolDecisions = new Map<string, Promise<PermissionDecision>>();
   }
 
   setLogger(logger: (message: string) => void): void {
     this.logger = logger;
+  }
+
+  setWorkingDirectory(directory?: string): void {
+    this.workingDirectory =
+      typeof directory === "string" && directory.trim() !== ""
+        ? directory
+        : undefined;
   }
 
   setOpenCodeClient(client: OpenCodeClient): void {
@@ -465,6 +514,25 @@ export class PreloopOpenCodePlugin {
     return resolved?.tool_approval_fail_open === true;
   }
 
+  /**
+   * Whether `tool.execute.before` gating is active. Requires the general
+   * `tool_approval_enabled` switch and `native_tool_approvals` not being
+   * `"off"` (unset means on, so a hand-installed plugin gates by default).
+   */
+  nativeToolApprovalsEnabled(config?: ControlConfig): boolean {
+    const resolved = config ?? this.controlConfig;
+    if (!this.toolApprovalEnabled(resolved)) {
+      return false;
+    }
+    const value = resolved?.native_tool_approvals;
+    return !(typeof value === "string" && value.trim().toLowerCase() === "off");
+  }
+
+  safeReadAutoAllowEnabled(config?: ControlConfig): boolean {
+    const resolved = config ?? this.controlConfig;
+    return resolved?.safe_read_auto_allow !== false;
+  }
+
   approvalTimeoutMs(config?: ControlConfig): number {
     const resolved = config ?? this.controlConfig;
     const value = resolved?.approval_timeout_ms;
@@ -721,7 +789,18 @@ export class PreloopOpenCodePlugin {
     }
 
     try {
-      const decision = await this.requestOperatorDecision(request);
+      // Reuse the decision the tool.execute.before gate already obtained for
+      // this call (or share its in-flight round trip); otherwise this ask is
+      // the first sighting of the call and performs the round trip itself.
+      const callKey = this.toolDecisionKey(request.sessionID, request.callID);
+      let pending = callKey ? this.toolDecisions.get(callKey) : undefined;
+      if (!pending) {
+        pending = this.requestOperatorDecision(request);
+        if (callKey) {
+          this.rememberToolDecision(callKey, pending);
+        }
+      }
+      const decision = await pending;
       let response: PermissionResponse;
       if (decision.decision === "deny") {
         response = "reject";
@@ -787,6 +866,133 @@ export class PreloopOpenCodePlugin {
     return body;
   }
 
+  // ---------------------------------------------------------------------
+  // Native tool-call gate (`tool.execute.before`)
+
+  private toolDecisionKey(
+    sessionID: string | undefined,
+    callID: string | undefined,
+  ): string | undefined {
+    const call = typeof callID === "string" ? callID.trim() : "";
+    if (call === "") {
+      return undefined;
+    }
+    const session = typeof sessionID === "string" ? sessionID.trim() : "";
+    return `${session}:${call}`;
+  }
+
+  private rememberToolDecision(
+    key: string,
+    decision: Promise<PermissionDecision>,
+  ): void {
+    this.toolDecisions.set(key, decision);
+    while (this.toolDecisions.size > DEDUPE_MAX_ENTRIES) {
+      const oldest = this.toolDecisions.keys().next().value;
+      if (oldest === undefined || oldest === key) {
+        break;
+      }
+      this.toolDecisions.delete(oldest);
+    }
+  }
+
+  /** Test seam: the decision cached for one native tool call, if any. */
+  cachedToolDecision(
+    sessionID: string | undefined,
+    callID: string | undefined,
+  ): Promise<PermissionDecision> | undefined {
+    const key = this.toolDecisionKey(sessionID, callID);
+    return key ? this.toolDecisions.get(key) : undefined;
+  }
+
+  buildToolExecuteRequestBody(
+    input: ToolExecuteBeforeInput,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const config = this.controlConfig ?? this.loadConfig();
+    const toolInput = normalizeToolArgs(args);
+    const body: Record<string, unknown> = {
+      source: this.runtime,
+      tool_name: mapOpenCodeToolName(input.tool),
+      tool_input: toolInput,
+      session_id:
+        input.sessionID ?? config.session_reference ?? input.callID ?? undefined,
+      cwd: this.workingDirectory ?? process.cwd(),
+    };
+    const description = toolInput["description"];
+    if (typeof description === "string" && description.trim() !== "") {
+      body.agent_reasoning = description;
+    }
+    return body;
+  }
+
+  /**
+   * Gate one native tool call before OpenCode executes it.
+   *
+   * Runs for every call regardless of OpenCode's own `permission` config (a
+   * user with everything set to `"allow"` never raises `permission.asked`, so
+   * this hook is the only place the call can be intercepted). The decision
+   * comes from Preloop: account tool rules decide first, and unmatched calls
+   * are escalated to a human approver. Read-only tools (`read`, `glob`,
+   * `grep`, `list`) go through only when the backend says so; the one local
+   * shortcut is the read-only shell allowlist (`safe_read_auto_allow`,
+   * mirroring the CLI hook's Cursor default), because the plugin does not
+   * read OpenCode's allowlist and every `ls` would otherwise block.
+   *
+   * Resolves when the call may proceed; throws `Preloop denied <tool>: ...`
+   * on an operator/policy deny or on a fail-closed timeout or transport
+   * error. OpenCode surfaces the thrown message to the model as the tool
+   * error, so the agent learns why the call was refused.
+   */
+  async handleToolExecuteBefore(
+    input: ToolExecuteBeforeInput,
+    output: ToolExecuteBeforeOutput,
+  ): Promise<ToolGateOutcome> {
+    const config = this.controlConfig ?? this.loadConfig();
+    if (!this.nativeToolApprovalsEnabled(config)) {
+      return { allowed: true, skipped: "disabled" };
+    }
+    if (isPreloopMCPTool(input.tool)) {
+      // Already governed by Preloop's MCP approvals server-side.
+      return { allowed: true, skipped: "preloop-mcp-tool" };
+    }
+    const args = output.args ?? {};
+    const toolName = mapOpenCodeToolName(input.tool);
+    if (
+      (input.tool ?? "").trim().toLowerCase() === "bash" &&
+      this.safeReadAutoAllowEnabled(config)
+    ) {
+      const command = args["command"];
+      if (typeof command === "string" && isSafeReadShellCommand(command)) {
+        return {
+          allowed: true,
+          skipped: "safe-read",
+          reason: "Read-only shell command auto-allowed by the plugin.",
+        };
+      }
+    }
+
+    const key = this.toolDecisionKey(input.sessionID, input.callID);
+    let pending = key ? this.toolDecisions.get(key) : undefined;
+    const cached = pending !== undefined;
+    if (!pending) {
+      pending = this.requestDecision(
+        this.buildToolExecuteRequestBody(input, args),
+      );
+      if (key) {
+        this.rememberToolDecision(key, pending);
+      }
+    }
+    const decision = await pending;
+    if (decision.decision === "deny") {
+      const reason = decision.reason ?? "Denied in Preloop.";
+      this.log(`Preloop denied ${toolName}: ${reason}`);
+      throw new Error(`Preloop denied ${toolName}: ${reason}`);
+    }
+    return cached
+      ? { allowed: true, skipped: "cached", reason: decision.reason }
+      : { allowed: true, reason: decision.reason };
+  }
+
   /**
    * Blocking round trip to Preloop's permission-check endpoint. The backend
    * parks the HTTP request until an operator decides (or its own ~300 s
@@ -796,6 +1002,18 @@ export class PreloopOpenCodePlugin {
    */
   async requestOperatorDecision(
     request: PermissionRequest,
+  ): Promise<PermissionDecision> {
+    return this.requestDecision(
+      this.buildPermissionRequestBody(
+        request,
+        this.workingDirectory ?? process.cwd(),
+      ),
+    );
+  }
+
+  /** Shared round trip for both the ask bridge and the tool gate. */
+  async requestDecision(
+    body: Record<string, unknown>,
   ): Promise<PermissionDecision> {
     const config = this.controlConfig ?? this.loadConfig();
     const doFetch = this.fetchImpl ?? (fetch as unknown as FetchLike);
@@ -813,9 +1031,7 @@ export class PreloopOpenCodePlugin {
             "content-type": "application/json",
             authorization: `Bearer ${config.bearer_token}`,
           },
-          body: JSON.stringify(
-            this.buildPermissionRequestBody(request, process.cwd()),
-          ),
+          body: JSON.stringify(body),
           signal: controller.signal,
         }).then(async (response) => {
           if (!response.ok) {
@@ -873,7 +1089,8 @@ export const plugin = new PreloopOpenCodePlugin();
  *
  * or drop a shim into `.opencode/plugins/preloop.ts`. OpenCode calls the
  * exported function once per project with an SDK context; we keep the Agent
- * Control websocket alive, bridge `permission.asked` events to Preloop, and
+ * Control websocket alive, gate every native tool call through
+ * `tool.execute.before`, bridge `permission.asked` events to Preloop, and
  * forward operator turns and stop commands from Preloop into OpenCode.
  */
 export const PreloopPlugin = async (ctx: {
@@ -881,17 +1098,26 @@ export const PreloopPlugin = async (ctx: {
   directory?: string;
 }): Promise<{
   event: (input: { event: { type: string; properties?: unknown } }) => Promise<void>;
+  "tool.execute.before": (
+    input: ToolExecuteBeforeInput,
+    output: ToolExecuteBeforeOutput,
+  ) => Promise<void>;
 }> => {
   const instance = plugin;
   if (ctx.client) {
     instance.setOpenCodeClient(ctx.client);
   }
+  instance.setWorkingDirectory(ctx.directory);
   instance.configure(loadControlConfig());
   // The model-list refresh runs from the WebSocket `open` handler, which
   // fires on this start as well as on every reconnect. Triggering it here
   // too would only double the fetch and the read-modify-write.
   await instance.start(ctx.client);
   return {
+    "tool.execute.before": async (input, output) => {
+      // Throws on deny; OpenCode reports the message as the tool error.
+      await instance.handleToolExecuteBefore(input, output ?? {});
+    },
     event: async ({ event }) => {
       if (
         event.type === "permission.asked" ||

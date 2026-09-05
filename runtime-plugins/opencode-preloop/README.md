@@ -14,24 +14,52 @@ used to authenticate the control WebSocket with an `Authorization` header.
 ## How approvals flow
 
 1. The plugin reads the `preloop.control` block that
-   `preloop agents enroll` writes into `~/.config/opencode/opencode.json`.
+   `preloop agents onboard OpenCode --approvals` writes into
+   `~/.config/opencode/opencode.json` (the same command adds the package to
+   the `plugin` array; OpenCode installs npm plugins with Bun on startup).
 2. It connects to `preloop.control.control_ws_url` with the durable runtime
    bearer token (sent as `Authorization: Bearer` on the WebSocket upgrade via
    the `ws` package, so the token never appears in proxy/access-log query
    strings), advertises presence/capabilities (`runtime: "opencode"`,
    `tool_approval: true`), sends heartbeats, and reconnects with backoff.
-3. When OpenCode's permission system raises a prompt, the plugin receives the
-   `permission.asked` event through the plugin `event` hook, dedupes it by
-   request id, and POSTs it to Preloop's permission-check endpoint (tool
-   name, proposed patterns, session id).
-4. The backend parks that request until an operator decides. The decision is
-   applied by replying `"once"` (approved) or `"reject"` (denied) through the
-   OpenCode SDK client — OpenCode holds tool execution open until a reply,
-   so awaiting the operator genuinely blocks the tool call.
+3. **Every native tool call is gated in `tool.execute.before`**, regardless
+   of OpenCode's own `permission` config. A user whose `opencode.json` sets
+   `bash`, `edit`, `webfetch`, ... to `"allow"` never sees a local prompt and
+   OpenCode never raises `permission.asked`, so this hook is the only place
+   the call can be intercepted. The plugin maps the OpenCode tool id to the
+   Preloop native tool vocabulary (`bash` -> `Bash`, `edit` -> `Edit`,
+   `write` -> `Write`, `read` -> `Read`, `glob` -> `Glob`, `grep` -> `Grep`,
+   `list` -> `List`, `webfetch` -> `WebFetch`, `task` -> `Task`; MCP tools
+   pass through by name), POSTs `{source: "opencode", tool_name, tool_input,
+   session_id, cwd}` to Preloop's permission-check endpoint, and awaits the
+   decision. Account tool rules decide first; unmatched calls are escalated
+   to a human approver. On deny (or a fail-closed timeout) the hook throws
+   `Preloop denied <tool>: <reason>`, which OpenCode reports to the model as
+   the tool error.
+   - Read-only tools (`read`, `glob`, `grep`, `list`) go through only when the
+     backend says so; add an allow rule for them in the Preloop console if you
+     do not want to approve file reads.
+   - The one local shortcut is `safe_read_auto_allow` (default `true`): a
+     `bash` command that consists solely of read-only commands (`ls`, `cat`,
+     `git status`, `git log`, `rg`, ... and plain `|` pipelines of them) is
+     allowed without a round trip, **including secret files** (`.env`,
+     `~/.ssh/id_rsa`, `~/.aws/credentials`, and any other path `cat`/`head`/
+     `tail` can read). The equivalent OpenCode `read` tool is still gated by
+     Preloop. This mirrors the Preloop CLI hook's Cursor default; set
+     `safe_read_auto_allow` to `false` to route those too.
+   - Tools served by the Preloop MCP server (`preloop_*`) are skipped because
+     Preloop already governs them server-side.
+4. For users who keep OpenCode's `"ask"` permissions, the plugin also receives
+   the `permission.asked` event through the plugin `event` hook and replies
+   `"once"` (approved) or `"reject"` (denied) through the OpenCode SDK
+   client. Decisions are deduped per tool call (session id + call id): a call
+   the gate already decided is answered from that decision, so the operator
+   is never asked twice for one call.
 5. If no decision arrives within `approval_timeout_ms` (default 310 s) or the
    endpoint is unreachable, the configured fallback applies: fail closed
-   (reject, the default) or fail open (approve) via
-   `tool_approval_fail_open`.
+   (deny, the default) or fail open (approve) via
+   `tool_approval_fail_open`. There is no local "ask" fallback for the gate:
+   a timed-out approval denies the call.
 
 Operator `send_message` commands arriving over the control WebSocket are
 deduped by `message_id` (the backend replays undelivered commands on
@@ -100,8 +128,10 @@ export { PreloopPlugin as default } from "@preloop-ai/opencode-plugin";
 
 ## Configuration
 
-Written by `preloop agents enroll` under `preloop.control` in
-`~/.config/opencode/opencode.json`:
+Written by `preloop agents onboard OpenCode --approvals` under
+`preloop.control` in `~/.config/opencode/opencode.json` (the CLI keeps its
+MCP server entry in the legacy `~/.config/opencode/config.json`; OpenCode
+also reads `opencode.json`, which is where this block lives):
 
 ```json
 {
@@ -115,6 +145,8 @@ Written by `preloop agents enroll` under `preloop.control` in
       "permission_check_url": "<optional; overrides the derived permission-check endpoint>",
       "session_reference": "<optional default session>",
       "tool_approval_enabled": true,
+      "native_tool_approvals": "on",
+      "safe_read_auto_allow": true,
       "tool_approval_fail_open": false,
       "approval_timeout_ms": 310000,
       "remote_control_enabled": true,
@@ -125,6 +157,16 @@ Written by `preloop agents enroll` under `preloop.control` in
 ```
 
 Set `PRELOOP_OPENCODE_CONTROL_CONFIG` to point at an alternative config file.
+
+`native_tool_approvals` gates the `tool.execute.before` interception: `"off"`
+disables it (the `permission.asked` bridge keeps working); unset or any other
+value enables it. `preloop agents onboard OpenCode --approvals` writes `"on"`
+and `preloop agents offboard OpenCode` removes the block and the `plugin`
+entry. `safe_read_auto_allow` (default `true`) lets read-only shell commands
+run without a round trip, including `cat`/`head`/`tail` of secret files
+(`.env`, SSH keys, cloud credentials). Set it to `false` to send those
+through Preloop too. The OpenCode `read` tool is not covered by this
+shortcut and still goes to the backend.
 
 `permission_check_url` is optional: when unset, the plugin derives
 `<origin>/api/v1/agents/permission-check` from `control_ws_url`. Set it when a

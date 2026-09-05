@@ -144,7 +144,7 @@ AGENT_CONTROL_CAPABILITIES = [
 ]
 AGENT_CONTROL_INPUT_MODES = ["text", "voice_transcript"]
 AGENT_CONTROL_OUTPUT_MODES = ["event", "status", "text"]
-AGENT_CONTROL_SUPPORTED_AGENT_KINDS = {"hermes", "openclaw", "claude_code"}
+AGENT_CONTROL_SUPPORTED_AGENT_KINDS = {"hermes", "openclaw", "claude_code", "opencode"}
 AGENT_CONTROL_STATE_UNSUPPORTED = "unsupported"
 AGENT_CONTROL_STATE_INSTALL_PENDING = "install_pending"
 AGENT_CONTROL_STATE_PLUGIN_CONFIGURED = "plugin_configured"

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1062,8 +1063,12 @@ func TestEnablePermissionPromptBuiltin(t *testing.T) {
 
 	client := api.NewClientWithToken(server.URL, "test-token")
 	var out strings.Builder
-	if err := enablePermissionPromptBuiltin(client, "agent-123", &out); err != nil {
+	created, err := enablePermissionPromptBuiltin(client, "agent-123", &out)
+	if err != nil {
 		t.Fatalf("enablePermissionPromptBuiltin: %v", err)
+	}
+	if !created {
+		t.Fatal("expected created=true when the row is new")
 	}
 
 	if captured["tool_name"] != "permission_prompt" {
@@ -1099,8 +1104,12 @@ func TestEnablePermissionPromptBuiltinToleratesExistingRow(t *testing.T) {
 
 	client := api.NewClientWithToken(server.URL, "test-token")
 	var out strings.Builder
-	if err := enablePermissionPromptBuiltin(client, "agent-123", &out); err != nil {
+	created, err := enablePermissionPromptBuiltin(client, "agent-123", &out)
+	if err != nil {
 		t.Fatalf("expected already-exists to be tolerated, got %v", err)
+	}
+	if created {
+		t.Fatal("expected created=false when the row already exists")
 	}
 	if !strings.Contains(out.String(), "already configured") {
 		t.Fatalf("expected already-configured note, got:\n%s", out.String())
@@ -1116,8 +1125,285 @@ func TestEnablePermissionPromptBuiltinPropagatesServerErrors(t *testing.T) {
 	defer server.Close()
 
 	client := api.NewClientWithToken(server.URL, "test-token")
-	if err := enablePermissionPromptBuiltin(client, "agent-123", nil); err == nil {
+	if _, err := enablePermissionPromptBuiltin(client, "agent-123", nil); err == nil {
 		t.Fatal("expected server error to propagate")
+	}
+}
+
+// --- OpenCode: plugin registration instead of a command hook ---
+
+// pinApprovalPolicyServer points the CLI at an httptest server whose default
+// approval workflow carries the given timeout, so onboarding resolves it the
+// way it does against a real account.
+func pinApprovalPolicyServer(t *testing.T, timeoutSeconds int) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != approvalPoliciesPath {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{"id": "wf-1", "name": "Default", "is_default": true, "timeout_seconds": timeoutSeconds},
+		})
+	}))
+	previousURL, previousToken := FlagURL, FlagToken
+	FlagURL, FlagToken = server.URL, "tok"
+	t.Cleanup(func() {
+		FlagURL, FlagToken = previousURL, previousToken
+		server.Close()
+	})
+	return server
+}
+
+func openCodeTestAgent(home string) AgentConfig {
+	return AgentConfig{Name: "OpenCode", ConfigPath: filepath.Join(home, ".config", "opencode", "config.json")}
+}
+
+func TestPermissionSourceForAgentOpenCode(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	agent := openCodeTestAgent(home)
+	if got := permissionSourceForAgent(agent); got != permissionSourceOpenCode {
+		t.Fatalf("permissionSourceForAgent = %q, want %q", got, permissionSourceOpenCode)
+	}
+	if !isApprovalHookSupportedAgent(agent) {
+		t.Fatal("OpenCode must be offered approvals onboarding")
+	}
+	if got := permissionSourceDisplayName(permissionSourceOpenCode); got != "OpenCode" {
+		t.Fatalf("display name = %q", got)
+	}
+	path, err := approvalHookConfigPath(permissionSourceOpenCode)
+	if err != nil {
+		t.Fatalf("approvalHookConfigPath: %v", err)
+	}
+	if want := filepath.Join(home, ".config", "opencode", "opencode.json"); path != want {
+		t.Fatalf("approvalHookConfigPath = %q, want %q", path, want)
+	}
+	// The command hook is not an OpenCode path: the plugin is.
+	if normalizePermissionSource("opencode") != "" {
+		t.Fatal("permission-hook --source must not accept opencode")
+	}
+}
+
+func TestInstallRemoveApprovalHooksOpenCode(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	pinApprovalPolicyServer(t, 600)
+	agent := openCodeTestAgent(home)
+	configPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+
+	// The founder's shape: every permission set to allow, plus another plugin.
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	preexisting := `{"$schema":"https://opencode.ai/config.json","permission":{"bash":"allow","edit":"allow","webfetch":"allow"},"plugin":["opencode-wakatime"],"theme":"dark"}`
+	if err := os.WriteFile(configPath, []byte(preexisting), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var out strings.Builder
+	if err := installApprovalHooks(agent, "https://preloop.ai", "agt_oc", &out); err != nil {
+		t.Fatalf("installApprovalHooks: %v", err)
+	}
+	for _, want := range []string{
+		"Restart OpenCode to load the plugin",
+		"preloop-opencode-plugin verify --config " + configPath,
+		"Approval wait timeout: 600s",
+		"regardless of OpenCode's own permission config",
+		"permissions were tightened to 0600",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("expected %q in onboarding output, got:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "JSONC") {
+		t.Errorf("did not expect a JSONC note when opencode.json exists:\n%s", out.String())
+	}
+
+	doc := readJSONDoc(t, configPath)
+	if doc["theme"] != "dark" {
+		t.Errorf("unrelated setting was clobbered: %v", doc["theme"])
+	}
+	permission, _ := doc["permission"].(map[string]interface{})
+	if permission["bash"] != "allow" || permission["edit"] != "allow" || permission["webfetch"] != "allow" {
+		t.Errorf("user permission config must be left alone: %v", doc["permission"])
+	}
+	if _, has := doc["hooks"]; has {
+		t.Errorf("OpenCode must not receive a command hook: %v", doc["hooks"])
+	}
+	plugins, _ := doc["plugin"].([]interface{})
+	if len(plugins) != 2 || plugins[0] != "opencode-wakatime" || plugins[1] != "@preloop-ai/opencode-plugin" {
+		t.Fatalf("plugin array = %v", doc["plugin"])
+	}
+	control := readJSONDoc(t, configPath)["preloop"].(map[string]interface{})["control"].(map[string]interface{})
+	checks := map[string]interface{}{
+		"runtime":               "opencode",
+		"protocol":              "preloop.agent_control.v1",
+		"bearer_token":          "agt_oc",
+		"control_ws_url":        "wss://preloop.ai/api/v1/agents/control/ws",
+		"adapter_package":       "@preloop-ai/opencode-plugin",
+		"runtime_principal_id":  runtimePrincipalIDForAgent(agent),
+		"native_tool_approvals": "on",
+		"tool_approval_enabled": true,
+		"safe_read_auto_allow":  true,
+		"approval_timeout_ms":   float64(600_000),
+		"enabled":               true,
+	}
+	for key, want := range checks {
+		if got := control[key]; got != want {
+			t.Errorf("control[%q] = %v (%T), want %v", key, got, got, want)
+		}
+	}
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if mode := info.Mode().Perm(); mode != 0600 {
+			t.Errorf("opencode.json carries the runtime token and must be 0600, got %o", mode)
+		}
+	}
+	// No hook credential file: the plugin authenticates from opencode.json.
+	if entries, err := os.ReadDir(filepath.Join(home, ".preloop", "agents")); err == nil && len(entries) > 0 {
+		t.Errorf("did not expect a permission_hook.json credential for OpenCode: %v", entries)
+	}
+
+	// Idempotent: a second --approvals run must not duplicate the entry.
+	if err := installApprovalHooks(agent, "https://preloop.ai", "agt_oc", nil); err != nil {
+		t.Fatalf("re-install: %v", err)
+	}
+	plugins, _ = readJSONDoc(t, configPath)["plugin"].([]interface{})
+	if len(plugins) != 2 {
+		t.Fatalf("expected exactly one preloop plugin entry after re-install, got %v", plugins)
+	}
+
+	// Remove: our entry and block gone, everything of the user's preserved.
+	var removeOut strings.Builder
+	if err := removeApprovalHooks(agent, &removeOut); err != nil {
+		t.Fatalf("removeApprovalHooks: %v", err)
+	}
+	doc = readJSONDoc(t, configPath)
+	if _, has := doc["preloop"]; has {
+		t.Errorf("preloop.control should be removed: %v", doc["preloop"])
+	}
+	plugins, _ = doc["plugin"].([]interface{})
+	if len(plugins) != 1 || plugins[0] != "opencode-wakatime" {
+		t.Errorf("plugin array after remove = %v", doc["plugin"])
+	}
+	if doc["theme"] != "dark" || doc["permission"] == nil {
+		t.Errorf("user settings lost during remove: %v", doc)
+	}
+	if !strings.Contains(removeOut.String(), "removed @preloop-ai/opencode-plugin") {
+		t.Errorf("expected removal note, got %q", removeOut.String())
+	}
+	// Removing again is a no-op.
+	if err := removeApprovalHooks(agent, nil); err != nil {
+		t.Fatalf("second remove: %v", err)
+	}
+}
+
+func TestInstallApprovalHooksOpenCodeCreatesConfigAndNotesJSONC(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	agent := openCodeTestAgent(home)
+	dir := filepath.Join(home, ".config", "opencode")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	jsonc := "{\n  // comments are why this file is never edited\n  \"theme\": \"dark\",\n}\n"
+	jsoncPath := filepath.Join(dir, "opencode.jsonc")
+	if err := os.WriteFile(jsoncPath, []byte(jsonc), 0644); err != nil {
+		t.Fatalf("write jsonc: %v", err)
+	}
+
+	var out strings.Builder
+	if err := installApprovalHooks(agent, "https://preloop.ai", "agt_j", &out); err != nil {
+		t.Fatalf("installApprovalHooks: %v", err)
+	}
+	if !strings.Contains(out.String(), "never edits JSONC") {
+		t.Errorf("expected the JSONC note, got:\n%s", out.String())
+	}
+	// Without an authenticated client the account timeout falls back to the
+	// nginx-aligned default.
+	if !strings.Contains(out.String(), "Approval wait timeout: 1800s") {
+		t.Errorf("expected default timeout note, got:\n%s", out.String())
+	}
+	if got, _ := os.ReadFile(jsoncPath); string(got) != jsonc {
+		t.Errorf("opencode.jsonc must never be modified, got %q", got)
+	}
+	configPath := filepath.Join(dir, "opencode.json")
+	doc := readJSONDoc(t, configPath)
+	if doc["$schema"] != "https://opencode.ai/config.json" {
+		t.Errorf("a created opencode.json should carry the schema pointer: %v", doc)
+	}
+	plugins, _ := doc["plugin"].([]interface{})
+	if len(plugins) != 1 || plugins[0] != "@preloop-ai/opencode-plugin" {
+		t.Errorf("plugin array = %v", doc["plugin"])
+	}
+	control := doc["preloop"].(map[string]interface{})["control"].(map[string]interface{})
+	if control["approval_timeout_ms"] != float64(1_800_000) {
+		t.Errorf("approval_timeout_ms = %v", control["approval_timeout_ms"])
+	}
+
+	// Removal from a file we created (only the schema pointer left) deletes it.
+	if err := removeApprovalHooks(agent, nil); err != nil {
+		t.Fatalf("removeApprovalHooks: %v", err)
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Errorf("expected our opencode.json to be deleted, stat err=%v", err)
+	}
+	if _, err := os.Stat(jsoncPath); err != nil {
+		t.Errorf("opencode.jsonc must survive removal: %v", err)
+	}
+}
+
+func TestOpenCodeApprovalHooksPreserveEnrollmentControlBlock(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	agent := openCodeTestAgent(home)
+	configPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+
+	// Plain enrollment writes the shared block with approvals off.
+	control := buildManagedAgentControlConfig(
+		agent, "https://preloop.ai", "agt_first", &managedAgentSummary{ID: "agent-1"}, nil, nil,
+	)
+	if err := writeOpenCodePreloopControl(control); err != nil {
+		t.Fatalf("writeOpenCodePreloopControl: %v", err)
+	}
+	written := readJSONDoc(t, configPath)["preloop"].(map[string]interface{})["control"].(map[string]interface{})
+	if written["native_tool_approvals"] != "off" {
+		t.Fatalf("enrollment alone must not gate tool calls, got %v", written["native_tool_approvals"])
+	}
+	if _, has := readJSONDoc(t, configPath)["plugin"]; has {
+		t.Fatal("enrollment alone must not register the plugin")
+	}
+
+	// --approvals flips the gate on, refreshes the token, keeps identity.
+	if err := installApprovalHooks(agent, "https://preloop.ai", "agt_second", nil); err != nil {
+		t.Fatalf("installApprovalHooks: %v", err)
+	}
+	after := readJSONDoc(t, configPath)["preloop"].(map[string]interface{})["control"].(map[string]interface{})
+	if after["managed_agent_id"] != "agent-1" {
+		t.Errorf("managed_agent_id lost: %v", after["managed_agent_id"])
+	}
+	if after["bearer_token"] != "agt_second" || after["native_tool_approvals"] != "on" {
+		t.Errorf("approvals install did not refresh the block: %v", after)
+	}
+
+	// A later plain re-enrollment must not silently turn approvals off.
+	if err := writeOpenCodePreloopControl(buildManagedAgentControlConfig(
+		agent, "https://preloop.ai", "agt_third", &managedAgentSummary{ID: "agent-1"}, nil, nil,
+	)); err != nil {
+		t.Fatalf("re-enroll: %v", err)
+	}
+	final := readJSONDoc(t, configPath)["preloop"].(map[string]interface{})["control"].(map[string]interface{})
+	if final["native_tool_approvals"] != "on" || final["approval_timeout_ms"] == nil || final["safe_read_auto_allow"] != true {
+		t.Errorf("re-enrollment dropped approval settings: %v", final)
+	}
+	if final["bearer_token"] != "agt_third" {
+		t.Errorf("re-enrollment should refresh the token: %v", final["bearer_token"])
 	}
 }
 

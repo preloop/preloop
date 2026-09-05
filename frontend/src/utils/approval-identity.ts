@@ -5,6 +5,7 @@ const SOURCE_LABELS: Record<string, string> = {
   codex: 'Codex',
   codex_cli: 'Codex CLI',
   cursor: 'Cursor',
+  opencode: 'OpenCode',
   openclaw: 'OpenClaw',
   hermes: 'Hermes',
 };

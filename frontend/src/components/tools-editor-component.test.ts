@@ -237,6 +237,29 @@ describe('ToolsEditorComponent – native family', () => {
     expect(copy).to.not.contain('No native tools found.');
   });
 
+  it('groups OpenCode adapter tools under the OpenCode label', async () => {
+    const editor = (await fixture(html`
+      <tools-editor-component
+        family="native"
+        .tools=${[
+          makeTool({ name: 'Bash', source: 'agent', adapters: ['opencode'] }),
+          makeTool({ name: 'List', source: 'agent', adapters: ['OpenCode'] }),
+        ]}
+      ></tools-editor-component>
+    `)) as ToolsEditorComponent;
+    await editor.updateComplete;
+
+    expect(groupTitles(editor)).to.deep.equal(['OpenCode']);
+    const groups = (
+      editor as unknown as {
+        _getToolGroups: () => { name: string; tools: { name: string }[] }[];
+      }
+    )._getToolGroups();
+    expect(
+      groups.find((g) => g.name === 'OpenCode')?.tools.map((t) => t.name)
+    ).to.deep.equal(['Bash', 'List']);
+  });
+
   it('groups wire ids and unknown adapters through nativeAdapterGroupName', async () => {
     const editor = (await fixture(html`
       <tools-editor-component

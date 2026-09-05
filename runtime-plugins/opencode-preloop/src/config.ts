@@ -3,9 +3,10 @@ import os from "node:os";
 import path from "node:path";
 
 /**
- * Control configuration, written by `preloop agents enroll` into OpenCode's
- * own config file (`~/.config/opencode/opencode.json`) under the
- * `preloop.control` key. A flat file containing only the control block is
+ * Control configuration, written by `preloop agents onboard OpenCode` into
+ * OpenCode's user config file (`~/.config/opencode/opencode.json`) under the
+ * `preloop.control` key. (The CLI's MCP entry lives in the legacy
+ * `~/.config/opencode/config.json`; OpenCode loads both.) A flat file containing only the control block is
  * also accepted so a config can be staged by hand or pointed at via
  * `PRELOOP_OPENCODE_CONTROL_CONFIG`.
  */
@@ -21,6 +22,21 @@ export type ControlConfig = {
   session_reference?: string;
   /** Gate the permission-ask bridging. Defaults to enabled. */
   tool_approval_enabled?: boolean;
+  /**
+   * Gate the `tool.execute.before` interception that routes every native
+   * tool call through Preloop regardless of OpenCode's own `permission`
+   * config. `"off"` disables it; anything else (including unset) enables it.
+   * Written by `preloop agents onboard OpenCode --approvals`.
+   */
+  native_tool_approvals?: "on" | "off" | string;
+  /**
+   * Auto-allow obviously read-only shell commands (`ls`, `cat`,
+   * `git status`, ...) without a Preloop round trip. Mirrors the CLI hook's
+   * Cursor default: the plugin does not consult OpenCode's allowlist, so
+   * without this every `ls` would become a blocking approval. Defaults to
+   * true; only `bash` commands are affected (never MCP tools).
+   */
+  safe_read_auto_allow?: boolean;
   /**
    * Override for Preloop's permission-check endpoint. When set, approval
    * round trips POST here instead of deriving

@@ -1465,6 +1465,22 @@ func agentControlNeedsOnboardingRefresh(agent AgentConfig) bool {
 		document,
 		clientBaseURLForFlags(),
 	)
+	if isOpenCodeAgent(agent) {
+		// The CLI cannot verify the OpenCode plugin locally (OpenCode
+		// installs it on startup and exposes no bin), so "configured" would
+		// never be true here and every batch onboard would re-enroll
+		// OpenCode. The control block in opencode.json being present, carrying
+		// a token, and pointing at this instance is the refresh criterion.
+		control, ok := readOpenCodePreloopControl()
+		if !ok {
+			return true
+		}
+		if strings.TrimSpace(lookupString(control, "bearer_token")) == "" {
+			return true
+		}
+		return lookupString(control, "control_ws_url") !=
+			managedAgentControlWebSocketURL(clientBaseURLForFlags())
+	}
 	configured, _ := validation["control_channel_configured"].(bool)
 	return !configured
 }
@@ -1857,6 +1873,11 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 		// into Hermes' own virtualenv followed by a plugin enable, so both
 		// --dry-run output and the real install go straight there.
 		return runAgentsInstallHermesPlugin(cmd, agentName, dryRun)
+	}
+	if isOpenCodeAgent(AgentConfig{Name: agentName}) {
+		// OpenCode installs npm plugins listed in its config on startup, so
+		// the install is the `plugin` registration.
+		return runAgentsInstallOpenCodePlugin(cmd, agentName, dryRun)
 	}
 	installCommand, installArgs, err := agentControlPluginInstallCommand(agentName)
 	if err != nil {

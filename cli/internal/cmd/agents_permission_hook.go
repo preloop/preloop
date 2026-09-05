@@ -24,6 +24,10 @@ const (
 	permissionSourceClaudeCode = "claude_code"
 	permissionSourceCodexCLI   = "codex_cli"
 	permissionSourceCursor     = "cursor"
+	// permissionSourceOpenCode is sent by the OpenCode runtime plugin's
+	// tool.execute.before gate, not by this CLI's permission-hook command:
+	// onboarding registers the plugin instead of writing a command hook.
+	permissionSourceOpenCode = "opencode"
 )
 
 // defaultApprovalHookTimeoutSeconds is used when onboarding could not resolve
@@ -479,6 +483,8 @@ func permissionSourceDisplayName(source string) string {
 		return "Codex CLI"
 	case permissionSourceCursor:
 		return "Cursor"
+	case permissionSourceOpenCode:
+		return "OpenCode"
 	default:
 		return source
 	}
