@@ -464,6 +464,12 @@ export class PreloopSessionObserver extends LitElement {
         justify-content: flex-end;
       }
 
+      /* DESIGN "Destructive actions": a large gap before the destructive
+         button so it is not next to the button beside it. */
+      .mode-row .destructive {
+        margin-left: var(--sl-spacing-large);
+      }
+
       .content {
         display: flex;
         flex-direction: column;
@@ -1700,13 +1706,17 @@ export class PreloopSessionObserver extends LitElement {
    * server no longer calls it active. Nothing streams into it, so there is
    * nothing to follow and (once it has ended) nothing to end. Same rule as a
    * finished run on the execution page: it shows neither.
+   *
+   * A session summary is only ever `ended`, `active_now` or `idle` (models
+   * crud/runtime_session.py, _row_to_summary; `recently_active` is managed
+   * agent vocabulary, not session vocabulary). `active_now` means a request
+   * inside the server's 10 minute window, so Follow and Pause go away while a
+   * session is quiet and come back when it wakes.
    */
   private isSessionLive(session: ObservedSession | null): boolean {
     if (!session) return true;
     if (session.status === 'ended' || session.endedAt) return false;
-    return (
-      session.status === 'active_now' || session.status === 'recently_active'
-    );
+    return session.status === 'active_now';
   }
 
   private isSessionEnded(session: ObservedSession | null): boolean {
@@ -1831,6 +1841,7 @@ export class PreloopSessionObserver extends LitElement {
                   <!-- DESIGN "Destructive actions": danger outline, last in
                        the row, and gone once there is nothing left to end. -->
                   <sl-button
+                    class="destructive"
                     size="small"
                     variant="danger"
                     outline

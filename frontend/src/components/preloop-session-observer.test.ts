@@ -1138,6 +1138,20 @@ describe('PreloopSessionObserver', () => {
         expect(endButton!.getAttribute('variant')).to.equal('danger');
         expect(endButton!.hasAttribute('outline')).to.be.true;
 
+        // DESIGN "Destructive actions": a larger gap than the row's own, so
+        // End session is not a neighbour of Refresh. The Shoelace theme is
+        // not loaded in the test page, so the spacing tokens are set here.
+        el.style.setProperty('--sl-spacing-small', '12px');
+        el.style.setProperty('--sl-spacing-large', '20px');
+        await el.updateComplete;
+        const row = endButton!.closest('.mode-row') as HTMLElement;
+        const rowGap = parseFloat(getComputedStyle(row).columnGap || '0');
+        const gapBefore = parseFloat(
+          getComputedStyle(endButton as HTMLElement).marginLeft || '0'
+        );
+        expect(rowGap).to.equal(12);
+        expect(gapBefore).to.be.greaterThan(rowGap);
+
         (endButton as HTMLElement).click();
         await waitUntil(
           () => Boolean(document.body.querySelector('confirm-dialog')),

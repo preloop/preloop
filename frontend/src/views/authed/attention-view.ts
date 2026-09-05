@@ -467,7 +467,7 @@ export class AttentionView extends AuthedElement {
           overflow: hidden;
           text-overflow: ellipsis;
         }
-        .evidence-table th {
+        .pricing-table th {
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
