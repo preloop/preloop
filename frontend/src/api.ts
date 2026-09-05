@@ -4284,6 +4284,7 @@ export interface AccountOrganization {
   id: string;
   organization_name: string | null;
   default_runner_pool?: string | null;
+  hosted_minutes_remaining?: number | null;
   created_at: string;
   updated_at: string;
 }

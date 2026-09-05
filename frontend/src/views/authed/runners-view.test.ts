@@ -89,14 +89,14 @@ describe('RunnersView', () => {
     expect(element.shadowRoot?.textContent).to.contain('office-mac');
     expect(element.shadowRoot?.textContent).to.contain('ops@example.com');
     expect(element.shadowRoot?.textContent).to.contain('local');
-    const select = element.shadowRoot?.querySelector(
-      'sl-select[label="Default runner pool"]'
+    const control = element.shadowRoot?.querySelector(
+      'preloop-runner-pool-select'
     );
-    expect(select).to.exist;
-    expect(element.shadowRoot?.textContent).to.contain(
-      'Any online private runner (default)'
+    expect(control).to.exist;
+    expect(control?.shadowRoot?.textContent).to.contain(
+      'Auto (default): private runners first, then Preloop hosted'
     );
-    expect(element.shadowRoot?.textContent).to.contain('Preloop hosted');
+    expect(control?.shadowRoot?.textContent).to.contain('Preloop hosted only');
   });
 
   it('shows empty state when no runners', async () => {
@@ -184,8 +184,11 @@ describe('RunnersView', () => {
     );
     await element.updateComplete;
 
-    const select = element.shadowRoot?.querySelector(
-      'sl-select[label="Default runner pool"]'
+    const control = element.shadowRoot?.querySelector(
+      'preloop-runner-pool-select'
+    ) as HTMLElement;
+    const select = control.shadowRoot?.querySelector(
+      'sl-select'
     ) as HTMLSelectElement;
     select.value = 'server';
     select.dispatchEvent(new CustomEvent('sl-change'));
@@ -217,14 +220,63 @@ describe('RunnersView', () => {
     );
     await element.updateComplete;
 
-    const select = element.shadowRoot?.querySelector(
-      'sl-select[label="Default runner pool"]'
+    const control = element.shadowRoot?.querySelector(
+      'preloop-runner-pool-select'
+    ) as HTMLElement;
+    const select = control.shadowRoot?.querySelector(
+      'sl-select'
     ) as HTMLSelectElement;
     const values = Array.from(select.querySelectorAll('sl-option')).map(
       (option) => option.getAttribute('value')
     );
     expect(values).to.include('office-mac');
     expect(select.value).to.equal('office-mac');
+  });
+
+  it('saves Auto as a null account default runner pool', async () => {
+    fetchStub = createFetchStub([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'office-mac',
+        hostname: 'mac.local',
+        os: 'darwin',
+        arch: 'arm64',
+        labels: ['local'],
+        status: 'online',
+        last_heartbeat: '2026-08-17T10:00:00Z',
+        current_execution_id: null,
+      },
+    ]);
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+
+    const control = element.shadowRoot?.querySelector(
+      'preloop-runner-pool-select'
+    ) as HTMLElement;
+    const select = control.shadowRoot?.querySelector(
+      'sl-select'
+    ) as HTMLSelectElement;
+    select.value = 'auto';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some(
+          (call) => String(call.args[1]?.method || '').toUpperCase() === 'PATCH'
+        )
+    );
+    const patch = fetchStub.getCalls().find((call) => {
+      const init = call.args[1] as RequestInit | undefined;
+      return String(init?.method || '').toUpperCase() === 'PATCH';
+    });
+    expect(
+      JSON.parse(String((patch?.args[1] as RequestInit).body))
+    ).to.deep.equal({ default_runner_pool: null });
   });
 
   it('shows registered-by email for a runner that arrives over websocket', async () => {
