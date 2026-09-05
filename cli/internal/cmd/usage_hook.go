@@ -77,15 +77,31 @@ var cursorHookEventMap = map[string]string{
 
 // cursorHookInput mirrors the fields of a Cursor hook stdin payload this
 // command uses, per the hook schemas published at cursor.com/docs/agent/
-// hooks (verified 2026-08-27). Fields we do not use (prompt text, file
-// paths, transcripts, user email) are deliberately not decoded: they never
-// leave the machine through this command.
+// hooks (verified 2026-09-05). Fields we do not use (file paths touched by
+// tools, user email, workspace roots) are deliberately not decoded.
+// transcript_path is decoded so the command can read the local transcript
+// for a token estimate; transcript text itself never leaves the machine
+// unless the operator opts in with --store-transcript.
 type cursorHookInput struct {
 	// Common fields (all agent hooks).
 	ConversationID string `json:"conversation_id"`
 	GenerationID   string `json:"generation_id"`
 	HookEventName  string `json:"hook_event_name"`
 	Model          string `json:"model"`
+	TranscriptPath string `json:"transcript_path"`
+
+	// subagentStop: the subagent's own transcript, separate from the
+	// parent conversation's.
+	AgentTranscriptPath string `json:"agent_transcript_path"`
+
+	// preCompact context measurements. context_tokens is Cursor's own
+	// count of the context about to be compacted, the only ground-truth
+	// token figure any Cursor hook reports.
+	ContextTokens       *int     `json:"context_tokens"`
+	ContextWindowSize   *int     `json:"context_window_size"`
+	ContextUsagePercent *float64 `json:"context_usage_percent"`
+	MessagesToCompact   *int     `json:"messages_to_compact"`
+	IsFirstCompaction   *bool    `json:"is_first_compaction"`
 
 	// sessionStart / sessionEnd. The docs state session_id equals
 	// conversation_id; it is decoded as a fallback only.
@@ -128,12 +144,17 @@ By default the command auto-detects the payload:
 
 Override detection with --from cursor|generic|codex.
 
-Cursor hook payloads carry no token counts and no billed amounts, so
-those records are lifecycle markers on the 'estimated' basis with no
-cost attached. Generic events and Codex rollouts may carry token
-counts; cost_basis stays 'estimated' unless the event explicitly
-includes a billed amount from a provider ledger. Null stays null,
-never 0.
+Cursor hook payloads carry no token counts and no billed amounts. When
+Cursor names a transcript file (transcript_path, or the
+CURSOR_TRANSCRIPT_PATH environment variable), stop, sessionEnd and
+subagentStop records carry a token estimate derived from the transcript
+text since the last shipped offset (4 characters per token, the same
+heuristic the gateway budget preflight uses), on the 'estimated' basis.
+Only counts leave the machine; transcript text never does unless you
+opt in with --store-transcript. Generic events and Codex rollouts may
+carry token counts; cost_basis stays 'estimated' unless the event
+explicitly includes a billed amount from a provider ledger. Null stays
+null, never 0.
 
 The command is fail-open by design: any error (unreachable server,
 missing auth, malformed payload) is reported on stderr and the command
@@ -202,7 +223,9 @@ func runUsageHook(cmd *cobra.Command, _ []string) error {
 	var records []map[string]interface{}
 	switch detected {
 	case usageHookFormatCursor:
-		records, err = recordsFromCursorHook(raws[0], parentFlag, now)
+		records, err = recordsFromCursorHook(raws[0], parentFlag, now, func(warnErr error) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "preloop usage hook: %v\n", warnErr)
+		})
 	case usageHookFormatGeneric:
 		records = recordsFromGenericEvents(cmd, raws, parentFlag, now)
 	case usageHookFormatCodex:
@@ -332,7 +355,7 @@ func resolveUsageHookSource(format usageHookFormat, flagValue string, flagChange
 }
 
 func recordsFromCursorHook(
-	payload json.RawMessage, parentFlag string, now time.Time,
+	payload json.RawMessage, parentFlag string, now time.Time, warn func(error),
 ) ([]map[string]interface{}, error) {
 	var input cursorHookInput
 	if err := json.Unmarshal(payload, &input); err != nil {
@@ -348,7 +371,47 @@ func recordsFromCursorHook(
 	if err != nil {
 		return nil, err
 	}
+	enrichCursorRecordFromTranscript(input, record, now, warn)
 	return []map[string]interface{}{record}, nil
+}
+
+// enrichCursorRecordFromTranscript adds the transcript-derived token
+// estimate to lifecycle records that close a generation. Any transcript
+// problem is reported through warn and leaves the lifecycle record intact:
+// a missing or unreadable transcript must never cost the event itself.
+func enrichCursorRecordFromTranscript(
+	input cursorHookInput,
+	record map[string]interface{},
+	now time.Time,
+	warn func(error),
+) {
+	conversationID, _ := record["conversation_id"].(string)
+	switch input.HookEventName {
+	case "sessionStart":
+		pruneCursorTranscriptState(now)
+		return
+	case "stop", "sessionEnd":
+		path := resolveCursorTranscriptPath(input.TranscriptPath)
+		if path == "" {
+			return
+		}
+		estimate, _, err := estimateCursorGeneration(conversationID, path, input.GenerationID, false)
+		if err != nil {
+			warn(fmt.Errorf("transcript estimate skipped: %w", err))
+		}
+		attachCursorTokenEstimate(record, estimate)
+	case "subagentStop":
+		path := strings.TrimSpace(input.AgentTranscriptPath)
+		if path == "" {
+			return
+		}
+		key := cursorSubagentStateKey(input, path)
+		estimate, _, err := estimateCursorGeneration(key, path, input.GenerationID, false)
+		if err != nil {
+			warn(fmt.Errorf("subagent transcript estimate skipped: %w", err))
+		}
+		attachCursorTokenEstimate(record, estimate)
+	}
 }
 
 func postUsageIngestRecords(
