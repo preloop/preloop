@@ -488,3 +488,48 @@ def test_real_completion_argument_builder_keeps_restored_provider_reasoning() ->
             ]
             == REASONING
         )
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_empty_provider_reasoning_does_not_emit_an_opaque_item(stream: bool) -> None:
+    with gateway() as (service, _):
+        payload = {"model": "deepseek/deepseek-v4-flash", "input": "Inspect"}
+        if stream:
+            chunks = [
+                {"choices": [{"delta": {"reasoning_content": "", "content": "Done"}}]}
+            ]
+            with patch.object(
+                service, "_open_upstream_stream", return_value=iter(chunks)
+            ):
+                result = response_from_stream(list(service.stream_response(payload)))
+        else:
+            turn = upstream_turn()
+            turn["choices"][0]["message"]["reasoning_content"] = ""
+            with patch.object(service, "_call_litellm", return_value=turn):
+                result = service.create_response(payload)
+        assert all(item["type"] != "reasoning" for item in result["output"])
+
+
+def test_stream_rejects_oversize_reasoning_before_consuming_more_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from preloop.services import openai_gateway
+
+    monkeypatch.setattr(openai_gateway, "MAX_REASONING_BUFFER_BYTES", 7, raising=False)
+    consumed = []
+
+    def chunks() -> Iterator[dict[str, Any]]:
+        for index in range(3):
+            consumed.append(index)
+            yield {"choices": [{"delta": {"reasoning_content": "éé"}}]}
+
+    with gateway() as (service, _):
+        with patch.object(service, "_open_upstream_stream", return_value=chunks()):
+            events = list(
+                service.stream_response(
+                    {"model": "deepseek/deepseek-v4-flash", "input": "Inspect"}
+                )
+            )
+    assert consumed == [0, 1]
+    assert "reasoning_content_too_large" in "".join(events)
+    assert '"type": "response.completed"' not in "".join(events)

@@ -16,6 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from io import StringIO
 from itertools import chain
 from uuid import uuid4
 from typing import (
@@ -78,7 +79,10 @@ from preloop.services.context_optimization import (
     tool_choice_named_tool,
     tool_definition_name,
 )
-from preloop.services.deepseek_responses_reasoning import DeepSeekResponsesReasoning
+from preloop.services.deepseek_responses_reasoning import (
+    MAX_ENCRYPTED_REASONING_CHARS,
+    DeepSeekResponsesReasoning,
+)
 from preloop.services.model_gateway_auth import (
     ModelGatewayAuthContext,
     compute_authorized_model_ids,
@@ -166,6 +170,9 @@ from preloop.services.secret_service import (
 from preloop.utils.audit import log_model_gateway_request
 
 logger = logging.getLogger(__name__)
+
+# Bound streamed provider data before final envelope encoding/encryption.
+MAX_REASONING_BUFFER_BYTES = MAX_ENCRYPTED_REASONING_CHARS
 
 _RUNTIME_SESSION_ACTIVITY_TOUCH_MIN_INTERVAL = timedelta(seconds=30)
 _RUNTIME_SESSION_SUMMARY_REFRESH_EVERY_REQUESTS = 10
@@ -2393,7 +2400,8 @@ class OpenAIGatewayService:
             reasoning_bridge = DeepSeekResponsesReasoning.for_model(
                 model, self.auth_context.user.account_id
             )
-            reasoning_parts: List[str] = []
+            reasoning_buffer = StringIO()
+            reasoning_bytes = 0
             reasoning_output_index: Optional[int] = None
             try:
                 yield self._sse_event(
@@ -2442,7 +2450,15 @@ class OpenAIGatewayService:
                         and isinstance(reasoning_delta, str)
                         and reasoning_delta
                     ):
-                        reasoning_parts.append(reasoning_delta)
+                        reasoning_bytes += len(reasoning_delta.encode("utf-8"))
+                        if reasoning_bytes > MAX_REASONING_BUFFER_BYTES:
+                            raise ModelGatewayAPIError(
+                                provider="openai",
+                                status_code=502,
+                                code="reasoning_content_too_large",
+                                message="Provider reasoning exceeds the supported buffer size.",
+                            )
+                        reasoning_buffer.write(reasoning_delta)
                         if reasoning_output_index is None:
                             reasoning_output_index = len(output_items)
                             item = {
@@ -2641,7 +2657,7 @@ class OpenAIGatewayService:
                 full_text = "".join(assistant_parts)
                 if reasoning_bridge is not None and reasoning_output_index is not None:
                     reasoning_item = reasoning_bridge.output_item(
-                        "".join(reasoning_parts),
+                        reasoning_buffer.getvalue(),
                         call_ids=[
                             str(state["item"]["call_id"])
                             for state in tool_call_states.values()
@@ -4582,8 +4598,10 @@ class OpenAIGatewayService:
         )
         choices = response_dict.get("choices") or []
         message = (choices[0].get("message") or {}) if choices else {}
-        if reasoning_bridge is not None and isinstance(
-            message.get("reasoning_content"), str
+        if (
+            reasoning_bridge is not None
+            and isinstance(message.get("reasoning_content"), str)
+            and message["reasoning_content"]
         ):
             output_items.insert(
                 0,
