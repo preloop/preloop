@@ -15,8 +15,8 @@ from preloop.services.issue_lifecycle import IssueLifecycleService
 from preloop.services.issue_lifecycle_provider import GitHubLifecycleProvider
 from preloop.services.issue_lifecycle_worker import (
     dispatch_lifecycle_execution,
+    lifecycle_worker_db,
     lifecycle_worker_hook,
-    worker_owned_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,16 +93,11 @@ async def lifecycle_flow_entry(
     trigger_service: Any, flow: models.Flow, event: dict[str, Any], nats_client: Any
 ) -> tuple[bool, models.FlowExecution | None]:
     """Intercept explicitly configured lifecycle flows before ordinary dispatch."""
-    db, owned = worker_owned_session(
-        trigger_service, getattr(trigger_service, "db", None)
-    )
-    try:
+    fallback = getattr(trigger_service, "db", None)
+    with lifecycle_worker_db(trigger_service, fallback) as db:
         return await _lifecycle_flow_entry(
             db, flow, event, nats_client, trigger_service
         )
-    finally:
-        if owned:
-            db.close()
 
 
 async def _lifecycle_flow_entry(
@@ -184,9 +179,8 @@ async def lifecycle_execution_finished(
     db: Session, execution: models.FlowExecution, flow: models.Flow
 ) -> None:
     """Consume persisted structured output; failures remain retryable by API."""
-    worker_db, owned = worker_owned_session(fallback=db)
-    try:
-        event = execution.trigger_event_details or {}
+    event = execution.trigger_event_details or {}
+    with lifecycle_worker_db(fallback=db) as worker_db:
         envelope = (event.get("payload") or {}).get("lifecycle") or event.get(
             "lifecycle_refinement"
         )
@@ -207,6 +201,3 @@ async def lifecycle_execution_finished(
             if contract.issue_revision != envelope["issue_revision"]:
                 raise ValueError("refinement_revision_mismatch")
             await service.refine(contract)
-    finally:
-        if owned:
-            worker_db.close()

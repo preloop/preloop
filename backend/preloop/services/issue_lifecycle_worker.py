@@ -1,31 +1,74 @@
 """Keep complete lifecycle ORM transactions away from the application loop."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import partial, wraps
 from typing import Any, ParamSpec, TypeVar
 from uuid import UUID
 
 import anyio
 from anyio import from_thread
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 P = ParamSpec("P")
 T = TypeVar("T")
 
+_lifecycle_bind: ContextVar[Connection | None] = ContextVar(
+    "lifecycle_bind", default=None
+)
+
+
+def _caller_session(*args: Any, **kwargs: Any) -> Session | None:
+    """Find the request/test Session without treating test doubles as ORM."""
+    for value in (*args, *kwargs.values()):
+        if isinstance(value, Session):
+            return value
+        db = getattr(value, "db", None)
+        if isinstance(db, Session):
+            return db
+    return None
+
 
 def worker_owned_session(owner: Any = None, fallback: Any = None) -> tuple[Any, bool]:
     """Open a Session on this worker thread instead of borrowing the caller's.
 
-    Test doubles that are not SQLAlchemy sessions are returned unchanged.
+    The worker joins the caller's connection (captured on the application
+    thread) so uncommitted rows stay visible. Test doubles that are not
+    SQLAlchemy sessions are returned unchanged.
     """
-    create = getattr(owner, "_create_orchestrator_session", None)
-    if callable(create):
-        return create(), True
-    if isinstance(fallback, Session):
-        from preloop.models.db.session import get_session_factory
-
-        return get_session_factory()(), True
+    bind = _lifecycle_bind.get()
+    session = fallback if isinstance(fallback, Session) else None
+    if session is None:
+        db = getattr(owner, "db", None)
+        if isinstance(db, Session):
+            session = db
+    if bind is None and session is not None:
+        bind = session.connection()
+    if bind is not None:
+        return (
+            Session(bind=bind, join_transaction_mode="create_savepoint"),
+            True,
+        )
     return fallback, False
+
+
+@contextmanager
+def lifecycle_worker_db(owner: Any = None, fallback: Any = None) -> Iterator[Any]:
+    """Open a worker-thread Session that joins the caller's transaction."""
+    db, owned = worker_owned_session(owner, fallback)
+    try:
+        yield db
+        if owned:
+            db.commit()
+    except Exception:
+        if owned:
+            db.rollback()
+        raise
+    finally:
+        if owned:
+            db.close()
 
 
 def run_lifecycle_endpoint(operation: Callable[[], Awaitable[T]]) -> T:
@@ -45,9 +88,16 @@ def lifecycle_worker_hook(
 
     @wraps(operation)
     async def offload(*args: P.args, **kwargs: P.kwargs) -> T:
-        return await anyio.to_thread.run_sync(
-            partial(run_lifecycle_endpoint, partial(operation, *args, **kwargs))
-        )
+        caller = _caller_session(*args, **kwargs)
+        token = _lifecycle_bind.set(caller.connection() if caller is not None else None)
+        try:
+            return await anyio.to_thread.run_sync(
+                partial(run_lifecycle_endpoint, partial(operation, *args, **kwargs))
+            )
+        finally:
+            _lifecycle_bind.reset(token)
+            if caller is not None:
+                caller.expire_all()
 
     return offload
 
