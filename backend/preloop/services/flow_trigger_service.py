@@ -688,6 +688,16 @@ class FlowTriggerService:
                 precreated_execution.id,
             )
             return precreated_execution
+
+        if precreated_execution is None:
+            from preloop.services.issue_lifecycle_runtime import lifecycle_flow_entry
+
+            handled, lifecycle_execution = await lifecycle_flow_entry(
+                self, flow, event_data, nats_client
+            )
+            if handled:
+                return lifecycle_execution
+
         if precreated_execution is not None:
             execution = precreated_execution
             execution_id = execution.id

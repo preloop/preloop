@@ -5590,6 +5590,190 @@ paths:
                 title: Response Get Issue Count Api V1 Issues Count Get
       security:
       - bearerAuth: []
+  /api/v1/issues/{issue_id}/lifecycle:
+    get:
+      tags:
+      - Issues
+      summary: Lifecycle Status
+      description: Read live scope plus durable readiness, pickup and audit history.
+      operationId: lifecycle_status_api_v1_issues__issue_id__lifecycle_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: issue_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Issue Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Lifecycle Status Api V1 Issues  Issue Id  Lifecycle
+                  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/issues/{issue_id}/lifecycle/refine:
+    post:
+      tags:
+      - Issues
+      summary: Refine Issue
+      description: Store a reviewable proposal; this operation cannot launch implementation.
+      operationId: refine_issue_api_v1_issues__issue_id__lifecycle_refine_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: issue_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Issue Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReadinessContract'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Refine Issue Api V1 Issues  Issue Id  Lifecycle Refine
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/issues/{issue_id}/lifecycle/ready:
+    post:
+      tags:
+      - Issues
+      summary: Ready Issue
+      description: Apply the configured readiness policy once to an approved scope.
+      operationId: ready_issue_api_v1_issues__issue_id__lifecycle_ready_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: issue_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Issue Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReadyRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Ready Issue Api V1 Issues  Issue Id  Lifecycle Ready
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/issues/{issue_id}/lifecycle/audit/reconcile:
+    post:
+      tags:
+      - Issues
+      summary: Reconcile Audit
+      description: Recover dispatch/publication after a transient provider or worker
+        failure.
+      operationId: reconcile_audit_api_v1_issues__issue_id__lifecycle_audit_reconcile_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: issue_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Issue Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Reconcile Audit Api V1 Issues  Issue Id  Lifecycle
+                  Audit Reconcile Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/issues/{issue_id}/lifecycle/deployment/verify:
+    post:
+      tags:
+      - Issues
+      summary: Verify Deployment
+      description: Trigger a separately approved target/scope after recording deployment.
+      operationId: verify_deployment_api_v1_issues__issue_id__lifecycle_deployment_verify_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: issue_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Issue Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeploymentVerificationRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Verify Deployment Api V1 Issues  Issue Id  Lifecycle
+                  Deployment Verify Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/issues/{issue_id}/comments:
     get:
       tags:
@@ -13928,6 +14112,34 @@ components:
       type: object
       title: CreateVersionRequest
       description: Request to create a new policy version.
+    Criterion:
+      properties:
+        id:
+          type: string
+          maxLength: 80
+          minLength: 1
+          title: Id
+        outcome:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Outcome
+        verification:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Verification
+        deployment_required:
+          type: boolean
+          title: Deployment Required
+          default: false
+      type: object
+      required:
+      - id
+      - outcome
+      - verification
+      title: Criterion
+      description: Observable acceptance, independently addressable by evidence.
     CronSchedule:
       properties:
         timezone:
@@ -14007,6 +14219,28 @@ components:
       type: object
       title: DashboardTelemetryResponse
       description: Aggregate high-level metrics for the global dashboard control plane.
+    DeploymentVerificationRequest:
+      properties:
+        merge_sha:
+          type: string
+          title: Merge Sha
+        target:
+          type: string
+          title: Target
+        deployed_revision:
+          type: string
+          title: Deployed Revision
+        deployment_evidence:
+          type: string
+          title: Deployment Evidence
+      type: object
+      required:
+      - merge_sha
+      - target
+      - deployed_revision
+      - deployment_evidence
+      title: DeploymentVerificationRequest
+      description: An authenticated deployment record, never inferred from issue closure.
     DetectorTimeoutFailMode:
       type: string
       enum:
@@ -19485,6 +19719,89 @@ components:
         per-row classification recorded at capture time; rows recorded before
 
         this feature carry no subtype and appear in neither count.'
+    ReadinessContract:
+      properties:
+        issue_revision:
+          type: string
+          title: Issue Revision
+        problem:
+          type: string
+          title: Problem
+          default: ''
+        user_outcome:
+          type: string
+          title: User Outcome
+          default: ''
+        constraints:
+          items:
+            type: string
+          type: array
+          title: Constraints
+        non_goals:
+          items:
+            type: string
+          type: array
+          title: Non Goals
+        assumptions:
+          items:
+            type: string
+          type: array
+          title: Assumptions
+        blocking_decisions:
+          items:
+            type: string
+          type: array
+          title: Blocking Decisions
+        conflicts:
+          items:
+            type: string
+          type: array
+          title: Conflicts
+        criteria:
+          items:
+            $ref: '#/components/schemas/Criterion'
+          type: array
+          title: Criteria
+        code_entry_points:
+          items:
+            type: string
+          type: array
+          title: Code Entry Points
+        test_entry_points:
+          items:
+            type: string
+          type: array
+          title: Test Entry Points
+        dependencies:
+          items:
+            type: integer
+          type: array
+          title: Dependencies
+        environment_profile:
+          type: string
+          title: Environment Profile
+          default: ''
+        test_commands:
+          items:
+            type: string
+          type: array
+          title: Test Commands
+      additionalProperties: false
+      type: object
+      required:
+      - issue_revision
+      title: ReadinessContract
+      description: A proposal can be incomplete; readiness explains each missing decision.
+    ReadyRequest:
+      properties:
+        issue_revision:
+          type: string
+          title: Issue Revision
+      type: object
+      required:
+      - issue_revision
+      title: ReadyRequest
+      description: The reviewer approves one exact issue revision.
     RefreshRequest:
       properties:
         refresh_token:

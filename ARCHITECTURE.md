@@ -78,3 +78,18 @@ graph LR
 
 Execution environment profiles and hosted checkpoint recovery are documented in
 [Environments and recovery](docs/guide/flows/environments-and-recovery.md).
+
+### Issue lifecycle controller
+
+`services/issue_lifecycle.py` coordinates structured readiness, one authorized
+implementation pickup, and independent merge/deployment acceptance audits.
+`IssueLifecycle` records live scope revisions, immutable merge references,
+execution bindings, evidence and follow-up identities through the CRUD layer.
+Transaction locks serialize each tenant/issue; provider markers recover external
+writes after local rollback. The trigger service prepares lifecycle executions
+before ordinary dispatch, and the orchestrator consumes durable structured output
+at completion. The GitHub adapter revalidates closing-commit/merged-PR authority;
+manual completion alone does not start an audit. Readiness consumes approved
+execution-environment capabilities rather than implementing test setup. See
+[Issue readiness and completion audits](docs/guide/flows/issue-lifecycle.md) for
+policy, API and recovery configuration.

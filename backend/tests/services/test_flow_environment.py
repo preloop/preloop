@@ -213,6 +213,73 @@ def test_readiness_checks_command_text_not_only_identifier(
     assert mismatch["blockers"] == ["environment_command_mismatch:component"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pool, commands, expected",
+    [
+        ("server", ["component"], []),
+        ("server", ["component", "backend"], ["environment_command_missing:backend"]),
+        (
+            "private-pool",
+            ["component"],
+            ["environment_protocol_unsupported_private_runner"],
+        ),
+    ],
+)
+async def test_lifecycle_uses_actual_environment_capability_registry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pool: str,
+    commands: list[str],
+    expected: list[str],
+) -> None:
+    from types import SimpleNamespace
+    from uuid import uuid4
+    from unittest.mock import Mock
+
+    from preloop.services.issue_lifecycle_runtime import FlowEnvironmentCapabilities
+    from preloop.models.crud import crud_flow
+
+    registry = tmp_path / "profiles.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "approved": {
+                    "image": IMAGE,
+                    "harness": "codex",
+                    "test_commands": {"component": ["npm test"]},
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(settings, "flow_environment_profiles_file", str(registry))
+    flow = SimpleNamespace(
+        agent_config={"environment_profile": "approved"},
+        agent_type="codex",
+        runner_pool=pool,
+        is_enabled=True,
+        git_clone_config={
+            "verification": {
+                "mode": "gate",
+                "profile": {
+                    "profile_id": "tests",
+                    "always": [
+                        {"id": key, "command": "npm test", "reason": "acceptance"}
+                        for key in commands
+                    ],
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(crud_flow, "get", lambda *args, **kwargs: flow)
+    capabilities = FlowEnvironmentCapabilities(
+        Mock(),
+        uuid4(),
+        {"implementation_flow_id": str(uuid4())},
+    )
+    assert await capabilities.blockers("approved", commands) == expected
+
+
 @pytest.mark.parametrize(
     "policy, expected",
     [

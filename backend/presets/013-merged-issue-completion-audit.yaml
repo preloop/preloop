@@ -1,0 +1,48 @@
+slug: merged-issue-completion-audit
+name: Merged Issue Completion Audit
+description: Independently check acceptance at the exact closing merge revision and propose bounded follow-ups.
+icon: clipboard-check
+trigger_event_source: null
+trigger_event_types:
+  - issue.closed
+prompt_template: |
+  Independently audit the merged implementation against this acceptance contract:
+  {{trigger_event.payload.lifecycle}}
+
+  The controller verified the provider's issue-to-merged-PR relation and pinned
+  checkout to payload.sha. Verify git rev-parse HEAD equals that exact merge_sha
+  before inspecting code or running tests. Do not reuse the implementer's conversation.
+  Read repository instructions and run only relevant approved test-profile commands.
+  Map every criterion to code, tests and observable evidence. Source inspection
+  alone is not a passing test, and issue closure never proves deployed acceptance.
+  Missing environment, skipped checks, ambiguous criteria or deployment evidence
+  must remain unknown. Write artifacts/logs under /workspace/evidence.
+
+  Write /workspace/result.json:
+  {"status": "success", "checked_out_sha":"<exact 40-hex merge SHA>",
+   "issue_revision":"<supplied issue revision>",
+   "criteria":[{"criterion_id":"<contract id>",
+     "verdict":"complete|gap|unknown", "code":["file:line"],
+     "tests":["command and artifact path with actual result"],
+     "observations":["observable evidence"], "reason":"<bounded conclusion>"}],
+   "follow_ups":[{"criterion_id":"<confirmed gap criterion>",
+     "kind":"defect|enhancement", "title":"<clear bounded title>",
+     "description":"<problem, expected outcome and acceptance>",
+     "evidence":["<evidence pointers>"]}]}
+
+  No criteria in the supplied contract means insufficient evidence; do not invent
+  a complete verdict. Propose at most three clear follow-ups. The controller searches
+  existing linked work, applies external-creation policy, and upserts one audit comment.
+  Do not directly create issues/comments, add agent-ready, reopen the original issue,
+  push, publish PRs, deploy, or probe production. Deployment requirements need a
+  separate approved verification with a recorded deployed revision and test scope.
+agent_type: codex
+agent_config:
+  sandbox_type: exec
+  enable_auto_lint: false
+  lifecycle_kind: merge_audit
+allowed_mcp_servers: []
+allowed_mcp_tools: []
+git_clone_config: null
+trigger_config: null
+is_preset: true

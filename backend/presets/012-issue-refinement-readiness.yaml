@@ -1,0 +1,34 @@
+slug: issue-refinement-readiness
+name: Issue Refinement and Readiness
+description: Produce a reviewable acceptance contract from triage; readiness authorization is separate.
+icon: clipboard-check
+trigger_event_source: null
+trigger_event_types:
+  - issue.opened
+prompt_template: |
+  Refine this issue after triage using repository instructions and issue templates.
+  Source issue: {{trigger_event.payload.issue}}
+  Trusted revision: {{trigger_event.lifecycle_refinement.issue_revision}}
+  Produce problem, user_outcome, constraints, non_goals, assumptions, blocking_decisions,
+  conflicts, criteria, code_entry_points, test_entry_points, dependencies,
+  environment_profile and test_commands. Ask only about materially blocking decisions.
+  Ordinary implementation choices belong in assumptions, not approval questions.
+  Each criterion has id, outcome, verification, deployment_required. Dependencies
+  are issue numbers in this repository. test_commands are named commands in the
+  selected operator-approved environment profile, not invented shell commands.
+  Missing environment or conflicting requirements block readiness; do not invent them.
+  Store /workspace/result.json with "status": "success" and readiness_contract containing
+  all those fields plus issue_revision set to the trusted revision above.
+  The result is a reviewable proposal. Do not add agent-ready, create follow-ups,
+  start implementation, or change project labels. A separate authorized transition
+  rechecks the live issue, dependencies and runner capabilities before pickup.
+agent_type: codex
+agent_config:
+  sandbox_type: exec
+  enable_auto_lint: false
+  lifecycle_kind: refinement
+allowed_mcp_servers: []
+allowed_mcp_tools: []
+git_clone_config: null
+trigger_config: null
+is_preset: true
