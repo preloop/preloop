@@ -7590,7 +7590,12 @@ paths:
       tags:
       - Flows
       summary: Read Flow Executions
-      description: Retrieve lightweight flow execution summaries for the account.
+      description: 'Retrieve lightweight flow execution summaries for the account.
+
+
+        `X-Total-Count` carries how many executions the filters matched, so a
+
+        console page of 25 can say "25 of 1,412 executions" honestly.'
       operationId: read_flow_executions_api_v1_flows_executions_get
       security:
       - bearerAuth: []
@@ -7628,6 +7633,23 @@ paths:
               type: string
           - type: 'null'
           title: Status
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Search
+      - name: started_after
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started After
       responses:
         '200':
           description: Successful Response

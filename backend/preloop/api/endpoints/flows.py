@@ -430,16 +430,26 @@ def _normalize_status_filters(status: Optional[List[str]]) -> Optional[List[str]
 @router.get("/flows/executions", response_model=List[schemas.FlowExecutionListResponse])
 @require_permission("view_flows")
 def read_flow_executions(
+    # FastAPI injects the response; the default keeps direct callers (tests,
+    # internal reuse) able to call this like any other function.
+    response: Response = None,
     db: Session = Depends(get_db),
     skip: int = 0,
     limit: int = 25,
     flow_id: Optional[uuid.UUID] = None,
     status: Optional[List[str]] = Query(default=None),
+    search: Optional[str] = None,
+    started_after: Optional[datetime] = None,
     current_user: User = Depends(get_current_active_user),
 ):
-    """Retrieve lightweight flow execution summaries for the account."""
+    """Retrieve lightweight flow execution summaries for the account.
+
+    `X-Total-Count` carries how many executions the filters matched, so a
+    console page of 25 can say "25 of 1,412 executions" honestly.
+    """
     statuses = _normalize_status_filters(status)
     limit = max(1, min(limit, 100))
+    search_term = search.strip() if isinstance(search, str) else None
     # Use eager_load=True to load flow relationship in single query (avoids N+1)
     executions = crud_flow_execution.get_multi(
         db,
@@ -448,9 +458,21 @@ def read_flow_executions(
         limit=limit,
         flow_id=flow_id,
         statuses=statuses,
+        search=search_term or None,
+        started_after=started_after,
         eager_load=True,
         lightweight=True,
     )
+    total = crud_flow_execution.count(
+        db,
+        account_id=current_user.account_id,
+        flow_id=flow_id,
+        statuses=statuses,
+        search=search_term or None,
+        started_after=started_after,
+    )
+    if response is not None and isinstance(total, int):
+        response.headers["X-Total-Count"] = str(total)
 
     # Flow is already loaded via joinedload - no additional queries needed
     for execution in executions:
