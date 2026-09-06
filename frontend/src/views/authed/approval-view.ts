@@ -211,6 +211,13 @@ export class ApprovalView extends AuthedElement {
         color: var(--console-meta-color);
       }
 
+      /* The attribution line renders in the meta register everywhere else.
+         Inside this strip it sits on the same hairline row as the other
+         facts, so it takes the strip's size: one type size per row. */
+      .fact-strip attribution-line {
+        --console-text-meta: var(--sl-font-size-small);
+      }
+
       .fact code {
         font-family: monospace;
         font-size: 0.8125rem;
@@ -1223,10 +1230,7 @@ export class ApprovalView extends AuthedElement {
     const shortId = request.id.slice(0, 8);
     return html`
       <div class="fact-strip">
-        <attribution-line
-          class="fact attribution"
-          .source=${request}
-        ></attribution-line>
+        <attribution-line class="fact" .source=${request}></attribution-line>
         <div class="fact">
           <span class="fact-label">Tool</span>
           <code>${request.tool_name}</code>

@@ -51,17 +51,26 @@ export function formatApprovalRequester(
  * it empty even when they carried an agent id, which is how a named Claude
  * Code agent came to render as "AI agent". `agent.name` is resolved from the
  * id at read time, so it is right whenever the agent still exists.
+ *
+ * When nothing names the agent but an id exists (deleted agent, or a server
+ * that predates the resolved summary), the eight character id is the answer,
+ * the same one `attributionParts` gives: the chip beside the attribution line
+ * must not say "AI agent" while the line says "Agent 3f2a9c14".
  */
 export function approvalRequesterName(
   request: {
-    agent?: { name?: string | null } | null;
+    agent?: { id?: string | null; name?: string | null } | null;
+    managed_agent_id?: string | null;
     managed_agent_name?: string | null;
     tool_args?: Record<string, unknown> | null;
   },
   fallback = 'AI agent'
 ): string {
+  const agentId = (request.agent?.id || request.managed_agent_id || '').trim();
   return formatApprovalRequester(
-    request.agent?.name || request.managed_agent_name,
+    request.agent?.name ||
+      request.managed_agent_name ||
+      (agentId ? agentId.slice(0, 8) : null),
     request.tool_args,
     fallback
   );
