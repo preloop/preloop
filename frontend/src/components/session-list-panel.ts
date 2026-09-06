@@ -140,9 +140,13 @@ export class SessionListPanel extends LitElement {
    * "Chips"). The idle case used to return `primary`, so one page carried
    * two dialects for one word: a soft neutral chip in the agent header and a
    * solid blue badge in the session list beside it.
+   *
+   * An ended session stays neutral even if a request in it failed: warning
+   * means "needs a person" (DESIGN.md), and a finished run does not.
    */
   private getVariant(session: ObservedSession) {
     if (session.status === 'active_now') return 'success';
+    if (session.status === 'ended') return 'neutral';
     if (session.failedRequests > 0) return 'warning';
     return 'neutral';
   }

@@ -73,6 +73,17 @@ describe('session-list-panel status chips', () => {
     });
   });
 
+  it('leaves an ended session neutral even when a request failed', async () => {
+    const el = await renderPanel([
+      makeSession({ status: 'ended', failedRequests: 3 }),
+    ]);
+
+    const badge = el.shadowRoot?.querySelector('.title-row sl-badge');
+    expect(badge?.textContent?.trim()).to.equal('Ended');
+    // Warning means "needs a person"; a finished run does not.
+    expect(badge?.getAttribute('variant')).to.equal('neutral');
+  });
+
   it('renders the waste badge through the same chip recipe', async () => {
     const el = await renderPanel([makeSession({ optimizationWasteScore: 20 })]);
 
