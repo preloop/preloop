@@ -614,6 +614,9 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         import os
         from uuid import UUID as _UUID
 
+        from preloop.services.approval_attribution import (
+            attribution_from_user_context,
+        )
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
         from preloop.services.permission_prompt import evaluate_permission_prompt
 
@@ -637,21 +640,19 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             except (ValueError, TypeError):
                 return None
 
+        # Same helper the other creation paths use: a flow runtime token
+        # names the flow, and that name must not be stored as an agent.
+        caller = attribution_from_user_context(user_context)
+
         try:
             behavior = await evaluate_permission_prompt(
                 base_url=os.getenv("PRELOOP_URL", "http://localhost:8000"),
                 account_id=user_context.account_id,
                 user_id=_as_uuid(user_context.user_id),
-                managed_agent_id=_as_uuid(
-                    getattr(user_context, "managed_agent_id", None)
-                ),
-                runtime_session_id=_as_uuid(
-                    getattr(user_context, "runtime_session_id", None)
-                ),
-                managed_agent_name=getattr(
-                    user_context, "runtime_principal_name", None
-                ),
-                api_key_id=_as_uuid(getattr(user_context, "api_key_id", None)),
+                managed_agent_id=caller.managed_agent_id,
+                runtime_session_id=caller.runtime_session_id,
+                managed_agent_name=caller.managed_agent_name,
+                api_key_id=caller.api_key_id,
                 source="claude_code",
                 tool_name=tool_name,
                 tool_input=input,
