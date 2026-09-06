@@ -2088,6 +2088,45 @@ class FlowExecutionOrchestrator:
                 [seed.path for seed in workspace_files],
             )
 
+        # Native profiles use only the operator's local Cursor login/config.
+        # Do not mint model/MCP tokens or resolve cloud provider secrets here.
+        from preloop.services.host_exec import (
+            host_exec_profile_name,
+            host_exec_flow_error,
+            host_exec_unavailable_reason,
+        )
+
+        profile = host_exec_profile_name(self.flow.agent_config)
+        if effective_agent_type == "cursor" or profile:
+            error = host_exec_flow_error(
+                agent_type=effective_agent_type,
+                agent_config=self.flow.agent_config,
+                runner_pool=self.flow.runner_pool,
+            ) or host_exec_unavailable_reason(
+                git_clone_config=self.flow.git_clone_config,
+                custom_commands=self.flow.custom_commands,
+            )
+            if error:
+                raise ValueError(error)
+            if workspace_files or (self.trigger_event_data or {}).get("_resume"):
+                raise ValueError(
+                    "Host profiles do not support remote workspace seeds or native resume"
+                )
+            return {
+                "flow_id": str(self.flow_id),
+                "flow_name": self.flow.name,
+                "execution_id": str(self.execution_log.id),
+                "prompt": resolved_prompt,
+                "agent_type": "cursor",
+                "agent_config": {"host_exec_profile": profile},
+                "account_id": self.flow.account_id,
+                # A request for the local profile's explicit model map. This is
+                # never a claim about the model Cursor actually reported.
+                "model_identifier": self.ai_model.model_identifier
+                if self.ai_model
+                else None,
+            }
+
         # Create short-lived API token for this flow execution
         account_api_token = None
         if self.flow.account_id:

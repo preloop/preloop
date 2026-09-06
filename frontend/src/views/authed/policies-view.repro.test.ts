@@ -80,7 +80,8 @@ function stubFetch(opts: StubOpts) {
         return new Response('version: "1.0"\n', { status: 200 });
       }
       if (url.includes('/api/v1/policies/versions')) {
-        return json([]);
+        // PolicyVersionListResponse, the shape the endpoint really sends.
+        return json({ versions: [], total: 0 });
       }
       if (url.includes('/api/v1/policies/generate') && method === 'POST') {
         return json({ yaml: 'version: "1.0"\ntools: []\n', warnings: [] });

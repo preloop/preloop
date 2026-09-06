@@ -49,6 +49,14 @@
         transparent
     );
 
+    /* A resting state, unlike hover, so it is a hue and not a gray: a
+       selected row must not read as the row the pointer happens to be on. */
+    --console-selected-tint: color-mix(
+        in srgb,
+        var(--sl-color-primary-600) 8%,
+        transparent
+    );
+
     /* Default buttons: Shoelace's own face in light. */
     --console-button-face: var(--sl-color-neutral-0);
     --console-button-border: var(--sl-color-neutral-300);
@@ -82,6 +90,12 @@
     --console-hover-tint: color-mix(
         in srgb,
         var(--sl-color-neutral-1000) 6%,
+        transparent
+    );
+
+    --console-selected-tint: color-mix(
+        in srgb,
+        var(--sl-color-primary-600) 14%,
         transparent
     );
 

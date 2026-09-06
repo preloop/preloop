@@ -249,6 +249,19 @@ describe('inventory-card', () => {
     ]);
   });
 
+  it('holds only what the account has, never approvals or sessions', async () => {
+    // An approval that has been decided and a session that has ended are
+    // records of something that happened, not things the account holds.
+    // Pending approvals live in the attention strip; the record of both
+    // lives on the Overview's Audit trail line.
+    const el = await card({ showUsers: true });
+    const labels = tabText(el).map((label) => label.toLowerCase());
+    expect(labels.some((label) => label.includes('approval'))).to.be.false;
+    expect(labels.some((label) => label.includes('session'))).to.be.false;
+    expect(el.shadowRoot?.textContent).to.not.contain('Approvals');
+    expect(el.shadowRoot?.textContent).to.not.contain('Sessions');
+  });
+
   it('opens on Agents and remembers the tab you left it on', async () => {
     const el = await card();
     expect(el.shadowRoot?.querySelector('a[href="/console/agents/agent-1"]')).to

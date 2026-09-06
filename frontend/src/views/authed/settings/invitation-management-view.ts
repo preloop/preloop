@@ -55,9 +55,10 @@ export class InvitationManagementView extends LitElement {
   static styles = [
     unsafeCSS(consoleStyles),
     css`
+      /* No page padding here: the shell pays the side inset
+         (styles/console-styles.css, "The page box"). */
       :host {
         display: block;
-        padding: 2rem;
       }
 
       .header {

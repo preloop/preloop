@@ -16,8 +16,18 @@ import {
   updateAccessRule,
   deleteAccessRule,
   getUserProfile,
+  listPolicyVersions,
+  normalizePolicyDiff,
+  normalizePolicyRollback,
 } from '../../api';
-import type { AccessRule, ModelIORule } from '../../api';
+import type {
+  AccessRule,
+  ModelIORule,
+  PolicyDiffResult,
+  PolicyRollbackResult,
+  PolicyVersion,
+} from '../../api';
+import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import { hasPermission } from '../../permissions';
 import type { Tool, ApprovalWorkflow } from '../../components/tool-card';
 import '../../components/policy-generate-dialog';
@@ -67,62 +77,23 @@ interface ToolAccessRule {
   accessRule: AccessRule | null;
 }
 
-// Types for diff result
-interface DiffChange {
-  type: 'added' | 'removed' | 'modified';
-  category: 'mcp_servers' | 'approval_workflows' | 'tools' | 'model_io';
-  name: string;
-  details?: string;
-}
-
-interface PolicyDiffResult {
-  summary: string;
-  has_changes: boolean;
-  changes: {
-    added: DiffChange[];
-    removed: DiffChange[];
-    modified: DiffChange[];
-  };
-}
-
-// Types for policy versions
-interface PolicyVersion {
-  id: string;
-  version_number: number;
-  tag: string | null;
-  description: string | null;
-  created_at: string;
-  created_by_username: string | null;
-  is_active: boolean;
-  snapshot_summary: {
-    mcp_servers_count: number;
-    tools_count: number;
-    policies_count: number;
-  };
-}
+// Diff and version shapes live in the API layer, which normalises what the
+// endpoints actually return (see normalizePolicyVersions/normalizePolicyDiff).
 
 interface CreateVersionRequest {
   description?: string;
   tag?: string;
 }
 
-interface RollbackResponse {
-  success: boolean;
-  message: string;
-  preview_only: boolean;
-  changes?: PolicyDiffResult;
-  rolled_back_to_version?: number;
-}
-
+/** Field names as POST /api/v1/policies/versions/prune reads them. */
 interface PruneOptions {
-  keep_days?: number;
+  older_than_days?: number;
   keep_tagged?: boolean;
-  min_versions_to_keep?: number;
+  keep_count?: number;
 }
 
 interface PruneResponse {
   deleted_count: number;
-  remaining_count: number;
 }
 
 interface PolicyValidationError {
@@ -291,7 +262,7 @@ export class PoliciesView extends LitElement {
   @state() private _showTagDialog = false;
   @state() private _showRollbackDialog = false;
   @state() private _rollbackConfirmVisible = true;
-  @state() private _rollbackPreview: RollbackResponse | null = null;
+  @state() private _rollbackPreview: PolicyRollbackResult | null = null;
   @state() private _savingVersion = false;
   @state() private _pruningVersions = false;
   @state() private _rollingBack = false;
@@ -311,6 +282,8 @@ export class PoliciesView extends LitElement {
   };
   @state() private _versionToTag: PolicyVersion | null = null;
   @state() private _versionToRollback: PolicyVersion | null = null;
+  /** Last render failure already reported, so one fault is not a toast storm. */
+  private _renderErrorReported: string | null = null;
 
   static styles = [
     consoleDialogStyles,
@@ -822,6 +795,52 @@ export class PoliciesView extends LitElement {
   }
 
   /**
+   * Failures on this page used to be invisible while a dialog was open: the
+   * inline alert renders behind the modal. Every failure now also raises a
+   * toast, which sits above the dialog, and the inline alert stays for the
+   * operator who scrolls back.
+   */
+  private _reportError(error: unknown, fallback: string): void {
+    const message =
+      (error instanceof Error && error.message) ||
+      (typeof error === 'string' && error) ||
+      fallback;
+    this._error = message;
+    showToast(message, 'danger');
+  }
+
+  /**
+   * A render that throws leaves the page half drawn and silent: Lit aborts
+   * the update, so every part after the failure (here: all the dialogs) keeps
+   * its last value and clicking a button appears to do nothing. Report the
+   * failure once instead of letting it surface as an unhandled rejection, and
+   * keep accepting updates so the rest of the console still works.
+   */
+  protected performUpdate(): void | Promise<unknown> {
+    try {
+      const result = super.performUpdate();
+      // The page drew: forget the last fault so a fresh one is reported
+      // again instead of being swallowed as a repeat.
+      this._renderErrorReported = null;
+      return result;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unexpected render error';
+      // The exception text is for whoever reads the console, not for the
+      // operator: the toast says what happened and what to do about it.
+      console.error('Policies view failed to render:', error);
+      if (this._renderErrorReported !== message) {
+        this._renderErrorReported = message;
+        showToast(
+          'The policies page could not finish drawing. Reload to try again, and tell us if it keeps happening.',
+          'danger'
+        );
+      }
+      return undefined;
+    }
+  }
+
+  /**
    * A gated route must not fetch. The shell hides the outlet, but a routed
    * view is a light-DOM child and stays connected, so the view checks the
    * viewer's permissions itself before asking for tools, workflows or rules.
@@ -906,7 +925,7 @@ export class PoliciesView extends LitElement {
         ];
       });
     } catch (err: any) {
-      this._error = err.message || 'Failed to load data';
+      this._reportError(err, 'Failed to load data');
       console.error('Error loading policies data:', err);
     } finally {
       this._loading = false;
@@ -1265,21 +1284,29 @@ export class PoliciesView extends LitElement {
       await patchModelIORule(rule.id, { enabled: !(rule.enabled !== false) });
       await this.loadData();
     } catch (err: any) {
-      this._error = err.message || 'Failed to update model I/O rule';
+      this._reportError(err, 'Failed to update model I/O rule');
     }
   }
 
   private async removeModelIORule(rule: ModelIORule) {
-    if (
-      !confirm(`Delete model I/O rule "${rule.id}"? This cannot be undone.`)
-    ) {
+    const confirmed = await confirmDialog({
+      title: 'Delete rule',
+      message: `Delete model I/O rule "${rule.id}"?`,
+      detail:
+        'Traffic this rule matched is allowed again as soon as it is gone. ' +
+        'This cannot be undone.',
+      confirmLabel: 'Delete rule',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
     try {
       await deleteModelIORule(rule.id);
+      showToast(`Deleted ${rule.id}.`, 'success');
       await this.loadData();
     } catch (err: any) {
-      this._error = err.message || 'Failed to delete model I/O rule';
+      this._reportError(err, 'Failed to delete model I/O rule');
     }
   }
 
@@ -1293,7 +1320,7 @@ export class PoliciesView extends LitElement {
       });
       await this.loadData();
     } catch (err: any) {
-      this._error = err.message || 'Failed to update tool rule';
+      this._reportError(err, 'Failed to update tool rule');
     }
   }
 
@@ -1301,18 +1328,24 @@ export class PoliciesView extends LitElement {
     if (!rule.accessRuleId) {
       return;
     }
-    if (
-      !confirm(
-        `Delete tool rule for "${rule.toolName}"? This cannot be undone.`
-      )
-    ) {
+    const confirmed = await confirmDialog({
+      title: 'Delete rule',
+      message: `Delete the tool rule for "${rule.toolName}"?`,
+      detail:
+        'Calls to this tool follow the remaining rules as soon as it is ' +
+        'gone. This cannot be undone.',
+      confirmLabel: 'Delete rule',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
     try {
       await deleteAccessRule(rule.accessRuleId);
+      showToast(`Deleted the tool rule for ${rule.toolName}.`, 'success');
       await this.loadData();
     } catch (err: any) {
-      this._error = err.message || 'Failed to delete tool rule';
+      this._reportError(err, 'Failed to delete tool rule');
     }
   }
 
@@ -1348,10 +1381,12 @@ export class PoliciesView extends LitElement {
         throw new Error(error.detail?.message || 'Failed to preview policy');
       }
 
-      this._diffResult = await response.json();
+      // The endpoint answers with a flat change list; the dialog renders
+      // added, removed and modified sections.
+      this._diffResult = normalizePolicyDiff(await response.json());
       this._showDiffDialog = true;
     } catch (err: any) {
-      this._error = err.message || 'Failed to preview policy file';
+      this._reportError(err, 'Failed to preview policy file');
       this._pendingYamlSave = false;
     } finally {
       this._isUploading = false;
@@ -1403,7 +1438,7 @@ export class PoliciesView extends LitElement {
         this._yamlNotice = 'Policy saved and applied.';
       }
     } catch (err: any) {
-      this._error = err.message || 'Failed to apply policy file';
+      this._reportError(err, 'Failed to apply policy file');
       if (this._pendingYamlSave) {
         this._yamlNotice = '';
       }
@@ -1435,7 +1470,7 @@ export class PoliciesView extends LitElement {
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
     } catch (err: any) {
-      this._error = err.message || 'Failed to export policies';
+      this._reportError(err, 'Failed to export policies');
     } finally {
       this._isExporting = false;
     }
@@ -1567,15 +1602,12 @@ export class PoliciesView extends LitElement {
   private async loadVersions() {
     this._loadingVersions = true;
     try {
-      const response = await fetchWithAuth(
-        '/api/v1/policies/versions?limit=50'
-      );
-      if (!response.ok) {
-        throw new Error('Failed to fetch versions');
-      }
-      this._versions = await response.json();
+      // listPolicyVersions unwraps the {versions, total} payload. Iterating
+      // the wrapper is what threw "e is not iterable" inside repeat() and
+      // stopped every dialog on this page from rendering.
+      this._versions = await listPolicyVersions(50);
     } catch (err: any) {
-      this._error = err.message || 'Failed to load versions';
+      this._reportError(err, 'Failed to load versions');
     } finally {
       this._loadingVersions = false;
       this._versionsLoaded = true;
@@ -1610,7 +1642,7 @@ export class PoliciesView extends LitElement {
       this._versionForm = { description: '', tag: '' };
       await this.loadVersions();
     } catch (err: any) {
-      this._error = err.message || 'Failed to save version';
+      this._reportError(err, 'Failed to save version');
     } finally {
       this._savingVersion = false;
     }
@@ -1637,11 +1669,15 @@ export class PoliciesView extends LitElement {
         );
       }
 
-      const result: RollbackResponse = await response.json();
+      // The endpoint answers {success, diff, error}; the dialog reads a
+      // grouped diff under `changes`.
+      const result = normalizePolicyRollback(await response.json());
 
       if (previewOnly) {
         this._rollbackPreview = result;
         this._showRollbackDialog = true;
+      } else if (!result.success) {
+        throw new Error(result.error || 'Failed to rollback to version');
       } else {
         this._showRollbackDialog = false;
         this._rollbackPreview = null;
@@ -1650,7 +1686,7 @@ export class PoliciesView extends LitElement {
         await Promise.all([this.loadData(), this.loadVersions()]);
       }
     } catch (err: any) {
-      this._error = err.message || 'Failed to rollback to version';
+      this._reportError(err, 'Failed to rollback to version');
     } finally {
       this._rollingBack = false;
     }
@@ -1680,18 +1716,25 @@ export class PoliciesView extends LitElement {
       this._tagForm = { tag: '' };
       await this.loadVersions();
     } catch (err: any) {
-      this._error = err.message || 'Failed to update tag';
+      this._reportError(err, 'Failed to update tag');
     } finally {
       this._taggingVersion = false;
     }
   }
 
   private async deleteVersion(version: PolicyVersion) {
-    if (
-      !confirm(
-        `Are you sure you want to delete version ${version.version_number}${version.tag ? ` (${version.tag})` : ''}? This cannot be undone.`
-      )
-    ) {
+    const label = `version ${version.version_number}${
+      version.tag ? ` (${version.tag})` : ''
+    }`;
+    const confirmed = await confirmDialog({
+      title: 'Delete version',
+      message: `Delete ${label}?`,
+      detail:
+        'The snapshot is removed for good. The active policy is not changed.',
+      confirmLabel: 'Delete version',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -1709,9 +1752,10 @@ export class PoliciesView extends LitElement {
         );
       }
 
+      showToast(`Deleted ${label}.`, 'success');
       await this.loadVersions();
     } catch (err: any) {
-      this._error = err.message || 'Failed to delete version';
+      this._reportError(err, 'Failed to delete version');
     } finally {
       this._deletingVersion = false;
     }
@@ -1720,10 +1764,12 @@ export class PoliciesView extends LitElement {
   private async pruneVersions() {
     this._pruningVersions = true;
     try {
+      // The endpoint reads older_than_days and keep_count. The old names were
+      // dropped silently, so pruning always ran with the server defaults.
       const body: PruneOptions = {
-        keep_days: this._pruneForm.keepDays,
+        older_than_days: this._pruneForm.keepDays,
         keep_tagged: this._pruneForm.keepTagged,
-        min_versions_to_keep: this._pruneForm.minVersionsToKeep,
+        keep_count: this._pruneForm.minVersionsToKeep,
       };
 
       const response = await fetchWithAuth('/api/v1/policies/versions/prune', {
@@ -1742,21 +1788,17 @@ export class PoliciesView extends LitElement {
       const result: PruneResponse = await response.json();
       this._showPruneDialog = false;
 
-      // Show success message
-      const alertEl = document.createElement('sl-alert');
-      alertEl.variant = 'success';
-      alertEl.closable = true;
-      alertEl.duration = 5000;
-      alertEl.innerHTML = `
-        <sl-icon slot="icon" name="check-circle"></sl-icon>
-        Pruned ${result.deleted_count} old versions. ${result.remaining_count} versions remaining.
-      `;
-      document.body.appendChild(alertEl);
-      alertEl.toast();
+      const deleted = Number(result?.deleted_count ?? 0);
+      showToast(
+        deleted === 1
+          ? 'Pruned 1 old version.'
+          : `Pruned ${deleted} old versions.`,
+        'success'
+      );
 
       await this.loadVersions();
     } catch (err: any) {
-      this._error = err.message || 'Failed to prune versions';
+      this._reportError(err, 'Failed to prune versions');
     } finally {
       this._pruningVersions = false;
     }
@@ -1784,8 +1826,15 @@ export class PoliciesView extends LitElement {
     this.rollbackToVersion(version.id, true);
   }
 
-  private formatVersionDate(dateStr: string): string {
+  private formatVersionDate(dateStr: string | null): string {
+    // A missing or unparseable timestamp used to render "Invalid Date".
+    if (!dateStr) {
+      return 'Unknown date';
+    }
     const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) {
+      return 'Unknown date';
+    }
     return date.toLocaleDateString(undefined, {
       year: 'numeric',
       month: 'short',
@@ -2531,10 +2580,13 @@ defaults:
   }
 
   private renderVersionsSection() {
+    // Defence in depth: the API layer already normalises the payload, and a
+    // list this template can iterate is worth more than a correct type.
+    const versions = Array.isArray(this._versions) ? this._versions : [];
     return html`
       <div class="versions-section">
         <div class="versions-header">
-          <h3>Version History</h3>
+          <h3>Version history</h3>
           <div class="versions-actions">
             <sl-button
               size="small"
@@ -2542,15 +2594,15 @@ defaults:
               @click=${() => (this._showSaveVersionDialog = true)}
             >
               <sl-icon slot="prefix" name="save"></sl-icon>
-              Save Version
+              Save version
             </sl-button>
             <sl-button
               size="small"
               @click=${() => (this._showPruneDialog = true)}
-              ?disabled=${this._versions.length === 0}
+              ?disabled=${versions.length === 0}
             >
               <sl-icon slot="prefix" name="trash"></sl-icon>
-              Prune Old Versions
+              Prune old versions
             </sl-button>
             <sl-button
               size="small"
@@ -2570,7 +2622,7 @@ defaults:
                   <sl-spinner></sl-spinner>
                 </div>
               `
-            : this._versions.length === 0
+            : versions.length === 0
               ? html`
                   <div class="empty-versions">
                     <sl-icon
@@ -2587,7 +2639,7 @@ defaults:
               : html`
                   <div class="version-list">
                     ${repeat(
-                      this._versions,
+                      versions,
                       (v) => v.id,
                       (version) => this.renderVersionItem(version)
                     )}
@@ -2619,8 +2671,8 @@ defaults:
               <span class="version-date">
                 ${this.formatVersionDate(version.created_at)}
                 ${
-                  version.created_by_username
-                    ? ` by ${version.created_by_username}`
+                  version.created_by_user_id
+                    ? ` by ${version.created_by_user_id}`
                     : ''
                 }
               </span>
@@ -2642,21 +2694,21 @@ defaults:
             class="version-actions"
             @click=${(e: Event) => e.stopPropagation()}
           >
-            <sl-tooltip content="View Diff">
+            <sl-tooltip content="View diff">
               <sl-icon-button
                 name="file-diff"
                 @click=${() => this.openRollbackPreview(version, false)}
                 ?disabled=${version.is_active}
               ></sl-icon-button>
             </sl-tooltip>
-            <sl-tooltip content="Rollback to this version">
+            <sl-tooltip content="Roll back to this version">
               <sl-icon-button
                 name="arrow-counterclockwise"
                 @click=${() => this.openRollbackPreview(version, true)}
                 ?disabled=${version.is_active}
               ></sl-icon-button>
             </sl-tooltip>
-            <sl-tooltip content="Edit Tag">
+            <sl-tooltip content="Edit tag">
               <sl-icon-button
                 name="tag"
                 @click=${() => this.openTagDialog(version)}
@@ -2679,18 +2731,21 @@ defaults:
                     <div class="version-stat">
                       <sl-icon name="hdd-network"></sl-icon>
                       <span>
-                        ${version.snapshot_summary.mcp_servers_count} MCP
+                        ${version.snapshot_summary?.mcp_servers_count ?? 0} MCP
                         servers
                       </span>
                     </div>
                     <div class="version-stat">
                       <sl-icon name="tools"></sl-icon>
-                      <span>${version.snapshot_summary.tools_count} tools</span>
+                      <span>
+                        ${version.snapshot_summary?.tools_count ?? 0} tools
+                      </span>
                     </div>
                     <div class="version-stat">
                       <sl-icon name="shield-check"></sl-icon>
                       <span>
-                        ${version.snapshot_summary.policies_count} policies
+                        ${version.snapshot_summary?.policies_count ?? 0}
+                        policies
                       </span>
                     </div>
                   </div>
@@ -2705,7 +2760,7 @@ defaults:
   private renderSaveVersionDialog() {
     return html`
       <sl-dialog
-        label="Save Version"
+        label="Save version"
         ?open=${this._showSaveVersionDialog}
         @sl-request-close=${() => (this._showSaveVersionDialog = false)}
       >
@@ -2753,7 +2808,7 @@ defaults:
             @click=${() => this.createVersion()}
             ?loading=${this._savingVersion}
           >
-            Save Version
+            Save version
           </sl-button>
         </div>
       </sl-dialog>
@@ -2763,7 +2818,7 @@ defaults:
   private renderPruneVersionsDialog() {
     return html`
       <sl-dialog
-        label="Prune Old Versions"
+        label="Prune old versions"
         ?open=${this._showPruneDialog}
         @sl-request-close=${() => (this._showPruneDialog = false)}
       >
@@ -2827,10 +2882,11 @@ defaults:
           </sl-button>
           <sl-button
             variant="danger"
+            outline
             @click=${() => this.pruneVersions()}
             ?loading=${this._pruningVersions}
           >
-            Prune Versions
+            Prune versions
           </sl-button>
         </div>
       </sl-dialog>
@@ -2840,7 +2896,7 @@ defaults:
   private renderTagVersionDialog() {
     return html`
       <sl-dialog
-        label="Edit Version Tag"
+        label="Edit version tag"
         ?open=${this._showTagDialog}
         @sl-request-close=${() => {
           this._showTagDialog = false;
@@ -2884,7 +2940,7 @@ defaults:
                       )}
                     ?loading=${this._taggingVersion}
                   >
-                    Save Tag
+                    Save tag
                   </sl-button>
                 </div>
               `
@@ -2895,10 +2951,14 @@ defaults:
   }
 
   private renderRollbackConfirmDialog() {
+    const preview = this._rollbackPreview?.changes ?? null;
+    const added = preview?.changes?.added ?? [];
+    const modified = preview?.changes?.modified ?? [];
+    const removed = preview?.changes?.removed ?? [];
     return html`
       <sl-dialog
         label=${
-          this._rollbackConfirmVisible ? 'Rollback to Version' : 'Version Diff'
+          this._rollbackConfirmVisible ? 'Roll back to version' : 'Version diff'
         }
         ?open=${this._showRollbackDialog}
         @sl-request-close=${() => {
@@ -2937,19 +2997,18 @@ defaults:
                     ? html`
                         <p style="margin-top: 0;">
                           ${
-                            this._rollbackPreview.changes?.has_changes
+                            preview?.has_changes
                               ? 'The following changes will be made:'
                               : 'No changes would be made by this rollback.'
                           }
                         </p>
 
                         ${
-                          this._rollbackPreview.changes?.has_changes
+                          preview?.has_changes
                             ? html`
                                 <div class="diff-container">
                                   ${
-                                    this._rollbackPreview.changes.changes.added
-                                      .length > 0
+                                    added.length > 0
                                       ? html`
                                           <div class="diff-section">
                                             <div class="diff-section-title">
@@ -2957,19 +3016,22 @@ defaults:
                                                 name="plus-circle-fill"
                                                 style="color: var(--sl-color-success-600);"
                                               ></sl-icon>
-                                              Added
-                                              (${
-                                                this._rollbackPreview.changes
-                                                  .changes.added.length
-                                              })
+                                              Added (${added.length})
                                             </div>
-                                            ${this._rollbackPreview.changes.changes.added.map(
+                                            ${added.map(
                                               (change) => html`
                                                 <div class="diff-item added">
                                                   <strong
                                                     >${change.category}:</strong
                                                   >
                                                   ${change.name}
+                                                  ${
+                                                    change.details
+                                                      ? html`<br /><small
+                                                            >${change.details}</small
+                                                          >`
+                                                      : ''
+                                                  }
                                                 </div>
                                               `
                                             )}
@@ -2978,8 +3040,7 @@ defaults:
                                       : ''
                                   }
                                   ${
-                                    this._rollbackPreview.changes.changes
-                                      .modified.length > 0
+                                    modified.length > 0
                                       ? html`
                                           <div class="diff-section">
                                             <div class="diff-section-title">
@@ -2987,19 +3048,22 @@ defaults:
                                                 name="pencil-fill"
                                                 style="color: var(--sl-color-warning-600);"
                                               ></sl-icon>
-                                              Modified
-                                              (${
-                                                this._rollbackPreview.changes
-                                                  .changes.modified.length
-                                              })
+                                              Modified (${modified.length})
                                             </div>
-                                            ${this._rollbackPreview.changes.changes.modified.map(
+                                            ${modified.map(
                                               (change) => html`
                                                 <div class="diff-item modified">
                                                   <strong
                                                     >${change.category}:</strong
                                                   >
                                                   ${change.name}
+                                                  ${
+                                                    change.details
+                                                      ? html`<br /><small
+                                                            >${change.details}</small
+                                                          >`
+                                                      : ''
+                                                  }
                                                 </div>
                                               `
                                             )}
@@ -3008,8 +3072,7 @@ defaults:
                                       : ''
                                   }
                                   ${
-                                    this._rollbackPreview.changes.changes
-                                      .removed.length > 0
+                                    removed.length > 0
                                       ? html`
                                           <div class="diff-section">
                                             <div class="diff-section-title">
@@ -3017,19 +3080,22 @@ defaults:
                                                 name="dash-circle-fill"
                                                 style="color: var(--sl-color-danger-600);"
                                               ></sl-icon>
-                                              Removed
-                                              (${
-                                                this._rollbackPreview.changes
-                                                  .changes.removed.length
-                                              })
+                                              Removed (${removed.length})
                                             </div>
-                                            ${this._rollbackPreview.changes.changes.removed.map(
+                                            ${removed.map(
                                               (change) => html`
                                                 <div class="diff-item removed">
                                                   <strong
                                                     >${change.category}:</strong
                                                   >
                                                   ${change.name}
+                                                  ${
+                                                    change.details
+                                                      ? html`<br /><small
+                                                            >${change.details}</small
+                                                          >`
+                                                      : ''
+                                                  }
                                                 </div>
                                               `
                                             )}
@@ -3064,16 +3130,16 @@ defaults:
                       ? html`
                           <sl-button
                             variant="danger"
+                            outline
                             @click=${() =>
                               this.rollbackToVersion(
                                 this._versionToRollback!.id,
                                 false
                               )}
                             ?loading=${this._rollingBack}
-                            ?disabled=${!this._rollbackPreview?.changes
-                              ?.has_changes}
+                            ?disabled=${!preview?.has_changes}
                           >
-                            Confirm Rollback
+                            Roll back
                           </sl-button>
                         `
                       : ''
@@ -3087,9 +3153,14 @@ defaults:
   }
 
   private renderDiffDialog() {
+    // Read the three buckets once, tolerating a payload that is missing any
+    // of them: a throw here would abort the render of every later dialog.
+    const added = this._diffResult?.changes?.added ?? [];
+    const modified = this._diffResult?.changes?.modified ?? [];
+    const removed = this._diffResult?.changes?.removed ?? [];
     return html`
       <sl-dialog
-        label="Preview Policy Changes"
+        label="Preview policy changes"
         ?open=${this._showDiffDialog}
         @sl-request-close=${this._cancelDiffPreview}
         style="--width: 700px;"
@@ -3110,7 +3181,7 @@ defaults:
                     ? html`
                         <div class="diff-container">
                           ${
-                            this._diffResult.changes.added.length > 0
+                            added.length > 0
                               ? html`
                                   <div class="diff-section">
                                     <div class="diff-section-title">
@@ -3118,10 +3189,9 @@ defaults:
                                         name="plus-circle-fill"
                                         style="color: var(--sl-color-success-600);"
                                       ></sl-icon>
-                                      Added
-                                      (${this._diffResult.changes.added.length})
+                                      Added (${added.length})
                                     </div>
-                                    ${this._diffResult.changes.added.map(
+                                    ${added.map(
                                       (change) => html`
                                         <div class="diff-item added">
                                           <strong>${change.category}:</strong>
@@ -3141,7 +3211,7 @@ defaults:
                               : ''
                           }
                           ${
-                            this._diffResult.changes.modified.length > 0
+                            modified.length > 0
                               ? html`
                                   <div class="diff-section">
                                     <div class="diff-section-title">
@@ -3149,10 +3219,9 @@ defaults:
                                         name="pencil-fill"
                                         style="color: var(--sl-color-warning-600);"
                                       ></sl-icon>
-                                      Modified
-                                      (${this._diffResult.changes.modified.length})
+                                      Modified (${modified.length})
                                     </div>
-                                    ${this._diffResult.changes.modified.map(
+                                    ${modified.map(
                                       (change) => html`
                                         <div class="diff-item modified">
                                           <strong>${change.category}:</strong>
@@ -3172,7 +3241,7 @@ defaults:
                               : ''
                           }
                           ${
-                            this._diffResult.changes.removed.length > 0
+                            removed.length > 0
                               ? html`
                                   <div class="diff-section">
                                     <div class="diff-section-title">
@@ -3180,14 +3249,20 @@ defaults:
                                         name="dash-circle-fill"
                                         style="color: var(--sl-color-danger-600);"
                                       ></sl-icon>
-                                      Removed
-                                      (${this._diffResult.changes.removed.length})
+                                      Removed (${removed.length})
                                     </div>
-                                    ${this._diffResult.changes.removed.map(
+                                    ${removed.map(
                                       (change) => html`
                                         <div class="diff-item removed">
                                           <strong>${change.category}:</strong>
                                           ${change.name}
+                                          ${
+                                            change.details
+                                              ? html`<br /><small
+                                                    >${change.details}</small
+                                                  >`
+                                              : ''
+                                          }
                                         </div>
                                       `
                                     )}
@@ -3215,7 +3290,7 @@ defaults:
             ?loading=${this._isUploading}
             ?disabled=${!this._diffResult?.has_changes}
           >
-            Apply Changes
+            Apply changes
           </sl-button>
         </div>
       </sl-dialog>

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional, Union
 from uuid import UUID
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from preloop.models import models
@@ -14,6 +15,13 @@ from .base import CRUDBase
 
 class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
     """CRUD operations for ApprovalRequest model."""
+
+    def detach_loaded_result(
+        self, db: Union[Session, AsyncSession], request: ApprovalRequest
+    ) -> ApprovalRequest:
+        """Preserve loaded scalar values before a read transaction rolls back."""
+        db.expunge(request)
+        return request
 
     def expire_stale_pending(
         self,

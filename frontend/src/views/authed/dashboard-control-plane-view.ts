@@ -8,6 +8,7 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/progress-bar/progress-bar.js';
+import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
 import '../../components/mcp-setup-dialog.ts';
 import '../../components/budget-limits-dialog.ts';
 import '../../components/activity-feed.ts';
@@ -163,6 +164,13 @@ const FOLD_SESSIONS_LIMIT = 20;
 
 /** The page of gateway calls the failures card reads on a live refresh. */
 const GATEWAY_FAILURES_REFRESH_LIMIT = 25;
+
+/**
+ * The page of approval requests the Audit trail line counts decisions from.
+ * The endpoint takes no date filter, so a full page means the count is a
+ * sample of the range and the line says so in its title.
+ */
+const APPROVALS_PAGE_SIZE = 100;
 
 /** How long a burst of events on one topic is collected before it is served. */
 const REALTIME_DEBOUNCE_MS = 250;
@@ -407,6 +415,27 @@ export class DashboardView extends AuthedElement {
     expired: 0,
     avgApprovalTime: 0,
   };
+  /**
+   * When each approval on the last page was decided. The Audit trail line
+   * counts the ones inside the page range, so a range change is a filter
+   * over what the page already fetched rather than another request.
+   */
+  @state() private decidedApprovalTimes: string[] = [];
+  /** True when that page came back full, so the count is a sample. */
+  @state() private approvalsSampled = false;
+  /**
+   * Audit events recorded in the page range, or null when we have not asked
+   * or the ask failed. Never rendered as a zero when it is unknown.
+   */
+  @state() private auditEventCount: number | null = null;
+  /**
+   * True while the figures on the Audit trail line are being measured for
+   * the range on screen. It covers a range change too, which keeps the
+   * other `fetching*` flags false on purpose (the numbers already up stay
+   * up while they are replaced), and would otherwise leave last window's
+   * sessions and audit events sitting under the new range's label.
+   */
+  @state() private fetchingAuditTrail = false;
 
   private unsubscribeRealtime?: () => void;
   private refreshInFlight = false;
@@ -478,6 +507,22 @@ export class DashboardView extends AuthedElement {
       }
       .plane-dot.served {
         background: var(--sl-color-success-600);
+      }
+      /* Status not in yet. A hollow ring says "no answer": a filled neutral
+         dot next to "No traffic yet" is a claim, and this row is not making
+         one until the summary lands. */
+      .plane-dot.pending {
+        background: transparent;
+        border: 1px solid var(--sl-color-neutral-300);
+        box-sizing: border-box;
+      }
+      /* The metrics cell, the width of the numbers it is waiting for, so the
+         row does not resize when they arrive. */
+      .plane-stats sl-skeleton {
+        --border-radius: var(--sl-border-radius-small);
+        display: inline-block;
+        height: 0.75rem;
+        width: 9ch;
       }
       .plane-endpoint {
         align-items: center;
@@ -565,6 +610,41 @@ export class DashboardView extends AuthedElement {
         font-family: var(--sl-font-mono);
         font-size: 12px;
       }
+      /* What the account did, one line under the Inventory box. A hairline
+         above it, no fill and no border box: it is a footnote to the box it
+         follows, not a fourth card competing with it. */
+      .audit-trail {
+        align-items: baseline;
+        border-top: 1px solid var(--console-hairline);
+        color: var(--console-meta-color);
+        display: flex;
+        flex-wrap: wrap;
+        font-size: var(--console-text-meta);
+        gap: var(--sl-spacing-x-small);
+        padding-top: var(--sl-spacing-small);
+      }
+      .audit-trail-label {
+        color: var(--sl-color-neutral-900);
+        font-weight: 600;
+      }
+      .audit-trail-items {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-x-small);
+        font-variant-numeric: tabular-nums;
+      }
+      .audit-trail-items a {
+        color: var(--console-link-color);
+        text-decoration: none;
+      }
+      .audit-trail-items a:hover {
+        text-decoration: underline;
+      }
+      .audit-trail-items a + a::before {
+        color: var(--console-meta-color);
+        content: '· ';
+      }
+
       /* One amber line above the page, or nothing. It stays one line: the
          chips truncate before the strip is allowed to wrap, so "View all"
          never falls to a second row. */
@@ -1485,6 +1565,10 @@ export class DashboardView extends AuthedElement {
       this.hasAIModels = data.hasAIModels || false;
       if (data.lastUpdatedAt) this.lastUpdatedAt = data.lastUpdatedAt;
       this.approvalStats = data.approvalStats || this.approvalStats;
+      this.decidedApprovalTimes = data.decidedApprovalTimes || [];
+      this.approvalsSampled = data.approvalsSampled === true;
+      this.auditEventCount =
+        typeof data.auditEventCount === 'number' ? data.auditEventCount : null;
       this.attentionInputs = data.attentionInputs || null;
       if (this.attentionInputs) this.publishAttentionCounts();
       this.budgetPolicies = data.budgetPolicies || [];
@@ -1563,6 +1647,9 @@ export class DashboardView extends AuthedElement {
         hasAIModels: this.hasAIModels,
         lastUpdatedAt: this.lastUpdatedAt,
         approvalStats: this.approvalStats,
+        decidedApprovalTimes: this.decidedApprovalTimes,
+        approvalsSampled: this.approvalsSampled,
+        auditEventCount: this.auditEventCount,
         attentionInputs: this.trimAttentionInputsForCache(),
         budgetPolicies: this.budgetPolicies,
         budgetAgents: this.budgetAgents,
@@ -1618,31 +1705,58 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
-   * Welcome chrome can paint before the fold; the deploy wizard must not.
-   * Empty agents on first paint are not "not onboarded", and mounting
-   * the wizard then fired a second `GET /ai-models` next to
-   * {@link fetchModelsList}.
+   * The get-started card takes the whole page, so it is the loudest
+   * onboarding prompt the console has and the last one allowed to guess.
+   * Neither the card nor the wizard inside it paints before
+   * {@link onboardingResolved}: empty lists on first paint are not "not
+   * onboarded", and the wizard also fires a second `GET /ai-models` next to
+   * {@link fetchModelsList} when it mounts.
    */
   private get showWelcomeCard(): boolean {
-    return !this.welcomeCardDismissed && !this.isOnboarded;
+    return (
+      !this.welcomeCardDismissed && this.onboardingResolved && !this.isOnboarded
+    );
   }
 
   private get mountDeployWizard(): boolean {
-    return this.showWelcomeCard && !this.fetchingAgents;
+    return this.showWelcomeCard;
   }
 
   /**
-   * True once the cheap lists the checklist reads (agents, tools) plus
-   * budget policies and the feature flags have all answered. Usage columns
-   * are not an input: an account with agents is finished with "Onboard an
-   * agent" whether or not this month's spend has arrived yet.
+   * True once every request {@link isOnboarded} reads has answered.
+   *
+   * Empty arrays before their lists land are not "the account has nothing":
+   * gating on them printed "Connect your first agent" and the get-started
+   * wizard on the first frame of an account with fifty agents, then took
+   * both back a beat later. Nothing that asks the reader to onboard is drawn
+   * until agents, flows and their runs have all resolved, so no prompt on
+   * this page is ever retracted by a later response (DESIGN.md, Next steps
+   * and the flash it used to cause).
+   */
+  private get onboardingResolved(): boolean {
+    return (
+      !this.fetchingAgents &&
+      !this.fetchingFlows &&
+      !this.fetchingRecentExecutions
+    );
+  }
+
+  /**
+   * True once the lists the checklist reads (agents, flows and their runs,
+   * tools, people where user management is on) plus budget policies and the
+   * feature flags have all answered. Usage columns are not an input: an
+   * account with agents is finished with "Onboard an agent" whether or not
+   * this month's spend has arrived yet.
    */
   private get nextStepsInputsResolved(): boolean {
     return (
-      !this.fetchingAgents &&
+      this.onboardingResolved &&
       !this.fetchingBudget &&
       !this.fetchingTools &&
-      this.featuresResolved
+      this.featuresResolved &&
+      // The invite step reads the people list, so a checklist that offers it
+      // waits for that list too rather than ticking the row a beat later.
+      (!this.userManagementEnabled || !this.fetchingUsers)
     );
   }
 
@@ -2018,6 +2132,12 @@ export class DashboardView extends AuthedElement {
     this.lastFetchStartedAt = Date.now();
     markOverviewTiming('overview-fetch-start');
 
+    // Both the sessions figure (this wave) and the audit figure (the
+    // deferred wave) are about to be re-measured for `startDateStr`, so the
+    // line steps aside until both are in rather than restating the last
+    // window's numbers under the new label.
+    this.fetchingAuditTrail = true;
+
     if (!options.preserveLoadingState) {
       this.fetchingGatewaySummary = true;
       this.fetchingRecentExecutions = true;
@@ -2157,6 +2277,8 @@ export class DashboardView extends AuthedElement {
       this.fetchingBudget = false;
       this.fetchingAudit = false;
       this.fetchingMCPAndTools = false;
+      // The deferred wave never ran, so nothing else will clear this.
+      this.fetchingAuditTrail = false;
       this.loading = false;
     } finally {
       this.refreshInFlight = false;
@@ -2179,6 +2301,9 @@ export class DashboardView extends AuthedElement {
       await Promise.all([
         this.refreshGatewayInteractions(startDateStr),
         this.refreshUsageBreakdown(startDateStr),
+        // The Audit trail line is per range, and the approvals it counts are
+        // filtered from the page already in hand.
+        this.refreshAuditEventCount(startDateStr),
       ]);
       this.scheduleCacheWrite();
       markOverviewTiming('overview-deferred-ready');
@@ -2213,6 +2338,40 @@ export class DashboardView extends AuthedElement {
       { items: [] } as Awaited<ReturnType<typeof getAccountGatewayUsageSearch>>
     );
     this.gatewayInteractions = interactions.items || [];
+  }
+
+  /**
+   * How many audit events the range holds, for the Audit trail line.
+   *
+   * One count request (`limit=1`, the total is the answer), beside the two
+   * the page already makes for tool calls. It is scoped to the range, so a
+   * range change re-asks it rather than leaving a figure from the last
+   * window under a new label. A failure leaves the count null and the line
+   * omits it rather than printing a zero the account did not earn.
+   */
+  private async refreshAuditEventCount(startDateStr: string): Promise<void> {
+    const params = new URLSearchParams();
+    params.set('limit', '1');
+    params.set('start_date', startDateStr);
+    try {
+      const count = await this.catchWith403Handling(
+        fetchWithAuth(`/api/v1/audit-logs/grouped?${params}`).then(
+          (response) => {
+            if (!response.ok) {
+              throw new Error('Failed to count audit events');
+            }
+            return response.json() as Promise<{ total?: number }>;
+          }
+        ),
+        null
+      );
+      this.auditEventCount =
+        count && typeof count.total === 'number' ? count.total : null;
+    } finally {
+      // This is the last figure the line waits on: the sessions count landed
+      // with the fold, above.
+      this.fetchingAuditTrail = false;
+    }
   }
 
   /**
@@ -2285,7 +2444,7 @@ export class DashboardView extends AuthedElement {
     this.tools = tools || [];
   }
 
-  /** Flow runs, resolved approvals and the gateway call log. */
+  /** Flow runs, resolved approvals, the gateway call log and the audit count. */
   private async fetchInventoryData(startDateStr: string): Promise<void> {
     this.fetchingRecentExecutions = true;
     this.fetchingFlowUsage = true;
@@ -2302,12 +2461,13 @@ export class DashboardView extends AuthedElement {
       })();
       const [allApprovalRequests] = await Promise.all([
         this.catchWith403Handling(
-          this.fetchApprovalRequests(undefined, 100),
+          this.fetchApprovalRequests(undefined, APPROVALS_PAGE_SIZE),
           [] as ApprovalRequest[]
         ),
         // The failures card shows a handful, and it should be the handful
         // that happened in the range the page is showing.
         this.refreshGatewayInteractions(startDateStr),
+        this.refreshAuditEventCount(startDateStr),
         executionsPromise,
       ]);
 
@@ -2575,6 +2735,17 @@ export class DashboardView extends AuthedElement {
 
   private calculateApprovalStats(requests: ApprovalRequest[]): void {
     const total = requests.length;
+    // When the decisions were taken, so the Audit trail line can count the
+    // ones inside the page range without asking for the list again on every
+    // range change. Timestamps only: the cache carries this.
+    this.decidedApprovalTimes = requests
+      .filter(
+        (request) =>
+          (request.status === 'approved' || request.status === 'declined') &&
+          Boolean(request.resolved_at)
+      )
+      .map((request) => request.resolved_at as string);
+    this.approvalsSampled = requests.length >= APPROVALS_PAGE_SIZE;
     const approved = requests.filter(
       (request) => request.status === 'approved'
     ).length;
@@ -3314,12 +3485,17 @@ export class DashboardView extends AuthedElement {
     docsLabel: string;
     stats: string[];
     formatSelect?: boolean;
+    /** True while the request behind the dot and the numbers is in flight. */
+    pending?: boolean;
   }) {
+    const pending = options.pending === true;
     return html`
       <div class="plane-row">
         <span class="plane-name-cell">
           <span
-            class="plane-dot ${options.served ? 'served' : ''}"
+            class="plane-dot ${
+              pending ? 'pending' : options.served ? 'served' : ''
+            }"
             aria-hidden="true"
           ></span>
           <span class="plane-name">${options.name}</span>
@@ -3356,13 +3532,27 @@ export class DashboardView extends AuthedElement {
             </a>
           </sl-tooltip>
         </span>
-        <span class="plane-stats">
-          ${
-            options.served
-              ? options.stats.join(' · ')
-              : html`<span class="plane-quiet">No traffic yet</span>`
-          }
-        </span>
+        ${
+          // `sl-skeleton` carries no role, so a label on it is not reliably
+          // announced. The cell itself says it is waiting, and the skeleton
+          // is decoration inside it.
+          pending
+            ? html`<span
+                class="plane-stats"
+                role="status"
+                aria-busy="true"
+                aria-label="Loading ${options.name.toLowerCase()} activity"
+              >
+                <sl-skeleton effect="none" aria-hidden="true"></sl-skeleton>
+              </span>`
+            : html`<span class="plane-stats">
+                ${
+                  options.served
+                    ? options.stats.join(' · ')
+                    : html`<span class="plane-quiet">No traffic yet</span>`
+                }
+              </span>`
+        }
       </div>
     `;
   }
@@ -3436,7 +3626,20 @@ export class DashboardView extends AuthedElement {
    * is about traffic, not about how many things exist.
    */
   private renderGatewayCard() {
-    const hasAgents = this.managedAgents.length > 0;
+    // The prompt is the one thing on this card that a later response can
+    // retract, so it waits for the agents list; the two rows never do. Until
+    // the onboarding state is confirmed the card keeps its own shape with the
+    // status and the metrics left blank (D32).
+    const promptOnboarding =
+      this.onboardingResolved &&
+      this.managedAgents.length === 0 &&
+      this.totalAgentsCount === 0;
+    // An answer already in hand (the session cache, or the range before this
+    // one) beats a skeleton over it: a slower call never blanks a row that
+    // already has numbers (D32).
+    const modelStatsPending =
+      this.fetchingGatewaySummary && !this.gatewaySummary;
+    const toolStatsPending = this.fetchingAudit && this.toolCallsCount === 0;
     return html`
       <sl-card class="content-card gateway-card">
         <div slot="header" class="card-header-with-action">
@@ -3458,8 +3661,9 @@ export class DashboardView extends AuthedElement {
         </div>
 
         ${
-          hasAgents
-            ? html`
+          promptOnboarding
+            ? this.renderConnectFirstAgent()
+            : html`
                 ${this.renderPlaneRow({
                   name: 'Model gateway',
                   served: (this.gatewaySummary?.total_requests || 0) > 0,
@@ -3469,6 +3673,7 @@ export class DashboardView extends AuthedElement {
                   docsLabel: 'Model gateway docs',
                   stats: this.modelGatewayStats,
                   formatSelect: true,
+                  pending: modelStatsPending,
                 })}
                 ${this.renderPlaneRow({
                   name: 'Tool firewall',
@@ -3478,9 +3683,9 @@ export class DashboardView extends AuthedElement {
                   docsHref: 'https://docs.preloop.ai/guide/mcp-server',
                   docsLabel: 'Tool firewall docs',
                   stats: this.toolFirewallStats,
+                  pending: toolStatsPending,
                 })}
               `
-            : this.renderConnectFirstAgent()
         }
       </sl-card>
     `;
@@ -3846,6 +4051,99 @@ export class DashboardView extends AuthedElement {
     `;
   }
 
+  /**
+   * How many approvals were decided inside the page range.
+   *
+   * Decisions are not inventory: an approval that has been answered is a
+   * record of something that happened, so it belongs on the Audit trail
+   * line and not in the Inventory box. Pending ones stay in the attention
+   * strip, where there is something to do about them.
+   */
+  private get decidedApprovalsInRange(): number {
+    const start = this.getGatewayStartMs();
+    return this.decidedApprovalTimes.filter((time) => {
+      const at = parseUTCDate(time).getTime();
+      return Number.isFinite(at) && at >= start;
+    }).length;
+  }
+
+  /**
+   * True once every figure on the Audit trail line has answered for the
+   * range on screen. The line arrives complete rather than growing an item
+   * at a time under the reader's eyes, and a range change hides it until
+   * the new window's numbers are in: a figure from the last window under a
+   * new label is worse than no line.
+   *
+   * Sessions land with the fold (`loading`), decided approvals with the
+   * inventory wave (`fetchingRecentExecutions`), and the audit count with
+   * `fetchingAuditTrail`. `fetchingAudit` is the secondary pass
+   * (exceptions, trackers, tool metrics) and is not a figure on this line.
+   */
+  private get auditTrailResolved(): boolean {
+    return (
+      !this.loading &&
+      !this.fetchingRecentExecutions &&
+      !this.fetchingAuditTrail
+    );
+  }
+
+  /**
+   * What the account did, kept as a record: approvals decided, sessions and
+   * audit events in the page range, each a way into the page that holds
+   * them. The Inventory box above says what the account has; this line says
+   * what there is a trail of, and it is one line because a record nobody is
+   * being asked to act on does not need a card.
+   */
+  private renderAuditTrail() {
+    if (!this.auditTrailResolved) {
+      return nothing;
+    }
+    const decided = this.decidedApprovalsInRange;
+    const sessions = this.totalRuntimeSessionsCount;
+    const events = this.auditEventCount;
+    // Nothing has happened in this window, so there is no trail to offer.
+    if (decided === 0 && sessions === 0 && !events) {
+      return nothing;
+    }
+    const items = [
+      decided > 0
+        ? html`<a
+            href="/console/approvals"
+            title=${
+              this.approvalsSampled
+                ? `In the last ${this.gatewayRangeLabel} (from the most recent ${APPROVALS_PAGE_SIZE} approval requests)`
+                : `In the last ${this.gatewayRangeLabel}`
+            }
+            >${this.formatNumber(decided)} approval${decided === 1 ? '' : 's'}
+            decided</a
+          >`
+        : nothing,
+      sessions > 0
+        ? html`<a href="/console/runtime-sessions"
+            >${this.formatNumber(sessions)}
+            session${sessions === 1 ? '' : 's'}</a
+          >`
+        : nothing,
+      // A figure we could not measure is omitted, never rendered as a zero.
+      events
+        ? html`<a href="/console/audit"
+            >${this.formatNumber(events)} audit
+            event${events === 1 ? '' : 's'}</a
+          >`
+        : nothing,
+    ].filter((item) => item !== nothing);
+
+    return html`
+      <div class="audit-trail">
+        <span class="audit-trail-label">Audit trail</span>
+        <span class="audit-trail-range" title="Range set on the Usage card"
+          >${this.gatewayRangeLabel}</span
+        >
+        <span class="audit-trail-items">${items}</span>
+      </div>
+    `;
+  }
+
   /** What just happened, live, with the audit page one click away. */
   private renderActivityFeed() {
     return html`
@@ -3905,7 +4203,7 @@ export class DashboardView extends AuthedElement {
         <div class="main-column">
           <div class="dashboard-stack">
             ${this.renderGatewayCard()} ${this.renderNextStepsCard()}
-            ${this.renderInventoryCard()}
+            ${this.renderInventoryCard()} ${this.renderAuditTrail()}
 
             <div
               style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sl-spacing-medium);"

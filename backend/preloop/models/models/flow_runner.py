@@ -61,6 +61,9 @@ class FlowRunner(Base):
     halt_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     reported_status: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    capabilities: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
 
     account = relationship("Account")
     registered_by = relationship("User")

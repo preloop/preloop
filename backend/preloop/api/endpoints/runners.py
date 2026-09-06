@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session
 
 from preloop.agents.runner_launch import (
     prepare_runner_delivery,
-    validate_runner_completion,
 )
 from preloop.api.auth import get_current_active_user
 from preloop.models import schemas
@@ -33,6 +32,10 @@ from preloop.services.runner_service import (
     emit_runner_updated,
     hash_runner_token,
     mint_runner_token,
+)
+from preloop.services.host_exec import (
+    finalize_runner_completion,
+    normalize_host_exec_advertisements,
 )
 from preloop.utils.permissions import require_permission
 
@@ -70,6 +73,9 @@ def register_runner(
     current_user: User = Depends(get_current_active_user),
 ):
     """Register a new runner or resume an existing one for this account."""
+    capabilities = normalize_host_exec_advertisements(
+        [profile.model_dump() for profile in body.host_exec_profiles]
+    )
     if body.runner_id:
         existing = crud_flow_runner.get(
             db, id=body.runner_id, account_id=str(current_user.account_id)
@@ -77,24 +83,16 @@ def register_runner(
         if not existing:
             raise HTTPException(status_code=404, detail="Runner not found")
         token = mint_runner_token()
-        existing.token_hash = hash_runner_token(token)
-        if body.name:
-            existing.name = body.name
-        if body.hostname:
-            existing.hostname = body.hostname
-        if body.os:
-            existing.os = body.os
-        if body.arch:
-            existing.arch = body.arch
-        if body.labels:
-            existing.labels = body.labels
-        if body.instance_id:
-            existing.instance_id = body.instance_id
-        existing.status = "online"
-        existing.last_heartbeat = datetime.now(timezone.utc)
-        db.add(existing)
-        db.commit()
-        db.refresh(existing)
+        updates = {
+            "token_hash": hash_runner_token(token),
+            "capabilities": capabilities,
+            "status": "online",
+            "last_heartbeat": datetime.now(timezone.utc),
+        }
+        for field in ("name", "hostname", "os", "arch", "labels", "instance_id"):
+            if value := getattr(body, field):
+                updates[field] = value
+        existing = crud_flow_runner.update(db, db_obj=existing, obj_in=updates)
         emit_runner_updated(existing, db)
         return schemas.RunnerRegisterResponse(
             **_to_response(existing, db).model_dump(), token=token
@@ -117,6 +115,7 @@ def register_runner(
             "last_heartbeat": datetime.now(timezone.utc),
             "token_hash": hash_runner_token(token),
             "halt_requested": False,
+            "capabilities": capabilities,
         },
     )
     emit_runner_updated(row, db)
@@ -227,7 +226,11 @@ def job_for_runner_replay(
     ``job_for_heartbeat_ack``.
     """
     job = dict(pending_job)
-    if not mint_token or job.get("launch_version"):
+    if (
+        not mint_token
+        or job.get("launch_version")
+        or job.get("completion_protocol") == "host_exec"
+    ):
         return job
     execution_id = _parse_runner_execution_id(job.get("execution_id"))
     if execution_id is None:
@@ -300,6 +303,8 @@ async def runner_ws(
 
             if msg_type == "heartbeat":
                 status = "busy" if runner.current_execution_id else "online"
+                if "host_exec_profiles" in raw:
+                    runner.capabilities = normalize_host_exec_advertisements(raw)
                 crud_flow_runner.touch_heartbeat(db, runner, status=status)
                 db.refresh(runner)
                 reply: Dict[str, Any] = {"type": "ack"}
@@ -391,8 +396,8 @@ async def runner_ws(
                         {"type": "error", "error": "Invalid runner completion status"}
                     )
                     continue
-                status, completion_error, result = validate_runner_completion(
-                    raw, leased_job=runner.pending_job or {}
+                status, completion_error, result = finalize_runner_completion(
+                    raw, pending_job=runner.pending_job
                 )
                 runner.reported_status = status
                 runner.pending_job = None
@@ -409,6 +414,7 @@ async def runner_ws(
                     execution.end_time = datetime.now(timezone.utc)
                     if completion_error:
                         execution.error_message = completion_error
+
                     if result is not None:
                         execution.result = result
                     db.add(execution)

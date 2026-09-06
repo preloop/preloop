@@ -17,6 +17,12 @@ from preloop.services.runner_service import (
     mark_queued_or_fail,
 )
 
+from preloop.services.host_exec import (
+    HOST_EXEC_AGENT_TYPE,
+    host_exec_profile_name,
+    host_exec_unavailable_reason,
+)
+
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
 from .runner_launch import (
     LAUNCH_VERSION,
@@ -269,7 +275,14 @@ class RemoteRunnerExecutor(AgentExecutor):
         resolve_profile(
             agent_config, agent_type=str(agent_type or ""), runner="private"
         )
-        if not agent_config_has_image(agent_config):
+        profile = host_exec_profile_name(agent_config, context)
+        kind = str(agent_type or "").strip().lower() if agent_type else ""
+        if kind == HOST_EXEC_AGENT_TYPE and not profile:
+            raise ValueError(
+                "agent type cursor requires agent_config.host_exec_profile "
+                "on a private runner"
+            )
+        if not profile and not agent_config_has_image(agent_config):
             image = default_agent_image(str(agent_type or ""))
             if image:
                 agent_config["image"] = image
@@ -279,6 +292,20 @@ class RemoteRunnerExecutor(AgentExecutor):
             if value is not None:
                 return value
             return getattr(flow, key, default) if flow is not None else default
+
+        git_clone_config = context_or_flow("git_clone_config")
+        resume_from = _resume_from_execution_id(context, self.execution)
+        if profile:
+            blocked = host_exec_unavailable_reason(
+                git_clone_config=git_clone_config,
+                resume_from=resume_from,
+                session_id=context.get("session_id"),
+                custom_commands=context_or_flow("custom_commands"),
+            )
+            if blocked:
+                raise ValueError(blocked)
+            agent_config.pop("image", None)
+            agent_type = agent_type or HOST_EXEC_AGENT_TYPE
 
         payload: Dict[str, Any] = {
             "launch_version": LAUNCH_VERSION,
@@ -297,11 +324,31 @@ class RemoteRunnerExecutor(AgentExecutor):
             "account_api_token": context.get("account_api_token"),
             "allowed_mcp_servers": context_or_flow("allowed_mcp_servers", []) or [],
             "allowed_mcp_tools": context_or_flow("allowed_mcp_tools", []) or [],
-            "git_clone_config": context_or_flow("git_clone_config"),
+            "git_clone_config": git_clone_config,
             "custom_commands": context_or_flow("custom_commands"),
         }
-        resume_from = _resume_from_execution_id(context, self.execution)
-        if resume_from:
+        if profile:
+            payload["host_exec_profile"] = profile
+            timeout_seconds = context.get("timeout_seconds")
+            if timeout_seconds is None and flow is not None:
+                timeout_seconds = getattr(flow, "timeout_seconds", None)
+            if timeout_seconds:
+                payload["timeout_seconds"] = timeout_seconds
+            # Host profiles consume only data and local credentials. Never
+            # deliver Docker scripts, model/MCP tokens or remote setup commands.
+            allowed = {
+                "execution_id",
+                "flow_id",
+                "agent_type",
+                "prompt",
+                "model_identifier",
+                "host_exec_profile",
+                "timeout_seconds",
+            }
+            payload = {key: value for key, value in payload.items() if key in allowed}
+            payload["agent_config"] = {"host_exec_profile": profile}
+            payload["completion_protocol"] = "host_exec"
+        elif resume_from:
             payload["resume_from"] = resume_from
         return payload
 
@@ -389,6 +436,7 @@ def payload_for_log(payload: Dict[str, Any]) -> Dict[str, Any]:
         "execution_id": payload.get("execution_id"),
         "agent_type": payload.get("agent_type"),
         "image": image,
+        "host_exec_profile": host_exec_profile_name(agent_config, payload),
     }
 
 

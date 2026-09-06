@@ -8,6 +8,8 @@ import pytest
 from fastapi import HTTPException
 
 from preloop.api.endpoints import approval_requests
+from preloop.models import models
+from preloop.models.schemas.approval_request import ApprovalRequestResponse
 
 
 @pytest.fixture
@@ -24,7 +26,7 @@ def mock_user():
 @pytest.fixture
 def mock_approval_request(mock_user):
     """Create a mock approval request."""
-    request = MagicMock()
+    request = models.ApprovalRequest(decided_by_ai=False)
     request.id = uuid.uuid4()
     request.account_id = mock_user.account_id
     request.tool_name = "test_tool"
@@ -67,7 +69,9 @@ class TestGetApprovalRequest:
                 db=mock_db_session,
             )
 
-            assert result == mock_approval_request
+            assert result == ApprovalRequestResponse.model_validate(
+                mock_approval_request
+            )
             mock_crud.get.assert_called_once_with(
                 mock_db_session,
                 id=str(mock_approval_request.id),
@@ -114,7 +118,9 @@ class TestListApprovalRequests:
             )
 
             assert len(result) == 1
-            assert result[0] == mock_approval_request
+            assert result[0] == ApprovalRequestResponse.model_validate(
+                mock_approval_request
+            )
             mock_crud.get_multi_by_account.assert_called_once_with(
                 mock_db_session,
                 account_id=mock_user.account_id,
@@ -791,4 +797,4 @@ class TestViewedEventRecording:
                 db=mock_db_session,
             )
 
-        assert result == mock_approval_request
+        assert result == ApprovalRequestResponse.model_validate(mock_approval_request)

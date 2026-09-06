@@ -11,6 +11,7 @@ import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '../../components/list-toolbar.ts';
 import '../../components/resource-actions.ts';
+import '../../components/list-selection.ts';
 import '../../components/time-range-select.ts';
 import '../../components/token-figures.ts';
 import { router } from '../../router';
@@ -27,6 +28,11 @@ import {
 } from '../../api';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
+import {
+  ListSelectionController,
+  confirmBulkAction,
+  type BulkAction,
+} from '../../components/list-selection';
 import {
   formatLocalDateTime,
   formatRelativeTime,
@@ -294,6 +300,11 @@ export function filterFlowRows(
 
 @customElement('flows-view')
 export class FlowsView extends LitElement {
+  /** Multi-select for the flow table and the card grid. */
+  readonly selection = new ListSelectionController<FlowListRow>(this, {
+    idOf: (row) => row.id,
+  });
+
   static styles = [
     consoleDialogStyles,
     unsafeCSS(consoleStyles),
@@ -346,6 +357,11 @@ export class FlowsView extends LitElement {
          sized to their widest plausible number and nothing more. A flow
          called "Release Sentinel db-migration" must be readable without a
          tooltip, which is what the first screenshot round got wrong. */
+      /* The select column is fixed: the shared 40px keeps the flow name
+         starting at the same x as on agents, keys and models. */
+      .col-select {
+        width: 40px;
+      }
       .col-flow {
         width: 25%;
       }
@@ -1119,6 +1135,18 @@ export class FlowsView extends LitElement {
     );
   }
 
+  /**
+   * Prunes the selection to the rows this pass will paint, before anything
+   * renders. The bulk bar sits above the list and cards branches, so pruning
+   * inside either of them would leave the bar counting rows a filter or a
+   * search had already taken off the page for a frame.
+   */
+  protected willUpdate(): void {
+    this.selection.setItems(
+      this.loadError || this.flows.length === 0 ? [] : this.visibleRows
+    );
+  }
+
   /** The Type filter's options: the presets these flows came from, plus Custom. */
   private get presetOptions(): Array<{ value: string; label: string }> {
     const seen = new Map<string, string>();
@@ -1261,6 +1289,122 @@ export class FlowsView extends LitElement {
     }
   }
 
+  /**
+   * What a set of flows can be asked to do. Pause and resume are offered
+   * whatever the mix: a selection of five paused and two running is exactly
+   * when an operator reaches for "resume all", and the run reports the ones
+   * that were already there as successes.
+   */
+  private get bulkActions(): BulkAction[] {
+    return [
+      {
+        id: 'resume',
+        label: 'Resume',
+        icon: 'play-circle',
+        variant: 'success',
+      },
+      { id: 'pause', label: 'Pause', icon: 'pause-circle', variant: 'warning' },
+      { id: 'delete', label: 'Delete', icon: 'trash', variant: 'danger' },
+    ];
+  }
+
+  private renderSelectCheckbox(row: FlowListRow) {
+    return html`<list-select-checkbox
+      item-id=${row.id}
+      label=${`Select ${row.name}`}
+      ?checked=${this.selection.isSelected(row.id)}
+      ?disabled=${this.selection.busy}
+      @selection-toggle=${this.selection.handleToggleEvent}
+    ></list-select-checkbox>`;
+  }
+
+  private renderBulkBar() {
+    // Nothing at all at zero selected, wrapper included: an empty slot with a
+    // margin would push every collection down by 8px it never had before.
+    if (this.selection.count === 0) return nothing;
+    return html`<div class="bulk-bar-slot">
+      <list-bulk-bar
+        label="Flow bulk actions"
+        .count=${this.selection.count}
+        .actions=${this.bulkActions}
+        .running=${this.selection.running}
+        .progressDone=${this.selection.progressDone}
+        .progressTotal=${this.selection.progressTotal}
+        @bulk-action=${(event: CustomEvent) =>
+          void this.handleBulkAction(event.detail.id)}
+        @selection-clear=${() => this.selection.clear()}
+      ></list-bulk-bar>
+    </div>`;
+  }
+
+  private async handleBulkAction(actionId: string): Promise<void> {
+    const rows = this.selection.selectedItems;
+    if (rows.length === 0) return;
+    const items = rows.map((row) => ({ id: row.id, name: row.name }));
+    const count = `${rows.length} ${rows.length === 1 ? 'flow' : 'flows'}`;
+
+    if (actionId === 'delete') {
+      const confirmed = await confirmBulkAction({
+        title: rows.length === 1 ? 'Delete flow' : 'Delete flows',
+        message: `Delete ${count}?`,
+        names: rows.map((row) => row.name),
+        detail:
+          'The flows and their triggers stop immediately. Past runs stay in the executions list. This cannot be undone.',
+        confirmLabel: rows.length === 1 ? 'Delete flow' : 'Delete flows',
+        variant: 'danger',
+      });
+      if (!confirmed) return;
+      const result = await this.selection.run(
+        'delete',
+        items,
+        (item) => deleteFlow(item.id),
+        { verb: 'delete', verbPast: 'deleted', noun: 'flow' }
+      );
+      const deleted = new Set(result.succeeded.map((item) => item.id));
+      this.flows = this.flows.filter((flow) => !deleted.has(flow.id));
+      return;
+    }
+
+    const enable = actionId === 'resume';
+    const title = enable
+      ? rows.length === 1
+        ? 'Resume flow'
+        : 'Resume flows'
+      : rows.length === 1
+        ? 'Pause flow'
+        : 'Pause flows';
+    // Pause and resume confirm too, like the agents list: moving twelve flows
+    // is one keystroke away and the dialog is the only place the count and the
+    // names are spelled out.
+    const confirmed = await confirmBulkAction({
+      title,
+      message: `${enable ? 'Resume' : 'Pause'} ${count}?`,
+      names: rows.map((row) => row.name),
+      detail: enable
+        ? 'Their triggers start firing again. Nothing runs until the next event.'
+        : 'Their triggers stop firing. Runs already in flight finish.',
+      confirmLabel: title,
+      variant: 'primary',
+    });
+    if (!confirmed) return;
+
+    await this.selection.run(
+      actionId,
+      items,
+      async (item) => {
+        await updateFlow(item.id, { is_enabled: enable });
+        this.flows = this.flows.map((flow) =>
+          flow.id === item.id ? { ...flow, is_enabled: enable } : flow
+        );
+      },
+      {
+        verb: enable ? 'resume' : 'pause',
+        verbPast: enable ? 'resumed' : 'paused',
+        noun: 'flow',
+      }
+    );
+  }
+
   async deleteFlowHandler(row: FlowListRow) {
     const confirmed = await confirmDialog({
       title: 'Delete flow',
@@ -1333,7 +1477,7 @@ export class FlowsView extends LitElement {
               ? this.renderLoadError()
               : this.flows.length > 0
                 ? html`
-                    ${this.renderToolbar()}
+                    ${this.renderToolbar()} ${this.renderBulkBar()}
                     ${
                       this.effectiveView === 'list'
                         ? this.renderListView()
@@ -1571,8 +1715,14 @@ export class FlowsView extends LitElement {
     return html`
       <sl-card class="table-card">
         <div class="table-scroll">
-          <table class="styled-table flows-table">
+          <table
+            class="styled-table flows-table"
+            role="grid"
+            aria-multiselectable="true"
+            aria-label="Flows"
+          >
             <colgroup>
+              <col class="col-select" />
               <col class="col-flow" />
               <col class="col-trigger" />
               <col class="col-status" />
@@ -1585,6 +1735,15 @@ export class FlowsView extends LitElement {
             </colgroup>
             <thead>
               <tr>
+                <th class="select-cell">
+                  <list-select-checkbox
+                    label="Select all flows"
+                    ?checked=${this.selection.allSelected}
+                    ?indeterminate=${this.selection.someSelected}
+                    ?disabled=${this.selection.busy}
+                    @selection-toggle=${this.selection.handleToggleEvent}
+                  ></list-select-checkbox>
+                </th>
                 ${this.renderSortableHeader('flow', 'Flow')}
                 ${this.renderSortableHeader('trigger', 'Trigger')}
                 ${this.renderSortableHeader('status', 'Status')}
@@ -1615,8 +1774,16 @@ export class FlowsView extends LitElement {
     return html`
       <tr
         class="flow-row"
+        data-selection-id=${row.id}
+        aria-selected=${this.selection.isSelected(row.id) ? 'true' : 'false'}
         @click=${(event: MouseEvent) => this.handleRowClick(event, row)}
       >
+        <td
+          class="select-cell"
+          @click=${(event: Event) => event.stopPropagation()}
+        >
+          ${this.renderSelectCheckbox(row)}
+        </td>
         <td class="flow-cell" title=${row.name}>
           <div class="flow-identity">
             <sl-icon name=${row.icon}></sl-icon>
@@ -1794,10 +1961,19 @@ export class FlowsView extends LitElement {
 
   renderFlowCard(row: FlowListRow) {
     const running = Number(row.source.execution_stats?.running_execs || 0);
+    // A card carries no aria-selected: there is no container role for a grid
+    // of cards that would make it honest. The checkbox states the selection.
     return html`
-      <sl-card class="flow-card" @click=${() => Router.go(row.detailUrl)}>
+      <sl-card
+        class="flow-card"
+        data-selection-id=${row.id}
+        @click=${() => Router.go(row.detailUrl)}
+      >
         <div slot="header" class="flow-header">
           <div class="flow-title">
+            <span @click=${(event: Event) => event.stopPropagation()}>
+              ${this.renderSelectCheckbox(row)}
+            </span>
             <sl-icon name=${row.icon}></sl-icon>
             <a
               href=${row.detailUrl}

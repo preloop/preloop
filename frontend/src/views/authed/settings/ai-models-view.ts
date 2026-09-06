@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { when } from 'lit/directives/when.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -24,6 +24,12 @@ import '../../../components/list-toolbar';
 import '../../../components/resource-actions';
 import '../../../components/token-figures';
 import type { ResourceAction } from '../../../components/resource-actions';
+import '../../../components/list-selection';
+import {
+  ListSelectionController,
+  confirmBulkAction,
+  type BulkAction,
+} from '../../../components/list-selection';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
 import { formatRelativeTime } from '../../../utils/date';
 import {
@@ -38,6 +44,11 @@ import consoleStyles from '../../../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
 
 const VIEW_MODE_KEY = 'preloop.models.view_mode';
+
+/** Delete is the only thing that makes sense over a set of models. */
+const MODEL_BULK_ACTIONS: BulkAction[] = [
+  { id: 'delete', label: 'Delete', icon: 'trash', variant: 'danger' },
+];
 
 export function isGatewayEnabled(model: AIModel): boolean {
   const gateway = model.meta_data?.gateway;
@@ -75,6 +86,11 @@ export function filterModels(
 @customElement('ai-models-view')
 export class AIModelsView extends LitElement {
   private static readonly FLEET_WINDOW_DAYS = 30;
+
+  /** Multi-select for the model table and the card grid. */
+  readonly selection = new ListSelectionController<AIModel>(this, {
+    idOf: (model) => model.id,
+  });
 
   private readonly INFO_ALERT_DISMISSED_KEY =
     'preloop-models-info-alert-dismissed';
@@ -670,6 +686,15 @@ export class AIModelsView extends LitElement {
     return effectiveViewMode(this.currentView, this.narrowViewport);
   }
 
+  /**
+   * Prunes the selection to the models this pass paints, before the bulk bar
+   * is built, so a filter change can never leave the bar counting models that
+   * are no longer on the page.
+   */
+  protected willUpdate(): void {
+    this.selection.setItems(this.visibleModels);
+  }
+
   private get providerOptions(): string[] {
     return [...new Set(this.models.map((model) => model.provider_name))]
       .filter(Boolean)
@@ -906,9 +931,77 @@ export class AIModelsView extends LitElement {
         No models match these filters.
       </div>`;
     }
-    return this.effectiveView === 'cards'
-      ? this.renderCardsView(models)
-      : this.renderListView(models);
+    return html`
+      ${this.renderBulkBar()}
+      ${
+        this.effectiveView === 'cards'
+          ? this.renderCardsView(models)
+          : this.renderListView(models)
+      }
+    `;
+  }
+
+  /** One checkbox shape for the row and the card. */
+  private renderSelectCheckbox(model: AIModel) {
+    return html`<list-select-checkbox
+      item-id=${model.id}
+      label=${`Select ${model.name}`}
+      ?checked=${this.selection.isSelected(model.id)}
+      ?disabled=${this.selection.busy}
+      @selection-toggle=${this.selection.handleToggleEvent}
+    ></list-select-checkbox>`;
+  }
+
+  private renderBulkBar() {
+    // Nothing at all at zero selected, wrapper included: an empty slot with a
+    // margin would push every collection down by 8px it never had before.
+    if (this.selection.count === 0) return nothing;
+    return html`<div class="bulk-bar-slot">
+      <list-bulk-bar
+        label="Model bulk actions"
+        .count=${this.selection.count}
+        .actions=${MODEL_BULK_ACTIONS}
+        .running=${this.selection.running}
+        .progressDone=${this.selection.progressDone}
+        .progressTotal=${this.selection.progressTotal}
+        @bulk-action=${() => void this.handleBulkDelete()}
+        @selection-clear=${() => this.selection.clear()}
+      ></list-bulk-bar>
+    </div>`;
+  }
+
+  /**
+   * Deletes every selected model, one DELETE each at the shared bound.
+   *
+   * Setting the default stays a single-model action and is deliberately not
+   * here: an account has exactly one default, so "set default" over a
+   * selection of four would silently pick one and discard three.
+   */
+  private async handleBulkDelete(): Promise<void> {
+    const models = this.selection.selectedItems;
+    if (models.length === 0) return;
+    const defaults = models.filter((model) => model.is_default);
+    const confirmed = await confirmBulkAction({
+      title: models.length === 1 ? 'Delete model' : 'Delete models',
+      message: `Delete ${models.length} ${
+        models.length === 1 ? 'model' : 'models'
+      }?`,
+      names: models.map((model) => model.name),
+      detail: defaults.length
+        ? `Agents pointed at these models stop resolving. ${defaults[0].name} is the account default. This cannot be undone.`
+        : 'Agents pointed at these models stop resolving. This cannot be undone.',
+      confirmLabel: models.length === 1 ? 'Delete model' : 'Delete models',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+
+    await this.selection.run(
+      'delete',
+      models.map((model) => ({ id: model.id, name: model.name })),
+      (model) => deleteAIModel(model.id),
+      { verb: 'delete', verbPast: 'deleted', noun: 'model' }
+    );
+    await this.fetchModels();
   }
 
   /**
@@ -982,9 +1075,23 @@ export class AIModelsView extends LitElement {
   private renderListView(models: AIModel[]) {
     return html`
       <sl-card class="table-card">
-        <table class="styled-table">
+        <table
+          class="styled-table"
+          role="grid"
+          aria-multiselectable="true"
+          aria-label="AI models"
+        >
           <thead>
             <tr>
+              <th class="select-cell">
+                <list-select-checkbox
+                  label="Select all models"
+                  ?checked=${this.selection.allSelected}
+                  ?indeterminate=${this.selection.someSelected}
+                  ?disabled=${this.selection.busy}
+                  @selection-toggle=${this.selection.handleToggleEvent}
+                ></list-select-checkbox>
+              </th>
               <th>Name</th>
               <th>Provider</th>
               <th>Fleet health</th>
@@ -1100,8 +1207,15 @@ export class AIModelsView extends LitElement {
   }
 
   private renderModelRow(model: AIModel) {
+    const selected = this.selection.isSelected(model.id);
     return html`
-      <tr class="model-row" data-model-id=${model.id}>
+      <tr
+        class="model-row"
+        data-model-id=${model.id}
+        data-selection-id=${model.id}
+        aria-selected=${selected ? 'true' : 'false'}
+      >
+        <td class="select-cell">${this.renderSelectCheckbox(model)}</td>
         <td>${this.renderNameCell(model)}</td>
         <td>${this.renderProviderCell(model)}</td>
         <td>${this.renderHealthCell(model)}</td>
@@ -1125,10 +1239,17 @@ export class AIModelsView extends LitElement {
   }
 
   private renderModelCard(model: AIModel) {
+    // Selection on a card is stated by its checkbox, not by aria-selected:
+    // the card has no role that supports it (see the agents and flows cards).
     return html`
-      <sl-card class="model-card" data-model-id=${model.id}>
+      <sl-card
+        class="model-card"
+        data-model-id=${model.id}
+        data-selection-id=${model.id}
+      >
         <div class="model-card-body">
           <div class="model-card-header">
+            ${this.renderSelectCheckbox(model)}
             <a class="model-link" href=${`/console/ai-models/${model.id}`}>
               ${model.name}
             </a>
