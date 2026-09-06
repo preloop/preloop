@@ -701,13 +701,6 @@ export class AccountView extends LitElement {
                         The following traffic is rejected until the halt is
                         lifted:
                       </div>
-                      <sl-input
-                        label="Recovery reason"
-                        maxlength="500"
-                        value=${this._haltReason}
-                        @sl-input=${(e: any) => (this._haltReason = e.target.value)}
-                        ?disabled=${this._haltBusy}
-                      ></sl-input>
                       <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
                         ${this._haltStatus.scopes.map(
                           (entry) => html`

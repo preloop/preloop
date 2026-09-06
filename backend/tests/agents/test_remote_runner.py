@@ -152,9 +152,16 @@ async def test_fresh_queued_executor_reconstructs_complete_payload(
         "preloop.agents.remote_runner.crud_flow_execution.get",
         lambda *args, **kwargs: execution,
     )
+
+    async def fake_hydrate(db: Any, job: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **job,
+            "account_api_token": "fresh-runtime-token",
+            "launch": {"version": 1},
+        }
+
     monkeypatch.setattr(
-        "preloop.agents.remote_runner.create_flow_runtime_token",
-        lambda *args, **kwargs: ("fresh-runtime-token", uuid4()),
+        "preloop.agents.remote_runner.prepare_runner_delivery", fake_hydrate
     )
 
     executor = create_executor_for_execution(

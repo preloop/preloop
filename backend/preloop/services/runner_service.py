@@ -199,7 +199,7 @@ def resolve_runner_pool(
     return None
 
 
-_PERSISTED_SECRET_KEYS = ("account_api_token",)
+_PERSISTED_SECRET_KEYS = ("account_api_token", "launch")
 
 
 def persistable_job_payload(payload: Dict[str, Any]) -> Dict[str, Any]:

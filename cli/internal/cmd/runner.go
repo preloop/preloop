@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -193,6 +192,9 @@ func loadOrRegisterRunner(client *api.Client, name, hostname string, labels []st
 }
 
 type leasedJobOutcome struct {
+	logBuffer   *runnerLogBuffer
+	result      map[string]any
+	exitCode    int
 	executionID string
 	status      string
 	errMsg      string
@@ -236,6 +238,9 @@ func writeJobOutcome(conn *websocket.Conn, outcome leasedJobOutcome) error {
 	if conn == nil {
 		return nil
 	}
+	if err := flushRunnerLogs(conn, outcome.executionID, outcome.logBuffer, true); err != nil {
+		return err
+	}
 	if len(outcome.lines) > 0 {
 		if err := conn.WriteJSON(map[string]any{
 			"type":         "logs",
@@ -246,10 +251,14 @@ func writeJobOutcome(conn *websocket.Conn, outcome leasedJobOutcome) error {
 		}
 	}
 	return conn.WriteJSON(map[string]any{
-		"type":         "complete",
-		"execution_id": outcome.executionID,
-		"status":       outcome.status,
-		"error":        outcome.errMsg,
+		"type":                "complete",
+		"launch_version":      runnerLaunchVersion,
+		"completion_protocol": "docker_v1",
+		"exit_code":           outcome.exitCode,
+		"result":              outcome.result,
+		"execution_id":        outcome.executionID,
+		"status":              outcome.status,
+		"error":               outcome.errMsg,
 	})
 }
 
@@ -443,6 +452,8 @@ func runRunnerSession(
 		}
 	}
 
+	logTicker := time.NewTicker(time.Second)
+	defer logTicker.Stop()
 	ticker := time.NewTicker(runnerHeartbeatEvery)
 	defer ticker.Stop()
 
@@ -453,6 +464,14 @@ func runRunnerSession(
 			killRunning()
 			_ = conn.WriteJSON(map[string]any{"type": "unregister"})
 			return nil
+		case <-logTicker.C:
+			if *runningCmd != nil {
+				if buffer, ok := (*runningCmd).Stdout.(*runnerLogBuffer); ok {
+					if err := flushRunnerLogs(conn, *runningExecID, buffer, false); err != nil {
+						return err
+					}
+				}
+			}
 		case <-ticker.C:
 			// Retention progresses even when the runner receives no new jobs.
 			keep := map[string]bool{}
@@ -583,7 +602,27 @@ func beginLeasedJob(
 		return writeJobOutcome(conn, outcome)
 	}
 
+	launch, launchErr := runnerLaunchFromJob(job)
+	if launchErr != nil {
+		outcome := leasedJobOutcome{executionID: executionID, status: "FAILED", errMsg: launchErr.Error()}
+		rememberOutcome(lastComplete, outcome)
+		return writeJobOutcome(conn, outcome)
+	}
 	env := runnerJobEnv(job, apiURL)
+	for key, value := range launch["env"].(map[string]any) {
+		env[key] = value.(string)
+	}
+	env["PRELOOP_RUNNER_SCRIPT"] = launch["script"].(string)
+	env["PRELOOP_MCP_URL"] = strings.TrimRight(apiURL, "/") + "/mcp/v1"
+	opts.Launch = true
+	opts.PreserveEntrypoint = image == "ghcr.io/openai/codex-universal:latest"
+	if cfg, ok := job["agent_config"].(map[string]any); ok {
+		if runner, ok := cfg["runner"].(map[string]any); ok {
+			if preserve, ok := runner["preserve_image_entrypoint"].(bool); ok {
+				opts.PreserveEntrypoint = preserve
+			}
+		}
+	}
 	if optsErr != nil {
 		reason := optsErr.Error()
 		outcome := leasedJobOutcome{
@@ -609,7 +648,7 @@ func beginLeasedJob(
 		}
 	}
 	cmd := newRunnerJobCmd(image, env, opts)
-	var buf bytes.Buffer
+	var buf runnerLogBuffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 	if err := cmd.Start(); err != nil {
@@ -648,16 +687,40 @@ func requestJobHalt(halted *atomic.Bool, runningCmd *exec.Cmd) bool {
 	return false
 }
 
-func waitDockerJob(cmd *exec.Cmd, executionID string, buf *bytes.Buffer, halted *atomic.Bool) leasedJobOutcome {
+func waitDockerJob(cmd *exec.Cmd, executionID string, buf interface{ String() string }, halted *atomic.Bool) leasedJobOutcome {
 	err := cmd.Wait()
-	lines := splitNonEmptyLines(buf.String())
+	buffer, streaming := buf.(*runnerLogBuffer)
+	if streaming {
+		buffer.finish()
+	}
+	result, lines, resultErr := runnerStructuredResult(splitNonEmptyLines(buf.String()))
+	outcome := leasedJobOutcome{executionID: executionID, status: "SUCCEEDED", lines: lines, result: result}
+	if streaming {
+		outcome.logBuffer = buffer
+		outcome.lines = nil
+	}
+	if cmd.ProcessState != nil {
+		outcome.exitCode = cmd.ProcessState.ExitCode()
+	}
 	if err != nil {
 		if halted != nil && halted.Load() {
-			return leasedJobOutcome{executionID: executionID, status: "STOPPED", lines: lines}
+			outcome.status = "STOPPED"
+			return outcome
 		}
-		return leasedJobOutcome{executionID: executionID, status: "FAILED", errMsg: err.Error(), lines: lines}
+		outcome.status = "FAILED"
+		outcome.errMsg = err.Error()
+		return outcome
 	}
-	return leasedJobOutcome{executionID: executionID, status: "SUCCEEDED", lines: lines}
+	if resultErr != nil {
+		outcome.status = "FAILED"
+		outcome.errMsg = resultErr.Error()
+		if streaming && buffer.overflow {
+			outcome.errMsg = "Runner log buffer exceeded its limit; execution markers may be missing"
+		}
+	} else if runnerResultIsFailure(result) {
+		outcome.status = "FAILED"
+	}
+	return outcome
 }
 
 func splitNonEmptyLines(output string) []string {
@@ -683,11 +746,11 @@ func runnerImageFromJob(job map[string]any) string {
 	if cfg == nil {
 		return ""
 	}
-	if image, ok := cfg["image"].(string); ok {
-		return image
+	if image, ok := cfg["image"].(string); ok && strings.TrimSpace(image) != "" {
+		return strings.TrimSpace(image)
 	}
 	if image, ok := cfg["docker_image"].(string); ok {
-		return image
+		return strings.TrimSpace(image)
 	}
 	return ""
 }

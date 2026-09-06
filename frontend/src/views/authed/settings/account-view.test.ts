@@ -134,6 +134,14 @@ describe('AccountView', () => {
       html`<account-view></account-view>`
     );
     await waitUntil(() => !(element as any)._loading);
+    (element as any)._haltStatus = {
+      active: true,
+      scopes: [{ scope: 'flows', reason: 'Inspect active runtimes' }],
+    };
+    await element.updateComplete;
+    expect(
+      element.shadowRoot?.querySelectorAll('sl-input[label="Recovery reason"]')
+    ).to.have.length(1);
     (element as any)._haltReason = 'Runtime termination verified';
     await (element as any)._handleResume(['flows']);
     const request = fetchStub

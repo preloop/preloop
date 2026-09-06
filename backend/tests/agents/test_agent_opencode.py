@@ -2,11 +2,18 @@
 
 import base64
 import os
+import shutil
 from unittest.mock import patch, AsyncMock
 
 import pytest
 
 from preloop.agents.opencode import OpenCodeAgent
+
+_HAS_NODE = shutil.which("node") is not None
+_SKIP_WITHOUT_NODE = pytest.mark.skipif(
+    not _HAS_NODE,
+    reason="node is required to parse the embedded OpenCode log filter",
+)
 
 
 class TestOpenCodeAgentInit:
@@ -823,6 +830,20 @@ class TestOpenCodeLogFilterJs:
         assert start > len(marker) and end > start, "filter heredoc not found"
         return script[start:end]
 
+    def test_filter_js_tracks_parent_session_id(self):
+        script = OpenCodeAgent({})._build_opencode_script(
+            {
+                "prompt": "test",
+                "opencode_model": "model-1",
+                "execution_id": "exec-1",
+                "flow_name": "test-flow",
+            }
+        )
+        js = self._extract_filter_js(script)
+        assert "parentSessionId" in js
+        assert "/tmp/preloop-cli-session-id" in js
+
+    @_SKIP_WITHOUT_NODE
     def test_filter_js_is_valid_javascript(self, tmp_path):
         import subprocess
 
@@ -846,6 +867,7 @@ class TestOpenCodeLogFilterJs:
         )
         assert result.returncode == 0, result.stderr
 
+    @_SKIP_WITHOUT_NODE
     def test_filter_js_detects_session_ids(self, tmp_path):
         """The filter writes the parent session.idle/created id, not nested ones."""
         import json
