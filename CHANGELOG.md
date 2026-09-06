@@ -103,6 +103,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Landing build fails on missing screenshots**: the brand Vite plugin
+  now errors when a landing `hero.image` or feature `placeholderImg` is
+  missing from `frontend/public`, so a 404 like the onboard-dialog still
+  cannot ship silent again.
+
 - **Talk window follows the latest message**: new turns (including after
   the 50-event page is full, and replies that arrive as activity rows)
   keep the thread at the bottom unless the reader scrolled up with a
