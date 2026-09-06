@@ -69,6 +69,7 @@ from preloop.utils.tokens import (
 from preloop.models.crud import (
     crud_account,
     crud_audit_log,
+    crud_team,
     crud_user,
     crud_api_key,
     crud_api_usage,
@@ -82,7 +83,6 @@ from preloop.models.crud import (
 from preloop.models.db.session import get_db_session
 from preloop.models.models.user import User as UserModel
 from preloop.models.models.api_key import ApiKey
-from preloop.models.models.team import Team, TeamMembership
 from pydantic import BaseModel
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AUDIT,
@@ -220,22 +220,18 @@ def _resolve_team_ids(user: UserModel, db: Session) -> List[UUID]:
     caller's account scopes everything else it can see.
     """
     try:
-        rows = (
-            db.query(Team.id)
-            .join(TeamMembership, Team.id == TeamMembership.team_id)
-            .filter(
-                TeamMembership.user_id == user.id,
-                Team.account_id == user.account_id,
-            )
-            .order_by(Team.name)
-            .all()
+        teams = crud_team.get_user_teams(
+            db,
+            user_id=user.id,
+            account_id=user.account_id,
+            limit=None,
         )
     except Exception:
         # Same rule as permissions above: never 500 /users/me over an
         # optional field.
         logger.exception("Failed to resolve team memberships; returning empty list")
         return []
-    return [row[0] for row in rows]
+    return [team.id for team in teams]
 
 
 def _build_auth_user_response(user: UserModel, db: Session) -> AuthUserResponse:
