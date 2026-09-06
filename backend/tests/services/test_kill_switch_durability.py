@@ -721,3 +721,113 @@ async def test_live_docker_halt_stops_process_after_scope_reenabled(
     finally:
         await container.delete(force=True)
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_halted_admission_precedes_checkpoint_capability_mint(
+    db_session, test_user, execution
+):
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    crud_account_halt.set_scopes(
+        db_session,
+        account_id=test_user.account_id,
+        scopes=["flows"],
+        active=True,
+        user_id=test_user.id,
+    )
+    orch = FlowExecutionOrchestrator(
+        db_session, flow_id=execution.flow_id, trigger_event_data={}, nats_client=None
+    )
+    orch.execution_log = execution
+    orch.flow = execution.flow
+    executor = SimpleNamespace(start=AsyncMock(), cleanup=AsyncMock())
+    with (
+        patch(
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
+            return_value=executor,
+        ),
+        patch("preloop.services.checkpoint_runtime.checkpoint_context") as mint,
+    ):
+        with pytest.raises(kill_switch.FlowHaltActiveError):
+            await orch._start_agent_session({"agent_type": "codex", "agent_config": {}})
+    mint.assert_not_called()
+    executor.start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_created_runtime_with_lost_reference_stays_unconfirmed_and_never_restarts(
+    db_session, test_user, execution
+):
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+    from preloop.services import flow_execution_runner
+
+    orch = FlowExecutionOrchestrator(
+        db_session, flow_id=execution.flow_id, trigger_event_data={}, nats_client=None
+    )
+    orch.execution_log = execution
+    orch.flow = execution.flow
+    created = []
+
+    async def create_then_lose_response(context):
+        created.append("runtime-created")
+        crud_account_halt.set_scopes(
+            db_session,
+            account_id=test_user.account_id,
+            scopes=["flows"],
+            active=True,
+            user_id=test_user.id,
+        )
+        raise RuntimeError("runtime created but response lost")
+
+    executor = SimpleNamespace(
+        start=AsyncMock(side_effect=create_then_lose_response), cleanup=AsyncMock()
+    )
+    with (
+        patch(
+            "preloop.services.flow_orchestrator.create_executor_for_execution",
+            return_value=executor,
+        ),
+        patch(
+            "preloop.services.checkpoint_runtime.checkpoint_context", return_value={}
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="response lost"):
+            await orch._start_agent_session({"agent_type": "codex", "agent_config": {}})
+    db_session.refresh(execution)
+    assert created == ["runtime-created"]
+    assert execution.launch_requested_at is not None
+    assert execution.agent_session_reference is None
+    assert not crud_flow_execution.cancel_unstarted_stop(
+        db_session, execution_id=execution.id
+    )
+    assert (
+        crud_flow_execution.get_stop_request(db_session, execution_id=execution.id)[
+            "confirmed_at"
+        ]
+        is None
+    )
+    # Scope recovery must not transform an unknown runtime into a fresh launch.
+    crud_account_halt.set_scopes(
+        db_session,
+        account_id=test_user.account_id,
+        scopes=["flows"],
+        active=False,
+        user_id=test_user.id,
+    )
+    with (
+        patch.object(
+            flow_execution_runner, "get_db_session", return_value=iter([db_session])
+        ),
+        patch.object(db_session, "close"),
+        patch.object(
+            flow_execution_runner, "run_existing_execution", new=AsyncMock()
+        ) as run,
+    ):
+        outcome = await flow_execution_runner.claim_and_run_execution(str(execution.id))
+    assert outcome["status"] == "stop_unconfirmed"
+    run.assert_not_awaited()
+    db_session.refresh(execution)
+    assert execution.status == "FAILED"
+    assert execution.stop_confirmed_at is None
+    assert "Stop unconfirmed" in execution.error_message

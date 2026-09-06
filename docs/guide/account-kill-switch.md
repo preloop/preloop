@@ -41,7 +41,7 @@ grace period; Kubernetes waits for foreground removal of the Job and Pods;
 private runners must receive and acknowledge the stop. Offline runners and
 unreachable runtime APIs cannot provide immediate confirmation.
 
-The execution detail API exposes `stop_requested_at`, `stop_source`,
+The execution detail API exposes `launch_requested_at`, `stop_requested_at`, `stop_source`,
 `stop_reason` and `stop_confirmed_at`. A requested timestamp without a confirmed
 timestamp means termination remains outstanding, even when the account has
 already been re-enabled or a monitor reported an error. Recovery workers continue
@@ -63,3 +63,9 @@ The halt does not undo external side effects that already happened. Independent
 processes and requests that bypass Preloop cannot be universally revoked by this
 control. Runtime API failure or a disconnected private runner remains visible as
 an unconfirmed stop rather than a claim that all activity ended.
+
+A launch intent is persisted before calling the runtime API. If that call creates
+a resource but fails before its reference is recorded, a halt cannot safely
+confirm termination or automatically launch a replacement. The execution reports
+`Stop unconfirmed` and requires operator inspection of the runtime using its
+execution identity. Missing reference alone never proves nothing was launched.

@@ -1078,6 +1078,11 @@ def create_app() -> FastAPI:
     if is_api_role:
         # Note: Issue duplicates endpoint is now loaded via plugins/analytics
         app.include_router(webhooks.router, prefix="/api/v1", tags=["Webhooks"])
+        from preloop.api.endpoints import flow_artifacts
+
+        app.include_router(
+            flow_artifacts.router, prefix="/api/v1", tags=["Flow artifacts"]
+        )
         app.include_router(
             flows.router,
             prefix="/api/v1",

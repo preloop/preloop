@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Optional, Set
 
 from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models.db.session import get_db_session
+from preloop.models.schemas.flow_execution import FlowExecutionUpdate
 from preloop.services.flow_execution_dispatcher import (
     claim_stale_after_seconds,
     dispatch_execute,
@@ -223,6 +224,20 @@ async def claim_and_run_execution(
         if not session_reference:
             if crud_flow_execution.cancel_unstarted_stop(db, execution_id=execution_id):
                 return {"status": "stopped", "execution_id": execution_id_str}
+            if crud_flow_execution.get_stop_request(db, execution_id=execution_id):
+                # A start may have created a runtime before failing to return a
+                # reference. Never infer termination or start a replacement.
+                crud_flow_execution.update(
+                    db,
+                    db_obj=execution,
+                    obj_in=FlowExecutionUpdate(
+                        status="FAILED",
+                        failure_category="runner_error",
+                        error_message="Stop unconfirmed: launch was requested but no runtime reference was recorded; operator inspection required",
+                    ),
+                )
+                db.commit()
+                return {"status": "stop_unconfirmed", "execution_id": execution_id_str}
             try:
                 if flows_halted(db, flow_row.account_id):
                     return {"status": "halted", "execution_id": execution_id_str}

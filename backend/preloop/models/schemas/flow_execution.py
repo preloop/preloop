@@ -148,6 +148,7 @@ class FlowExecutionBase(BaseModel):
             "(parsed /workspace/result.json, eval/observe runs)"
         ),
     )
+    launch_requested_at: Optional[datetime] = None
     stop_requested_at: Optional[datetime] = None
     stop_reason: Optional[str] = None
     stop_source: Optional[str] = None

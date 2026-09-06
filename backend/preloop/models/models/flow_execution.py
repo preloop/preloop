@@ -107,6 +107,7 @@ class FlowExecution(Base):
         String, nullable=True
     )  # e.g., agent session ID, K8s job ID, Docker container ID, process ID
     # Durable emergency-stop intent survives worker restarts and scope recovery.
+    launch_requested_at = Column(DateTime(timezone=True), nullable=True)
     stop_requested_at = Column(DateTime(timezone=True), nullable=True)
     stop_reason = Column(String(500), nullable=True)
     stop_source = Column(String(32), nullable=True)

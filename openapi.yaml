@@ -7469,6 +7469,78 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/flows/executions/{execution_id}/artifacts:
+    put:
+      tags:
+      - Flow artifacts
+      summary: Upload Artifact
+      description: Read a bounded gzip archive and commit only after complete validation.
+      operationId: upload_artifact_api_v1_flows_executions__execution_id__artifacts_put
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactReference'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+    get:
+      tags:
+      - Flow artifacts
+      summary: Download Artifact
+      description: Download the one immutable reference named by a scoped capability.
+      operationId: download_artifact_api_v1_flows_executions__execution_id__artifacts_get
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/flows:
     post:
       tags:
@@ -12336,6 +12408,40 @@ components:
       type: object
       title: ApprovalWorkflowUpdate
       description: Schema for updating approval workflow.
+    ArtifactReference:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        artifact_id:
+          type: string
+          format: uuid
+          title: Artifact Id
+        execution_id:
+          type: string
+          format: uuid
+          title: Execution Id
+        storage_kind:
+          type: string
+          enum:
+          - hosted
+          - runner_local
+          title: Storage Kind
+          default: hosted
+        manifest_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Manifest Sha256
+      additionalProperties: false
+      type: object
+      required:
+      - artifact_id
+      - execution_id
+      - manifest_sha256
+      title: ArtifactReference
+      description: Opaque reference; authorization is checked on every retrieval.
     AttentionDismissalListResponse:
       properties:
         items:
@@ -14077,6 +14183,12 @@ components:
           title: Result
           description: Structured result artifact reported by the agent (parsed /workspace/result.json,
             eval/observe runs)
+        launch_requested_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Launch Requested At
         stop_requested_at:
           anyOf:
           - type: string

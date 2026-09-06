@@ -1,0 +1,130 @@
+{
+  "preloop-component": {
+    "version": 1,
+    "image": "registry.example.com/preloop-environment@sha256:REPLACE_WITH_PUBLISHED_DIGEST",
+    "harness": "codex",
+    "protocol_version": 1,
+    "setup_timeout_seconds": 900,
+    "setup_commands": [
+      "npm --prefix frontend ci"
+    ],
+    "lockfiles": [
+      "frontend/package-lock.json"
+    ],
+    "test_commands": {
+      "component": [
+        "cd frontend && npm test"
+      ]
+    },
+    "artifact_paths": [
+      "test-results",
+      "frontend/test-results",
+      "frontend/playwright-report"
+    ],
+    "env": {
+      "PRELOOP_DISABLE_TELEMETRY": "true"
+    },
+    "cache_paths": [
+      "frontend/node_modules"
+    ]
+  },
+  "preloop-backend": {
+    "version": 1,
+    "image": "registry.example.com/preloop-environment@sha256:REPLACE_WITH_PUBLISHED_DIGEST",
+    "harness": "codex",
+    "setup_commands": [
+      "python3 -m venv .venv",
+      ".venv/bin/pip install -e '.[dev]'",
+      ".venv/bin/python scripts/init_db.py --force"
+    ],
+    "services": [
+      {
+        "name": "postgres",
+        "image": "pgvector/pgvector@sha256:REPLACE_WITH_APPROVED_DIGEST",
+        "port": 5432,
+        "env": {
+          "POSTGRES_PASSWORD": "disposable-test",
+          "POSTGRES_DB": "preloop_test"
+        }
+      },
+      {
+        "name": "nats",
+        "image": "nats@sha256:REPLACE_WITH_APPROVED_DIGEST",
+        "port": 4222,
+        "command": [
+          "--jetstream"
+        ]
+      }
+    ],
+    "env": {
+      "DATABASE_URL": "postgresql+psycopg://postgres:disposable-test@${service.postgres}:5432/preloop_test",
+      "NATS_URL": "nats://${service.nats}:4222",
+      "PRELOOP_DISABLE_TELEMETRY": "true"
+    },
+    "test_commands": {
+      "backend": [
+        ".venv/bin/pytest backend/tests"
+      ]
+    },
+    "artifact_paths": [
+      "test-results"
+    ],
+    "lockfiles": [
+      "pyproject.toml"
+    ],
+    "cache_paths": [
+      ".venv"
+    ]
+  },
+  "preloop-application": {
+    "version": 1,
+    "image": "registry.example.com/preloop-environment@sha256:REPLACE_WITH_PUBLISHED_DIGEST",
+    "harness": "codex",
+    "setup_commands": [
+      "python3 -m venv .venv",
+      ".venv/bin/pip install -e '.[dev]'",
+      "npm --prefix frontend ci"
+    ],
+    "services": [
+      {
+        "name": "postgres",
+        "image": "pgvector/pgvector@sha256:REPLACE_WITH_APPROVED_DIGEST",
+        "port": 5432,
+        "env": {
+          "POSTGRES_PASSWORD": "disposable-test",
+          "POSTGRES_DB": "preloop_test"
+        }
+      },
+      {
+        "name": "nats",
+        "image": "nats@sha256:REPLACE_WITH_APPROVED_DIGEST",
+        "port": 4222,
+        "command": [
+          "--jetstream"
+        ]
+      }
+    ],
+    "env": {
+      "DATABASE_URL": "postgresql+psycopg://postgres:disposable-test@${service.postgres}:5432/preloop_test",
+      "NATS_URL": "nats://${service.nats}:4222",
+      "PRELOOP_DISABLE_TELEMETRY": "true",
+      "PRELOOP_DISPOSABLE_ENVIRONMENT": "true"
+    },
+    "test_commands": {
+      "application": [
+        "./scripts/flow-environment-app-check.sh bash -c \"cd frontend && npm run test:e2e:ci\""
+      ]
+    },
+    "artifact_paths": [
+      "test-results"
+    ],
+    "lockfiles": [
+      "pyproject.toml",
+      "frontend/package-lock.json"
+    ],
+    "cache_paths": [
+      ".venv",
+      "frontend/node_modules"
+    ]
+  }
+}

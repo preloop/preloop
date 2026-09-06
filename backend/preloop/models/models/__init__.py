@@ -15,6 +15,7 @@ from .project import Project
 from .tracker import Tracker, TrackerType
 from .client_version_log import ClientVersionLog
 from .ai_model import AIModel
+from .flow_artifact import FlowArtifact
 from .flow import Flow
 from .flow_feedback import FlowFeedback, FlowThread
 from .flow_execution import FlowExecution
@@ -106,6 +107,7 @@ __all__ = [
     "Comment",
     "AIModel",
     "Flow",
+    "FlowArtifact",
     "FlowExecution",
     "FlowRunner",
     "FlowExecutionLog",
