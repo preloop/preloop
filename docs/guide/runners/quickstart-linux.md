@@ -184,7 +184,7 @@ Create `~/.preloop/runner-host-profiles.json` (or point
       "workspace_root": "/home/example/src",
       "timeout_seconds": 1800,
       "force_writes": false,
-      "pass_model": true
+      "model_map": {"team-fast": "sonnet-4.6"}
     }
   ]
 }
@@ -199,9 +199,9 @@ profiles are unavailable.
 
 An optional local `model_map` maps requested identifiers to Cursor aliases,
 for example `"model_map": {"team-fast": "sonnet-4.6"}`. Every nonempty requested
-model must match this map, including when `pass_model` is false. The scheduler
-selects a runner advertising that identifier. With `pass_model: true`, the
-runner passes the mapped alias to Cursor; otherwise the local default applies.
+model must match this map. The scheduler selects a runner advertising that
+identifier, and the runner passes the mapped alias to Cursor. The legacy
+`pass_model` field does not bypass this mapping.
 The selected API model's credentials are never delivered to the host. Leave
 the requested model empty to use the profile default. An actual model is
 recorded only when Cursor reports it, never inferred from the request.
@@ -210,7 +210,8 @@ The lease supplies the prompt as one argument after `--`, plus the profile,
 requested model and deadline. It cannot inject an executable, extra argv,
 environment, API key or session id. Only `cursor-agent` and `agent` executables
 are accepted. Local argv cannot override runner-managed workspace, model,
-resume or output controls. `force_writes` defaults to false; enable it only for
+resume or credential controls. The profile should retain `stream-json` output
+so the runner can validate structured completion. `force_writes` defaults to false; enable it only for
 a profile whose operator intends to permit writes.
 
 Each job creates a fresh directory under

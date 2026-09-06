@@ -136,6 +136,9 @@ describe('PreloopFlowForm host execution submit', () => {
     void (element as any).handleFormSubmit(new Event('submit'));
     const event = await submitted;
     expect(event.detail.flow.ai_model_id ?? '').to.equal('');
+    expect(element.shadowRoot?.textContent).to.include(
+      'These flow tool settings do not apply.'
+    );
     expect(
       element.shadowRoot
         ?.querySelector('sl-select[label="Requested AI Model"]')

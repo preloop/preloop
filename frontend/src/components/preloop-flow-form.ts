@@ -1866,6 +1866,7 @@ export class PreloopFlowForm extends LitElement {
           <div slot="header" class="card-header-title">
             <sl-icon name="tools"></sl-icon> Allowed MCP Tools
           </div>
+          ${this.flow.agent_type === 'cursor' ? html`<p>Cursor profiles use local MCP configuration. These flow tool settings do not apply.</p>` : nothing}
 
           <div
             style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
