@@ -80,6 +80,24 @@ describe('policy version and diff shapes', () => {
       expect(version.snapshot_summary.tools_count).to.equal(6);
     });
 
+    it('keeps created_at null when the payload omits it', () => {
+      const [version] = normalizePolicyVersions([
+        { id: 'v1', version_number: 1 },
+      ]);
+
+      expect(version.created_at).to.equal(null);
+    });
+
+    it('drops a row without an id so keys cannot collide', () => {
+      const versions = normalizePolicyVersions([
+        { id: 'v1', version_number: 1 },
+        { version_number: 2 },
+        { id: '', version_number: 3 },
+      ]);
+
+      expect(versions.map((version) => version.id)).to.deep.equal(['v1']);
+    });
+
     it('answers with an array for a bare array, {items}, null, or junk', () => {
       expect(normalizePolicyVersions([])).to.deep.equal([]);
       expect(normalizePolicyVersions({ items: [] })).to.deep.equal([]);
@@ -170,7 +188,46 @@ describe('policy version and diff shapes', () => {
       expect(diff?.changes.modified[0].name).to.equal('');
     });
 
-    it('passes an already grouped diff through', () => {
+    it('says what a modified item changed', () => {
+      const diff = normalizePolicyDiff({
+        has_changes: true,
+        summary: '2 changes',
+        changes: [
+          {
+            path: '$.tools[name=shell]',
+            operation: 'modify',
+            old_value: { name: 'shell', timeout: 30 },
+            new_value: { name: 'shell', timeout: 60 },
+          },
+          {
+            path: '$.metadata',
+            operation: 'modify',
+            old_value: { name: 'default', version: '1', owner: 'a' },
+            new_value: { name: 'default', version: '2', owner: 'b' },
+          },
+        ],
+      });
+
+      expect(diff?.changes.modified[0].details).to.equal(
+        'timeout: was 30, now 60'
+      );
+      expect(diff?.changes.modified[1].details).to.equal(
+        'changed owner, version'
+      );
+    });
+
+    it('keeps a name that contains brackets', () => {
+      const diff = normalizePolicyDiff({
+        has_changes: true,
+        summary: '1 change',
+        changes: [{ path: '$.tools[name=read[all]]', operation: 'add' }],
+      });
+
+      expect(diff?.changes.added[0].category).to.equal('Tool');
+      expect(diff?.changes.added[0].name).to.equal('read[all]');
+    });
+
+    it('passes an already grouped diff through with the same labels', () => {
       const diff = normalizePolicyDiff({
         has_changes: true,
         summary: '1 change',
@@ -181,6 +238,7 @@ describe('policy version and diff shapes', () => {
         },
       });
 
+      expect(diff?.changes.added[0].category).to.equal('Tool');
       expect(diff?.changes.added[0].name).to.equal('shell');
       expect(diff?.changes.removed).to.deep.equal([]);
       expect(diff?.changes.modified).to.deep.equal([]);

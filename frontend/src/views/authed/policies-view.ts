@@ -1820,8 +1820,15 @@ export class PoliciesView extends LitElement {
     this.rollbackToVersion(version.id, true);
   }
 
-  private formatVersionDate(dateStr: string): string {
+  private formatVersionDate(dateStr: string | null): string {
+    // A missing or unparseable timestamp used to render "Invalid Date".
+    if (!dateStr) {
+      return 'Unknown date';
+    }
     const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) {
+      return 'Unknown date';
+    }
     return date.toLocaleDateString(undefined, {
       year: 'numeric',
       month: 'short',
@@ -3012,6 +3019,13 @@ defaults:
                                                     >${change.category}:</strong
                                                   >
                                                   ${change.name}
+                                                  ${
+                                                    change.details
+                                                      ? html`<br /><small
+                                                            >${change.details}</small
+                                                          >`
+                                                      : ''
+                                                  }
                                                 </div>
                                               `
                                             )}
@@ -3037,6 +3051,13 @@ defaults:
                                                     >${change.category}:</strong
                                                   >
                                                   ${change.name}
+                                                  ${
+                                                    change.details
+                                                      ? html`<br /><small
+                                                            >${change.details}</small
+                                                          >`
+                                                      : ''
+                                                  }
                                                 </div>
                                               `
                                             )}
@@ -3062,6 +3083,13 @@ defaults:
                                                     >${change.category}:</strong
                                                   >
                                                   ${change.name}
+                                                  ${
+                                                    change.details
+                                                      ? html`<br /><small
+                                                            >${change.details}</small
+                                                          >`
+                                                      : ''
+                                                  }
                                                 </div>
                                               `
                                             )}
@@ -3222,6 +3250,13 @@ defaults:
                                         <div class="diff-item removed">
                                           <strong>${change.category}:</strong>
                                           ${change.name}
+                                          ${
+                                            change.details
+                                              ? html`<br /><small
+                                                    >${change.details}</small
+                                                  >`
+                                              : ''
+                                          }
                                         </div>
                                       `
                                     )}

@@ -3955,7 +3955,8 @@ export interface PolicyVersion {
   version_number: number;
   tag: string | null;
   description: string | null;
-  created_at: string;
+  /** Null when the payload omits it, so the row can leave the date out. */
+  created_at: string | null;
   created_by_username: string | null;
   is_active: boolean;
   snapshot_summary: PolicyVersionSummary;
@@ -3985,32 +3986,40 @@ export function normalizePolicyVersions(payload: unknown): PolicyVersion[] {
         ? (source?.items as unknown[])
         : [];
 
-  return rows
-    .filter(
-      (row): row is Record<string, unknown> =>
-        typeof row === 'object' && row !== null
-    )
-    .map((row) => {
-      const summary = (row.snapshot_summary ?? {}) as Record<string, unknown>;
-      return {
-        id: String(row.id ?? ''),
-        version_number: asNumber(row.version_number),
-        tag: asNullableString(row.tag),
-        description: asNullableString(row.description),
-        created_at: typeof row.created_at === 'string' ? row.created_at : '',
-        created_by_username: asNullableString(row.created_by_username),
-        is_active: Boolean(row.is_active),
-        snapshot_summary: {
-          mcp_servers_count: asNumber(
-            summary.mcp_servers_count ?? row.mcp_servers_count
-          ),
-          tools_count: asNumber(summary.tools_count ?? row.tools_count),
-          policies_count: asNumber(
-            summary.policies_count ?? row.policies_count
-          ),
-        },
-      };
-    });
+  return (
+    rows
+      .filter(
+        (row): row is Record<string, unknown> =>
+          typeof row === 'object' && row !== null
+      )
+      // An id is the row's key in repeat() and the path segment every version
+      // action posts to. A row without one would share a key with the next such
+      // row and could not be tagged, rolled back or deleted, so drop it.
+      .filter(
+        (row) => asNullableString(row.id) !== null || asNumber(row.id) > 0
+      )
+      .map((row) => {
+        const summary = (row.snapshot_summary ?? {}) as Record<string, unknown>;
+        return {
+          id: String(row.id),
+          version_number: asNumber(row.version_number),
+          tag: asNullableString(row.tag),
+          description: asNullableString(row.description),
+          created_at: asNullableString(row.created_at),
+          created_by_username: asNullableString(row.created_by_username),
+          is_active: Boolean(row.is_active),
+          snapshot_summary: {
+            mcp_servers_count: asNumber(
+              summary.mcp_servers_count ?? row.mcp_servers_count
+            ),
+            tools_count: asNumber(summary.tools_count ?? row.tools_count),
+            policies_count: asNumber(
+              summary.policies_count ?? row.policies_count
+            ),
+          },
+        };
+      })
+  );
 }
 
 export async function listPolicyVersions(limit = 50): Promise<PolicyVersion[]> {
@@ -4050,15 +4059,97 @@ const POLICY_DIFF_CATEGORIES: Record<string, string> = {
   defaults: 'Defaults',
 };
 
+/** `tools` becomes `Tool`; an unknown section keeps its own spelling. */
+function describeDiffCategory(section: string): string {
+  return POLICY_DIFF_CATEGORIES[section] ?? section;
+}
+
 /** `$.tools[name=shell]` becomes `{ category: 'Tool', name: 'shell' }`. */
 function describeDiffPath(path: string): { category: string; name: string } {
   const cleaned = path.replace(/^\$\.?/, '');
-  const match = cleaned.match(/^([^[]+)(?:\[(?:name|id)=([^\]]*)\])?$/);
-  const section = match?.[1] ?? cleaned;
-  return {
-    category: POLICY_DIFF_CATEGORIES[section] ?? section,
-    name: match?.[2] ?? '',
-  };
+  // Greedy up to the last bracket: a tool named `read[all]` is legal and its
+  // name must not be cut short or fall through to the category.
+  const match = cleaned.match(/^([^[]+)\[(?:name|id)=(.*)\]$/);
+  if (match) {
+    return { category: describeDiffCategory(match[1]), name: match[2] };
+  }
+  const bracket = cleaned.indexOf('[');
+  if (bracket > 0) {
+    // A selector this function does not understand: show it as the name so
+    // the operator reads a section label they recognise.
+    return {
+      category: describeDiffCategory(cleaned.slice(0, bracket)),
+      name: cleaned.slice(bracket + 1).replace(/\]$/, ''),
+    };
+  }
+  return { category: describeDiffCategory(cleaned), name: '' };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** One line of a value, short enough to sit under a diff row. */
+function summarizeDiffValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return 'unset';
+  }
+  if (typeof value === 'string') {
+    if (value === '') {
+      return 'empty';
+    }
+    return value.length > 60 ? `${value.slice(0, 57)}...` : value;
+  }
+  return String(value);
+}
+
+function isScalar(value: unknown): boolean {
+  return (
+    value === null ||
+    value === undefined ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  );
+}
+
+/**
+ * Say what a `modify` entry actually changed. The endpoint sends `old_value`
+ * and `new_value` (whole objects for a named item, a scalar for a leaf), so
+ * name the changed keys, or the before and after when there is only one.
+ */
+export function describeDiffChange(
+  oldValue: unknown,
+  newValue: unknown
+): string | undefined {
+  if (isScalar(oldValue) && isScalar(newValue)) {
+    if (oldValue === newValue) {
+      return undefined;
+    }
+    return `was ${summarizeDiffValue(oldValue)}, now ${summarizeDiffValue(newValue)}`;
+  }
+  if (!isPlainObject(oldValue) || !isPlainObject(newValue)) {
+    return undefined;
+  }
+  const keys = Array.from(
+    new Set([...Object.keys(oldValue), ...Object.keys(newValue)])
+  )
+    .filter(
+      (key) => JSON.stringify(oldValue[key]) !== JSON.stringify(newValue[key])
+    )
+    .sort();
+  if (keys.length === 0) {
+    return undefined;
+  }
+  if (keys.length === 1) {
+    const key = keys[0];
+    const detail = describeDiffChange(oldValue[key], newValue[key]);
+    return detail ? `${key}: ${detail}` : `changed ${key}`;
+  }
+  if (keys.length > 4) {
+    return `changed ${keys.slice(0, 4).join(', ')} and ${keys.length - 4} more`;
+  }
+  return `changed ${keys.join(', ')}`;
 }
 
 function asDiffChanges(
@@ -4075,7 +4166,9 @@ function asDiffChanges(
     )
     .map((item) => ({
       type,
-      category: String(item.category ?? ''),
+      // Older payloads carry the raw section name, so label it the same way
+      // the flat branch labels a path: one spelling in the dialog either way.
+      category: describeDiffCategory(String(item.category ?? '')),
       name: String(item.name ?? ''),
       details:
         typeof item.details === 'string' && item.details !== ''
@@ -4115,14 +4208,20 @@ export function normalizePolicyDiff(payload: unknown): PolicyDiffResult | null {
             ? 'removed'
             : 'modified';
       const described = describeDiffPath(String(entry.path ?? ''));
+      const details =
+        typeof entry.details === 'string' && entry.details !== ''
+          ? entry.details
+          : bucket === 'modified'
+            ? describeDiffChange(entry.old_value, entry.new_value)
+            : undefined;
       grouped[bucket].push({
         type: bucket,
-        category: String(entry.category ?? described.category),
+        category:
+          entry.category !== undefined && entry.category !== null
+            ? describeDiffCategory(String(entry.category))
+            : described.category,
         name: String(entry.name ?? described.name),
-        details:
-          typeof entry.details === 'string' && entry.details !== ''
-            ? entry.details
-            : undefined,
+        details,
       });
     }
   } else if (typeof source.changes === 'object' && source.changes !== null) {
