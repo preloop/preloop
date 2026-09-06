@@ -813,31 +813,32 @@ export class PreloopFlowForm extends LitElement {
   }
 
   private normalizedRoutingRules() {
-    return this.routingRules
-      .map((rule) => {
-        const anyLabels = this.splitLabelList(rule.anyLabels);
-        const allLabels = this.splitLabelList(rule.allLabels);
-        const labels: { any?: string[]; all?: string[] } = {};
-        if (anyLabels.length) {
-          labels.any = anyLabels;
-        }
-        if (allLabels.length) {
-          labels.all = allLabels;
-        }
-        return {
-          id: rule.id,
-          labels,
-          ai_model_id: rule.ai_model_id,
-          agent_type: rule.agent_type,
-        };
-      })
-      .filter(
-        (rule) =>
-          rule.ai_model_id &&
-          rule.agent_type &&
-          ((rule.labels.any && rule.labels.any.length > 0) ||
-            (rule.labels.all && rule.labels.all.length > 0))
-      );
+    return this.routingRules.map((rule, index) => {
+      const anyLabels = this.splitLabelList(rule.anyLabels);
+      const allLabels = this.splitLabelList(rule.allLabels);
+      if (
+        !rule.ai_model_id ||
+        !rule.agent_type ||
+        (!anyLabels.length && !allLabels.length)
+      ) {
+        throw new Error(
+          `Routing rule ${index + 1} needs a model, harness, and at least one label. Complete it or remove it before saving.`
+        );
+      }
+      const labels: { any?: string[]; all?: string[] } = {};
+      if (anyLabels.length) {
+        labels.any = anyLabels;
+      }
+      if (allLabels.length) {
+        labels.all = allLabels;
+      }
+      return {
+        id: rule.id,
+        labels,
+        ai_model_id: rule.ai_model_id,
+        agent_type: rule.agent_type,
+      };
+    });
   }
 
   private buildAgentConfig(): Record<string, unknown> {

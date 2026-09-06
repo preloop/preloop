@@ -1297,3 +1297,82 @@ class TestRoutingEndpointTrust:
             await FlowTriggerService(db_session).trigger_flow(
                 flow_id=flow.id, source_execution_id=prior.id
             )
+
+
+@pytest.mark.parametrize("matrix", [False, True])
+def test_harness_whitespace_is_normalized_before_persisting(
+    db_session: Session, test_user: User, matrix: bool
+) -> None:
+    model = _usable_model(db_session, test_user.account_id)
+    flow = _flow(
+        db_session,
+        test_user,
+        ai_model_id=model.id,
+        routing=_policy(
+            _rule(
+                "docs",
+                any_labels=["documentation"],
+                model_id=model.id,
+                agent_type=" CoDeX ",
+            )
+        ),
+    )
+    details = prepare_execution_routing(
+        db_session,
+        flow,
+        {"payload": {"labels": ["documentation"]}},
+        authorized_matrix={"agent_type": " CoDeX ", "ai_model_id": str(model.id)}
+        if matrix
+        else None,
+    )
+    assert (
+        details[MATRIX_OVERRIDES_KEY if matrix else ROUTING_RECORD_KEY]["agent_type"]
+        == "codex"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type", ["comment_created", "check_run"])
+async def test_legacy_feedback_identity_block_is_visible_on_source_execution(
+    db_session: Session, test_user: User, event_type: str
+) -> None:
+    from preloop.models import models
+
+    model = _usable_model(db_session, test_user.account_id)
+    flow = _flow(db_session, test_user, ai_model_id=model.id)
+    flow.trigger_event_types = ["issue_labeled", event_type]
+    prior = FlowExecution(flow_id=flow.id, status="SUCCEEDED", trigger_event_details={})
+    db_session.add(prior)
+    db_session.flush()
+    resume = {
+        "execution_id": str(prior.id),
+        "pr_url": "https://github.com/example/project/pull/1",
+        "source_branch": "feat/test",
+    }
+    event = {
+        "source": "github",
+        "type": event_type,
+        "account_id": str(test_user.account_id),
+        "payload": {"issue": {"pull_request": {"html_url": resume["pr_url"]}}},
+    }
+    binding = (
+        "preloop.services.flow_pr_binding.bind_resume_or_skip"
+        if event_type == "comment_created"
+        else "preloop.services.flow_trigger_service.bind_ci_failure_resume_or_skip"
+    )
+    with (
+        patch("preloop.services.flow_trigger_service.get_nats_client", AsyncMock()),
+        patch(
+            "preloop.services.flow_trigger_service.crud_flow.get_by_trigger",
+            return_value=[flow],
+        ),
+        patch(binding, return_value=resume),
+    ):
+        await FlowTriggerService(db_session).process_event(event)
+    logs = (
+        db_session.query(models.FlowExecutionLog).filter_by(execution_id=prior.id).all()
+    )
+    assert any(
+        log.metadata_.get("reason") == "model_identity_unavailable" for log in logs
+    )
+    assert db_session.query(FlowExecution).filter_by(flow_id=flow.id).count() == 1

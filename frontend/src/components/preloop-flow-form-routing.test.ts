@@ -166,4 +166,19 @@ describe('PreloopFlowForm model routing roundtrip', () => {
       ],
     });
   });
+
+  for (const missing of ['anyLabels', 'ai_model_id', 'agent_type']) {
+    it(`rejects an incomplete rule with missing ${missing} without dropping it`, async () => {
+      const element = await mount({ sandbox_type: 'exec' });
+      (element as any).addRoutingRule();
+      (element as any).updateRoutingRule(0, 'anyLabels', 'documentation');
+      (element as any).updateRoutingRule(0, missing, '');
+      const listener = sandbox.spy();
+      element.addEventListener('flow-submit', listener);
+      await (element as any).handleFormSubmit(new Event('submit'));
+      expect(listener.callCount).to.equal(0);
+      expect((element as any).formError).to.include('Routing rule 1');
+      expect((element as any).routingRules).to.have.length(1);
+    });
+  }
 });

@@ -356,6 +356,7 @@ def validate_authorized_matrix(
     agent_type = cell.get("agent_type")
     if agent_type:
         harness = str(agent_type).strip().lower()
+        cell["agent_type"] = harness
         if harness not in SUPPORTED_AGENT_TYPES:
             raise ModelRoutingError(
                 f"agent_type '{agent_type}' is not supported; "
@@ -392,7 +393,7 @@ def resolve_routing_record(
         )
         return _record(
             ai_model_id=matched.ai_model_id,
-            agent_type=matched.agent_type.lower(),
+            agent_type=matched.agent_type.strip().lower(),
             source="rule",
             reason=f"Matched routing rule '{matched.id}'.",
             label_snapshot=labels,

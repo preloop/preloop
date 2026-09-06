@@ -1207,6 +1207,26 @@ class FlowTriggerService:
                         source_execution=source_execution,
                     )
                     logger.info(f"Flow '{flow.name}' ({flow.id}) execution initiated")
+                except ModelRoutingError:
+                    if source_execution is not None:
+                        crud_flow_execution.append_log(
+                            self.db,
+                            str(source_execution.id),
+                            {
+                                "type": "warning",
+                                "message": "PR feedback continuation blocked: the original model/harness identity cannot be preserved. Start a new execution explicitly.",
+                                "metadata": {
+                                    "reason": "model_identity_unavailable",
+                                    "event_type": event_type,
+                                },
+                            },
+                        )
+                    logger.warning(
+                        "Model routing blocked event %s for flow %s",
+                        event_type,
+                        flow.id,
+                        exc_info=True,
+                    )
                 except Exception as e:
                     logger.error(
                         f"Error initiating flow '{flow.name}' ({flow.id}): {e}",

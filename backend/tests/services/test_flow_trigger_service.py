@@ -587,7 +587,7 @@ class TestProcessEvent:
     ):
         sample_flow.trigger_event_types = ["issue_labeled", "comment_created"]
         mock_bind.return_value = {
-            "execution_id": "prior",
+            "execution_id": str(uuid.uuid4()),
             "pr_url": "https://github.com/preloop/preloop/pull/353",
             "source_branch": "feat/x",
         }
@@ -606,7 +606,24 @@ class TestProcessEvent:
             },
         }
 
-        await flow_trigger_service.process_event(event)
+        source = MagicMock(
+            flow_id=sample_flow.id,
+            trigger_event_details={
+                "_model_routing": {
+                    "schema_version": 1,
+                    "agent_type": "codex",
+                    "ai_model_id": str(uuid.uuid4()),
+                },
+            },
+        )
+        with (
+            patch(
+                "preloop.services.model_routing.crud_flow_execution.get",
+                return_value=source,
+            ),
+            patch("preloop.services.model_routing.load_usable_model"),
+        ):
+            await flow_trigger_service.process_event(event)
 
         mock_bind.assert_called_once()
         mock_create_task.assert_called_once()
@@ -659,7 +676,7 @@ class TestProcessEvent:
         sample_flow.trigger_event_types = ["issue_labeled", "check_run"]
         mock_running.return_value = None
         mock_bind.return_value = {
-            "execution_id": "prior",
+            "execution_id": str(uuid.uuid4()),
             "pr_url": "https://github.com/preloop/preloop/pull/353",
             "source_branch": "feat/x",
         }
@@ -682,7 +699,24 @@ class TestProcessEvent:
             },
         }
 
-        await flow_trigger_service.process_event(event)
+        source = MagicMock(
+            flow_id=sample_flow.id,
+            trigger_event_details={
+                "_model_routing": {
+                    "schema_version": 1,
+                    "agent_type": "codex",
+                    "ai_model_id": str(uuid.uuid4()),
+                },
+            },
+        )
+        with (
+            patch(
+                "preloop.services.model_routing.crud_flow_execution.get",
+                return_value=source,
+            ),
+            patch("preloop.services.model_routing.load_usable_model"),
+        ):
+            await flow_trigger_service.process_event(event)
 
         mock_bind.assert_called_once()
         mock_create_task.assert_called_once()
