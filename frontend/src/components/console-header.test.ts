@@ -373,11 +373,23 @@ describe('console-header bell approvals', () => {
     expect(notificationItems(el).length, 'notification rows').to.equal(0);
   });
 
-  it('does not count an approval that has already expired', async () => {
-    approvals = [
-      { ...APPROVAL, expires_at: new Date(Date.now() - 60_000).toISOString() },
-    ];
+  it('drops an approval that expires while the tab stays open', async () => {
     const el = await header();
+
+    // It loaded live, so the load-time filter is not what is under test here.
+    expect(el.shadowRoot!.querySelectorAll('.approval-item').length).to.equal(
+      1
+    );
+    expect(el.shadowRoot!.querySelector('.notification-badge')).to.exist;
+
+    // Nothing arrives when an approval times out, so the only thing between a
+    // dead request and the badge is the filter on read.
+    const loaded = (
+      el as unknown as { _pendingApprovals: Array<{ expires_at?: string }> }
+    )._pendingApprovals;
+    loaded[0].expires_at = new Date(Date.now() - 1_000).toISOString();
+    el.requestUpdate();
+    await el.updateComplete;
 
     expect(el.shadowRoot!.querySelectorAll('.approval-item').length).to.equal(
       0
