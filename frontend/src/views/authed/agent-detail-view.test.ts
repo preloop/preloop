@@ -602,6 +602,115 @@ describe('AgentDetailView', () => {
     ).to.be.true;
   });
 
+  // Wave 3 (A5): the facts about the agent are one hairline row between the
+  // header and the tabs, not a 190px card holding one number.
+  it('states the agent facts and its spend on one summary strip', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    const strip = element.shadowRoot?.querySelector('.summary-strip');
+    expect(strip, 'the summary strip is rendered').to.exist;
+    expect(element.shadowRoot?.querySelector('.agent-overview'), 'no card').to
+      .not.exist;
+
+    const stripText = getDeepText(strip).replace(/\s+/g, ' ').trim();
+    // Kind, the id the agent reports itself as, the reference it enrolled
+    // with, and its status, in that order.
+    expect(stripText).to.contain('Claude Code');
+    expect(stripText).to.contain('claude-code-agent-1');
+    expect(stripText).to.contain('claude-session-2');
+    expect(
+      strip?.querySelector('.badge-row sl-badge.status-chip')?.textContent
+    ).to.contain('Active now');
+
+    // The spend is stated with the window it covers and what it is based on.
+    expect(stripText).to.contain('Estimated spend · 30d');
+    expect(stripText).to.contain('$0.57');
+    expect(stripText).to.contain('4 requests');
+
+    // Volume leads the money on the strip as it does in the lists, so the
+    // card this replaced did not take the token split down with it.
+    const figures = strip?.querySelector(
+      '[data-testid="agent-token-figures"] token-figures'
+    ) as (HTMLElement & { updateComplete: Promise<unknown> }) | null;
+    expect(figures, 'the strip states the token split').to.exist;
+    await figures!.updateComplete;
+    const figuresText = (figures!.shadowRoot?.textContent || '').replace(
+      /\s+/g,
+      ' '
+    );
+    expect(figuresText).to.contain('300 in');
+    expect(figuresText).to.contain('120 out');
+    // This aggregate reported no cache fields, so no hit rate is claimed.
+    expect(figuresText).to.not.contain('hit');
+
+    // One range control, the shared one, holding the selected window.
+    const range = strip?.querySelector('time-range-select');
+    expect(range, 'the strip carries the shared range control').to.exist;
+    expect((range as unknown as { value: string }).value).to.equal('month');
+    expect(strip?.querySelector('select'), 'no bare select').to.not.exist;
+  });
+
+  // DESIGN.md: the strip never wraps a UUID. Identifiers are shortened to
+  // eight characters, the whole value stays in the title and on the
+  // clipboard.
+  it('shortens the uuids on the strip and keeps the full value to copy', async () => {
+    const uuid = '2f1c8d9a-4b7e-4c21-9f3a-6d0e5b8c1a77';
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (
+          url.startsWith('/api/v1/agents/agent-1') &&
+          !url.includes('/governance')
+        ) {
+          const response = await defaultFetch(input, init);
+          const payload = await response.json();
+          payload.agent.session_source_id = uuid;
+          payload.agent.session_reference = `agent-${uuid}`;
+          return new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return defaultFetch(input, init);
+      }
+    );
+
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    const strip = element.shadowRoot?.querySelector('.summary-strip');
+    const ids = Array.from(strip?.querySelectorAll('.strip-id') || []);
+    expect(ids.map((id) => id.textContent?.trim())).to.deep.equal([
+      '2f1c8d9a\u2026',
+      'agent-2f1c8d9a\u2026',
+    ]);
+    expect(ids.map((id) => id.getAttribute('title'))).to.deep.equal([
+      uuid,
+      `agent-${uuid}`,
+    ]);
+
+    // The full value goes to the clipboard, not to the screen.
+    const copyButtons = Array.from(
+      strip?.querySelectorAll('sl-copy-button') || []
+    );
+    expect(
+      copyButtons.map((button) => button.getAttribute('value'))
+    ).to.deep.equal([uuid, `agent-${uuid}`]);
+    expect(strip?.textContent).to.not.contain('4b7e-4c21');
+  });
+
   it('calls the session history panel Session History', async () => {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`

@@ -39,6 +39,12 @@ export class ListToolbar extends LitElement {
    * so the field is still announced as "Search sessions".
    */
   @property({ type: String }) searchLabel = '';
+  /**
+   * Collections that cannot be searched (the tracker's pull requests come
+   * from the host, unfiltered) still take the bar, without a field that
+   * would do nothing when typed into.
+   */
+  @property({ type: Boolean }) searchable = true;
   @property({ type: String }) view: ListViewMode = 'list';
   @property({ type: Array }) views: ListViewMode[] = ['list', 'cards'];
   @property({ type: String }) toggleLabel = 'View';
@@ -184,17 +190,23 @@ export class ListToolbar extends LitElement {
           class="filters"
           @submit=${(event: Event) => event.preventDefault()}
         >
-          <sl-input
-            class="search-input"
-            label=${this.searchLabel || this.searchPlaceholder}
-            placeholder=${this.searchPlaceholder}
-            clearable
-            .value=${this.search}
-            @sl-input=${this.handleSearchInput}
-            @sl-clear=${this.handleSearchClear}
-          >
-            <sl-icon name="search" slot="prefix"></sl-icon>
-          </sl-input>
+          ${
+            this.searchable
+              ? html`
+                  <sl-input
+                    class="search-input"
+                    label=${this.searchLabel || this.searchPlaceholder}
+                    placeholder=${this.searchPlaceholder}
+                    clearable
+                    .value=${this.search}
+                    @sl-input=${this.handleSearchInput}
+                    @sl-clear=${this.handleSearchClear}
+                  >
+                    <sl-icon name="search" slot="prefix"></sl-icon>
+                  </sl-input>
+                `
+              : nothing
+          }
           <slot></slot>
         </form>
 

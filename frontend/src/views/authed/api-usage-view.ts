@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -13,6 +13,7 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '../../components/view-header.ts';
 import '../../components/token-figures.ts';
+import '../../components/time-range-select.ts';
 import {
   getAccountGatewayUsageSearch,
   getAccountGatewayUsageSummary,
@@ -33,13 +34,39 @@ import type {
   GatewayUsageBySession,
 } from '../../types';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import { shortExecutionId } from '../../utils/execution-subject';
+import {
+  formatTimeRangeWindow,
+  resolvePreviousTimeRange,
+  resolveTimeRange,
+  timeRangeShortLabel,
+  type TimeRangeKey,
+} from '../../utils/time-range';
 
-type DateRangePreset = 'last-7' | 'last-30' | 'last-90' | 'all' | 'custom';
+// The page carries one range control, the shared `time-range-select`, with the
+// same vocabulary as the Overview and Cost. The window itself comes from
+// `utils/time-range`, so "30d" here is the same 30 days Cost and the model
+// detail page ask the server for.
+const DATE_RANGE_OPTIONS: Array<{ value: TimeRangeKey; label: string }> = [
+  { value: 'last-24h', label: '24h' },
+  { value: 'last-7', label: '7d' },
+  { value: 'last-30', label: '30d' },
+  { value: 'last-90', label: '90d' },
+  { value: 'last-365', label: '1y' },
+  // The window with no bounds. The console lost it when the Filters card
+  // went; the shared util has always been able to resolve it.
+  { value: 'all', label: 'All time' },
+];
 
 @customElement('api-usage-view')
 export class ApiUsageView extends LitElement {
   @state()
   private summary: AccountGatewayUsageSummaryResponse | null = null;
+
+  // The window before the selected one, so spend can say "vs prior 30d"
+  // instead of a bare dollar figure.
+  @state()
+  private previousSummary: AccountGatewayUsageSummaryResponse | null = null;
 
   @state()
   private searchResults: AccountGatewayUsageSearchResponse | null = null;
@@ -54,18 +81,24 @@ export class ApiUsageView extends LitElement {
   private error: string | null = null;
 
   @state()
-  private selectedRange: DateRangePreset = 'last-30';
-
-  @state()
-  private startDate = '';
-
-  @state()
-  private endDate = '';
+  private selectedRange: TimeRangeKey = 'last-30';
 
   @state()
   private searchQuery = '';
 
+  // The search is its own request against its own card, so it has its own
+  // busy flag and its own error rather than blanking the page's numbers.
+  @state()
+  private searchLoading = false;
+
+  @state()
+  private searchError: string | null = null;
+
   private initialized = false;
+
+  private searchDebounce?: ReturnType<typeof setTimeout>;
+
+  private searchRequestId = 0;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -80,35 +113,65 @@ export class ApiUsageView extends LitElement {
         gap: var(--sl-spacing-large);
       }
 
-      .filters-card,
       .summary-card,
       .breakdown-card {
         overflow: hidden;
       }
 
-      .filters-grid {
+      /* One range control, then what it resolved to, then the search that
+         narrows the captured interactions. No Apply: the page answers as the
+         controls change. */
+      .toolbar {
         display: flex;
         gap: var(--sl-spacing-medium);
-        flex-wrap: wrap;
-        align-items: end;
-      }
-
-      .filters-grid sl-select,
-      .filters-grid sl-input {
-        min-width: 180px;
-      }
-
-      .filters-actions {
-        display: flex;
-        gap: var(--sl-spacing-small);
         align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .toolbar time-range-select {
+        --time-range-select-width: 110px;
+      }
+
+      /* The window the numbers cover, restated beside the control that chose
+         it, because the sibling pages used to disagree about "30 days". */
+      .range-window {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .usage-search {
+        flex: 1 1 260px;
+        min-width: 220px;
         margin-left: auto;
       }
 
-      .period-caption {
-        margin-top: var(--sl-spacing-small);
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
+      /* Names the search field for assistive tech without a visible label. */
+      .usage-search::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .results {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-large);
+      }
+
+      /* A range change never blanks answers the page already has: they stay
+         readable at 60% until the new ones arrive. A search does the same to
+         the one card it changes. */
+      .results.is-updating,
+      .breakdown-card.is-updating {
+        opacity: 0.6;
+        pointer-events: none;
       }
 
       .stats-grid {
@@ -398,11 +461,6 @@ export class ApiUsageView extends LitElement {
       }
 
       @media (max-width: 720px) {
-        .filters-actions {
-          margin-left: 0;
-          width: 100%;
-        }
-
         .daily-row {
           grid-template-columns: 1fr;
         }
@@ -436,51 +494,77 @@ export class ApiUsageView extends LitElement {
     super.connectedCallback();
 
     if (!this.initialized) {
-      if (this.selectedRange !== 'custom') {
-        this.applyPresetDates(this.selectedRange);
-      }
       this.initialized = true;
       void this.loadSummary();
     }
+  }
+
+  disconnectedCallback() {
+    if (this.searchDebounce) {
+      clearTimeout(this.searchDebounce);
+      this.searchDebounce = undefined;
+    }
+    super.disconnectedCallback();
+  }
+
+  /** The selected window, in the shape the gateway endpoints take. */
+  private rangeParams(): GatewayUsageSummaryParams {
+    const range = resolveTimeRange(this.selectedRange);
+    const params: GatewayUsageSummaryParams = {};
+
+    if (range.startDate) {
+      params.startDate = range.startDate;
+    }
+
+    if (range.endDate) {
+      params.endDate = range.endDate;
+    }
+
+    return params;
   }
 
   private async loadSummary() {
     this.loading = true;
     this.error = null;
 
+    const previousRange = resolvePreviousTimeRange(this.selectedRange);
+
     try {
-      const params: GatewayUsageSummaryParams = {};
-
-      if (this.startDate) {
-        params.startDate = new Date(`${this.startDate}T00:00:00`).toISOString();
-      }
-
-      if (this.endDate) {
-        params.endDate = new Date(`${this.endDate}T23:59:59.999`).toISOString();
-      }
-
+      const params = this.rangeParams();
       const searchQuery = this.searchQuery.trim();
-      const [summary, searchResults, rateLimitReport] = await Promise.all([
-        getAccountGatewayUsageSummary({
-          ...params,
-          // This view renders model/flow/session/day breakdowns.
-          includeBreakdown: true,
-        }),
-        getAccountGatewayUsageSearch({
-          ...params,
-          query: searchQuery || undefined,
-          limit: 10,
-        }),
-        // Rate-limit telemetry is supplementary; a failure here must not
-        // blank the whole usage view.
-        getAccountRateLimitReport(params).catch((error: unknown) => {
-          console.error('Failed to load rate limit report:', error);
-          return null;
-        }),
-      ]);
+      const [summary, searchResults, rateLimitReport, previousSummary] =
+        await Promise.all([
+          getAccountGatewayUsageSummary({
+            ...params,
+            // This view renders model/flow/session/day breakdowns.
+            includeBreakdown: true,
+          }),
+          getAccountGatewayUsageSearch({
+            ...params,
+            query: searchQuery || undefined,
+            limit: 10,
+          }),
+          // Rate-limit telemetry is supplementary; a failure here must not
+          // blank the whole usage view.
+          getAccountRateLimitReport(params).catch((error: unknown) => {
+            console.error('Failed to load rate limit report:', error);
+            return null;
+          }),
+          // The comparison window is a garnish on one stat: if it fails, the
+          // stat says it has no comparison rather than the page failing. All
+          // time has nothing before it, so it costs no request.
+          previousRange.startDate
+            ? getAccountGatewayUsageSummary({
+                startDate: previousRange.startDate,
+                endDate: previousRange.endDate ?? undefined,
+              }).catch(() => null)
+            : Promise.resolve(null),
+        ]);
       this.summary = summary;
       this.searchResults = searchResults;
+      this.searchError = null;
       this.rateLimitReport = rateLimitReport;
+      this.previousSummary = previousSummary;
     } catch (error) {
       console.error('Failed to load account gateway usage summary:', error);
       this.error =
@@ -490,84 +574,141 @@ export class ApiUsageView extends LitElement {
       this.summary = null;
       this.searchResults = null;
       this.rateLimitReport = null;
+      this.previousSummary = null;
     } finally {
       this.loading = false;
     }
   }
 
-  private getLocalDateString(date: Date): string {
-    const year = date.getFullYear();
-    const month = `${date.getMonth() + 1}`.padStart(2, '0');
-    const day = `${date.getDate()}`.padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }
-
-  private applyPresetDates(range: Exclude<DateRangePreset, 'custom'>) {
-    if (range === 'all') {
-      this.startDate = '';
-      this.endDate = '';
+  private handleRangeChange(event: Event) {
+    const value = (event as CustomEvent<{ value: string }>).detail
+      ?.value as TimeRangeKey;
+    if (!value || value === this.selectedRange) {
       return;
     }
-
-    const today = new Date();
-    const endDate = new Date(today);
-    const startDate = new Date(today);
-    const days = range === 'last-7' ? 7 : range === 'last-30' ? 30 : 90;
-
-    startDate.setDate(startDate.getDate() - (days - 1));
-
-    this.startDate = this.getLocalDateString(startDate);
-    this.endDate = this.getLocalDateString(endDate);
-  }
-
-  private handleRangeChange(event: Event) {
-    const value = (event.target as HTMLInputElement & { value: string })
-      .value as DateRangePreset;
-
     this.selectedRange = value;
+    // An in-flight search still carries the old window. Bump so its answer
+    // cannot overwrite the results this range is about to load.
+    this.searchRequestId++;
+    this.searchLoading = false;
+    void this.loadSummary();
+  }
 
-    if (value !== 'custom') {
-      this.applyPresetDates(value);
-      void this.loadSummary();
+  /**
+   * Only the captured interactions depend on the query, so a pause in typing
+   * is one request. Reloading the page would cost four (summary with
+   * breakdowns, search, the rate-limit report and the comparison window) to
+   * change one list.
+   */
+  private async loadSearchResults() {
+    // Two searches can be in flight at once, and the slower one must not
+    // overwrite the newer answer.
+    const request = ++this.searchRequestId;
+    this.searchLoading = true;
+
+    try {
+      const results = await getAccountGatewayUsageSearch({
+        ...this.rangeParams(),
+        query: this.searchQuery.trim() || undefined,
+        limit: 10,
+      });
+      if (request !== this.searchRequestId) {
+        return;
+      }
+      this.searchResults = results;
+      this.searchError = null;
+    } catch (error) {
+      console.error('Failed to search captured gateway interactions:', error);
+      if (request !== this.searchRequestId) {
+        return;
+      }
+      // A failed search says so where the results would be; the numbers above
+      // it are still true and stay on screen.
+      this.searchError =
+        error instanceof Error
+          ? error.message
+          : 'Failed to search captured interactions';
+      this.searchResults = null;
+    } finally {
+      if (request === this.searchRequestId) {
+        this.searchLoading = false;
+      }
     }
-  }
-
-  private handleStartDateChange(event: Event) {
-    this.startDate = (
-      event.target as HTMLInputElement & { value: string }
-    ).value;
-    this.selectedRange = 'custom';
-  }
-
-  private handleEndDateChange(event: Event) {
-    this.endDate = (event.target as HTMLInputElement & { value: string }).value;
-    this.selectedRange = 'custom';
   }
 
   private handleSearchQueryChange(event: Event) {
     this.searchQuery = (
       event.target as HTMLInputElement & { value: string }
     ).value;
-  }
-
-  private async applyCustomFilters() {
-    if (this.startDate && this.endDate && this.startDate > this.endDate) {
-      this.error = 'Start date must be earlier than end date.';
-      return;
+    // The search hits the server, so a keystroke is not a request: the page
+    // waits for a pause in typing.
+    if (this.searchDebounce) {
+      clearTimeout(this.searchDebounce);
     }
-
-    await this.loadSummary();
+    this.searchDebounce = setTimeout(() => {
+      this.searchDebounce = undefined;
+      void this.loadSearchResults();
+    }, 300);
   }
 
-  private async clearFilters() {
-    this.selectedRange = 'all';
-    this.startDate = '';
-    this.endDate = '';
-    await this.loadSummary();
+  /** The short form of the selected range, for stat labels ("$ est. · 30d"). */
+  private rangeChipLabel(): string {
+    return timeRangeShortLabel(this.selectedRange);
+  }
+
+  /**
+   * Which days the numbers cover, restated beside the control that chose
+   * them. The server's own window wins over the client's preset: what the
+   * page prints is what it was actually given.
+   */
+  private rangeWindowLabel(): string {
+    const requested = resolveTimeRange(this.selectedRange);
+    return formatTimeRangeWindow({
+      startDate: this.summary?.period_start ?? requested.startDate,
+      endDate: this.summary?.period_end ?? requested.endDate,
+    });
+  }
+
+  /**
+   * A delta in the Overview's form: an arrow, a percentage, and the window it
+   * is measured against. A dollar difference alone says nothing about whether
+   * spend doubled or moved a percent.
+   */
+  private spendComparisonDetail(): string {
+    // "All time" has no window before it to compare against.
+    if (!resolvePreviousTimeRange(this.selectedRange).startDate) {
+      return 'All recorded gateway spend';
+    }
+    const previousLabel = `prior ${this.rangeChipLabel()}`;
+    const current = this.summary?.estimated_cost ?? 0;
+    const previous = this.previousSummary?.estimated_cost ?? 0;
+    if (!previous || previous <= 0) {
+      return `No comparison for ${previousLabel}`;
+    }
+    const change = ((current - previous) / previous) * 100;
+    if (Math.abs(change) < 0.5) {
+      return `No change vs ${previousLabel}`;
+    }
+    const arrow = change > 0 ? '\u25b2' : '\u25bc';
+    return `${arrow} ${Math.abs(Math.round(change))}% vs ${previousLabel}`;
   }
 
   private formatNumber(value: number | null | undefined): string {
     return typeof value === 'number' ? value.toLocaleString() : '0';
+  }
+
+  /**
+   * Counts big enough to lose their shape are compact, as on the Overview and
+   * Cost ("821.3M"), with the exact figure kept in a title for anyone who
+   * needs every digit.
+   */
+  private formatCompactNumber(value: number | null | undefined): string {
+    const amount = Number(value || 0);
+    if (amount < 1000) return String(Math.round(amount));
+    return new Intl.NumberFormat(undefined, {
+      notation: 'compact',
+      maximumFractionDigits: 1,
+    }).format(amount);
   }
 
   private formatPercent(value: number): string {
@@ -661,6 +802,19 @@ export class ApiUsageView extends LitElement {
     );
   }
 
+  /**
+   * A run id is a link, not a paragraph: a uuid shows its first 8 characters
+   * with the whole id in the title. An id that is already a short handle (a
+   * codex run key) is left alone, because truncating it would lose meaning.
+   */
+  private shortSourceId(id: string): string {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      id
+    )
+      ? shortExecutionId(id)
+      : id;
+  }
+
   private getRuntimeSessionHref(session: GatewayUsageBySession): string | null {
     return session.runtime_session_id
       ? `/console/runtime-sessions?sessionId=${session.runtime_session_id}`
@@ -692,7 +846,8 @@ export class ApiUsageView extends LitElement {
     label: string,
     value: string,
     detail: unknown,
-    icon: string
+    icon: string,
+    exact?: string
   ) {
     return html`
       <div class="stat-card">
@@ -700,7 +855,7 @@ export class ApiUsageView extends LitElement {
           <sl-icon name=${icon}></sl-icon>
           <span>${label}</span>
         </div>
-        <div class="stat-value">${value}</div>
+        <div class="stat-value" title=${exact ?? nothing}>${value}</div>
         <div class="stat-detail">${detail}</div>
       </div>
     `;
@@ -716,7 +871,7 @@ export class ApiUsageView extends LitElement {
         <div slot="header" class="section-header">
           <div class="section-title">
             <sl-icon name="cash-stack"></sl-icon>
-            <span>Budget Snapshot</span>
+            <span>Budget snapshot</span>
           </div>
           ${
             budget.hard_limit_exceeded
@@ -839,7 +994,7 @@ export class ApiUsageView extends LitElement {
         <div slot="header" class="section-header">
           <div class="section-title">
             <sl-icon name="speedometer2"></sl-icon>
-            <span>Rate Limits & Headroom</span>
+            <span>Rate limits and headroom</span>
           </div>
           ${
             hasHits
@@ -1099,44 +1254,34 @@ export class ApiUsageView extends LitElement {
     return html`
       <div class="session-list">
         <div class="session-header">
-          <div>Runtime Session</div>
+          <div>Runtime session</div>
           <div class="cell-numeric">Requests</div>
           <div class="cell-numeric">Tokens</div>
           <div class="cell-numeric">Cost</div>
-          <div>Last Activity</div>
+          <div>Last activity</div>
         </div>
         ${sortedSessions.map((session) => {
           const sourceType = this.getSessionSourceType(session);
           const sourceId = this.getSessionSourceId(session);
           const lastActivity = this.getSessionLastActivity(session);
           const flowBacked = this.isFlowBackedSession(session);
+          const sessionHref = this.getRuntimeSessionHref(session);
 
           return html`
             <div class="session-row">
               <div class="session-primary">
                 <div class="breakdown-name">
                   ${
-                    this.getRuntimeSessionHref(session)
-                      ? html`
-                          <a
-                            class="session-link"
-                            href=${this.getRuntimeSessionHref(session)!}
-                            >${this.getSessionDisplayName(session)}</a
-                          >
-                        `
+                    sessionHref
+                      ? html`<a class="session-link" href=${sessionHref}
+                          >${this.getSessionDisplayName(session)}</a
+                        >`
                       : this.getSessionDisplayName(session)
                   }
                 </div>
                 <div class="breakdown-secondary">
                   ${session.model_alias || 'Unknown model'}
-                  ${
-                    session.provider_name
-                      ? html`· ${session.provider_name}`
-                      : ''
-                  }
-                </div>
-                <div class="session-meta">
-                  Source: ${this.getSessionSourceLabel(sourceType)}
+                  ${session.provider_name ? `\u00b7 ${session.provider_name}` : ''}
                 </div>
                 ${
                   sourceId
@@ -1144,33 +1289,28 @@ export class ApiUsageView extends LitElement {
                         <div class="session-meta">
                           ${
                             flowBacked
-                              ? html`
-                                  Flow execution:
+                              ? html`Flow execution:
                                   <a
                                     class="session-link"
                                     href=${`/console/flows/executions/${sourceId}`}
-                                    >${sourceId}</a
-                                  >
-                                `
-                              : html` Source ID: <code>${sourceId}</code> `
+                                    title=${sourceId}
+                                    >${this.shortSourceId(sourceId)}</a
+                                  >`
+                              : html`${this.getSessionSourceLabel(sourceType)}
+                                  <code title=${sourceId}
+                                    >${this.shortSourceId(sourceId)}</code
+                                  >`
                           }
                         </div>
                       `
                     : ''
                 }
-                ${
-                  session.session_reference
-                    ? html`
-                        <div class="session-meta">
-                          Session reference:
-                          <code>${session.session_reference}</code>
-                        </div>
-                      `
-                    : ''
-                }
               </div>
-              <div class="cell-numeric">
-                ${this.formatNumber(session.request_count)}
+              <div
+                class="cell-numeric"
+                title=${this.formatNumber(session.request_count)}
+              >
+                ${this.formatCompactNumber(session.request_count)}
               </div>
               <div class="cell-numeric">
                 <token-figures
@@ -1198,6 +1338,15 @@ export class ApiUsageView extends LitElement {
   private renderSearchResults(
     results: AccountGatewayUsageSearchResponse | null
   ) {
+    if (this.searchError) {
+      return html`
+        <div class="empty-state" role="alert">
+          <sl-icon name="exclamation-triangle"></sl-icon>
+          <div>${this.searchError}</div>
+        </div>
+      `;
+    }
+
     if (!results || results.items.length === 0) {
       return html`
         <div class="empty-state">
@@ -1263,31 +1412,34 @@ export class ApiUsageView extends LitElement {
   private renderSummary(summary: AccountGatewayUsageSummaryResponse) {
     const successRate = this.getSuccessRate(summary);
     const tokenUsage: GatewayTokenUsage = summary.token_usage;
+    const range = this.rangeChipLabel();
 
     return html`
-      <div class="stats-grid">
+      <div class="stats-grid" role="region" aria-label="Gateway usage totals">
         ${this.renderStatCard(
-          'Requests',
-          this.formatNumber(summary.total_requests),
+          `Requests \u00b7 ${range}`,
+          this.formatCompactNumber(summary.total_requests),
           `${this.formatNumber(summary.successful_requests)} succeeded, ${this.formatNumber(summary.failed_requests)} failed`,
-          'activity'
+          'activity',
+          this.formatNumber(summary.total_requests)
         )}
         ${this.renderStatCard(
-          'Estimated Cost',
+          `$ est. \u00b7 ${range}`,
           this.formatCost(summary.estimated_cost),
-          `${this.formatCost(summary.budget.current_spend_usd)} current spend`,
+          this.spendComparisonDetail(),
           'cash'
         )}
         ${this.renderStatCard(
-          'Total tokens',
-          this.formatNumber(tokenUsage.total_tokens),
+          `Tokens \u00b7 ${range}`,
+          this.formatCompactNumber(tokenUsage.total_tokens),
           html`<token-figures .usage=${tokenUsage} expanded></token-figures>`,
-          'cpu'
+          'cpu',
+          this.formatNumber(tokenUsage.total_tokens)
         )}
         ${this.renderStatCard(
-          'Success Rate',
+          `Success rate \u00b7 ${range}`,
           this.formatPercent(successRate),
-          `${this.formatDateTimeLabel(summary.period_start)} to ${this.formatDateTimeLabel(summary.period_end)}`,
+          `${this.formatNumber(summary.failed_requests)} failed`,
           'check2-circle'
         )}
       </div>
@@ -1296,77 +1448,30 @@ export class ApiUsageView extends LitElement {
 
   render() {
     return html`
-      <view-header headerText="API Usage" width="extra-wide"></view-header>
+      <view-header headerText="API usage" width="extra-wide"></view-header>
       <div class="column-layout dashboard extra-wide">
         <div class="main-column">
           <div class="page">
-            <sl-card class="filters-card">
-              <div slot="header" class="section-header">
-                <div class="section-title">
-                  <sl-icon name="funnel"></sl-icon>
-                  <span>Gateway Usage Filters</span>
-                </div>
-              </div>
-
-              <div class="filters-grid">
-                <sl-select
-                  label="Date range"
-                  value=${this.selectedRange}
-                  @sl-change=${this.handleRangeChange}
-                >
-                  <sl-option value="last-7">Last 7 days</sl-option>
-                  <sl-option value="last-30">Last 30 days</sl-option>
-                  <sl-option value="last-90">Last 90 days</sl-option>
-                  <sl-option value="all">All time</sl-option>
-                  <sl-option value="custom">Custom</sl-option>
-                </sl-select>
-
-                <sl-input
-                  type="date"
-                  label="Start date"
-                  .value=${this.startDate}
-                  @sl-change=${this.handleStartDateChange}
-                ></sl-input>
-
-                <sl-input
-                  type="date"
-                  label="End date"
-                  .value=${this.endDate}
-                  @sl-change=${this.handleEndDateChange}
-                ></sl-input>
-
-                <sl-input
-                  label="Conversation search"
-                  placeholder="Search captured prompts, outputs, or metadata"
-                  .value=${this.searchQuery}
-                  @sl-input=${this.handleSearchQueryChange}
-                ></sl-input>
-
-                <div class="filters-actions">
-                  <sl-button
-                    variant="primary"
-                    @click=${this.applyCustomFilters}
-                  >
-                    Apply
-                  </sl-button>
-                  <sl-button variant="default" @click=${this.clearFilters}>
-                    Reset
-                  </sl-button>
-                </div>
-              </div>
-
-              ${
-                this.summary
-                  ? html`
-                      <div class="period-caption">
-                        Showing gateway usage from
-                        ${this.formatDateTimeLabel(this.summary.period_start)}
-                        to ${this.formatDateTimeLabel(this.summary.period_end)}.
-                      </div>
-                    `
-                  : ''
-              }
-            </sl-card>
+            <div class="toolbar">
+              <time-range-select
+                ariaLabel="Gateway usage range"
+                .value=${this.selectedRange}
+                .options=${DATE_RANGE_OPTIONS}
+                @range-change=${this.handleRangeChange}
+              ></time-range-select>
+              <span class="range-window">${this.rangeWindowLabel()}</span>
+              <sl-input
+                class="usage-search"
+                label="Search captured interactions"
+                placeholder="Search prompts, outputs, or metadata"
+                clearable
+                .value=${this.searchQuery}
+                @sl-input=${this.handleSearchQueryChange}
+                @sl-clear=${this.handleSearchQueryChange}
+              >
+                <sl-icon name="search" slot="prefix"></sl-icon>
+              </sl-input>
+            </div>
 
             ${
               this.error
@@ -1382,10 +1487,15 @@ export class ApiUsageView extends LitElement {
                 : ''
             }
             ${
-              this.loading
+              this.loading && !this.summary
                 ? html`
                     <sl-card>
-                      <div class="loading-state">
+                      <div
+                        class="loading-state"
+                        role="status"
+                        aria-live="polite"
+                        aria-busy="true"
+                      >
                         <sl-spinner></sl-spinner>
                         <div>Loading gateway usage summary...</div>
                       </div>
@@ -1393,93 +1503,103 @@ export class ApiUsageView extends LitElement {
                   `
                 : this.summary
                   ? html`
-                      ${this.renderSummary(this.summary)}
+                      <div
+                        class="results ${this.loading ? 'is-updating' : ''}"
+                        aria-busy=${this.loading ? 'true' : 'false'}
+                      >
+                        ${this.renderSummary(this.summary)}
 
-                      <sl-card class="breakdown-card">
-                        <div slot="header" class="section-header">
-                          <div class="section-title">
-                            <sl-icon name="collection"></sl-icon>
-                            <span>Recent Runtime Sessions</span>
+                        <sl-card class="breakdown-card">
+                          <div slot="header" class="section-header">
+                            <div class="section-title">
+                              <sl-icon name="collection"></sl-icon>
+                              <span>Recent runtime sessions</span>
+                            </div>
+                            <span class="section-subtitle">
+                              Recent gateway activity grouped by runtime session
+                            </span>
                           </div>
-                          <span class="section-subtitle">
-                            Recent gateway activity grouped by runtime session
-                          </span>
-                        </div>
-                        ${this.renderSessionBreakdown(
-                          this.summary.usage_by_session
-                        )}
-                      </sl-card>
+                          ${this.renderSessionBreakdown(
+                            this.summary.usage_by_session
+                          )}
+                        </sl-card>
 
-                      <sl-card class="breakdown-card">
-                        <div slot="header" class="section-header">
-                          <div class="section-title">
-                            <sl-icon name="search"></sl-icon>
-                            <span>Captured Interactions</span>
+                        <sl-card
+                          class="breakdown-card ${
+                            this.searchLoading ? 'is-updating' : ''
+                          }"
+                          aria-busy=${this.searchLoading ? 'true' : 'false'}
+                        >
+                          <div slot="header" class="section-header">
+                            <div class="section-title">
+                              <sl-icon name="search"></sl-icon>
+                              <span>Captured interactions</span>
+                            </div>
+                            <span class="section-subtitle">
+                              ${
+                                this.searchQuery.trim()
+                                  ? 'Search results from the indexed gateway corpus'
+                                  : 'Recent indexed gateway interactions'
+                              }
+                            </span>
                           </div>
-                          <span class="section-subtitle">
+                          ${this.renderSearchResults(this.searchResults)}
+                        </sl-card>
+
+                        <div class="content-grid">
+                          <div class="stack">
+                            <sl-card class="breakdown-card">
+                              <div slot="header" class="section-header">
+                                <div class="section-title">
+                                  <sl-icon name="bar-chart"></sl-icon>
+                                  <span>Daily activity</span>
+                                </div>
+                                <span class="section-subtitle">
+                                  Requests and spend over time
+                                </span>
+                              </div>
+                              ${this.renderDailyUsage(this.summary.requests_by_day)}
+                            </sl-card>
+
+                            <sl-card class="breakdown-card">
+                              <div slot="header" class="section-header">
+                                <div class="section-title">
+                                  <sl-icon name="cpu"></sl-icon>
+                                  <span>Usage by model</span>
+                                </div>
+                                <span class="section-subtitle">
+                                  Top models by cost and volume
+                                </span>
+                              </div>
+                              ${this.renderModelBreakdown(
+                                this.summary.usage_by_model
+                              )}
+                            </sl-card>
+                          </div>
+
+                          <div class="stack">
+                            ${this.renderBudgetCard(this.summary)}
                             ${
-                              this.searchQuery.trim()
-                                ? 'Search results from the indexed gateway corpus'
-                                : 'Recent indexed gateway interactions'
+                              this.rateLimitReport
+                                ? this.renderRateLimitCard(this.rateLimitReport)
+                                : ''
                             }
-                          </span>
-                        </div>
-                        ${this.renderSearchResults(this.searchResults)}
-                      </sl-card>
 
-                      <div class="content-grid">
-                        <div class="stack">
-                          <sl-card class="breakdown-card">
-                            <div slot="header" class="section-header">
-                              <div class="section-title">
-                                <sl-icon name="bar-chart"></sl-icon>
-                                <span>Daily Activity</span>
+                            <sl-card class="breakdown-card">
+                              <div slot="header" class="section-header">
+                                <div class="section-title">
+                                  <sl-icon name="diagram-3"></sl-icon>
+                                  <span>Usage by flow</span>
+                                </div>
+                                <span class="section-subtitle">
+                                  Flow-level gateway consumption
+                                </span>
                               </div>
-                              <span class="section-subtitle">
-                                Requests and spend over time
-                              </span>
-                            </div>
-                            ${this.renderDailyUsage(this.summary.requests_by_day)}
-                          </sl-card>
-
-                          <sl-card class="breakdown-card">
-                            <div slot="header" class="section-header">
-                              <div class="section-title">
-                                <sl-icon name="cpu"></sl-icon>
-                                <span>Usage By Model</span>
-                              </div>
-                              <span class="section-subtitle">
-                                Top models by cost and volume
-                              </span>
-                            </div>
-                            ${this.renderModelBreakdown(
-                              this.summary.usage_by_model
-                            )}
-                          </sl-card>
-                        </div>
-
-                        <div class="stack">
-                          ${this.renderBudgetCard(this.summary)}
-                          ${
-                            this.rateLimitReport
-                              ? this.renderRateLimitCard(this.rateLimitReport)
-                              : ''
-                          }
-
-                          <sl-card class="breakdown-card">
-                            <div slot="header" class="section-header">
-                              <div class="section-title">
-                                <sl-icon name="diagram-3"></sl-icon>
-                                <span>Usage By Flow</span>
-                              </div>
-                              <span class="section-subtitle">
-                                Flow-level gateway consumption
-                              </span>
-                            </div>
-                            ${this.renderFlowBreakdown(
-                              this.summary.usage_by_flow
-                            )}
-                          </sl-card>
+                              ${this.renderFlowBreakdown(
+                                this.summary.usage_by_flow
+                              )}
+                            </sl-card>
+                          </div>
                         </div>
                       </div>
                     `

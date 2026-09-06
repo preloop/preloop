@@ -1500,6 +1500,8 @@ export interface PullRequestListResponse {
   has_more: boolean;
   supported: boolean;
   fetched_at: string;
+  /** Present when the tracker reports how many open rows exist in total. */
+  total?: number | null;
 }
 
 export type VerdictStatus =

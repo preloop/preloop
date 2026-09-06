@@ -4,15 +4,66 @@ import sinon from 'sinon';
 import './api-usage-view';
 import type { ApiUsageView } from './api-usage-view';
 
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function searchResponseWithExcerpt(excerpt: string) {
+  return {
+    period_start: '2026-02-08T00:00:00Z',
+    period_end: '2026-03-09T23:59:59Z',
+    query: 'rollback',
+    total: 1,
+    limit: 10,
+    offset: 0,
+    items: [
+      {
+        api_usage_id: 'usage-range-probe',
+        timestamp: '2026-03-09T19:15:00Z',
+        status_code: 200,
+        outcome: 'success',
+        endpoint: '/openai/v1/responses',
+        method: 'POST',
+        provider_name: 'OpenAI',
+        model_alias: 'openai/gpt-5',
+        flow_id: 'flow-1',
+        flow_name: 'Triage Assistant',
+        flow_execution_id: 'execution-1',
+        runtime_session_id: 'runtime-session-1',
+        session_source_type: 'flow_execution',
+        session_source_id: 'execution-1',
+        session_reference: 'session-abc123',
+        runtime_principal_type: 'flow_execution',
+        runtime_principal_id: 'execution-1',
+        runtime_principal_name: 'Triage Assistant',
+        estimated_cost: 0.27,
+        token_usage: {
+          prompt_tokens: 250,
+          completion_tokens: 80,
+          total_tokens: 330,
+        },
+        excerpt,
+        meta_data: {
+          source: 'gateway_interaction',
+          endpoint_kind: 'responses',
+        },
+      },
+    ],
+  };
+}
+
 describe('ApiUsageView', () => {
   let fetchStub: sinon.SinonStub;
+  let defaultUsageFetch: (input: RequestInfo | URL) => Promise<Response>;
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
-    fetchStub = sinon.stub(window, 'fetch');
-    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+    defaultUsageFetch = async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
       if (url.startsWith('/api/v1/account/gateway-usage/summary')) {
@@ -151,6 +202,30 @@ describe('ApiUsageView', () => {
                 last_request_at: '2026-03-09T20:00:00Z',
                 ended_at: null,
               },
+              {
+                runtime_session_id: 'runtime-session-3',
+                runtime_session_name: 'Nightly Reviewer',
+                session_source_type: 'flow_execution',
+                session_source_id: '2f1c8d9a-4b7e-4c21-9f3a-6d0e5b8c1a77',
+                runtime_principal_type: 'flow_execution',
+                runtime_principal_id: '2f1c8d9a-4b7e-4c21-9f3a-6d0e5b8c1a77',
+                runtime_principal_name: 'Nightly Reviewer',
+                flow_execution_id: '2f1c8d9a-4b7e-4c21-9f3a-6d0e5b8c1a77',
+                flow_id: 'flow-2',
+                flow_name: 'PR Reviewer',
+                session_reference: 'session-def456',
+                model_alias: 'openai/gpt-5',
+                provider_name: 'OpenAI',
+                request_count: 9,
+                token_usage: {
+                  prompt_tokens: 3000,
+                  completion_tokens: 900,
+                  total_tokens: 3900,
+                },
+                estimated_cost: 0.41,
+                last_activity_at: '2026-03-09T21:00:00Z',
+                last_request_at: '2026-03-09T21:00:00Z',
+              },
             ],
           }),
           {
@@ -250,7 +325,10 @@ describe('ApiUsageView', () => {
           headers: { 'Content-Type': 'application/json' },
         }
       );
-    });
+    };
+
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(defaultUsageFetch);
   });
 
   afterEach(() => {
@@ -271,22 +349,20 @@ describe('ApiUsageView', () => {
 
     const content = element.shadowRoot?.textContent || '';
 
-    expect(content).to.contain('Gateway Usage Filters');
+    expect(content).to.contain('Requests · 30d');
     expect(content).to.contain('42');
     expect(content).to.contain('$3.46');
-    expect(content).to.contain('16,500');
+    expect(content).to.contain('16.5K');
     expect(content).to.contain('92.9%');
+    expect(content).to.contain('3 failed');
     expect(content).to.contain('openai/gpt-5');
     expect(content).to.contain('Triage Assistant');
-    expect(content).to.contain('Recent Runtime Sessions');
-    expect(content).to.contain('execution-1');
-    expect(content).to.contain('session-abc123');
+    expect(content).to.contain('Recent runtime sessions');
     expect(content).to.contain('Workspace Agent');
-    expect(content).to.contain('Source: Codex');
-    expect(content).to.contain('codex-run-1');
-    expect(content).to.contain('Budget Snapshot');
+    expect(content).to.contain('Codex');
+    expect(content).to.contain('Budget snapshot');
     expect(content).to.contain('$12.50');
-    expect(content).to.contain('Captured Interactions');
+    expect(content).to.contain('Captured interactions');
     expect(content).to.contain('production rollback checklist');
     expect(content).to.contain('provider timeout');
 
@@ -372,5 +448,269 @@ describe('ApiUsageView', () => {
     expect(
       (updated.shadowRoot?.textContent || '').replace(/\s+/g, ' ')
     ).to.contain('6K hit');
+  });
+
+  it('carries the shared range control and restates the window it resolved', async () => {
+    const element = (await fixture(
+      html`<api-usage-view></api-usage-view>`
+    )) as ApiUsageView;
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'API usage view did not finish loading'
+    );
+    await element.updateComplete;
+
+    // One range vocabulary per page: the shared control, not a select plus
+    // two date inputs plus Apply.
+    const range = element.shadowRoot?.querySelector('time-range-select');
+    expect(range).to.exist;
+    expect((range as any).value).to.equal('last-30');
+    expect(
+      element.shadowRoot?.querySelector('sl-select[label="Date range"]')
+    ).to.equal(null);
+    expect(element.shadowRoot?.querySelector('sl-input[type="date"]')).to.equal(
+      null
+    );
+
+    const content = element.shadowRoot?.textContent || '';
+    expect(content).to.not.contain('Gateway Usage Filters');
+    expect(content).to.not.contain('Apply');
+
+    // The window the numbers cover is restated beside the control that
+    // chose it, because the sibling pages used to disagree about "30 days".
+    const window = element.shadowRoot
+      ?.querySelector('.range-window')
+      ?.textContent?.trim();
+    expect(window).to.contain(' to ');
+
+    // Four stats, each labelled with the range they cover.
+    const labels = Array.from(
+      element.shadowRoot?.querySelectorAll('.stat-label') || []
+    ).map((node) => node.textContent?.trim());
+    expect(labels).to.deep.equal([
+      'Requests · 30d',
+      '$ est. · 30d',
+      'Tokens · 30d',
+      'Success rate · 30d',
+    ]);
+  });
+
+  it('reduces a session row to who ran, on what model, and a short run link', async () => {
+    const element = (await fixture(
+      html`<api-usage-view></api-usage-view>`
+    )) as ApiUsageView;
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'API usage view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const uuid = '2f1c8d9a-4b7e-4c21-9f3a-6d0e5b8c1a77';
+    const link = element.shadowRoot?.querySelector(
+      `a[href="/console/flows/executions/${uuid}"]`
+    );
+    const row = link?.closest('.session-row');
+    const text = row?.textContent?.replace(/\s+/g, ' ').trim() || '';
+
+    expect(text).to.contain('Nightly Reviewer');
+    expect(text).to.contain('openai/gpt-5');
+
+    // The run is a short handle that links to the run, with the full id in
+    // the title: never a bare UUID where a link was available.
+    expect(link?.textContent?.trim()).to.equal('2f1c8d9a');
+    expect(link?.getAttribute('title')).to.equal(uuid);
+
+    // The lines that repeated the id in two other spellings are gone.
+    expect(text).to.not.contain('Source:');
+    expect(text).to.not.contain('Session reference:');
+    expect(text).to.not.contain('session-def456');
+  });
+
+  // "All time" survived the Filters card: the shared util resolves it to a
+  // window with no bounds, so the page asks the server for everything.
+  it('offers All time and asks for it without date bounds', async () => {
+    const element = (await fixture(
+      html`<api-usage-view></api-usage-view>`
+    )) as ApiUsageView;
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'API usage view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const range = element.shadowRoot?.querySelector('time-range-select');
+    expect(
+      ((range as any).options as { value: string; label: string }[]).map(
+        (option) => option.value
+      )
+    ).to.contain('all');
+
+    const before = fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) =>
+        url.startsWith('/api/v1/account/gateway-usage/summary')
+      ).length;
+    range?.dispatchEvent(
+      new CustomEvent('range-change', {
+        detail: { value: 'all' },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await waitUntil(
+      () => !(element as any).loading,
+      'the All time reload never settled',
+      { timeout: 3000 }
+    );
+    await element.updateComplete;
+
+    const summaryCalls = fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => url.startsWith('/api/v1/account/gateway-usage/summary'))
+      .slice(before);
+    expect(summaryCalls.length).to.be.greaterThan(0);
+    summaryCalls.forEach((url) => {
+      expect(url).to.not.contain('start_date=');
+      expect(url).to.not.contain('end_date=');
+    });
+    // No prior window exists, so no comparison request and no false delta.
+    expect(summaryCalls.length).to.equal(1);
+    expect(element.shadowRoot?.textContent).to.contain(
+      'All recorded gateway spend'
+    );
+  });
+
+  // Only the captured interactions depend on the query, so a pause in typing
+  // costs one request, not the four the whole page costs.
+  it('spends one request on a search, not a whole page reload', async () => {
+    const element = (await fixture(
+      html`<api-usage-view></api-usage-view>`
+    )) as ApiUsageView;
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'API usage view did not finish loading'
+    );
+    await element.updateComplete;
+
+    // Icons are fetched too; only the API calls are counted here.
+    const apiCalls = () =>
+      fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((url) => url.startsWith('/api/'));
+    const callsAfterLoad = apiCalls().length;
+    const search = element.shadowRoot?.querySelector(
+      'sl-input.usage-search'
+    ) as HTMLInputElement;
+    search.value = 'rollback';
+    search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+
+    await waitUntil(
+      () => apiCalls().length > callsAfterLoad,
+      'the debounced search never reached the server',
+      { timeout: 3000 }
+    );
+    await waitUntil(
+      () => !(element as any).searchLoading,
+      'the search never settled',
+      { timeout: 3000 }
+    );
+    await element.updateComplete;
+
+    const newCalls = apiCalls().slice(callsAfterLoad);
+    expect(newCalls).to.have.length(1);
+    expect(newCalls[0]).to.contain('/api/v1/account/gateway-usage/search');
+    expect(newCalls[0]).to.contain('query=rollback');
+
+    // The numbers the search did not touch are still on screen.
+    expect(element.shadowRoot?.textContent).to.contain('Requests · 30d');
+  });
+
+  // A search that left before the range changed must not land on top of the
+  // results the new window already painted.
+  it('does not let a stale in-flight search overwrite results after a range change', async () => {
+    const element = (await fixture(
+      html`<api-usage-view></api-usage-view>`
+    )) as ApiUsageView;
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'API usage view did not finish loading'
+    );
+    await element.updateComplete;
+
+    let resolveStaleSearch: ((response: Response) => void) | undefined;
+    let staleSearchStarted = false;
+
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/api/v1/account/gateway-usage/search')) {
+        if (!staleSearchStarted) {
+          staleSearchStarted = true;
+          return new Promise<Response>((resolve) => {
+            resolveStaleSearch = resolve;
+          });
+        }
+        return jsonResponse(
+          searchResponseWithExcerpt('new-range captured interaction')
+        );
+      }
+      return defaultUsageFetch(input);
+    });
+
+    const search = element.shadowRoot?.querySelector(
+      'sl-input.usage-search'
+    ) as HTMLInputElement;
+    search.value = 'rollback';
+    search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+
+    await waitUntil(
+      () => staleSearchStarted,
+      'the in-flight search never reached the server',
+      { timeout: 3000 }
+    );
+
+    const range = element.shadowRoot?.querySelector('time-range-select');
+    range?.dispatchEvent(
+      new CustomEvent('range-change', {
+        detail: { value: 'last-7' },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'the range reload never settled',
+      { timeout: 3000 }
+    );
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.textContent).to.contain(
+      'new-range captured interaction'
+    );
+    expect((element as any).searchLoading).to.equal(false);
+
+    resolveStaleSearch!(
+      jsonResponse(
+        searchResponseWithExcerpt('stale-range captured interaction')
+      )
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+    await element.updateComplete;
+
+    const content = element.shadowRoot?.textContent || '';
+    expect(content).to.contain('new-range captured interaction');
+    expect(content).to.not.contain('stale-range captured interaction');
+    expect((element as any).searchResults.items[0].excerpt).to.equal(
+      'new-range captured interaction'
+    );
   });
 });

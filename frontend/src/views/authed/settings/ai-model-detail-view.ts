@@ -14,6 +14,7 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '../../../components/view-header.ts';
+import '../../../components/time-range-select.ts';
 import '../../../components/resource-actions.ts';
 import '../../../components/budget-policy-editor.ts';
 import '../../../components/preloop-session-observer.ts';
@@ -48,9 +49,25 @@ import type {
 } from '../../../types';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
 import consoleStyles from '../../../styles/console-styles.css?inline';
+import {
+  formatTimeRangeWindow,
+  resolveTimeRange,
+  type TimeRangeKey,
+} from '../../../utils/time-range';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
 
-type DateRangePreset = 'last-7' | 'last-30' | 'last-90' | 'all' | 'custom';
+// The one range control, with the same vocabulary as the Overview, Cost and
+// API usage, and the window resolved by the same shared math so "30d" means
+// the same 30 days on all four pages.
+const DATE_RANGE_OPTIONS: Array<{ value: TimeRangeKey; label: string }> = [
+  { value: 'last-24h', label: '24h' },
+  { value: 'last-7', label: '7d' },
+  { value: 'last-30', label: '30d' },
+  { value: 'last-365', label: '1y' },
+  // The window with no bounds, kept from the Filters card this toolbar
+  // replaced: the shared util resolves it to no start and no end.
+  { value: 'all', label: 'All time' },
+];
 
 type PriceField =
   'input' | 'output' | 'cachedInput' | 'request' | 'effectiveFrom';
@@ -86,20 +103,31 @@ export class AIModelDetailView extends LitElement {
   @state()
   private loading = true;
 
+  /**
+   * A reload the operator asked for (a new range, a new search) dims the
+   * answers it is about to replace instead of blanking the page; the 250 ms
+   * realtime refresh does neither, because a page that dims itself twice a
+   * second is unreadable.
+   */
+  @state()
+  private updating = false;
+
   @state()
   private error: string | null = null;
 
   @state()
-  private selectedRange: DateRangePreset = 'last-30';
-
-  @state()
-  private startDate = '';
-
-  @state()
-  private endDate = '';
+  private selectedRange: TimeRangeKey = 'last-30';
 
   @state()
   private interactionQuery = '';
+
+  // The interaction search is one request against one card, so it carries its
+  // own busy flag and its own error instead of reloading the page.
+  @state()
+  private interactionsLoading = false;
+
+  @state()
+  private interactionsError: string | null = null;
 
   @state()
   private validationPrompt =
@@ -178,6 +206,18 @@ export class AIModelDetailView extends LitElement {
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
   private refreshInFlight = false;
+  /**
+   * A reload asked for while another is in flight is not dropped: the latest
+   * one is queued and runs when the in-flight call settles. Otherwise the
+   * range control could name a window whose data was never fetched, which the
+   * 250 ms realtime refresh made easy to hit.
+   */
+  private pendingReload: {
+    preserveLoadingState?: boolean;
+    markUpdating?: boolean;
+  } | null = null;
+  private interactionSearchDebounce?: ReturnType<typeof setTimeout>;
+  private interactionsRequestId = 0;
 
   static styles = [
     consoleDialogStyles,
@@ -189,6 +229,7 @@ export class AIModelDetailView extends LitElement {
 
       .page,
       .stack,
+      .results,
       .daily-list,
       .session-list,
       .interaction-list {
@@ -197,8 +238,19 @@ export class AIModelDetailView extends LitElement {
       }
 
       .page,
-      .stack {
+      .stack,
+      .results {
         gap: var(--sl-spacing-large);
+      }
+
+      /* A range change never blanks answers the page already has: they stay
+         readable at 60% until the new ones arrive, the way API usage and Cost
+         behave. Only the very first load shows a spinner, and a search dims
+         only the card it changes. */
+      .results.is-updating,
+      sl-card.is-updating {
+        opacity: 0.6;
+        pointer-events: none;
       }
 
       .price-grid {
@@ -273,7 +325,6 @@ export class AIModelDetailView extends LitElement {
         margin-top: var(--sl-spacing-small);
       }
 
-      .filters-grid,
       .interaction-toolbar {
         display: flex;
         gap: var(--sl-spacing-medium);
@@ -281,23 +332,51 @@ export class AIModelDetailView extends LitElement {
         align-items: end;
       }
 
-      .filters-grid sl-select,
-      .filters-grid sl-input,
-      .interaction-toolbar sl-input {
-        min-width: 180px;
-      }
-
       .interaction-toolbar sl-input {
         min-width: 280px;
       }
 
-      .filters-actions {
+      /* One range control, the window it resolved to, and the search that
+         narrows the captured interactions. No Apply: the page answers as the
+         controls change. */
+      .toolbar {
         display: flex;
-        gap: var(--sl-spacing-small);
+        gap: var(--sl-spacing-medium);
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .toolbar time-range-select {
+        --time-range-select-width: 110px;
+      }
+
+      /* The window the numbers cover, restated beside the control that chose
+         it, because the sibling usage pages used to disagree about "30 days". */
+      .range-window {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .interaction-search {
+        flex: 1 1 260px;
+        min-width: 220px;
         margin-left: auto;
       }
 
-      .period-caption,
+      /* Names the search field for assistive tech without a visible label. */
+      .interaction-search::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
       .meta-line,
       .session-meta,
       .interaction-meta,
@@ -306,10 +385,6 @@ export class AIModelDetailView extends LitElement {
         color: var(--sl-color-neutral-600);
         font-size: var(--sl-font-size-small);
         overflow-wrap: anywhere;
-      }
-
-      .period-caption {
-        margin-top: var(--sl-spacing-small);
       }
 
       .model-heading {
@@ -495,7 +570,7 @@ export class AIModelDetailView extends LitElement {
       }
 
       @media (max-width: 720px) {
-        .filters-actions {
+        .interaction-search {
           margin-left: 0;
           width: 100%;
         }
@@ -535,9 +610,6 @@ export class AIModelDetailView extends LitElement {
       new URLSearchParams(window.location.search).get('pricing') === 'edit';
 
     if (!this.initialized) {
-      if (this.selectedRange !== 'custom') {
-        this.applyPresetDates(this.selectedRange);
-      }
       this.initialized = true;
       if (this.modelId) {
         void this.loadData();
@@ -551,6 +623,10 @@ export class AIModelDetailView extends LitElement {
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
+    }
+    if (this.interactionSearchDebounce) {
+      clearTimeout(this.interactionSearchDebounce);
+      this.interactionSearchDebounce = undefined;
     }
   }
 
@@ -614,7 +690,9 @@ export class AIModelDetailView extends LitElement {
     }, 250);
   }
 
-  private async loadData(options: { preserveLoadingState?: boolean } = {}) {
+  private async loadData(
+    options: { preserveLoadingState?: boolean; markUpdating?: boolean } = {}
+  ) {
     if (!this.modelId) {
       this.error = 'Missing AI model id.';
       this.loading = false;
@@ -622,11 +700,26 @@ export class AIModelDetailView extends LitElement {
     }
 
     if (this.refreshInFlight) {
+      this.pendingReload = {
+        // The latest caller decides whether a spinner is wanted; a queued
+        // request for the dim treatment survives either way.
+        preserveLoadingState: options.preserveLoadingState,
+        markUpdating:
+          options.markUpdating || this.pendingReload?.markUpdating || false,
+      };
+      // The queued reload reads the range and the query as they are when it
+      // runs, so the last answer on screen is the last one asked for.
+      if (this.pendingReload.markUpdating) {
+        this.updating = true;
+      }
       return;
     }
     this.refreshInFlight = true;
     if (!options.preserveLoadingState) {
       this.loading = true;
+    }
+    if (options.markUpdating) {
+      this.updating = true;
     }
     this.error = null;
 
@@ -640,6 +733,9 @@ export class AIModelDetailView extends LitElement {
       this.sessions = null;
       this.interactions = null;
       this.loading = false;
+      this.updating = false;
+      this.refreshInFlight = false;
+      this.runPendingReload();
       return;
     }
 
@@ -663,6 +759,7 @@ export class AIModelDetailView extends LitElement {
       this.summary = summary;
       this.sessions = sessions;
       this.interactions = interactions;
+      this.interactionsError = null;
     } catch (error) {
       this.error =
         error instanceof Error
@@ -673,18 +770,31 @@ export class AIModelDetailView extends LitElement {
       this.interactions = null;
     } finally {
       this.loading = false;
+      this.updating = false;
       this.refreshInFlight = false;
+      this.runPendingReload();
     }
+  }
+
+  /** Run the reload that arrived while the last one was still in flight. */
+  private runPendingReload(): void {
+    const pending = this.pendingReload;
+    if (!pending) {
+      return;
+    }
+    this.pendingReload = null;
+    void this.loadData(pending);
   }
 
   private buildSummaryParams(): GatewayUsageSummaryParams {
     const params: GatewayUsageSummaryParams = {};
+    const range = resolveTimeRange(this.selectedRange);
 
-    if (this.startDate) {
-      params.startDate = new Date(`${this.startDate}T00:00:00`).toISOString();
+    if (range.startDate) {
+      params.startDate = range.startDate;
     }
-    if (this.endDate) {
-      params.endDate = new Date(`${this.endDate}T23:59:59.999`).toISOString();
+    if (range.endDate) {
+      params.endDate = range.endDate;
     }
 
     return params;
@@ -697,65 +807,85 @@ export class AIModelDetailView extends LitElement {
     return `${year}-${month}-${day}`;
   }
 
-  private applyPresetDates(range: Exclude<DateRangePreset, 'custom'>) {
-    if (range === 'all') {
-      this.startDate = '';
-      this.endDate = '';
+  private handleRangeChange(event: Event) {
+    const value = (event as CustomEvent<{ value: string }>).detail
+      ?.value as TimeRangeKey;
+    if (!value || value === this.selectedRange) {
       return;
     }
-
-    const today = new Date();
-    const startDate = new Date(today);
-    const days = range === 'last-7' ? 7 : range === 'last-30' ? 30 : 90;
-    startDate.setDate(startDate.getDate() - (days - 1));
-
-    this.startDate = this.getLocalDateString(startDate);
-    this.endDate = this.getLocalDateString(today);
-  }
-
-  private handleRangeChange(event: Event) {
-    const value = (event.target as HTMLInputElement & { value: string })
-      .value as DateRangePreset;
     this.selectedRange = value;
-
-    if (value !== 'custom') {
-      this.applyPresetDates(value);
-      void this.loadData();
-    }
-  }
-
-  private handleStartDateChange(event: Event) {
-    this.startDate = (
-      event.target as HTMLInputElement & { value: string }
-    ).value;
-    this.selectedRange = 'custom';
-  }
-
-  private handleEndDateChange(event: Event) {
-    this.endDate = (event.target as HTMLInputElement & { value: string }).value;
-    this.selectedRange = 'custom';
+    // The numbers on screen stay readable while the new window loads; only a
+    // page that has nothing to show yet gets a spinner.
+    void this.loadData({ preserveLoadingState: true, markUpdating: true });
   }
 
   private handleInteractionQueryChange(event: Event) {
     this.interactionQuery = (
       event.target as HTMLInputElement & { value: string }
     ).value;
+    // The search runs on the server, so a keystroke is not a request: the
+    // page waits for a pause in typing instead of an Apply button.
+    if (this.interactionSearchDebounce) {
+      clearTimeout(this.interactionSearchDebounce);
+    }
+    this.interactionSearchDebounce = setTimeout(() => {
+      this.interactionSearchDebounce = undefined;
+      void this.loadInteractions();
+    }, 300);
   }
 
-  private async applyFilters() {
-    if (this.startDate && this.endDate && this.startDate > this.endDate) {
-      this.error = 'Start date must be earlier than end date.';
+  /**
+   * Only the captured interactions depend on the query, so a pause in typing
+   * is one request. Reloading the page would cost five (the model, its price,
+   * the summary, the sessions and the search) to change one list.
+   */
+  private async loadInteractions() {
+    if (!this.modelId) {
       return;
     }
+    // Two searches can be in flight at once, and the slower one must not
+    // overwrite the newer answer.
+    const request = ++this.interactionsRequestId;
+    this.interactionsLoading = true;
 
-    await this.loadData();
+    try {
+      const results = await getAIModelGatewayUsageSearch(this.modelId, {
+        ...this.buildSummaryParams(),
+        query: this.interactionQuery.trim() || undefined,
+        limit: 10,
+      });
+      if (request !== this.interactionsRequestId) {
+        return;
+      }
+      this.interactions = results;
+      this.interactionsError = null;
+    } catch (error) {
+      console.error('Failed to search captured model interactions:', error);
+      if (request !== this.interactionsRequestId) {
+        return;
+      }
+      this.interactionsError =
+        error instanceof Error
+          ? error.message
+          : 'Failed to search captured interactions';
+      this.interactions = null;
+    } finally {
+      if (request === this.interactionsRequestId) {
+        this.interactionsLoading = false;
+      }
+    }
   }
 
-  private async clearFilters() {
-    this.selectedRange = 'last-30';
-    this.applyPresetDates('last-30');
-    this.interactionQuery = '';
-    await this.loadData();
+  /**
+   * Which days the numbers cover, restated under the control that chose them.
+   * The server's own window wins over the client's preset.
+   */
+  private rangeWindowLabel(): string {
+    const requested = resolveTimeRange(this.selectedRange);
+    return formatTimeRangeWindow({
+      startDate: this.summary?.period_start ?? requested.startDate,
+      endDate: this.summary?.period_end ?? requested.endDate,
+    });
   }
 
   private formatNumber(value: number | null | undefined): string {
@@ -1482,6 +1612,15 @@ export class AIModelDetailView extends LitElement {
   }
 
   private renderInteractions() {
+    if (this.interactionsError) {
+      return html`
+        <div class="empty-state" role="alert">
+          <sl-icon name="exclamation-triangle"></sl-icon>
+          <div>${this.interactionsError}</div>
+        </div>
+      `;
+    }
+
     if (!this.interactions || this.interactions.items.length === 0) {
       return html`
         <div class="empty-state">
@@ -2083,59 +2222,26 @@ export class AIModelDetailView extends LitElement {
 
             ${this.renderPricingCard()} ${this.renderGatewayValidation()}
 
-            <sl-card>
-              <div slot="header" class="model-title">Filters</div>
-              <div class="filters-grid">
-                <sl-select
-                  label="Date range"
-                  value=${this.selectedRange}
-                  @sl-change=${this.handleRangeChange}
-                >
-                  <sl-option value="last-7">Last 7 days</sl-option>
-                  <sl-option value="last-30">Last 30 days</sl-option>
-                  <sl-option value="last-90">Last 90 days</sl-option>
-                  <sl-option value="all">All time</sl-option>
-                  <sl-option value="custom">Custom</sl-option>
-                </sl-select>
-                <sl-input
-                  type="date"
-                  label="Start date"
-                  .value=${this.startDate}
-                  @sl-change=${this.handleStartDateChange}
-                ></sl-input>
-                <sl-input
-                  type="date"
-                  label="End date"
-                  .value=${this.endDate}
-                  @sl-change=${this.handleEndDateChange}
-                ></sl-input>
-                <sl-input
-                  label="Captured interaction search"
-                  placeholder="Search prompts, outputs, or metadata"
-                  .value=${this.interactionQuery}
-                  @sl-input=${this.handleInteractionQueryChange}
-                ></sl-input>
-                <div class="filters-actions">
-                  <sl-button variant="primary" @click=${this.applyFilters}>
-                    Apply
-                  </sl-button>
-                  <sl-button variant="default" @click=${this.clearFilters}>
-                    Reset
-                  </sl-button>
-                </div>
-              </div>
-              ${
-                this.summary
-                  ? html`
-                      <div class="period-caption">
-                        Showing model-scoped activity from
-                        ${this.formatDateTime(this.summary.period_start)} to
-                        ${this.formatDateTime(this.summary.period_end)}.
-                      </div>
-                    `
-                  : ''
-              }
-            </sl-card>
+            <div class="toolbar">
+              <time-range-select
+                ariaLabel="Model usage range"
+                .value=${this.selectedRange}
+                .options=${DATE_RANGE_OPTIONS}
+                @range-change=${this.handleRangeChange}
+              ></time-range-select>
+              <span class="range-window">${this.rangeWindowLabel()}</span>
+              <sl-input
+                class="interaction-search"
+                label="Search captured interactions"
+                placeholder="Search prompts, outputs, or metadata"
+                clearable
+                .value=${this.interactionQuery}
+                @sl-input=${this.handleInteractionQueryChange}
+                @sl-clear=${this.handleInteractionQueryChange}
+              >
+                <sl-icon name="search" slot="prefix"></sl-icon>
+              </sl-input>
+            </div>
 
             ${
               this.error
@@ -2151,50 +2257,73 @@ export class AIModelDetailView extends LitElement {
                 : ''
             }
             ${
-              this.loading
+              this.loading && !this.summary
                 ? html`
                     <sl-card>
-                      <div class="loading-state">
+                      <div
+                        class="loading-state"
+                        role="status"
+                        aria-live="polite"
+                        aria-busy="true"
+                      >
                         <sl-spinner></sl-spinner>
                         <div>Loading AI model observability...</div>
                       </div>
                     </sl-card>
                   `
                 : html`
-                    <sl-card>
-                      <div slot="header" class="model-heading">
-                        <div class="model-title">Usage summary</div>
-                        ${
-                          this.trackedPeriodLabel
-                            ? html`<div class="meta-line">
-                                ${this.trackedPeriodLabel}
-                              </div>`
-                            : ''
-                        }
-                      </div>
-                      ${this.renderSummarySection()}
-                    </sl-card>
+                    <div
+                      class="results ${this.updating ? 'is-updating' : ''}"
+                      aria-busy=${this.updating ? 'true' : 'false'}
+                    >
+                      <sl-card>
+                        <div slot="header" class="model-heading">
+                          <div class="model-title">Usage summary</div>
+                          ${
+                            this.trackedPeriodLabel
+                              ? html`<div class="meta-line">
+                                  ${this.trackedPeriodLabel}
+                                </div>`
+                              : ''
+                          }
+                        </div>
+                        ${this.renderSummarySection()}
+                      </sl-card>
 
-                    <sl-card>
-                      <div slot="header" class="model-title">
-                        Session Observer
-                      </div>
-                      <div class="meta-line" style="margin-bottom: 0.75rem;">
-                        Recent sessions, replay, cost breakdown, and
-                        optimization suggestions scoped to this model.
-                      </div>
-                      <preloop-session-observer
-                        scope="ai_model"
-                        .scopeId=${this.modelId}
-                        .sessions=${this.sessions?.items || []}
-                        layout="embedded"
-                        defaultReplayMode="timeline"
-                        .features=${{
-                          summaries: true,
-                          auditLinks: true,
-                        }}
-                      ></preloop-session-observer>
-                    </sl-card>
+                      <sl-card>
+                        <div slot="header" class="model-title">
+                          Session Observer
+                        </div>
+                        <div class="meta-line" style="margin-bottom: 0.75rem;">
+                          Recent sessions, replay, cost breakdown, and
+                          optimization suggestions scoped to this model.
+                        </div>
+                        <preloop-session-observer
+                          scope="ai_model"
+                          .scopeId=${this.modelId}
+                          .sessions=${this.sessions?.items || []}
+                          layout="embedded"
+                          defaultReplayMode="timeline"
+                          .features=${{
+                            summaries: true,
+                            auditLinks: true,
+                          }}
+                        ></preloop-session-observer>
+                      </sl-card>
+
+                      <!-- The toolbar's search field narrows this list, so
+                           the list has to be on the page: before this it was
+                           fetched on every load and never rendered. -->
+                      <sl-card
+                        class="${this.interactionsLoading ? 'is-updating' : ''}"
+                        aria-busy=${this.interactionsLoading ? 'true' : 'false'}
+                      >
+                        <div slot="header" class="model-title">
+                          Captured interactions
+                        </div>
+                        ${this.renderInteractions()}
+                      </sl-card>
+                    </div>
                   `
             }
           </div>

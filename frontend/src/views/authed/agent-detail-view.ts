@@ -6,6 +6,7 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
@@ -23,6 +24,7 @@ import '../../components/token-figures.ts';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
 import '../../components/talk-button.ts';
+import '../../components/time-range-select.ts';
 import '../../components/confirm-dialog.ts';
 import { confirmDialog } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
@@ -89,6 +91,26 @@ type AllowedModelCandidate = {
   model_identifier?: string;
   meta_data?: Record<string, unknown> | null;
 };
+
+/**
+ * The spend window offered on the summary strip. Same vocabulary and same
+ * control as the Overview usage card, so "30d" means the same thing and looks
+ * the same wherever it is offered.
+ */
+const SPEND_RANGE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'day', label: '24h' },
+  { value: 'week', label: '7d' },
+  { value: 'month', label: '30d' },
+  { value: 'year', label: '1y' },
+];
+
+/**
+ * A uuid anywhere in an identifier, including a prefixed one
+ * ("agent-1f8c...", "flow-execution/1f8c..."), so the strip can shorten the
+ * uuid and keep the part that carries meaning.
+ */
+const UUID_IN_IDENTIFIER =
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 @customElement('agent-detail-view')
 export class AgentDetailView extends LitElement {
@@ -325,11 +347,6 @@ export class AgentDetailView extends LitElement {
         gap: var(--sl-spacing-2x-small);
       }
 
-      .info-icon {
-        color: var(--console-meta-color);
-        font-size: 0.95rem;
-      }
-
       .stat-value {
         margin-top: var(--sl-spacing-2x-small);
         font-size: 1.35rem;
@@ -351,17 +368,77 @@ export class AgentDetailView extends LitElement {
         color: var(--sl-color-neutral-900);
       }
 
-      /* The identity block is a card: it sits on the page, so it takes the
-         card rung of the ladder rather than a named gray step. */
-      .agent-overview {
+      /* Facts about the agent live on one hairline row between the header and
+         the tabs (DESIGN "Strip, not cards"): kind, source id, config
+         reference and status on the left, the spend the page is scoped to on
+         the right. The card this replaced held two meta lines and one number
+         above 100px of nothing. */
+      .summary-strip {
         display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-small);
-        padding: var(--sl-spacing-large);
-        border-radius: var(--console-card-radius);
-        background: var(--console-surface);
-        border: var(--console-card-border);
-        box-shadow: var(--console-card-shadow);
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px var(--sl-spacing-medium);
+        padding: 12px 0;
+        border-top: 1px solid
+          var(--console-hairline, var(--sl-color-neutral-200));
+        border-bottom: 1px solid
+          var(--console-hairline, var(--sl-color-neutral-200));
+        color: var(--sl-color-neutral-900);
+        font-size: var(--console-text-body, var(--sl-font-size-small));
+        font-variant-numeric: tabular-nums;
+      }
+
+      .strip-facts {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+
+      .strip-facts .strip-id {
+        font-family: var(--sl-font-mono);
+        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-700);
+        overflow-wrap: anywhere;
+      }
+
+      .strip-facts sl-copy-button::part(button) {
+        padding: 0 2px;
+      }
+
+      .strip-sep {
+        color: var(--console-meta-color, var(--sl-color-neutral-500));
+      }
+
+      .strip-spend {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sl-spacing-x-small);
+        margin-left: auto;
+      }
+
+      .strip-spend .strip-label,
+      .strip-spend .strip-requests {
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
+        font-size: var(--sl-font-size-small);
+      }
+
+      .strip-spend .strip-tokens {
+        display: inline-flex;
+        align-items: baseline;
+      }
+
+      .strip-spend .strip-value {
+        font-weight: var(--sl-font-weight-semibold);
+      }
+
+      /* The identity trail is rare (only a re-keyed agent has one) and does
+         not belong on the fact row, so it sits under it in the meta register. */
+      .strip-identity {
+        margin-top: var(--sl-spacing-x-small);
       }
 
       .section-header {
@@ -836,22 +913,6 @@ export class AgentDetailView extends LitElement {
     return 'This agent is not fully managed by Preloop yet.';
   }
 
-  private renderInfoTooltip(content: string): TemplateResult {
-    return html`
-      <sl-tooltip content=${content}>
-        <sl-icon class="info-icon" name="info-circle"></sl-icon>
-      </sl-tooltip>
-    `;
-  }
-
-  private renderStatLabel(label: string, explanation?: string): TemplateResult {
-    return html`
-      <div class="stat-label">
-        ${label}${explanation ? this.renderInfoTooltip(explanation) : null}
-      </div>
-    `;
-  }
-
   private getParsedModelBudgets(): Record<
     string,
     { monthly_usd_limit?: number }
@@ -990,6 +1051,101 @@ export class AgentDetailView extends LitElement {
     if (this.agent.live_validation_status === 'not_run')
       return 'Live check not run';
     return 'Live check pending';
+  }
+
+  /** The label of the spend window currently selected ("30d"). */
+  private spendRangeLabel(): string {
+    return (
+      SPEND_RANGE_OPTIONS.find(
+        (option) => option.value === this.budgetTimeRange
+      )?.label || '30d'
+    );
+  }
+
+  /**
+   * One hairline row of facts between the header and the tabs: what kind of
+   * agent this is, the id it reports itself as, the config it was enrolled
+   * from, its status and its tags, then the spend for the selected window.
+   *
+   * DESIGN "Strip, not cards": these are facts about a thing, so they take a
+   * row, not a 190px box holding one number and 100px of empty space.
+   */
+  private renderSummaryStrip(
+    aggregate: ManagedAgentUsageAggregate | null
+  ): TemplateResult | typeof nothing {
+    if (!this.agent) return nothing;
+    const requests = aggregate?.total_requests ?? 0;
+    const reference = this.agent.session_reference;
+    return html`
+      <div class="summary-strip" role="region" aria-label="Agent summary">
+        <div class="strip-facts">
+          <span
+            >${this.getSourceLabel(
+              this.agent.agent_kind || this.agent.session_source_type
+            )}</span
+          >
+          <span class="strip-sep" aria-hidden="true">·</span>
+          ${this.renderStripId(this.agent.session_source_id, 'Copy source id')}
+          ${
+            reference
+              ? html`<span class="strip-sep" aria-hidden="true">·</span>
+                  ${this.renderStripId(reference, 'Copy session reference')}`
+              : nothing
+          }
+          <span class="badge-row">${this.renderHeaderChips()}</span>
+        </div>
+        <div class="strip-spend">
+          <span class="strip-label"
+            >Estimated spend · ${this.spendRangeLabel()}</span
+          >
+          <!-- Volume before money: the tokens are what the spend is made of,
+               split in and out with the cache share of the input. -->
+          <span class="strip-tokens" data-testid="agent-token-figures">
+            <token-figures
+              expanded
+              .usage=${aggregate?.token_usage ?? null}
+            ></token-figures>
+          </span>
+          <span class="strip-value"
+            >${this.formatMoney(aggregate?.estimated_cost)}</span
+          >
+          <span class="strip-requests"
+            >${requests} request${requests === 1 ? '' : 's'}</span
+          >
+          <time-range-select
+            ariaLabel="Estimated spend range"
+            .value=${this.budgetTimeRange}
+            .options=${SPEND_RANGE_OPTIONS}
+            @range-change=${(event: CustomEvent<{ value: string }>) => {
+              this.budgetTimeRange = event.detail
+                .value as typeof this.budgetTimeRange;
+              // The window is applied server-side through `start_date` on the
+              // agent detail call, so the numbers reload with the range.
+              void this.loadData();
+            }}
+          ></time-range-select>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * An identifier on the strip, shortened. DESIGN "Strip, not cards": the
+   * strip never wraps a UUID, so a uuid (bare or prefixed, "agent-<uuid>")
+   * shows eight characters with the whole value in the title and a copy
+   * button that puts the full id on the clipboard. A short handle
+   * ("claude-code-agent-1") is left alone: truncating it would lose meaning.
+   */
+  private renderStripId(value: string, copyLabel: string): TemplateResult {
+    const match = value.match(UUID_IN_IDENTIFIER);
+    if (!match) {
+      return html`<span class="strip-id" title=${value}>${value}</span>`;
+    }
+    const shortened = `${value.slice(0, match.index)}${match[0].slice(0, 8)}\u2026`;
+    return html`
+      <span class="strip-id" title=${value}>${shortened}</span>
+      <sl-copy-button value=${value} copy-label=${copyLabel}></sl-copy-button>
+    `;
   }
 
   /**
@@ -1243,7 +1399,8 @@ export class AgentDetailView extends LitElement {
     if (ids.length === 0) return nothing;
     return html`
       <details
-        style="margin-top: var(--sl-spacing-x-small); font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600);"
+        class="strip-identity"
+        style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600);"
       >
         <summary style="cursor: pointer;">
           Identity history (${ids.length})
@@ -2743,77 +2900,7 @@ export class AgentDetailView extends LitElement {
         </div>
       </view-header>
       <div class="page" style="padding-top: 0;">
-        <div
-          class="agent-overview"
-          style="flex-direction: row; justify-content: space-between; align-items: stretch; flex-wrap: wrap;"
-        >
-          <div style="flex: 1; min-width: 300px;">
-            <div
-              style="color: var(--console-meta-color); font-size: 0.9rem; margin-top: 4px;"
-            >
-              ${this.getSourceLabel(
-                this.agent.agent_kind || this.agent.session_source_type
-              )}
-              · ${this.agent.session_source_id}
-              ${
-                this.agent.session_reference
-                  ? ` · ${this.agent.session_reference}`
-                  : ''
-              }
-            </div>
-
-            <div
-              style="display: flex; flex-direction: column; align-items: flex-start; gap: var(--sl-spacing-small); margin-top: var(--sl-spacing-small);"
-            >
-              <div class="badge-row">${this.renderHeaderChips()}</div>
-
-              ${this.renderIdentityHistory()}
-            </div>
-          </div>
-
-          <div
-            class="stat-card"
-            style="min-width: 200px; display: flex; flex-direction: column; justify-content: space-between; border-color: transparent;"
-          >
-            <div
-              style="display: flex; justify-content: space-between; align-items: center; width: 100%;"
-            >
-              ${this.renderStatLabel('Estimated spend')}
-              <select
-                style="background: transparent; border: none; font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600); cursor: pointer; outline: none;"
-                .value=${this.budgetTimeRange}
-                @change=${(e: Event) => {
-                  this.budgetTimeRange = (e.target as HTMLSelectElement)
-                    .value as any;
-                  // The API currently returns aggregate lifetime cost,
-                  // time window filtering requires a backend update for agent-specific spend
-                  this.loadData();
-                }}
-              >
-                <option value="day">24h</option>
-                <option value="week">7d</option>
-                <option value="month">30d</option>
-                <option value="year">1y</option>
-              </select>
-            </div>
-            <div>
-              <!-- Volume before money: the tokens are what the spend is made
-                   of, split in and out with the cache share of the input. -->
-              <div class="meta-line" data-testid="agent-token-figures">
-                <token-figures
-                  expanded
-                  .usage=${aggregate?.token_usage ?? null}
-                ></token-figures>
-              </div>
-              <div class="stat-value">
-                ${this.formatMoney(aggregate?.estimated_cost)}
-              </div>
-              <div class="meta-line">
-                Based on ${aggregate?.total_requests ?? 0} requests
-              </div>
-            </div>
-          </div>
-        </div>
+        ${this.renderSummaryStrip(aggregate)} ${this.renderIdentityHistory()}
 
         <!-- Sub-view Tab Navigation -->
         ${(() => {

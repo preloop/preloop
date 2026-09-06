@@ -26,6 +26,7 @@ interface StubOpts {
   trackerType?: string;
   pullRequests?: unknown[];
   prHasMore?: boolean;
+  prTotal?: number;
   prSupported?: boolean;
   pullRequestHandler?: (url: string) => Response | null;
 }
@@ -38,6 +39,7 @@ function stubFetch(opts: StubOpts = {}) {
     trackerType = 'github',
     pullRequests = [],
     prHasMore = false,
+    prTotal,
     prSupported = true,
     pullRequestHandler,
   } = opts;
@@ -78,6 +80,7 @@ function stubFetch(opts: StubOpts = {}) {
           has_more: prHasMore,
           supported: prSupported,
           fetched_at: '2026-01-03T00:00:00Z',
+          ...(prTotal !== undefined ? { total: prTotal } : {}),
         });
       }
       if (url.includes('/api/v1/projects')) {
@@ -321,6 +324,79 @@ describe('TrackerDetailView', () => {
     );
   });
 
+  // Wave 3 (C10): the Issues tab is a collection pane, not a card. It spans
+  // the page whether it has rows or not, the tab is its title, and the
+  // filters are the bar the Flows list established.
+  it('renders the Issues tab as a full-width pane when it is empty', async () => {
+    fetchStub = stubFetch({ issues: [], total: 0 });
+    const el = await mountView();
+    (el as unknown as { _selectedProjectId: string })._selectedProjectId =
+      projectA.id;
+    await (
+      el as unknown as { _loadIssues: (reset: boolean) => Promise<void> }
+    )._loadIssues(true);
+    await el.updateComplete;
+
+    const panel = el.shadowRoot?.querySelector(
+      'sl-tab-panel[name="issues"] .collection-pane'
+    ) as HTMLElement | null;
+    expect(panel, 'the issues tab renders a pane').to.exist;
+    expect(panel?.querySelector('sl-card'), 'no card around the collection').to
+      .not.exist;
+
+    // Spanning the page: the empty pane is as wide as its tab panel.
+    const panelWidth = panel!.getBoundingClientRect().width;
+    const hostWidth = el
+      .shadowRoot!.querySelector('sl-tab-panel[name="issues"]')!
+      .getBoundingClientRect().width;
+    expect(panelWidth).to.be.greaterThan(0);
+    expect(hostWidth - panelWidth).to.be.lessThan(2);
+
+    // The bar carries search, the project, the status and the count.
+    const toolbar = panel?.querySelector('list-toolbar');
+    expect(toolbar?.getAttribute('searchPlaceholder')).to.equal(
+      'Search key or title'
+    );
+    expect(panel?.querySelectorAll('sl-select').length).to.equal(2);
+    expect(
+      panel?.querySelector('[slot="count"]')?.textContent?.trim()
+    ).to.equal('0 issues');
+
+    // One line where the table would be, not a collapsed card.
+    const empty = panel?.querySelector('.issues-empty') as HTMLElement | null;
+    expect(empty?.textContent).to.contain('No open issues in Alpha');
+    expect(empty!.getBoundingClientRect().height).to.be.at.least(72);
+  });
+
+  // A dropdown reading "Alpha" names nothing: each filter says what it
+  // filters, on screen and to assistive tech.
+  it('names the Issues pane filters on screen, not only to a screen reader', async () => {
+    fetchStub = stubFetch({ issues: [], total: 0 });
+    const el = await mountView();
+    await el.updateComplete;
+
+    const selects = Array.from(
+      el.shadowRoot?.querySelectorAll(
+        'sl-tab-panel[name="issues"] .collection-pane sl-select'
+      ) || []
+    );
+    expect(selects.length).to.equal(2);
+    expect(
+      selects.map((select) =>
+        select.querySelector('[slot="prefix"]')?.textContent?.trim()
+      )
+    ).to.deep.equal(['Project', 'Status']);
+    // The accessible name survives too.
+    expect(selects.map((select) => select.getAttribute('label'))).to.deep.equal(
+      ['Project', 'Status']
+    );
+
+    const prList = el.shadowRoot?.querySelector(
+      'sl-tab-panel[name="pull-requests"] .collection-pane sl-select [slot="prefix"]'
+    );
+    expect(prList?.textContent?.trim()).to.equal('Project');
+  });
+
   it('search with no matches uses its own empty line', async () => {
     fetchStub = stubFetch({
       issues: [
@@ -493,7 +569,10 @@ describe('TrackerDetailView', () => {
     await el.updateComplete;
     const text = el.shadowRoot?.textContent || '';
     expect(text).to.contain('Merge requests');
-    expect(text).to.contain('Open merge requests');
+    // The tab is the title, so the pane no longer repeats it as a card
+    // heading; the count on the bar says what is on screen.
+    expect(text).to.not.contain('Open merge requests');
+    expect(text).to.contain('1 open merge request');
     expect(text).to.contain('Live from GitLab, refreshed every minute.');
     expect(text).to.contain('Fix login');
     expect(text).to.contain('#7');
@@ -507,6 +586,77 @@ describe('TrackerDetailView', () => {
     expect(
       branches?.querySelector('.visually-hidden')?.textContent?.trim()
     ).to.equal('to');
+  });
+
+  it('does not report a paged PR list as the total', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=pull-requests&project=${projectA.id}`
+    );
+    fetchStub = stubFetch({
+      pullRequests: [
+        {
+          number: 12,
+          iid: 12,
+          title: 'Add login',
+          url: 'https://github.com/acme/widgets/pull/12',
+          author: 'janedoe',
+          source_branch: 'feature',
+          target_branch: 'main',
+          state: 'open',
+          draft: false,
+          updated_at: '2026-01-03T00:00:00Z',
+        },
+      ],
+      prHasMore: true,
+    });
+    const el = await mountView();
+    await (
+      el as unknown as { _loadPullRequests: (reset: boolean) => Promise<void> }
+    )._loadPullRequests(true);
+    await el.updateComplete;
+    const count = el.shadowRoot
+      ?.querySelector('sl-tab-panel[name="pull-requests"] [slot="count"]')
+      ?.textContent?.trim();
+    expect(count).to.equal('showing 1 pull request');
+    expect(count).to.not.contain('open pull request');
+  });
+
+  it('uses the API total when the PR list reports one', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=pull-requests&project=${projectA.id}`
+    );
+    fetchStub = stubFetch({
+      pullRequests: [
+        {
+          number: 12,
+          iid: 12,
+          title: 'Add login',
+          url: 'https://github.com/acme/widgets/pull/12',
+          author: 'janedoe',
+          source_branch: 'feature',
+          target_branch: 'main',
+          state: 'open',
+          draft: false,
+          updated_at: '2026-01-03T00:00:00Z',
+        },
+      ],
+      prHasMore: true,
+      prTotal: 40,
+    });
+    const el = await mountView();
+    await (
+      el as unknown as { _loadPullRequests: (reset: boolean) => Promise<void> }
+    )._loadPullRequests(true);
+    await el.updateComplete;
+    expect(
+      el.shadowRoot
+        ?.querySelector('sl-tab-panel[name="pull-requests"] [slot="count"]')
+        ?.textContent?.trim()
+    ).to.equal('1 of 40 open pull requests');
   });
 
   it('leaves the Branches cell empty when a branch is missing', async () => {
