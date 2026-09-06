@@ -32,6 +32,14 @@ TRIGGER_SUBJECT_KEY = "_subject"
 # single cell keep their overrides for free.
 MATRIX_OVERRIDES_KEY = "_matrix"
 
+# Reserved key under which the controller records the model/harness chosen
+# for one execution (matched routing rule or the flow default). Written only
+# by the controller after validating account-owned models. Never accepted
+# from webhook bodies, tracker payloads, or an unvalidated trigger body.
+# Shape: {"schema_version": 1, "ai_model_id", "agent_type", "source",
+# "rule_id"?, "label_snapshot", "reason"}.
+ROUTING_RECORD_KEY = "_model_routing"
+
 
 def resolve_matrix_agent_selection(
     trigger_event_details: Optional[dict],
@@ -53,6 +61,46 @@ def resolve_matrix_agent_selection(
         overrides.get("agent_type") or flow_agent_type,
         overrides.get("ai_model_id") or flow_ai_model_id,
     )
+
+
+def resolve_execution_agent_selection(
+    trigger_event_details: Optional[dict],
+    *,
+    flow_agent_type: Optional[str] = None,
+    flow_ai_model_id: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Effective ``(agent_type, ai_model_id)`` including flow routing records.
+
+    Authorized matrix cells still win (eval fan-out is not production
+    routing). Otherwise a controller-written ``ROUTING_RECORD_KEY`` pins the
+    model and harness for retries and native continuation. Flow defaults are
+    used when neither reserved key is present.
+    """
+    details = trigger_event_details or {}
+    overrides = details.get(MATRIX_OVERRIDES_KEY) or {}
+    if (
+        isinstance(overrides, dict)
+        and "agent_type" in overrides
+        and "ai_model_id" in overrides
+    ):
+        return overrides["agent_type"], overrides["ai_model_id"]
+    if isinstance(overrides, dict) and (
+        overrides.get("agent_type") or overrides.get("ai_model_id")
+    ):
+        return resolve_matrix_agent_selection(
+            details,
+            flow_agent_type=flow_agent_type,
+            flow_ai_model_id=flow_ai_model_id,
+        )
+    routing = details.get(ROUTING_RECORD_KEY) or {}
+    if isinstance(routing, dict) and (
+        routing.get("agent_type") or routing.get("ai_model_id")
+    ):
+        return (
+            routing.get("agent_type"),
+            routing.get("ai_model_id"),
+        )
+    return (flow_agent_type, flow_ai_model_id)
 
 
 class FlowExecution(Base):

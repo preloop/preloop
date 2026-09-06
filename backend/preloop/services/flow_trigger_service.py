@@ -7,7 +7,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models.models import Flow
-from preloop.models.models.flow_execution import FlowExecution, MATRIX_OVERRIDES_KEY
+from preloop.models.models.flow_execution import FlowExecution
+from preloop.services.model_routing import (
+    ModelRoutingError,
+    load_source_execution_for_flow,
+    prepare_execution_routing,
+)
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.services.flow_ci_feedback import (
     GITHUB_CI_EVENT_TYPES,
@@ -649,6 +654,7 @@ class FlowTriggerService:
         retry_of_execution_id: Optional[uuid.UUID] = None,
         test_mode: bool = False,
         precreated_execution: Any = None,
+        source_execution: Optional[FlowExecution] = None,
     ) -> Any:
         """Create (or reuse) a PENDING execution and hand it to a worker or local task.
 
@@ -688,6 +694,13 @@ class FlowTriggerService:
         else:
             trigger_details = _make_json_serializable(
                 dict(event_data) if event_data else {}
+            )
+            trigger_details = prepare_execution_routing(
+                self.db,
+                flow,
+                trigger_details,
+                source_execution=source_execution,
+                pin_kind="continuation" if source_execution is not None else None,
             )
             if test_mode:
                 trigger_details["test_mode"] = True
@@ -1131,6 +1144,7 @@ class FlowTriggerService:
                         f"Triggering flow '{flow.name}' ({flow.id}) for event {event_type}"
                     )
                     event_copy = dict(event_data)
+                    source_execution = None
                     if event_type == "comment_created":
                         from preloop.services.flow_pr_binding import (
                             bind_resume_or_skip,
@@ -1151,6 +1165,18 @@ class FlowTriggerService:
                                     "no resume started for this comment",
                                     flow.name,
                                     flow.id,
+                                )
+                                continue
+                            source_execution = load_source_execution_for_flow(
+                                self.db, flow, resume.get("execution_id")
+                            )
+                            if source_execution is None:
+                                logger.error(
+                                    "Skipping comment_created on flow '%s' (%s): "
+                                    "bound execution %s failed account/lineage checks",
+                                    flow.name,
+                                    flow.id,
+                                    resume.get("execution_id"),
                                 )
                                 continue
                             logger.info(
@@ -1176,6 +1202,19 @@ class FlowTriggerService:
                                 flow.id,
                             )
                             continue
+                        source_execution = load_source_execution_for_flow(
+                            self.db, flow, ci_resume.get("execution_id")
+                        )
+                        if source_execution is None:
+                            logger.error(
+                                "Skipping %s on flow '%s' (%s): bound execution "
+                                "%s failed account/lineage checks",
+                                event_type,
+                                flow.name,
+                                flow.id,
+                                ci_resume.get("execution_id"),
+                            )
+                            continue
                         logger.info(
                             "Resuming flow '%s' from execution %s after CI failure on %s",
                             flow.name,
@@ -1186,8 +1225,29 @@ class FlowTriggerService:
                         flow=flow,
                         event_data=event_copy,
                         nats_client=nats_client,
+                        source_execution=source_execution,
                     )
                     logger.info(f"Flow '{flow.name}' ({flow.id}) execution initiated")
+                except ModelRoutingError:
+                    if source_execution is not None:
+                        crud_flow_execution.append_log(
+                            self.db,
+                            str(source_execution.id),
+                            {
+                                "type": "warning",
+                                "message": "PR feedback continuation blocked: the original model/harness identity cannot be preserved. Start a new execution explicitly.",
+                                "metadata": {
+                                    "reason": "model_identity_unavailable",
+                                    "event_type": event_type,
+                                },
+                            },
+                        )
+                    logger.warning(
+                        "Model routing blocked event %s for flow %s",
+                        event_type,
+                        flow.id,
+                        exc_info=True,
+                    )
                 except FlowHaltActiveError:
                     # The kill switch is not an error: record that the trigger
                     # was deliberately dropped (#157) and keep processing.
@@ -1331,6 +1391,7 @@ class FlowTriggerService:
         trigger_event_data: Optional[Dict[str, Any]] = None,
         retry_of_execution_id: Optional[uuid.UUID] = None,
         triggered_by: Optional[str] = None,
+        source_execution_id: Optional[uuid.UUID] = None,
     ) -> Dict[str, Any]:
         """
         Manually trigger a flow execution for testing purposes or as a retry.
@@ -1343,6 +1404,8 @@ class FlowTriggerService:
             triggered_by: Who started this run, for the execution subject. A
                 manual run has no repo and no reference, so the person is the
                 only thing that tells two of them apart in the console list.
+            source_execution_id: Controller-owned continuation of a persisted
+                execution on this flow. Never read from the trigger body.
 
         Returns:
             Dict with execution_id and status
@@ -1385,6 +1448,23 @@ class FlowTriggerService:
         from preloop.services.flow_orchestrator import _make_json_serializable
 
         trigger_details = _make_json_serializable(trigger_details)
+        pin_source_id = retry_of_execution_id or source_execution_id
+        source_execution = None
+        pin_kind = None
+        if pin_source_id is not None:
+            source_execution = load_source_execution_for_flow(
+                self.db, flow, pin_source_id
+            )
+            if source_execution is None:
+                raise ModelRoutingError("source execution not found for this flow")
+            pin_kind = "retry" if retry_of_execution_id is not None else "continuation"
+        trigger_details = prepare_execution_routing(
+            self.db,
+            flow,
+            trigger_details,
+            source_execution=source_execution,
+            pin_kind=pin_kind,
+        )
         attach_trigger_subject(trigger_details)
         attach_workspace_file_paths(trigger_details)
 
@@ -1507,7 +1587,12 @@ class FlowTriggerService:
                 cell["agent_type"] = str(entry["agent_type"])
             if entry.get("ai_model_id"):
                 cell["ai_model_id"] = str(entry["ai_model_id"])
-            trigger_details[MATRIX_OVERRIDES_KEY] = cell
+            trigger_details = prepare_execution_routing(
+                self.db,
+                flow,
+                trigger_details,
+                authorized_matrix=cell,
+            )
             cells.append(cell)
 
             execution_data = FlowExecutionCreate(

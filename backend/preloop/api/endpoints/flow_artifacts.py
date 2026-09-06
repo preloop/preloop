@@ -13,7 +13,11 @@ from preloop.config import settings
 from preloop.models.crud import crud_flow, crud_flow_execution, flow_artifact
 from preloop.models.db.session import get_db_session
 from preloop.models.schemas.flow_artifact import ArtifactReference
-from preloop.services.flow_artifacts import get_artifact, put_artifact
+from preloop.services.flow_artifacts import (
+    artifact_thread_id,
+    get_artifact,
+    put_artifact,
+)
 
 router = APIRouter()
 
@@ -97,13 +101,7 @@ def authorize(
     ):
         raise HTTPException(404, "artifact_execution_missing")
     trigger = execution.trigger_event_details or {}
-    resume = trigger.get("_resume") or {}
-    thread_id = str(
-        trigger.get("_session_thread_id")
-        or resume.get("thread_id")
-        or resume.get("execution_id")
-        or execution.id
-    )
+    thread_id = artifact_thread_id(trigger, execution.id)
     if claims["thread_id"] != thread_id:
         raise HTTPException(403, "artifact_thread_mismatch")
     if operation == "put" and execution.status not in {
