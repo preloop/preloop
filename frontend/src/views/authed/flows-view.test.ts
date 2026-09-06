@@ -14,6 +14,7 @@ import {
 } from './flows-view';
 import { invalidateApiCaches } from '../../api';
 import { loadShoelaceTokens } from '../../utils/test-shoelace-theme';
+import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 
 describe('FlowsView', () => {
   let fetchStub: sinon.SinonStub;
@@ -83,6 +84,159 @@ describe('FlowsView', () => {
       'Event-driven agent runs.'
     );
     expect(element.shadowRoot?.querySelector('.proxy-notice')).to.not.exist;
+  });
+
+  it('pauses every selected flow from the bulk bar', async () => {
+    const mockFlows = [
+      { id: 'flow-1', name: 'Nightly sweep', is_enabled: true },
+      { id: 'flow-2', name: 'PR reviewer', is_enabled: true },
+      { id: 'flow-3', name: 'Release notes', is_enabled: true },
+    ];
+    fetchStub = createFetchStub(mockFlows, []);
+    const element = (await fixture(
+      html`<flows-view></flows-view>`
+    )) as FlowsView;
+    await waitUntil(
+      () => (element as any).flows?.length === 3,
+      'Flows did not load'
+    );
+    await element.updateComplete;
+
+    const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
+    expect(bar.shadowRoot!.querySelector('.bulk-bar')).to.equal(null);
+
+    // x on the focused row, then shift+X to the third: two keys, three rows.
+    const rowLink = (id: string) =>
+      element.shadowRoot!.querySelector<HTMLElement>(
+        `tr[data-selection-id="${id}"] a.row-link`
+      )!;
+    rowLink('flow-1').dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'x',
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      })
+    );
+    await element.updateComplete;
+    rowLink('flow-3').dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'X',
+        shiftKey: true,
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      })
+    );
+    await element.updateComplete;
+
+    expect(Array.from(element.selection.selectedIds)).to.deep.equal([
+      'flow-1',
+      'flow-2',
+      'flow-3',
+    ]);
+    expect(
+      bar.shadowRoot!.querySelector('[data-testid="bulk-count"]')!.textContent
+    ).to.contain('3 selected');
+
+    const pause = bar.shadowRoot!.querySelector<HTMLElement>(
+      'sl-button[data-action="pause"]'
+    )!;
+    await (pause as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    pause.click();
+
+    const patches = () =>
+      fetchStub
+        .getCalls()
+        .filter((call) => (call.args[1] as RequestInit)?.method === 'PUT');
+    await waitUntil(() => patches().length === 3, 'not every flow was paused');
+    expect(
+      patches()
+        .map((call) => String(call.args[0]))
+        .sort()
+    ).to.deep.equal([
+      '/api/v1/flows/flow-1',
+      '/api/v1/flows/flow-2',
+      '/api/v1/flows/flow-3',
+    ]);
+    expect(
+      JSON.parse(String((patches()[0].args[1] as RequestInit).body))
+    ).to.deep.equal({ is_enabled: false });
+
+    // A finished run leaves a quiet page.
+    await waitUntil(
+      () => element.selection.count === 0,
+      'selection survived the run'
+    );
+  });
+
+  it('names the flows it is about to delete and clears with Escape', async () => {
+    const mockFlows = [
+      { id: 'flow-1', name: 'Nightly sweep', is_enabled: true },
+      { id: 'flow-2', name: 'PR reviewer', is_enabled: true },
+    ];
+    fetchStub = createFetchStub(mockFlows, []);
+    const element = (await fixture(
+      html`<flows-view></flows-view>`
+    )) as FlowsView;
+    await waitUntil(
+      () => (element as any).flows?.length === 2,
+      'Flows did not load'
+    );
+    await element.updateComplete;
+
+    element.selection.toggleAll(true);
+    await element.updateComplete;
+    const bar = element.shadowRoot!.querySelector('list-bulk-bar')!;
+    const remove = bar.shadowRoot!.querySelector<HTMLElement>(
+      'sl-button[data-action="delete"]'
+    )!;
+    // DESIGN.md: destructive is danger outline, away from the everyday ones.
+    expect(remove.getAttribute('variant')).to.equal('danger');
+    expect(remove.hasAttribute('outline')).to.equal(true);
+    await (remove as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    remove.click();
+
+    await waitUntil(
+      () => !!document.querySelector('confirm-dialog'),
+      'no confirm dialog'
+    );
+    const dialog = document.querySelector('confirm-dialog')!;
+    await (dialog as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    const dialogText = dialog.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+    expect(dialogText).to.contain('Delete 2 flows?');
+    expect(dialogText).to.contain('Nightly sweep, PR reviewer');
+
+    // Dismiss without deleting, then clear the selection with Escape.
+    dialog
+      .shadowRoot!.querySelector<HTMLElement>('sl-button')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await element.updateComplete;
+    expect(
+      fetchStub
+        .getCalls()
+        .filter((call) => (call.args[1] as RequestInit)?.method === 'DELETE')
+        .length
+    ).to.equal(0);
+
+    element
+      .shadowRoot!.querySelector<HTMLElement>(
+        'tr[data-selection-id="flow-1"] a.row-link'
+      )!
+      .dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+        })
+      );
+    await element.updateComplete;
+    expect(element.selection.count).to.equal(0);
+    resetConfirmDialogForTests();
   });
 
   it('shows empty state when no flows', async () => {
