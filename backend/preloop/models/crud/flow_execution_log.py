@@ -1,7 +1,8 @@
 import uuid
+from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
 from preloop.models.models.flow_execution_log import FlowExecutionLog
@@ -46,6 +47,32 @@ class CRUDFlowExecutionLog(CRUDBase[FlowExecutionLog]):
             rows = list(reversed(rows))
 
         return list(rows)
+
+    def get_agent_log_page(
+        self,
+        db: Session,
+        execution_id: uuid.UUID,
+        *,
+        after: Optional[tuple[datetime, uuid.UUID]] = None,
+        limit: int = 500,
+    ) -> List[FlowExecutionLog]:
+        """Read one bounded raw-log page, using an execution-scoped keyset cursor.
+
+        Timestamp ties use row identity, so a page boundary cannot skip another
+        line with the same timestamp. Derived metrics/events are never replayed.
+        """
+        query = select(FlowExecutionLog).where(
+            FlowExecutionLog.execution_id == execution_id,
+            FlowExecutionLog.log_type == "agent_log_line",
+        )
+        if after is not None:
+            query = query.where(
+                tuple_(FlowExecutionLog.timestamp, FlowExecutionLog.id) > after
+            )
+        query = query.order_by(
+            FlowExecutionLog.timestamp.asc(), FlowExecutionLog.id.asc()
+        ).limit(max(1, min(limit, 1000)))
+        return list(db.execute(query).scalars().all())
 
     def get_event_by_id(
         self,
