@@ -73,14 +73,21 @@ export class ListSelection {
     return this.ids.includes(id);
   }
 
-  /** Adds or removes one id and moves the anchor to it. */
+  /**
+   * Adds or removes one id. Adding moves the anchor to it; removing clears
+   * the anchor if it left the set, the same way `deselectAll` does.
+   */
   toggle(id: string): ListSelection {
-    return this.has(id)
-      ? new ListSelection(
-          this.ids.filter((selected) => selected !== id),
-          id
-        )
-      : new ListSelection([...this.ids, id], id);
+    if (this.has(id)) {
+      const remaining = this.ids.filter((selected) => selected !== id);
+      return new ListSelection(
+        remaining,
+        this.anchorId && remaining.includes(this.anchorId)
+          ? this.anchorId
+          : null
+      );
+    }
+    return new ListSelection([...this.ids, id], id);
   }
 
   /**
@@ -104,8 +111,9 @@ export class ListSelection {
     const [start, end] = from <= to ? [from, to] : [to, from];
     const range = order.slice(start, end + 1);
     const added = range.filter((candidate) => !this.has(candidate));
-    // The anchor stays put so a second shift-click grows or shrinks the same
-    // range instead of walking away from where the operator started.
+    // The anchor stays put so a second shift-click grows the same range
+    // additively (nothing is removed) instead of walking away from where
+    // the operator started.
     return new ListSelection([...this.ids, ...added], anchor);
   }
 
@@ -535,6 +543,41 @@ export interface BulkReport {
   noun: string;
 }
 
+/** Compact description of who failed and why, grouping shared messages. */
+function formatFailedItems<T extends BulkItem>(
+  failed: readonly BulkFailure<T>[]
+): string {
+  if (failed.length === 0) return '';
+  const uniqueMessages = [...new Set(failed.map((failure) => failure.message))];
+  if (uniqueMessages.length === 1) {
+    const names = formatItemNames(
+      failed.map((failure) => failure.item.name),
+      3
+    );
+    const message = uniqueMessages[0];
+    return message ? `${names} (${message})` : names;
+  }
+  if (failed.length <= 3) {
+    return failed
+      .map((failure) =>
+        failure.message
+          ? `${failure.item.name} (${failure.message})`
+          : failure.item.name
+      )
+      .join(', ');
+  }
+  const groups = new Map<string, string[]>();
+  for (const failure of failed) {
+    const key = failure.message || 'Request failed';
+    const names = groups.get(key) ?? [];
+    names.push(failure.item.name);
+    groups.set(key, names);
+  }
+  return Array.from(groups, ([message, names]) => {
+    return `${formatItemNames(names, 3)} (${message})`;
+  }).join('; ');
+}
+
 /**
  * One toast for the whole run: what worked and, by name, what did not.
  */
@@ -547,16 +590,11 @@ export function bulkResultMessage<T extends BulkItem>(
   if (result.failed.length === 0) {
     return `${okCount} ${okNoun} ${report.verbPast}`;
   }
-  const failedNames = formatItemNames(
-    result.failed.map((failure) => failure.item.name),
-    3
-  );
-  const firstMessage = result.failed[0]?.message;
-  const reason = firstMessage ? ` (${firstMessage})` : '';
+  const failedDetail = formatFailedItems(result.failed);
   if (okCount === 0) {
-    return `Could not ${report.verb} ${failedNames}${reason}`;
+    return `Could not ${report.verb} ${failedDetail}`;
   }
-  return `${okCount} ${okNoun} ${report.verbPast}, ${result.failed.length} failed: ${failedNames}${reason}`;
+  return `${okCount} ${okNoun} ${report.verbPast}, ${result.failed.length} failed: ${failedDetail}`;
 }
 
 /** Shows the end-of-run toast. Success only when nothing failed. */

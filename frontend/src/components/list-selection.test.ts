@@ -30,6 +30,20 @@ describe('ListSelection model', () => {
 
     selection = selection.toggle('b');
     expect(selection.ids).to.eql([]);
+    expect(selection.anchorId).to.equal(null);
+  });
+
+  it('does not treat a just-deselected id as the shift-range anchor', () => {
+    const selection = ListSelection.empty()
+      .toggle('a')
+      .toggle('b')
+      .toggle('b')
+      .extendTo('c', ORDER);
+    // Deselecting B must forget B as the anchor, so shift-click C is a
+    // plain toggle of C and does not re-select B (and the A–C range).
+    expect(selection.ids).to.eql(['a', 'c']);
+    expect(selection.has('b')).to.equal(false);
+    expect(selection.anchorId).to.equal('c');
   });
 
   it('leaves the previous value untouched when toggling', () => {
@@ -353,6 +367,39 @@ describe('bulk reporting', () => {
         report
       )
     ).to.equal('Could not pause Gamma (Forbidden)');
+  });
+
+  it('reports distinct failure reasons instead of the first message only', () => {
+    const report = { verb: 'pause', verbPast: 'paused', noun: 'agent' };
+    expect(
+      bulkResultMessage(
+        {
+          succeeded: [{ id: 'a', name: 'Alpha' }],
+          failed: [
+            { item: { id: 'b', name: 'Beta' }, message: 'Forbidden' },
+            { item: { id: 'c', name: 'Gamma' }, message: 'Conflict' },
+          ],
+        },
+        report
+      )
+    ).to.equal('1 agent paused, 2 failed: Beta (Forbidden), Gamma (Conflict)');
+    expect(
+      bulkResultMessage(
+        {
+          succeeded: [],
+          failed: [
+            { item: { id: 'a', name: 'Alpha' }, message: 'Forbidden' },
+            { item: { id: 'b', name: 'Beta' }, message: 'Forbidden' },
+            { item: { id: 'c', name: 'Gamma' }, message: 'Conflict' },
+            { item: { id: 'd', name: 'Delta' }, message: 'Conflict' },
+            { item: { id: 'e', name: 'Epsilon' }, message: 'Not found' },
+          ],
+        },
+        report
+      )
+    ).to.equal(
+      'Could not pause Alpha, Beta (Forbidden); Gamma, Delta (Conflict); Epsilon (Not found)'
+    );
   });
 });
 
