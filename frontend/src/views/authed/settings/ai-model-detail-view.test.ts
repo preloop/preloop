@@ -985,4 +985,52 @@ describe('AIModelDetailView', () => {
       'Prices must be zero or more.'
     );
   });
+  it('carries the shared range control instead of a Filters card', async () => {
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+
+    await waitUntil(
+      () => !(element as any).loading,
+      'AI model detail view did not finish loading',
+      { timeout: 5000 }
+    );
+    await element.updateComplete;
+
+    // One range vocabulary, shared with the Overview, Cost and API usage.
+    const range = element.shadowRoot?.querySelector('time-range-select');
+    expect(range).to.exist;
+    expect((range as any).value).to.equal('last-30');
+    expect(
+      element.shadowRoot?.querySelector('sl-select[label="Date range"]')
+    ).to.equal(null);
+    expect(element.shadowRoot?.querySelector('sl-input[type="date"]')).to.equal(
+      null
+    );
+
+    const content = element.shadowRoot?.textContent || '';
+    expect(content).to.not.contain('Filters');
+    expect(content).to.not.contain('Showing model-scoped activity from');
+
+    // The window is restated beside the control that chose it.
+    const window = element.shadowRoot
+      ?.querySelector('.range-window')
+      ?.textContent?.trim();
+    expect(window).to.contain(' to ');
+
+    // The window on the wire is the shared 30 days, not 30 local calendar
+    // days ending tonight.
+    const summaryCall = fetchStub
+      .getCalls()
+      .find((call) =>
+        String(call.args[0]).startsWith('/api/v1/ai-models/model-1/summary')
+      );
+    const query = new URLSearchParams(
+      String(summaryCall?.args[0]).split('?')[1] || ''
+    );
+    const start = new Date(query.get('start_date') || '');
+    const end = new Date(query.get('end_date') || '');
+    const spanDays = (end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000);
+    expect(Math.abs(spanDays - 30)).to.be.below(0.01);
+  });
 });

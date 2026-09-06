@@ -33,6 +33,11 @@ import type {
   ProviderBillingConnection,
 } from '../../types';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import {
+  resolvePreviousTimeRange,
+  resolveTimeRange,
+  timeRangeShortLabel,
+} from '../../utils/time-range';
 import '../../components/view-header.ts';
 import '../../components/time-range-select.ts';
 import '../../components/budget-policy-editor.ts';
@@ -587,75 +592,25 @@ export class CostView extends AuthedElement {
     window.localStorage.setItem(COST_DATE_RANGE_STORAGE_KEY, value);
   }
 
+  /**
+   * Cost asks the shared range math, so its "30d" is the same 30 days the
+   * Overview, API usage and the model detail page ask for.
+   */
   private getDateParams(
     range: DateRangePreset = this.selectedRange
   ): DateRangeParams {
-    const now = new Date();
-    const start = new Date(now);
-    const end = new Date(now);
-    if (range === 'today') {
-      start.setHours(0, 0, 0, 0);
-    } else if (range === 'this-week') {
-      const day = start.getDay();
-      const daysSinceMonday = (day + 6) % 7;
-      start.setDate(start.getDate() - daysSinceMonday);
-      start.setHours(0, 0, 0, 0);
-    } else if (range === 'this-month') {
-      start.setDate(1);
-      start.setHours(0, 0, 0, 0);
-    } else if (range === 'last-month') {
-      start.setMonth(now.getMonth() - 1, 1);
-      start.setHours(0, 0, 0, 0);
-      end.setDate(1);
-      end.setHours(0, 0, 0, 0);
-    } else {
-      const days = range === 'last-7' ? 7 : range === 'last-90' ? 90 : 30;
-      start.setDate(now.getDate() - days);
-    }
+    const window = resolveTimeRange(range);
     return {
-      startDate: start.toISOString(),
-      endDate: end.toISOString(),
+      startDate: window.startDate as string,
+      endDate: window.endDate as string,
     };
   }
 
   private getPreviousDateParams(range: DateRangePreset): DateRangeParams {
-    const current = this.getDateParams(range);
-    const start = new Date(current.startDate);
-    const end = new Date(current.endDate);
-    if (range === 'today') {
-      const durationMs = end.getTime() - start.getTime();
-      const previousStart = new Date(start);
-      previousStart.setDate(previousStart.getDate() - 1);
-      const previousEnd = new Date(previousStart.getTime() + durationMs);
-      return {
-        startDate: previousStart.toISOString(),
-        endDate: previousEnd.toISOString(),
-      };
-    }
-    if (range === 'this-week') {
-      const previousEnd = new Date(start);
-      const previousStart = new Date(start);
-      previousStart.setDate(previousStart.getDate() - 7);
-      return {
-        startDate: previousStart.toISOString(),
-        endDate: previousEnd.toISOString(),
-      };
-    }
-    if (range === 'this-month' || range === 'last-month') {
-      const previousStart = new Date(start);
-      previousStart.setMonth(previousStart.getMonth() - 1, 1);
-      const previousEnd = new Date(start);
-      return {
-        startDate: previousStart.toISOString(),
-        endDate: previousEnd.toISOString(),
-      };
-    }
-    const durationMs = end.getTime() - start.getTime();
-    const previousEnd = start;
-    const previousStart = new Date(previousEnd.getTime() - durationMs);
+    const window = resolvePreviousTimeRange(range);
     return {
-      startDate: previousStart.toISOString(),
-      endDate: previousEnd.toISOString(),
+      startDate: window.startDate as string,
+      endDate: window.endDate as string,
     };
   }
 
@@ -1056,10 +1011,7 @@ export class CostView extends AuthedElement {
    * The short form of the selected range, for stat labels ("$ est. · 30d").
    */
   private rangeChipLabel(): string {
-    const option = DATE_RANGE_OPTIONS.find(
-      (item) => item.value === this.selectedRange
-    );
-    return (option?.label || '30d').toLowerCase();
+    return timeRangeShortLabel(this.selectedRange);
   }
 
   /**

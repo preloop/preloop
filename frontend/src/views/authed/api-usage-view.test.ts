@@ -151,6 +151,30 @@ describe('ApiUsageView', () => {
                 last_request_at: '2026-03-09T20:00:00Z',
                 ended_at: null,
               },
+              {
+                runtime_session_id: 'runtime-session-3',
+                runtime_session_name: 'Nightly Reviewer',
+                session_source_type: 'flow_execution',
+                session_source_id: '2f1c8d9a-4b7e-4c21-9f3a-6d0e5b8c1a77',
+                runtime_principal_type: 'flow_execution',
+                runtime_principal_id: '2f1c8d9a-4b7e-4c21-9f3a-6d0e5b8c1a77',
+                runtime_principal_name: 'Nightly Reviewer',
+                flow_execution_id: '2f1c8d9a-4b7e-4c21-9f3a-6d0e5b8c1a77',
+                flow_id: 'flow-2',
+                flow_name: 'PR Reviewer',
+                session_reference: 'session-def456',
+                model_alias: 'openai/gpt-5',
+                provider_name: 'OpenAI',
+                request_count: 9,
+                token_usage: {
+                  prompt_tokens: 3000,
+                  completion_tokens: 900,
+                  total_tokens: 3900,
+                },
+                estimated_cost: 0.41,
+                last_activity_at: '2026-03-09T21:00:00Z',
+                last_request_at: '2026-03-09T21:00:00Z',
+              },
             ],
           }),
           {
@@ -271,22 +295,20 @@ describe('ApiUsageView', () => {
 
     const content = element.shadowRoot?.textContent || '';
 
-    expect(content).to.contain('Gateway Usage Filters');
+    expect(content).to.contain('Requests \u00b7 30d');
     expect(content).to.contain('42');
     expect(content).to.contain('$3.46');
-    expect(content).to.contain('16,500');
+    expect(content).to.contain('16.5K');
     expect(content).to.contain('92.9%');
+    expect(content).to.contain('3 failed');
     expect(content).to.contain('openai/gpt-5');
     expect(content).to.contain('Triage Assistant');
-    expect(content).to.contain('Recent Runtime Sessions');
-    expect(content).to.contain('execution-1');
-    expect(content).to.contain('session-abc123');
+    expect(content).to.contain('Recent runtime sessions');
     expect(content).to.contain('Workspace Agent');
-    expect(content).to.contain('Source: Codex');
-    expect(content).to.contain('codex-run-1');
-    expect(content).to.contain('Budget Snapshot');
+    expect(content).to.contain('Codex');
+    expect(content).to.contain('Budget snapshot');
     expect(content).to.contain('$12.50');
-    expect(content).to.contain('Captured Interactions');
+    expect(content).to.contain('Captured interactions');
     expect(content).to.contain('production rollback checklist');
     expect(content).to.contain('provider timeout');
 
@@ -372,5 +394,83 @@ describe('ApiUsageView', () => {
     expect(
       (updated.shadowRoot?.textContent || '').replace(/\s+/g, ' ')
     ).to.contain('6K hit');
+  });
+
+  it('carries the shared range control and restates the window it resolved', async () => {
+    const element = (await fixture(
+      html`<api-usage-view></api-usage-view>`
+    )) as ApiUsageView;
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'API usage view did not finish loading'
+    );
+    await element.updateComplete;
+
+    // One range vocabulary per page: the shared control, not a select plus
+    // two date inputs plus Apply.
+    const range = element.shadowRoot?.querySelector('time-range-select');
+    expect(range).to.exist;
+    expect((range as any).value).to.equal('last-30');
+    expect(
+      element.shadowRoot?.querySelector('sl-select[label="Date range"]')
+    ).to.equal(null);
+    expect(element.shadowRoot?.querySelector('sl-input[type="date"]')).to.equal(
+      null
+    );
+
+    const content = element.shadowRoot?.textContent || '';
+    expect(content).to.not.contain('Gateway Usage Filters');
+    expect(content).to.not.contain('Apply');
+
+    // The window the numbers cover is restated beside the control that
+    // chose it, because the sibling pages used to disagree about "30 days".
+    const window = element.shadowRoot
+      ?.querySelector('.range-window')
+      ?.textContent?.trim();
+    expect(window).to.contain(' to ');
+
+    // Four stats, each labelled with the range they cover.
+    const labels = Array.from(
+      element.shadowRoot?.querySelectorAll('.stat-label') || []
+    ).map((node) => node.textContent?.trim());
+    expect(labels).to.deep.equal([
+      'Requests \u00b7 30d',
+      '$ est. \u00b7 30d',
+      'Tokens \u00b7 30d',
+      'Success rate \u00b7 30d',
+    ]);
+  });
+
+  it('reduces a session row to who ran, on what model, and a short run link', async () => {
+    const element = (await fixture(
+      html`<api-usage-view></api-usage-view>`
+    )) as ApiUsageView;
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'API usage view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const uuid = '2f1c8d9a-4b7e-4c21-9f3a-6d0e5b8c1a77';
+    const link = element.shadowRoot?.querySelector(
+      `a[href="/console/flows/executions/${uuid}"]`
+    );
+    const row = link?.closest('.session-row');
+    const text = row?.textContent?.replace(/\s+/g, ' ').trim() || '';
+
+    expect(text).to.contain('Nightly Reviewer');
+    expect(text).to.contain('openai/gpt-5');
+
+    // The run is a short handle that links to the run, with the full id in
+    // the title: never a bare UUID where a link was available.
+    expect(link?.textContent?.trim()).to.equal('2f1c8d9a');
+    expect(link?.getAttribute('title')).to.equal(uuid);
+
+    // The lines that repeated the id in two other spellings are gone.
+    expect(text).to.not.contain('Source:');
+    expect(text).to.not.contain('Session reference:');
+    expect(text).to.not.contain('session-def456');
   });
 });

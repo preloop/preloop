@@ -95,6 +95,7 @@ import type {
   InventoryUserRow,
 } from '../../components/inventory-card';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import { resolveTimeRange } from '../../utils/time-range';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 
 /**
@@ -1991,26 +1992,18 @@ export class DashboardView extends AuthedElement {
     this.scheduleCacheWrite();
   }
 
+  /**
+   * The lower bound of the window the Usage card is showing. The math is
+   * shared with Cost, API usage and the model detail page (`utils/time-range`)
+   * so the same nominal "30d" is the same 30 days everywhere: this page used
+   * to step back one calendar month, which is 28 to 31 days depending on the
+   * date, and its totals disagreed with its siblings.
+   */
   private getGatewayStartDate(): string {
-    const now = new Date();
-    if (this.gatewayTimeRange === 'day') {
-      const d = new Date(now);
-      d.setDate(d.getDate() - 1);
-      return d.toISOString();
-    }
-    if (this.gatewayTimeRange === 'week') {
-      const d = new Date(now);
-      d.setDate(d.getDate() - 7);
-      return d.toISOString();
-    }
-    if (this.gatewayTimeRange === 'year') {
-      const d = new Date(now);
-      d.setFullYear(d.getFullYear() - 1);
-      return d.toISOString();
-    }
-    const d = new Date(now);
-    d.setMonth(d.getMonth() - 1);
-    return d.toISOString();
+    return (
+      resolveTimeRange(this.gatewayTimeRange).startDate ??
+      new Date().toISOString()
+    );
   }
 
   /** The same boundary as `getGatewayStartDate()`, as epoch milliseconds. */
