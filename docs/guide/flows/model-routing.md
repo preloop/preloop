@@ -50,3 +50,11 @@ Invalid or foreign models are rejected on save (HTTP 422) and at dispatch. There
 Routing does not read structured assessment fields from triage output or from the event payload. Same-execution stage handoffs (for example "plan on one model, implement on another") need explicit new sessions later. Public benchmark ranking is not used as scheduling authority.
 
 Current normalized label arrays take precedence, including an empty array. Provider issue or PR arrays are used only when no normalized array exists. Singular label-event deltas never count as current labels.
+
+
+Private Cursor defaults require a valid named `host_exec_profile` and an explicit
+private runner pool. Selected models must be account-visible LLM rows; the local
+profile supplies credentials and the model mapping. This does not enable Cursor
+rule targets, eval matrix entries, hosted execution, or native session resume.
+The runner must independently support the native profile. Empty routing rule
+sets behave like absent routing configuration.

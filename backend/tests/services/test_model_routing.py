@@ -1376,3 +1376,98 @@ async def test_legacy_feedback_identity_block_is_visible_on_source_execution(
         log.metadata_.get("reason") == "model_identity_unavailable" for log in logs
     )
     assert db_session.query(FlowExecution).filter_by(flow_id=flow.id).count() == 1
+
+
+@pytest.mark.parametrize("empty_policy", [False, True])
+def test_private_cursor_default_pins_owned_model_without_cloud_credentials(
+    db_session: Session, test_user: User, empty_policy: bool
+) -> None:
+    model = _usable_model(db_session, test_user.account_id)
+    model.api_key = None
+    flow = _flow(
+        db_session,
+        test_user,
+        agent_type="cursor",
+        ai_model_id=model.id,
+        extra_config={"host_exec_profile": "cursor-ask"},
+        routing={"version": 1, "rules": []} if empty_policy else None,
+    )
+    flow.runner_pool = "private"
+    details = prepare_execution_routing(db_session, flow, {})
+    assert details[ROUTING_RECORD_KEY]["agent_type"] == "cursor"
+    assert details[ROUTING_RECORD_KEY]["ai_model_id"] == str(model.id)
+    prior = FlowExecution(flow_id=flow.id, trigger_event_details=details)
+    pinned = prepare_execution_routing(db_session, flow, {}, source_execution=prior)
+    assert pinned[ROUTING_RECORD_KEY]["ai_model_id"] == str(model.id)
+    assert pinned[ROUTING_RECORD_KEY]["source"] == "pinned"
+
+
+@pytest.mark.parametrize(
+    "profile,pool",
+    [
+        (None, "private"),
+        ("../../bin", "private"),
+        ("cursor-ask", "server"),
+        ("cursor-ask", None),
+    ],
+)
+def test_cursor_default_rejects_missing_private_profile(
+    db_session: Session, test_user: User, profile: str | None, pool: str | None
+) -> None:
+    flow = _flow(
+        db_session,
+        test_user,
+        agent_type="cursor",
+        extra_config={"host_exec_profile": profile},
+    )
+    flow.runner_pool = pool
+    with pytest.raises(ModelRoutingError, match="private"):
+        prepare_execution_routing(db_session, flow, {})
+
+
+def test_private_cursor_default_rejects_foreign_model(
+    db_session: Session, test_user: User
+) -> None:
+    other = crud_account.create(
+        db_session, obj_in={"organization_name": f"Other {uuid4().hex[:8]}"}
+    )
+    foreign = _usable_model(db_session, other.id)
+    flow = _flow(
+        db_session,
+        test_user,
+        agent_type="cursor",
+        ai_model_id=foreign.id,
+        extra_config={"host_exec_profile": "cursor-ask"},
+    )
+    flow.runner_pool = "private"
+    with pytest.raises(ModelRoutingError, match="not found"):
+        prepare_execution_routing(db_session, flow, {})
+
+
+@pytest.mark.parametrize("matrix", [False, True])
+def test_private_cursor_does_not_enable_rules_or_matrices(
+    db_session: Session, test_user: User, matrix: bool
+) -> None:
+    model = _usable_model(db_session, test_user.account_id)
+    flow = _flow(
+        db_session,
+        test_user,
+        agent_type="cursor",
+        ai_model_id=model.id,
+        extra_config={"host_exec_profile": "cursor-ask"},
+        routing=_policy(
+            _rule(
+                "native", any_labels=["native"], model_id=model.id, agent_type="cursor"
+            )
+        ),
+    )
+    flow.runner_pool = "private"
+    with pytest.raises(ModelRoutingError, match="not supported"):
+        prepare_execution_routing(
+            db_session,
+            flow,
+            {"payload": {"labels": ["native"]}},
+            authorized_matrix={"agent_type": "cursor", "ai_model_id": str(model.id)}
+            if matrix
+            else None,
+        )

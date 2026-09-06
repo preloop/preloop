@@ -9,6 +9,7 @@ controller-extracted label names, never webhook-supplied model ids.
 from __future__ import annotations
 
 import logging
+import re
 from copy import deepcopy
 from uuid import UUID
 from typing import Any, Dict, Iterable, List, Optional, Sequence
@@ -220,6 +221,48 @@ def load_usable_model(
     return model
 
 
+def validate_default_selection(
+    db: Session, flow: models.Flow, *, agent_type: str, ai_model_id: Any
+) -> None:
+    """Validate defaults/pinned identity without widening rule or matrix targets.
+
+    A named private Cursor profile uses the runner's local credentials and
+    model map. The runtime still owns native capability checks and rejection of
+    unsupported resume/publication paths. This forward-compatible boundary has
+    no dependency on the optional native-runner implementation.
+    """
+    harness = (agent_type or "").strip().lower()
+    if harness != "cursor":
+        if ai_model_id is not None:
+            load_usable_model(
+                db,
+                ai_model_id=ai_model_id,
+                agent_type=harness,
+                account_id=flow.account_id,
+            )
+        return
+    config = flow.agent_config if isinstance(flow.agent_config, dict) else {}
+    profile = config.get("host_exec_profile")
+    pool = flow.runner_pool
+    if (
+        not isinstance(profile, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", profile.strip()) is None
+        or not isinstance(pool, str)
+        or not pool.strip()
+        or pool.strip().lower() == "server"
+    ):
+        raise ModelRoutingError(
+            "Cursor defaults require a named host profile and explicit private runner pool"
+        )
+    if ai_model_id is None:
+        return
+    model = crud_ai_model.get(db, id=_model_uuid(ai_model_id))
+    if not _account_can_use_model(model, flow.account_id):
+        raise ModelRoutingError(f"ai_model_id '{ai_model_id}' not found")
+    if getattr(model, "model_kind", "llm") != "llm":
+        raise ModelRoutingError("Private Cursor defaults require an LLM model")
+
+
 def validate_stored_model_routing(
     db: Session, agent_config: Any, account_id: Any
 ) -> Optional[ModelRoutingConfig]:
@@ -402,14 +445,13 @@ def resolve_routing_record(
 
     default_type = (flow.agent_type or "").strip().lower() or None
     default_model_id = flow.ai_model_id
-    if config and default_model_id is not None:
-        load_usable_model(
-            db,
-            ai_model_id=default_model_id,
-            agent_type=default_type or "codex",
-            account_id=account_id,
+    if default_type == "cursor" or (
+        config and config.rules and default_model_id is not None
+    ):
+        validate_default_selection(
+            db, flow, ai_model_id=default_model_id, agent_type=default_type or "codex"
         )
-    elif config and default_type:
+    elif config and config.rules and default_type:
         from preloop.agents.factory import SUPPORTED_AGENT_TYPES
 
         if default_type not in SUPPORTED_AGENT_TYPES:
@@ -434,11 +476,8 @@ def revalidate_routing_record(
     agent_type = record["agent_type"]
     ai_model_id = record.get("ai_model_id")
     if ai_model_id:
-        load_usable_model(
-            db,
-            ai_model_id=ai_model_id,
-            agent_type=agent_type,
-            account_id=getattr(flow, "account_id", None),
+        validate_default_selection(
+            db, flow, ai_model_id=ai_model_id, agent_type=agent_type
         )
     return record
 
