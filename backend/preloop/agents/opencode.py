@@ -580,6 +580,10 @@ mkdir -p /workspace
 cat > /workspace/opencode.json << OPENCODE_CONFIG_EOF
 {opencode_config_shell}
 OPENCODE_CONFIG_EOF
+# Project discovery stops at the Git root. Load the generated runtime config
+# explicitly when the primary checkout is nested beneath /workspace.
+# Export once so normal, resumed and completion-nudge invocations inherit it.
+export OPENCODE_CONFIG=/workspace/opencode.json
 
 cat > /tmp/opencode-json-log-filter.js <<'JS'
 const readline = require("node:readline");
