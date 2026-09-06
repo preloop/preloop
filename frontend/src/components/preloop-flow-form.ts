@@ -640,6 +640,18 @@ export class PreloopFlowForm extends LitElement {
       return;
     }
 
+    const timeoutSeconds = this.flow.timeout_seconds ?? null;
+    if (
+      timeoutSeconds !== null &&
+      (!Number.isInteger(timeoutSeconds) ||
+        timeoutSeconds < 60 ||
+        timeoutSeconds > 86400)
+    ) {
+      this.formError =
+        'Execution timeout must be a whole number between 60 and 86400 seconds, or blank for the deployment default.';
+      return;
+    }
+
     this.isSaving = true;
     try {
       const payload: any = {
@@ -673,6 +685,8 @@ export class PreloopFlowForm extends LitElement {
             : null,
         git_clone_config: this.flow.git_clone_config || { enabled: false },
         notifications: this.flow.notifications || defaultFlowNotifications(),
+        // Explicit null clears a saved override and restores the deployment default.
+        timeout_seconds: timeoutSeconds,
         max_iterations: this.flow.max_iterations || undefined,
         max_budget: this.flow.max_budget || undefined,
         is_enabled: this.flow.is_enabled ?? true,
@@ -1992,6 +2006,19 @@ export class PreloopFlowForm extends LitElement {
             Boundaries
           </div>
           <div class="form-grid">
+            <sl-input
+              type="number"
+              name="timeout_seconds"
+              label="Execution timeout (seconds)"
+              min="60"
+              max="86400"
+              step="1"
+              placeholder="Deployment default"
+              help-text="Maximum duration of one execution: 60–86400 seconds (1 minute–24 hours). Leave blank to use the deployment default."
+              .value=${this.flow.timeout_seconds == null ? '' : String(this.flow.timeout_seconds)}
+              @sl-input=${(e: Event) => this.handleInputChange('timeout_seconds', e)}
+            ></sl-input>
+
             <sl-input
               type="number"
               label="Maximum Iteration Count"

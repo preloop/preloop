@@ -110,6 +110,7 @@ export interface Flow {
   git_clone_config?: GitCloneConfig;
   notifications?: FlowNotifications | null;
   custom_commands?: FlowCustomCommands;
+  timeout_seconds?: number | null;
   max_iterations?: number | null;
   max_budget?: number | null;
   is_preset?: boolean;
