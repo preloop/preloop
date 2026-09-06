@@ -49,6 +49,21 @@ export class ViewHeader extends LitElement {
         font-size: var(--console-text-meta);
         font-variant-numeric: tabular-nums;
       }
+      /* Phones: the title and its actions cannot share one nowrap row, so the
+         actions drop to their own full-width row and wrap inside it. Without
+         this the primary button is clipped at the right edge (390px). */
+      @media (max-width: 640px) {
+        .header {
+          flex-wrap: wrap;
+          align-items: flex-start;
+        }
+        ::slotted([slot='main-column']) {
+          width: 100%;
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-small);
+        }
+      }
     `,
   ];
 

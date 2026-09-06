@@ -65,8 +65,8 @@ def approval_console_url(base_url: str, request_id: Any) -> str:
     agent cannot use it to self-approve.
 
     The SPA registers this page at ``/console/approval/:requestId``.
-    Token-free ``/approval/<id>`` is the public token page, which 404s
-    without ``?token=`` (issue #335).
+    Tokenized ``/approval/<id>?token=...`` links (email, webhook) serve the
+    public token page; a bare ``/approval/<id>`` redirects here (issue #335).
     """
     return f"{base_url.rstrip('/')}/console/approval/{request_id}"
 

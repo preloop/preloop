@@ -68,6 +68,16 @@ export interface FlowExecutionStats {
   running_execs?: number;
   last_seen_at?: string | null;
   estimated_cost?: number;
+  /**
+   * Present only when the flows request named a window (`stats_since`), and
+   * then every field below is measured over that same window, so a list that
+   * says "in the last 30d" can say one thing.
+   */
+  since?: string;
+  runs?: number;
+  failed?: number;
+  cost?: number;
+  last_run_at?: string | null;
 }
 
 /**
@@ -514,6 +524,8 @@ export interface ManagedAgentSummary {
   supports_voice?: boolean;
   supports_interrupt?: boolean;
   control_session_mode?: 'local' | 'remote' | 'queued' | 'offline' | string;
+  /** Last Agent Control heartbeat, so the age of the presence signal is readable. */
+  control_last_heartbeat_at?: string | null;
   supported_input_modes?: string[];
   supported_output_modes?: string[];
 }

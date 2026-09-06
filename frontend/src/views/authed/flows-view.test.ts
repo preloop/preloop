@@ -296,6 +296,28 @@ describe('FlowsView', () => {
     const minutesAgo = (minutes: number) =>
       new Date(Date.now() - minutes * 60_000).toISOString();
 
+    /**
+     * `execution_stats` as the server answers it for a window: runs, failed
+     * and cost measured over the same days the header names. Nightly has the
+     * shape that used to print a contradiction, spend with no run in range.
+     */
+    const windowStats = (
+      runs: number,
+      failed: number,
+      cost: number,
+      lastRunAt: string | null = null
+    ) => ({
+      since: new Date(Date.now() - 30 * 24 * 3600_000).toISOString(),
+      runs,
+      failed,
+      cost,
+      last_run_at: lastRunAt,
+      total_execs: runs,
+      running_execs: 0,
+      last_seen_at: lastRunAt,
+      estimated_cost: cost,
+    });
+
     const FLOWS = [
       {
         id: 'flow-review',
@@ -306,12 +328,14 @@ describe('FlowsView', () => {
         source_preset_id: 'preset-review',
         trigger_event_source: 'webhook',
         trigger_event_types: ['pull_request_updated'],
+        execution_stats: windowStats(1, 0, 1.2345, minutesAgo(10)),
       },
       {
         id: 'flow-nightly',
         name: 'Nightly Report',
         description: 'Sends the nightly digest',
         is_enabled: false,
+        execution_stats: windowStats(0, 0, 0.33),
         trigger_event_source: 'schedule',
         schedule_state: {
           active: false,
@@ -328,6 +352,7 @@ describe('FlowsView', () => {
         is_enabled: true,
         trigger_event_source: 'webhook',
         trigger_event_types: ['issue_created'],
+        execution_stats: windowStats(2, 1, 0.5, minutesAgo(120)),
       },
     ];
 
@@ -377,14 +402,6 @@ describe('FlowsView', () => {
           }
           if (url.includes('/api/v1/flows') && method === 'GET') {
             return json(FLOWS);
-          }
-          if (url.includes('/api/v1/account/gateway-usage/summary')) {
-            return json({
-              usage_by_flow: [
-                { flow_id: 'flow-review', estimated_cost: 1.2345 },
-                { flow_id: 'flow-triage', estimated_cost: 0.5 },
-              ],
-            });
           }
           if (url.includes('/api/v1/trackers')) {
             return json([]);
@@ -625,6 +642,103 @@ describe('FlowsView', () => {
       expect(triage?.failed).to.equal(1);
     });
 
+    it('asks the server for the counts of the range it names', async () => {
+      await renderFlows();
+      const flowsCall = fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .find(
+          (url) =>
+            url.includes('/api/v1/flows') &&
+            !url.includes('presets') &&
+            !url.includes('executions')
+        );
+      expect(flowsCall, 'the flows request names the window').to.contain(
+        'stats_since='
+      );
+    });
+
+    it('states no spend beside a flow with no run in the range', async () => {
+      const element = await renderFlows();
+      const nightly = element.rows.find(
+        (row: FlowListRow) => row.id === 'flow-nightly'
+      );
+      // The server reported spend against the flow but zero runs started in
+      // the window. One period, one story: the cell says nothing rather than
+      // printing money next to "No run in the last 30d".
+      expect(nightly?.runs).to.equal(0);
+      expect(nightly?.cost).to.equal(0);
+
+      const row = [
+        ...(element.shadowRoot?.querySelectorAll('tbody tr.flow-row') || []),
+      ].find((tr) => (tr.textContent || '').includes('Nightly Report'));
+      const text = (row?.textContent || '').replace(/\s+/g, ' ');
+      expect(text).to.contain('No run in the last 30d');
+      expect(text).to.not.contain('$0.33');
+      expect(text).to.not.contain('$0.00');
+    });
+
+    it('states no spend when the server did not measure this window', async () => {
+      // A server without `stats_since` answers lifetime stats only, so the
+      // runs are counted from the executions sample and there is no figure
+      // for this window. "-" says that; "$0.00" would claim the flow spent
+      // nothing, which the page has no way of knowing.
+      fetchStub = sinon
+        .stub(window, 'fetch')
+        .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          const method = (init?.method || 'GET').toUpperCase();
+          const json = (data: unknown) =>
+            new Response(JSON.stringify(data), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          if (url.includes('/api/v1/flows/presets')) return json([]);
+          if (url.includes('/api/v1/flows/executions')) {
+            return json(url.includes('status=') ? [] : EXECUTIONS);
+          }
+          if (url.includes('/api/v1/flows') && method === 'GET') {
+            return json([
+              {
+                id: 'flow-review',
+                name: 'Pull Request Reviewer',
+                is_enabled: true,
+                trigger_event_source: 'webhook',
+                execution_stats: {
+                  total_execs: 9,
+                  running_execs: 0,
+                  estimated_cost: 4.5,
+                },
+              },
+            ]);
+          }
+          if (url.includes('/api/v1/trackers')) return json([]);
+          return json({ detail: `Unhandled: ${method} ${url}` });
+        });
+      const element = (await fixture(
+        html`<flows-view></flows-view>`
+      )) as FlowsView;
+      await waitUntil(
+        () => !(element as any).isLoading,
+        'Flows view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const row = element.rows.find(
+        (candidate: FlowListRow) => candidate.id === 'flow-review'
+      );
+      expect(row?.countsFromServer).to.equal(false);
+      expect(row?.runs).to.be.greaterThan(0);
+
+      const cells = [
+        ...(element.shadowRoot?.querySelectorAll(
+          'tbody tr.flow-row td.numeric'
+        ) || []),
+      ];
+      const cost = cells[cells.length - 1];
+      expect((cost?.textContent || '').trim()).to.equal('-');
+    });
+
     it('offers open, run, edit, pause and a separated danger delete in the kebab', async () => {
       const element = await renderFlows();
       const actions = element.shadowRoot?.querySelector(
@@ -701,9 +815,11 @@ describe('FlowsView', () => {
         status: 'enabled',
         statusLabel: 'Enabled',
         lastRun: null,
+        lastRunAt: null,
         runs: 0,
         failed: 0,
         cost: 0,
+        countsFromServer: true,
         source: { id: 'flow-1', name: 'Alpha' } as any,
         ...overrides,
       };

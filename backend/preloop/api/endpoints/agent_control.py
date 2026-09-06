@@ -61,6 +61,18 @@ router = APIRouter()
 # ``integrations/agent_control/core.py``; keep them in sync.
 EVICTION_CLOSE_CODE: int = 4000
 
+# How long the control WebSocket waits for an inbound frame before it pings the
+# agent, and how many of those windows may pass in silence before the socket is
+# closed.
+#
+# Presence itself is retired by the ~90s heartbeat TTL, independent of this
+# close. Two windows is 120s: that is how long a half-open socket (a closed
+# laptop lid, a network that dropped without sending a FIN) can occupy this
+# replica. Closing frees the dead connection so a wedged plugin can reconnect,
+# and the disconnect path can drop the registry entry and clear the heartbeat.
+AGENT_CONTROL_RECEIVE_TIMEOUT_SECONDS: float = 60.0
+AGENT_CONTROL_MAX_SILENT_RECEIVES: int = 2
+
 # Operational failures on the delivery path (NATS / DB / WS). Catch these
 # instead of bare ``Exception`` so programming bugs (AttributeError, TypeError,
 # etc.) still surface.
@@ -412,6 +424,10 @@ def _touch_presence(
         runtime_session_id=context.runtime_session.id,
         observed_at=observed_at,
         control_session_mode=session_mode,
+        # This function is only reachable from the Agent Control WebSocket, so
+        # every call here is proof the plugin is connected right now. It is the
+        # only presence signal the other api replicas can read.
+        control_heartbeat_at=observed_at,
         commit=False,
     )
     if commit:
@@ -846,6 +862,9 @@ async def managed_agent_control_websocket(
 
     now = datetime.now(UTC)
     _touch_presence(db, context, observed_at=now)
+    # The last heartbeat this connection wrote, so a clean close can retire
+    # its own presence without stealing a newer connection's.
+    last_presence_at = now
     connected = _connection_envelope(
         connection,
         envelope_type="presence",
@@ -868,15 +887,37 @@ async def managed_agent_control_websocket(
     # (or alongside) sending their capabilities envelope.
     await _redeliver_pending_commands(db, connection, websocket)
 
+    # Consecutive receive timeouts. A live plugin beats every 30s, so one
+    # timeout is a slow agent and two is a socket nobody is on the other end of.
+    silent_receives = 0
     try:
         while True:
             try:
                 raw_message = await asyncio.wait_for(
-                    websocket.receive_json(), timeout=60.0
+                    websocket.receive_json(),
+                    timeout=AGENT_CONTROL_RECEIVE_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
+                silent_receives += 1
+                if silent_receives >= AGENT_CONTROL_MAX_SILENT_RECEIVES:
+                    logger.info(
+                        "Managed agent %s control websocket silent for %ss; "
+                        "closing so presence can be retired",
+                        connection.managed_agent_id,
+                        int(AGENT_CONTROL_RECEIVE_TIMEOUT_SECONDS * silent_receives),
+                    )
+                    # Close explicitly: the client has to learn the socket is
+                    # gone so a plugin that is merely wedged can reconnect.
+                    try:
+                        await websocket.close(code=status.WS_1001_GOING_AWAY)
+                    except _WS_DELIVERY_ERRORS:
+                        logger.debug(
+                            "Silent control websocket already gone", exc_info=True
+                        )
+                    break
                 await websocket.send_json({"type": "ping"})
                 continue
+            silent_receives = 0
 
             try:
                 inbound = AgentControlInboundEnvelope.model_validate(raw_message)
@@ -910,10 +951,11 @@ async def managed_agent_control_websocket(
                 inbound_mode = inbound.payload.get("session_mode")
                 if inbound_mode not in {"local", "remote", "queued"}:
                     inbound_mode = None
+                last_presence_at = datetime.now(UTC)
                 _touch_presence(
                     db,
                     context,
-                    observed_at=datetime.now(UTC),
+                    observed_at=last_presence_at,
                     session_mode=inbound_mode,
                 )
                 _mark_control_verified_from_capabilities(db, context, inbound)
@@ -959,6 +1001,26 @@ async def managed_agent_control_websocket(
                 )
         removed_active = await agent_control_manager.disconnect(connection_id)
         if removed_active:
+            # A clean close is presence information every replica can read, so
+            # retire the heartbeat instead of waiting out the window. This runs
+            # in a finally block: a session that already failed must not stop
+            # the disconnect bookkeeping below.
+            try:
+                crud_managed_agent.clear_control_heartbeat(
+                    db,
+                    account_id=connection.account_id,
+                    session_source_type=connection.managed_agent_session_source_type,
+                    session_source_id=connection.managed_agent_session_source_id,
+                    not_newer_than=last_presence_at,
+                    commit=True,
+                )
+            except _DB_DELIVERY_ERRORS:
+                logger.warning(
+                    "Failed to clear control heartbeat for managed agent %s",
+                    connection.managed_agent_id,
+                    exc_info=True,
+                )
+                db.rollback()
             crud_managed_agent.clear_runtime_session_binding(
                 db,
                 account_id=connection.account_id,

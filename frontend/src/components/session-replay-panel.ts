@@ -34,6 +34,7 @@ import {
   getGatewayEventPreviewMessages,
   getGatewayEventUserRequest,
 } from '../utils/session-observer';
+import { outcomeLabel } from '../utils/outcome-label';
 import { getExampleSessionOptimization } from '../api';
 import './preloop-gateway-event';
 import './session-optimization-panel';
@@ -3015,8 +3016,11 @@ export class SessionReplayPanel extends LitElement {
         : 'warning';
     return html`
       <div class="message-metrics">
+        <!-- The badge a reader sees on every model request in the transcript:
+             it says what happened ("Succeeded"), not the enum the gateway
+             stored ("success"). -->
         <span class="metric-pill ${outcomeClass}">
-          ${statusCode ? `${statusCode} ` : ''}${outcome}
+          ${statusCode ? `${statusCode} ` : ''}${outcomeLabel(outcome)}
         </span>
         <span class="metric-pill">${formatNumber(totalTokens)} tokens</span>
         <span class="metric-pill">${formatCost(estimatedCost)}</span>

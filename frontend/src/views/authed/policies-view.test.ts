@@ -1,6 +1,7 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
+import { invalidateApiCaches } from '../../api';
 import '../../components/view-header.ts';
 import './policies-view';
 import { conditionTypeFor } from './policies-view';
@@ -169,11 +170,80 @@ describe('PoliciesView', () => {
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
+    // The view now reads the cached profile before it fetches; a permission
+    // set must not leak from one case into the next.
+    invalidateApiCaches();
   });
 
   afterEach(() => {
     fetchStub?.restore();
     localStorage.clear();
+    invalidateApiCaches();
+  });
+
+  it('fetches nothing when the viewer lacks view_policies', async () => {
+    // B-P1: the gated view stayed connected behind the shell's
+    // permission-denied and still fetched tools, workflows and rules.
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/api/v1/auth/users/me')) {
+          return json({
+            username: 'viewer',
+            email: 'viewer@example.com',
+            email_verified: true,
+            permissions: ['view_agents'],
+          });
+        }
+        return json({ detail: `Unexpected: ${url}` }, 500);
+      });
+
+    const element = (await fixture(
+      html`<policies-view></policies-view>`
+    )) as PoliciesView;
+    await waitUntil(
+      () => (element as any)._permissionDenied === true,
+      'permission check did not resolve'
+    );
+    await element.updateComplete;
+
+    const dataCalls = fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter(
+        (url) => url.includes('/api/') && !url.endsWith('/api/v1/auth/users/me')
+      );
+    expect(dataCalls).to.deep.equal([]);
+    expect(element.shadowRoot?.querySelector('permission-denied')).to.exist;
+    expect(element.shadowRoot?.querySelector('sl-tab-group')).to.equal(null);
+  });
+
+  it('loads when the viewer has view_policies', async () => {
+    fetchStub = createFetchStub();
+    fetchStub
+      .withArgs(
+        sinon.match((url: unknown) =>
+          String(url).endsWith('/api/v1/auth/users/me')
+        )
+      )
+      .callsFake(async () =>
+        json({
+          username: 'admin',
+          email: 'admin@example.com',
+          email_verified: true,
+          permissions: ['view_policies'],
+        })
+      );
+
+    const element = (await fixture(
+      html`<policies-view></policies-view>`
+    )) as PoliciesView;
+    await waitUntil(() => !(element as any)._loading, 'still loading');
+    await element.updateComplete;
+
+    expect((element as any)._permissionDenied).to.equal(false);
+    expect(element.shadowRoot?.querySelector('sl-tab-group')).to.exist;
   });
 
   it('renders the Policies header and tabs after load', async () => {

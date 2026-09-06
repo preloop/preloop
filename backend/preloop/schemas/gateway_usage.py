@@ -327,6 +327,10 @@ class ManagedAgentSummary(BaseModel):
     supports_voice: bool = False
     supports_interrupt: bool = False
     control_session_mode: str = "offline"
+    #: Last Agent Control heartbeat this agent's plugin sent. Exposed so an
+    #: operator (and staging debugging) can tell "no plugin" from "the plugin
+    #: stopped beating", which the online flag alone cannot say.
+    control_last_heartbeat_at: Optional[datetime] = None
     supported_input_modes: List[str] = Field(default_factory=list)
     supported_output_modes: List[str] = Field(default_factory=list)
 

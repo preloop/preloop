@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`control_last_heartbeat_at` on managed agent summaries**: Agent Control
+  presence now exposes the last WebSocket heartbeat timestamp on
+  `ManagedAgentSummary` (list and detail, OpenAPI, TypeScript type) so the
+  age of the signal is readable when debugging replica disagreement.
+
 - **Codex ChatGPT-OAuth model auto-registration**: when Codex CLI (or any
   OpenAI-protocol client using a ChatGPT subscription-OAuth credential)
   asks for a `gpt-*` / o-series / `chatgpt-*` model the account has not
@@ -97,6 +102,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds a page by dropping a markdown file.
 
 ### Fixed
+
+- **Talk window follows the latest message**: new turns (including after
+  the 50-event page is full, and replies that arrive as activity rows)
+  keep the thread at the bottom unless the reader scrolled up with a
+  gesture. Session switches rebind the thread; layout growth re-sticks
+  via ResizeObserver. The Jump to latest pill remains the only way back.
+
+- **Agent Control presence is honest across replicas**: `control_online`
+  is computed from a persisted heartbeat (~90s TTL) instead of whichever
+  replica holds the WebSocket, so the badge no longer flaps offline on
+  the replica that does not own the socket. `last_seen_at` (enrollment
+  and gateway traffic) is no longer used as a stand-in for a live plugin.
 
 - **Wrapper PR/MR create no longer sends invalid JSON**:
   `git_clone_config.create_pull_request` interpolated title and body into

@@ -1329,3 +1329,110 @@ describe('AddAIModelModal stable field bindings (#186)', () => {
     expect((element as any)._currentModel.model_kind).to.equal('stt');
   });
 });
+
+describe('AddAIModelModal dialog copy and state (D7)', () => {
+  let sandbox: SinonSandbox;
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    localStorage.setItem('refreshToken', 'test-refresh-token');
+    sandbox = sinon.createSandbox();
+    sandbox
+      .stub(window, 'fetch')
+      .callsFake(async () => new Response(JSON.stringify([])));
+  });
+
+  afterEach(() => {
+    sandbox.restore();
+    localStorage.clear();
+  });
+
+  it('shows no API key warning on a freshly opened Add dialog', async () => {
+    const element: AddAIModelModal = await fixture(
+      html`<add-ai-model-modal ?open=${true}></add-ai-model-modal>`
+    );
+    await element.updateComplete;
+
+    // The gateway checkbox defaults to on, so the warning used to fire before
+    // anything was typed.
+    expect((element as any)._preloopGatewayEnabled).to.be.true;
+    expect(element.shadowRoot?.querySelector('sl-alert[variant="warning"]')).to
+      .not.exist;
+    const text = element.shadowRoot?.textContent || '';
+    expect(text).to.not.contain('Add an API key');
+    expect(text).to.not.contain('Save provider and model id');
+
+    // It appears once the operator has left the API key field empty.
+    const apiKeyField = element.shadowRoot?.querySelector(
+      '[data-field="api_key"]'
+    ) as HTMLElement;
+    apiKeyField.dispatchEvent(new CustomEvent('sl-blur', { bubbles: true }));
+    await element.updateComplete;
+    expect(element.shadowRoot?.querySelector('sl-alert[variant="warning"]')).to
+      .exist;
+  });
+
+  it('preselects the stored provider when editing an openai-codex model', async () => {
+    const codexModel = {
+      id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+      name: 'Codex CLI openai/gpt-5.4',
+      provider_name: 'openai-codex',
+      model_identifier: 'gpt-5.4',
+      model_kind: 'llm',
+      api_endpoint: 'https://chatgpt.com/backend-api/codex',
+      has_api_key: true,
+      is_default: false,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-02T00:00:00Z',
+    };
+
+    const element: AddAIModelModal = await fixture(
+      html`<add-ai-model-modal
+        .model=${codexModel as any}
+        ?open=${true}
+      ></add-ai-model-modal>`
+    );
+    await element.updateComplete;
+
+    const providerValues = (element as any)._availableProviders.map(
+      (provider: { value: string }) => provider.value
+    );
+    expect(providerValues).to.include('openai-codex');
+
+    const providerSelect = Array.from(
+      element.shadowRoot?.querySelectorAll('sl-select') || []
+    ).find((select) => select.getAttribute('label') === 'Provider');
+    expect(providerSelect, 'provider select is rendered').to.exist;
+    expect((providerSelect as any).value).to.equal('openai-codex');
+    const optionValues = Array.from(
+      providerSelect?.querySelectorAll('sl-option') || []
+    ).map((option) => option.getAttribute('value'));
+    expect(optionValues).to.include('openai-codex');
+  });
+
+  it('labels the first fields Name and Type and the fetch button by what it does', async () => {
+    const element: AddAIModelModal = await fixture(
+      html`<add-ai-model-modal ?open=${true}></add-ai-model-modal>`
+    );
+    await element.updateComplete;
+
+    expect(
+      element.shadowRoot
+        ?.querySelector('[data-field="name"]')
+        ?.getAttribute('label')
+    ).to.equal('Name');
+    expect(
+      element.shadowRoot
+        ?.querySelector('[data-field="model_kind"]')
+        ?.getAttribute('label')
+    ).to.equal('Type');
+
+    const fetchButton = Array.from(
+      element.shadowRoot?.querySelectorAll('sl-button') || []
+    ).find((button) =>
+      button.textContent?.includes('Fetch models from provider')
+    );
+    expect(fetchButton, 'fetch button is rendered').to.exist;
+    expect(fetchButton?.getAttribute('style') || '').to.not.contain('width');
+  });
+});

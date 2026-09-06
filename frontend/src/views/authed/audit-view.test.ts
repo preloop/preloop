@@ -1,4 +1,5 @@
 import { expect, waitUntil } from '@open-wc/testing';
+import { setViewport } from '@web/test-runner-commands';
 import sinon from 'sinon';
 
 import './audit-view';
@@ -345,6 +346,97 @@ describe('AuditView', () => {
     expect(expandedContent).to.contain('Runtime Session Id');
 
     document.body.removeChild(element);
+  });
+
+  describe('filter bar and rows (B-D1)', () => {
+    async function mountLoaded() {
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(
+        () => !(element as any)._loading,
+        'Audit view did not finish loading'
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    it('gives every filter the full width of the bar at 390px', async () => {
+      await setViewport({ width: 390, height: 844 });
+      const element = await mountLoaded();
+
+      const bar = element.shadowRoot?.querySelector(
+        '.filter-bar'
+      ) as HTMLElement;
+      const controls = Array.from(
+        bar.querySelectorAll('sl-input, sl-select')
+      ) as HTMLElement[];
+      // Search, event type, outcomes, from, to, min $, max $.
+      expect(controls.length).to.equal(7);
+
+      const barWidth = bar.getBoundingClientRect().width;
+      for (const control of controls) {
+        const rect = control.getBoundingClientRect();
+        expect(
+          Math.abs(rect.width - barWidth),
+          `${control.tagName} ${control.getAttribute('type') || ''} is not full width`
+        ).to.be.lessThan(2);
+        expect(
+          Math.abs(rect.left - bar.getBoundingClientRect().left)
+        ).to.be.lessThan(2);
+      }
+
+      element.remove();
+      await setViewport({ width: 1280, height: 800 });
+    });
+
+    it('keeps the seven filters on one grid row on desktop', async () => {
+      await setViewport({ width: 1280, height: 800 });
+      const element = await mountLoaded();
+
+      const bar = element.shadowRoot?.querySelector(
+        '.filter-bar'
+      ) as HTMLElement;
+      const columns = getComputedStyle(bar)
+        .gridTemplateColumns.split(' ')
+        .filter(Boolean);
+      expect(columns.length).to.equal(7);
+
+      // One row: the seven controls share a vertical centre (they are
+      // centre-aligned in the grid and a date input is a little taller).
+      const centres = (
+        Array.from(bar.querySelectorAll('sl-input, sl-select')) as HTMLElement[]
+      ).map((control) => {
+        const rect = control.getBoundingClientRect();
+        return rect.top + rect.height / 2;
+      });
+      for (const centre of centres) {
+        expect(Math.abs(centre - centres[0])).to.be.lessThan(2);
+      }
+
+      element.remove();
+    });
+
+    it('carries the outcome in a tint chip and leaves the row unruled', async () => {
+      const element = await mountLoaded();
+
+      const row = element.shadowRoot?.querySelector(
+        '.timeline-group'
+      ) as HTMLElement;
+      const style = getComputedStyle(row);
+      expect(style.borderLeftStyle).to.equal('none');
+      expect(parseFloat(style.borderLeftWidth)).to.equal(0);
+
+      const badges = Array.from(
+        element.shadowRoot?.querySelectorAll('.timeline-group sl-badge') || []
+      );
+      expect(badges.length).to.be.greaterThan(0);
+      for (const badge of badges) {
+        expect(badge.classList.contains('status-chip')).to.equal(true);
+        expect(badge.classList.contains('solid')).to.equal(false);
+      }
+
+      element.remove();
+    });
   });
 
   it('renders gateway request failures with readable labels and details', async () => {

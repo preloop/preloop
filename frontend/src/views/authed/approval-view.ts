@@ -1,4 +1,4 @@
-import { html, css } from 'lit';
+import { html, css, unsafeCSS } from 'lit';
 import { customElement, state, property } from 'lit/decorators.js';
 import { AuthedElement } from '../../api';
 import type { ApprovalDecisionOptions, ApprovalRequest } from '../../types';
@@ -9,17 +9,38 @@ import {
   getApprovalSource,
   withoutApprovalMetadata,
 } from '../../utils/approval-identity';
+import {
+  APPROVAL_REQUESTS_PAGE_LIMIT,
+  approvalStatusLabel,
+  formatNextWaitingLabel,
+  isExpiringSoon,
+  isUnexpiredPendingRequest,
+  millisUntilExpiry,
+  normalizeApprovalRequest,
+} from '../../utils/approvals';
+import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import '../../components/question-answer-panel';
 import '../../components/approval-rule-context-block';
 import type { QuestionAnswerDetail } from '../../components/question-answer-panel';
+import consoleStyles from '../../styles/console-styles.css?inline';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
+import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
+
+/** One workflow-history entry as returned by the history API. */
+export interface ApprovalTimelineEntry {
+  event_type: string;
+  detail: string;
+  comment?: string | null;
+  actor_email?: string | null;
+  timestamp: string;
+}
 
 @customElement('approval-view')
 export class ApprovalView extends AuthedElement {
@@ -30,10 +51,22 @@ export class ApprovalView extends AuthedElement {
   private approvalRequest: ApprovalRequest | null = null;
 
   @state()
+  private history: ApprovalTimelineEntry[] = [];
+
+  @state()
   private loading = true;
 
   @state()
   private error: string | null = null;
+
+  /**
+   * True when the request is rendered from the public token payload instead
+   * of the authenticated API (viewer is signed in but not a member of the
+   * request's account, e.g. an escalation recipient). Decisions then go
+   * through the token endpoint.
+   */
+  @state()
+  private publicOnly = false;
 
   @state()
   private comment = '';
@@ -41,135 +74,346 @@ export class ApprovalView extends AuthedElement {
   @state()
   private submitting = false;
 
+  /**
+   * Ticks once a second while the request is live, so the countdown moves and
+   * an expiry that passes while the page is open flips the page to timed out
+   * instead of leaving dead buttons on screen.
+   */
   @state()
-  private actionResult: { type: 'success' | 'error'; message: string } | null =
-    null;
+  private nowMs = Date.now();
+
+  /** Set once this page has taken a decision, to show where to go next. */
+  @state()
+  private decisionTaken = false;
+
+  /** Other requests still waiting for this operator, fetched after a decision. */
+  @state()
+  private waitingNext: ApprovalRequest[] = [];
+
+  /**
+   * How many pending rows the queue fetch returned, before client-side
+   * filtering. Used to say "100+" when the page is full rather than a
+   * count that looks total and is not.
+   */
+  @state()
+  private waitingNextFetched = 0;
+
+  /**
+   * True while the deny confirmation is on screen. The decision keys listen on
+   * the document, so without this an A pressed over an open "Deny this
+   * request?" dialog would approve behind it.
+   */
+  private confirming = false;
 
   private unsubscribe?: () => void;
+  private tickTimer?: ReturnType<typeof setInterval>;
 
-  static styles = css`
-    :host {
-      display: block;
-      padding: 2rem;
-      max-width: 840px;
-      margin: 0 auto;
-    }
+  static styles = [
+    unsafeCSS(consoleStyles),
+    css`
+      :host {
+        display: block;
+        padding: 2rem;
+        max-width: 840px;
+        margin: 0 auto;
+      }
 
-    .header {
-      margin-bottom: 2rem;
-    }
+      .header {
+        margin-bottom: 2rem;
+      }
 
-    .header h1 {
-      margin: 0 0 0.5rem 0;
-      font-size: 1.75rem;
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-    }
+      .header h1 {
+        margin: 0 0 0.5rem 0;
+        font-size: 1.75rem;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+      }
 
-    .header p {
-      margin: 0;
-      color: var(--sl-color-neutral-600);
-    }
+      .header p {
+        margin: 0;
+        color: var(--sl-color-neutral-600);
+      }
 
-    .status-badge {
-      font-size: 0.875rem;
-    }
+      .status-badge {
+        font-size: 0.875rem;
+      }
 
-    .content-section {
-      margin-bottom: 1.5rem;
-    }
+      .content-section {
+        margin-bottom: 1.5rem;
+      }
 
-    .content-section h2 {
-      font-size: 1.125rem;
-      margin: 0 0 0.75rem 0;
-      font-weight: 600;
-    }
+      .content-section h2 {
+        font-size: 1.125rem;
+        margin: 0 0 0.75rem 0;
+        font-weight: 600;
+      }
 
-    .info-grid {
-      display: grid;
-      grid-template-columns: 150px 1fr;
-      gap: 0.75rem;
-      margin-bottom: 1rem;
-    }
+      .info-grid {
+        display: grid;
+        grid-template-columns: 150px 1fr;
+        gap: 0.75rem;
+        margin-bottom: 1rem;
+      }
 
-    .info-label {
-      font-weight: 600;
-      color: var(--sl-color-neutral-700);
-    }
+      .info-label {
+        font-weight: 600;
+        color: var(--sl-color-neutral-700);
+      }
 
-    .info-value {
-      color: var(--sl-color-neutral-900);
-    }
+      .info-value {
+        color: var(--sl-color-neutral-900);
+      }
 
-    .code-block {
-      background: var(--sl-color-neutral-100);
-      padding: 1rem;
-      border-radius: 4px;
-      overflow-x: auto;
-      font-family: monospace;
-      font-size: 0.875rem;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
+      .code-block {
+        background: var(--sl-color-neutral-100);
+        padding: 1rem;
+        border-radius: 4px;
+        overflow-x: auto;
+        font-family: monospace;
+        font-size: 0.875rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
 
-    .reasoning-text {
-      background: var(--sl-color-primary-50);
-      border-left: 3px solid var(--sl-color-primary-600);
-      padding: 1rem;
-      border-radius: 4px;
-      margin-top: 0.5rem;
-      color: var(--sl-color-neutral-900);
-      line-height: 1.6;
-    }
+      .reasoning-text {
+        background: var(--sl-color-primary-50);
+        border-left: 3px solid var(--sl-color-primary-600);
+        padding: 1rem;
+        border-radius: 4px;
+        margin-top: 0.5rem;
+        color: var(--sl-color-neutral-900);
+        line-height: 1.6;
+      }
 
-    .actions {
-      display: flex;
-      gap: 1rem;
-      margin-top: 2rem;
-    }
+      .actions {
+        display: flex;
+        gap: 1rem;
+        margin-top: 2rem;
+      }
 
-    .actions sl-button {
-      flex: 1;
-    }
+      .actions sl-button {
+        flex: 1;
+      }
 
-    .comment-section {
-      margin-top: 1.5rem;
-    }
+      .comment-section {
+        margin-top: 1.5rem;
+      }
 
-    .loading-state {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      padding: 3rem;
-    }
+      .loading-state {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 3rem;
+      }
 
-    .resolved-info {
-      margin-top: 1rem;
-      padding: 1rem;
-      background: var(--sl-color-neutral-50);
-      border-radius: 4px;
-    }
+      .resolved-info {
+        margin-top: 1rem;
+        padding: 1rem;
+        background: var(--sl-color-neutral-50);
+        border-radius: 4px;
+      }
 
-    .resolved-info h3 {
-      margin: 0 0 0.5rem 0;
-      font-size: 1rem;
-      font-weight: 600;
-    }
+      .resolved-info h3 {
+        margin: 0 0 0.5rem 0;
+        font-size: 1rem;
+        font-weight: 600;
+      }
 
-    .metadata {
-      font-size: 0.875rem;
-      color: var(--sl-color-neutral-600);
-      margin-top: 1rem;
-    }
-  `;
+      .metadata {
+        font-size: 0.875rem;
+        color: var(--sl-color-neutral-600);
+        margin-top: 1rem;
+      }
+
+      /* The decision travels with the page: whatever the operator has scrolled
+       to, the bar with the countdown and the two buttons is on screen. */
+      .decision-bar {
+        position: sticky;
+        bottom: 0;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sl-spacing-medium);
+        margin: var(--sl-spacing-large) -2rem 0 -2rem;
+        padding: var(--sl-spacing-medium) 2rem;
+        background: var(--console-surface, var(--sl-color-neutral-0));
+        border-top: 1px solid
+          var(--console-hairline, var(--sl-color-neutral-200));
+        z-index: 1;
+      }
+
+      .decision-summary {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-2x-small);
+        flex: 1 1 260px;
+        min-width: 0;
+      }
+
+      .decision-title {
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .decision-title code {
+        font-family: var(--sl-font-mono);
+        font-size: var(--sl-font-size-small);
+      }
+
+      .decision-paused {
+        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-600);
+      }
+
+      .decision-comment {
+        flex: 1 1 200px;
+        min-width: 160px;
+      }
+
+      /*
+       * The label repeats the placeholder and would cost the bar a whole row.
+       * Keep it in the accessibility tree (Shoelace wires it to the input, so
+       * the field has a name) and take it out of the picture.
+       */
+      .decision-comment::part(form-control-label) {
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        height: 1px;
+        overflow: hidden;
+        position: absolute;
+        white-space: nowrap;
+        width: 1px;
+      }
+
+      .decision-buttons {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+      }
+
+      /* Destructive last, after a large gap, never beside the everyday action. */
+      .decision-buttons .deny {
+        margin-left: var(--sl-spacing-large);
+      }
+
+      kbd {
+        font-family: var(--sl-font-mono);
+        font-size: var(--sl-font-size-x-small);
+        border: 1px solid var(--console-hairline, var(--sl-color-neutral-200));
+        border-radius: var(--sl-border-radius-small);
+        padding: 0 4px;
+        margin-left: 6px;
+        color: inherit;
+      }
+
+      .post-decision {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+        margin-top: var(--sl-spacing-medium);
+        font-size: var(--sl-font-size-small);
+      }
+
+      .post-decision .separator,
+      .post-decision .muted {
+        color: var(--sl-color-neutral-600);
+      }
+
+      @media (max-width: 640px) {
+        :host {
+          padding: 1rem;
+        }
+
+        .decision-bar {
+          margin-left: -1rem;
+          margin-right: -1rem;
+          padding-left: 1rem;
+          padding-right: 1rem;
+        }
+
+        .decision-buttons {
+          flex: 1 1 100%;
+        }
+
+        .decision-buttons sl-button {
+          flex: 1;
+        }
+
+        /* The stacked buttons take the full row, so the large gap still fits. */
+        .decision-buttons .deny {
+          margin-left: var(--sl-spacing-large);
+        }
+      }
+
+      .timeline {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      .timeline li {
+        display: flex;
+        gap: 0.75rem;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid var(--sl-color-neutral-200);
+      }
+
+      .timeline li:last-child {
+        border-bottom: none;
+      }
+
+      .timeline-icon {
+        flex: none;
+        color: var(--sl-color-neutral-500);
+        font-size: 1rem;
+        margin-top: 0.1rem;
+      }
+
+      .timeline-body {
+        flex: 1;
+      }
+
+      .timeline-detail {
+        margin: 0;
+        color: var(--sl-color-neutral-900);
+        line-height: 1.4;
+      }
+
+      .timeline-meta {
+        margin: 0.15rem 0 0 0;
+        font-size: 0.8rem;
+        color: var(--sl-color-neutral-600);
+      }
+
+      .timeline-comment {
+        margin: 0.35rem 0 0 0;
+        padding: 0.5rem;
+        background: var(--sl-color-neutral-100);
+        border-radius: 4px;
+        font-size: 0.85rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .expired-banner {
+        margin-bottom: 1.5rem;
+      }
+    `,
+  ];
 
   async connectedCallback() {
     super.connectedCallback();
-    // Extract requestId from URL if not set
+    // Extract requestId from URL if not set. Both the console route
+    // (/console/approval/:id) and the legacy top-level link (/approval/:id,
+    // which the backend redirects here) must resolve (issue #335).
     if (!this.requestId) {
       const path = window.location.pathname;
-      const match = path.match(/\/console\/approval\/([^/?]+)/);
+      const match = path.match(/\/(?:console\/)?approval\/([^/?]+)/);
       if (match) {
         this.requestId = match[1];
       }
@@ -178,13 +422,73 @@ export class ApprovalView extends AuthedElement {
 
     // Connect to WebSocket for real-time approval updates
     this.connectWebSocket();
+
+    // The decision keys work wherever focus is, so the listener sits on the
+    // document rather than on the host: a key pressed before anything inside
+    // the page is focused never reaches the host element.
+    document.addEventListener('keydown', this.handleKeyDown);
+    this.startTicking();
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     // Disconnect from WebSocket when view is destroyed
     this.unsubscribe?.();
+    document.removeEventListener('keydown', this.handleKeyDown);
+    this.stopTicking();
   }
+
+  private startTicking() {
+    if (this.tickTimer) return;
+    this.tickTimer = setInterval(() => {
+      this.nowMs = Date.now();
+      if (!this.isLive) this.stopTicking();
+    }, 1000);
+  }
+
+  private stopTicking() {
+    if (this.tickTimer) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = undefined;
+    }
+  }
+
+  /** True while the request is pending and its expiry is still ahead. */
+  private get isLive(): boolean {
+    return (
+      !!this.approvalRequest &&
+      isUnexpiredPendingRequest(this.approvalRequest, this.nowMs)
+    );
+  }
+
+  private handleKeyDown = (event: KeyboardEvent) => {
+    if (!this.isLive || this.isQuestion || this.submitting) return;
+    // A confirmation is a question in its own right: answer it with the mouse
+    // or the dialog's own keys, not with the page shortcuts underneath it.
+    if (this.confirming) return;
+    // Holding the key down would re-ask the confirmation on every repeat.
+    if (event.repeat) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const target = event.composedPath()[0] as HTMLElement | undefined;
+    const tag = target?.tagName?.toLowerCase() ?? '';
+    if (
+      ['input', 'textarea', 'select', 'sl-input', 'sl-textarea'].includes(
+        tag
+      ) ||
+      target?.isContentEditable
+    ) {
+      return;
+    }
+    const key = event.key.toLowerCase();
+    // Founder call: Approve fires immediately; Deny confirms. No undo window.
+    if (key === 'a') {
+      event.preventDefault();
+      void this.handleApprove();
+    } else if (key === 'd') {
+      event.preventDefault();
+      void this.handleDeny();
+    }
+  };
 
   private connectWebSocket() {
     this.unsubscribe = unifiedWebSocketManager.subscribe(
@@ -215,44 +519,98 @@ export class ApprovalView extends AuthedElement {
         resolved_at: message.resolved_at || this.approvalRequest.resolved_at,
       };
 
-      // Show notification based on event type
+      // Report the change the way the rest of the console reports results,
+      // unless this page took the decision: submitDecision already said so and
+      // a broadcast echoed back here would toast the same thing twice.
+      if (this.decisionTaken) return;
       if (message.type === 'approval_approved') {
-        this.actionResult = {
-          type: 'success',
-          message: 'This request was approved!',
-        };
+        showToast('This request was approved.', 'success');
       } else if (message.type === 'approval_declined') {
-        this.actionResult = {
-          type: 'error',
-          message: 'This request was declined.',
-        };
+        showToast('This request was denied.', 'neutral');
       } else if (message.type === 'approval_expired') {
-        this.actionResult = {
-          type: 'error',
-          message: 'This request has expired.',
-        };
+        showToast('This request timed out.', 'warning');
       }
+
+      // A state transition just landed; refresh the workflow timeline.
+      this.loadHistory();
     }
   }
 
   private async loadApprovalRequest() {
     this.loading = true;
     this.error = null;
+    this.publicOnly = false;
 
     try {
       const data = await this.fetchData(
         `/api/v1/approval-requests/${this.requestId}`
       );
       if (data) {
-        this.approvalRequest = data;
-      } else {
-        this.error = 'Approval request not found';
+        // A request the sweeper has not caught up with yet is still `pending`
+        // in the database long after its expiry. Read the clock here so the
+        // page never offers a decision that the backend would reject.
+        this.approvalRequest = normalizeApprovalRequest(data);
+        await this.loadHistory();
+        return;
       }
+      // Authenticated read failed (not a member of the account or request
+      // gone). Fall back to the public token payload when the link carried
+      // one, so escalation recipients can still see the request (issue #335).
+      if (await this.loadPublicRequest()) {
+        return;
+      }
+      this.error = 'Approval request not found';
     } catch (err: any) {
       this.error = err.message || 'Failed to load approval request';
       console.error('Error loading approval request:', err);
     } finally {
       this.loading = false;
+    }
+  }
+
+  /** Load the request via the public token endpoint. True when it worked. */
+  private async loadPublicRequest(): Promise<boolean> {
+    const token = new URLSearchParams(window.location.search).get('token');
+    if (!token) {
+      return false;
+    }
+    try {
+      const response = await fetch(
+        `/approval/${this.requestId}/data?token=${encodeURIComponent(token)}`
+      );
+      if (!response.ok) {
+        return false;
+      }
+      const data = await response.json();
+      // The public payload is a subset of ApprovalRequest; fill the gaps the
+      // render path reads so the card renders without blowing up.
+      this.approvalRequest = {
+        ...data,
+        tool_configuration_id: data.tool_configuration_id ?? '',
+        approval_workflow_id: data.approval_workflow_id ?? '',
+        account_id: data.account_id ?? '',
+      } as ApprovalRequest;
+      this.history = Array.isArray(data.history) ? data.history : [];
+      this.publicOnly = true;
+      return true;
+    } catch (err) {
+      console.error('Public token fallback failed:', err);
+      return false;
+    }
+  }
+
+  /** Fetch the workflow-history timeline (authenticated reads only). */
+  private async loadHistory() {
+    try {
+      const events = await this.fetchData(
+        `/api/v1/approval-requests/${this.requestId}/history`
+      );
+      if (Array.isArray(events)) {
+        this.history = events as ApprovalTimelineEntry[];
+      }
+    } catch (err) {
+      // Timeline is supplementary; the request card must still render.
+      console.error('Error loading approval history:', err);
     }
   }
 
@@ -275,7 +633,6 @@ export class ApprovalView extends AuthedElement {
     if (!this.approvalRequest) return;
 
     this.submitting = true;
-    this.actionResult = null;
 
     const body: Record<string, unknown> = {
       approved: action === 'approve',
@@ -286,6 +643,50 @@ export class ApprovalView extends AuthedElement {
     }
     if (options.answer_text) {
       body.answer_text = options.answer_text;
+    }
+
+    // Public-token rendering (viewer outside the account): the decision goes
+    // through the token endpoint, which authorizes exactly this request.
+    if (this.publicOnly) {
+      const token = new URLSearchParams(window.location.search).get('token');
+      try {
+        const response = await fetch(
+          `/approval/${this.requestId}/decide?token=${encodeURIComponent(
+            token || ''
+          )}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: action === 'approve' ? 'approve' : 'decline',
+              comment: options.comment || null,
+            }),
+          }
+        );
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.detail || `Failed to ${action} request`);
+        }
+        const updated = await response.json();
+        this.approvalRequest = {
+          ...this.approvalRequest!,
+          status: updated.status,
+          resolved_at: updated.resolved_at ?? this.approvalRequest!.resolved_at,
+        };
+        // An empty array is the default when the decide payload omits
+        // history; do not wipe a timeline we already rendered.
+        if (Array.isArray(updated.history) && updated.history.length > 0) {
+          this.history = updated.history;
+        }
+        this.decisionTaken = true;
+        showToast(successMessage, action === 'approve' ? 'success' : 'neutral');
+        this.comment = '';
+      } catch (err: any) {
+        showToast(err.message || `Failed to ${action} request`, 'danger');
+      } finally {
+        this.submitting = false;
+      }
+      return;
     }
 
     try {
@@ -308,15 +709,38 @@ export class ApprovalView extends AuthedElement {
 
       const updated = await response.json();
       this.approvalRequest = updated;
-      this.actionResult = { type: 'success', message: successMessage };
       this.comment = '';
+      this.decisionTaken = true;
+      showToast(successMessage, action === 'approve' ? 'success' : 'neutral');
+      this.loadHistory();
+      await this.loadWaitingNext();
     } catch (err: any) {
-      this.actionResult = {
-        type: 'error',
-        message: err.message || `Failed to ${action} request`,
-      };
+      showToast(err.message || `Failed to ${action} request`, 'danger');
     } finally {
       this.submitting = false;
+    }
+  }
+
+  /**
+   * After a decision the page has nothing left to do, so it says where the
+   * work is: back to the list, or straight into the next request waiting.
+   */
+  private async loadWaitingNext() {
+    try {
+      const data = await this.fetchData(
+        `/api/v1/approval-requests?status=pending&limit=${APPROVAL_REQUESTS_PAGE_LIMIT}`
+      );
+      if (Array.isArray(data)) {
+        this.waitingNextFetched = data.length;
+        this.waitingNext = (data as ApprovalRequest[]).filter(
+          (request) =>
+            request.id !== this.requestId &&
+            isUnexpiredPendingRequest(request, Date.now())
+        );
+      }
+    } catch (error) {
+      // The decision landed; a missing queue count is not worth an error.
+      console.error('Failed to load the waiting queue:', error);
     }
   }
 
@@ -324,15 +748,35 @@ export class ApprovalView extends AuthedElement {
     await this.submitDecision(
       'approve',
       { comment: this.comment },
-      'Request approved successfully!'
+      'Request approved.'
     );
   }
 
-  private async handleDecline() {
+  /** Denying stops the agent, so it confirms first (DESIGN.md destructive). */
+  private async handleDeny() {
+    const request = this.approvalRequest;
+    if (!request || this.confirming) return;
+    this.confirming = true;
+    let confirmed = false;
+    try {
+      confirmed = await confirmDialog({
+        title: 'Deny this request?',
+        message: `${request.tool_name} will not run.`,
+        detail: `${formatApprovalRequester(
+          request.managed_agent_name,
+          request.tool_args
+        )} is told no and continues without it.`,
+        confirmLabel: 'Deny',
+        variant: 'danger',
+      });
+    } finally {
+      this.confirming = false;
+    }
+    if (!confirmed) return;
     await this.submitDecision(
       'decline',
       { comment: this.comment },
-      'Request declined.'
+      'Request denied.'
     );
   }
 
@@ -385,6 +829,31 @@ export class ApprovalView extends AuthedElement {
     }
   }
 
+  /** "expires in 4m 12s" while it matters, coarser once it is hours away. */
+  private formatCountdown(request: ApprovalRequest): string | null {
+    const remaining = millisUntilExpiry(request, this.nowMs);
+    if (remaining === null) return null;
+    if (remaining <= 0) return 'expired';
+    const totalSeconds = Math.floor(remaining / 1000);
+    if (totalSeconds < 60) return `expires in ${totalSeconds}s`;
+    const minutes = Math.floor(totalSeconds / 60);
+    if (minutes < 60) {
+      return `expires in ${minutes}m ${totalSeconds % 60}s`;
+    }
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `expires in ${hours}h ${minutes % 60}m`;
+    return `expires in ${Math.floor(hours / 24)}d`;
+  }
+
+  /** The one-line summary the decision bar leads with. */
+  private decisionSummary(request: ApprovalRequest): string {
+    const args = withoutApprovalMetadata(request.tool_args);
+    const firstValue = Object.values(args).find(
+      (value) => typeof value === 'string' && value.trim().length > 0
+    ) as string | undefined;
+    return request.summary?.trim() || firstValue?.trim() || request.tool_name;
+  }
+
   private formatToolArgs(args: Record<string, any>): string {
     // Convert args to JSON string with proper formatting
     const jsonStr = JSON.stringify(args, null, 2);
@@ -395,6 +864,29 @@ export class ApprovalView extends AuthedElement {
       .replace(/\\n/g, '\n')
       .replace(/\\r/g, '\r')
       .replace(/\\t/g, '\t');
+  }
+
+  private timelineIcon(event: ApprovalTimelineEntry): string {
+    switch (event.event_type) {
+      case 'approval_requested':
+        return 'shield-check';
+      case 'notification_sent':
+        return 'send';
+      case 'viewed':
+        return 'eye';
+      case 'vote_received':
+        return 'hand-thumbs-up';
+      case 'approval_complete':
+        return 'check-circle';
+      case 'escalation_triggered':
+        return 'arrow-up-circle';
+      case 'expired':
+        return 'clock-history';
+      case 'cancelled':
+        return 'slash-circle';
+      default:
+        return 'dot';
+    }
   }
 
   render() {
@@ -419,32 +911,32 @@ export class ApprovalView extends AuthedElement {
       return html`
         <sl-alert variant="warning" open>
           <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-          <strong>Not Found:</strong> Approval request not found
+          <strong>Not found:</strong> Approval request not found
         </sl-alert>
       `;
     }
 
-    const isPending = this.approvalRequest.status === 'pending';
+    // A request whose expiry passed is timed out, whatever the record says:
+    // the buttons would post a decision the backend refuses.
+    const request = normalizeApprovalRequest(this.approvalRequest, this.nowMs);
+    const isPending = isUnexpiredPendingRequest(request, this.nowMs);
     const isResolved = [
       'approved',
       'declined',
       'expired',
       'cancelled',
-    ].includes(this.approvalRequest.status);
-    const displayStatus =
-      this.approvalRequest.status === 'expired'
-        ? 'TIMED OUT'
-        : this.approvalRequest.status.toUpperCase();
+    ].includes(request.status);
+    const displayStatus = approvalStatusLabel(request.status);
+    const countdown = isPending ? this.formatCountdown(request) : null;
+    const expiringSoon = isPending && isExpiringSoon(request, this.nowMs);
 
     const toolArgs = this.formatToolArgs(
-      withoutApprovalMetadata(this.approvalRequest.tool_args)
+      withoutApprovalMetadata(request.tool_args)
     );
-    const source = formatApprovalSource(
-      getApprovalSource(this.approvalRequest.tool_args)
-    );
+    const source = formatApprovalSource(getApprovalSource(request.tool_args));
     const requester = formatApprovalRequester(
-      this.approvalRequest.managed_agent_name,
-      this.approvalRequest.tool_args
+      request.managed_agent_name,
+      request.tool_args
     );
 
     const isQuestion = this.isQuestion;
@@ -455,13 +947,26 @@ export class ApprovalView extends AuthedElement {
           <sl-icon
             name=${isQuestion ? 'chat-left-quote' : 'shield-check'}
           ></sl-icon>
-          ${isQuestion ? 'Agent Question' : 'Tool Execution Approval'}
+          ${isQuestion ? 'Agent question' : 'Tool execution approval'}
           <sl-badge
-            variant=${this.getStatusVariant(this.approvalRequest.status)}
-            class="status-badge"
+            pill
+            class="chip status-badge"
+            variant=${this.getStatusVariant(request.status)}
           >
             ${displayStatus}
           </sl-badge>
+          ${
+            countdown
+              ? html`<sl-badge
+                  pill
+                  class="chip status-badge"
+                  variant=${expiringSoon ? 'warning' : 'neutral'}
+                >
+                  <sl-icon name="hourglass"></sl-icon>
+                  ${countdown}
+                </sl-badge>`
+              : ''
+          }
         </h1>
         <p>
           ${
@@ -473,25 +978,11 @@ export class ApprovalView extends AuthedElement {
       </div>
 
       ${
-        this.actionResult
+        this.approvalRequest.status === 'expired'
           ? html`
-              <sl-alert
-                variant=${
-                  this.actionResult.type === 'success' ? 'success' : 'danger'
-                }
-                open
-                closable
-                @sl-hide=${() => (this.actionResult = null)}
-              >
-                <sl-icon
-                  slot="icon"
-                  name=${
-                    this.actionResult.type === 'success'
-                      ? 'check-circle'
-                      : 'exclamation-octagon'
-                  }
-                ></sl-icon>
-                ${this.actionResult.message}
+              <sl-alert variant="warning" open class="expired-banner">
+                <sl-icon slot="icon" name="clock-history"></sl-icon>
+                <strong>Expired:</strong> no response within the window
               </sl-alert>
             `
           : ''
@@ -504,10 +995,8 @@ export class ApprovalView extends AuthedElement {
                 <div class="content-section">
                   <question-answer-panel
                     .question=${this.questionText}
-                    .options=${this.approvalRequest.question_options ?? []}
-                    .allowFreeText=${
-                      this.approvalRequest.allow_free_text === true
-                    }
+                    .options=${request.question_options ?? []}
+                    .allowFreeText=${request.allow_free_text === true}
                     .submitting=${this.submitting}
                     @question-answer=${this.handleQuestionAnswer}
                     @question-dismiss=${this.handleQuestionDismiss}
@@ -517,13 +1006,11 @@ export class ApprovalView extends AuthedElement {
             : ''
         }
         ${
-          this.approvalRequest.summary && !isQuestion
+          request.summary && !isQuestion
             ? html`
                 <div class="content-section">
                   <h2>Request</h2>
-                  <div class="reasoning-text">
-                    ${this.approvalRequest.summary}
-                  </div>
+                  <div class="reasoning-text">${request.summary}</div>
                 </div>
               `
             : ''
@@ -539,7 +1026,7 @@ export class ApprovalView extends AuthedElement {
             : ''
         }
         <div class="content-section">
-          <h2>Tool Information</h2>
+          <h2>Tool information</h2>
           <div class="info-grid">
             <div class="info-label">Requested by:</div>
             <div class="info-value">
@@ -555,40 +1042,38 @@ export class ApprovalView extends AuthedElement {
                 : ''
             }
 
-            <div class="info-label">Tool Name:</div>
+            <div class="info-label">Tool name:</div>
             <div class="info-value">
-              <strong>${this.approvalRequest.tool_name}</strong>
+              <strong>${request.tool_name}</strong>
             </div>
 
             <div class="info-label">Request ID:</div>
             <div class="info-value">
-              <code style="font-size: 0.75rem;"
-                >${this.approvalRequest.id}</code
-              >
+              <code style="font-size: 0.75rem;">${request.id}</code>
             </div>
 
             <div class="info-label">Requested:</div>
             <div class="info-value">
-              ${this.formatDate(this.approvalRequest.requested_at)}
+              ${this.formatDate(request.requested_at)}
             </div>
 
             ${
-              this.approvalRequest.expires_at
+              request.expires_at
                 ? html`
                     <div class="info-label">Expires:</div>
                     <div class="info-value">
-                      ${this.formatDate(this.approvalRequest.expires_at)}
+                      ${this.formatDate(request.expires_at)}
                     </div>
                   `
                 : ''
             }
             ${
-              this.approvalRequest.execution_id
+              request.execution_id
                 ? html`
                     <div class="info-label">Execution ID:</div>
                     <div class="info-value">
                       <code style="font-size: 0.75rem;"
-                        >${this.approvalRequest.execution_id}</code
+                        >${request.execution_id}</code
                       >
                     </div>
                   `
@@ -598,110 +1083,95 @@ export class ApprovalView extends AuthedElement {
         </div>
 
         ${
-          this.approvalRequest.rule_context
+          request.rule_context
             ? html`
                 <div class="content-section">
                   <approval-rule-context-block
-                    .ruleContext=${this.approvalRequest.rule_context}
-                    .toolName=${this.approvalRequest.tool_name}
+                    .ruleContext=${request.rule_context}
+                    .toolName=${request.tool_name}
                   ></approval-rule-context-block>
                 </div>
               `
             : ''
         }
         ${
-          this.approvalRequest.agent_reasoning
+          request.agent_reasoning
             ? html`
                 <div class="content-section">
-                  <h2>Agent Reasoning</h2>
-                  <div class="reasoning-text">
-                    ${this.approvalRequest.agent_reasoning}
-                  </div>
+                  <h2>Agent reasoning</h2>
+                  <div class="reasoning-text">${request.agent_reasoning}</div>
                 </div>
               `
             : ''
         }
 
         <div class="content-section">
-          <h2>Tool Arguments</h2>
+          <h2>Tool arguments</h2>
           <div class="code-block">${toolArgs}</div>
         </div>
 
         ${
-          isResolved
+          this.history.length
             ? html`
-                <div class="resolved-info">
-                  <h3>
-                    ${
-                      this.approvalRequest.status === 'approved'
-                        ? '✅ Approved'
-                        : this.approvalRequest.status === 'expired'
-                          ? '⏱️ Timed Out'
-                          : this.approvalRequest.status === 'cancelled'
-                            ? '🚫 Cancelled'
-                            : '❌ Declined'
-                    }
-                  </h3>
-                  ${
-                    this.approvalRequest.resolved_at
-                      ? html`<p>
-                          Resolved at:
-                          ${this.formatDate(this.approvalRequest.resolved_at)}
-                        </p>`
-                      : ''
-                  }
-                  ${
-                    this.approvalRequest.approver_comment
-                      ? html`
-                          <p><strong>Comment:</strong></p>
-                          <div class="code-block">
-                            ${this.approvalRequest.approver_comment}
+                <div class="content-section">
+                  <h2>Workflow History</h2>
+                  <ul class="timeline">
+                    ${this.history.map(
+                      (event) => html`
+                        <li>
+                          <sl-icon
+                            class="timeline-icon"
+                            name=${this.timelineIcon(event)}
+                          ></sl-icon>
+                          <div class="timeline-body">
+                            <p class="timeline-detail">${event.detail}</p>
+                            <p class="timeline-meta">
+                              ${
+                                event.actor_email
+                                  ? html`<strong>${event.actor_email}</strong>
+                                      · `
+                                  : ''
+                              }
+                              ${this.formatDate(event.timestamp)}
+                            </p>
+                            ${
+                              event.comment
+                                ? html`<div class="timeline-comment">
+                                    ${event.comment}
+                                  </div>`
+                                : ''
+                            }
                           </div>
-                        `
-                      : ''
-                  }
+                        </li>
+                      `
+                    )}
+                  </ul>
                 </div>
               `
             : ''
         }
         ${
-          isPending && !isQuestion
+          isResolved
             ? html`
-                <sl-divider></sl-divider>
-
-                <div class="comment-section">
-                  <h2>Your Decision</h2>
-                  <sl-textarea
-                    label="Comment (optional)"
-                    placeholder="Add a comment explaining your decision..."
-                    rows="4"
-                    .value=${this.comment}
-                    @sl-input=${(e: any) => (this.comment = e.target.value)}
-                    ?disabled=${this.submitting}
-                  ></sl-textarea>
-                </div>
-
-                <div class="actions">
-                  <sl-button
-                    variant="success"
-                    size="large"
-                    @click=${this.handleApprove}
-                    ?loading=${this.submitting}
-                    ?disabled=${this.submitting}
-                  >
-                    <sl-icon slot="prefix" name="check-circle"></sl-icon>
-                    Approve
-                  </sl-button>
-                  <sl-button
-                    variant="danger"
-                    size="large"
-                    @click=${this.handleDecline}
-                    ?loading=${this.submitting}
-                    ?disabled=${this.submitting}
-                  >
-                    <sl-icon slot="prefix" name="x-circle"></sl-icon>
-                    Decline
-                  </sl-button>
+                <div class="resolved-info">
+                  <h3>${approvalStatusLabel(request.status)}</h3>
+                  ${
+                    request.resolved_at
+                      ? html`<p>
+                          Resolved at: ${this.formatDate(request.resolved_at)}
+                        </p>`
+                      : ''
+                  }
+                  ${
+                    request.approver_comment
+                      ? html`
+                          <p><strong>Comment:</strong></p>
+                          <div class="code-block">
+                            ${request.approver_comment}
+                          </div>
+                        `
+                      : ''
+                  }
                 </div>
               `
             : ''
@@ -716,6 +1186,103 @@ export class ApprovalView extends AuthedElement {
           }
         </div>
       </sl-card>
+
+      ${this.decisionTaken ? this.renderPostDecision() : ''}
+      ${
+        isPending && !isQuestion
+          ? this.renderDecisionBar(request, countdown, expiringSoon)
+          : ''
+      }
+    `;
+  }
+
+  /** The decision, always on screen, whatever the operator has scrolled to. */
+  private renderDecisionBar(
+    request: ApprovalRequest,
+    countdown: string | null,
+    expiringSoon: boolean
+  ) {
+    const requester = formatApprovalRequester(
+      request.managed_agent_name,
+      request.tool_args
+    );
+    return html`
+      <div class="decision-bar">
+        <div class="decision-summary">
+          <div class="decision-title" title=${this.decisionSummary(request)}>
+            <code>${request.tool_name}</code> ${this.decisionSummary(request)}
+          </div>
+          <div class="decision-paused">
+            ${requester} is paused until you decide
+          </div>
+          ${
+            countdown
+              ? html`<sl-badge
+                  pill
+                  class="chip countdown-chip"
+                  variant=${expiringSoon ? 'warning' : 'neutral'}
+                >
+                  <sl-icon name="hourglass"></sl-icon>
+                  ${countdown}
+                </sl-badge>`
+              : ''
+          }
+        </div>
+        <sl-input
+          class="decision-comment"
+          size="small"
+          label="Comment (optional)"
+          placeholder="Comment (optional)"
+          .value=${this.comment}
+          @sl-input=${(e: any) => (this.comment = e.target.value)}
+          ?disabled=${this.submitting}
+        ></sl-input>
+        <div class="decision-buttons">
+          <sl-button
+            class="approve"
+            variant="success"
+            title="Approve (A)"
+            @click=${this.handleApprove}
+            ?loading=${this.submitting}
+            ?disabled=${this.submitting}
+          >
+            <sl-icon slot="prefix" name="check-circle"></sl-icon>
+            Approve<kbd aria-hidden="true">A</kbd>
+          </sl-button>
+          <sl-button
+            class="deny"
+            variant="danger"
+            outline
+            title="Deny (D)"
+            @click=${this.handleDeny}
+            ?disabled=${this.submitting}
+          >
+            <sl-icon slot="prefix" name="x-circle"></sl-icon>
+            Deny<kbd aria-hidden="true">D</kbd>
+          </sl-button>
+        </div>
+      </div>
+    `;
+  }
+
+  /** Where the work is now that this page has none left. */
+  private renderPostDecision() {
+    const waiting = this.waitingNext;
+    return html`
+      <div class="post-decision">
+        <a href="/console/approvals">Back to approvals</a>
+        <span class="separator">·</span>
+        ${
+          waiting.length > 0
+            ? html`<a href="/console/approval/${waiting[0].id}"
+                >${formatNextWaitingLabel(
+                  waiting.length,
+                  this.waitingNextFetched
+                )}</a
+              >`
+            : html`<span class="muted">Nothing else is waiting for you</span>`
+        }
+      </div>
     `;
   }
 }

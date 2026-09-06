@@ -9,6 +9,10 @@ from preloop.api.endpoints.account import (
     _managed_agent_control_config_flags,
     _managed_agent_onboarding_flags,
 )
+from preloop.services.agent_control_presence import (
+    AGENT_CONTROL_HEARTBEAT_INTERVAL,
+    AGENT_CONTROL_PRESENCE_TTL,
+)
 from preloop.models.crud import (
     crud_ai_model,
     crud_api_usage,
@@ -170,8 +174,20 @@ def test_managed_agent_control_fields_enable_claude_code_with_sidecar_flags():
     assert no_sidecar["control_capabilities"] == []
 
 
-def test_managed_agent_control_online_uses_persisted_last_seen():
-    """REST on another worker still reports online from the sidecar heartbeat."""
+def _control_enrollment() -> dict:
+    return {
+        "validation_result": {
+            "control_channel_configured": True,
+            "control_plugin_verified": True,
+            "control_ws_url_ok": True,
+            "control_bearer_token_ok": True,
+        },
+        "managed_config": {},
+    }
+
+
+def test_managed_agent_control_online_uses_persisted_heartbeat():
+    """REST on another replica still reports online from the WS heartbeat."""
     fields = _managed_agent_control_fields(
         {
             "id": "agent-from-db",
@@ -182,24 +198,48 @@ def test_managed_agent_control_online_uses_persisted_last_seen():
             "ended_at": None,
             "last_seen_at": datetime.now(UTC) - timedelta(seconds=10),
             "control_session_mode": "local",
+            "control_last_heartbeat_at": datetime.now(UTC) - timedelta(seconds=10),
         },
-        {
-            "validation_result": {
-                "control_channel_configured": True,
-                "control_plugin_verified": True,
-                "control_ws_url_ok": True,
-                "control_bearer_token_ok": True,
-            },
-            "managed_config": {},
-        },
+        _control_enrollment(),
     )
 
     assert fields["control_online"] is True
     assert fields["control_session_mode"] == "local"
 
 
+def test_managed_agent_presence_window_survives_one_missed_heartbeat():
+    """A late beat must not flip the badge; three missed beats must."""
+    beat = AGENT_CONTROL_HEARTBEAT_INTERVAL.total_seconds()
+    assert AGENT_CONTROL_PRESENCE_TTL >= AGENT_CONTROL_HEARTBEAT_INTERVAL * 2.5
+
+    def online_after(seconds: float) -> bool:
+        return _managed_agent_control_fields(
+            {
+                "id": "agent-from-db",
+                "agent_kind": "claude_code",
+                "session_source_type": "claude_code",
+                "lifecycle_state": "active",
+                "runtime_session_id": "runtime-claude",
+                "ended_at": None,
+                "last_seen_at": datetime.now(UTC),
+                "control_session_mode": "remote",
+                "control_last_heartbeat_at": (
+                    datetime.now(UTC) - timedelta(seconds=seconds)
+                ),
+            },
+            _control_enrollment(),
+        )["control_online"]
+
+    # One beat late, then two: still connected, because plugins are allowed to
+    # be busy for a moment.
+    assert online_after(beat * 2 - 1) is True
+    assert online_after(AGENT_CONTROL_PRESENCE_TTL.total_seconds() - 1) is True
+    # Past the window the agent is gone, and it takes more than one lost beat.
+    assert online_after(AGENT_CONTROL_PRESENCE_TTL.total_seconds() + 5) is False
+
+
 def test_managed_agent_control_online_ignores_enrollment_last_seen():
-    """Token mint stamps last_seen_at; that is not a sidecar heartbeat."""
+    """Token mint and gateway traffic stamp last_seen_at; neither is presence."""
     fields = _managed_agent_control_fields(
         {
             "id": "agent-from-db",
@@ -209,20 +249,71 @@ def test_managed_agent_control_online_ignores_enrollment_last_seen():
             "runtime_session_id": "runtime-claude",
             "ended_at": None,
             "last_seen_at": datetime.now(UTC) - timedelta(seconds=10),
+            # A stale session mode from an old connection, and no heartbeat.
+            "control_session_mode": "remote",
         },
-        {
-            "validation_result": {
-                "control_channel_configured": True,
-                "control_plugin_verified": True,
-                "control_ws_url_ok": True,
-                "control_bearer_token_ok": True,
-            },
-            "managed_config": {},
-        },
+        _control_enrollment(),
     )
 
     assert fields["control_online"] is False
     assert fields["control_session_mode"] == "offline"
+
+
+def _online_snapshot(_agent_id: str) -> dict:
+    return {"online": True, "session_mode": "local", "supports_interrupt": True}
+
+
+def test_managed_agent_control_online_ignores_a_registry_entry_gone_stale():
+    """A half-open socket must not keep one replica claiming online.
+
+    The replica holding the socket knows it is registered, but if the
+    heartbeat it writes has stopped moving then the plugin is gone and every
+    other replica already says offline. Trust the shared signal.
+    """
+    with patch(
+        "preloop.api.endpoints.agent_control.agent_control_snapshot",
+        _online_snapshot,
+    ):
+        stale = _managed_agent_control_fields(
+            {
+                "id": "agent-half-open",
+                "agent_kind": "claude_code",
+                "session_source_type": "claude_code",
+                "lifecycle_state": "active",
+                "runtime_session_id": "runtime-claude",
+                "ended_at": None,
+                "last_seen_at": datetime.now(UTC),
+                "control_session_mode": "local",
+                "control_last_heartbeat_at": (
+                    datetime.now(UTC)
+                    - AGENT_CONTROL_PRESENCE_TTL
+                    - timedelta(seconds=5)
+                ),
+            },
+            _control_enrollment(),
+        )
+
+        assert stale["control_online"] is False
+        assert stale["control_session_mode"] == "offline"
+
+        # A socket from before the heartbeat column existed still counts.
+        never_beat = _managed_agent_control_fields(
+            {
+                "id": "agent-half-open",
+                "agent_kind": "claude_code",
+                "session_source_type": "claude_code",
+                "lifecycle_state": "active",
+                "runtime_session_id": "runtime-claude",
+                "ended_at": None,
+                "last_seen_at": datetime.now(UTC),
+                "control_session_mode": "local",
+                "control_last_heartbeat_at": None,
+            },
+            _control_enrollment(),
+        )
+
+        assert never_beat["control_online"] is True
+        assert never_beat["control_session_mode"] == "local"
 
 
 def test_managed_agent_summary_coerces_null_session_mode():
@@ -2257,3 +2348,141 @@ def test_account_agent_enrollment_validate_and_restore(client, db_session, test_
     assert restore_body["backup_metadata"]["restored_by"] == "test"
     assert restore_body["validation_result"]["restored"] is True
     assert restore_body["last_restored_at"] is not None
+
+
+def _enroll_control_plugin(db_session, *, account_id, agent_id, user_id) -> None:
+    """The enrollment the runtime plugin writes when it installs itself."""
+    crud_managed_agent_enrollment.create_for_agent(
+        db_session,
+        account_id=account_id,
+        agent_id=agent_id,
+        created_by_user_id=user_id,
+        enrollment_type="cli_managed_config",
+        adapter_key="claude_code",
+        status="active",
+        managed_config={},
+        validation_result={
+            "control_channel_configured": True,
+            "control_plugin_verified": True,
+            "control_ws_url_ok": True,
+            "control_bearer_token_ok": True,
+        },
+        commit=True,
+    )
+
+
+def test_agent_presence_survives_a_replica_without_the_websocket(
+    client, db_session, test_user
+):
+    """Production runs api=2, so most reads never see the connection registry.
+
+    This request is served by a process that holds no Agent Control socket for
+    this agent. It has to answer from the persisted heartbeat, otherwise the
+    badge flips every time the load balancer picks the other replica.
+    """
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "workspace-presence",
+            "session_reference": "claude-session-presence",
+            "runtime_principal_name": "Presence Workspace",
+            "allowed_mcp_servers": [],
+        },
+    )
+    assert token_response.status_code == 201
+
+    agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="claude_code",
+        session_source_id="workspace-presence",
+    )
+    assert agent is not None
+    _enroll_control_plugin(
+        db_session,
+        account_id=test_user.account_id,
+        agent_id=agent.id,
+        user_id=test_user.id,
+    )
+
+    # The heartbeat the WebSocket persisted on the other replica.
+    crud_managed_agent.touch_last_seen_for_principal(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="workspace-presence",
+        observed_at=datetime.now(UTC),
+        control_session_mode="local",
+        control_heartbeat_at=datetime.now(UTC),
+        commit=True,
+    )
+
+    detail = client.get(f"/api/v1/agents/{agent.id}")
+    assert detail.status_code == 200
+    body = detail.json()["agent"]
+    assert body["control_enabled"] is True
+    assert body["control_online"] is True
+    assert body["control_session_mode"] == "local"
+
+    listed = client.get("/api/v1/agents")
+    assert listed.status_code == 200
+    item = next(
+        entry
+        for entry in listed.json()["items"]
+        if entry["session_source_id"] == "workspace-presence"
+    )
+    # The list and the detail view must agree; the console reads both.
+    assert item["control_online"] is True
+    assert item["control_session_mode"] == "local"
+
+
+def test_agent_presence_goes_offline_once_the_heartbeat_window_passes(
+    client, db_session, test_user
+):
+    """A plugin that stopped beating is offline, on every replica."""
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "workspace-stale",
+            "session_reference": "claude-session-stale",
+            "runtime_principal_name": "Stale Workspace",
+            "allowed_mcp_servers": [],
+        },
+    )
+    assert token_response.status_code == 201
+
+    agent = crud_managed_agent.get_by_source(
+        db_session,
+        account_id=str(test_user.account_id),
+        session_source_type="claude_code",
+        session_source_id="workspace-stale",
+    )
+    assert agent is not None
+    _enroll_control_plugin(
+        db_session,
+        account_id=test_user.account_id,
+        agent_id=agent.id,
+        user_id=test_user.id,
+    )
+
+    stale = datetime.now(UTC) - AGENT_CONTROL_PRESENCE_TTL - timedelta(seconds=5)
+    crud_managed_agent.touch_last_seen_for_principal(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="workspace-stale",
+        # Gateway traffic keeps last_seen_at fresh even after the plugin died.
+        observed_at=datetime.now(UTC),
+        control_session_mode="local",
+        control_heartbeat_at=stale,
+        commit=True,
+    )
+
+    detail = client.get(f"/api/v1/agents/{agent.id}")
+    assert detail.status_code == 200
+    body = detail.json()["agent"]
+    assert body["control_enabled"] is True
+    assert body["control_online"] is False
+    assert body["control_session_mode"] == "offline"

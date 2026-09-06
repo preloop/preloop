@@ -389,6 +389,18 @@ export class CostView extends AuthedElement {
         color: var(--sl-color-neutral-600);
       }
 
+      /* The previous range's answers, on their way out: readable, clearly not
+         current, and in exactly the place the new ones will appear. Only the
+         answers dim and go inert. The side column (budgets, pricing
+         overrides) is not an answer about the range, so it stays live: no
+         opacity here on the wrapper, which would group the side column into
+         the fade. */
+      .results.is-updating > *:not(.column-layout),
+      .results.is-updating .main-column {
+        opacity: 0.6;
+        pointer-events: none;
+      }
+
       .analytics-card::part(body) {
         padding: var(--sl-spacing-large);
       }
@@ -1935,7 +1947,7 @@ export class CostView extends AuthedElement {
                 </div>
               `
             : html`<div class="empty">
-                No provider billing data in this window yet — run "Sync now" or
+                No provider billing data in this window yet. Run "Sync now" or
                 wait for the daily ingestion.
               </div>`
         }
@@ -2280,7 +2292,7 @@ export class CostView extends AuthedElement {
                 role="status"
               >
                 <sl-icon slot="icon" name="info-circle"></sl-icon>
-                Owner attribution unavailable — sessions are grouped as
+                Owner attribution unavailable: sessions are grouped as
                 Unattributed.
               </sl-alert>`
             : nothing
@@ -2386,7 +2398,7 @@ export class CostView extends AuthedElement {
     return html`
       <sl-alert variant="neutral" open class="tools-notice" role="status">
         <sl-icon slot="icon" name="info-circle"></sl-icon>
-        No expensive tool definitions flagged — your agents' tool schemas look
+        No expensive tool definitions flagged: your agents' tool schemas look
         efficient. Sort by total cost or schema tokens to spot the priciest
         tools.
       </sl-alert>
@@ -2657,11 +2669,16 @@ export class CostView extends AuthedElement {
   }
 
   render() {
+    // A slower call never blanks a card that already has an answer: the first
+    // load gets the spinner, a range change keeps the previous numbers at 60%
+    // with aria-busy until the new ones arrive.
+    const hasAnswer = this.summary !== null;
+    const updating = this.loading && hasAnswer;
     return html`
       <div class="page">
         <view-header
           headerText="Cost Analytics"
-          description="Understand gateway spend by model, agent, session, flow, and API key."
+          description="Understand gateway spend by agent, tool, session and user."
         ></view-header>
 
         <div class="toolbar">
@@ -2693,7 +2710,7 @@ export class CostView extends AuthedElement {
             : null
         }
         ${
-          this.loading
+          this.loading && !hasAnswer
             ? html`<sl-card>
                 <div
                   class="loading-state"
@@ -2706,13 +2723,18 @@ export class CostView extends AuthedElement {
                 </div>
               </sl-card>`
             : html`
-                ${this.renderMetrics()} ${this.renderCatalogInfo()}
-                ${this.renderUnpricedNotice()}
-                <div class="column-layout dashboard extra-wide">
-                  <div class="main-column">
-                    ${this.renderBreakdown()} ${this.renderImportedUsage()}
+                <div
+                  class="results ${updating ? 'is-updating' : ''}"
+                  aria-busy=${updating ? 'true' : 'false'}
+                >
+                  ${this.renderMetrics()} ${this.renderCatalogInfo()}
+                  ${this.renderUnpricedNotice()}
+                  <div class="column-layout dashboard extra-wide">
+                    <div class="main-column">
+                      ${this.renderBreakdown()} ${this.renderImportedUsage()}
+                    </div>
+                    <div class="side-column">${this.renderControls()}</div>
                   </div>
-                  <div class="side-column">${this.renderControls()}</div>
                 </div>
               `
         }

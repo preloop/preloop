@@ -219,6 +219,53 @@ describe('agent-talk-view', () => {
     el.remove();
   });
 
+  it('announces the window on the talk channel in window mode', async () => {
+    const listener = listenOnTalkChannel();
+    const el = await mount('?window=1&session=sess-1');
+
+    await waitUntil(
+      () => listener.messages.some((message) => message.type === 'open'),
+      'the window never announced itself'
+    );
+    listener.close();
+    el.remove();
+  });
+
+  it('posts no heartbeat from the in-page form', async () => {
+    // DESIGN: one chip per open talk *window*. On the page (and on a phone,
+    // where Talk navigates instead of opening a window) the chip would point
+    // at the tab the operator is already reading.
+    const listener = listenOnTalkChannel();
+    const el = await mount('?session=sess-1');
+
+    await aTimeout(50);
+    expect(listener.messages.map((message) => message.type)).to.not.contain(
+      'open'
+    );
+    expect(listener.messages).to.have.length(0);
+
+    // Closing the page says nothing either.
+    el.remove();
+    await aTimeout(50);
+    expect(listener.messages).to.have.length(0);
+    listener.close();
+  });
+
+  it('raises no unread dot from the in-page form', async () => {
+    setAttention({ hidden: true, focused: false });
+    const listener = listenOnTalkChannel();
+    const el = await mount('?session=sess-1');
+
+    el.receiveActivity({
+      payload: { managed_agent_id: 'agent-1', runtime_session_id: 'sess-1' },
+    });
+
+    await aTimeout(50);
+    expect(listener.messages).to.have.length(0);
+    listener.close();
+    el.remove();
+  });
+
   it('reports the entry point that opened it as the composer source', async () => {
     const el = await mount('?window=1&session=sess-1&source=agent-detail-view');
     const composer = el.shadowRoot!.querySelector(

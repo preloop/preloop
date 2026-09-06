@@ -2791,8 +2791,22 @@ export async function getAIModelGatewayUsageSearch(
 }
 
 // Flows
-export async function getFlows(): Promise<any[]> {
-  const response = await fetchWithAuth('/api/v1/flows');
+/**
+ * The account's flows.
+ *
+ * `statsSince` asks for the run counts and the spend of one window
+ * (`execution_stats.runs`, `.failed`, `.cost`, `.last_run_at`). The flows
+ * list states a single period, and counting runs client-side from a sample
+ * of recent executions while reading spend from a separate range endpoint is
+ * how a row came to say "No run in the last 30d" beside $0.33.
+ */
+export async function getFlows(
+  options: { statsSince?: string } = {}
+): Promise<any[]> {
+  const query = options.statsSince
+    ? `?stats_since=${encodeURIComponent(options.statsSince)}`
+    : '';
+  const response = await fetchWithAuth(`/api/v1/flows${query}`);
   if (!response.ok) {
     throw new Error('Failed to fetch flows');
   }

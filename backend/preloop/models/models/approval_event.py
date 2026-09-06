@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import String, DateTime, Text, ForeignKey
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,6 +19,27 @@ class ApprovalEvent(Base):
     """
 
     __tablename__ = "approval_event"
+    __table_args__ = (
+        # One `viewed` row per authenticated viewer. Concurrent GETs race
+        # past has_event(); the unique index makes the insert idempotent.
+        Index(
+            "uq_approval_event_viewed_actor",
+            "approval_request_id",
+            "event_type",
+            "actor_id",
+            unique=True,
+            postgresql_where=text("event_type = 'viewed' AND actor_id IS NOT NULL"),
+        ),
+        # Anonymous token views have no actor_id; NULLs are distinct in a
+        # unique index, so they need their own partial unique.
+        Index(
+            "uq_approval_event_viewed_anonymous",
+            "approval_request_id",
+            "event_type",
+            unique=True,
+            postgresql_where=text("event_type = 'viewed' AND actor_id IS NULL"),
+        ),
+    )
 
     approval_request_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

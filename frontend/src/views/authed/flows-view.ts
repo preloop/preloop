@@ -16,7 +16,6 @@ import { router } from '../../router';
 import { Router } from '@vaadin/router';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import {
-  getAccountGatewayUsageSummary,
   getFlows,
   getFlowPresets,
   getFlowExecutions,
@@ -33,6 +32,9 @@ import {
   parseUTCDate,
 } from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
+// Re-exported below: the list and the flow detail page state the trigger the
+// same way, so the reading lives in one module.
+import { flowTriggerSummary } from '../../utils/flow-trigger';
 import {
   executionSubjectCss,
   renderExecutionSubject,
@@ -49,6 +51,8 @@ import {
   type ListViewMode,
   type NarrowViewportSubscription,
 } from '../../utils/view-mode';
+
+export { flowTriggerSummary };
 
 /** A flow row from the list endpoints, where id and name are always present. */
 type FlowListItem = Flow & { id: string; name: string };
@@ -123,9 +127,16 @@ export interface FlowListRow {
   status: FlowStatus;
   statusLabel: string;
   lastRun: FlowExecution | null;
+  /**
+   * When the most recent run is older than the executions sample, the server
+   * still knows when it was; the cell says so rather than "No run".
+   */
+  lastRunAt: string | null;
   runs: number;
   failed: number;
   cost: number;
+  /** True when runs, failed and cost all come from the server's window. */
+  countsFromServer: boolean;
   source: FlowListItem;
 }
 
@@ -154,59 +165,6 @@ export function flowStatusOf(flow: Flow): FlowStatus {
   const hasRun = Number(flow.execution_stats?.total_execs || 0) > 0;
   if (!flow.trigger_event_source && !hasRun) return 'draft';
   return 'enabled';
-}
-
-/** "pull_request_updated" reads as "Pull request updated" in a column. */
-function humaniseToken(token: string): string {
-  const spaced = token.replace(/[_-]+/g, ' ').trim();
-  if (!spaced) return '';
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-}
-
-/**
- * The trigger, on one line: where events come from and which ones.
- *
- * `trigger_event_source` is 'webhook', 'schedule' or a tracker id, so the
- * tracker names are passed in; when they are not available (the request
- * failed, or has not landed yet) the event types alone still say more than
- * a UUID would.
- */
-export function flowTriggerSummary(
-  flow: Flow,
-  trackerNames: Record<string, string> = {}
-): { label: string; title: string } {
-  const source = flow.trigger_event_source;
-  if (source === 'schedule') {
-    const schedule = flow.schedule_state;
-    const label = schedule?.description || 'Schedule';
-    const next = schedule?.next_run_at
-      ? `Next run ${formatLocalDateTime(schedule.next_run_at)}`
-      : schedule && !schedule.active
-        ? 'Schedule paused'
-        : 'No upcoming runs';
-    return { label, title: `${label} · ${next}` };
-  }
-  const types = (flow.trigger_event_types || [])
-    .map((type) => String(type))
-    // A webhook flow whose only event type is "webhook" would read
-    // "Webhook - Webhook"; say a thing once.
-    .filter((type) => type.toLowerCase() !== String(source).toLowerCase())
-    .map((type) => humaniseToken(type))
-    .filter(Boolean);
-  if (source === 'webhook') {
-    const label = types.length ? `Webhook · ${types.join(', ')}` : 'Webhook';
-    return { label, title: label };
-  }
-  if (!source) {
-    return {
-      label: 'Manual',
-      title: 'No trigger configured. This flow runs when someone starts it.',
-    };
-  }
-  const name = trackerNames[source];
-  const parts = [name, types.join(', ')].filter(Boolean);
-  const label = parts.length ? parts.join(' · ') : 'Tracker';
-  return { label, title: label };
 }
 
 /**
@@ -743,7 +701,6 @@ export class FlowsView extends LitElement {
   @state() private presetsLoading = false;
   @state() private executions: FlowExecution[] = [];
   @state() private activeExecutions: FlowExecution[] = [];
-  @state() private costByFlow: Record<string, number> = {};
   @state() private trackerNames: Record<string, string> = {};
   @state() private isLoading = true;
   /** Set when the flows fetch failed, so the page says so instead of "none". */
@@ -847,7 +804,7 @@ export class FlowsView extends LitElement {
       // that skips the socket and renders "No flows yet" over an account that
       // has flows.
       const [flows, executions, activeExecutions] = await Promise.all([
-        getFlows().catch((error) => {
+        getFlows({ statsSince: this.rangeStartDate() }).catch((error) => {
           console.error('Failed to load flows:', error);
           return null;
         }),
@@ -884,28 +841,26 @@ export class FlowsView extends LitElement {
         void this.ensurePresetsLoaded();
       }
       void this.loadTrackerNames();
-      void this.loadCosts();
     } finally {
       this.isLoading = false;
     }
   }
 
-  /** Spend per flow for the page range, the figure the Overview uses. */
-  private async loadCosts(): Promise<void> {
+  /**
+   * Re-read the flows for a new range.
+   *
+   * Runs, failures and spend are all per-range, so a range change refetches
+   * them together. The page keeps its current numbers on screen while the
+   * request is in flight instead of blanking to a spinner (DESIGN.md, "A
+   * range change is not a page load").
+   */
+  private async loadRangeStats(): Promise<void> {
     try {
-      const summary = await getAccountGatewayUsageSummary({
-        startDate: this.rangeStartDate(),
-        includeBreakdown: true,
-      });
-      const costs: Record<string, number> = {};
-      for (const flow of summary?.usage_by_flow || []) {
-        if (flow.flow_id) costs[flow.flow_id] = flow.estimated_cost || 0;
-      }
-      this.costByFlow = costs;
+      const flows = await getFlows({ statsSince: this.rangeStartDate() });
+      if (Array.isArray(flows)) this.flows = flows;
     } catch (error) {
-      // A missing cost column is better than a wrong one: leave it empty and
-      // the cells read as "-".
-      this.costByFlow = {};
+      // Keep the numbers already on screen; they name their own window.
+      console.error('Failed to refresh flow stats:', error);
     }
   }
 
@@ -1035,7 +990,19 @@ export class FlowsView extends LitElement {
     return this.executions.length >= EXECUTIONS_SAMPLE_LIMIT;
   }
 
+  /**
+   * True when the server counted the runs for this range.
+   *
+   * It answers `execution_stats.since` when asked for a window, and then the
+   * counts are the database's, not a tally of the 200 executions this page
+   * happens to hold.
+   */
+  private get countsFromServer(): boolean {
+    return this.flows.some((flow) => Boolean(flow.execution_stats?.since));
+  }
+
   private get sampleNote(): string {
+    if (this.countsFromServer) return '';
     return this.executionsSampleIsFull
       ? ` (from the most recent ${EXECUTIONS_SAMPLE_LIMIT} runs)`
       : '';
@@ -1047,6 +1014,24 @@ export class FlowsView extends LitElement {
     return this.flows.map((flow) => {
       const entry = runs.get(flow.id);
       const status = flowStatusOf(flow);
+      // Runs, failures and spend for the page range come from one place. The
+      // server measures all three over the window the header names; the
+      // sample is the fallback for a response that predates `stats_since`,
+      // and then there is no spend to state, because the only figure the
+      // page has for it was measured over a different window.
+      const stats = flow.execution_stats;
+      const countsFromServer = Boolean(stats?.since);
+      const rowRuns = countsFromServer
+        ? Number(stats?.runs || 0)
+        : entry?.runs || 0;
+      const rowFailed = countsFromServer
+        ? Number(stats?.failed || 0)
+        : entry?.failed || 0;
+      // Zero runs in the window means zero spend in the window. Printing a
+      // figure next to "No run in the last 30d" is how the list came to
+      // contradict itself.
+      const rowCost =
+        countsFromServer && rowRuns > 0 ? Number(stats?.cost || 0) : 0;
       const trigger = flowTriggerSummary(flow, this.trackerNames);
       const presetId = flow.source_preset_id
         ? String(flow.source_preset_id)
@@ -1066,9 +1051,14 @@ export class FlowsView extends LitElement {
         status,
         statusLabel: FLOW_STATUS_LABELS[status],
         lastRun: entry?.last || null,
-        runs: entry?.runs || 0,
-        failed: entry?.failed || 0,
-        cost: this.costByFlow[flow.id] || 0,
+        lastRunAt:
+          entry?.last?.start_time ||
+          (countsFromServer ? stats?.last_run_at : null) ||
+          null,
+        runs: rowRuns,
+        failed: rowFailed,
+        cost: rowCost,
+        countsFromServer,
         source: flow,
       };
     });
@@ -1477,7 +1467,7 @@ export class FlowsView extends LitElement {
           ]}
           @range-change=${(event: CustomEvent) => {
             this.range = event.detail.value as FlowRange;
-            void this.loadCosts();
+            void this.loadRangeStats();
           }}
         ></time-range-select>
         <span slot="count">${this.resultsLabel}</span>
@@ -1621,8 +1611,15 @@ export class FlowsView extends LitElement {
               : html`<span class="muted-cell">0</span>`
           }
         </td>
+        <!-- Only a server that measured this window can state a spend for
+             it. Without stats_since the cost is unknown, and "-" says that;
+             "$0.00" would be a figure the page made up. -->
         <td class="numeric" title=${`Estimated spend, last ${this.rangeLabel}`}>
-          ${this.formatMoney(row.cost)}
+          ${
+            row.countsFromServer && row.runs > 0
+              ? this.formatMoney(row.cost)
+              : html`<span class="muted-cell">-</span>`
+          }
         </td>
         <td class="actions-cell">
           <div
@@ -1643,6 +1640,19 @@ export class FlowsView extends LitElement {
   private renderLastRun(row: FlowListRow) {
     const run = row.lastRun;
     if (!run) {
+      // The server knows when the flow last ran even when that run is outside
+      // the executions this page holds. Saying "No run" over a run the same
+      // row counts is the contradiction this cell used to print.
+      if (row.lastRunAt) {
+        return html`<span
+          class="muted-cell"
+          title=${formatLocalDateTime(row.lastRunAt)}
+          >Ran
+          ${formatRelativeTime(row.lastRunAt, undefined, {
+            maxRelativeDays: 30,
+          })}</span
+        >`;
+      }
       return html`<span class="muted-cell"
         >No run in the last ${this.rangeLabel}</span
       >`;
@@ -1776,7 +1786,13 @@ export class FlowsView extends LitElement {
             <sl-icon name="play-circle"></sl-icon>${row.runs}
             runs${row.failed > 0 ? `, ${row.failed} failed` : ''}
           </span>
-          <span class="stat-item">${this.formatMoney(row.cost)} est.</span>
+          ${
+            row.countsFromServer && row.runs > 0
+              ? html`<span class="stat-item"
+                  >${this.formatMoney(row.cost)} est.</span
+                >`
+              : nothing
+          }
           ${
             running > 0
               ? html`<span class="stat-item"

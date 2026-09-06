@@ -159,6 +159,55 @@ function firstErrorLine(message?: string | null): string {
 }
 
 /**
+ * The `error.error` (or `error`) field of a logfmt record, moved to the front.
+ *
+ * Agents log the failure as one logfmt line whose last field is the only one
+ * that says what happened (`error.error="AI_APICallError: Insufficient
+ * Balance"`). Read left to right that line is a timestamp, a level and a
+ * span id, and the part a human needs is the part a narrow column drops.
+ * Nothing is discarded: the rest of the record follows the lifted value.
+ */
+export function liftLogfmtErrorField(line: string): string {
+  if (!line || !/\berror(?:\.\w+)?=/.test(line)) return line;
+  for (const field of ['error.error', 'error']) {
+    const pattern = new RegExp(
+      `(?:^|\\s)${field.replace('.', '\\.')}=(?:"([^"]*)"|(\\S+))`
+    );
+    const match = line.match(pattern);
+    if (!match) continue;
+    const value = (match[1] ?? match[2] ?? '').trim();
+    if (!value) continue;
+    const rest = (
+      line.slice(0, match.index) +
+      line.slice((match.index || 0) + match[0].length)
+    )
+      .replace(/\s+/g, ' ')
+      .trim();
+    return rest ? `${value} · ${rest}` : value;
+  }
+  return line;
+}
+
+/** The provider's own sentence, out of whatever shape it arrived in. */
+function providerErrorMessage(detail?: string | null): string {
+  const text = (detail || '').trim();
+  if (!text) return '';
+  if (text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text) as any;
+      const message =
+        parsed?.error?.message ?? parsed?.message ?? parsed?.error ?? '';
+      if (typeof message === 'string' && message.trim()) {
+        return message.trim();
+      }
+    } catch {
+      // Not JSON after all; fall through to the raw first line.
+    }
+  }
+  return liftLogfmtErrorField(firstErrorLine(text));
+}
+
+/**
  * The gateway-events endpoint returns every log row of the execution; only
  * the model calls carry request/response detail worth a card.
  */
@@ -316,14 +365,27 @@ export class FlowExecutionView extends LitElement {
       /* Red appears twice on this page: the status pill and this line. */
       .error-line {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         gap: 8px;
         margin: -4px 0 16px;
         color: var(--sl-color-danger-700);
         font-size: var(--console-text-body);
+      }
+      .error-line sl-icon {
+        flex-shrink: 0;
+        margin-top: 3px;
+      }
+      /* One unwrapped logfmt record cut at the viewport hid the only part
+         that said what happened. Three lines that wrap, and the rest stays
+         in the Output tab. */
+      .error-line .error-text {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 3;
+        line-clamp: 3;
         overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        overflow-wrap: anywhere;
+        white-space: normal;
       }
       .execution-tabs {
         margin-bottom: 16px;
@@ -1400,6 +1462,62 @@ export class FlowExecutionView extends LitElement {
     }
   }
 
+  /**
+   * The failing model call, oldest first: the one that broke the run.
+   */
+  private firstFailedGatewayEvent(): FlowGatewayEvent | null {
+    const failed = this.gatewayEvents
+      .filter((event) => {
+        if (!isModelGatewayCall(event)) return false;
+        const status = event.payload.status_code;
+        return typeof status === 'number' && status >= 400;
+      })
+      .sort(
+        (a, b) =>
+          timelineTime(a.timestamp || '') - timelineTime(b.timestamp || '')
+      );
+    return failed[0] || null;
+  }
+
+  /** True when the model calls on this page came back 4xx. */
+  private hasClientErrorGatewayEvent(): boolean {
+    return this.gatewayEvents.some((event) => {
+      const status = event.payload.status_code;
+      return typeof status === 'number' && status >= 400 && status < 500;
+    });
+  }
+
+  /**
+   * The one danger line under the strip.
+   *
+   * The gateway's own message leads when a model call failed, because it is
+   * the sentence the provider wrote ("Insufficient Balance (HTTP 402 from
+   * deepseek)"). Otherwise the execution's first error line does, with its
+   * logfmt `error.error` field lifted to the front.
+   */
+  private errorLineText(execution: FlowExecution): string {
+    const failed = this.firstFailedGatewayEvent();
+    if (failed) {
+      const message = providerErrorMessage(
+        (failed.payload.error_detail as string | null) ||
+          (failed.payload.message as string | null)
+      );
+      const status = failed.payload.status_code;
+      const provider =
+        failed.payload.provider_name || failed.payload.gateway_provider || '';
+      const parenthetical = [
+        typeof status === 'number' ? `HTTP ${status}` : '',
+        provider ? `from ${provider}` : '',
+      ]
+        .filter(Boolean)
+        .join(' ');
+      if (message) {
+        return parenthetical ? `${message} (${parenthetical})` : message;
+      }
+    }
+    return liftLogfmtErrorField(firstErrorLine(execution.error_message));
+  }
+
   private hasGatewayUsageEvents(): boolean {
     return this.gatewayEvents.some((event) =>
       this.gatewayEventHasUsageMetrics(event)
@@ -2419,7 +2537,9 @@ ${execution.resolved_input_prompt}</pre>
             ? html`<div class="strip-item">
                 <span class="strip-label">Failure</span>
                 <span class="strip-value" data-testid="strip-failure-category"
-                  >${renderFailureCategoryChip(execution.failure_category)}</span
+                  >${renderFailureCategoryChip(execution.failure_category, {
+                    retryDoubtful: this.hasClientErrorGatewayEvent(),
+                  })}</span
                 >
               </div>`
             : ''
@@ -2673,7 +2793,7 @@ ${execution.resolved_input_prompt}</pre>
     const execution = this.execution;
     const running = this.isExecutionRunning();
     const statusVariant = executionStatusVariant(execution.status);
-    const errorLine = firstErrorLine(execution.error_message);
+    const errorLine = this.errorLineText(execution);
 
     return html`
       <view-header
@@ -2721,7 +2841,7 @@ ${execution.resolved_input_prompt}</pre>
                   title=${execution.error_message || ''}
                 >
                   <sl-icon name="exclamation-triangle"></sl-icon>
-                  <span>${errorLine}</span>
+                  <span class="error-text">${errorLine}</span>
                 </div>`
               : ''
           }

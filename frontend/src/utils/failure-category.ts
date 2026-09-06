@@ -47,6 +47,15 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The gateway rejected the credentials this run was using, so the model was never reached.',
   },
+  provider_billing: {
+    label: 'provider billing',
+    tooltip:
+      'The provider refused the call: billing or quota. Retry after the account is topped up.',
+  },
+  /**
+   * Superseded by `provider_billing`, which the server writes now. Kept so
+   * runs classified before it still read as something.
+   */
   model_quota: {
     label: 'model quota',
     tooltip: 'The provider refused the call on quota or spending limits.',
@@ -116,12 +125,28 @@ export function failureCategoryChipLabel(
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
+/**
+ * The `model_transient` line without its retry promise.
+ *
+ * Servers older than `provider_billing` filed HTTP 402 "Insufficient
+ * Balance" under `model_transient`, whose tooltip says the run "usually works
+ * on a retry". When the page it is shown on holds the gateway calls, and
+ * those calls came back 4xx, the console can see that the promise is false,
+ * so it stops making it rather than contradicting the evidence beside it.
+ */
+const MODEL_TRANSIENT_NO_RETRY_TOOLTIP =
+  'The provider dropped the stream or refused the call. The gateway calls on this run came back 4xx, so a retry may fail the same way.';
+
 /** The one line under the pointer. Unknown values say only what they are. */
 export function failureCategoryTooltip(
-  value: string | null | undefined
+  value: string | null | undefined,
+  options: { retryDoubtful?: boolean } = {}
 ): string {
   const key = normalize(value);
   if (!key) return '';
+  if (key === 'model_transient' && options.retryDoubtful) {
+    return MODEL_TRANSIENT_NO_RETRY_TOOLTIP;
+  }
   const known = FAILURE_CATEGORY_META[key];
   if (known) return known.tooltip;
   return `This run failed with the category ${failureCategoryLabel(
@@ -139,7 +164,7 @@ export function failureCategoryTooltip(
  */
 export function renderFailureCategoryChip(
   value: string | null | undefined,
-  options: { tooltip?: boolean } = {}
+  options: { tooltip?: boolean; retryDoubtful?: boolean } = {}
 ): TemplateResult | typeof nothing {
   const key = normalize(value);
   if (!key) return nothing;
@@ -153,7 +178,11 @@ export function renderFailureCategoryChip(
   if (options.tooltip === false) {
     return chip;
   }
-  return html`<sl-tooltip content=${failureCategoryTooltip(key)} hoist
+  return html`<sl-tooltip
+    content=${failureCategoryTooltip(key, {
+      retryDoubtful: options.retryDoubtful,
+    })}
+    hoist
     >${chip}</sl-tooltip
   >`;
 }

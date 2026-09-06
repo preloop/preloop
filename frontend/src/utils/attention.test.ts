@@ -5,6 +5,7 @@ import {
   ATTENTION_KIND_ORDER,
   attentionKindChipLabel,
   deriveAttentionItems,
+  errorHeadline,
   groupAttentionItems,
   type AttentionInputs,
 } from './attention';
@@ -1297,5 +1298,37 @@ describe('ATTENTION_KIND_META', () => {
     expect(attentionKindChipLabel('approval', 2)).to.equal('2 approvals');
     expect(attentionKindChipLabel('agent', 1)).to.equal('1 agent');
     expect(attentionKindChipLabel('flow', 0)).to.equal('0 flows');
+  });
+});
+
+describe('errorHeadline', () => {
+  it('drops a logfmt prefix from the line it shows', () => {
+    expect(
+      errorHeadline(
+        'timestamp=2026-09-03T19:32:45.726Z level=error Failed to start agent Job: (409)'
+      )
+    ).to.equal('Failed to start agent Job: (409)');
+    expect(errorHeadline('level="ERROR" Read timed out')).to.equal(
+      'Read timed out'
+    );
+  });
+
+  it('skips a line that is nothing but plumbing', () => {
+    expect(
+      errorHeadline(
+        'timestamp=2026-09-03T19:32:45.726Z level=error\nRead timed out\n  at x.py'
+      )
+    ).to.equal('Read timed out');
+  });
+
+  it('keeps a message that carries no prefix, and the raw line if every line is one', () => {
+    expect(errorHeadline('Read timed out\n  at x.py')).to.equal(
+      'Read timed out'
+    );
+    expect(errorHeadline('timestamp=2026-09-03T19:32:45.726Z')).to.equal(
+      'timestamp=2026-09-03T19:32:45.726Z'
+    );
+    expect(errorHeadline('')).to.equal('');
+    expect(errorHeadline(null)).to.equal('');
   });
 });

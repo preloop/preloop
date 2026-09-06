@@ -669,6 +669,28 @@ export class IssuesDependenciesView extends LitElement {
       this._selectedProjectId = projectId;
     }
 
+    // The rest of the issues area addresses a project by the short id in
+    // `?projects=` (Duplicates, Compliance, and the tracker pages that link
+    // into them). This page only read `?project=<full uuid>`, so arriving
+    // from a tracker landed on whichever project happened to be first and
+    // silently showed another project's dependencies. It takes one project,
+    // so it takes the first of the listed ones it recognises.
+    const shortProjectIds = params.get('projects');
+    if (shortProjectIds && this._allProjects.length > 0) {
+      const shortIdSet = new Set(
+        shortProjectIds
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean)
+      );
+      const matched = this._allProjects.find((project) =>
+        shortIdSet.has(project.id.split('-')[0])
+      );
+      // No match is not a reason to change the selection: an id from another
+      // account, or a stale link, leaves the page where it was.
+      if (matched) this._selectedProjectId = matched.id;
+    }
+
     this._expandedRowKey = params.get('selectedIssue') || null;
     this._currentPage = Number(params.get('page')) || 1;
     const status = params.get('status') as IssueStatus | null;

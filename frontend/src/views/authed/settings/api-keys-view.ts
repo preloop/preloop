@@ -30,6 +30,8 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
 import '../../../components/governance-rule-set-editor.ts';
 import '../../../components/budget-policy-editor.ts';
+import '../../../components/resource-actions.ts';
+import { confirmDialog } from '../../../components/confirm-dialog';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { parseUTCDate } from '../../../utils/date';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
@@ -116,6 +118,15 @@ export class ApiKeysView extends LitElement {
 
   @state()
   private governanceError: string | null = null;
+
+  /**
+   * Revoked and expired keys are history, not credentials. An account that
+   * mints a key per flow run accumulates dozens of them and they push the
+   * long-lived keys off the first screen, so they stay behind a footer until
+   * the operator asks for them.
+   */
+  @state()
+  private showAllKeys = false;
 
   @state()
   private liveActivity: Record<
@@ -225,18 +236,43 @@ export class ApiKeysView extends LitElement {
     );
   }
 
+  private isRevoked(key: ApiKey): boolean {
+    return key.activity_status === 'revoked';
+  }
+
+  private isExpired(key: ApiKey): boolean {
+    if (!key.expires_at) return false;
+    return parseUTCDate(key.expires_at).getTime() <= Date.now();
+  }
+
+  /** A key that can no longer sign a request: nothing to do with it but read it. */
+  private isRetired(key: ApiKey): boolean {
+    return this.isRevoked(key) || this.isExpired(key);
+  }
+
   private getActivityVariant(key: ApiKey): string {
+    if (this.isRevoked(key)) return 'danger';
+    if (this.isExpired(key)) return 'neutral';
     if (key.activity_status === 'active_now') return 'success';
     if (key.activity_status === 'recently_active') return 'primary';
-    if (key.activity_status === 'revoked') return 'danger';
     return 'neutral';
   }
 
   private getActivityLabel(key: ApiKey): string {
+    if (this.isRevoked(key)) return 'Revoked';
+    if (this.isExpired(key)) return 'Expired';
     if (key.activity_status === 'active_now') return 'Active now';
     if (key.activity_status === 'recently_active') return 'Recently active';
-    if (key.activity_status === 'revoked') return 'Revoked';
     return 'Idle';
+  }
+
+  private visibleKeys(): ApiKey[] {
+    if (this.showAllKeys) return this.apiKeys;
+    return this.apiKeys.filter((key) => !this.isRetired(key));
+  }
+
+  private hiddenKeyCount(): number {
+    return this.apiKeys.filter((key) => this.isRetired(key)).length;
   }
 
   async handleCreateApiKey() {
@@ -282,14 +318,23 @@ export class ApiKeysView extends LitElement {
     }
   }
 
-  async handleDeleteApiKey(keyId: string) {
-    if (confirm('Are you sure you want to revoke this API key?')) {
-      try {
-        await deleteApiKey(keyId);
-        await this.fetchApiKeys();
-      } catch (error) {
-        console.error('Failed to delete API key:', error);
-      }
+  async handleDeleteApiKey(keyId: string, keyName?: string) {
+    const confirmed = await confirmDialog({
+      title: 'Revoke API key',
+      message: keyName ? `Revoke "${keyName}"?` : 'Revoke this API key?',
+      detail:
+        'Anything still authenticating with this key stops working immediately. This cannot be undone.',
+      confirmLabel: 'Revoke key',
+      variant: 'danger',
+    });
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await deleteApiKey(keyId);
+      await this.fetchApiKeys();
+    } catch (error) {
+      console.error('Failed to delete API key:', error);
     }
   }
 
@@ -553,11 +598,18 @@ export class ApiKeysView extends LitElement {
                 e.preventDefault();
                 this.isCreateModalOpen = true;
               }}
-              >Add an API Key</a
+              >Add an API key</a
             >
           </sl-alert>
         `;
       }
+
+      const visibleKeys = this.visibleKeys();
+      const hiddenCount = this.hiddenKeyCount();
+      const hiddenLabel = `${hiddenCount} ${
+        hiddenCount === 1 ? 'key is' : 'keys are'
+      } revoked or expired and hidden`;
+      const shownLabel = `Showing ${this.apiKeys.length} keys, including ${hiddenCount} revoked or expired`;
 
       return html`
         <sl-card class="table-card">
@@ -567,15 +619,22 @@ export class ApiKeysView extends LitElement {
                 <th>Name</th>
                 <th>Status</th>
                 <th>Created</th>
-                <th>Last Activity</th>
-                <th>Recent Usage</th>
+                <th>Last activity</th>
+                <th>Recent usage</th>
                 <th>Expires</th>
-                <th>Actions</th>
+                <th class="actions-cell">Actions</th>
               </tr>
             </thead>
             <tbody>
+              ${
+                visibleKeys.length === 0
+                  ? html`<tr>
+                      <td colspan="7" class="empty-row">No active keys.</td>
+                    </tr>`
+                  : ''
+              }
               ${repeat(
-                this.apiKeys,
+                visibleKeys,
                 (key) => key.id,
                 (key) => html`
                   <tr>
@@ -599,7 +658,11 @@ export class ApiKeysView extends LitElement {
                       </div>
                     </td>
                     <td>
-                      <sl-badge variant=${this.getActivityVariant(key)}>
+                      <sl-badge
+                        class="chip"
+                        pill
+                        variant=${this.getActivityVariant(key)}
+                      >
                         ${this.getActivityLabel(key)}
                       </sl-badge>
                     </td>
@@ -630,27 +693,74 @@ export class ApiKeysView extends LitElement {
                           : 'Never'
                       }
                     </td>
-                    <td>
-                      <sl-button
-                        variant="danger"
-                        size="small"
-                        @click=${() => this.handleDeleteApiKey(key.id)}
-                        >Revoke</sl-button
-                      >
+                    <td class="actions-cell">
+                      <!-- A revoked or expired key cannot be revoked again, so
+                           it carries no actions at all. -->
+                      <resource-actions
+                        menu-only
+                        .actions=${
+                          this.isRetired(key)
+                            ? []
+                            : [
+                                {
+                                  id: 'revoke',
+                                  label: 'Revoke key',
+                                  icon: 'trash',
+                                  variant: 'danger' as const,
+                                  onClick: () =>
+                                    this.handleDeleteApiKey(key.id, key.name),
+                                },
+                              ]
+                        }
+                      ></resource-actions>
                     </td>
                   </tr>
                 `
               )}
             </tbody>
           </table>
+          ${
+            hiddenCount > 0 && !this.showAllKeys
+              ? html`<div class="table-footnote">
+                  <span>${hiddenLabel}</span>
+                  <span aria-hidden="true">·</span>
+                  <button
+                    type="button"
+                    class="link-button"
+                    @click=${() => {
+                      this.showAllKeys = true;
+                    }}
+                  >
+                    Show all
+                  </button>
+                </div>`
+              : ''
+          }
+          ${
+            this.showAllKeys && hiddenCount > 0
+              ? html`<div class="table-footnote">
+                  <span>${shownLabel}</span>
+                  <span aria-hidden="true">·</span>
+                  <button
+                    type="button"
+                    class="link-button"
+                    @click=${() => {
+                      this.showAllKeys = false;
+                    }}
+                  >
+                    Hide them
+                  </button>
+                </div>`
+              : ''
+          }
         </sl-card>
       `;
     };
 
     return html`
       <view-header
-        headerText="API Keys"
-        description='Credentials for the gateway and MCP endpoints. Keys labeled "Managed Agent" were minted automatically when an agent was onboarded.'
+        headerText="API keys"
+        description='Credentials for the gateway and MCP endpoints. Keys labeled "Managed Agent" were minted automatically when an agent was onboarded, and "Flow Execution" keys are minted for a single flow run and revoked when it ends.'
         width="narrow"
       >
         <div slot="main-column">
@@ -659,7 +769,7 @@ export class ApiKeysView extends LitElement {
             @click=${() => {
               this.isCreateModalOpen = true;
             }}
-            >Create New API Key</sl-button
+            >Create API key</sl-button
           >
         </div>
       </view-header>
@@ -668,7 +778,7 @@ export class ApiKeysView extends LitElement {
         <div class="side-column"></div>
       </div>
 
-      <sl-dialog label="Create API Key" .open=${this.isCreateModalOpen}>
+      <sl-dialog label="Create API key" .open=${this.isCreateModalOpen}>
         ${
           this.createError
             ? html`<sl-alert variant="danger" open style="margin-bottom: 1rem;">
@@ -680,7 +790,7 @@ export class ApiKeysView extends LitElement {
         <sl-input
           autofocus
           style="margin-bottom: 1rem;"
-          label="Key Name"
+          label="Key name"
           placeholder="Enter a name for your key"
           .value=${this.newKeyName}
           @sl-input=${(e: Event) =>
@@ -719,7 +829,7 @@ export class ApiKeysView extends LitElement {
       </sl-dialog>
 
       <sl-dialog
-        label="API Key Created"
+        label="API key created"
         .open=${this.isShowKeyModalOpen && this.newlyCreatedKey}
         @sl-hide=${() => (this.isShowKeyModalOpen = false)}
       >
@@ -802,6 +912,40 @@ export class ApiKeysView extends LitElement {
       }
       tr:last-child td {
         border-bottom: none;
+      }
+      td.actions-cell {
+        text-align: right;
+        width: 1%;
+        white-space: nowrap;
+      }
+      /* The Actions header sits over a right-aligned column, so it is
+         right-aligned too. */
+      th.actions-cell {
+        text-align: right;
+      }
+      .empty-row {
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
+        font-size: var(--sl-font-size-small);
+      }
+      /* A hairline footer, not a card: the count of what is not on screen and
+         the one control that reveals it. */
+      .table-footnote {
+        border-top: 1px solid
+          var(--console-hairline, var(--sl-color-neutral-200));
+        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
+        font-size: var(--sl-font-size-small);
+      }
+      .link-button {
+        background: none;
+        border: none;
+        padding: 0;
+        font: inherit;
+        color: var(--sl-color-primary-600);
+        cursor: pointer;
+      }
+      .link-button:hover {
+        text-decoration: underline;
       }
       .code-container {
         position: relative;

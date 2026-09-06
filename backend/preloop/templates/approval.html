@@ -108,6 +108,62 @@
             font-size: 0.875rem;
             text-wrap: auto;
         }
+
+        .status-expired {
+            background: #e5e7eb;
+            color: #374151;
+        }
+
+        .status-cancelled {
+            background: #e5e7eb;
+            color: #374151;
+        }
+
+        .timeline {
+            list-style: none;
+            margin: 0 0 1rem 0;
+            padding: 0;
+        }
+
+        .timeline li {
+            display: flex;
+            gap: 0.75rem;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .timeline li:last-child {
+            border-bottom: none;
+        }
+
+        .timeline-icon {
+            flex: none;
+            color: #6b7280;
+            font-size: 1rem;
+            margin-top: 0.1rem;
+        }
+
+        .timeline-detail {
+            margin: 0;
+            color: #1f2937;
+            line-height: 1.4;
+        }
+
+        .timeline-meta {
+            margin: 0.15rem 0 0 0;
+            font-size: 0.8rem;
+            color: #6b7280;
+        }
+
+        .timeline-comment {
+            margin: 0.35rem 0 0 0;
+            padding: 0.5rem;
+            background: #f3f4f6;
+            border-radius: 0.25rem;
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
     </style>
 </head>
 
@@ -165,6 +221,13 @@
                     <pre id="tool-args"></pre>
                 </div>
 
+                <div id="expired-banner" style="display: none; margin-bottom: 1.5rem;">
+                    <sl-alert variant="warning" open>
+                        <sl-icon slot="icon" name="clock-history"></sl-icon>
+                        <strong>Expired:</strong> no response within the window
+                    </sl-alert>
+                </div>
+
                 <div id="comment-section">
                     <sl-textarea id="comment" label="Comment (optional)"
                         help-text="Add a comment explaining your decision" rows="3"></sl-textarea>
@@ -179,6 +242,11 @@
                         <sl-icon slot="prefix" name="x-circle"></sl-icon>
                         Decline
                     </sl-button>
+                </div>
+
+                <div class="info-item" id="history-section" style="display: none; margin-bottom: 2rem;">
+                    <div class="info-label">Workflow History</div>
+                    <ul class="timeline" id="history"></ul>
                 </div>
 
                 <div id="result" style="display: none; margin-top: 2rem;">
@@ -249,15 +317,77 @@
                 document.getElementById('agent-reasoning').textContent = approvalData.agent_reasoning;
             }
 
+            // Expired requests get an explicit banner (issue #335).
+            document.getElementById('expired-banner').style.display =
+                approvalData.status === 'expired' ? 'block' : 'none';
+
+            displayHistory(approvalData.history || []);
+
             // Hide actions if already resolved
             if (['approved', 'declined', 'expired', 'cancelled'].includes(approvalData.status)) {
                 document.getElementById('actions').style.display = 'none';
                 document.getElementById('comment-section').style.display = 'none';
+                const resolvedMessages = {
+                    approved: 'This approval request has already been approved.',
+                    declined: 'This approval request has already been declined.',
+                    expired: 'Expired: no response within the approval window.',
+                    cancelled: 'This approval request was cancelled.'
+                };
                 showResult(
                     approvalData.status === 'approved' ? 'success' : 'warning',
                     `Request ${approvalData.status}`,
-                    `This approval request has already been ${approvalData.status}.`
+                    resolvedMessages[approvalData.status] || `This approval request has already been ${approvalData.status}.`
                 );
+            }
+        }
+
+        const TIMELINE_ICONS = {
+            approval_requested: 'shield-check',
+            notification_sent: 'send',
+            viewed: 'eye',
+            vote_received: 'hand-thumbs-up',
+            approval_complete: 'check-circle',
+            escalation_triggered: 'arrow-up-circle',
+            expired: 'clock-history',
+            cancelled: 'slash-circle'
+        };
+
+        function displayHistory(events) {
+            if (!events.length) {
+                return;
+            }
+            const list = document.getElementById('history');
+            document.getElementById('history-section').style.display = 'block';
+            list.innerHTML = '';
+            for (const event of events) {
+                const li = document.createElement('li');
+
+                const icon = document.createElement('sl-icon');
+                icon.className = 'timeline-icon';
+                icon.name = TIMELINE_ICONS[event.event_type] || 'dot';
+                li.appendChild(icon);
+
+                const body = document.createElement('div');
+
+                const detail = document.createElement('p');
+                detail.className = 'timeline-detail';
+                detail.textContent = event.detail || event.event_type;
+                body.appendChild(detail);
+
+                const meta = document.createElement('p');
+                meta.className = 'timeline-meta';
+                meta.textContent = event.timestamp ? new Date(event.timestamp).toLocaleString() : '';
+                body.appendChild(meta);
+
+                if (event.comment) {
+                    const comment = document.createElement('div');
+                    comment.className = 'timeline-comment';
+                    comment.textContent = event.comment;
+                    body.appendChild(comment);
+                }
+
+                li.appendChild(body);
+                list.appendChild(li);
             }
         }
 
@@ -292,6 +422,9 @@
 
                 // Update status
                 approvalData.status = result.status;
+                if (Array.isArray(result.history)) {
+                    approvalData.history = result.history;
+                }
                 displayApproval();
             } catch (error) {
                 showError(error.message);

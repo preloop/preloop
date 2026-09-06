@@ -10,6 +10,15 @@ import {
   parseUTCDate,
 } from '../../utils/date';
 import { formatApprovalRequester } from '../../utils/approval-identity';
+import {
+  APPROVAL_REQUESTS_PAGE_LIMIT,
+  approvalStatusLabel,
+  isExpiringSoon,
+  isUnexpiredPendingRequest,
+  normalizeApprovalRequest,
+  partitionApprovalRequests,
+} from '../../utils/approvals';
+import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '../../components/approval-rule-context-block';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
@@ -51,6 +60,18 @@ export class ApprovalsView extends AuthedElement {
   @state()
   private filteredRequests: ApprovalRequest[] = [];
 
+  /** Pending, not expired: the requests an operator can still decide. */
+  @state()
+  private waitingRequests: ApprovalRequest[] = [];
+
+  /** Everything already decided, expired or cancelled. */
+  @state()
+  private historyRequests: ApprovalRequest[] = [];
+
+  /** Id of the request whose row decision is in flight, if any. */
+  @state()
+  private decidingId: string | null = null;
+
   @state()
   private loading = true;
 
@@ -83,7 +104,16 @@ export class ApprovalsView extends AuthedElement {
   @state()
   private answerError: string | null = null;
 
+  /**
+   * Ticks once a second while anything in "Waiting for you" can still expire,
+   * so a request that times out with the list open leaves that group and
+   * loses its Approve/Deny buttons instead of offering a dead decision.
+   */
+  @state()
+  private nowMs = Date.now();
+
   private unsubscribe?: () => void;
+  private tickTimer?: ReturnType<typeof setInterval>;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -220,6 +250,41 @@ export class ApprovalsView extends AuthedElement {
         display: flex;
         align-items: center;
         gap: var(--sl-spacing-small);
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      /* Destructive last, after a large gap, never beside the everyday action. */
+      .approval-actions .row-deny {
+        margin-left: var(--sl-spacing-large);
+      }
+
+      .approval-actions .row-details {
+        color: var(--sl-color-primary-600);
+        font-size: var(--sl-font-size-small);
+        text-decoration: none;
+        margin-left: var(--sl-spacing-small);
+      }
+
+      .approval-actions .row-details:hover {
+        text-decoration: underline;
+      }
+
+      .approval-group {
+        margin-bottom: var(--sl-spacing-large);
+      }
+
+      .group-header {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+        margin-bottom: var(--sl-spacing-small);
+      }
+
+      .group-header h2 {
+        margin: 0;
+        font-size: var(--sl-font-size-medium);
+        font-weight: 600;
       }
 
       .rate-bar {
@@ -276,6 +341,31 @@ export class ApprovalsView extends AuthedElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this.unsubscribe?.();
+    this.stopTicking();
+  }
+
+  private startTicking() {
+    if (this.tickTimer) return;
+    this.tickTimer = setInterval(() => {
+      this.nowMs = Date.now();
+      this.applyFilters();
+    }, 1000);
+  }
+
+  private stopTicking() {
+    if (this.tickTimer) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = undefined;
+    }
+  }
+
+  /** Tick only while a waiting row still has an expiry that can pass. */
+  private syncExpiryTick() {
+    if (this.waitingRequests.some((request) => request.expires_at)) {
+      this.startTicking();
+    } else {
+      this.stopTicking();
+    }
   }
 
   private connectWebSocket() {
@@ -316,7 +406,7 @@ export class ApprovalsView extends AuthedElement {
         allow_free_text: message.allow_free_text === true,
       };
 
-      if (!this.isUnexpiredPendingRequest(newApproval)) {
+      if (!isUnexpiredPendingRequest(newApproval)) {
         return;
       }
 
@@ -359,12 +449,13 @@ export class ApprovalsView extends AuthedElement {
   private async loadApprovalRequests() {
     this.loading = true;
     try {
-      // Fetch approval requests (API max limit is 100)
-      const data = await this.fetchData('/api/v1/approval-requests?limit=100');
+      const data = await this.fetchData(
+        `/api/v1/approval-requests?limit=${APPROVAL_REQUESTS_PAGE_LIMIT}`
+      );
       if (data && Array.isArray(data)) {
         // Sort by requested_at descending (most recent first)
         this.approvalRequests = (data as ApprovalRequest[])
-          .map((request) => this.normalizeApprovalRequest(request))
+          .map((request) => normalizeApprovalRequest(request))
           .sort(
             (a, b) =>
               parseUTCDate(b.requested_at).getTime() -
@@ -443,6 +534,15 @@ export class ApprovalsView extends AuthedElement {
   }
 
   private applyFilters() {
+    const now = this.nowMs;
+    const normalized = this.approvalRequests.map((request) =>
+      normalizeApprovalRequest(request, now)
+    );
+    if (normalized.some((request, i) => request !== this.approvalRequests[i])) {
+      this.approvalRequests = normalized;
+      this.calculateStats();
+    }
+
     let filtered = [...this.approvalRequests];
 
     // Status filter
@@ -470,6 +570,13 @@ export class ApprovalsView extends AuthedElement {
     }
 
     this.filteredRequests = filtered;
+
+    // What still needs a person comes first, soonest expiry at the top; the
+    // rest is history and keeps its newest-first order.
+    const { waiting, history } = partitionApprovalRequests(filtered, now);
+    this.waitingRequests = waiting;
+    this.historyRequests = history;
+    this.syncExpiryTick();
   }
 
   private getUniqueTools(): string[] {
@@ -483,30 +590,6 @@ export class ApprovalsView extends AuthedElement {
 
   private formatExpiryDate(dateStr: string): string {
     return formatFutureRelativeTime(dateStr);
-  }
-
-  private isUnexpiredPendingRequest(request: ApprovalRequest): boolean {
-    if (request.status !== 'pending') {
-      return false;
-    }
-    if (!request.expires_at) {
-      return true;
-    }
-    return parseUTCDate(request.expires_at).getTime() > Date.now();
-  }
-
-  private normalizeApprovalRequest(request: ApprovalRequest): ApprovalRequest {
-    if (
-      request.status !== 'pending' ||
-      this.isUnexpiredPendingRequest(request)
-    ) {
-      return request;
-    }
-    return {
-      ...request,
-      status: 'expired',
-      resolved_at: request.resolved_at || request.expires_at,
-    };
   }
 
   private formatFullDate(dateStr: string): string {
@@ -601,6 +684,70 @@ export class ApprovalsView extends AuthedElement {
     this.calculateStats();
   }
 
+  /**
+   * Re-read the clock at click time so a row whose expiry passed between
+   * ticks cannot still post Approve or Deny.
+   */
+  private ensureStillWaiting(request: ApprovalRequest): boolean {
+    this.nowMs = Date.now();
+    if (isUnexpiredPendingRequest(request, this.nowMs)) return true;
+    this.applyFilters();
+    return false;
+  }
+
+  /**
+   * Row-level approve: the same call the detail page makes, taken where the
+   * request is seen. Approving is not destructive, so it does not confirm.
+   */
+  private async handleRowApprove(request: ApprovalRequest) {
+    if (!this.ensureStillWaiting(request)) return;
+    this.decidingId = request.id;
+    try {
+      const updated = await approveRequest(request.id);
+      this.applyResolution(request.id, {
+        status: 'approved',
+        resolved_at: updated?.resolved_at ?? null,
+      });
+      showToast(`Approved ${request.tool_name}.`, 'success');
+    } catch (error: any) {
+      showToast(error?.message || 'Failed to approve the request', 'danger');
+      console.error('Failed to approve request:', error);
+    } finally {
+      this.decidingId = null;
+    }
+  }
+
+  /** Denying stops the agent, so it confirms first (DESIGN.md destructive). */
+  private async handleRowDeny(request: ApprovalRequest) {
+    if (!this.ensureStillWaiting(request)) return;
+    const confirmed = await confirmDialog({
+      title: 'Deny this request?',
+      message: `${request.tool_name} will not run.`,
+      detail: `${formatApprovalRequester(
+        request.managed_agent_name,
+        request.tool_args
+      )} is told no and continues without it.`,
+      confirmLabel: 'Deny',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    if (!this.ensureStillWaiting(request)) return;
+    this.decidingId = request.id;
+    try {
+      const updated = await declineRequest(request.id);
+      this.applyResolution(request.id, {
+        status: 'declined',
+        resolved_at: updated?.resolved_at ?? null,
+      });
+      showToast(`Denied ${request.tool_name}.`, 'neutral');
+    } catch (error: any) {
+      showToast(error?.message || 'Failed to deny the request', 'danger');
+      console.error('Failed to deny request:', error);
+    } finally {
+      this.decidingId = null;
+    }
+  }
+
   /** An answered question is submitted as an approve carrying the answer. */
   private async handleQuestionAnswer(
     request: ApprovalRequest,
@@ -649,7 +796,7 @@ export class ApprovalsView extends AuthedElement {
   render() {
     if (this.loading) {
       return html`
-        <view-header headerText="Approval Requests" width="wide"></view-header>
+        <view-header headerText="Approval requests" width="wide"></view-header>
         <div class="loading-container">
           <sl-spinner style="font-size: 3rem;"></sl-spinner>
         </div>
@@ -658,14 +805,14 @@ export class ApprovalsView extends AuthedElement {
 
     return html`
       <view-header
-        headerText="Approval Requests"
-        description="Tool calls that waited for a human decision — who approved, who denied, and how long it took. Approval policies are configured elsewhere: MCP tool rules and native tool-call defaults live in Tools; per-agent overrides live on each agent's detail page."
+        headerText="Approval requests"
+        description="Tool calls that waited for a human decision, and what happened to them. Approval rules live in Tools; per-agent overrides live on each agent's detail page."
         width="wide"
       >
         <sl-dropdown>
           <sl-button slot="trigger" size="small" caret>
             <sl-icon slot="prefix" name="gear"></sl-icon>
-            Configure Approvals
+            Configure approvals
           </sl-button>
           <sl-menu>
             <sl-menu-item
@@ -695,7 +842,7 @@ export class ApprovalsView extends AuthedElement {
           <div class="stats-grid">
             <div class="stat-card">
               <div class="stat-value primary">${this.stats.total}</div>
-              <div class="stat-label">Total Requests</div>
+              <div class="stat-label">Total requests</div>
             </div>
             <div class="stat-card">
               <div class="stat-value warning">${this.stats.pending}</div>
@@ -712,11 +859,11 @@ export class ApprovalsView extends AuthedElement {
             </div>
             <div class="stat-card">
               <div class="stat-value danger">${this.stats.declined}</div>
-              <div class="stat-label">Declined</div>
+              <div class="stat-label">Denied</div>
             </div>
             <div class="stat-card">
               <div class="stat-value neutral">${this.stats.expired}</div>
-              <div class="stat-label">Timed Out</div>
+              <div class="stat-label">Timed out</div>
               ${
                 this.stats.expired > 0
                   ? html`<div class="stat-subtext">No response in time</div>`
@@ -733,7 +880,7 @@ export class ApprovalsView extends AuthedElement {
                     : '-'
                 }
               </div>
-              <div class="stat-label">Avg Response</div>
+              <div class="stat-label">Avg response</div>
             </div>
           </div>
 
@@ -744,7 +891,7 @@ export class ApprovalsView extends AuthedElement {
                   <sl-card style="margin-bottom: var(--sl-spacing-large);">
                     <div slot="header" class="chart-header">
                       <sl-icon name="pie-chart"></sl-icon>
-                      Approval Rate
+                      Approval rate
                     </div>
                     <div class="rate-labels">
                       <span
@@ -752,7 +899,7 @@ export class ApprovalsView extends AuthedElement {
                         (${Math.round(this.stats.approvalRate)}%)</span
                       >
                       <span
-                        >Declined: ${this.stats.declined}
+                        >Denied: ${this.stats.declined}
                         (${Math.round(100 - this.stats.approvalRate)}%)</span
                       >
                     </div>
@@ -772,11 +919,11 @@ export class ApprovalsView extends AuthedElement {
               value=${this.statusFilter}
               @sl-change=${this.handleStatusFilterChange}
             >
-              <sl-option value="all">All Statuses</sl-option>
+              <sl-option value="all">All statuses</sl-option>
               <sl-option value="pending">Pending</sl-option>
               <sl-option value="approved">Approved</sl-option>
-              <sl-option value="declined">Declined</sl-option>
-              <sl-option value="expired">Timed Out</sl-option>
+              <sl-option value="declined">Denied</sl-option>
+              <sl-option value="expired">Timed out</sl-option>
               <sl-option value="cancelled">Cancelled</sl-option>
             </sl-select>
 
@@ -785,7 +932,7 @@ export class ApprovalsView extends AuthedElement {
               value=${this.toolFilter}
               @sl-change=${this.handleToolFilterChange}
             >
-              <sl-option value="all">All Tools</sl-option>
+              <sl-option value="all">All tools</sl-option>
               ${this.getUniqueTools().map(
                 (tool) => html`<sl-option value=${tool}>${tool}</sl-option>`
               )}
@@ -826,258 +973,268 @@ export class ApprovalsView extends AuthedElement {
                       this.approvalRequests.length === 0
                         ? html`<sl-button href="/console/tools">
                             <sl-icon slot="prefix" name="gear"></sl-icon>
-                            Configure Tools
+                            Configure tools
                           </sl-button>`
                         : ''
                     }
                   </div>
                 `
               : html`
-                  <div class="approval-list">
-                    ${this.filteredRequests.map(
-                      (request) => html`
-                        <div
-                          class="approval-item ${request.status} ${
-                            this.isQuestion(request) ? 'question' : ''
-                          }"
-                        >
-                          <div class="approval-row">
-                            <div class="approval-info">
-                              <div class="approval-tool">
-                                <sl-icon
-                                  name=${
-                                    this.isQuestion(request)
-                                      ? 'chat-left-quote'
-                                      : 'tools'
-                                  }
-                                ></sl-icon>
-                                ${
-                                  this.isQuestion(request)
-                                    ? html`<span
-                                        style="font-weight: 500; max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                                        title=${this.questionText(request)}
-                                        >${this.questionText(request)}</span
-                                      >`
-                                    : request.summary
-                                      ? html`<span
-                                          style="font-weight: 500; max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                                          title=${request.summary}
-                                          >${
-                                            request.summary.length > 120
-                                              ? `${request.summary.substring(0, 120)}…`
-                                              : request.summary
-                                          }</span
-                                        >`
-                                      : html`<code>${request.tool_name}</code>`
-                                }
-                                <sl-tag
-                                  size="small"
-                                  variant=${this.getStatusVariant(request.status)}
-                                >
-                                  <sl-icon
-                                    name=${this.getStatusIcon(request.status)}
-                                    style="margin-right: 4px;"
-                                  ></sl-icon>
-                                  ${
-                                    request.status === 'expired'
-                                      ? 'timed out'
-                                      : request.status
-                                  }
-                                </sl-tag>
-                                <sl-tag size="small" variant="neutral">
-                                  <sl-icon
-                                    name="cpu"
-                                    style="margin-right: 4px;"
-                                  ></sl-icon>
-                                  ${formatApprovalRequester(
-                                    request.managed_agent_name,
-                                    request.tool_args
-                                  )}
-                                </sl-tag>
-                                ${
-                                  request.auto_approved_reason
-                                    ? html`<sl-tooltip
-                                        content="Auto-approved by a time-boxed bypass. No person reviewed this call."
-                                      >
-                                        <sl-tag size="small" variant="warning">
-                                          <sl-icon
-                                            name="exclamation-triangle"
-                                            style="margin-right: 4px;"
-                                          ></sl-icon>
-                                          not reviewed
-                                        </sl-tag>
-                                      </sl-tooltip>`
-                                    : ''
-                                }
-                              </div>
-                              ${
-                                request.summary
-                                  ? html`
-                                      <div
-                                        class="approval-meta"
-                                        style="margin-top: 2px;"
-                                      >
-                                        <span class="approval-meta-item">
-                                          <code style="font-size: 0.8em;"
-                                            >${request.tool_name}</code
-                                          >
-                                        </span>
-                                      </div>
-                                    `
-                                  : ''
-                              }
-                              ${
-                                request.rule_context
-                                  ? html`
-                                      <div
-                                        class="approval-meta"
-                                        style="margin-top: 2px;"
-                                      >
-                                        <approval-rule-context-block
-                                          compact
-                                          .ruleContext=${request.rule_context}
-                                        ></approval-rule-context-block>
-                                      </div>
-                                    `
-                                  : ''
-                              }
-                              <div class="approval-meta">
-                                <sl-tooltip
-                                  content=${this.formatFullDate(
-                                    request.requested_at
-                                  )}
-                                >
-                                  <span class="approval-meta-item">
-                                    <sl-icon name="clock"></sl-icon>
-                                    ${this.formatDate(request.requested_at)}
-                                  </span>
-                                </sl-tooltip>
-                                ${
-                                  request.execution_id
-                                    ? html`
-                                        <span class="approval-meta-item">
-                                          <sl-icon name="diagram-3"></sl-icon>
-                                          <a
-                                            href="/console/flows/executions/${request.execution_id}"
-                                            >Flow Execution</a
-                                          >
-                                        </span>
-                                      `
-                                    : ''
-                                }
-                                ${
-                                  request.resolved_at
-                                    ? html`
-                                        <sl-tooltip
-                                          content="Resolved: ${this.formatFullDate(
-                                            request.resolved_at
-                                          )}"
-                                        >
-                                          <span class="approval-meta-item">
-                                            <sl-icon
-                                              name="check2-square"
-                                            ></sl-icon>
-                                            Resolved
-                                            ${this.formatDate(request.resolved_at)}
-                                          </span>
-                                        </sl-tooltip>
-                                      `
-                                    : ''
-                                }
-                                ${
-                                  request.expires_at &&
-                                  request.status === 'pending'
-                                    ? html`
-                                        <sl-tooltip
-                                          content="Expires: ${this.formatFullDate(
-                                            request.expires_at
-                                          )}"
-                                        >
-                                          <span
-                                            class="approval-meta-item"
-                                            style="color: var(--sl-color-warning-600);"
-                                          >
-                                            <sl-icon name="hourglass"></sl-icon>
-                                            Expires
-                                            ${this.formatExpiryDate(
-                                              request.expires_at
-                                            )}
-                                          </span>
-                                        </sl-tooltip>
-                                      `
-                                    : ''
-                                }
-                              </div>
-                              ${
-                                !request.summary && request.agent_reasoning
-                                  ? html`
-                                      <div
-                                        style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-700); margin-top: var(--sl-spacing-2x-small); font-style: italic; max-width: 600px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                                      >
-                                        "${request.agent_reasoning.substring(
-                                          0,
-                                          100
-                                        )}${
-                                          request.agent_reasoning.length > 100
-                                            ? '...'
-                                            : ''
-                                        }"
-                                      </div>
-                                    `
-                                  : ''
-                              }
-                            </div>
-                            <div class="approval-actions">
-                              <sl-button
-                                size="small"
-                                variant=${
-                                  request.status === 'pending'
-                                    ? 'primary'
-                                    : 'default'
-                                }
-                                href="/console/approval/${request.id}"
-                              >
-                                ${request.status === 'pending' ? 'Review' : 'View'}
-                              </sl-button>
-                            </div>
-                          </div>
-                          ${
-                            this.isQuestion(request) &&
-                            request.status === 'pending'
-                              ? html`
-                                  <question-answer-panel
-                                    compact
-                                    .question=${this.questionText(request)}
-                                    .options=${request.question_options ?? []}
-                                    .allowFreeText=${
-                                      request.allow_free_text === true
-                                    }
-                                    .submitting=${
-                                      this.answeringId === request.id
-                                    }
-                                    @question-answer=${(
-                                      e: CustomEvent<QuestionAnswerDetail>
-                                    ) => this.handleQuestionAnswer(request, e)}
-                                    @question-dismiss=${() =>
-                                      this.handleQuestionDismiss(request)}
-                                  ></question-answer-panel>
-                                  ${
-                                    this.answerError
-                                      ? html`<div class="answer-error">
-                                          ${this.answerError}
-                                        </div>`
-                                      : ''
-                                  }
-                                `
-                              : ''
-                          }
-                        </div>
-                      `
-                    )}
-                  </div>
+                  ${this.renderGroup(
+                    'Waiting for you',
+                    this.waitingRequests,
+                    true
+                  )}
+                  ${this.renderGroup('History', this.historyRequests, false)}
                 `
           }
         </div>
+      </div>
+    `;
+  }
+
+  /**
+   * One group of rows under its own heading. "Waiting for you" carries the
+   * decision, so it is rendered first and its rows get Approve and Deny.
+   */
+  private renderGroup(
+    title: string,
+    requests: ApprovalRequest[],
+    waiting: boolean
+  ) {
+    if (requests.length === 0) return '';
+    return html`
+      <div class="approval-group">
+        <div class="group-header">
+          <h2>${title}</h2>
+          <sl-badge
+            pill
+            class="chip"
+            variant=${waiting ? 'warning' : 'neutral'}
+          >
+            ${requests.length}
+          </sl-badge>
+        </div>
+        <div class="approval-list">
+          ${requests.map((request) => this.renderRequest(request, waiting))}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderRequest(request: ApprovalRequest, waiting: boolean) {
+    return html`
+      <div
+        class="approval-item ${request.status} ${
+          this.isQuestion(request) ? 'question' : ''
+        }"
+      >
+        <div class="approval-row">
+          <div class="approval-info">
+            <div class="approval-tool">
+              <sl-icon
+                name=${this.isQuestion(request) ? 'chat-left-quote' : 'tools'}
+              ></sl-icon>
+              ${
+                this.isQuestion(request)
+                  ? html`<span
+                      style="font-weight: 500; max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                      title=${this.questionText(request)}
+                      >${this.questionText(request)}</span
+                    >`
+                  : request.summary
+                    ? html`<span
+                        style="font-weight: 500; max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                        title=${request.summary}
+                        >${
+                          request.summary.length > 120
+                            ? `${request.summary.substring(0, 120)}…`
+                            : request.summary
+                        }</span
+                      >`
+                    : html`<code>${request.tool_name}</code>`
+              }
+              <sl-badge
+                pill
+                class="chip"
+                variant=${this.getStatusVariant(request.status)}
+              >
+                <sl-icon name=${this.getStatusIcon(request.status)}></sl-icon>
+                ${approvalStatusLabel(request.status)}
+              </sl-badge>
+              <sl-badge pill class="tag-chip">
+                <sl-icon name="cpu"></sl-icon>
+                ${formatApprovalRequester(
+                  request.managed_agent_name,
+                  request.tool_args
+                )}
+              </sl-badge>
+              ${
+                request.auto_approved_reason
+                  ? html`<sl-tooltip
+                      content="Auto-approved by a time-boxed bypass. No person reviewed this call."
+                    >
+                      <sl-badge pill class="chip" variant="warning">
+                        <sl-icon name="exclamation-triangle"></sl-icon>
+                        Not reviewed
+                      </sl-badge>
+                    </sl-tooltip>`
+                  : ''
+              }
+            </div>
+            ${
+              request.summary
+                ? html`
+                    <div class="approval-meta" style="margin-top: 2px;">
+                      <span class="approval-meta-item">
+                        <code style="font-size: 0.8em;"
+                          >${request.tool_name}</code
+                        >
+                      </span>
+                    </div>
+                  `
+                : ''
+            }
+            ${
+              request.rule_context
+                ? html`
+                    <div class="approval-meta" style="margin-top: 2px;">
+                      <approval-rule-context-block
+                        compact
+                        .ruleContext=${request.rule_context}
+                      ></approval-rule-context-block>
+                    </div>
+                  `
+                : ''
+            }
+            <div class="approval-meta">
+              <sl-tooltip content=${this.formatFullDate(request.requested_at)}>
+                <span class="approval-meta-item">
+                  <sl-icon name="clock"></sl-icon>
+                  ${this.formatDate(request.requested_at)}
+                </span>
+              </sl-tooltip>
+              ${
+                request.execution_id
+                  ? html`
+                      <span class="approval-meta-item">
+                        <sl-icon name="diagram-3"></sl-icon>
+                        <a
+                          href="/console/flows/executions/${request.execution_id}"
+                          >Flow Execution</a
+                        >
+                      </span>
+                    `
+                  : ''
+              }
+              ${
+                request.resolved_at
+                  ? html`
+                      <sl-tooltip
+                        content="Resolved: ${this.formatFullDate(
+                          request.resolved_at
+                        )}"
+                      >
+                        <span class="approval-meta-item">
+                          <sl-icon name="check2-square"></sl-icon>
+                          Resolved ${this.formatDate(request.resolved_at)}
+                        </span>
+                      </sl-tooltip>
+                    `
+                  : ''
+              }
+              ${
+                request.expires_at && waiting
+                  ? html`
+                      <sl-tooltip
+                        content="Expires: ${this.formatFullDate(
+                          request.expires_at
+                        )}"
+                      >
+                        <sl-badge
+                          pill
+                          class="chip"
+                          variant=${
+                            isExpiringSoon(request, this.nowMs)
+                              ? 'warning'
+                              : 'neutral'
+                          }
+                        >
+                          <sl-icon name="hourglass"></sl-icon>
+                          expires ${this.formatExpiryDate(request.expires_at)}
+                        </sl-badge>
+                      </sl-tooltip>
+                    `
+                  : ''
+              }
+            </div>
+            ${
+              !request.summary && request.agent_reasoning
+                ? html`
+                    <div
+                      style="font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-700); margin-top: var(--sl-spacing-2x-small); font-style: italic; max-width: 600px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                    >
+                      "${request.agent_reasoning.substring(0, 100)}${
+                        request.agent_reasoning.length > 100 ? '...' : ''
+                      }"
+                    </div>
+                  `
+                : ''
+            }
+          </div>
+          <div class="approval-actions">
+            ${
+              waiting && !this.isQuestion(request)
+                ? html`
+                    <sl-button
+                      class="row-approve"
+                      size="small"
+                      variant="success"
+                      ?loading=${this.decidingId === request.id}
+                      ?disabled=${this.decidingId === request.id}
+                      @click=${() => this.handleRowApprove(request)}
+                    >
+                      Approve
+                    </sl-button>
+                    <sl-button
+                      class="row-deny"
+                      size="small"
+                      variant="danger"
+                      outline
+                      ?disabled=${this.decidingId === request.id}
+                      @click=${() => this.handleRowDeny(request)}
+                    >
+                      Deny
+                    </sl-button>
+                  `
+                : ''
+            }
+            <a class="row-details" href="/console/approval/${request.id}"
+              >${waiting ? 'Details' : 'View'}</a
+            >
+          </div>
+        </div>
+        ${
+          this.isQuestion(request) && waiting
+            ? html`
+                <question-answer-panel
+                  compact
+                  .question=${this.questionText(request)}
+                  .options=${request.question_options ?? []}
+                  .allowFreeText=${request.allow_free_text === true}
+                  .submitting=${this.answeringId === request.id}
+                  @question-answer=${(e: CustomEvent<QuestionAnswerDetail>) =>
+                    this.handleQuestionAnswer(request, e)}
+                  @question-dismiss=${() => this.handleQuestionDismiss(request)}
+                ></question-answer-panel>
+                ${
+                  this.answerError
+                    ? html`<div class="answer-error">${this.answerError}</div>`
+                    : ''
+                }
+              `
+            : ''
+        }
       </div>
     `;
   }
