@@ -999,12 +999,105 @@ describe('DashboardView', () => {
           !element['fetchingAgents'] &&
           !element['fetchingBudget'] &&
           !element['fetchingAudit'] &&
-          !element['fetchingMCPAndTools'],
+          !element['fetchingMCPAndTools'] &&
+          // Onboarding prompts wait for the flows and their runs too, so a
+          // test about one is only meaningful once those have answered.
+          element['onboardingResolved'],
         'dashboard did not finish loading'
       );
       await element.updateComplete;
       return element;
     }
+
+    it('draws both plane rows before the numbers arrive, with no status and no prompt', async () => {
+      let releaseSummary = () => {};
+      summaryGate = new Promise<void>((resolve) => {
+        releaseSummary = resolve;
+      });
+
+      const element = await mountDashboard();
+      await element.updateComplete;
+
+      const rows = element.shadowRoot?.querySelectorAll('.plane-row') || [];
+      expect(rows.length, 'both planes on the first frame').to.equal(2);
+      expect(rows[0].textContent).to.contain('Model gateway');
+      expect(rows[0].textContent).to.contain('/openai/v1');
+      expect(rows[1].textContent).to.contain('Tool firewall');
+      // No status and no metrics until the requests behind them answer: a
+      // neutral dot and "No traffic yet" are claims, not blanks.
+      expect(
+        element.shadowRoot?.querySelectorAll('.plane-dot.pending').length,
+        'both dots pending'
+      ).to.equal(2);
+      expect(
+        element.shadowRoot?.querySelectorAll('.plane-dot.served').length
+      ).to.equal(0);
+      expect(rows[0].querySelector('.plane-stats sl-skeleton'), 'metrics cell')
+        .to.exist;
+      expect(element.shadowRoot?.textContent).to.not.contain('No traffic yet');
+      // And no onboarding line while the agents list is still unanswered.
+      expect(element.shadowRoot?.querySelector('.connect-first')).to.not.exist;
+      expect(element.shadowRoot?.querySelector('.welcome-container')).to.not
+        .exist;
+
+      releaseSummary();
+      await waitUntil(
+        () => !element['fetchingGatewaySummary'],
+        'summary never landed'
+      );
+      await element.updateComplete;
+
+      const filled = element.shadowRoot?.querySelector(
+        '.plane-row .plane-stats'
+      ) as HTMLElement;
+      expect(filled.querySelector('sl-skeleton')).to.not.exist;
+      expect(filled.textContent).to.contain('requests');
+      expect(
+        element.shadowRoot?.querySelectorAll('.plane-dot.served').length
+      ).to.be.greaterThan(0);
+    });
+
+    it('holds the get-started card until every onboarding input has answered', async () => {
+      agentsResponse = { ...agentsResponse, total: 0, items: [] };
+      flowsResponse = [];
+      flowExecutionsResponse = [];
+      runtimeSessionsResponse = { items: [], total: 0 };
+      let releaseFlows = () => {};
+      flowsGate = new Promise<void>((resolve) => {
+        releaseFlows = resolve;
+      });
+
+      const element = await mountDashboard();
+      await waitUntil(() => !element['fetchingAgents'], 'fold never finished');
+      await element.updateComplete;
+
+      // Agents answered "none", the flows list has not answered at all. A
+      // page that decides here takes the whole console away from an account
+      // that turns out to have flows.
+      expect(element['onboardingResolved'], 'still unresolved').to.be.false;
+      expect(
+        element.shadowRoot?.querySelector('.welcome-container'),
+        'no get-started card before the flows list'
+      ).to.not.exist;
+      expect(
+        element.shadowRoot?.querySelector('preloop-deploy-wizard'),
+        'no wizard before the flows list'
+      ).to.not.exist;
+      expect(element.shadowRoot?.querySelector('.gateway-card'), 'the console')
+        .to.exist;
+
+      releaseFlows();
+      await waitUntil(
+        () => element['onboardingResolved'],
+        'onboarding never resolved'
+      );
+      await element.updateComplete;
+
+      expect(
+        element.shadowRoot?.querySelector('.welcome-container'),
+        'get-started card after every input answered'
+      ).to.exist;
+    });
 
     it('shows both endpoints without a disclosure', async () => {
       const element = await mountLoaded();
@@ -1365,7 +1458,10 @@ describe('DashboardView', () => {
           !element['fetchingAgents'] &&
           !element['fetchingBudget'] &&
           !element['fetchingAudit'] &&
-          !element['fetchingMCPAndTools'],
+          !element['fetchingMCPAndTools'] &&
+          // Onboarding prompts wait for the flows and their runs too, so a
+          // test about one is only meaningful once those have answered.
+          element['onboardingResolved'],
         'dashboard did not finish loading'
       );
       await element.updateComplete;

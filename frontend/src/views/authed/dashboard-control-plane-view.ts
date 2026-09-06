@@ -8,6 +8,7 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/progress-bar/progress-bar.js';
+import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
 import '../../components/mcp-setup-dialog.ts';
 import '../../components/budget-limits-dialog.ts';
 import '../../components/activity-feed.ts';
@@ -476,6 +477,22 @@ export class DashboardView extends AuthedElement {
       }
       .plane-dot.served {
         background: var(--sl-color-success-600);
+      }
+      /* Status not in yet. A hollow ring says "no answer": a filled neutral
+         dot next to "No traffic yet" is a claim, and this row is not making
+         one until the summary lands. */
+      .plane-dot.pending {
+        background: transparent;
+        border: 1px solid var(--sl-color-neutral-300);
+        box-sizing: border-box;
+      }
+      /* The metrics cell, the width of the numbers it is waiting for, so the
+         row does not resize when they arrive. */
+      .plane-stats sl-skeleton {
+        --border-radius: var(--sl-border-radius-small);
+        display: inline-block;
+        height: 0.75rem;
+        width: 9ch;
       }
       .plane-endpoint {
         align-items: center;
@@ -1616,31 +1633,58 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
-   * Welcome chrome can paint before the fold; the deploy wizard must not.
-   * Empty agents on first paint are not "not onboarded", and mounting
-   * the wizard then fired a second `GET /ai-models` next to
-   * {@link fetchModelsList}.
+   * The get-started card takes the whole page, so it is the loudest
+   * onboarding prompt the console has and the last one allowed to guess.
+   * Neither the card nor the wizard inside it paints before
+   * {@link onboardingResolved}: empty lists on first paint are not "not
+   * onboarded", and the wizard also fires a second `GET /ai-models` next to
+   * {@link fetchModelsList} when it mounts.
    */
   private get showWelcomeCard(): boolean {
-    return !this.welcomeCardDismissed && !this.isOnboarded;
+    return (
+      !this.welcomeCardDismissed && this.onboardingResolved && !this.isOnboarded
+    );
   }
 
   private get mountDeployWizard(): boolean {
-    return this.showWelcomeCard && !this.fetchingAgents;
+    return this.showWelcomeCard;
   }
 
   /**
-   * True once the cheap lists the checklist reads (agents, tools) plus
-   * budget policies and the feature flags have all answered. Usage columns
-   * are not an input: an account with agents is finished with "Onboard an
-   * agent" whether or not this month's spend has arrived yet.
+   * True once every request {@link isOnboarded} reads has answered.
+   *
+   * Empty arrays before their lists land are not "the account has nothing":
+   * gating on them printed "Connect your first agent" and the get-started
+   * wizard on the first frame of an account with fifty agents, then took
+   * both back a beat later. Nothing that asks the reader to onboard is drawn
+   * until agents, flows and their runs have all resolved, so no prompt on
+   * this page is ever retracted by a later response (DESIGN.md, Next steps
+   * and the flash it used to cause).
+   */
+  private get onboardingResolved(): boolean {
+    return (
+      !this.fetchingAgents &&
+      !this.fetchingFlows &&
+      !this.fetchingRecentExecutions
+    );
+  }
+
+  /**
+   * True once the lists the checklist reads (agents, flows and their runs,
+   * tools, people where user management is on) plus budget policies and the
+   * feature flags have all answered. Usage columns are not an input: an
+   * account with agents is finished with "Onboard an agent" whether or not
+   * this month's spend has arrived yet.
    */
   private get nextStepsInputsResolved(): boolean {
     return (
-      !this.fetchingAgents &&
+      this.onboardingResolved &&
       !this.fetchingBudget &&
       !this.fetchingTools &&
-      this.featuresResolved
+      this.featuresResolved &&
+      // The invite step reads the people list, so a checklist that offers it
+      // waits for that list too rather than ticking the row a beat later.
+      (!this.userManagementEnabled || !this.fetchingUsers)
     );
   }
 
@@ -3312,12 +3356,17 @@ export class DashboardView extends AuthedElement {
     docsLabel: string;
     stats: string[];
     formatSelect?: boolean;
+    /** True while the request behind the dot and the numbers is in flight. */
+    pending?: boolean;
   }) {
+    const pending = options.pending === true;
     return html`
       <div class="plane-row">
         <span class="plane-name-cell">
           <span
-            class="plane-dot ${options.served ? 'served' : ''}"
+            class="plane-dot ${
+              pending ? 'pending' : options.served ? 'served' : ''
+            }"
             aria-hidden="true"
           ></span>
           <span class="plane-name">${options.name}</span>
@@ -3356,9 +3405,14 @@ export class DashboardView extends AuthedElement {
         </span>
         <span class="plane-stats">
           ${
-            options.served
-              ? options.stats.join(' · ')
-              : html`<span class="plane-quiet">No traffic yet</span>`
+            pending
+              ? html`<sl-skeleton
+                  effect="none"
+                  aria-label="Loading ${options.name.toLowerCase()} activity"
+                ></sl-skeleton>`
+              : options.served
+                ? options.stats.join(' · ')
+                : html`<span class="plane-quiet">No traffic yet</span>`
           }
         </span>
       </div>
@@ -3434,7 +3488,20 @@ export class DashboardView extends AuthedElement {
    * is about traffic, not about how many things exist.
    */
   private renderGatewayCard() {
-    const hasAgents = this.managedAgents.length > 0;
+    // The prompt is the one thing on this card that a later response can
+    // retract, so it waits for the agents list; the two rows never do. Until
+    // the onboarding state is confirmed the card keeps its own shape with the
+    // status and the metrics left blank (D32).
+    const promptOnboarding =
+      this.onboardingResolved &&
+      this.managedAgents.length === 0 &&
+      this.totalAgentsCount === 0;
+    // An answer already in hand (the session cache, or the range before this
+    // one) beats a skeleton over it: a slower call never blanks a row that
+    // already has numbers (D32).
+    const modelStatsPending =
+      this.fetchingGatewaySummary && !this.gatewaySummary;
+    const toolStatsPending = this.fetchingAudit && this.toolCallsCount === 0;
     return html`
       <sl-card class="content-card gateway-card">
         <div slot="header" class="card-header-with-action">
@@ -3456,8 +3523,9 @@ export class DashboardView extends AuthedElement {
         </div>
 
         ${
-          hasAgents
-            ? html`
+          promptOnboarding
+            ? this.renderConnectFirstAgent()
+            : html`
                 ${this.renderPlaneRow({
                   name: 'Model gateway',
                   served: (this.gatewaySummary?.total_requests || 0) > 0,
@@ -3467,6 +3535,7 @@ export class DashboardView extends AuthedElement {
                   docsLabel: 'Model gateway docs',
                   stats: this.modelGatewayStats,
                   formatSelect: true,
+                  pending: modelStatsPending,
                 })}
                 ${this.renderPlaneRow({
                   name: 'Tool firewall',
@@ -3476,9 +3545,9 @@ export class DashboardView extends AuthedElement {
                   docsHref: 'https://docs.preloop.ai/guide/mcp-server',
                   docsLabel: 'Tool firewall docs',
                   stats: this.toolFirewallStats,
+                  pending: toolStatsPending,
                 })}
               `
-            : this.renderConnectFirstAgent()
         }
       </sl-card>
     `;
