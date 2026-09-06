@@ -36,7 +36,6 @@ import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
 import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
-import '@shoelace-style/shoelace/dist/components/progress-bar/progress-bar.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
 /**
@@ -150,19 +149,27 @@ export class ApprovalsView extends AuthedElement {
   static styles = [
     unsafeCSS(consoleStyles),
     css`
-      .stats-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-        gap: var(--sl-spacing-medium);
-        margin-bottom: var(--sl-spacing-large);
+      /* One hairline strip, not six boxes: these are counts, not cards. */
+      .stat-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem 0.75rem;
+        padding: var(--sl-spacing-small) 0;
+        margin-bottom: var(--sl-spacing-medium);
+        border-top: 1px solid var(--console-hairline);
+        border-bottom: 1px solid var(--console-hairline);
+        color: var(--console-meta-color);
+        font-size: var(--sl-font-size-small);
+        font-variant-numeric: tabular-nums;
       }
 
-      .stat-card {
-        background: var(--sl-color-neutral-0);
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
-        padding: var(--sl-spacing-medium);
-        text-align: center;
+      .stat-strip strong {
+        color: var(--console-body-color);
+        font-weight: 600;
+      }
+
+      .stat-strip .separator {
+        color: var(--console-hairline);
       }
 
       .filters-row {
@@ -342,18 +349,6 @@ export class ApprovalsView extends AuthedElement {
         margin: 0;
         font-size: var(--sl-font-size-medium);
         font-weight: 600;
-      }
-
-      .rate-bar {
-        margin-top: var(--sl-spacing-medium);
-      }
-
-      .rate-labels {
-        display: flex;
-        justify-content: space-between;
-        font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-600);
-        margin-bottom: var(--sl-spacing-2x-small);
       }
 
       .summary-row {
@@ -1036,79 +1031,7 @@ export class ApprovalsView extends AuthedElement {
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
-          <!-- Analytics Summary -->
-          <div class="stats-grid">
-            <div class="stat-card">
-              <div class="stat-value primary">${this.stats.total}</div>
-              <div class="stat-label">Total requests</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-value warning">${this.stats.pending}</div>
-              <div class="stat-label">Pending</div>
-              ${
-                this.stats.pending > 0
-                  ? html`<div class="stat-subtext">Awaiting review</div>`
-                  : ''
-              }
-            </div>
-            <div class="stat-card">
-              <div class="stat-value success">${this.stats.approved}</div>
-              <div class="stat-label">Approved</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-value danger">${this.stats.declined}</div>
-              <div class="stat-label">Denied</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-value neutral">${this.stats.expired}</div>
-              <div class="stat-label">Timed out</div>
-              ${
-                this.stats.expired > 0
-                  ? html`<div class="stat-subtext">No response in time</div>`
-                  : ''
-              }
-            </div>
-            <div class="stat-card">
-              <div class="stat-value primary">
-                ${
-                  this.stats.avgResponseTimeMinutes > 0
-                    ? this.stats.avgResponseTimeMinutes < 60
-                      ? `${this.stats.avgResponseTimeMinutes}m`
-                      : `${Math.round(this.stats.avgResponseTimeMinutes / 60)}h`
-                    : '-'
-                }
-              </div>
-              <div class="stat-label">Avg response</div>
-            </div>
-          </div>
-
-          <!-- Approval Rate -->
-          ${
-            this.stats.approved + this.stats.declined > 0
-              ? html`
-                  <sl-card style="margin-bottom: var(--sl-spacing-large);">
-                    <div slot="header" class="chart-header">
-                      <sl-icon name="pie-chart"></sl-icon>
-                      Approval rate
-                    </div>
-                    <div class="rate-labels">
-                      <span
-                        >Approved: ${this.stats.approved}
-                        (${Math.round(this.stats.approvalRate)}%)</span
-                      >
-                      <span
-                        >Denied: ${this.stats.declined}
-                        (${Math.round(100 - this.stats.approvalRate)}%)</span
-                      >
-                    </div>
-                    <sl-progress-bar
-                      value="${this.stats.approvalRate}"
-                      style="--indicator-color: var(--sl-color-success-600); --track-color: var(--sl-color-danger-200);"
-                    ></sl-progress-bar>
-                  </sl-card>
-                `
-              : ''
-          }
+          ${this.renderStatStrip()}
 
           <!-- Filters -->
           <div class="filters-row">
@@ -1193,6 +1116,52 @@ export class ApprovalsView extends AuthedElement {
                 `
           }
         </div>
+      </div>
+    `;
+  }
+
+  /**
+   * The counts on one hairline strip. The list fetches a single page, so the
+   * total is capped: when the page came back full the strip says "last 100"
+   * rather than presenting a page count as an account total.
+   */
+  private renderStatStrip() {
+    const stats = this.stats;
+    const capped = stats.total >= APPROVAL_REQUESTS_PAGE_LIMIT;
+    const avg =
+      stats.avgResponseTimeMinutes > 0
+        ? stats.avgResponseTimeMinutes < 60
+          ? `${stats.avgResponseTimeMinutes}m`
+          : `${Math.round(stats.avgResponseTimeMinutes / 60)}h`
+        : null;
+    const facts: Array<unknown> = [
+      capped
+        ? html`Last <strong>${APPROVAL_REQUESTS_PAGE_LIMIT}</strong> requests`
+        : html`<strong>${stats.total}</strong> requests`,
+      html`<strong>${this.waitingRequests.length}</strong> waiting`,
+      html`<strong>${stats.approved}</strong> approved`,
+      html`<strong>${stats.declined}</strong> denied`,
+      html`<strong>${stats.expired}</strong> timed out`,
+    ];
+    if (stats.approved + stats.declined > 0) {
+      facts.push(
+        html`<strong>${Math.round(stats.approvalRate)}%</strong> approved by a
+          person`
+      );
+    }
+    if (avg) {
+      facts.push(html`avg response <strong>${avg}</strong>`);
+    }
+    return html`
+      <div class="stat-strip">
+        ${facts.map(
+          (fact, index) =>
+            html`${
+                index > 0
+                  ? html`<span class="separator" aria-hidden="true">·</span>`
+                  : ''
+              }<span>${fact}</span>`
+        )}
       </div>
     `;
   }

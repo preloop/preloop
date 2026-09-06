@@ -267,7 +267,9 @@ describe('Policies page repro', () => {
     const cardEl = m.element.shadowRoot!.querySelector(
       '[data-rule-id="shell"]'
     ) as HTMLElement;
-    expect(cardEl.querySelectorAll('sl-button')).to.have.length(2);
+    // B-P2: the card's Enable/Disable and Delete now live in one row menu.
+    expect(cardEl.querySelectorAll('sl-dropdown')).to.have.length(1);
+    expect(cardEl.querySelectorAll('sl-menu-item')).to.have.length(3);
   });
 
   it('R7 tool rule Save posts condition_type cel for a CEL expression', async () => {

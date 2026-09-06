@@ -481,6 +481,54 @@ describe('ApprovalsView', () => {
     });
   });
 
+  describe('the counts strip (B-L3)', () => {
+    function resolved(status: string, id: string) {
+      const requestedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+      return baseRequest({
+        id,
+        status,
+        requested_at: requestedAt,
+        resolved_at: new Date(Date.now() - 8 * 60_000).toISOString(),
+      });
+    }
+
+    it('states the counts on one hairline strip, not in cards', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'waiting', expires_at: inMinutes(30) }),
+        resolved('approved', 'yes'),
+        resolved('declined', 'no'),
+      ]);
+
+      expect(
+        element.shadowRoot?.querySelectorAll('.stat-card').length
+      ).to.equal(0);
+      const strip = element.shadowRoot?.querySelector(
+        '.stat-strip'
+      ) as HTMLElement;
+      expect(strip).to.exist;
+      // The separators are their own spans, spaced by the flex gap, so the
+      // text node reading is the facts joined by the middle dot.
+      expect((strip.textContent || '').replace(/\s+/g, ' ').trim()).to.equal(
+        '3 requests·1 waiting·1 approved·1 denied·0 timed out·50% approved by a person·avg response 2m'
+      );
+    });
+
+    it('says "last 100" instead of a total when the page came back full', async () => {
+      const requests = Array.from({ length: 100 }, (_unused, index) =>
+        resolved('approved', `ar-${index}`)
+      );
+      const element = await renderList(requests);
+
+      const strip = element.shadowRoot?.querySelector(
+        '.stat-strip'
+      ) as HTMLElement;
+      const text = (strip.textContent || '').replace(/\s+/g, ' ').trim();
+      // "Last 100", never a bare "100 requests": the page limit is not a
+      // count of everything the account ever asked for.
+      expect(text).to.match(/^Last 100 requests·/);
+    });
+  });
+
   describe('new since last visit', () => {
     it('dots a waiting request the first time it is seen and not after', async () => {
       const element = await renderList([
