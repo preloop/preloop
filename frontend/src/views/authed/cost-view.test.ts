@@ -191,7 +191,13 @@ describe('CostView', () => {
       ?.textContent?.replace(/\s+/g, ' ')
       .trim();
     expect(window).to.contain(' to ');
-    expect(window).to.contain('updated');
+    // The read time is a clock time, not "just now": the page neither polls
+    // nor subscribes, so a relative phrase painted once goes stale in place.
+    expect(window).to.match(/read \d/);
+    expect(window).to.not.contain('just now');
+    expect(
+      element.shadowRoot?.querySelector('.range-window')?.getAttribute('title')
+    ).to.contain('Loaded');
 
     const buttons = Array.from(
       element.shadowRoot?.querySelectorAll('sl-button') || []
@@ -261,8 +267,20 @@ describe('CostView', () => {
     expect(line).to.contain('(868 models), 55 days old.');
     // "Update recommended" with nothing to click became something to click.
     expect(line).to.not.contain('update recommended');
-    const action = element.shadowRoot?.querySelector('a.catalog-action');
+    // It opens a dialog, so it is a button: an anchor to "#panel-pricing"
+    // could never resolve inside a shadow root.
+    expect(element.shadowRoot?.querySelector('a.catalog-action')).to.equal(
+      null
+    );
+    const action = element.shadowRoot?.querySelector(
+      'button.catalog-action'
+    ) as HTMLButtonElement | null;
     expect(action?.textContent?.trim()).to.equal('Override a price');
+    action?.click();
+    await element.updateComplete;
+    expect(
+      (element as unknown as { priceDialogOpen: boolean }).priceDialogOpen
+    ).to.equal(true);
   });
 
   it('exposes loading status while analytics are fetched', async () => {

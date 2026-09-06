@@ -351,7 +351,9 @@ describe('AIModelsView', () => {
     // dash rather than fourteen invitations to change the default.
     const actions = (
       element as unknown as {
-        modelActions: (model: AIModel) => { id: string; outline?: boolean }[];
+        modelActions: (
+          model: AIModel
+        ) => { id: string; variant?: string; outline?: boolean }[];
       }
     ).modelActions({ id: 'model-1', is_default: false } as AIModel);
     expect(actions.map((action) => action.id)).to.deep.equal([
@@ -360,14 +362,29 @@ describe('AIModelsView', () => {
       'set-default',
       'delete',
     ]);
-    const del = actions[actions.length - 1] as {
-      variant?: string;
-      outline?: boolean;
-      separated?: boolean;
+    expect(actions[actions.length - 1].variant).to.equal('danger');
+
+    // What the row actually renders is the menu: in menu-only mode
+    // resource-actions sends every action into the dropdown and ignores the
+    // outline and separated flags, so the assertion that can fail is the
+    // order, with Delete last and its icon in danger red.
+    const kebab = kebabs?.[0] as HTMLElement & {
+      updateComplete?: Promise<unknown>;
     };
-    expect(del.variant).to.equal('danger');
-    expect(del.outline).to.equal(true);
-    expect(del.separated).to.equal(true);
+    await kebab.updateComplete;
+    const items = kebab.shadowRoot?.querySelectorAll('sl-menu-item') ?? [];
+    // The fixture model is already the default, so its menu holds three
+    // actions; Delete is last in either case.
+    expect([...items].map((item) => item.textContent?.trim())).to.deep.equal([
+      'View',
+      'Edit',
+      'Delete',
+    ]);
+    const last = items[items.length - 1];
+    expect(last.className).to.contain('danger-item');
+    expect(last.querySelector('sl-icon')?.getAttribute('style')).to.contain(
+      '--sl-color-danger-600'
+    );
   });
 
   it('does not add a prior-window request to every realtime refresh', async () => {

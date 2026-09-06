@@ -32,7 +32,6 @@ import type {
   ProviderBillingConnection,
 } from '../../types';
 import consoleStyles from '../../styles/console-styles.css?inline';
-import { formatRelativeTime } from '../../utils/date';
 import '../../components/view-header.ts';
 import '../../components/time-range-select.ts';
 import '../../components/budget-policy-editor.ts';
@@ -269,8 +268,21 @@ export class CostView extends AuthedElement {
         font-variant-numeric: tabular-nums;
       }
 
+      /* It opens a dialog, so it is a button. As an anchor it pointed at a
+         fragment that cannot resolve inside a shadow root, and told assistive
+         tech it was a link. */
       .catalog-action {
+        appearance: none;
+        background: none;
+        border: none;
+        padding: 0;
+        font: inherit;
         color: var(--sl-color-primary-600);
+        cursor: pointer;
+      }
+
+      .catalog-action:hover {
+        text-decoration: underline;
       }
 
       .metric-grid {
@@ -1055,9 +1067,23 @@ export class CostView extends AuthedElement {
     const day = (date: Date) =>
       date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
     const window = `${day(start)} to ${day(end)}`;
-    return this.loadedAt
-      ? `${window} · updated ${formatRelativeTime(this.loadedAt)}`
-      : window;
+    // Cost has no websocket subscription and no poll, so the numbers are as
+    // old as the last load. A relative "updated just now" painted once would
+    // still say "just now" an hour later; a clock time cannot go stale.
+    const loaded = this.loadedAt ? new Date(this.loadedAt) : null;
+    if (!loaded || Number.isNaN(loaded.getTime())) return window;
+    const read = loaded.toLocaleTimeString(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+    return `${window} · read ${read}`;
+  }
+
+  /** The full timestamp behind "read 14:02", for the label's tooltip. */
+  private rangeWindowTitle(): string {
+    const loaded = this.loadedAt ? new Date(this.loadedAt) : null;
+    if (!loaded || Number.isNaN(loaded.getTime())) return '';
+    return `Loaded ${loaded.toLocaleString()}`;
   }
 
   /**
@@ -1429,15 +1455,15 @@ export class CostView extends AuthedElement {
         ${ageDays === 1 ? 'day' : 'days'} old.
         ${
           ageDays > 45
-            ? html`<a
+            ? html`<button
+                type="button"
                 class="catalog-action"
-                href="#panel-pricing"
-                @click=${(event: Event) => {
-                  event.preventDefault();
+                @click=${() => {
                   this.priceDialogOpen = true;
                 }}
-                >Override a price</a
-              >`
+              >
+                Override a price
+              </button>`
             : nothing
         }
       </div>
@@ -2811,7 +2837,9 @@ export class CostView extends AuthedElement {
             .options=${DATE_RANGE_OPTIONS}
             @range-change=${this.handleRangeChange}
           ></time-range-select>
-          <span class="range-window">${this.rangeWindowLabel()}</span>
+          <span class="range-window" title=${this.rangeWindowTitle()}
+            >${this.rangeWindowLabel()}</span
+          >
         </div>
 
         ${

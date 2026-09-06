@@ -163,7 +163,12 @@ export class NotificationPreferencesView extends AuthedElement {
         align-items: center;
         gap: var(--sl-spacing-medium);
         padding: var(--sl-spacing-medium) 0;
-        border-bottom: 1px solid var(--sl-color-neutral-200);
+        border-bottom: 1px solid var(--console-hairline);
+      }
+
+      /* The card edge ends the list; a rule right above it is a second edge. */
+      .preference-row:last-of-type {
+        border-bottom: none;
       }
 
       .preference-label {
@@ -194,7 +199,7 @@ export class NotificationPreferencesView extends AuthedElement {
         align-items: center;
         gap: var(--sl-spacing-medium);
         padding: var(--sl-spacing-medium) 0;
-        border-bottom: 1px solid var(--sl-color-neutral-200);
+        border-bottom: 1px solid var(--console-hairline);
       }
 
       .devices-list .device-item:last-of-type {
@@ -981,7 +986,6 @@ export class NotificationPreferencesView extends AuthedElement {
             Get the mobile app to approve requests on the go.
           </div>
           <sl-button
-            class="app-store-button"
             variant="default"
             href="https://apps.apple.com/app/preloop/id6757803021"
             target="_blank"
@@ -991,7 +995,6 @@ export class NotificationPreferencesView extends AuthedElement {
             App Store
           </sl-button>
           <sl-button
-            class="app-store-button"
             variant="default"
             href="https://play.google.com/store/apps/details?id=ai.spacecode.preloop&pli=1"
             target="_blank"

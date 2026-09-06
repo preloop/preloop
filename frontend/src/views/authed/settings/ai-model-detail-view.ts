@@ -366,11 +366,26 @@ export class AIModelDetailView extends LitElement {
         gap: var(--sl-spacing-medium);
         border-bottom: 1px solid var(--console-hairline);
         padding-bottom: var(--sl-spacing-medium);
+        /* Clips the rule of whichever stat starts a row: see below. */
+        overflow: hidden;
       }
 
-      .stat-item + .stat-item {
+      /* The separator lives in the gap to the stat's left, not on its border:
+         a border follows DOM order, and once this grid wraps the first stat of
+         the second row would keep a rule with nothing beside it. A rule in the
+         gap falls outside the grid's box for a row's first stat and is
+         clipped. */
+      .stat-item {
+        position: relative;
+      }
+
+      .stat-item::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: calc(-1 * var(--sl-spacing-medium) / 2);
         border-left: 1px solid var(--console-hairline);
-        padding-left: var(--sl-spacing-medium);
       }
 
       .stat-label {

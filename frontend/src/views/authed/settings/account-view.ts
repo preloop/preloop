@@ -395,12 +395,27 @@ export class AccountView extends LitElement {
         gap: 0.75rem;
         margin-top: 1rem;
         padding-bottom: 0.875rem;
-        border-bottom: 1px solid var(--sl-color-neutral-200);
+        border-bottom: 1px solid var(--console-hairline);
+        /* Clips the rule of whichever metric starts a row: see below. */
+        overflow: hidden;
       }
 
-      .usage-metric + .usage-metric {
-        border-left: 1px solid var(--sl-color-neutral-200);
-        padding-left: 0.75rem;
+      /* The separator is drawn in the gap to the metric's left rather than on
+         its own border, because a border follows DOM order and this grid
+         wraps: once it does, the first metric of the second row would carry a
+         rule with nothing beside it. Sitting in the gap, that rule falls
+         outside the grid's box and is clipped away. */
+      .usage-metric {
+        position: relative;
+      }
+
+      .usage-metric::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: -0.375rem;
+        border-left: 1px solid var(--console-hairline);
       }
 
       .usage-label {

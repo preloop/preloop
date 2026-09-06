@@ -196,11 +196,6 @@ export class AIModelsView extends LitElement {
       .styled-table tr:last-child td {
         border-bottom: none;
       }
-      .actions {
-        display: flex;
-        gap: var(--sl-spacing-x-small);
-        justify-content: flex-end;
-      }
       .empty-state a {
         color: var(--sl-color-primary-600);
         text-decoration: none;
@@ -925,7 +920,10 @@ export class AIModelsView extends LitElement {
       model.is_default,
       () =>
         html`<sl-badge class="chip" variant="success" pill>Default</sl-badge>`,
-      () => html`<span class="cell-secondary">&mdash;</span>`
+      () =>
+        html`<span class="cell-secondary" aria-label="Not default"
+          >&ndash;</span
+        >`
     );
   }
 
