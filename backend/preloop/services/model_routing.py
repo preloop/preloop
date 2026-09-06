@@ -24,6 +24,11 @@ from preloop.models.models.flow_execution import (
     ROUTING_RECORD_KEY,
 )
 from preloop.models.schemas.flow import ModelRoutingConfig, ModelRoutingRule
+from preloop.services.runner_service import (
+    _account_default_runner_pool,
+    _explicit_pool,
+    _is_server_pool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -233,13 +238,37 @@ def load_usable_model(
     return model
 
 
+def _require_environment_profile_harness(agent_config: Any, agent_type: str) -> None:
+    """Reject a selected harness that cannot run the flow's environment profile."""
+    if not isinstance(agent_config, dict) or not agent_config.get(
+        "environment_profile"
+    ):
+        return
+    from preloop.services.flow_environment import resolve_profile
+
+    harness = (agent_type or "").strip().lower()
+    try:
+        resolve_profile(agent_config, agent_type=harness, runner="server")
+    except ValueError as exc:
+        if str(exc) == "environment_harness_mismatch":
+            raise ModelRoutingError(
+                "environment_profile "
+                f"{agent_config['environment_profile']!r} does not support "
+                f"agent_type {harness!r}"
+            ) from exc
+        raise ModelRoutingError(str(exc)) from exc
+
+
 def validate_default_selection(
     db: Session, flow: models.Flow, *, agent_type: str, ai_model_id: Any
 ) -> None:
     """Validate defaults/pinned identity without widening rule or matrix targets.
 
     A named private Cursor profile uses the runner's local credentials and
-    model map. The runtime still owns native capability checks and rejection of
+    model map. The pool check matches ``resolve_runner_pool`` for the
+    flow-level and account-default steps (not the "any online runner" auto
+    fallback): ``flow.runner_pool``, then ``account.default_runner_pool``.
+    The runtime still owns native capability checks and rejection of
     unsupported resume/publication paths. This forward-compatible boundary has
     no dependency on the optional native-runner implementation.
     """
@@ -255,16 +284,18 @@ def validate_default_selection(
         return
     config = flow.agent_config if isinstance(flow.agent_config, dict) else {}
     profile = config.get("host_exec_profile")
-    pool = flow.runner_pool
+    pool = _explicit_pool(getattr(flow, "runner_pool", None))
+    if pool is None:
+        pool = _explicit_pool(_account_default_runner_pool(flow, db))
     if (
         not isinstance(profile, str)
         or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", profile.strip()) is None
-        or not isinstance(pool, str)
-        or not pool.strip()
-        or pool.strip().lower() == "server"
+        or pool is None
+        or _is_server_pool(pool)
     ):
         raise ModelRoutingError(
-            "Cursor defaults require a named host profile and explicit private runner pool"
+            "Cursor defaults require a named host profile and a private "
+            "runner pool (flow.runner_pool or account.default_runner_pool)"
         )
     if ai_model_id is None:
         return
@@ -293,6 +324,7 @@ def validate_stored_model_routing(
             agent_type=rule.agent_type,
             account_id=account_id,
         )
+        _require_environment_profile_harness(agent_config, rule.agent_type)
     return config
 
 
@@ -408,7 +440,11 @@ def validate_authorized_matrix(
     cell["ai_model_id"] = str(model_id) if model_id else None
     agent_type = cell.get("agent_type")
     if agent_type:
-        cell["agent_type"] = _require_hosted_routing_harness(agent_type)
+        harness = _require_hosted_routing_harness(agent_type)
+        cell["agent_type"] = harness
+        _require_environment_profile_harness(
+            getattr(flow, "agent_config", None), harness
+        )
     ai_model_id = cell.get("ai_model_id")
     if ai_model_id:
         model = crud_ai_model.get(db, id=_model_uuid(ai_model_id))
@@ -438,6 +474,9 @@ def resolve_routing_record(
             agent_type=matched.agent_type,
             account_id=account_id,
         )
+        _require_environment_profile_harness(
+            getattr(flow, "agent_config", None), matched.agent_type
+        )
         return _record(
             ai_model_id=matched.ai_model_id,
             agent_type=matched.agent_type.strip().lower(),
@@ -463,6 +502,10 @@ def resolve_routing_record(
                 f"agent_type '{default_type}' is not supported; "
                 f"supported types: {sorted(SUPPORTED_AGENT_TYPES)}"
             )
+    if default_type:
+        _require_environment_profile_harness(
+            getattr(flow, "agent_config", None), default_type
+        )
     return _record(
         ai_model_id=default_model_id,
         agent_type=default_type,
@@ -483,6 +526,9 @@ def revalidate_routing_record(
         validate_default_selection(
             db, flow, ai_model_id=ai_model_id, agent_type=agent_type
         )
+    _require_environment_profile_harness(
+        getattr(flow, "agent_config", None), agent_type
+    )
     return record
 
 

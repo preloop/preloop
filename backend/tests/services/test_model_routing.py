@@ -1,5 +1,6 @@
 """Ordered per-flow model/harness routing from current issue labels."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -1426,6 +1427,29 @@ def test_cursor_default_rejects_missing_private_profile(
         prepare_execution_routing(db_session, flow, {})
 
 
+def test_cursor_default_honors_account_private_pool(
+    db_session: Session, test_user: User
+) -> None:
+    model = _usable_model(db_session, test_user.account_id)
+    model.api_key = None
+    account = crud_account.get(db_session, id=test_user.account_id)
+    assert account is not None
+    crud_account.update(
+        db_session, db_obj=account, obj_in={"default_runner_pool": "private"}
+    )
+    flow = _flow(
+        db_session,
+        test_user,
+        agent_type="cursor",
+        ai_model_id=model.id,
+        extra_config={"host_exec_profile": "cursor-ask"},
+    )
+    flow.runner_pool = None
+    details = prepare_execution_routing(db_session, flow, {})
+    assert details[ROUTING_RECORD_KEY]["agent_type"] == "cursor"
+    assert details[ROUTING_RECORD_KEY]["ai_model_id"] == str(model.id)
+
+
 def test_private_cursor_default_rejects_foreign_model(
     db_session: Session, test_user: User
 ) -> None:
@@ -1493,3 +1517,47 @@ def test_stored_routing_rejects_cursor_rules_with_host_profile_guidance(
             },
             test_user.account_id,
         )
+
+
+def test_environment_profile_rejects_mismatched_routing_harness(
+    db_session: Session,
+    test_user: User,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from preloop.config import settings
+
+    image = "example.com/agent@sha256:" + "a" * 64
+    registry = tmp_path / "profiles.json"
+    registry.write_text(json.dumps({"approved": {"image": image, "harness": "codex"}}))
+    monkeypatch.setattr(settings, "flow_environment_profiles_file", str(registry))
+    model = _usable_model(db_session, test_user.account_id)
+    config = {
+        "environment_profile": "approved",
+        "model_routing": _policy(
+            _rule(
+                "docs",
+                any_labels=["docs"],
+                model_id=model.id,
+                agent_type="opencode",
+            )
+        ),
+    }
+    with pytest.raises(ModelRoutingError, match="does not support"):
+        validate_stored_model_routing(db_session, config, test_user.account_id)
+    flow = _flow(
+        db_session,
+        test_user,
+        ai_model_id=model.id,
+        extra_config={"environment_profile": "approved"},
+        routing=_policy(
+            _rule(
+                "docs",
+                any_labels=["docs"],
+                model_id=model.id,
+                agent_type="opencode",
+            )
+        ),
+    )
+    with pytest.raises(ModelRoutingError, match="does not support"):
+        prepare_execution_routing(db_session, flow, {"payload": {"labels": ["docs"]}})

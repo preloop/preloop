@@ -40,7 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scoped checkpoints and recover unpushed commits plus dirty/untracked files. Private
   runners retain leased local workspaces with quota and expiry controls. Raw private
   custom images remain supported without a named profile.
-
 - **Issue Triage Assistant first slice**: rewrite of preset
   `issue-triage-assistant` for `issue_opened` / `issue_updated` (legacy
   `issue.opened` clones still match). Manual Run triage on a single issue

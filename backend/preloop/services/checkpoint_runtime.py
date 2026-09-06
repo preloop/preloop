@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from preloop.config import settings
 from preloop.models.crud import flow_artifact as crud
-from preloop.services.flow_artifacts import artifact_reference
+from preloop.services.flow_artifacts import artifact_reference, artifact_thread_id
 
 
 def checkpoint_context(db: Session, context: dict[str, Any]) -> dict[str, str]:
@@ -26,13 +26,7 @@ def checkpoint_context(db: Session, context: dict[str, Any]) -> dict[str, str]:
         # feedback resumes carry a controller-validated thread reservation.
         # Cold recovery needs an explicit controller decision, not a fallback.
         raise ValueError("checkpoint_resume_not_authorized")
-    thread_id = str(
-        context.get("thread_id")
-        or trigger.get("_session_thread_id")
-        or resume.get("thread_id")
-        or resume.get("execution_id")
-        or context["execution_id"]
-    )
+    thread_id = artifact_thread_id(trigger, context["execution_id"])
     identifiers = {
         "account_id": UUID(str(context["account_id"])),
         "flow_id": UUID(str(context["flow_id"])),
