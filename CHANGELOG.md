@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   host_exec`); Docker jobs keep the Docker launch v1 contract. Isolated
   publication and native CLI `--resume` fail closed. Cursor usage follows the
   operator's Cursor plan, not Preloop billing. Tracking: issue #450.
+- **Approved flow environments and workspace recovery**: optional pinned profiles
+  provide bounded setup and isolated services. Hosted executions can retain encrypted,
+  scoped checkpoints and recover unpushed commits plus dirty/untracked files. Private
+  runners retain leased local workspaces with quota and expiry controls. Raw private
+  custom images remain supported without a named profile.
+
 - **Issue Triage Assistant first slice**: rewrite of preset
   `issue-triage-assistant` for `issue_opened` / `issue_updated` (legacy
   `issue.opened` clones still match). Manual Run triage on a single issue
@@ -139,6 +145,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds a page by dropping a markdown file.
 
 ### Fixed
+
+- **OpenCode log-filter tests no longer crash without Node**:
+  `TestOpenCodeLogFilterJs` spawned `node` and raised `FileNotFoundError`
+  in the GitLab agents job (Python slim image) and any local env without
+  Node on `PATH`. Those cases skip; the agents unit job installs `nodejs`
+  so CI still parses and executes the embedded filter.
 
 - **Landing build fails on missing screenshots**: the brand Vite plugin
   now errors when a landing `hero.image` or feature `placeholderImg` is

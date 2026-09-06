@@ -304,6 +304,31 @@ def test_lease_payload_skips_image_for_host_exec() -> None:
     assert payload_for_log(payload)["agent_type"] == "cursor"
 
 
+def test_lease_payload_host_exec_does_not_bypass_environment_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A native profile cannot silently ignore a selected Docker environment."""
+    from preloop.config import settings
+
+    monkeypatch.setattr(settings, "flow_environment_profiles_file", None)
+    executor = RemoteRunnerExecutor(
+        "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()
+    )
+    with pytest.raises(ValueError, match="environment_profile_not_approved"):
+        executor._lease_payload(
+            execution_id=uuid4(),
+            flow_id=uuid4(),
+            prompt="summarize",
+            execution_context={
+                "agent_type": "cursor",
+                "agent_config": {
+                    "host_exec_profile": "cursor-ask",
+                    "environment_profile": "unapproved",
+                },
+            },
+        )
+
+
 def test_lease_payload_host_exec_rejects_pull_request() -> None:
     executor = RemoteRunnerExecutor(
         "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()

@@ -123,6 +123,28 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.first()
 
+    def purge_workspace_snapshots(self, db: Session, *, cutoff: Any) -> int:
+        """Release terminal legacy snapshots; active executions retain state."""
+        from preloop.models import models
+
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.workspace_snapshot.isnot(None),
+                models.FlowExecution.end_time < cutoff,
+                models.FlowExecution.status.in_(
+                    ["SUCCEEDED", "FAILED", "STOPPED", "CANCELLED", "TIMED_OUT"]
+                ),
+            )
+            .update(
+                {models.FlowExecution.workspace_snapshot: None},
+                synchronize_session=False,
+            )
+        )
+        if count:
+            db.commit()
+        return count
+
     def existing_ids(self, db: Session, ids: List[Any]) -> set:
         """Return the subset of ``ids`` that exist as flow execution rows.
 

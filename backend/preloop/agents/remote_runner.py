@@ -259,6 +259,11 @@ class RemoteRunnerExecutor(AgentExecutor):
             or self.agent_type
             or (getattr(flow, "agent_type", None) if flow is not None else None)
         )
+        from preloop.services.flow_environment import resolve_profile
+
+        resolve_profile(
+            agent_config, agent_type=str(agent_type or ""), runner="private"
+        )
         profile = host_exec_profile_name(agent_config, context)
         kind = str(agent_type or "").strip().lower() if agent_type else ""
         if kind == HOST_EXEC_AGENT_TYPE and not profile:

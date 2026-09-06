@@ -280,6 +280,9 @@ func copyDir(src, dst string) error {
 		if err != nil {
 			return err
 		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("workspace symlinks cannot be copied")
+		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
@@ -318,7 +321,7 @@ func workspaceTTL() time.Duration {
 	hours := defaultWorkspaceTTLHours
 	raw := strings.TrimSpace(os.Getenv(workspaceTTLHoursEnv))
 	if raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
 			hours = parsed
 		}
 	}
@@ -330,7 +333,44 @@ func cleanupStaleWorkspaces(keep map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	return cleanupStaleWorkspacesAt(root, workspaceTTL(), time.Now(), keep)
+	now := time.Now()
+	if err := cleanupStaleWorkspacesAt(root, workspaceTTL(), now, keep); err != nil {
+		return err
+	}
+	return enforceWorkspaceQuota(root, privateWorkspaceQuota(), now, keep)
+}
+
+func touchWorkspaceLease(executionID string) error {
+	dir, err := runnerWorkspaceDir(executionID)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, ".preloop-runner-lease")
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("invalid workspace lease")
+	}
+	temporary, err := os.CreateTemp(dir, ".lease-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temporary.Name())
+	if _, err := temporary.WriteString(time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporary.Name(), path)
+}
+
+func releaseWorkspaceLease(executionID string) {
+	if dir, err := runnerWorkspaceDir(executionID); err == nil {
+		_ = os.Remove(filepath.Join(dir, ".preloop-runner-lease"))
+	}
 }
 
 func cleanupStaleWorkspacesAt(root string, ttl time.Duration, now time.Time, keep map[string]bool) error {
@@ -348,14 +388,21 @@ func cleanupStaleWorkspacesAt(root string, ttl time.Duration, now time.Time, kee
 		if keep != nil && keep[entry.Name()] {
 			continue
 		}
+		if lease, err := os.Lstat(filepath.Join(root, entry.Name(), ".preloop-runner-lease")); err == nil && lease.Mode().IsRegular() && now.Sub(lease.ModTime()) < 2*time.Minute {
+			continue
+		}
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
-		if now.Sub(info.ModTime()) <= ttl {
+		if ttl > 0 && now.Sub(info.ModTime()) <= ttl {
 			continue
 		}
-		_ = os.RemoveAll(filepath.Join(root, entry.Name()))
+		path := filepath.Join(root, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+		_ = os.WriteFile(path+".expired", []byte("workspace_retention_expired\n"), 0600)
 	}
 	return nil
 }

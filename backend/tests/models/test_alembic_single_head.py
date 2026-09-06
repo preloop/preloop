@@ -112,4 +112,11 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert feedback.down_revision == "20260906_ae_viewed_uniq"
     runner_caps = script.get_revision("20260906_runner_caps")
     assert runner_caps.down_revision == "20260906_flow_feedback"
-    assert script.get_heads() == ["20260906_runner_caps"]
+    artifacts = script.get_revision("20260906_flow_artifacts")
+    assert artifacts.down_revision == "20260906_flow_feedback"
+    merged = script.get_revision("20260906_runner_artifact_merge")
+    assert set(merged.down_revision) == {
+        "20260906_runner_caps",
+        "20260906_flow_artifacts",
+    }
+    assert script.get_heads() == ["20260906_runner_artifact_merge"]

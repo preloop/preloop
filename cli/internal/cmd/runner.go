@@ -479,6 +479,13 @@ func runRunnerSession(
 				}
 			}
 		case <-ticker.C:
+			// Retention progresses even when the runner receives no new jobs.
+			keep := map[string]bool{}
+			if *runningExecID != "" {
+				keep[*runningExecID] = true
+				_ = touchWorkspaceLease(*runningExecID)
+			}
+			_ = cleanupStaleWorkspaces(keep)
 			_ = conn.WriteControl(
 				websocket.PingMessage, nil, time.Now().Add(runnerPingWait),
 			)
@@ -488,6 +495,7 @@ func runRunnerSession(
 		case err := <-readErr:
 			return fmt.Errorf("runner read: %w", err)
 		case outcome := <-*jobDone:
+			releaseWorkspaceLease(outcome.executionID)
 			applyJobOutcome(
 				conn, outcome, runningCmd, runningExecID, jobDone, halt, halted, lastComplete,
 			)
@@ -571,6 +579,7 @@ func beginLeasedJob(
 	if optsErr == nil && opts.PersistWorkspace {
 		if hostDir, persistErr := preparePersistWorkspace(executionID, resumeFrom); persistErr == nil {
 			opts.WorkspaceHostDir = hostDir
+			_ = touchWorkspaceLease(executionID)
 		} else {
 			optsErr = fmt.Errorf("persist workspace: %w", persistErr)
 		}
@@ -782,6 +791,13 @@ func runnerJobEnv(job map[string]any, apiURL string) map[string]string {
 	}
 	if executionID, ok := job["execution_id"].(string); ok && executionID != "" {
 		env["COMPOSE_PROJECT_NAME"] = composeProjectName(executionID)
+	}
+	for _, key := range []string{"git_clone_config", "custom_commands"} {
+		if value, ok := job[key]; ok && value != nil {
+			if data, err := json.Marshal(value); err == nil {
+				env[strings.ToUpper(key)] = string(data)
+			}
+		}
 	}
 	if cfg, ok := job["agent_config"].(map[string]any); ok && len(cfg) > 0 {
 		sanitized := sanitizeAgentConfig(cfg)
