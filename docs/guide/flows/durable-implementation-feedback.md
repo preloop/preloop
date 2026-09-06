@@ -118,6 +118,65 @@ Wrappers install the selected CLI before one native restore, enter the primary
 checkout after setup, and log the actual CLI version and configured image reference.
 A configured image tag is not proof of the resolved runtime image digest.
 
+## Deployment prerequisites
+
+Enable checkpoint uploads only after deploying the transaction-resilience backend
+and its EE companion. In particular, the artifact quota lock must use
+`FOR NO KEY UPDATE` so checkpoint inserts do not recreate account foreign-key
+contention. Apply database migrations before starting the updated API and flow
+workers. Merely enabling feedback on a saved flow does not enable artifact upload.
+
+The chart already supports shared `extraEnv` on the API, gateway, execution workers
+and scheduler. Its defaults leave `FLOW_ARTIFACT_DIRECT_UPLOAD` disabled. The
+optional [native checkpoint overlay](../../../helm/preloop/values-native-checkpoints.yaml)
+enables it and retains both workspace and native artifacts for seven days. Copy
+and review that file with your installation values; do not enable it merely by
+setting an environment variable on the Helm client or CI job.
+
+The overlay caps compressed uploads at 16 MiB through
+`WORKSPACE_SNAPSHOT_MAX_BYTES`, which applies to both artifact kinds. This is below
+the chart's default 32 MiB ingress and console proxy body limit. Oversized archives
+fail explicitly; increase application and every proxy limit together only after
+checking memory and database capacity. Expanded archives retain their separate
+`FLOW_ARTIFACT_EXPANDED_MAX_BYTES` limit (default 2 GiB), and
+`FLOW_ARTIFACT_ACCOUNT_QUOTA_BYTES` limits stored account data (default 4 GiB).
+Retention consumes that quota, so cleanup and database headroom must cover the
+selected retention window. The checkpoint interval defaults to 300 seconds.
+
+Helm merges maps but **replaces lists**. Merge these entries with any existing
+`extraEnv`, preserving database, private-CA and other installation entries. An
+additional values file must not silently replace that list. Render the combined
+values and verify that the same direct-upload flag reaches the API and execution
+workers. Confirm the existing signing/encryption Secret references remain intact;
+never print key values in CI logs.
+
+All API and worker replicas must share a stable `SECRET_KEY`, used to sign and
+verify scoped upload/download capabilities. Artifacts use the existing encryption
+configuration: a stable `SECURITY__ENCRYPTION_KEY` when configured, otherwise the
+existing encryption key derived from `SECRET_KEY`. Preserve the installation's
+current mode and keys. Switching to a new dedicated key or rotating either key is
+not part of enabling checkpoints and can make existing encrypted data unreadable.
+If an existing dedicated key comes from a Kubernetes Secret, preserve its
+`valueFrom.secretKeyRef` entry in the combined values. A non-empty key check only
+proves presence, not continuity with previously stored data.
+
+`PRELOOP_URL` must be reachable from the actual agent execution namespace or
+private runner, including DNS, TLS trust and egress to its resolved destination.
+The native client uploads directly to
+`/api/v1/flows/executions/{execution_id}/artifacts`; MCP access alone does not prove
+this route works. An internal ingress may need an explicit existing network-policy
+rule for its namespace and HTTPS port. Do not widen agent egress merely to bypass
+a failed readiness check. Check upload timeouts as well as size limits.
+
+Use a local or staging acceptance run to verify an encrypted workspace and native
+artifact row, then a fresh-container native resume for the same implementation
+thread. The two-turn image smoke below proves the harness's selected-session
+restore separately from the encrypted HTTP transport. Old executions without an
+uploaded checkpoint cannot regain their lost native context by enabling this
+setting; they require an explicit cold handoff. Disable future direct uploads by
+removing this overlay or setting `FLOW_ARTIFACT_DIRECT_UPLOAD=false` consistently,
+while preserving stored artifacts and keys for recovery.
+
 ## Local validation
 
 Unit fixtures cover archive identity, traversal, symlinks, credential isolation,
