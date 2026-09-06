@@ -1391,16 +1391,22 @@ export class ApprovalsView extends AuthedElement {
   }
 
   /**
+   * Follow the destination the configure menu item carries.
+   *
+   * Through the router, not `window.location`: these are console pages, and a
+   * full page reload would throw away the websocket and reload the shell to
+   * reach a sibling view.
+   */
+  private openConfigLink(event: Event) {
+    const href = (event.currentTarget as HTMLElement | null)?.dataset.href;
+    if (href) Router.go(href);
+  }
+
+  /**
    * The shared bulk bar, on one hairline between the group heading and its
    * rows. It renders nothing until something is selected, so a page with no
    * selection looks exactly as it did before.
    */
-  /** Follow the destination the configure menu item carries. */
-  private openConfigLink(event: Event) {
-    const href = (event.currentTarget as HTMLElement | null)?.dataset.href;
-    if (href) window.location.href = href;
-  }
-
   private renderBulkBar() {
     return html`
       <list-bulk-bar

@@ -631,6 +631,10 @@ describe('inventory-card', () => {
     // saying what they were.
     expect(labels).to.deep.equal(['Requests', 'Tokens', 'Spend', 'Seen']);
 
+    // Read from the stylesheet, not the DOM: the separator is a ::before on
+    // a media query, and a pseudo element has no node to query. The cost is
+    // that an equivalent rewrite of the rule breaks this assertion even
+    // though the behaviour holds.
     const css = Array.from(el.shadowRoot!.adoptedStyleSheets)
       .flatMap((sheet) =>
         Array.from(sheet.cssRules).map((rule) => rule.cssText)

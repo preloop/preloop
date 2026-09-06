@@ -117,7 +117,6 @@ export class ApprovalRuleContextBlock extends LitElement {
     }
   `;
 
-  /** True when this context names a real rule with an expression. */
   /**
    * An expression worth printing under the name.
    *

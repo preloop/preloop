@@ -1067,5 +1067,25 @@ describe('ApprovalsView', () => {
         items.find((item) => item.text.includes('Native tool approvals'))?.href
       ).to.equal('/console/tools?tab=native');
     });
+
+    it('navigates when an item is clicked', async () => {
+      const element = await renderList([baseRequest({ id: 'ar-1' })]);
+      const item = Array.from(
+        element.shadowRoot!.querySelectorAll('sl-menu-item')
+      ).find(
+        (candidate) =>
+          candidate.getAttribute('data-href') === '/console/tools?tab=mcp'
+      )!;
+
+      const go = sinon.stub(Router, 'go');
+      try {
+        // The attributes alone would still read correctly with the handler
+        // unwired, so the click is what proves the menu goes anywhere.
+        item.click();
+        expect(go.calledOnceWith('/console/tools?tab=mcp')).to.be.true;
+      } finally {
+        go.restore();
+      }
+    });
   });
 });
