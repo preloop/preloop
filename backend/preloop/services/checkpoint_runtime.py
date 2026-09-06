@@ -21,7 +21,10 @@ def checkpoint_context(db: Session, context: dict[str, Any]) -> dict[str, str]:
     trigger = context.get("trigger_event_data") or {}
     resume = trigger.get("_resume") or {}
     if resume and context.get("checkpoint_resume_authorized") is not True:
-        raise ValueError("checkpoint_resume_not_authorized")
+        # PR-comment and CI-failure resumes carry `_resume` without a
+        # thread_id, so they are not checkpoint-authorized. Cold-clone
+        # instead of failing the whole follow-up execution.
+        return {}
     thread_id = str(
         context.get("thread_id")
         or trigger.get("_session_thread_id")

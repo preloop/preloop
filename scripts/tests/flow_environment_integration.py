@@ -23,12 +23,11 @@ from fastapi import FastAPI
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-import preloop.models.crud  # noqa: F401
-
 from preloop.agents.codex import CodexAgent
 from preloop.api.endpoints.flow_artifacts import router
 from preloop.config import settings
 from preloop.models import models
+from preloop.models.crud import crud_flow_execution
 from preloop.services.checkpoint_runtime import checkpoint_context
 
 
@@ -182,6 +181,7 @@ async def main(args: argparse.Namespace) -> None:
                 )
                 db.add(original)
                 db.commit()
+                assert crud_flow_execution.get(db, id=original.id) is not None
                 scope = {
                     "test_kubernetes_config": {
                         "test_kubeconfig": args.kubeconfig,

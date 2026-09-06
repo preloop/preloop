@@ -43,7 +43,7 @@ def scope(db_session, test_user):
 
 def test_encrypted_roundtrip_and_tenant_isolation(db_session, scope) -> None:
     body = archive_with("workspace/source", b"unpublished source")
-    ref = put_artifact(db_session, **scope, kind="workspace", archive=body, metadata={})
+    ref = put_artifact(db_session, **scope, kind="workspace", archive=body)
     row = crud.get(
         db_session,
         artifact_id=ref.artifact_id,
@@ -69,7 +69,6 @@ def test_cleanup_respects_lease_and_reports_expiry(db_session, scope) -> None:
         **scope,
         kind="workspace",
         archive=archive_with("workspace/source"),
-        metadata={},
     )
     row = crud.get(
         db_session,
@@ -95,12 +94,9 @@ def test_interrupted_or_invalid_upload_does_not_replace_latest(
         **scope,
         kind="workspace",
         archive=archive_with("workspace/source"),
-        metadata={},
     )
     with pytest.raises(ValueError, match="corrupt"):
-        put_artifact(
-            db_session, **scope, kind="workspace", archive=b"interrupted", metadata={}
-        )
+        put_artifact(db_session, **scope, kind="workspace", archive=b"interrupted")
     latest = crud.latest(db_session, **scope, kind="workspace")
     assert latest.id == first.artifact_id
 

@@ -89,7 +89,6 @@ def put_artifact(
     execution_id: UUID,
     kind: Literal["workspace", "native_session"],
     archive: bytes,
-    metadata: dict[str, Any],
 ) -> ArtifactReference:
     """Validate and atomically commit encrypted bytes and metadata."""
     expanded = validate_archive(
@@ -97,6 +96,7 @@ def put_artifact(
         max_bytes=settings.workspace_snapshot_max_bytes,
         max_expanded_bytes=settings.flow_artifact_expanded_max_bytes,
     )
+    metadata: dict[str, Any] = {}
     native_expiry = None
     if kind in {"workspace", "native_session"}:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
@@ -121,7 +121,6 @@ def put_artifact(
             except KeyError:
                 if kind == "native_session":
                     raise ValueError("artifact_native_manifest_missing") from None
-                metadata = dict(metadata)
     now = datetime.now(UTC)
     ttl = (
         settings.flow_native_session_retention_hours

@@ -87,10 +87,8 @@ def test_checkpoint_roundtrip_preserves_unpushed_and_dirty_state(
     body = capture(source, max_bytes=100000)
     target = tmp_path / "restored"
     restore(body, target)
-    assert (
-        subprocess.check_output(["git", "-C", str(target), "rev-parse", "HEAD"])
-        == original
-    )
+    restored = subprocess.check_output(["git", "-C", str(target), "rev-parse", "HEAD"])
+    assert restored == original
     assert (target / "tracked.txt").read_text() == "dirty"
     assert (target / "untracked.txt").read_text() == "needed"
     assert not (target / ".env").exists()
@@ -137,8 +135,32 @@ def test_missing_checkpoint_blocks_resume_before_cold_clone(
     with pytest.raises(ValueError, match="workspace_checkpoint_missing"):
         checkpoint_context(Mock(), context)
     context["checkpoint_resume_authorized"] = False
-    with pytest.raises(ValueError, match="checkpoint_resume_not_authorized"):
-        checkpoint_context(Mock(), context)
+    assert checkpoint_context(Mock(), context) == {}
+
+
+def test_pr_comment_resume_without_thread_id_cold_clones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
+    from unittest.mock import Mock
+
+    from preloop.config import settings
+    from preloop.services.checkpoint_runtime import checkpoint_context
+
+    monkeypatch.setattr(settings, "flow_artifact_direct_upload", True)
+    context = {
+        "account_id": str(uuid4()),
+        "flow_id": str(uuid4()),
+        "execution_id": str(uuid4()),
+        "trigger_event_data": {
+            "_resume": {
+                "execution_id": str(uuid4()),
+                "pr_url": "https://example.com/merge_requests/1",
+                "source_branch": "fix",
+            }
+        },
+    }
+    assert checkpoint_context(Mock(), context) == {}
 
 
 @pytest.mark.asyncio
@@ -166,3 +188,34 @@ async def test_private_executor_never_receives_hosted_artifact_capability(
     await orchestrator._start_agent_session(context)
     hosted.assert_not_called()
     assert context["checkpoint_env"] == {}
+
+
+def test_artifact_capability_covers_longest_execution() -> None:
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    import jwt
+
+    from preloop.api.endpoints.flow_artifacts import (
+        ARTIFACT_CAPABILITY_TTL,
+        mint_artifact_capability,
+    )
+    from preloop.config import settings
+
+    token = mint_artifact_capability(
+        account_id=uuid4(),
+        flow_id=uuid4(),
+        thread_id="thread",
+        execution_id=uuid4(),
+        kind="workspace",
+        operation="put",
+    )
+    claims = jwt.decode(
+        token,
+        settings.security.secret_key,
+        algorithms=["HS256"],
+        audience="flow-artifact",
+    )
+    expiry = datetime.fromtimestamp(claims["exp"], UTC)
+    assert ARTIFACT_CAPABILITY_TTL >= timedelta(hours=24)
+    assert expiry >= datetime.now(UTC) + timedelta(hours=23)

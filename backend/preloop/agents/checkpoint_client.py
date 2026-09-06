@@ -196,7 +196,10 @@ def restore(body: bytes, destination: Path) -> None:
                 total += member.size
                 if total > limit:
                     raise ValueError("checkpoint_expansion_limit")
-                archive.extract(member, path=staging, filter="data")
+                try:
+                    archive.extract(member, path=staging, filter="data")
+                except TypeError:
+                    archive.extract(member, path=staging)
         staged = Path(staging) / "workspace"
         if not staged.is_dir():
             raise ValueError("checkpoint_missing_workspace")
@@ -211,32 +214,33 @@ def main() -> None:
     import fcntl
 
     # Serialize periodic, final and prepublication captures in this sandbox.
-    lock = open("/tmp/preloop-checkpoint.lock", "a")
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    try:
-        if sys.argv[1] == "restore":
-            restore(
-                request("GET", os.environ["PRELOOP_CHECKPOINT_GET_TOKEN"]),
-                Path("/workspace"),
-            )
-            print("PRELOOP_CHECKPOINT restored", flush=True)
-        else:
-            body = capture(
-                Path("/workspace"),
-                max_bytes=int(os.environ["PRELOOP_CHECKPOINT_MAX_BYTES"]),
-            )
-            reference = json.loads(
-                request("PUT", os.environ["PRELOOP_CHECKPOINT_PUT_TOKEN"], body)
-            )
-            Path("/tmp/preloop-checkpoint-reference.json").write_text(
-                json.dumps(reference)
-            )
-            print(
-                "PRELOOP_CHECKPOINT committed " + reference["artifact_id"], flush=True
-            )
-    except Exception as exc:
-        print("PRELOOP_CHECKPOINT failed " + type(exc).__name__, flush=True)
-        raise SystemExit(1) from None
+    with open("/tmp/preloop-checkpoint.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            if sys.argv[1] == "restore":
+                restore(
+                    request("GET", os.environ["PRELOOP_CHECKPOINT_GET_TOKEN"]),
+                    Path("/workspace"),
+                )
+                print("PRELOOP_CHECKPOINT restored", flush=True)
+            else:
+                body = capture(
+                    Path("/workspace"),
+                    max_bytes=int(os.environ["PRELOOP_CHECKPOINT_MAX_BYTES"]),
+                )
+                reference = json.loads(
+                    request("PUT", os.environ["PRELOOP_CHECKPOINT_PUT_TOKEN"], body)
+                )
+                Path("/tmp/preloop-checkpoint-reference.json").write_text(
+                    json.dumps(reference)
+                )
+                print(
+                    "PRELOOP_CHECKPOINT committed " + reference["artifact_id"],
+                    flush=True,
+                )
+        except Exception as exc:
+            print("PRELOOP_CHECKPOINT failed " + type(exc).__name__, flush=True)
+            raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

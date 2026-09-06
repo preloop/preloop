@@ -17,6 +17,10 @@ from preloop.services.flow_artifacts import get_artifact, put_artifact
 
 router = APIRouter()
 
+# Must cover the longest allowed execution (24h) plus a short buffer so the
+# final prepublication PUT is not rejected after a long coding run.
+ARTIFACT_CAPABILITY_TTL = timedelta(hours=24, minutes=5)
+
 
 def mint_artifact_capability(
     *,
@@ -32,7 +36,7 @@ def mint_artifact_capability(
     return jwt.encode(
         {
             "aud": "flow-artifact",
-            "exp": datetime.now(UTC) + timedelta(hours=2),
+            "exp": datetime.now(UTC) + ARTIFACT_CAPABILITY_TTL,
             "account_id": str(account_id),
             "flow_id": str(flow_id),
             "thread_id": thread_id,
@@ -142,7 +146,6 @@ def upload_artifact(
             thread_id=claims["thread_id"],
             kind=claims["kind"],
             archive=archive,
-            metadata={},
         )
     except ValueError as exc:
         flow_artifact.rollback(db)
