@@ -918,6 +918,7 @@ class TestTriggerFlow:
     @patch("preloop.services.flow_trigger_service.get_nats_client")
     @patch("preloop.services.flow_trigger_service.crud_flow_execution")
     @patch("preloop.services.flow_trigger_service.crud_flow")
+    @pytest.mark.parametrize("feedback_enabled", [False, True])
     async def test_trigger_flow_merges_custom_event_data(
         self,
         mock_crud_flow,
@@ -927,6 +928,7 @@ class TestTriggerFlow:
         mock_get_db,
         flow_trigger_service,
         sample_flow,
+        feedback_enabled,
     ):
         """Test triggering a flow with custom event data merges correctly."""
         mock_crud_flow.get.return_value = sample_flow
@@ -941,7 +943,14 @@ class TestTriggerFlow:
         mock_session = MagicMock()
         mock_get_db.return_value = iter([mock_session])
 
-        custom_event = {"source": "manual", "payload": {"test": True}}
+        sample_flow.agent_config = {"feedback": {"enabled": feedback_enabled}}
+        planted = str(uuid.uuid4())
+        custom_event = {
+            "source": "manual",
+            "payload": {"test": True},
+            "_session_thread_id": planted,
+            "_thread_id": planted,
+        }
         await flow_trigger_service.trigger_flow(
             sample_flow.id,
             test_mode=True,
@@ -953,6 +962,10 @@ class TestTriggerFlow:
         execution_data = create_call[1]["obj_in"]
         assert execution_data.trigger_event_details["test_mode"] is True
         assert execution_data.trigger_event_details["source"] == "manual"
+        assert "_thread_id" not in execution_data.trigger_event_details
+        marker = execution_data.trigger_event_details.get("_session_thread_id")
+        assert bool(marker) is feedback_enabled
+        assert marker != planted
 
 
 class TestCreateOrchestratorSession:

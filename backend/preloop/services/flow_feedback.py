@@ -6,12 +6,14 @@ import hashlib
 import json
 import logging
 import uuid
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
+from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_flow_feedback
 from preloop.services.flow_feedback_provider import (
@@ -53,8 +55,13 @@ def feedback_policy(flow: Any) -> dict[str, Any] | None:
 
 
 def register_thread(
-    db: Session, execution: models.FlowExecution, pr_url: str, branch: str
-) -> None:
+    db: Session,
+    execution: models.FlowExecution,
+    pr_url: str,
+    branch: str,
+    *,
+    adoption: dict[str, Any] | None = None,
+) -> models.FlowThread | None:
     """Register after trusted publication; initial reconciliation recovers races."""
     flow = crud_flow.get(db, id=execution.flow_id)
     policy = feedback_policy(flow)
@@ -62,7 +69,11 @@ def register_thread(
         return
     details = execution.trigger_event_details or {}
     if details.get("_thread_id"):
-        return
+        return None
+    if not details.get("_session_thread_id") and adoption is None:
+        # Enabling an old flow is permission for future implementations, not
+        # permission to spend repair budgets on its historical PR backlog.
+        return None
     payload = details.get("payload") or {}
     repository = payload.get("repository") or payload.get("project") or {}
     repository_id = repository.get("id")
@@ -75,7 +86,7 @@ def register_thread(
         session_thread_id = (
             uuid.UUID(str(details["_session_thread_id"]))
             if details.get("_session_thread_id")
-            else uuid.uuid4()
+            else uuid.UUID(str(execution.id))
         )
     except (ValueError, TypeError, AttributeError):
         logger.warning("Cannot bind feedback: tracker or session id is not a UUID")
@@ -101,6 +112,7 @@ def register_thread(
             ).encode()
         ).hexdigest(),
         "repository": repository,
+        **({"adoption": adoption} if adoption is not None else {}),
         "trigger": {
             **{
                 key: details[key]
@@ -112,7 +124,7 @@ def register_thread(
             "account_id": str(flow.account_id),
         },
     }
-    crud_flow_feedback.register(
+    return crud_flow_feedback.register(
         db,
         values={
             "id": session_thread_id,
@@ -166,12 +178,61 @@ def resolve_native_checkpoint(
     )
     if prior is None or prior.flow_id != flow_id:
         raise ValueError("resume_failed: checkpoint execution mismatch")
+    if not settings.flow_artifact_direct_upload:
+        raise ValueError("resume_failed: checkpoint uploads disabled")
+    if source_cold_handoff(thread, prior.id):
+        if (
+            resume.get("pr_url") != thread.pr_url
+            or resume.get("source_branch") != thread.branch
+        ):
+            raise ValueError("resume_failed: published branch binding mismatch")
+        return {"cold_handoff_authorized": True}
     session = prior.cli_session
     if not isinstance(session, dict):
-        return None
+        raise ValueError("resume_failed: native checkpoint missing")
+    from preloop.agents.cli_session import valid_session_id
+
+    if not valid_session_id(
+        session.get("agent_type", ""), session.get("session_id", "")
+    ):
+        raise ValueError("resume_failed: invalid native session identity")
+    if settings.flow_artifact_direct_upload:
+        from preloop.models.crud import flow_artifact
+        from preloop.services.flow_artifacts import artifact_reference
+
+        reference = session.get("artifact_reference") or {}
+        try:
+            artifact = flow_artifact.get(
+                db,
+                artifact_id=uuid.UUID(str(reference.get("artifact_id"))),
+                account_id=account_id,
+                flow_id=flow_id,
+                thread_id=str(thread.id),
+            )
+        except (ValueError, TypeError):
+            artifact = None
+        if (
+            artifact is None
+            or artifact.kind != "native_session"
+            or artifact.execution_id != prior.id
+            or artifact.ciphertext is None
+            or artifact.expires_at.replace(tzinfo=UTC) <= datetime.now(UTC)
+            or str(reference.get("execution_id")) != str(prior.id)
+            or reference.get("manifest_sha256")
+            != artifact_reference(artifact).manifest_sha256
+        ):
+            raise ValueError("resume_failed: native checkpoint unavailable")
     if session.get("thread_id") and session["thread_id"] != str(thread.id):
         raise ValueError("resume_failed: native session thread mismatch")
     return dict(session)
+
+
+def source_cold_handoff(thread: models.FlowThread, source_id: uuid.UUID) -> bool:
+    """The explicit exception belongs only to the adopted source checkpoint."""
+    adoption = (thread.context or {}).get("adoption") or {}
+    return adoption.get("recovery_mode") == "published_branch_handoff" and adoption.get(
+        "source_execution_id"
+    ) == str(source_id)
 
 
 def ingest_feedback(db: Session, event: dict[str, Any]) -> bool:
@@ -235,7 +296,8 @@ def decide(
         return "closed", "pr_closed_or_merged"
     if now >= thread.expires_at:
         return "expired", "subscription_expired"
-    if state.blocked_reason and not state.checks_pending:
+    requirements_unknown = state.blocked_reason == "repository_requirements_unavailable"
+    if state.blocked_reason and not state.checks_pending and not requirements_unknown:
         return "blocked", state.blocked_reason
     if state.checks_pending:
         started = (thread.cursor or {}).get("ci_wait_started")
@@ -268,6 +330,8 @@ def decide(
         return "stopped", "no_progress"
     if actionable:
         return "repair", None
+    if requirements_unknown:
+        return "blocked", state.blocked_reason
     if state.checks_passed and state.reviews_passed and not state.blocked_reason:
         return "ready", None
     return "waiting", "review_or_ci_pending"
@@ -325,6 +389,18 @@ async def _reconcile(
             now=now,
         )
         return
+    if feedback_policy(flow) is None:
+        # Keep budget/deadline history so an explicit re-enable can continue.
+        crud_flow_feedback.update(
+            db,
+            thread_id,
+            token,
+            changes={"state": "paused", "stop_reason": "feedback_disabled"},
+            now=now,
+        )
+        return
+    policy = deepcopy(feedback_policy(flow))
+    crud_flow_feedback.sync_policy(db, thread, policy)
     provider = await FeedbackProvider.for_thread(db, thread)
     state = await provider.read()
     if state.closed or now >= thread.expires_at:
@@ -443,7 +519,11 @@ async def _reconcile(
         "pr_url": thread.pr_url,
         "source_branch": thread.branch,
     }
-    if isinstance(prior.cli_session, dict) and prior.cli_session.get("session_id"):
+    if (
+        not source_cold_handoff(thread, prior.id)
+        and isinstance(prior.cli_session, dict)
+        and prior.cli_session.get("session_id")
+    ):
         resume["cli_session"] = prior.cli_session
     actionable = [
         item
@@ -512,6 +592,7 @@ async def _reconcile(
         receipt_ids=[item.id for item in pending],
         head_sha=state.head_sha,
         now=now,
+        expected_policy=policy,
     )
     if execution is not None:
         from preloop.services.flow_trigger_service import FlowTriggerService

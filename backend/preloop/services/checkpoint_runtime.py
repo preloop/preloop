@@ -60,7 +60,9 @@ def checkpoint_context(db: Session, context: dict[str, Any]) -> dict[str, str]:
             operation="get",
             reference=ArtifactReference.model_validate(native_ref),
         )
-    if resume.get("execution_id"):
+    if resume.get("execution_id") and not context.get(
+        "published_branch_handoff_authorized"
+    ):
         prior = crud.latest(
             db,
             account_id=identifiers["account_id"],

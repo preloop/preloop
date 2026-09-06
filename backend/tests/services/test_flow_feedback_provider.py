@@ -196,3 +196,118 @@ def test_untrusted_logs_are_bounded_and_redacted() -> None:
     assert "do-not-copy" not in result
     assert "[REDACTED]" in result
     assert len(result) <= 12000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["protection", "rules"])
+async def test_missing_repository_permission_allows_only_known_repairs(
+    endpoint: str,
+) -> None:
+    from datetime import datetime, timedelta
+    from preloop.services.flow_feedback import decide
+    from preloop.sync.exceptions import TrackerPermissionError
+
+    provider, paths = github_fixture()
+    provider.thread.policy.pop("required_checks")
+    original = provider.client._request.side_effect
+
+    async def request(method: str, path: str, data: Any = None) -> Any:
+        if path.endswith("/protection"):
+            if endpoint == "protection":
+                raise TrackerPermissionError("permission denied")
+            return {}
+        if "/rules/branches/" in path and endpoint == "rules":
+            raise TrackerPermissionError("permission denied")
+        return await original(method, path, data)
+
+    provider.client._request.side_effect = request
+    state = await provider.read()
+    assert state.blocked_reason == "repository_requirements_unavailable"
+    assert state.checks_passed is False and state.reviews_passed is False
+    assert {item["kind"] for item in state.feedback} == {
+        "inline_comment",
+        "review",
+        "ci",
+    }
+    assert len([path for path in paths if path.endswith("/pulls/7")]) == 2
+    now = datetime(2026, 9, 6)
+    thread = SimpleNamespace(
+        expires_at=now + timedelta(days=1),
+        policy={},
+        cursor={},
+        turns=0,
+        cost=0,
+        no_progress=0,
+    )
+    pending = [SimpleNamespace(**item) for item in state.feedback]
+    assert decide(thread, state, pending, now=now) == ("repair", None)
+    assert decide(thread, state, [], now=now) == (
+        "blocked",
+        "repository_requirements_unavailable",
+    )
+    state.checks_pending = True
+    assert decide(thread, state, pending, now=now) == ("waiting", "ci_pending")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["protection", "checks", "comments"])
+async def test_provider_generic_errors_never_authorize_partial_feedback(
+    endpoint: str,
+) -> None:
+    from preloop.sync.exceptions import TrackerResponseError
+
+    provider, _ = github_fixture()
+    provider.thread.policy.pop("required_checks")
+    original = provider.client._request.side_effect
+
+    async def request(method: str, path: str, data: Any = None) -> Any:
+        if (
+            (endpoint == "protection" and path.endswith("/protection"))
+            or (endpoint == "checks" and "/check-runs" in path)
+            or (endpoint == "comments" and "/issues/" in path)
+        ):
+            raise TrackerResponseError("GitHub API error: 403 - rate limit")
+        return await original(method, path, data)
+
+    provider.client._request.side_effect = request
+    with pytest.raises(TrackerResponseError):
+        await provider.read()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,message,headers,permission",
+    [
+        (403, "Resource not accessible by integration", {}, True),
+        (403, "Resource not accessible by personal access token", {}, True),
+        (403, "Must have admin rights to Repository.", {}, True),
+        (
+            403,
+            "Resource not accessible by integration",
+            {"x-ratelimit-remaining": "0"},
+            False,
+        ),
+        (403, "Resource not accessible by integration", {"retry-after": "60"}, False),
+        (403, "API rate limit exceeded", {}, False),
+        (429, "Resource not accessible by integration", {}, False),
+        (500, "Resource not accessible by integration", {}, False),
+    ],
+)
+async def test_github_classifies_only_explicit_permission_denials(
+    status: int, message: str, headers: dict[str, str], permission: bool
+) -> None:
+    import httpx
+    from unittest.mock import patch
+    from preloop.sync.trackers.github import GitHubTracker
+    from preloop.sync.exceptions import TrackerResponseError, TrackerPermissionError
+
+    tracker = GitHubTracker("test", "synthetic", {})
+    client = AsyncMock()
+    client.request.return_value = httpx.Response(
+        status, json={"message": message}, headers=headers
+    )
+    with patch("preloop.sync.trackers.github.httpx.AsyncClient", return_value=client):
+        client.__aenter__.return_value = client
+        with pytest.raises(TrackerResponseError) as error:
+            await tracker._request("GET", "/repositories/123/branches/main/protection")
+    assert isinstance(error.value, TrackerPermissionError) is permission

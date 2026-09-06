@@ -18,6 +18,10 @@ TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "ABORTED", "STOPPED
 class CRUDFlowFeedback:
     """Transaction boundaries for subscriptions, inbox receipts and dispatch."""
 
+    def release_read(self, db: Session) -> None:
+        """End a materialized read before asynchronous provider I/O."""
+        db.commit()
+
     def rollback(self, db: Session) -> None:
         db.rollback()
 
@@ -36,6 +40,9 @@ class CRUDFlowFeedback:
                     .as_boolean()
                     .is_(True),
                     execution.result["pr_url"].astext.isnot(None),
+                    execution.trigger_event_details["_session_thread_id"].astext.isnot(
+                        None
+                    ),
                     ~bound,
                 )
                 .order_by(execution.created_at.desc())
@@ -257,6 +264,18 @@ class CRUDFlowFeedback:
         db.commit()
         return True
 
+    def sync_policy(
+        self, db: Session, thread: models.FlowThread, policy: dict[str, Any]
+    ) -> None:
+        """Apply live policy without replenishing spent budgets or extending TTL."""
+        thread.policy = dict(policy)
+        original = thread.created_at.replace(tzinfo=None)
+        thread.expires_at = min(
+            thread.expires_at,
+            original + timedelta(hours=int(policy.get("max_age_hours", 168))),
+        )
+        db.commit()
+
     def reserve(
         self,
         db: Session,
@@ -267,7 +286,19 @@ class CRUDFlowFeedback:
         receipt_ids: list[uuid.UUID],
         head_sha: str,
         now: datetime,
+        expected_policy: dict[str, Any] | None = None,
     ) -> models.FlowExecution | None:
+        candidate = self.leased(db, thread_id, token)
+        if candidate is None:
+            db.rollback()
+            return None
+        # Parent before child matches flow deletion's FK cascade lock order.
+        flow = db.execute(
+            select(models.Flow)
+            .where(models.Flow.id == candidate.flow_id)
+            .execution_options(populate_existing=True)
+            .with_for_update(read=True)
+        ).scalar_one_or_none()
         thread = self.leased(db, thread_id, token, lock=True)
         if (
             thread is None
@@ -276,6 +307,26 @@ class CRUDFlowFeedback:
             or thread.active_execution_id
         ):
             db.rollback()
+            return None
+        # Re-read under a shared row lock so a concurrent policy edit cannot
+        # commit between this authorization check and execution reservation.
+        policy = (flow.agent_config or {}).get("feedback") if flow else None
+        if (
+            flow is None
+            or flow.account_id != thread.account_id
+            or not flow.is_enabled
+            or not isinstance(policy, dict)
+            or policy.get("enabled") is not True
+            or (expected_policy is not None and policy != expected_policy)
+            or now >= thread.expires_at
+            or thread.turns >= int(policy.get("max_turns", 5))
+            or thread.cost >= float(policy.get("max_cost", 100))
+            or thread.no_progress >= int(policy.get("max_no_progress", 2))
+        ):
+            thread.lease_until = None
+            thread.lease_token = None
+            thread.due_at = now
+            db.commit()
             return None
         execution = models.FlowExecution(
             id=uuid.uuid4(),

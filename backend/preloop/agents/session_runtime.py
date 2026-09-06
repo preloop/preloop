@@ -27,6 +27,8 @@ if __name__ == "__main__":
     url = os.environ.get("PRELOOP_CHECKPOINT_URL")
     token = os.environ.get("PRELOOP_NATIVE_SESSION_GET_TOKEN" if action == "restore" else "PRELOOP_NATIVE_SESSION_PUT_TOKEN")
     try:
+        if action == "restore" and (not token or not url):
+            raise SessionRestoreError("native checkpoint transport missing")
         if not token or not url:
             print("PRELOOP_NATIVE_RESUME " + json.dumps({"mode": "cold_handoff", "reason": "artifact_unavailable_or_runner_unsupported"}))
             sys.exit(0)
@@ -39,13 +41,11 @@ if __name__ == "__main__":
                     archive = response.read(MAX_BYTES + 1)
             except urllib.error.HTTPError as exc:
                 if exc.code in (404, 410):
-                    print("PRELOOP_NATIVE_RESUME " + json.dumps({"mode": "cold_handoff", "reason": "missing_or_expired"}))
-                    sys.exit(0)
+                    raise SessionRestoreError("native checkpoint missing or expired") from exc
                 raise
             files = unpack_session(archive, harness=harness, harness_version=version, session_id=sid, thread_id=thread)
             if files is None:
-                print("PRELOOP_NATIVE_RESUME " + json.dumps({"mode": "cold_handoff", "reason": "expired"}))
-                sys.exit(0)
+                raise SessionRestoreError("native checkpoint expired")
             restore_session(files, Path(root))
             print("PRELOOP_NATIVE_RESUME " + json.dumps({"mode": "native_resume", "session_id": sid}))
             sys.exit(10)
@@ -101,6 +101,14 @@ if [ -n "$PRELOOP_CLI_SESSION_ID" ]; then
 fi
 """
     )
+    if context.get("published_branch_handoff_authorized") is True:
+        restore += (
+            "echo 'PRELOOP_NATIVE_RESUME "
+            + json.dumps(
+                {"mode": "cold_handoff", "reason": "explicit_published_branch_adoption"}
+            )
+            + "'\n"
+        )
     pack = f"""
 if [ -n {captured_sid_expr} ]; then
     python3 {script} pack {common} {captured_sid_expr} {shlex.quote(str(thread))}

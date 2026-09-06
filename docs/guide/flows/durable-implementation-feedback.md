@@ -3,7 +3,8 @@
 The Automated Issue Implementation preset can keep a PR moving through review
 and CI without leaving an agent container waiting. Each repair gets a new
 FlowExecution, its own execution budgets and fresh credentials. The implementation
-thread keeps the PR branch and exact native conversation across those turns.
+thread keeps the PR branch and, when recovery files are available, the exact native
+conversation across those turns.
 Reviewers remain separate flows and conversations. Merging remains a human action.
 
 ## Enable a subscription
@@ -40,8 +41,8 @@ turns, cumulative estimated cost in USD, lifetime, and feedback debounce. The
 initial values match the policy defaults above. Saving an existing flow without
 opting in leaves follow-up disabled. Other policy fields set through the API are
 preserved when editing these controls. A compatible saved checkpoint is required
-for native conversation resume; otherwise an eligible repair reports its cold
-handoff explicitly. Turning on the option does not merge a PR.
+for native conversation resume. An existing publication without that state
+requires explicit permission to start a fresh conversation. Turning on the option does not merge a PR.
 
 For an existing PR, open the successful execution that published it and choose
 **Set up PR follow-up**. This fetches a read-only preview of the exact PR, branch,
@@ -51,6 +52,15 @@ and confirm again. The action requires enabled flow feedback and deployment
 support for saved execution state uploads; unavailable prerequisites are shown in
 the preview. A failed network response triggers a status refresh, not an automatic
 second adoption request.
+
+Enabling feedback applies to future executions. The server records opt-in when
+an execution starts; turning the setting on does not discover and repair an old
+PR backlog. An older successful publication requires explicit adoption below.
+Turning feedback off pauses future repairs without cancelling a running turn.
+Re-enabling keeps consumed turns, cost, no-progress history and the deadline.
+Current reviewer trust and budget settings apply on every reconciliation and are
+checked again when reserving a repair. Reducing the maximum age can shorten the
+original deadline; increasing it never extends an existing subscription.
 
 Use the actual reviewer integration's actor ID in `trusted_reviewer_ids`.
 Unlisted bots and the configured implementer actor are ignored. A copied HTML
@@ -92,9 +102,13 @@ check never becomes ready simply because a webhook was missing.
 
 Readiness requires passing checks and review gates on the current head. Provider
 permission errors, pagination beyond the bounded reconciliation window, and
-ruleset workflow/code-scanning gates that require additional evidence fail closed
-with a reason. Resolve the blocker or provide the required gate integration;
-Preloop does not interpret unavailable evidence as approval. The PR remains open
+ruleset workflow/code-scanning gates that require additional evidence prevent
+readiness with a reason. Explicit permission denials on GitHub branch protection
+or ruleset discovery still allow repairs to fully read, current-head review and
+CI feedback. They never establish that repository requirements passed. Other
+provider failures, rate limits or incomplete feedback block repairs as well.
+Resolve the blocker or provide the required gate integration; Preloop does not
+interpret unavailable evidence as approval. The PR remains open
 for manual merge.
 
 ## Native conversation checkpoints
@@ -116,8 +130,11 @@ Providing another issue's execution ID or artifact reference does not authorize
 its session. Private runners must advertise native checkpoint support; a runner
 without it reports a cold handoff and does not upload its home directory.
 
-Restore begins in an empty session directory. Missing/expired state produces
-`cold_handoff` with a reason, using current issue/PR evidence. Corrupt, mismatched,
+Restore begins in an empty session directory. Missing or expired recovery files
+stop a durable native resume. Only an explicitly adopted original publication may
+start a fresh conversation on its published branch and report `cold_handoff`.
+That exception is consumed by the first repair: later repairs need their own
+workspace and native checkpoints. Corrupt, mismatched,
 unsupported or incompatible existing state produces `resume_failed`. A failed
 native CLI resume preserves the checkpoint and does not silently select another
 conversation. The execution result records `native_resume`, `cold_handoff` or
@@ -206,6 +223,49 @@ uploaded checkpoint cannot regain their lost native context by enabling this
 setting; they require an explicit cold handoff. Disable future direct uploads by
 removing this overlay or setting `FLOW_ARTIFACT_DIRECT_UPLOAD=false` consistently,
 while preserving stored artifacts and keys for recovery.
+
+## Adopt one existing publication
+
+First enable feedback on the flow and direct artifact uploads on the API and
+execution workers (`FLOW_ARTIFACT_DIRECT_UPLOAD=true`). The worker must reach
+`PRELOOP_URL` and share the existing encryption configuration. Retain workspace
+and native artifacts for the desired repair window. A native session ID alone is
+not sufficient to resume a conversation.
+
+Use the execution detail action, or preview the original successful publishing
+execution through `GET /api/v1/flows/executions/{execution_id}/continuation`.
+The preview verifies account ownership, the tracker and current PR repository,
+branch, URL and head. It also exercises review, CI and repository gate reads with
+at most twelve provider requests and a 25-second deadline. It writes no thread
+and dispatches no execution. `feedback_readable=false` means feedback read permissions
+or provider availability must be fixed before adoption. A permission denial
+limited to repository requirement discovery permits adoption and bounded repairs,
+with a warning that readiness remains unverified. Other gate blockers
+remain visible in `feedback_blocked_reason` and the warnings.
+
+Submit the returned head using
+`POST /api/v1/flows/executions/{execution_id}/continuation`:
+
+```json
+{
+  "recovery_mode": "published_branch_handoff",
+  "expected_head_sha": "<head_sha from the preview>",
+  "acknowledge_fresh_conversation": true
+}
+```
+
+Use `native_resume` when it appears in `allowed_recovery_modes`; fresh-conversation
+acknowledgement is then unnecessary. `published_branch_handoff` explicitly gives
+up unavailable unpublished workspace and native conversation state and starts
+from the verified published PR branch. The controller binds that permission to
+the selected source execution and its reserved first repair. Trigger payloads
+cannot grant the exception. Subsequent turns must restore their own checkpoints.
+
+A changed head, closed PR, disabled flow, missing checkpoint capability or
+unreadable provider returns HTTP 409, requiring a new preview. Repeated adoption
+returns the existing thread without resetting its counters, deadline or terminal
+state. Adoption starts the bounded subscription; it does not immediately create
+an agent run. The scheduler first reconciles current trusted feedback and gates.
 
 ## Local validation
 
