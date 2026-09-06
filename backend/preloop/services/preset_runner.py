@@ -715,15 +715,43 @@ async def run_preset_on_target(
         issue, project, tracker, git_only=preset_slug != TRIAGE_SLUG
     )
 
-    from preloop.services.flow_trigger_service import FlowTriggerService
+    from preloop.services.flow_trigger_service import (
+        FlowDispatchError,
+        FlowTriggerService,
+    )
 
     trigger_service = FlowTriggerService(db)
-    result = await trigger_service.trigger_flow(
-        flow_id=flow.id,
-        test_mode=False,
-        trigger_event_data=trigger_event_data,
-        triggered_by=triggered_by,
-    )
+    try:
+        result = await trigger_service.trigger_flow(
+            flow_id=flow.id,
+            test_mode=False,
+            trigger_event_data=trigger_event_data,
+            triggered_by=triggered_by,
+        )
+    except FlowDispatchError as exc:
+        # Dispatch may fail after the row is committed. Return its identity
+        # so the console can open the existing run instead of creating another.
+        execution_id = str(exc.execution_id)
+        url = f"/console/flows/executions/{execution_id}"
+        return {
+            "execution_id": execution_id,
+            "flow_id": str(flow.id),
+            "flow_name": flow.name,
+            "flow_created": created,
+            "execution_url": url,
+            "results": [
+                {
+                    "issue_id": str(issue_id),
+                    "execution_id": execution_id,
+                    "execution_status": exc.execution_status,
+                    "execution_url": url,
+                    "error": (
+                        "Execution was created but dispatch could not be "
+                        "confirmed. View the existing run before retrying."
+                    ),
+                }
+            ],
+        }
     raw_execution_id = result.get("id") or result.get("execution_id")
     if raw_execution_id is None:
         raise _http(500, "Flow trigger did not return an execution id")
@@ -782,6 +810,23 @@ async def _run_preset_on_issue_batch(
             )
         except PresetRunnerError as exc:
             item_errors[str(issue_id)] = _error_text(exc.detail)
+
+    if confirm_create and not loaded:
+        # Every target failed visibility checks; do not clone the preset.
+        return {
+            "execution_id": None,
+            "flow_id": "",
+            "flow_name": PRESET_SLUGS.get(preset_slug) or preset_slug,
+            "flow_created": False,
+            "execution_url": None,
+            "results": [
+                {
+                    "issue_id": str(issue_id),
+                    "error": item_errors.get(str(issue_id)),
+                }
+                for issue_id in ordered_ids
+            ],
+        }
 
     flow, created = resolve_or_create_flow(
         db,
@@ -948,15 +993,29 @@ async def _run_preset_on_pull_request(
     )
     trigger_event_data = build_pull_request_trigger_payload(pr, project, tracker)
 
-    from preloop.services.flow_trigger_service import FlowTriggerService
+    from preloop.services.flow_trigger_service import (
+        FlowDispatchError,
+        FlowTriggerService,
+    )
 
     trigger_service = FlowTriggerService(db)
-    result = await trigger_service.trigger_flow(
-        flow_id=flow.id,
-        test_mode=False,
-        trigger_event_data=trigger_event_data,
-        triggered_by=triggered_by,
-    )
+    try:
+        result = await trigger_service.trigger_flow(
+            flow_id=flow.id,
+            test_mode=False,
+            trigger_event_data=trigger_event_data,
+            triggered_by=triggered_by,
+        )
+    except FlowDispatchError as exc:
+        execution_id = str(exc.execution_id)
+        url = f"/console/flows/executions/{execution_id}"
+        return {
+            "execution_id": execution_id,
+            "flow_id": str(flow.id),
+            "flow_name": flow.name,
+            "flow_created": created,
+            "execution_url": url,
+        }
     raw_execution_id = result.get("id") or result.get("execution_id")
     if raw_execution_id is None:
         raise _http(500, "Flow trigger did not return an execution id")

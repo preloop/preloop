@@ -987,3 +987,87 @@ async def test_triage_batch_preserves_partial_results(failure_kind: str) -> None
         assert "dispatch transport failed" not in middle["error"]
     else:
         assert middle["execution_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_single_issue_run_preserves_execution_on_dispatch_error() -> None:
+    from preloop.models.schemas.flow import RunPresetResponse
+    from preloop.services.flow_trigger_service import FlowDispatchError
+
+    issue_id = uuid.uuid4()
+    execution_id = str(uuid.uuid4())
+    flow = _account_flow(name="Issue Triage Assistant")
+    trigger = AsyncMock(
+        side_effect=FlowDispatchError(
+            execution_id, "PENDING", RuntimeError("dispatch transport failed")
+        )
+    )
+    with (
+        patch(
+            "preloop.services.preset_runner._load_visible_issue",
+            return_value=(MagicMock(), MagicMock(), MagicMock()),
+        ),
+        patch(
+            "preloop.services.preset_runner.resolve_or_create_flow",
+            return_value=(flow, False),
+        ),
+        patch(
+            "preloop.services.preset_runner.build_issue_trigger_payload",
+            return_value={},
+        ),
+        patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService.trigger_flow",
+            trigger,
+        ),
+    ):
+        response = await run_preset_on_target(
+            MagicMock(),
+            current_user=_user(uuid.uuid4()),
+            preset_slug=TRIAGE_SLUG,
+            target=_Simple(kind="issue", issue_id=issue_id),
+            confirm_create=True,
+            triggered_by="Jane Doe",
+        )
+    result = RunPresetResponse.model_validate(response).model_dump()
+    assert result["execution_id"] == execution_id
+    assert result["execution_url"] == f"/console/flows/executions/{execution_id}"
+    item = result["results"][0]
+    assert item["issue_id"] == str(issue_id)
+    assert item["execution_id"] == execution_id
+    assert item["execution_status"] == "PENDING"
+    assert "before retrying" in item["error"]
+    assert "dispatch transport failed" not in item["error"]
+
+
+@pytest.mark.asyncio
+async def test_triage_batch_skips_flow_create_when_no_issue_loads() -> None:
+    from preloop.models.schemas.flow import RunPresetResponse
+
+    targets = [_Simple(kind="issue", issue_id=uuid.uuid4()) for _ in range(2)]
+    resolve = MagicMock()
+    with (
+        patch(
+            "preloop.services.preset_runner._load_visible_issue",
+            side_effect=PresetRunnerError(404, "Issue not found"),
+        ),
+        patch(
+            "preloop.services.preset_runner.resolve_or_create_flow",
+            resolve,
+        ),
+    ):
+        response = await run_preset_on_target(
+            MagicMock(),
+            current_user=_user(uuid.uuid4()),
+            preset_slug=TRIAGE_SLUG,
+            targets=targets,
+            confirm_create=True,
+            triggered_by="Jane Doe",
+        )
+    resolve.assert_not_called()
+    result = RunPresetResponse.model_validate(response).model_dump()
+    assert result["execution_id"] is None
+    assert result["flow_created"] is False
+    assert [item["error"] for item in result["results"]] == [
+        "Issue not found",
+        "Issue not found",
+    ]
