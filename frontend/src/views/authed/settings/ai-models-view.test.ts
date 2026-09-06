@@ -126,8 +126,11 @@ describe('AIModelsView', () => {
       ' '
     );
     expect(content).to.contain('Claude Sonnet Primary');
-    expect(content).to.contain('View');
-    expect(content).to.contain('Fleet spend');
+    // Honest stat labels: the window is in the label, not in a subtext that
+    // claims a configuration count is a 30-day metric.
+    expect(content).to.contain('$ est. · 30d');
+    expect(content).to.contain('Requests · 30d');
+    expect(content).to.contain('Need attention');
     expect(content).to.contain('$12.34');
     expect(content).to.contain('42 requests');
     expect(content).to.contain('3 active sessions');
@@ -146,12 +149,7 @@ describe('AIModelsView', () => {
     const nameLink = element.shadowRoot?.querySelector(
       'a.model-link[href="/console/ai-models/model-1"]'
     );
-    const viewButton = element.shadowRoot?.querySelector(
-      'sl-button[href="/console/ai-models/model-1"]'
-    );
-
     expect(nameLink).to.not.equal(null);
-    expect(viewButton).to.not.equal(null);
     expect(connectStub).to.have.been.calledOnce;
     expect(subscribeStub.callCount).to.equal(5);
 
@@ -318,6 +316,133 @@ describe('AIModelsView', () => {
     expect(element.shadowRoot?.querySelector('.model-card')).to.exist;
     expect(element.shadowRoot?.querySelector('.model-row')).to.equal(null);
     expect(element.shadowRoot?.textContent).to.contain('Default');
-    expect(element.shadowRoot?.textContent).to.contain('View');
+    // Cards carry the same one kebab as the rows, not a row of buttons.
+    expect(
+      element.shadowRoot?.querySelectorAll('.model-card resource-actions')
+    ).to.have.lengthOf(1);
+  });
+
+  it('gives each row one kebab holding View, Edit, Set default and Delete', async () => {
+    const element = (await fixture(
+      html`<ai-models-view></ai-models-view>`
+    )) as AIModelsView;
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'AI models view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const rows = element.shadowRoot?.querySelectorAll('.model-row') ?? [];
+    expect(rows).to.have.lengthOf(1);
+    const kebabs = element.shadowRoot?.querySelectorAll(
+      '.model-row resource-actions[menu-only]'
+    );
+    expect(kebabs).to.have.lengthOf(1);
+    // No solid danger button and no "Set as default" button in the row: the
+    // rare action and the destructive one both live in the kebab.
+    expect(
+      element.shadowRoot?.querySelector(
+        '.model-row sl-button[variant="danger"]'
+      )
+    ).to.equal(null);
+    expect(element.shadowRoot?.textContent).to.not.contain('Set as default');
+
+    // The default model is a chip, not a button; the rest of the column is a
+    // dash rather than fourteen invitations to change the default.
+    const actions = (
+      element as unknown as {
+        modelActions: (
+          model: AIModel
+        ) => { id: string; variant?: string; outline?: boolean }[];
+      }
+    ).modelActions({ id: 'model-1', is_default: false } as AIModel);
+    expect(actions.map((action) => action.id)).to.deep.equal([
+      'view',
+      'edit',
+      'set-default',
+      'delete',
+    ]);
+    expect(actions[actions.length - 1].variant).to.equal('danger');
+
+    // What the row actually renders is the menu: in menu-only mode
+    // resource-actions sends every action into the dropdown and ignores the
+    // outline and separated flags, so the assertion that can fail is the
+    // order, with Delete last and its icon in danger red.
+    const kebab = kebabs?.[0] as HTMLElement & {
+      updateComplete?: Promise<unknown>;
+    };
+    await kebab.updateComplete;
+    const items = kebab.shadowRoot?.querySelectorAll('sl-menu-item') ?? [];
+    // The fixture model is already the default, so its menu holds three
+    // actions; Delete is last in either case.
+    expect([...items].map((item) => item.textContent?.trim())).to.deep.equal([
+      'View',
+      'Edit',
+      'Delete',
+    ]);
+    const last = items[items.length - 1];
+    expect(last.className).to.contain('danger-item');
+    expect(last.querySelector('sl-icon')?.getAttribute('style')).to.contain(
+      '--sl-color-danger-600'
+    );
+  });
+
+  it('does not add a prior-window request to every realtime refresh', async () => {
+    const element = (await fixture(
+      html`<ai-models-view></ai-models-view>`
+    )) as AIModelsView;
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'AI models view did not finish loading'
+    );
+    await element.updateComplete;
+    await waitUntil(
+      () => (element as any).priorFleetSpend !== null,
+      'prior window spend never loaded'
+    );
+
+    const overviewCalls = () =>
+      fetchStub
+        .getCalls()
+        .filter((call) =>
+          String(call.args[0]).startsWith('/api/v1/ai-models/overview')
+        ).length;
+    // Mount asks for this window and the one before it, once each.
+    expect(overviewCalls()).to.equal(2);
+
+    // A websocket refresh is one request, not two: the prior 30 day window
+    // moves once a day, and a burst of extra calls is what emptied the API
+    // connection pool on 2026-09-03.
+    await element.fetchModels({ preserveLoadingState: true });
+    expect(overviewCalls()).to.equal(3);
+
+    // Even a full reload reuses the loaded prior window while it is current.
+    await element.fetchModels();
+    await waitUntil(() => overviewCalls() >= 4, 'reload did not fetch');
+    expect(overviewCalls()).to.equal(4);
+    expect((element as any).priorFleetSpend).to.be.a('number');
+  });
+
+  it('renders counts compact and sub-cent spend to four decimals', async () => {
+    const element = (await fixture(
+      html`<ai-models-view></ai-models-view>`
+    )) as AIModelsView;
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'AI models view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const format = element as unknown as {
+      formatCompactNumber: (value: number) => string;
+      formatCurrency: (value: number) => string;
+    };
+    expect(format.formatCompactNumber(999)).to.equal('999');
+    expect(format.formatCompactNumber(18306)).to.equal('18.3K');
+    expect(format.formatCompactNumber(572180203)).to.equal('572.2M');
+    // A sub-cent estimate is four decimals, never a $0.00 that reads as free.
+    expect(format.formatCurrency(0.0042)).to.equal('$0.0042');
+    expect(format.formatCurrency(12.3)).to.equal('$12.30');
+    expect(format.formatCurrency(0)).to.equal('$0.00');
   });
 });

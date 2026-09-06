@@ -6,7 +6,7 @@ targets are supported. Both reviewer flows use preset ``pull-request-reviewer``.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -23,11 +23,13 @@ from preloop.models.crud import (
     crud_tracker,
 )
 from preloop.models.models.user import User
+from preloop.models.schemas.flow import TRIAGE_BATCH_MAX
 from preloop.services.flow_presets_service import clone_preset_for_account
 
 IMPLEMENTER_SLUG = "automated-issue-implementation"
 REVIEWER_SLUG = "pull-request-reviewer"
-ISSUE_PRESET_SLUGS = {IMPLEMENTER_SLUG}
+TRIAGE_SLUG = "issue-triage-assistant"
+ISSUE_PRESET_SLUGS = {IMPLEMENTER_SLUG, TRIAGE_SLUG}
 PR_PRESET_SLUGS = {REVIEWER_SLUG}
 
 
@@ -127,11 +129,51 @@ def _issue_assignee(issue: Any) -> str:
     return ""
 
 
+def _issue_author(issue: Any) -> str:
+    """Return an observed author, never the issue's assignee."""
+    meta = (
+        issue.meta_data if isinstance(getattr(issue, "meta_data", None), dict) else {}
+    )
+    author = (
+        meta.get("author")
+        or meta.get("creator")
+        or meta.get("reporter")
+        or meta.get("user")
+    )
+    if isinstance(author, str):
+        return author
+    if isinstance(author, dict):
+        return str(
+            author.get("login")
+            or author.get("username")
+            or author.get("displayName")
+            or author.get("name")
+            or ""
+        )
+    return ""
+
+
 def _issue_labels(issue: Any) -> List[str]:
     meta = (
         issue.meta_data if isinstance(getattr(issue, "meta_data", None), dict) else {}
     )
     return _label_names(meta.get("labels", []))
+
+
+def _issue_updated_at(issue: Any) -> Optional[str]:
+    value = getattr(issue, "updated_at", None)
+    if value is None:
+        meta = (
+            issue.meta_data
+            if isinstance(getattr(issue, "meta_data", None), dict)
+            else {}
+        )
+        value = meta.get("updated_at")
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    return str(value)
 
 
 def _repository_clone_fields(project: Any, tracker: Any) -> Dict[str, Any]:
@@ -263,37 +305,58 @@ def resolve_or_create_flow(
     return created, True
 
 
-def _git_tracker_kind(tracker: Any) -> str:
-    """Return ``github`` or ``gitlab``, or raise 400 for other tracker types."""
+def _tracker_kind_for_issue_payload(tracker: Any, *, git_only: bool) -> str:
+    """Return a tracker kind for an issue payload.
+
+    Implementer runs require GitHub or GitLab. Triage may also run on
+    Jira or other issue trackers using the same normalized packet.
+    """
     tracker_type = (getattr(tracker, "tracker_type", "") or "").lower()
     if "gitlab" in tracker_type:
         return "gitlab"
     if "github" in tracker_type:
         return "github"
-    raise _http(
-        400,
-        "Run implementer is only available for GitHub and GitLab issues",
-    )
+    if git_only:
+        raise _http(
+            400,
+            "Run implementer is only available for GitHub and GitLab issues",
+        )
+    if "jira" in tracker_type:
+        return "jira"
+    return tracker_type or "tracker"
+
+
+def _git_tracker_kind(tracker: Any) -> str:
+    """Return ``github`` or ``gitlab``, or raise 400 for other tracker types."""
+    return _tracker_kind_for_issue_payload(tracker, git_only=True)
 
 
 def build_issue_trigger_payload(
-    issue: Any, project: Any, tracker: Any
+    issue: Any, project: Any, tracker: Any, *, git_only: bool = True
 ) -> Dict[str, Any]:
-    """Build ``trigger_event_data`` for an implementer run on ``issue``."""
-    tracker_type = _git_tracker_kind(tracker)
+    """Build ``trigger_event_data`` for an implementer or triage run on ``issue``."""
+    tracker_kind = _tracker_kind_for_issue_payload(tracker, git_only=git_only)
 
-    repo = _repository_clone_fields(project, tracker)
+    is_git_tracker = tracker_kind in ("github", "gitlab")
+    repo = _repository_clone_fields(project, tracker) if is_git_tracker else None
     issue_url = _issue_url(issue)
-    number = _issue_number(issue)
+    number = (
+        _issue_number(issue)
+        if is_git_tracker
+        else getattr(issue, "key", None) or getattr(issue, "external_id", None)
+    )
     title = getattr(issue, "title", None) or ""
     description = getattr(issue, "description", None) or ""
     state = getattr(issue, "status", None) or ""
-    payload: Dict[str, Any] = {
-        "project_id": str(project.id),
-        "repository": repo,
-    }
+    labels = _issue_labels(issue)
+    updated_at = _issue_updated_at(issue)
+    author = _issue_assignee(issue) if git_only else _issue_author(issue)
+    payload: Dict[str, Any] = {"project_id": str(project.id)}
+    if repo is not None:
+        payload["repository"] = repo
 
-    if "gitlab" in tracker_type:
+    if tracker_kind == "gitlab":
+        assert repo is not None
         project_id = getattr(project, "identifier", None) or str(project.id)
         try:
             gitlab_id: Any = int(str(project_id))
@@ -307,6 +370,9 @@ def build_issue_trigger_payload(
             "description": description,
             "url": issue_url,
             "state": state,
+            "author": author,
+            "labels": labels,
+            "updated_at": updated_at,
         }
         payload["project"] = {
             "id": gitlab_id,
@@ -318,17 +384,32 @@ def build_issue_trigger_payload(
             "git_http_url": repo.get("git_http_url"),
         }
         source = "gitlab"
-    else:
+    elif tracker_kind == "github":
         payload["issue"] = {
             "number": number,
             "title": title,
             "body": description,
             "html_url": issue_url,
             "state": state,
-            "user": {"login": _issue_assignee(issue)},
-            "labels": _issue_labels(issue),
+            "user": {"login": author},
+            "labels": labels,
+            "updated_at": updated_at,
         }
         source = "github"
+    else:
+        payload["object_kind"] = "issue"
+        payload["object_attributes"] = {
+            "iid": number,
+            "number": number,
+            "title": title,
+            "description": description,
+            "url": issue_url,
+            "state": state,
+            "author": author,
+            "labels": labels,
+            "updated_at": updated_at,
+        }
+        source = tracker_kind
 
     return {
         "type": "issue_run",
@@ -519,20 +600,60 @@ async def _fetch_pull_request_detail(
     )
 
 
+def _error_text(detail: Any) -> str:
+    if isinstance(detail, dict):
+        message = detail.get("message") or detail.get("code")
+        if message:
+            return str(message)
+        return str(detail)
+    return str(detail)
+
+
+def _target_kind(target: Any) -> Optional[str]:
+    return getattr(target, "kind", None) or (
+        target.get("kind") if isinstance(target, dict) else None
+    )
+
+
+def _target_issue_id(target: Any) -> UUID:
+    issue_id = getattr(target, "issue_id", None) or (
+        target.get("issue_id") if isinstance(target, dict) else None
+    )
+    if issue_id is None:
+        raise _http(400, "target.issue_id is required when kind is issue")
+    if isinstance(issue_id, UUID):
+        return issue_id
+    try:
+        return UUID(str(issue_id))
+    except (TypeError, ValueError) as exc:
+        raise _http(400, "target.issue_id must be a UUID") from exc
+
+
 async def run_preset_on_target(
     db: Session,
     *,
     current_user: User,
     preset_slug: str,
-    target: Any,
+    target: Any = None,
+    targets: Any = None,
     confirm_create: bool,
     triggered_by: str,
     flow_crud: Any = None,
 ) -> Dict[str, Any]:
     """Resolve the preset flow and, when confirmed, trigger it on ``target``."""
-    kind = getattr(target, "kind", None) or (
-        target.get("kind") if isinstance(target, dict) else None
-    )
+    if targets is not None:
+        return await _run_preset_on_issue_batch(
+            db,
+            current_user=current_user,
+            preset_slug=preset_slug,
+            targets=targets,
+            confirm_create=confirm_create,
+            triggered_by=triggered_by,
+            flow_crud=flow_crud,
+        )
+    if target is None:
+        raise _http(400, "Provide exactly one of target or targets")
+    kind = _target_kind(target)
     if kind == "pull_request":
         return await _run_preset_on_pull_request(
             db,
@@ -563,11 +684,7 @@ async def run_preset_on_target(
             f"Preset {preset_slug} does not match an issue target.",
         )
 
-    issue_id = getattr(target, "issue_id", None) or (
-        target.get("issue_id") if isinstance(target, dict) else None
-    )
-    if issue_id is None:
-        raise _http(400, "target.issue_id is required when kind is issue")
+    issue_id = _target_issue_id(target)
 
     issue, project, tracker = _load_visible_issue(
         db, issue_id=issue_id, account_id=current_user.account_id
@@ -594,17 +711,47 @@ async def run_preset_on_target(
             "execution_url": None,
         }
 
-    trigger_event_data = build_issue_trigger_payload(issue, project, tracker)
+    trigger_event_data = build_issue_trigger_payload(
+        issue, project, tracker, git_only=preset_slug != TRIAGE_SLUG
+    )
 
-    from preloop.services.flow_trigger_service import FlowTriggerService
+    from preloop.services.flow_trigger_service import (
+        FlowDispatchError,
+        FlowTriggerService,
+    )
 
     trigger_service = FlowTriggerService(db)
-    result = await trigger_service.trigger_flow(
-        flow_id=flow.id,
-        test_mode=False,
-        trigger_event_data=trigger_event_data,
-        triggered_by=triggered_by,
-    )
+    try:
+        result = await trigger_service.trigger_flow(
+            flow_id=flow.id,
+            test_mode=False,
+            trigger_event_data=trigger_event_data,
+            triggered_by=triggered_by,
+        )
+    except FlowDispatchError as exc:
+        # Dispatch may fail after the row is committed. Return its identity
+        # so the console can open the existing run instead of creating another.
+        execution_id = str(exc.execution_id)
+        url = f"/console/flows/executions/{execution_id}"
+        return {
+            "execution_id": execution_id,
+            "flow_id": str(flow.id),
+            "flow_name": flow.name,
+            "flow_created": created,
+            "execution_url": url,
+            "results": [
+                {
+                    "issue_id": str(issue_id),
+                    "execution_id": execution_id,
+                    "execution_status": exc.execution_status,
+                    "execution_url": url,
+                    "error": (
+                        "Execution was created but dispatch could not be "
+                        "confirmed. View the existing run before retrying."
+                    ),
+                }
+            ],
+        }
     raw_execution_id = result.get("id") or result.get("execution_id")
     if raw_execution_id is None:
         raise _http(500, "Flow trigger did not return an execution id")
@@ -615,6 +762,162 @@ async def run_preset_on_target(
         "flow_name": flow.name,
         "flow_created": created,
         "execution_url": f"/console/flows/executions/{execution_id}",
+    }
+
+
+async def _run_preset_on_issue_batch(
+    db: Session,
+    *,
+    current_user: User,
+    preset_slug: str,
+    targets: List[Any],
+    confirm_create: bool,
+    triggered_by: str,
+    flow_crud: Any = None,
+) -> Dict[str, Any]:
+    """Run triage on up to ``TRIAGE_BATCH_MAX`` unique issue targets."""
+    if preset_slug != TRIAGE_SLUG:
+        raise _http(
+            400,
+            "Batch targets are only supported for the issue-triage-assistant preset.",
+        )
+    if not isinstance(targets, list) or not targets:
+        raise _http(400, "targets must be a non-empty list")
+    if len(targets) > TRIAGE_BATCH_MAX:
+        raise _http(
+            400,
+            f"targets supports at most {TRIAGE_BATCH_MAX} entries",
+        )
+
+    ordered_ids: List[UUID] = []
+    seen: set[str] = set()
+    for item in targets:
+        if _target_kind(item) != "issue":
+            raise _http(400, "Batch targets must all have kind issue")
+        issue_id = _target_issue_id(item)
+        key = str(issue_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered_ids.append(issue_id)
+
+    loaded: Dict[str, Tuple[Any, Any, Any]] = {}
+    item_errors: Dict[str, str] = {}
+    for issue_id in ordered_ids:
+        try:
+            loaded[str(issue_id)] = _load_visible_issue(
+                db, issue_id=issue_id, account_id=current_user.account_id
+            )
+        except PresetRunnerError as exc:
+            item_errors[str(issue_id)] = _error_text(exc.detail)
+
+    if confirm_create and not loaded:
+        # Every target failed visibility checks; do not clone the preset.
+        return {
+            "execution_id": None,
+            "flow_id": "",
+            "flow_name": PRESET_SLUGS.get(preset_slug) or preset_slug,
+            "flow_created": False,
+            "execution_url": None,
+            "results": [
+                {
+                    "issue_id": str(issue_id),
+                    "error": item_errors.get(str(issue_id)),
+                }
+                for issue_id in ordered_ids
+            ],
+        }
+
+    flow, created = resolve_or_create_flow(
+        db,
+        account_id=current_user.account_id,
+        preset_slug=preset_slug,
+        confirm_create=confirm_create,
+        current_user=current_user,
+        flow_crud=flow_crud,
+    )
+
+    if not confirm_create:
+        return {
+            "execution_id": None,
+            "flow_id": str(flow.id),
+            "flow_name": flow.name,
+            "flow_created": False,
+            "execution_url": None,
+            "results": [
+                {"issue_id": str(issue_id), "error": item_errors.get(str(issue_id))}
+                for issue_id in ordered_ids
+            ],
+        }
+
+    from preloop.services.flow_trigger_service import (
+        FlowDispatchError,
+        FlowTriggerService,
+    )
+
+    trigger_service = FlowTriggerService(db)
+    results: List[Dict[str, Any]] = []
+    first_execution_id: Optional[str] = None
+    first_execution_url: Optional[str] = None
+    for issue_id in ordered_ids:
+        key = str(issue_id)
+        if key in item_errors:
+            results.append({"issue_id": key, "error": item_errors[key]})
+            continue
+        issue, project, tracker = loaded[key]
+        try:
+            trigger_event_data = build_issue_trigger_payload(
+                issue, project, tracker, git_only=False
+            )
+            result = await trigger_service.trigger_flow(
+                flow_id=flow.id,
+                test_mode=False,
+                trigger_event_data=trigger_event_data,
+                triggered_by=triggered_by,
+            )
+            raw_execution_id = result.get("id") or result.get("execution_id")
+            if raw_execution_id is None:
+                results.append(
+                    {
+                        "issue_id": key,
+                        "error": "Flow trigger did not return an execution id",
+                    }
+                )
+                continue
+            execution_id = str(raw_execution_id)
+            item_result = {
+                "issue_id": key,
+                "execution_id": execution_id,
+                "execution_status": result.get("status"),
+                "execution_url": f"/console/flows/executions/{execution_id}",
+            }
+        except FlowDispatchError as exc:
+            # Dispatch may fail after the row is committed. Keep its identity
+            # so callers inspect the existing run instead of submitting it twice.
+            item_result = {
+                "issue_id": key,
+                "execution_id": exc.execution_id,
+                "execution_status": exc.execution_status,
+                "execution_url": f"/console/flows/executions/{exc.execution_id}",
+                "error": "Execution was created but dispatch could not be confirmed. "
+                "View the existing run before retrying.",
+            }
+        except PresetRunnerError as exc:
+            item_result = {"issue_id": key, "error": _error_text(exc.detail)}
+        except ValueError as exc:
+            item_result = {"issue_id": key, "error": str(exc)}
+        results.append(item_result)
+        if first_execution_id is None and item_result.get("execution_id"):
+            first_execution_id = item_result["execution_id"]
+            first_execution_url = item_result["execution_url"]
+
+    return {
+        "execution_id": first_execution_id,
+        "flow_id": str(flow.id),
+        "flow_name": flow.name,
+        "flow_created": created,
+        "execution_url": first_execution_url,
+        "results": results,
     }
 
 
@@ -690,15 +993,42 @@ async def _run_preset_on_pull_request(
     )
     trigger_event_data = build_pull_request_trigger_payload(pr, project, tracker)
 
-    from preloop.services.flow_trigger_service import FlowTriggerService
+    from preloop.services.flow_trigger_service import (
+        FlowDispatchError,
+        FlowTriggerService,
+    )
 
     trigger_service = FlowTriggerService(db)
-    result = await trigger_service.trigger_flow(
-        flow_id=flow.id,
-        test_mode=False,
-        trigger_event_data=trigger_event_data,
-        triggered_by=triggered_by,
-    )
+    try:
+        result = await trigger_service.trigger_flow(
+            flow_id=flow.id,
+            test_mode=False,
+            trigger_event_data=trigger_event_data,
+            triggered_by=triggered_by,
+        )
+    except FlowDispatchError as exc:
+        execution_id = str(exc.execution_id)
+        url = f"/console/flows/executions/{execution_id}"
+        return {
+            "execution_id": execution_id,
+            "flow_id": str(flow.id),
+            "flow_name": flow.name,
+            "flow_created": created,
+            "execution_url": url,
+            "results": [
+                {
+                    "project_id": str(project_id),
+                    "number": int(number),
+                    "execution_id": execution_id,
+                    "execution_status": exc.execution_status,
+                    "execution_url": url,
+                    "error": (
+                        "Execution was created but dispatch could not be "
+                        "confirmed. View the existing run before retrying."
+                    ),
+                }
+            ],
+        }
     raw_execution_id = result.get("id") or result.get("execution_id")
     if raw_execution_id is None:
         raise _http(500, "Flow trigger did not return an execution id")

@@ -3,7 +3,7 @@ import sinon from 'sinon';
 
 import { invalidateApiCaches } from '../../../api';
 import './user-management-view';
-import type { UserManagementView } from './user-management-view';
+import { UserManagementView } from './user-management-view';
 
 describe('UserManagementView', () => {
   let fetchStub: sinon.SinonStub;
@@ -108,9 +108,66 @@ describe('UserManagementView', () => {
     );
     await element.updateComplete;
 
-    expect(element.shadowRoot?.textContent).to.contain('User Management');
+    // The page is called what the sidebar calls it.
+    expect(element.shadowRoot?.querySelector('h1')?.textContent).to.equal(
+      'Users'
+    );
     expect(element.shadowRoot?.textContent).to.contain('Alice Example');
     expect(element.shadowRoot?.textContent).to.contain('alice@example.com');
+  });
+
+  it('labels the sign-in source in words and keeps delete quiet', async () => {
+    fetchStub = createFetchStub({
+      users: [
+        { ...sampleUser, user_source: 'oauth_google', email_verified: false },
+      ],
+    });
+    const element = (await fixture(
+      html`<user-management-view></user-management-view>`
+    )) as UserManagementView;
+
+    await waitUntil(
+      () => (element as any).users?.length === 1,
+      'users did not load'
+    );
+    await element.updateComplete;
+
+    const chips = Array.from(
+      element.shadowRoot?.querySelectorAll('.user-meta sl-badge') || []
+    );
+    const labels = chips.map((chip) => (chip.textContent || '').trim());
+    // A raw enum value is not a label a reader can act on.
+    expect(labels).to.include('Google');
+    expect(labels).to.not.include('oauth_google');
+    // Chips are tints, and no chip is a solid paint.
+    chips.forEach((chip) => {
+      expect(chip.classList.contains('chip')).to.equal(true);
+      expect(chip.classList.contains('solid')).to.equal(false);
+    });
+
+    const del = element.shadowRoot?.querySelector(
+      '.user-actions sl-button[variant="danger"]'
+    );
+    expect(del?.hasAttribute('outline')).to.equal(true);
+    expect(del?.classList.contains('danger-action')).to.equal(true);
+    // Last in the row, after the gap.
+    const actions = Array.from(
+      element.shadowRoot?.querySelectorAll('.user-actions sl-button') || []
+    );
+    expect(actions[actions.length - 1]).to.equal(del);
+  });
+
+  it('names sign-in sources and roles without exposing the schema', () => {
+    expect(UserManagementView.userSourceLabel('local')).to.equal('Password');
+    expect(UserManagementView.userSourceLabel('oauth_google')).to.equal(
+      'Google'
+    );
+    expect(UserManagementView.userSourceLabel('oauth_github')).to.equal(
+      'GitHub'
+    );
+    expect(UserManagementView.userSourceLabel('')).to.equal('Unknown');
+    expect(UserManagementView.roleLabel('owner')).to.equal('Owner');
+    expect(UserManagementView.roleLabel('team_admin')).to.equal('Team admin');
   });
 
   it('renders an empty grid when there are no users', async () => {

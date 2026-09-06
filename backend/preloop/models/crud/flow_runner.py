@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import JSON, func, or_
 from sqlalchemy.orm import Session
 
 from ..models.flow_runner import FlowRunner
@@ -92,7 +92,13 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
             .filter(
                 FlowRunner.id == runner_id,
                 FlowRunner.status == "online",
-                FlowRunner.pending_job.is_(None),
+                # JSONB stores an assigned Python None as JSON null by default.
+                # Both representations mean there is no pending lease, including
+                # rows cleared by the runner completion/error handlers.
+                or_(
+                    FlowRunner.pending_job.is_(None),
+                    FlowRunner.pending_job == JSON.NULL,
+                ),
             )
             .with_for_update(skip_locked=True)
             .first()

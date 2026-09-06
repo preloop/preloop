@@ -439,6 +439,77 @@ describe('AuditView', () => {
     });
   });
 
+  describe('the page header and the approval filter (B-D2, B-D3)', () => {
+    it('puts the title first and "56.3K events · LIVE" in the header meta', async () => {
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+          return new Response(
+            JSON.stringify({ groups: [], total: 56316, skip: 0, limit: 50 }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(
+        () => !(element as any)._loading,
+        'Audit view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const header = element.shadowRoot?.querySelector('view-header');
+      expect(header?.getAttribute('headerText')).to.equal('Audit Timeline');
+      // Nothing precedes the title any more: the count and LIVE are meta.
+      expect(header?.querySelector('[slot="title-prefix"]')).to.equal(null);
+
+      const meta = header?.querySelector('[slot="meta"]') as HTMLElement;
+      expect(meta).to.exist;
+      expect((meta.textContent || '').replace(/\s+/g, ' ').trim()).to.equal(
+        '56.3K events · LIVE'
+      );
+
+      element.remove();
+    });
+
+    it('offers an "Approval decisions" event type and asks for the three approval actions', async () => {
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(
+        () => !(element as any)._loading,
+        'Audit view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const labels = Array.from(
+        element.shadowRoot?.querySelectorAll('sl-select sl-option') || []
+      ).map((option) => (option.textContent || '').trim());
+      expect(labels).to.contain('Approval decisions');
+
+      const params = (element as any)._timelineParams(0, 50) as URLSearchParams;
+      expect(params.getAll('event_type')).to.deep.equal([]);
+
+      (element as any)._eventTypeFilters = ['approval_decision', 'tool_call'];
+      const filtered = (element as any)._timelineParams(
+        0,
+        50
+      ) as URLSearchParams;
+      expect(filtered.getAll('event_type')).to.deep.equal([
+        'approval_approved',
+        'approval_denied',
+        'approval_expired',
+        'tool_call',
+      ]);
+
+      element.remove();
+    });
+  });
+
   it('renders gateway request failures with readable labels and details', async () => {
     const element = document.createElement('audit-view') as AuditView;
     document.body.appendChild(element);

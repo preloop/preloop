@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/guide/flows/model-routing.md`. Legacy executions without a complete
   recorded model/harness require an explicit new run. Durable feedback blocks
   with `model_identity_unavailable` instead of silently adopting new defaults.
+- **Issue Triage Assistant first slice**: rewrite of preset
+  `issue-triage-assistant` for `issue_opened` / `issue_updated` (legacy
+  `issue.opened` clones still match). Manual Run triage on a single issue
+  or up to 25 selected issues via `POST /flows/run-preset`. Proposals only:
+  comment plus `result.json`, no label apply, no `create_issue` /
+  `update_issue`. See [issue-triage.md](docs/guide/flows/issue-triage.md).
 
 - **Publication verification gate**: implementation flows can set
   `git_clone_config.verification` (`mode: gate` plus a trusted test

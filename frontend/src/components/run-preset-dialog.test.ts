@@ -191,4 +191,153 @@ describe('RunPresetDialog', () => {
     expect(models).to.exist;
     expect(models?.textContent).to.contain('Models');
   });
+
+  it('batch triage probe posts targets and uses triage copy', async () => {
+    const bodies: unknown[] = [];
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input, init) => {
+      const url = String(input);
+      if (!url.includes('/api/v1/flows/run-preset')) {
+        return new Response('{}', { status: 200 });
+      }
+      const parsed = JSON.parse(String(init?.body || '{}'));
+      bodies.push(parsed);
+      return new Response(
+        JSON.stringify({
+          execution_id: null,
+          flow_id: 'flow-1',
+          flow_name: 'Issue Triage Assistant',
+          flow_created: false,
+          execution_url: null,
+        }),
+        { status: 200 }
+      );
+    });
+
+    await openRunPresetDialog({
+      presetSlug: 'issue-triage-assistant',
+      targets: [
+        { kind: 'issue', issue_id: issueId },
+        { kind: 'issue', issue_id: '33333333-3333-3333-3333-333333333333' },
+      ],
+      issueKey: '2 issues',
+      role: 'triage',
+    });
+    const element = dialogElement();
+    await element.updateComplete;
+    const dialog = element.shadowRoot?.querySelector('sl-dialog');
+    expect(dialog?.getAttribute('label')).to.equal(
+      'Run Issue Triage Assistant on 2 issues?'
+    );
+    expect(bodies[0]).to.deep.include({
+      preset_slug: 'issue-triage-assistant',
+      confirm_create: false,
+    });
+    expect((bodies[0] as { targets: unknown }).targets).to.have.length(2);
+    expect((bodies[0] as { target?: unknown }).target).to.equal(undefined);
+  });
+  for (const anyCreated of [false, true]) {
+    it(`shows batch failures and preserves existing run links (created=${anyCreated})`, async () => {
+      const results = [
+        ...(anyCreated
+          ? [
+              {
+                issue_id: issueId,
+                execution_id: 'existing-run',
+                execution_status: 'PENDING',
+                execution_url: '/console/flows/executions/existing-run',
+                error: 'View the existing run before retrying.',
+              },
+            ]
+          : []),
+        {
+          issue_id: 'missing',
+          error: 'Issue not found <script>unsafe</script>',
+        },
+      ];
+      fetchStub = sinon
+        .stub(window, 'fetch')
+        .callsFake(async (_input, init) => {
+          const confirm = JSON.parse(String(init?.body || '{}')).confirm_create;
+          return new Response(
+            JSON.stringify({
+              execution_id: anyCreated ? 'existing-run' : null,
+              execution_url: anyCreated
+                ? '/console/flows/executions/existing-run'
+                : null,
+              flow_id: 'triage-flow',
+              flow_name: 'Issue Triage Assistant',
+              flow_created: false,
+              results: confirm ? results : [],
+            }),
+            { status: 200 }
+          );
+        });
+      await openRunPresetDialog({
+        presetSlug: 'issue-triage-assistant',
+        targets: results.map((item) => ({
+          kind: 'issue',
+          issue_id: item.issue_id,
+        })),
+        issueKey: 'selected issues',
+        role: 'triage',
+      });
+      await clickFooter('Run');
+      await aTimeout(30);
+      const alert = document.body.querySelector('sl-alert');
+      expect(alert).to.exist;
+      expect(alert?.getAttribute('variant')).to.equal('warning');
+      expect(alert?.textContent).to.contain(
+        'Issue not found <script>unsafe</script>'
+      );
+      expect(alert?.querySelector('script')).not.to.exist;
+      expect(alert?.textContent).not.to.contain('Run started');
+      expect(alert?.textContent).to.contain(
+        anyCreated ? '1 run created' : 'No runs were created'
+      );
+      if (anyCreated) expect(alert?.textContent).to.contain('View run');
+    });
+  }
+  it('shows a warning and existing run for a pull-request dispatch failure', async () => {
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (_input, init) => {
+      const confirm = JSON.parse(String(init?.body || '{}')).confirm_create;
+      return new Response(
+        JSON.stringify({
+          execution_id: confirm ? 'existing-pr-run' : null,
+          execution_url: confirm
+            ? '/console/flows/executions/existing-pr-run'
+            : null,
+          flow_id: 'review-flow',
+          flow_name: 'Pull Request Reviewer',
+          flow_created: false,
+          results: confirm
+            ? [
+                {
+                  project_id: 'project-id',
+                  number: 12,
+                  execution_id: 'existing-pr-run',
+                  execution_status: 'PENDING',
+                  execution_url: '/console/flows/executions/existing-pr-run',
+                  error: 'View the existing run before retrying.',
+                },
+              ]
+            : null,
+        }),
+        { status: 200 }
+      );
+    });
+    await openRunPresetDialog({
+      presetSlug: 'pull-request-reviewer',
+      target: { kind: 'pull_request', project_id: 'project-id', number: 12 },
+      issueKey: 'PR #12',
+      role: 'reviewer',
+    });
+    await clickFooter('Run');
+    await aTimeout(30);
+    const alert = document.body.querySelector('sl-alert');
+    expect(alert?.getAttribute('variant')).to.equal('warning');
+    expect(alert?.textContent).to.contain('Pull request #12');
+    expect(alert?.textContent).to.contain('View run');
+    expect(alert?.textContent).to.contain('before retrying');
+    expect(alert?.textContent).not.to.contain('Run started');
+  });
 });

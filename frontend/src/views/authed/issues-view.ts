@@ -10,10 +10,11 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/tag/tag.js';
 import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
+import '@shoelace-style/shoelace/dist/components/option/option.js';
+import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import '../../components/project-filter-modal.ts';
-import '../../components/duplicate-stats-chart.ts';
 import '../../components/resolve-issue-modal.ts';
 import '../../components/issue-detail-view.ts';
 import '../../components/pagination-controls.ts';
@@ -34,10 +35,7 @@ import type {
   Organization,
   VerdictState,
 } from '../../types';
-import {
-  DEFAULT_SIMILARITY_THRESHOLD,
-  DEFAULT_SIMILARITY_THRESHOLD_CHARTS,
-} from '../../config';
+import { DEFAULT_SIMILARITY_THRESHOLD } from '../../config';
 import {
   AIModelVerdict,
   renderVerdict,
@@ -45,14 +43,24 @@ import {
 } from '../../utils/verdict';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
+/** The similarity steps the bar offers, coarse enough to be a decision. */
+const SIMILARITY_THRESHOLDS = [
+  { value: DEFAULT_SIMILARITY_THRESHOLD, label: 'Any similarity' },
+  { value: 0.5, label: '50% or more' },
+  { value: 0.7, label: '70% or more' },
+  { value: 0.8, label: '80% or more' },
+  { value: 0.9, label: '90% or more' },
+];
+
+/** `open` is how the tracker spells it; "Open" is how the console says it. */
+function issueStatusLabel(status: string | null | undefined): string {
+  const raw = (status || '').trim();
+  if (!raw) return 'Unknown';
+  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+}
+
 @customElement('issues-view')
 export class IssuesView extends LitElement {
-  private readonly INFO_ALERT_DISMISSED_KEY =
-    'preloop-issues-info-alert-dismissed';
-
-  @state()
-  private _isInfoAlertOpen = false;
-
   @state()
   private _duplicates: DuplicatePair[] = [];
 
@@ -101,9 +109,16 @@ export class IssuesView extends LitElement {
   @state()
   private _selectedResolutionStatus: 'resolved' | 'unresolved' | 'all' = 'all';
 
-  private _similarityThreshold = DEFAULT_SIMILARITY_THRESHOLD;
-
-  private _similarityThresholdCharts = DEFAULT_SIMILARITY_THRESHOLD_CHARTS;
+  /**
+   * How alike two issues have to be before the page suggests the pair.
+   *
+   * The list used to ask for everything from 10% up, which is why it opened
+   * on pages of pairs nobody would call duplicates. It opens on 50% instead,
+   * and the bar states the threshold and lets a reader widen it back to
+   * everything.
+   */
+  @state()
+  private _similarityThreshold = 0.5;
 
   @state()
   private _allProjects: Project[] = [];
@@ -169,13 +184,22 @@ export class IssuesView extends LitElement {
       .placeholder-content {
         text-align: center;
       }
+
+      .issues-toolbar {
+        display: flex;
+        align-items: end;
+        gap: var(--sl-spacing-small);
+        justify-content: flex-end;
+      }
+
+      .threshold-filter {
+        min-width: 170px;
+      }
     `,
   ];
 
   async connectedCallback() {
     super.connectedCallback();
-    const isDismissed = localStorage.getItem(this.INFO_ALERT_DISMISSED_KEY);
-    this._isInfoAlertOpen = isDismissed !== 'true';
     // Fetch projects first so we can map short IDs from the URL to full IDs.
     await this.fetchProjects();
     this.parseUrlAndUpdateState();
@@ -384,7 +408,7 @@ export class IssuesView extends LitElement {
             e.stopPropagation();
             this._retryVerdict(pair);
           }}
-          >Retry</sl-button
+          >Review</sl-button
         >
       `;
     }
@@ -472,12 +496,13 @@ export class IssuesView extends LitElement {
     this.fetchDuplicates();
   }
 
-  private _handleProjectSelectedFromChart(event: CustomEvent) {
-    const { projectId } = event.detail;
-    if (projectId && !this._selectedProjectIds.includes(projectId)) {
-      this._selectedProjectIds = [...this._selectedProjectIds, projectId];
-      this.fetchDuplicates();
-    }
+  private _onThresholdChange(event: Event) {
+    const raw = (event.target as { value?: string }).value || '';
+    const next = Number(raw);
+    if (!Number.isFinite(next) || next === this._similarityThreshold) return;
+    this._similarityThreshold = next;
+    this._currentPage = 1;
+    this.fetchDuplicates();
   }
 
   private _renderActiveFilters() {
@@ -555,11 +580,6 @@ export class IssuesView extends LitElement {
     this.fetchDuplicates();
   }
 
-  private handleInfoAlertHide() {
-    localStorage.setItem(this.INFO_ALERT_DISMISSED_KEY, 'true');
-    this._isInfoAlertOpen = false;
-  }
-
   private _goToPreviousPage() {
     if (this._currentPage > 1) {
       this._currentPage--;
@@ -579,8 +599,23 @@ export class IssuesView extends LitElement {
         description="Find overlapping issues and resolve duplicates"
         width="wide"
       >
-        <div slot="main-column">
-          <sl-button @click=${this._openFilterModal}>
+        <div slot="main-column" class="issues-toolbar">
+          <sl-select
+            class="threshold-filter"
+            size="small"
+            label="Similarity"
+            .value=${String(this._similarityThreshold)}
+            @sl-change=${this._onThresholdChange}
+          >
+            ${SIMILARITY_THRESHOLDS.map(
+              (option) => html`
+                <sl-option value=${String(option.value)}
+                  >${option.label}</sl-option
+                >
+              `
+            )}
+          </sl-select>
+          <sl-button size="small" @click=${this._openFilterModal}>
             <sl-icon slot="prefix" name="filter"></sl-icon>
             Filter
           </sl-button>
@@ -589,45 +624,6 @@ export class IssuesView extends LitElement {
       <div class="column-layout wide">
         <div class="main-column">
           <div class="container">
-            <sl-alert
-              variant="primary"
-              ?open=${this._isInfoAlertOpen}
-              closable
-              @sl-hide=${this.handleInfoAlertHide}
-            >
-              <sl-icon slot="icon" name="info-circle"></sl-icon>
-              <strong>Find similar issues and resolve duplicates</strong><br />
-              Identify similar and potential duplicate issues across your
-              projects. Review each suggested pair, check the similarity score,
-              and use the AI review to resolve or dismiss the suggestion.
-            </sl-alert>
-
-            ${when(
-              this._initialLoadComplete && this._hasProjects,
-              () => html`
-                <sl-card class="embedding-card">
-                  <div slot="header" class="chart-header">
-                    Similar Issues per Project
-                    <sl-tooltip
-                      content="Showing issues with a similarity score of ${
-                        this._similarityThresholdCharts * 100
-                      }% or higher."
-                    >
-                      <sl-icon name="question-circle"></sl-icon>
-                    </sl-tooltip>
-                  </div>
-                  <duplicate-stats-chart
-                    .hasProjects=${this._hasProjects}
-                    .projectIds=${this._selectedProjectIds}
-                    .selectedStatus=${this._selectedStatus}
-                    .selectedResolution=${this._selectedResolutionStatus}
-                    .similarityThreshold=${this._similarityThresholdCharts}
-                    ?interactive=${true}
-                    @project-selected=${this._handleProjectSelectedFromChart}
-                  ></duplicate-stats-chart>
-                </sl-card>
-              `
-            )}
             ${when(
               this._resolutionSummary,
               () => html`
@@ -700,11 +696,14 @@ export class IssuesView extends LitElement {
                                       >${pair.issue1.key}</strong
                                     >
                                     <sl-badge
+                                      class="chip"
                                       pill
                                       variant=${getStatusVariant(
                                         pair.issue1.status
                                       )}
-                                      >${pair.issue1.status}</sl-badge
+                                      >${issueStatusLabel(
+                                        pair.issue1.status
+                                      )}</sl-badge
                                     >
                                   </a>
                                   <div class="issue-title">
@@ -726,11 +725,14 @@ export class IssuesView extends LitElement {
                                       >${pair.issue2.key}</strong
                                     >
                                     <sl-badge
+                                      class="chip"
                                       pill
                                       variant=${getStatusVariant(
                                         pair.issue2.status
                                       )}
-                                      >${pair.issue2.status}</sl-badge
+                                      >${issueStatusLabel(
+                                        pair.issue2.status
+                                      )}</sl-badge
                                     >
                                   </a>
                                   <div class="issue-title">
@@ -767,6 +769,7 @@ export class IssuesView extends LitElement {
                                         <sl-button
                                           size="small"
                                           variant="primary"
+                                          outline
                                           @click=${(e: Event) => {
                                             e.stopPropagation();
                                             this._openResolveModal(pair);

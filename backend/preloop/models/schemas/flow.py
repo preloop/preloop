@@ -736,6 +736,9 @@ class FlowResponse(FlowBase):
         return [str(v) for v in value] if value is not None else None
 
 
+TRIAGE_BATCH_MAX = 25
+
+
 class RunPresetTarget(BaseModel):
     """Issue or pull-request target for an ad hoc preset run."""
 
@@ -768,8 +771,35 @@ class RunPresetRequest(BaseModel):
     """Body for POST /flows/run-preset."""
 
     preset_slug: str
-    target: RunPresetTarget
+    target: Optional[RunPresetTarget] = None
+    targets: Optional[List[RunPresetTarget]] = None
     confirm_create: bool = False
+
+    @model_validator(mode="after")
+    def validate_target_or_targets(self) -> "RunPresetRequest":
+        """Require exactly one of ``target`` or a non-empty ``targets`` list."""
+        has_target = self.target is not None
+        has_targets = self.targets is not None
+        if has_target == has_targets:
+            raise ValueError("Provide exactly one of target or targets")
+        if self.targets is not None:
+            if not self.targets:
+                raise ValueError("targets must be a non-empty list")
+            if len(self.targets) > TRIAGE_BATCH_MAX:
+                raise ValueError(f"targets supports at most {TRIAGE_BATCH_MAX} entries")
+        return self
+
+
+class RunPresetItemResult(BaseModel):
+    """Target outcome for a preset run, including dispatch failure receipts."""
+
+    issue_id: Optional[str] = None
+    project_id: Optional[str] = None
+    number: Optional[int] = None
+    execution_id: Optional[str] = None
+    execution_status: Optional[str] = None
+    execution_url: Optional[str] = None
+    error: Optional[str] = None
 
 
 class RunPresetResponse(BaseModel):
@@ -780,3 +810,4 @@ class RunPresetResponse(BaseModel):
     flow_name: str
     flow_created: bool
     execution_url: Optional[str] = None
+    results: Optional[List[RunPresetItemResult]] = None

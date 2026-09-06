@@ -684,7 +684,7 @@ export class PreloopFlowForm extends LitElement {
     this.formError = null;
 
     if (!this.flow.name) {
-      this.formError = 'Flow Name is required.';
+      this.formError = 'Flow name is required.';
       return;
     }
 
@@ -1336,7 +1336,7 @@ export class PreloopFlowForm extends LitElement {
           style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;"
         >
           <label style="font-weight: 500;">
-            Event Filters (Optional)
+            Event filters (optional)
             <span style="font-weight: 400; color: var(--sl-color-neutral-600);">
               - Only trigger when conditions match
             </span>
@@ -1349,7 +1349,7 @@ export class PreloopFlowForm extends LitElement {
                     @click=${() => (this.filtersExpanded = true)}
                   >
                     <sl-icon slot="prefix" name="plus-circle"></sl-icon>
-                    Add Filters
+                    Add filters
                   </sl-button>
                 `
               : html`
@@ -1359,7 +1359,7 @@ export class PreloopFlowForm extends LitElement {
                     @click=${() => (this.filtersExpanded = false)}
                   >
                     <sl-icon slot="prefix" name="dash-circle"></sl-icon>
-                    Hide Filters
+                    Hide filters
                   </sl-button>
                 `
           }
@@ -1371,8 +1371,8 @@ export class PreloopFlowForm extends LitElement {
                 <div class="form-grid">
                   <!-- Author/Creator filter -->
                   <sl-input
-                    label="Created By (username)"
-                    placeholder="e.g., octocat, admin@example.com"
+                    label="Created by (username)"
+                    placeholder="e.g. octocat, admin@example.com"
                     .value=${this.flow.trigger_config?.author || ''}
                     @sl-input=${(e: any) => {
                       if (!this.flow.trigger_config)
@@ -1385,13 +1385,13 @@ export class PreloopFlowForm extends LitElement {
                       }
                       this.requestUpdate();
                     }}
-                    help-text="Filter by who created the issue/PR"
+                    help-text="Filter by who created the issue or pull request"
                   ></sl-input>
 
                   <!-- Assignee filter -->
                   <sl-input
-                    label="Assigned To (username)"
-                    placeholder="e.g., john_doe"
+                    label="Assigned to (username)"
+                    placeholder="e.g. john_doe"
                     .value=${this.flow.trigger_config?.assignee || ''}
                     @sl-input=${(e: any) => {
                       if (!this.flow.trigger_config)
@@ -1415,9 +1415,9 @@ export class PreloopFlowForm extends LitElement {
                             label="${
                               tracker.tracker_type === 'gitlab'
                                 ? 'Reviewer (username)'
-                                : 'Requested Reviewer (username)'
+                                : 'Requested reviewer (username)'
                             }"
-                            placeholder="e.g., jane_smith"
+                            placeholder="e.g. jane_smith"
                             .value=${this.flow.trigger_config?.reviewer || ''}
                             @sl-input=${(e: any) => {
                               if (!this.flow.trigger_config)
@@ -1439,7 +1439,7 @@ export class PreloopFlowForm extends LitElement {
                   <!-- Labels filter -->
                   <sl-input
                     label="Labels (comma-separated)"
-                    placeholder="e.g., bug, critical, backend"
+                    placeholder="e.g. bug, critical, backend"
                     .value=${(this.flow.trigger_config?.labels as string[])?.join(', ') || ''}
                     @sl-input=${(e: any) => {
                       if (!this.flow.trigger_config)
@@ -1455,7 +1455,7 @@ export class PreloopFlowForm extends LitElement {
                       }
                       this.requestUpdate();
                     }}
-                    help-text="Filter by labels (triggers if ANY label matches)"
+                    help-text="Filter by labels (triggers if any label matches)"
                   ></sl-input>
 
                   <!-- Milestone filter (GitHub/GitLab only) -->
@@ -1464,7 +1464,7 @@ export class PreloopFlowForm extends LitElement {
                       ? html`
                           <sl-input
                             label="Milestone"
-                            placeholder="e.g., v1.0, Sprint 10"
+                            placeholder="e.g. v1.0, sprint 10"
                             .value=${this.flow.trigger_config?.milestone || ''}
                             @sl-input=${(e: any) => {
                               if (!this.flow.trigger_config)
@@ -1503,7 +1503,7 @@ export class PreloopFlowForm extends LitElement {
                             }}
                             clearable
                           >
-                            <sl-option value="">Any Priority</sl-option>
+                            <sl-option value="">Any priority</sl-option>
                             <sl-option value="Highest">Highest</sl-option>
                             <sl-option value="High">High</sl-option>
                             <sl-option value="Medium">Medium</sl-option>
@@ -1512,8 +1512,8 @@ export class PreloopFlowForm extends LitElement {
                           </sl-select>
 
                           <sl-input
-                            label="Issue Type"
-                            placeholder="e.g., Task, Bug, Story"
+                            label="Issue type"
+                            placeholder="e.g. task, bug, story"
                             .value=${this.flow.trigger_config?.issue_type || ''}
                             @sl-input=${(e: any) => {
                               if (!this.flow.trigger_config)
@@ -1599,7 +1599,7 @@ export class PreloopFlowForm extends LitElement {
                                   </sl-checkbox>
 
                                   <sl-select
-                                    label="Merge Status"
+                                    label="Merge status"
                                     .value=${this.flow.trigger_config?.state || ''}
                                     @sl-change=${(e: any) => {
                                       if (!this.flow.trigger_config)
@@ -1615,7 +1615,7 @@ export class PreloopFlowForm extends LitElement {
                                     clearable
                                     help-text="Filter by merge request state"
                                   >
-                                    <sl-option value="">Any State</sl-option>
+                                    <sl-option value="">Any state</sl-option>
                                     <sl-option value="opened">Opened</sl-option>
                                     <sl-option value="closed">Closed</sl-option>
                                     <sl-option value="merged">Merged</sl-option>
@@ -1624,7 +1624,7 @@ export class PreloopFlowForm extends LitElement {
                               : tracker.tracker_type === 'github'
                                 ? html`
                                     <sl-select
-                                      label="Pull Request State"
+                                      label="Pull request state"
                                       .value=${this.flow.trigger_config?.state || ''}
                                       @sl-change=${(e: any) => {
                                         if (!this.flow.trigger_config)
@@ -1641,7 +1641,7 @@ export class PreloopFlowForm extends LitElement {
                                       clearable
                                       help-text="Filter by pull request state"
                                     >
-                                      <sl-option value="">Any State</sl-option>
+                                      <sl-option value="">Any state</sl-option>
                                       <sl-option value="open">Open</sl-option>
                                       <sl-option value="closed"
                                         >Closed</sl-option
@@ -1649,7 +1649,7 @@ export class PreloopFlowForm extends LitElement {
                                     </sl-select>
 
                                     <sl-select
-                                      label="Mergeable State"
+                                      label="Mergeable state"
                                       .value=${
                                         this.flow.trigger_config
                                           ?.mergeable_state || ''
@@ -1668,7 +1668,7 @@ export class PreloopFlowForm extends LitElement {
                                         this.requestUpdate();
                                       }}
                                       clearable
-                                      help-text="Filter by whether PR can be merged"
+                                      help-text="Filter by whether the pull request can be merged"
                                     >
                                       <sl-option value="">Any</sl-option>
                                       <sl-option value="clean"
@@ -1804,10 +1804,10 @@ export class PreloopFlowForm extends LitElement {
         }
         <sl-card>
           <div slot="header" class="card-header-title">
-            <sl-icon name="info-circle"></sl-icon> Flow Information
+            <sl-icon name="info-circle"></sl-icon> Flow information
           </div>
           <sl-input
-            label="Flow Name"
+            label="Flow name"
             .value=${this.flow.name || ''}
             @sl-input=${(e: Event) => this.handleInputChange('name', e)}
             required
@@ -1823,14 +1823,14 @@ export class PreloopFlowForm extends LitElement {
 
         <sl-card>
           <div slot="header" class="card-header-title">
-            <sl-icon name="calendar-event"></sl-icon> Trigger Configuration
+            <sl-icon name="calendar-event"></sl-icon> Trigger configuration
           </div>
 
           <div style="margin-bottom: var(--sl-spacing-large);">
             <label
               style="display: block; margin-bottom: 0.5rem; font-weight: 500;"
             >
-              Trigger Type
+              Trigger type
             </label>
             <sl-radio-group
               value=${this.triggerType}
@@ -1839,7 +1839,7 @@ export class PreloopFlowForm extends LitElement {
               style="display: flex; gap: var(--sl-spacing-large);"
             >
               <sl-radio value="webhook">Webhook</sl-radio>
-              <sl-radio value="tracker">Tracker Event</sl-radio>
+              <sl-radio value="tracker">Tracker event</sl-radio>
               <sl-radio value="schedule">Schedule</sl-radio>
             </sl-radio-group>
           </div>
@@ -1881,7 +1881,7 @@ export class PreloopFlowForm extends LitElement {
                       >
                         <sl-select
                           label="Tracker"
-                          placeholder="Select tracking source"
+                          placeholder="Select a tracker"
                           .value=${this.flow.trigger_event_source || ''}
                           @sl-change=${this.handleTrackerChange}
                           style="margin-bottom: 0;"
@@ -1906,7 +1906,7 @@ export class PreloopFlowForm extends LitElement {
 
                       <sl-select
                         label="Organization"
-                        placeholder="Select organization"
+                        placeholder="Select an organization"
                         .value=${this.flow.trigger_organization_id || ''}
                         @sl-change=${this.handleOrganizationChange}
                         ?disabled=${
@@ -1923,7 +1923,7 @@ export class PreloopFlowForm extends LitElement {
                       </sl-select>
 
                       <sl-select
-                        label="Projects (Optional)"
+                        label="Projects (optional)"
                         placeholder="All projects"
                         multiple
                         clearable
@@ -1949,7 +1949,7 @@ export class PreloopFlowForm extends LitElement {
 
                       <sl-select
                         label="Events"
-                        placeholder="Select trigger event kinds"
+                        placeholder="Select the events that trigger this flow"
                         multiple
                         .value=${this.flow.trigger_event_types || []}
                         @sl-change=${(e: any) => {
@@ -1971,7 +1971,7 @@ export class PreloopFlowForm extends LitElement {
 
         <sl-card>
           <div slot="header" class="card-header-title">
-            <sl-icon name="robot"></sl-icon> AI Agent & Model Configuration
+            <sl-icon name="robot"></sl-icon> AI agent and model configuration
           </div>
 
           ${
@@ -1981,7 +1981,7 @@ export class PreloopFlowForm extends LitElement {
                     <label
                       style="display: block; margin-bottom: 0.5rem; font-weight: 500;"
                     >
-                      Execution Mode
+                      Execution mode
                     </label>
                     <sl-radio-group
                       value=${this.flowExecutionPath}
@@ -2023,7 +2023,7 @@ export class PreloopFlowForm extends LitElement {
             this.longRunningAgents.length > 0
               ? html`
                   <sl-select
-                    label="Target Long-Running Agent"
+                    label="Target long-running agent"
                     .value=${this.targetAgentId}
                     @sl-change=${(e: any) => {
                       this.targetAgentId = e.target.value;
@@ -2045,7 +2045,7 @@ export class PreloopFlowForm extends LitElement {
                 `
               : html`
                   <sl-select
-                    label="AI Agent Runtime Type"
+                    label="Agent runtime"
                     .value=${this.flow.agent_type || 'codex'}
                     @sl-change=${(e: any) => {
                       this.flow.agent_type = e.target.value;
@@ -2063,8 +2063,8 @@ export class PreloopFlowForm extends LitElement {
             style="display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small); margin-bottom: var(--sl-spacing-medium);"
           >
             <sl-select
-              label="AI Model"
-              placeholder="Select AI model"
+              label="AI model"
+              placeholder="Select an AI model"
               .value=${this.flow.ai_model_id || ''}
               @sl-change=${(e: any) => {
                 this.flow.ai_model_id = e.target.value;
@@ -2081,7 +2081,7 @@ export class PreloopFlowForm extends LitElement {
               @click=${this.openAddAIModelDialog}
               style="align-self: flex-start; margin-top: -0.25rem; height: auto; padding: 0;"
             >
-              <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add New AI Model
+              <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add AI model
             </sl-button>
           </div>
 
@@ -2090,7 +2090,7 @@ export class PreloopFlowForm extends LitElement {
 
           <sl-textarea
             class="prompt"
-            label="System/Flow Prompt Template"
+            label="Prompt template"
             rows="6"
             placeholder="System instruction that directs the agent's goal..."
             .value=${this.flow.prompt_template || ''}
@@ -2101,7 +2101,7 @@ export class PreloopFlowForm extends LitElement {
 
         <sl-card>
           <div slot="header" class="card-header-title">
-            <sl-icon name="tools"></sl-icon> Allowed MCP Tools
+            <sl-icon name="tools"></sl-icon> Allowed MCP tools
           </div>
 
           <div
@@ -2187,7 +2187,7 @@ export class PreloopFlowForm extends LitElement {
 
         <sl-card>
           <div slot="header" class="card-header-title">
-            <sl-icon name="git"></sl-icon> Git Clone Configuration
+            <sl-icon name="git"></sl-icon> Git clone configuration
           </div>
           <sl-checkbox
             .checked=${this.flow.git_clone_config?.enabled || false}
@@ -2195,7 +2195,7 @@ export class PreloopFlowForm extends LitElement {
               this.handleGitCloneToggle(e.target.checked)}
             style="margin-bottom: var(--sl-spacing-medium);"
           >
-            Enable Git Workspace Cloning
+            Enable git workspace cloning
           </sl-checkbox>
 
           ${
@@ -2206,7 +2206,7 @@ export class PreloopFlowForm extends LitElement {
                     style="margin-top: var(--sl-spacing-medium);"
                   >
                     <sl-input
-                      label="Git Author Name"
+                      label="Git author name"
                       .value=${
                         this.flow.git_clone_config?.git_user_name || 'Preloop'
                       }
@@ -2219,7 +2219,7 @@ export class PreloopFlowForm extends LitElement {
                     ></sl-input>
 
                     <sl-input
-                      label="Git Author Email"
+                      label="Git author email"
                       .value=${
                         this.flow.git_clone_config?.git_user_email ||
                         'git@preloop.ai'
@@ -2233,7 +2233,7 @@ export class PreloopFlowForm extends LitElement {
                     ></sl-input>
 
                     <sl-input
-                      label="Source Branch"
+                      label="Source branch"
                       .value=${
                         this.flow.git_clone_config?.source_branch || 'main'
                       }
@@ -2257,7 +2257,7 @@ export class PreloopFlowForm extends LitElement {
                       }}
                       style="align-self: center;"
                     >
-                      Create Pull/Merge Request on Commit
+                      Create a pull or merge request on commit
                     </sl-checkbox>
                   </div>
                 `
@@ -2309,8 +2309,7 @@ export class PreloopFlowForm extends LitElement {
 
         <sl-card>
           <div slot="header" class="card-header-title">
-            <sl-icon name="shield"></sl-icon> Execution Limits & Safety
-            Boundaries
+            <sl-icon name="shield"></sl-icon> Execution limits and safety
           </div>
           <div class="form-grid">
             <sl-input
@@ -2328,7 +2327,7 @@ export class PreloopFlowForm extends LitElement {
 
             <sl-input
               type="number"
-              label="Maximum Iteration Count"
+              label="Maximum iterations"
               .value=${this.flow.max_iterations || '30'}
               @sl-input=${(e: Event) =>
                 this.handleInputChange('max_iterations', e)}
@@ -2336,7 +2335,7 @@ export class PreloopFlowForm extends LitElement {
 
             <sl-input
               type="number"
-              label="Max Tokens Budget ($)"
+              label="Token budget ($)"
               .value=${this.flow.max_budget || '10'}
               @sl-input=${(e: Event) => this.handleInputChange('max_budget', e)}
             ></sl-input>
@@ -2365,7 +2364,7 @@ export class PreloopFlowForm extends LitElement {
             Cancel
           </sl-button>
           <sl-button type="submit" variant="primary" ?loading=${this.isSaving}>
-            ${this.flow.id ? 'Save Flow Changes' : 'Create & Activate Flow'}
+            ${this.flow.id ? 'Save changes' : 'Create flow'}
           </sl-button>
         </div>
       </form>

@@ -34,6 +34,22 @@ describe('list-toolbar', () => {
     expect(icon).to.exist;
   });
 
+  it('keeps a short accessible name when the placeholder spells out the fields', async () => {
+    const element = await fixture<ListToolbar>(html`
+      <list-toolbar
+        searchPlaceholder="Principal, session reference, or source id"
+        searchLabel="Search sessions"
+      ></list-toolbar>
+    `);
+    await element.updateComplete;
+
+    const input = element.shadowRoot!.querySelector('sl-input.search-input')!;
+    expect(input.getAttribute('placeholder')).to.equal(
+      'Principal, session reference, or source id'
+    );
+    expect(input.getAttribute('label')).to.equal('Search sessions');
+  });
+
   it('names the view switcher from toggleLabel', async () => {
     const element = await render({ toggleLabel: 'Trackers view' });
     const group = element.shadowRoot!.querySelector('sl-button-group');

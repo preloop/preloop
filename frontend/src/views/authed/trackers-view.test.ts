@@ -124,12 +124,12 @@ describe('TrackersView', () => {
     );
   }
 
-  it('renders Add New Tracker button', async () => {
+  it('renders the Add tracker button', async () => {
     await element.updateComplete;
 
     const addButton = getAddButton();
     expect(addButton).to.exist;
-    expect(addButton?.textContent?.trim()).to.include('Add New Tracker');
+    expect(addButton?.textContent?.trim()).to.include('Add tracker');
   });
 
   it('renders tracker-list', async () => {
@@ -139,7 +139,7 @@ describe('TrackersView', () => {
     expect(trackerList).to.exist;
   });
 
-  it('opens add tracker modal when Add New Tracker button is clicked', async () => {
+  it('opens add tracker modal when the Add tracker button is clicked', async () => {
     await element.updateComplete;
 
     const addButton = getAddButton();

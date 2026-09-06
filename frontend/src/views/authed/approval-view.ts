@@ -1,7 +1,17 @@
 import { html, css, unsafeCSS } from 'lit';
 import { customElement, state, property } from 'lit/decorators.js';
-import { AuthedElement } from '../../api';
-import type { ApprovalDecisionOptions, ApprovalRequest } from '../../types';
+import {
+  AuthedElement,
+  getAgentGovernance,
+  getUserProfile,
+  hasPermission,
+  updateAgentGovernance,
+} from '../../api';
+import type {
+  ApprovalDecisionOptions,
+  ApprovalRequest,
+  SubjectGovernanceConfig,
+} from '../../types';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import {
   formatApprovalRequester,
@@ -19,6 +29,11 @@ import {
   normalizeApprovalRequest,
 } from '../../utils/approvals';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
+import { formatRelativeTime } from '../../utils/date';
+import {
+  normalizeScopedToolRules,
+  serializeScopedToolRules,
+} from '../../utils/scoped-governance';
 import '../../components/question-answer-panel';
 import '../../components/approval-rule-context-block';
 import type { QuestionAnswerDetail } from '../../components/question-answer-panel';
@@ -32,6 +47,8 @@ import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
+import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 
 /** One workflow-history entry as returned by the history API. */
 export interface ApprovalTimelineEntry {
@@ -99,6 +116,26 @@ export class ApprovalView extends AuthedElement {
   private waitingNextFetched = 0;
 
   /**
+   * Ticked by the operator to turn this approval into a standing allow rule
+   * for this agent and this tool. Read on approve, never on deny.
+   */
+  @state()
+  private alwaysAllow = false;
+
+  /**
+   * Permissions of the signed-in user. `null` is not "no permissions": it is
+   * the RBAC-inactive contract of `/auth/users/me` (OSS and DISABLE_RBAC),
+   * where `hasPermission` is permissive. Use `permissionsLoaded` to tell
+   * "still fetching" from "RBAC is off".
+   */
+  @state()
+  private permissions: string[] | null = null;
+
+  /** True once the profile fetch has settled, whatever it returned. */
+  @state()
+  private permissionsLoaded = false;
+
+  /**
    * True while the deny confirmation is on screen. The decision keys listen on
    * the document, so without this an A pressed over an open "Deny this
    * request?" dialog would approve behind it.
@@ -150,24 +187,46 @@ export class ApprovalView extends AuthedElement {
         font-weight: 600;
       }
 
-      .info-grid {
-        display: grid;
-        grid-template-columns: 150px 1fr;
-        gap: 0.75rem;
+      /* The facts on one hairline strip: no boxes, no grid of labels. */
+      .fact-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem 1.5rem;
+        padding: 0.75rem 0;
         margin-bottom: 1rem;
+        border-top: 1px solid var(--console-hairline);
+        border-bottom: 1px solid var(--console-hairline);
       }
 
-      .info-label {
-        font-weight: 600;
-        color: var(--sl-color-neutral-700);
+      .fact {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: var(--sl-font-size-small);
+        min-width: 0;
       }
 
-      .info-value {
-        color: var(--sl-color-neutral-900);
+      .fact-label {
+        color: var(--console-meta-color);
       }
 
+      .fact code {
+        font-family: monospace;
+        font-size: 0.8125rem;
+      }
+
+      .fact a {
+        color: var(--console-link-color);
+      }
+
+      .copy-id::part(base) {
+        padding: 0;
+        font-size: 0.875rem;
+      }
+
+      /* D27: a command block rests on the page surface, not on a third one. */
       .code-block {
-        background: var(--sl-color-neutral-100);
+        background: var(--console-page);
         padding: 1rem;
         border-radius: 4px;
         overflow-x: auto;
@@ -208,17 +267,21 @@ export class ApprovalView extends AuthedElement {
         padding: 3rem;
       }
 
+      /* Depth limit two: what happened is a hairline block on the card, not a
+         filled panel inside it. */
       .resolved-info {
         margin-top: 1rem;
-        padding: 1rem;
-        background: var(--sl-color-neutral-50);
-        border-radius: 4px;
+        padding-top: 1rem;
+        border-top: 1px solid var(--console-hairline);
       }
 
       .resolved-info h3 {
         margin: 0 0 0.5rem 0;
         font-size: 1rem;
         font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
       }
 
       .metadata {
@@ -287,6 +350,12 @@ export class ApprovalView extends AuthedElement {
         position: absolute;
         white-space: nowrap;
         width: 1px;
+      }
+
+      /* One line, always: a wrapped "Always allow" label reads as two ideas. */
+      .always-allow::part(label) {
+        white-space: nowrap;
+        font-size: var(--sl-font-size-small);
       }
 
       .decision-buttons {
@@ -428,6 +497,26 @@ export class ApprovalView extends AuthedElement {
     // the page is focused never reaches the host element.
     document.addEventListener('keydown', this.handleKeyDown);
     this.startTicking();
+    void this.loadPermissions();
+  }
+
+  /**
+   * Writing a standing rule needs `manage_agents`, the permission the backend
+   * checks on `PUT /agents/{id}/governance`. Without it the checkbox is absent
+   * rather than present and answering with a 403.
+   */
+  private async loadPermissions() {
+    if (this.publicOnly) return;
+    try {
+      const profile = await getUserProfile();
+      // Keep the null: on OSS and DISABLE_RBAC the endpoint returns no
+      // permissions array at all, and `[]` would read as "allowed nothing".
+      this.permissions = profile?.permissions ?? null;
+    } catch {
+      this.permissions = null;
+    } finally {
+      this.permissionsLoaded = true;
+    }
   }
 
   disconnectedCallback() {
@@ -708,10 +797,17 @@ export class ApprovalView extends AuthedElement {
       }
 
       const updated = await response.json();
+      const decided = this.approvalRequest;
       this.approvalRequest = updated;
       this.comment = '';
       this.decisionTaken = true;
       showToast(successMessage, action === 'approve' ? 'success' : 'neutral');
+      // The standing rule is written only after the decision landed: a
+      // failed approve must not leave a rule behind.
+      if (action === 'approve' && this.alwaysAllow && decided) {
+        this.alwaysAllow = false;
+        await this.applyAlwaysAllow(decided);
+      }
       this.loadHistory();
       await this.loadWaitingNext();
     } catch (err: any) {
@@ -1025,63 +1121,23 @@ export class ApprovalView extends AuthedElement {
               `
             : ''
         }
+        ${this.renderFactStrip(request, requester, source, isPending, countdown)}
+
         <div class="content-section">
-          <h2>Tool information</h2>
-          <div class="info-grid">
-            <div class="info-label">Requested by:</div>
-            <div class="info-value">
-              <strong>${requester}</strong>
-            </div>
-
-            ${
-              source
-                ? html`
-                    <div class="info-label">Adapter:</div>
-                    <div class="info-value">${source}</div>
-                  `
-                : ''
-            }
-
-            <div class="info-label">Tool name:</div>
-            <div class="info-value">
-              <strong>${request.tool_name}</strong>
-            </div>
-
-            <div class="info-label">Request ID:</div>
-            <div class="info-value">
-              <code style="font-size: 0.75rem;">${request.id}</code>
-            </div>
-
-            <div class="info-label">Requested:</div>
-            <div class="info-value">
-              ${this.formatDate(request.requested_at)}
-            </div>
-
-            ${
-              request.expires_at
-                ? html`
-                    <div class="info-label">Expires:</div>
-                    <div class="info-value">
-                      ${this.formatDate(request.expires_at)}
-                    </div>
-                  `
-                : ''
-            }
-            ${
-              request.execution_id
-                ? html`
-                    <div class="info-label">Execution ID:</div>
-                    <div class="info-value">
-                      <code style="font-size: 0.75rem;"
-                        >${request.execution_id}</code
-                      >
-                    </div>
-                  `
-                : ''
-            }
-          </div>
+          <h2>${this.argsHeading(request)}</h2>
+          <div class="code-block">${toolArgs}</div>
         </div>
 
+        ${
+          request.agent_reasoning
+            ? html`
+                <div class="content-section">
+                  <h2>Why the agent wants this</h2>
+                  <div class="reasoning-text">${request.agent_reasoning}</div>
+                </div>
+              `
+            : ''
+        }
         ${
           request.rule_context
             ? html`
@@ -1094,22 +1150,6 @@ export class ApprovalView extends AuthedElement {
               `
             : ''
         }
-        ${
-          request.agent_reasoning
-            ? html`
-                <div class="content-section">
-                  <h2>Agent reasoning</h2>
-                  <div class="reasoning-text">${request.agent_reasoning}</div>
-                </div>
-              `
-            : ''
-        }
-
-        <div class="content-section">
-          <h2>Tool arguments</h2>
-          <div class="code-block">${toolArgs}</div>
-        </div>
-
         ${
           this.history.length
             ? html`
@@ -1150,32 +1190,7 @@ export class ApprovalView extends AuthedElement {
               `
             : ''
         }
-        ${
-          isResolved
-            ? html`
-                <div class="resolved-info">
-                  <h3>${approvalStatusLabel(request.status)}</h3>
-                  ${
-                    request.resolved_at
-                      ? html`<p>
-                          Resolved at: ${this.formatDate(request.resolved_at)}
-                        </p>`
-                      : ''
-                  }
-                  ${
-                    request.approver_comment
-                      ? html`
-                          <p><strong>Comment:</strong></p>
-                          <div class="code-block">
-                            ${request.approver_comment}
-                          </div>
-                        `
-                      : ''
-                  }
-                </div>
-              `
-            : ''
-        }
+        ${isResolved ? this.renderResolvedHeader(request) : ''}
 
         <div class="metadata">
           <sl-icon name="info-circle"></sl-icon>
@@ -1194,6 +1209,288 @@ export class ApprovalView extends AuthedElement {
           : ''
       }
     `;
+  }
+
+  /**
+   * The facts about this request on one hairline strip: who asked, what for,
+   * where from, and when. The agent and the session are links, because "which
+   * agent is this" is the first question a decision raises.
+   */
+  private renderFactStrip(
+    request: ApprovalRequest,
+    requester: string,
+    source: string | null,
+    isPending: boolean,
+    countdown: string | null
+  ) {
+    const shortId = request.id.slice(0, 8);
+    return html`
+      <div class="fact-strip">
+        <div class="fact">
+          <span class="fact-label">Agent</span>
+          ${
+            request.managed_agent_id
+              ? html`<a href="/console/agents/${request.managed_agent_id}"
+                  >${requester}</a
+                >`
+              : html`<span>${requester}</span>`
+          }
+        </div>
+        <div class="fact">
+          <span class="fact-label">Tool</span>
+          <code>${request.tool_name}</code>
+        </div>
+        ${
+          source
+            ? html`<div class="fact">
+                <span class="fact-label">Adapter</span>
+                <span>${source}</span>
+              </div>`
+            : ''
+        }
+        ${
+          request.runtime_session_id
+            ? html`<div class="fact">
+                <span class="fact-label">Session</span>
+                <a
+                  href="/console/runtime-sessions?sessionId=${encodeURIComponent(
+                    request.runtime_session_id
+                  )}"
+                  >${request.runtime_session_id.slice(0, 8)}</a
+                >
+              </div>`
+            : ''
+        }
+        ${
+          request.execution_id
+            ? html`<div class="fact">
+                <span class="fact-label">Execution</span>
+                <a href="/console/flows/executions/${request.execution_id}"
+                  >${request.execution_id.slice(0, 8)}</a
+                >
+              </div>`
+            : ''
+        }
+        <div class="fact">
+          <span class="fact-label">Requested</span>
+          <span title=${this.formatDate(request.requested_at)}
+            >${formatRelativeTime(request.requested_at)}</span
+          >
+        </div>
+        ${
+          // Once decided there is nothing left to expire, so the deadline goes.
+          isPending && countdown
+            ? html`<div class="fact">
+                <span class="fact-label">Expires</span>
+                <span title=${this.formatDate(request.expires_at || '')}
+                  >${countdown.replace('expires ', '')}</span
+                >
+              </div>`
+            : ''
+        }
+        <div class="fact">
+          <span class="fact-label">Request</span>
+          <code class="request-id">${shortId}</code>
+          <sl-icon-button
+            class="copy-id"
+            name="clipboard"
+            label="Copy the full request id"
+            @click=${() => this.copyRequestId(request.id)}
+          ></sl-icon-button>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Can this operator turn the decision into a standing rule?
+   *
+   * Only for a request that names its agent: the rule is stored on that
+   * agent's scoped governance, so an approval with no `managed_agent_id` has
+   * nowhere to put it. A public-token viewer never sees it.
+   */
+  private canWriteAgentRules(request: ApprovalRequest): boolean {
+    if (this.publicOnly) return false;
+    if (!request.managed_agent_id) return false;
+    // Wait for the profile rather than drawing a checkbox that may vanish.
+    if (!this.permissionsLoaded) return false;
+    return hasPermission(this.permissions, 'manage_agents');
+  }
+
+  /**
+   * Write "allow <tool> for this agent" as a scoped rule on the agent.
+   *
+   * The evaluator returns on the first matching scoped rule in list order
+   * (`policy_evaluator._evaluate_rule_candidates`) and a rule with no
+   * condition matches everything, so the new allow has to go in front: the
+   * catch-all `require_approval` that raised this request is usually already
+   * there, and an allow behind it would never be reached. The previous rule
+   * set is kept so Undo can put it back exactly.
+   */
+  private async applyAlwaysAllow(request: ApprovalRequest) {
+    const agentId = request.managed_agent_id;
+    if (!agentId) return;
+    try {
+      const current = await getAgentGovernance(agentId);
+      const config = current.config;
+      const previous = config.tool_rules || {};
+      const rules = normalizeScopedToolRules(previous);
+      const forTool = rules[request.tool_name] || [];
+      rules[request.tool_name] = [
+        {
+          id: `scoped:${request.tool_name}:allow-from-${request.id.slice(
+            0,
+            8
+          )}`,
+          action: 'allow',
+          condition_expression: null,
+          condition_type: 'simple',
+          priority: 0,
+          description: `Created from approval ${request.id.slice(0, 8)}`,
+          is_enabled: true,
+          approval_workflow_id: null,
+        },
+        // Everything that was there keeps its relative order, one step down.
+        ...forTool.map((rule, index) => ({ ...rule, priority: index + 1 })),
+      ];
+      await this.saveToolRules(
+        agentId,
+        config,
+        serializeScopedToolRules(rules)
+      );
+      showToast(
+        `Rule added. Future ${request.tool_name} calls from ${
+          request.managed_agent_name || 'this agent'
+        } run without asking.`,
+        'success',
+        {
+          label: 'Undo',
+          onClick: () => {
+            void this.undoAlwaysAllow(agentId, config, previous);
+          },
+        }
+      );
+    } catch {
+      showToast(
+        'The decision was recorded, but the rule could not be saved.',
+        'danger'
+      );
+    }
+  }
+
+  private async undoAlwaysAllow(
+    agentId: string,
+    config: SubjectGovernanceConfig,
+    previous: Record<string, Array<Record<string, unknown>>>
+  ) {
+    try {
+      await this.saveToolRules(agentId, config, previous);
+      showToast('Rule removed.', 'neutral');
+    } catch {
+      showToast('Could not remove the rule.', 'danger');
+    }
+  }
+
+  /** PUT the whole subject config back with only `tool_rules` changed. */
+  private async saveToolRules(
+    agentId: string,
+    config: SubjectGovernanceConfig,
+    toolRules: Record<string, Array<Record<string, unknown>>>
+  ) {
+    await updateAgentGovernance(agentId, {
+      ...config,
+      tool_rules: toolRules,
+    });
+  }
+
+  /** Bash and friends carry a command; anything else carries arguments. */
+  private argsHeading(request: ApprovalRequest): string {
+    const args = withoutApprovalMetadata(request.tool_args);
+    return typeof args.command === 'string' || typeof args.cmd === 'string'
+      ? 'Command'
+      : 'Arguments';
+  }
+
+  private async copyRequestId(id: string) {
+    try {
+      await navigator.clipboard.writeText(id);
+      showToast('Request id copied.', 'success');
+    } catch {
+      showToast('Could not copy the request id.', 'danger');
+    }
+  }
+
+  /**
+   * What happened to a resolved request, in one line: who decided and how
+   * long the agent waited. `responses[]` is not serialised by the API, so the
+   * decider comes from the workflow-history timeline, which carries the actor.
+   */
+  private renderResolvedHeader(request: ApprovalRequest) {
+    const label = approvalStatusLabel(request.status);
+    const decider = this.decider();
+    const elapsed = this.decisionElapsed(request);
+    const parts: string[] = [
+      decider ? `${label} by ${decider}` : label,
+      elapsed ? `${elapsed} after request` : '',
+    ].filter(Boolean);
+    return html`
+      <div class="resolved-info">
+        <h3>
+          <sl-icon name=${this.resolvedIcon(request.status)}></sl-icon>
+          ${parts.join(' · ')}
+        </h3>
+        ${
+          request.approver_comment
+            ? html`
+                <p><strong>Comment</strong></p>
+                <div class="code-block">${request.approver_comment}</div>
+              `
+            : ''
+        }
+      </div>
+    `;
+  }
+
+  private resolvedIcon(status: string): string {
+    switch (status) {
+      case 'approved':
+        return 'check-circle';
+      case 'declined':
+        return 'x-circle';
+      case 'expired':
+        return 'clock-history';
+      default:
+        return 'slash-circle';
+    }
+  }
+
+  /** Who decided: a person from the timeline, an AI judge, or a bypass. */
+  private decider(): string | null {
+    const request = this.approvalRequest;
+    if (!request) return null;
+    if (request.auto_approved_reason) return 'a time-boxed bypass';
+    if (request.decided_by_ai) return 'an AI reviewer';
+    const vote = [...this.history]
+      .reverse()
+      .find((event) => event.event_type === 'vote_received');
+    if (!vote) return null;
+    return vote.actor_email || 'an approver';
+  }
+
+  /** How long the agent waited, as "12s", "4m" or "2h". */
+  private decisionElapsed(request: ApprovalRequest): string | null {
+    if (!request.resolved_at) return null;
+    const elapsed =
+      new Date(request.resolved_at).getTime() -
+      new Date(request.requested_at).getTime();
+    if (!Number.isFinite(elapsed) || elapsed < 0) return null;
+    const seconds = Math.round(elapsed / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}h`;
+    return `${Math.round(hours / 24)}d`;
   }
 
   /** The decision, always on screen, whatever the operator has scrolled to. */
@@ -1237,6 +1534,19 @@ export class ApprovalView extends AuthedElement {
           @sl-input=${(e: any) => (this.comment = e.target.value)}
           ?disabled=${this.submitting}
         ></sl-input>
+        ${
+          this.canWriteAgentRules(request)
+            ? html`<sl-checkbox
+                class="always-allow"
+                ?checked=${this.alwaysAllow}
+                ?disabled=${this.submitting}
+                @sl-change=${(e: any) => (this.alwaysAllow = e.target.checked)}
+              >
+                Always allow ${request.tool_name} for
+                ${request.managed_agent_name || 'this agent'}
+              </sl-checkbox>`
+            : ''
+        }
         <div class="decision-buttons">
           <sl-button
             class="approve"
