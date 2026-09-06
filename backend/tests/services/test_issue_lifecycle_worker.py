@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -32,8 +33,66 @@ def test_connection_bound_worker_session_joins_caller(db_session: Session) -> No
         assert owned
         assert db.get_bind() is db_session.get_bind()
         assert isinstance(db.get_bind(), Connection)
+        assert db.join_transaction_mode == "rollback_only"
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_connection_bound_hook_writes_into_caller_transaction(
+    db_session: Session,
+) -> None:
+    """A joined worker leaves its rows in the caller transaction, uncommitted."""
+    fixture = _uncommitted_account(db_session)
+    name = f"lifecycle-joined-{uuid4()}"
+
+    @lifecycle_worker_hook
+    async def write(service: object, flow: object, event: dict, _nats: object) -> bool:
+        with lifecycle_worker_db(service, getattr(service, "db", None)) as db:
+            assert db.get_bind() is db_session.get_bind()
+            crud_account.create(
+                db,
+                obj_in={"organization_name": name, "is_active": True},
+                commit=False,
+            )
+            return db.get(models.Account, fixture.id) is not None
+
+    seen = await write(
+        SimpleNamespace(db=db_session),
+        SimpleNamespace(agent_config={}, account_id=uuid4()),
+        {"type": "push"},
+        None,
+    )
+    assert seen is True
+    written = db_session.scalar(
+        select(models.Account).where(models.Account.organization_name == name)
+    )
+    assert written is not None
+    assert db_session.get(models.Account, fixture.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_connection_bound_hook_failure_keeps_caller_transaction(
+    db_session: Session,
+) -> None:
+    """The joined session must not roll back: rollback_only takes the caller with it."""
+    fixture = _uncommitted_account(db_session)
+
+    @lifecycle_worker_hook
+    async def boom(service: object, flow: object, event: dict, _nats: object) -> None:
+        with lifecycle_worker_db(service, getattr(service, "db", None)) as db:
+            db.execute(select(models.Account.id).limit(1))
+            raise ValueError("lifecycle_worker_failed")
+
+    with pytest.raises(ValueError, match="lifecycle_worker_failed"):
+        await boom(
+            SimpleNamespace(db=db_session),
+            SimpleNamespace(agent_config={}, account_id=uuid4()),
+            {"type": "push"},
+            None,
+        )
+    assert db_session.get(models.Account, fixture.id) is not None
+    assert db_session.scalar(select(models.Account.id).limit(1)) is not None
 
 
 def test_engine_bound_worker_commit_survives_caller_close(
