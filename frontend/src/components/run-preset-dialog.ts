@@ -17,9 +17,10 @@ import {
 
 export interface RunPresetDialogOptions {
   presetSlug: RunPresetSlug;
-  target: RunPresetTarget;
+  target?: RunPresetTarget;
+  targets?: RunPresetTarget[];
   issueKey: string;
-  role?: 'implementer' | 'reviewer';
+  role?: 'implementer' | 'reviewer' | 'triage';
 }
 
 /**
@@ -37,7 +38,7 @@ export class RunPresetDialog extends LitElement {
   @state() private flowName = '';
   @state() private flowId = '';
   @state() private issueKey = '';
-  @state() private role: 'implementer' | 'reviewer' = 'implementer';
+  @state() private role: 'implementer' | 'reviewer' | 'triage' = 'implementer';
   @state() private modelAlert = false;
   @state() private errorMessage = '';
 
@@ -82,6 +83,7 @@ export class RunPresetDialog extends LitElement {
       const result = await runPresetOnTarget({
         preset_slug: options.presetSlug,
         target: options.target,
+        targets: options.targets,
         confirm_create: false,
       });
       this.flowName = result.flow_name;
@@ -125,14 +127,21 @@ export class RunPresetDialog extends LitElement {
     if (this.options?.presetSlug === 'pull-request-reviewer') {
       return 'Pull Request Reviewer';
     }
+    if (this.options?.presetSlug === 'issue-triage-assistant') {
+      return 'Issue Triage Assistant';
+    }
     return 'Automated Issue Implementation';
   }
 
   private titleText(): string {
     if (this.mode === 'create') {
-      return this.role === 'reviewer'
-        ? 'Create the reviewer flow?'
-        : 'Create the implementer flow?';
+      if (this.role === 'reviewer') {
+        return 'Create the reviewer flow?';
+      }
+      if (this.role === 'triage') {
+        return 'Create the triage flow?';
+      }
+      return 'Create the implementer flow?';
     }
     if (this.mode === 'disabled') {
       return `${this.flowName} is disabled`;
@@ -181,6 +190,7 @@ export class RunPresetDialog extends LitElement {
       const result = await runPresetOnTarget({
         preset_slug: this.options.presetSlug,
         target: this.options.target,
+        targets: this.options.targets,
         confirm_create: true,
       });
       this.close();

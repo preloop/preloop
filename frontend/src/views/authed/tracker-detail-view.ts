@@ -14,6 +14,7 @@ import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
+import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
 import {
@@ -118,6 +119,9 @@ export class TrackerDetailView extends LitElement {
   private _issuesError: string | null = null;
 
   @state()
+  private _selectedIssueIds: string[] = [];
+
+  @state()
   private _pullRequests: PullRequestListItem[] = [];
 
   @state()
@@ -134,6 +138,7 @@ export class TrackerDetailView extends LitElement {
 
   private _trackerId = '';
   private readonly _issuesPageSize = 20;
+  private readonly _triageBatchMax = 25;
   private _issuesRequestId = 0;
   private _issueSearchTimer: number | null = null;
   private readonly _prsPageSize = 20;
@@ -301,6 +306,10 @@ export class TrackerDetailView extends LitElement {
       .issues-controls sl-select,
       .issues-controls sl-input {
         min-width: 160px;
+      }
+
+      .select-col {
+        width: 2.5rem;
       }
 
       .issues-empty,
@@ -487,6 +496,7 @@ export class TrackerDetailView extends LitElement {
     if (reset) {
       this._issuesSkip = 0;
       this._issues = [];
+      this._selectedIssueIds = [];
     }
     this._issuesLoading = true;
     this._issuesError = null;
@@ -607,6 +617,47 @@ export class TrackerDetailView extends LitElement {
       target: { kind: 'issue', issue_id: issue.id },
       issueKey: issue.key,
       role: 'implementer',
+    });
+  }
+
+  private _selectedVisibleIssues(): IssueListItem[] {
+    const selected = new Set(this._selectedIssueIds);
+    return this._visibleIssues().filter((issue) => selected.has(issue.id));
+  }
+
+  private _toggleIssueSelection(issueId: string, checked: boolean) {
+    if (checked) {
+      if (this._selectedIssueIds.includes(issueId)) return;
+      if (this._selectedIssueIds.length >= this._triageBatchMax) return;
+      this._selectedIssueIds = [...this._selectedIssueIds, issueId];
+      return;
+    }
+    this._selectedIssueIds = this._selectedIssueIds.filter(
+      (id) => id !== issueId
+    );
+  }
+
+  private _toggleSelectVisible(checked: boolean) {
+    if (!checked) {
+      this._selectedIssueIds = [];
+      return;
+    }
+    const visibleIds = this._visibleIssues().map((issue) => issue.id);
+    this._selectedIssueIds = visibleIds.slice(0, this._triageBatchMax);
+  }
+
+  private _runTriageOnSelected() {
+    const selected = this._selectedVisibleIssues();
+    if (selected.length === 0) return;
+    void openRunPresetDialog({
+      presetSlug: 'issue-triage-assistant',
+      targets: selected.map((issue) => ({
+        kind: 'issue' as const,
+        issue_id: issue.id,
+      })),
+      issueKey:
+        selected.length === 1 ? selected[0].key : `${selected.length} issues`,
+      role: 'triage',
     });
   }
 
@@ -911,6 +962,19 @@ export class TrackerDetailView extends LitElement {
               value=${this._issueSearch}
               @sl-input=${this._onIssueSearch}
             ></sl-input>
+            <sl-button
+              size="small"
+              ?disabled=${this._selectedIssueIds.length === 0}
+              data-testid="run-triage-selected"
+              @click=${() => this._runTriageOnSelected()}
+            >
+              Run triage on selected
+              ${
+                this._selectedIssueIds.length
+                  ? html`(${this._selectedIssueIds.length})`
+                  : nothing
+              }
+            </sl-button>
           </div>
         </div>
         ${
@@ -942,6 +1006,36 @@ export class TrackerDetailView extends LitElement {
                     <table class="styled-table">
                       <thead>
                         <tr>
+                          <th class="select-col">
+                            <sl-checkbox
+                              ?checked=${
+                                this._visibleIssues().length > 0 &&
+                                this._selectedVisibleIssues().length ===
+                                  Math.min(
+                                    this._visibleIssues().length,
+                                    this._triageBatchMax
+                                  )
+                              }
+                              ?indeterminate=${
+                                this._selectedVisibleIssues().length > 0 &&
+                                this._selectedVisibleIssues().length <
+                                  Math.min(
+                                    this._visibleIssues().length,
+                                    this._triageBatchMax
+                                  )
+                              }
+                              @sl-change=${(event: Event) => {
+                                const checkbox = event.target as {
+                                  checked?: boolean;
+                                };
+                                this._toggleSelectVisible(
+                                  Boolean(checkbox.checked)
+                                );
+                              }}
+                            >
+                              <span class="visually-hidden">Select issues</span>
+                            </sl-checkbox>
+                          </th>
                           <th>Key</th>
                           <th>Title</th>
                           <th>Status</th>
@@ -955,6 +1049,33 @@ export class TrackerDetailView extends LitElement {
                         ${visible.map(
                           (issue) => html`
                             <tr>
+                              <td class="select-col">
+                                <sl-checkbox
+                                  ?checked=${this._selectedIssueIds.includes(
+                                    issue.id
+                                  )}
+                                  ?disabled=${
+                                    !this._selectedIssueIds.includes(
+                                      issue.id
+                                    ) &&
+                                    this._selectedIssueIds.length >=
+                                      this._triageBatchMax
+                                  }
+                                  @sl-change=${(event: Event) => {
+                                    const checkbox = event.target as {
+                                      checked?: boolean;
+                                    };
+                                    this._toggleIssueSelection(
+                                      issue.id,
+                                      Boolean(checkbox.checked)
+                                    );
+                                  }}
+                                >
+                                  <span class="visually-hidden"
+                                    >Select ${issue.key}</span
+                                  >
+                                </sl-checkbox>
+                              </td>
                               <td>
                                 <a
                                   href="/console/trackers/${this._trackerId}/issues/${issue.id}"

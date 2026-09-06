@@ -3065,7 +3065,9 @@ export async function triggerFlowExecution(
 }
 
 export type RunPresetSlug =
-  'automated-issue-implementation' | 'pull-request-reviewer';
+  | 'automated-issue-implementation'
+  | 'pull-request-reviewer'
+  | 'issue-triage-assistant';
 
 export interface RunPresetTarget {
   kind: 'issue' | 'pull_request';
@@ -3074,12 +3076,20 @@ export interface RunPresetTarget {
   number?: number;
 }
 
+export interface RunPresetItemResult {
+  issue_id: string;
+  execution_id?: string | null;
+  execution_url?: string | null;
+  error?: string | null;
+}
+
 export interface RunPresetResponse {
   execution_id: string | null;
   flow_id: string;
   flow_name: string;
   flow_created: boolean;
   execution_url: string | null;
+  results?: RunPresetItemResult[] | null;
 }
 
 export class RunPresetError extends Error {
@@ -3104,17 +3114,28 @@ export class RunPresetError extends Error {
 
 export async function runPresetOnTarget(body: {
   preset_slug: RunPresetSlug;
-  target: RunPresetTarget;
+  target?: RunPresetTarget;
+  targets?: RunPresetTarget[];
   confirm_create?: boolean;
 }): Promise<RunPresetResponse> {
+  const payload: {
+    preset_slug: RunPresetSlug;
+    target?: RunPresetTarget;
+    targets?: RunPresetTarget[];
+    confirm_create: boolean;
+  } = {
+    preset_slug: body.preset_slug,
+    confirm_create: body.confirm_create ?? false,
+  };
+  if (body.targets) {
+    payload.targets = body.targets;
+  } else {
+    payload.target = body.target;
+  }
   const response = await fetchWithAuth('/api/v1/flows/run-preset', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      preset_slug: body.preset_slug,
-      target: body.target,
-      confirm_create: body.confirm_create ?? false,
-    }),
+    body: JSON.stringify(payload),
   });
   if (response.ok) {
     return response.json();

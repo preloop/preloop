@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from preloop.services.preset_runner import (
     IMPLEMENTER_SLUG,
     REVIEWER_SLUG,
+    TRIAGE_SLUG,
     PresetRunnerError,
     _load_visible_issue,
     build_issue_trigger_payload,
@@ -274,6 +275,7 @@ def _github_issue_payload(*, tracker_url: str = "https://github.com") -> dict:
     issue.title = "Broken search"
     issue.description = "Search returns 500"
     issue.status = "open"
+    issue.updated_at = None
     issue.meta_data = {
         "url": "https://github.com/example/repo/issues/42",
         "assignees": [{"name": "janedoe"}],
@@ -302,6 +304,7 @@ def _gitlab_issue_payload() -> dict:
     issue.title = "Fix login"
     issue.description = "Login 401"
     issue.status = "opened"
+    issue.updated_at = None
     issue.meta_data = {"url": "https://gitlab.example.com/group/project2/-/issues/7"}
     issue.external_url = None
     project = MagicMock()
@@ -336,6 +339,8 @@ async def test_github_issue_payload_resolves_object_attributes():
     assert int(number) == 42
     assert url == "https://github.com/example/repo/issues/42"
     assert event["payload"]["issue"]["user"]["login"] == "janedoe"
+    assert event["payload"]["issue"]["labels"] == ["bug"]
+    assert event["payload"]["issue"]["updated_at"] is None
 
 
 def test_jira_issue_payload_is_rejected():
@@ -349,6 +354,38 @@ def test_jira_issue_payload_is_rejected():
     assert "GitHub and GitLab" in str(exc.value.detail)
 
 
+def test_jira_triage_payload_uses_object_attributes():
+    issue = MagicMock()
+    issue.external_id = "10001"
+    issue.key = "ALP-9"
+    issue.title = "Broken search"
+    issue.description = "Search returns 500"
+    issue.status = "open"
+    issue.updated_at = "2026-01-04T00:00:00Z"
+    issue.meta_data = {
+        "url": "https://jira.example.com/browse/ALP-9",
+        "labels": ["bug"],
+    }
+    issue.external_url = None
+    project = MagicMock()
+    project.id = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    project.name = "Alpha"
+    project.slug = "alpha"
+    project.identifier = "ALP"
+    project.settings = {}
+    project.meta_data = {}
+    tracker = MagicMock()
+    tracker.id = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+    tracker.account_id = uuid.UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+    tracker.tracker_type = "jira"
+    tracker.url = "https://jira.example.com"
+    event = build_issue_trigger_payload(issue, project, tracker, git_only=False)
+    assert event["source"] == "jira"
+    assert event["payload"]["object_attributes"]["title"] == "Broken search"
+    assert event["payload"]["object_attributes"]["labels"] == ["bug"]
+    assert event["payload"]["object_attributes"]["updated_at"] == "2026-01-04T00:00:00Z"
+
+
 @pytest.mark.asyncio
 async def test_gitlab_issue_payload_number_alias():
     event = _gitlab_issue_payload()
@@ -357,6 +394,7 @@ async def test_gitlab_issue_payload_number_alias():
     attrs = normalized["payload"]["object_attributes"]
     assert attrs["iid"] == 7
     assert attrs["number"] == 7
+    assert attrs["labels"] == []
     context = ResolverContext(
         db=MagicMock(),
         trigger_event_data=event,
@@ -742,3 +780,138 @@ async def test_run_preset_on_pull_request_500_when_trigger_omits_execution_id() 
 
     assert exc.value.status_code == 500
     assert "execution id" in str(exc.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_reviewer_slug_still_rejected_on_issue_target() -> None:
+    user = _user(uuid.uuid4())
+    target = _Simple(kind="issue", issue_id=uuid.uuid4())
+    with pytest.raises(PresetRunnerError) as exc:
+        await run_preset_on_target(
+            MagicMock(),
+            current_user=user,
+            preset_slug=REVIEWER_SLUG,
+            target=target,
+            confirm_create=False,
+            triggered_by="Jane Doe",
+        )
+    assert exc.value.status_code == 400
+    assert "issue" in str(exc.value.detail).lower()
+
+
+@pytest.mark.asyncio
+async def test_implementer_batch_targets_rejected() -> None:
+    user = _user(uuid.uuid4())
+    targets = [
+        _Simple(kind="issue", issue_id=uuid.uuid4()),
+        _Simple(kind="issue", issue_id=uuid.uuid4()),
+    ]
+    with pytest.raises(PresetRunnerError) as exc:
+        await run_preset_on_target(
+            MagicMock(),
+            current_user=user,
+            preset_slug=IMPLEMENTER_SLUG,
+            targets=targets,
+            confirm_create=False,
+            triggered_by="Jane Doe",
+        )
+    assert exc.value.status_code == 400
+    assert "issue-triage-assistant" in str(exc.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_triage_batch_dedupes_and_returns_per_item_errors() -> None:
+    account_id = uuid.uuid4()
+    good_id = uuid.uuid4()
+    missing_id = uuid.uuid4()
+    flow = _account_flow(name="Issue Triage Assistant")
+    user = _user(account_id)
+    issue = MagicMock()
+    issue.external_id = "42"
+    issue.key = "example/repo#42"
+    issue.title = "Broken search"
+    issue.description = "Search returns 500"
+    issue.status = "open"
+    issue.updated_at = None
+    issue.meta_data = {"url": "https://github.com/example/repo/issues/42", "labels": []}
+    issue.external_url = None
+    project, tracker = _github_project_tracker()
+    trigger = AsyncMock(return_value={"id": str(uuid.uuid4())})
+
+    def _load(_db, *, issue_id, account_id):  # noqa: ARG001
+        if issue_id == good_id:
+            return issue, project, tracker
+        raise PresetRunnerError(404, "Issue not found")
+
+    with (
+        patch(
+            "preloop.services.preset_runner._load_visible_issue",
+            side_effect=_load,
+        ),
+        patch(
+            "preloop.services.preset_runner.resolve_or_create_flow",
+            return_value=(flow, False),
+        ),
+        patch(
+            "preloop.services.flow_trigger_service.FlowTriggerService.trigger_flow",
+            trigger,
+        ),
+    ):
+        probe = await run_preset_on_target(
+            MagicMock(),
+            current_user=user,
+            preset_slug=TRIAGE_SLUG,
+            targets=[
+                _Simple(kind="issue", issue_id=good_id),
+                _Simple(kind="issue", issue_id=good_id),
+                _Simple(kind="issue", issue_id=missing_id),
+            ],
+            confirm_create=False,
+            triggered_by="Jane Doe",
+        )
+        assert probe["execution_id"] is None
+        assert [item["issue_id"] for item in probe["results"]] == [
+            str(good_id),
+            str(missing_id),
+        ]
+        trigger.assert_not_awaited()
+
+        confirmed = await run_preset_on_target(
+            MagicMock(),
+            current_user=user,
+            preset_slug=TRIAGE_SLUG,
+            targets=[
+                _Simple(kind="issue", issue_id=good_id),
+                _Simple(kind="issue", issue_id=good_id),
+                _Simple(kind="issue", issue_id=missing_id),
+            ],
+            confirm_create=True,
+            triggered_by="Jane Doe",
+        )
+
+    trigger.assert_awaited_once()
+    assert trigger.await_args.kwargs["test_mode"] is False
+    by_id = {item["issue_id"]: item for item in confirmed["results"]}
+    assert by_id[str(good_id)]["execution_id"] is not None
+    assert by_id[str(missing_id)]["error"] == "Issue not found"
+    assert confirmed["execution_id"] == by_id[str(good_id)]["execution_id"]
+
+
+def test_run_preset_request_requires_exactly_one_of_target_or_targets() -> None:
+    from pydantic import ValidationError
+
+    from preloop.models.schemas.flow import RunPresetRequest, RunPresetTarget
+
+    issue_id = uuid.uuid4()
+    target = RunPresetTarget(kind="issue", issue_id=issue_id)
+    with pytest.raises(ValidationError):
+        RunPresetRequest(preset_slug=TRIAGE_SLUG)
+    with pytest.raises(ValidationError):
+        RunPresetRequest(preset_slug=TRIAGE_SLUG, target=target, targets=[target])
+    with pytest.raises(ValidationError):
+        RunPresetRequest(preset_slug=TRIAGE_SLUG, targets=[])
+    too_many = [RunPresetTarget(kind="issue", issue_id=uuid.uuid4()) for _ in range(26)]
+    with pytest.raises(ValidationError):
+        RunPresetRequest(preset_slug=TRIAGE_SLUG, targets=too_many)
+    ok = RunPresetRequest(preset_slug=TRIAGE_SLUG, target=target)
+    assert ok.targets is None

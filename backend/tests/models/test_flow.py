@@ -260,3 +260,64 @@ def test_get_by_trigger_with_account_id(db_session: Session, create_account) -> 
     assert len(flows) >= 1
     flow_ids = [f.id for f in flows]
     assert created_flow.id in flow_ids
+
+
+def test_get_by_trigger_matches_legacy_dotted_issue_opened(
+    db_session: Session, create_account
+) -> None:
+    """Clones that still store issue.opened must match issue_opened events."""
+    account: Account = create_account()
+    flow_in = FlowCreate(
+        name=f"Legacy Triage {uuid4()}",
+        trigger_event_source="github",
+        trigger_event_types=["issue.opened"],
+        prompt_template="Triage",
+        agent_type="codex",
+        agent_config={},
+        account_id=account.id,
+    )
+    created_flow = crud_flow.create(
+        db=db_session, flow_in=flow_in, account_id=account.id
+    )
+
+    flows = crud_flow.get_by_trigger(
+        db=db_session,
+        event_source="github",
+        event_type="issue_opened",
+        account_id=account.id,
+    )
+    flow_ids = [item.id for item in flows]
+    assert created_flow.id in flow_ids
+
+
+def test_get_by_trigger_matches_canonical_issue_opened(
+    db_session: Session, create_account
+) -> None:
+    account: Account = create_account()
+    flow_in = FlowCreate(
+        name=f"Canonical Triage {uuid4()}",
+        trigger_event_source="github",
+        trigger_event_types=["issue_opened", "issue_updated"],
+        prompt_template="Triage",
+        agent_type="codex",
+        agent_config={},
+        account_id=account.id,
+    )
+    created_flow = crud_flow.create(
+        db=db_session, flow_in=flow_in, account_id=account.id
+    )
+
+    opened = crud_flow.get_by_trigger(
+        db=db_session,
+        event_source="github",
+        event_type="issue_opened",
+        account_id=account.id,
+    )
+    updated = crud_flow.get_by_trigger(
+        db=db_session,
+        event_source="github",
+        event_type="issue_updated",
+        account_id=account.id,
+    )
+    assert created_flow.id in [item.id for item in opened]
+    assert created_flow.id in [item.id for item in updated]

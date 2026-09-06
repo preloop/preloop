@@ -142,6 +142,16 @@ export class TrackerIssueView extends LitElement {
     });
   }
 
+  private _runTriage() {
+    if (!this._issue) return;
+    void openRunPresetDialog({
+      presetSlug: 'issue-triage-assistant',
+      target: { kind: 'issue', issue_id: this._issue.id },
+      issueKey: this._issue.key,
+      role: 'triage',
+    });
+  }
+
   private _similarIssuesHref(): string {
     const projectId = this._issue?.project_id || '';
     const shortId = projectId.split('-')[0];
@@ -216,6 +226,9 @@ export class TrackerIssueView extends LitElement {
           <span>${issue.key}</span>
         </div>
         <div slot="main-column" class="header-actions">
+          <sl-button size="small" @click=${() => this._runTriage()}>
+            Run triage
+          </sl-button>
           ${
             this._isGitTracker()
               ? html`

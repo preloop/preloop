@@ -191,4 +191,48 @@ describe('RunPresetDialog', () => {
     expect(models).to.exist;
     expect(models?.textContent).to.contain('Models');
   });
+
+  it('batch triage probe posts targets and uses triage copy', async () => {
+    const bodies: unknown[] = [];
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input, init) => {
+      const url = String(input);
+      if (!url.includes('/api/v1/flows/run-preset')) {
+        return new Response('{}', { status: 200 });
+      }
+      const parsed = JSON.parse(String(init?.body || '{}'));
+      bodies.push(parsed);
+      return new Response(
+        JSON.stringify({
+          execution_id: null,
+          flow_id: 'flow-1',
+          flow_name: 'Issue Triage Assistant',
+          flow_created: false,
+          execution_url: null,
+        }),
+        { status: 200 }
+      );
+    });
+
+    await openRunPresetDialog({
+      presetSlug: 'issue-triage-assistant',
+      targets: [
+        { kind: 'issue', issue_id: issueId },
+        { kind: 'issue', issue_id: '33333333-3333-3333-3333-333333333333' },
+      ],
+      issueKey: '2 issues',
+      role: 'triage',
+    });
+    const element = dialogElement();
+    await element.updateComplete;
+    const dialog = element.shadowRoot?.querySelector('sl-dialog');
+    expect(dialog?.getAttribute('label')).to.equal(
+      'Run Issue Triage Assistant on 2 issues?'
+    );
+    expect(bodies[0]).to.deep.include({
+      preset_slug: 'issue-triage-assistant',
+      confirm_create: false,
+    });
+    expect((bodies[0] as { targets: unknown }).targets).to.have.length(2);
+    expect((bodies[0] as { target?: unknown }).target).to.equal(undefined);
+  });
 });

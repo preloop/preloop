@@ -13,6 +13,26 @@ from typing import Dict, Any, List, Optional, Tuple
 from preloop.models.models.flow_execution import TRIGGER_SUBJECT_KEY
 from preloop.utils.schedule_text import describe_schedule_config
 
+# Older Issue Triage clones stored GitHub-style dotted names while webhook
+# normalization emits underscore names. Matching must accept both.
+EVENT_TYPE_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "issue_opened": ("issue.opened",),
+    "issue_updated": ("issue.updated",),
+}
+
+
+def matching_event_types(event_type: str) -> Tuple[str, ...]:
+    """Return the canonical event type plus legacy aliases that should match.
+
+    Args:
+        event_type: Normalized event type from ``normalize_event_type``.
+
+    Returns:
+        Canonical name first, then any dotted aliases.
+    """
+    extra = EVENT_TYPE_ALIASES.get(event_type, ())
+    return (event_type, *extra)
+
 
 def gitlab_label_delta(payload: Optional[dict]) -> Tuple[List[str], List[str]]:
     """Return (added, removed) label titles from a GitLab issue/MR webhook.

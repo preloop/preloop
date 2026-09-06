@@ -91,6 +91,7 @@ describe('TrackerIssueView', () => {
     expect(link).to.exist;
     expect(link?.textContent).to.contain('Open in GitHub');
     expect(el.shadowRoot?.textContent).to.contain('Run implementer');
+    expect(el.shadowRoot?.textContent).to.contain('Run triage');
 
     const mapped = (
       el as unknown as { _toIssue: (item: IssueListItem) => Issue }
@@ -170,6 +171,7 @@ describe('TrackerIssueView', () => {
     await tick(50);
 
     expect(el.shadowRoot?.textContent).to.not.contain('Run implementer');
+    expect(el.shadowRoot?.textContent).to.contain('Run triage');
   });
 
   it('falls back to Open in tracker when the tracker fetch fails', async () => {

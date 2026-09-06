@@ -2718,3 +2718,58 @@ def test_run_preset_pull_request_target_400(
 
     assert exc_info.value.status_code == 400
     assert "pull request" in str(exc_info.value.detail).lower()
+
+
+def test_run_preset_reviewer_on_issue_400(mock_account: Account, mocker: MockerFixture):
+    issue_id = uuid.uuid4()
+    mocker.patch(
+        "preloop.services.preset_runner._load_visible_issue",
+        return_value=(MagicMock(), MagicMock(), MagicMock()),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        flows.run_preset(
+            db=MagicMock(),
+            current_user=mock_account,
+            body=_run_preset_body(issue_id, slug="pull-request-reviewer"),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "issue" in str(exc_info.value.detail).lower()
+
+
+def test_run_preset_triage_batch_forwards_targets(
+    mock_account: Account, mocker: MockerFixture
+):
+    first = uuid.uuid4()
+    second = uuid.uuid4()
+    flow_id = uuid.uuid4()
+    mocker.patch(
+        "preloop.services.preset_runner.run_preset_on_target",
+        new=mocker.AsyncMock(
+            return_value={
+                "execution_id": "exec-1",
+                "flow_id": str(flow_id),
+                "flow_name": "Issue Triage Assistant",
+                "flow_created": False,
+                "execution_url": "/console/flows/executions/exec-1",
+                "results": [
+                    {"issue_id": str(first), "execution_id": "exec-1"},
+                    {"issue_id": str(second), "error": "Issue not found"},
+                ],
+            }
+        ),
+    )
+    body = schemas.RunPresetRequest(
+        preset_slug="issue-triage-assistant",
+        targets=[
+            schemas.RunPresetTarget(kind="issue", issue_id=first),
+            schemas.RunPresetTarget(kind="issue", issue_id=second),
+        ],
+        confirm_create=True,
+    )
+    result = flows.run_preset(db=MagicMock(), current_user=mock_account, body=body)
+    assert result.flow_name == "Issue Triage Assistant"
+    assert result.results is not None
+    assert len(result.results) == 2
+    assert result.results[1].error == "Issue not found"
