@@ -258,9 +258,9 @@ describe('AttentionView', () => {
     expect(approvals.querySelector('sl-badge')!.textContent!.trim()).to.equal(
       '1'
     );
-    expect(approvals.querySelector('sl-button')!.getAttribute('href')).to.equal(
-      '/console/approval/approval-1'
-    );
+    expect(
+      approvals.querySelector('.row-action')!.getAttribute('href')
+    ).to.equal('/console/approval/approval-1');
 
     const flows = el.shadowRoot!.querySelector('#flows')!;
     expect(flows.textContent).to.contain('Refund Assistant');
@@ -287,6 +287,124 @@ describe('AttentionView', () => {
     const detail = el.shadowRoot!.querySelector('#approvals .row-detail')!;
     expect(detail.textContent!.trim()).to.equal('Claude Code · pending 7w');
     expect(detail.getAttribute('title')).to.not.be.null;
+  });
+
+  it('approves an approval from its row', async () => {
+    const el = await mount();
+
+    const approve = el.shadowRoot!.querySelector(
+      '#approvals .row-approve'
+    ) as HTMLElement;
+    expect(approve, 'expected an Approve on the row').to.exist;
+    approvalsResponse = [];
+    approve.click();
+
+    await waitUntil(
+      () =>
+        fetchStub
+          .getCalls()
+          .some((call) =>
+            String(call.args[0]).includes(
+              '/api/v1/approval-requests/approval-1/approve'
+            )
+          ),
+      'no approve call'
+    );
+    await waitUntil(
+      () => !el.shadowRoot!.querySelector('#approvals'),
+      'the decided row stayed on the page'
+    );
+  });
+
+  it('confirms before it denies from the row', async () => {
+    const el = await mount();
+
+    const deny = el.shadowRoot!.querySelector(
+      '#approvals .row-deny'
+    ) as HTMLElement;
+    expect(deny.getAttribute('variant')).to.equal('danger');
+    expect(deny.hasAttribute('outline'), 'Deny must be outline').to.be.true;
+    deny.click();
+
+    await waitUntil(
+      () => !!document.querySelector('confirm-dialog'),
+      'no confirm dialog'
+    );
+    const declined = () =>
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('/decline'));
+    expect(declined(), 'denied without confirming').to.be.false;
+
+    (
+      document
+        .querySelector('confirm-dialog')!
+        .shadowRoot!.querySelector(
+          '[data-testid="confirm-dialog-confirm"]'
+        ) as HTMLElement
+    ).click();
+    await waitUntil(declined, 'no decline call');
+    resetConfirmDialogForTests();
+  });
+
+  it('sends a question to its detail page instead of a yes or no', async () => {
+    approvalsResponse = [
+      {
+        id: 'approval-q',
+        tool_name: 'ask_user',
+        summary: 'Which branch?',
+        is_question: true,
+        status: 'pending',
+        requested_at: new Date(Date.now() - 60_000).toISOString(),
+      },
+    ];
+    const el = await mount();
+
+    expect(el.shadowRoot!.querySelector('#approvals .row-approve')).to.not
+      .exist;
+    expect(
+      el
+        .shadowRoot!.querySelector('#approvals .row-action')!
+        .getAttribute('href')
+    ).to.equal('/console/approval/approval-q');
+  });
+
+  it('shows how long is left to decide, soonest deadline first', async () => {
+    const inMinutes = (minutes: number) =>
+      new Date(Date.now() + minutes * 60_000).toISOString();
+    approvalsResponse = [
+      {
+        id: 'later',
+        tool_name: 'later_tool',
+        status: 'pending',
+        requested_at: new Date(Date.now() - 60_000).toISOString(),
+        expires_at: inMinutes(120),
+      },
+      {
+        id: 'soonest',
+        tool_name: 'soonest_tool',
+        status: 'pending',
+        requested_at: new Date(Date.now() - 600_000).toISOString(),
+        expires_at: inMinutes(9),
+      },
+    ];
+    const el = await mount();
+
+    const rows = Array.from(
+      el.shadowRoot!.querySelectorAll('#approvals .attention-row')
+    );
+    expect(rows.map((row) => row.getAttribute('data-item-id'))).to.eql([
+      'approval:soonest',
+      'approval:later',
+    ]);
+    const chip = rows[0].querySelector('.expiry-chip')!;
+    expect(chip.textContent!.replace(/\s+/g, ' ').trim()).to.equal(
+      'expires in 9m'
+    );
+    expect(chip.getAttribute('variant')).to.equal('warning');
+    expect(
+      rows[1].querySelector('.expiry-chip')!.getAttribute('variant')
+    ).to.equal('neutral');
   });
 
   it('shows one row per flow with the failure count', async () => {

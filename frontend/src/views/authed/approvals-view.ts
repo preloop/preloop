@@ -1,5 +1,6 @@
 import { html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
+import { Router } from '@vaadin/router';
 import { AuthedElement, approveRequest, declineRequest } from '../../api';
 import type { ApprovalRequest } from '../../types';
 import '../../components/question-answer-panel';
@@ -37,6 +38,16 @@ import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import '@shoelace-style/shoelace/dist/components/progress-bar/progress-bar.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
+
+/**
+ * Ids the operator has already had on screen, so a request that arrived since
+ * the last visit can carry a "new" dot. Client-side on purpose: the record has
+ * no `viewed_at` column, and a per-browser memory is honest about that.
+ */
+const SEEN_STORAGE_KEY = 'preloop.approvals.seen';
+
+/** Cap on the stored seen set, so the key cannot grow without bound. */
+const SEEN_STORAGE_LIMIT = 500;
 
 interface ApprovalStats {
   total: number;
@@ -112,6 +123,27 @@ export class ApprovalsView extends AuthedElement {
   @state()
   private nowMs = Date.now();
 
+  /**
+   * Which row the keyboard is on, as an index into `navigableRequests`. -1
+   * means the keyboard has not been used yet, so no row steals the tab stop.
+   */
+  @state()
+  private focusedIndex = -1;
+
+  /** Rows picked with X. Bulk actions land in a later slice (E6). */
+  @state()
+  private selectedIds: string[] = [];
+
+  /** Waiting rows the operator had not seen when the page loaded. */
+  @state()
+  private newIds: string[] = [];
+
+  /** True while a deny confirmation is open, so A cannot fire behind it. */
+  private confirming = false;
+
+  /** Set when the focused row must be focused after the next render. */
+  private pendingFocus = false;
+
   private unsubscribe?: () => void;
   private tickTimer?: ReturnType<typeof setInterval>;
 
@@ -165,6 +197,31 @@ export class ApprovalsView extends AuthedElement {
         border: 1px solid var(--sl-color-neutral-200);
         border-radius: var(--sl-border-radius-medium);
         transition: all 0.2s ease;
+      }
+
+      /* The keyboard row: a ring you can see, and a tint when picked. */
+      .approval-item:focus {
+        outline: 2px solid var(--sl-color-primary-500);
+        outline-offset: 2px;
+      }
+
+      .approval-item.selected {
+        background: var(--sl-color-primary-50);
+        border-color: var(--sl-color-primary-300);
+      }
+
+      .key-legend {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-500);
+        margin-left: auto;
+      }
+
+      .new-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--sl-color-primary-600);
+        flex-shrink: 0;
       }
 
       .approval-row {
@@ -332,14 +389,20 @@ export class ApprovalsView extends AuthedElement {
     `,
   ];
 
+  /** Bound once so the host listener can be removed on disconnect. */
+  private readonly onKeyDown = (event: KeyboardEvent) =>
+    this.handleKeyDown(event);
+
   async connectedCallback() {
     super.connectedCallback();
+    this.addEventListener('keydown', this.onKeyDown);
     await this.loadApprovalRequests();
     this.connectWebSocket();
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.removeEventListener('keydown', this.onKeyDown);
     this.unsubscribe?.();
     this.stopTicking();
   }
@@ -366,6 +429,138 @@ export class ApprovalsView extends AuthedElement {
     } else {
       this.stopTicking();
     }
+  }
+
+  /** Waiting rows first, then history: the order the keyboard walks. */
+  private get navigableRequests(): ApprovalRequest[] {
+    return [...this.waitingRequests, ...this.historyRequests];
+  }
+
+  /** Ids of requests this browser has already shown, oldest dropped first. */
+  private readSeenIds(): string[] {
+    try {
+      const raw = window.localStorage.getItem(SEEN_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? parsed.filter((id): id is string => typeof id === 'string')
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private writeSeenIds(ids: string[]) {
+    try {
+      window.localStorage.setItem(
+        SEEN_STORAGE_KEY,
+        JSON.stringify(ids.slice(-SEEN_STORAGE_LIMIT))
+      );
+    } catch {
+      // A blocked or full storage only costs the dot, never the list.
+    }
+  }
+
+  /**
+   * Mark which waiting rows arrived since the last visit, then record every
+   * waiting row as seen so the dot clears on the next load.
+   */
+  private markNewSinceLastVisit() {
+    const seen = new Set(this.readSeenIds());
+    const waitingIds = this.waitingRequests.map((request) => request.id);
+    this.newIds = waitingIds.filter((id) => !seen.has(id));
+    if (this.newIds.length === 0) return;
+    this.writeSeenIds([...seen, ...this.newIds]);
+  }
+
+  /**
+   * Keys are handled on the host so a focused row, the list, or the page
+   * itself all reach the same handler. Typing in a filter is left alone.
+   */
+  private handleKeyDown(event: KeyboardEvent) {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const path = event.composedPath();
+    const typing = path.some((node) => {
+      const tag = (node as HTMLElement)?.tagName?.toLowerCase();
+      return (
+        tag === 'input' ||
+        tag === 'textarea' ||
+        tag === 'sl-input' ||
+        tag === 'sl-textarea' ||
+        tag === 'sl-select' ||
+        (node as HTMLElement)?.isContentEditable === true
+      );
+    });
+    if (typing) return;
+
+    const requests = this.navigableRequests;
+    if (requests.length === 0) return;
+    const key = event.key;
+
+    if (key === 'j' || key === 'J' || key === 'ArrowDown') {
+      event.preventDefault();
+      this.moveFocus(1);
+      return;
+    }
+    if (key === 'k' || key === 'K' || key === 'ArrowUp') {
+      event.preventDefault();
+      this.moveFocus(-1);
+      return;
+    }
+
+    const focused = requests[this.focusedIndex];
+    if (!focused) return;
+
+    if (key === 'Enter') {
+      event.preventDefault();
+      Router.go(`/console/approval/${focused.id}`);
+      return;
+    }
+    if (key === 'x' || key === 'X') {
+      event.preventDefault();
+      this.toggleSelection(focused.id);
+      return;
+    }
+    if (key === 'a' || key === 'A') {
+      if (!this.canDecide(focused)) return;
+      event.preventDefault();
+      void this.handleRowApprove(focused);
+      return;
+    }
+    if (key === 'd' || key === 'D') {
+      if (!this.canDecide(focused)) return;
+      event.preventDefault();
+      void this.handleRowDeny(focused);
+    }
+  }
+
+  /** Only waiting, non-question rows can be decided from the keyboard. */
+  private canDecide(request: ApprovalRequest): boolean {
+    if (this.confirming) return false;
+    if (this.isQuestion(request)) return false;
+    return this.waitingRequests.some((waiting) => waiting.id === request.id);
+  }
+
+  private moveFocus(delta: number) {
+    const last = this.navigableRequests.length - 1;
+    const next = this.focusedIndex < 0 ? 0 : this.focusedIndex + delta;
+    this.focusedIndex = Math.min(Math.max(next, 0), last);
+    this.pendingFocus = true;
+  }
+
+  private toggleSelection(id: string) {
+    this.selectedIds = this.selectedIds.includes(id)
+      ? this.selectedIds.filter((selected) => selected !== id)
+      : [...this.selectedIds, id];
+  }
+
+  protected updated() {
+    if (!this.pendingFocus) return;
+    this.pendingFocus = false;
+    const row = this.renderRoot.querySelector<HTMLElement>(
+      `.approval-item[data-index="${this.focusedIndex}"]`
+    );
+    row?.focus();
   }
 
   private connectWebSocket() {
@@ -462,6 +657,7 @@ export class ApprovalsView extends AuthedElement {
               parseUTCDate(a.requested_at).getTime()
           );
         this.applyFilters();
+        this.markNewSinceLastVisit();
         this.calculateStats();
       }
     } catch (error) {
@@ -720,6 +916,7 @@ export class ApprovalsView extends AuthedElement {
   /** Denying stops the agent, so it confirms first (DESIGN.md destructive). */
   private async handleRowDeny(request: ApprovalRequest) {
     if (!this.ensureStillWaiting(request)) return;
+    this.confirming = true;
     const confirmed = await confirmDialog({
       title: 'Deny this request?',
       message: `${request.tool_name} will not run.`,
@@ -730,6 +927,7 @@ export class ApprovalsView extends AuthedElement {
       confirmLabel: 'Deny',
       variant: 'danger',
     });
+    this.confirming = false;
     if (!confirmed) return;
     if (!this.ensureStillWaiting(request)) return;
     this.decidingId = request.id;
@@ -983,9 +1181,15 @@ export class ApprovalsView extends AuthedElement {
                   ${this.renderGroup(
                     'Waiting for you',
                     this.waitingRequests,
-                    true
+                    true,
+                    0
                   )}
-                  ${this.renderGroup('History', this.historyRequests, false)}
+                  ${this.renderGroup(
+                    'History',
+                    this.historyRequests,
+                    false,
+                    this.waitingRequests.length
+                  )}
                 `
           }
         </div>
@@ -1000,7 +1204,8 @@ export class ApprovalsView extends AuthedElement {
   private renderGroup(
     title: string,
     requests: ApprovalRequest[],
-    waiting: boolean
+    waiting: boolean,
+    indexOffset: number
   ) {
     if (requests.length === 0) return '';
     return html`
@@ -1014,24 +1219,58 @@ export class ApprovalsView extends AuthedElement {
           >
             ${requests.length}
           </sl-badge>
+          ${
+            waiting
+              ? html`<span class="key-legend"
+                  >J and K move · A approve · D deny · X select · Enter
+                  opens</span
+                >`
+              : ''
+          }
         </div>
-        <div class="approval-list">
-          ${requests.map((request) => this.renderRequest(request, waiting))}
+        <div class="approval-list" role="grid" aria-label=${title}>
+          ${requests.map((request, index) =>
+            this.renderRequest(request, waiting, indexOffset + index)
+          )}
         </div>
       </div>
     `;
   }
 
-  private renderRequest(request: ApprovalRequest, waiting: boolean) {
+  private renderRequest(
+    request: ApprovalRequest,
+    waiting: boolean,
+    index: number
+  ) {
+    const focused = this.focusedIndex === index;
+    const selected = this.selectedIds.includes(request.id);
+    const isNew = waiting && this.newIds.includes(request.id);
     return html`
       <div
         class="approval-item ${request.status} ${
           this.isQuestion(request) ? 'question' : ''
-        }"
+        } ${selected ? 'selected' : ''}"
+        role="row"
+        data-index=${index}
+        data-request-id=${request.id}
+        aria-selected=${selected ? 'true' : 'false'}
+        tabindex=${focused || (this.focusedIndex < 0 && index === 0) ? 0 : -1}
+        @focus=${() => {
+          this.focusedIndex = index;
+        }}
       >
-        <div class="approval-row">
+        <div class="approval-row" role="gridcell">
           <div class="approval-info">
             <div class="approval-tool">
+              ${
+                isNew
+                  ? html`<span
+                      class="new-dot"
+                      title="Arrived since your last visit"
+                      aria-label="New since your last visit"
+                    ></span>`
+                  : ''
+              }
               <sl-icon
                 name=${this.isQuestion(request) ? 'chat-left-quote' : 'tools'}
               ></sl-icon>
@@ -1217,21 +1456,25 @@ export class ApprovalsView extends AuthedElement {
         ${
           this.isQuestion(request) && waiting
             ? html`
-                <question-answer-panel
-                  compact
-                  .question=${this.questionText(request)}
-                  .options=${request.question_options ?? []}
-                  .allowFreeText=${request.allow_free_text === true}
-                  .submitting=${this.answeringId === request.id}
-                  @question-answer=${(e: CustomEvent<QuestionAnswerDetail>) =>
-                    this.handleQuestionAnswer(request, e)}
-                  @question-dismiss=${() => this.handleQuestionDismiss(request)}
-                ></question-answer-panel>
-                ${
-                  this.answerError
-                    ? html`<div class="answer-error">${this.answerError}</div>`
-                    : ''
-                }
+                <div role="gridcell">
+                  <question-answer-panel
+                    compact
+                    .question=${this.questionText(request)}
+                    .options=${request.question_options ?? []}
+                    .allowFreeText=${request.allow_free_text === true}
+                    .submitting=${this.answeringId === request.id}
+                    @question-answer=${(e: CustomEvent<QuestionAnswerDetail>) =>
+                      this.handleQuestionAnswer(request, e)}
+                    @question-dismiss=${() => this.handleQuestionDismiss(request)}
+                  ></question-answer-panel>
+                  ${
+                    this.answerError
+                      ? html`<div class="answer-error">
+                          ${this.answerError}
+                        </div>`
+                      : ''
+                  }
+                </div>
               `
             : ''
         }

@@ -1,4 +1,5 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import { Router } from '@vaadin/router';
 import sinon from 'sinon';
 
 import '../../components/view-header.ts';
@@ -346,6 +347,155 @@ describe('ApprovalsView', () => {
     const urls = fetchStub.getCalls().map((c) => String(c.args[0]));
     expect(urls.some((u) => u.includes('/api/v1/approval-requests'))).to.be
       .true;
+  });
+
+  describe('keyboard', () => {
+    function press(element: ApprovalsView, key: string) {
+      element.dispatchEvent(
+        new KeyboardEvent('keydown', { key, bubbles: true, composed: true })
+      );
+      return element.updateComplete;
+    }
+
+    function rows(element: ApprovalsView) {
+      return Array.from(
+        element.shadowRoot?.querySelectorAll('.approval-item') ?? []
+      ) as HTMLElement[];
+    }
+
+    it('moves the focused row with j and k', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'first', expires_at: inMinutes(3) }),
+        baseRequest({ id: 'second', expires_at: inMinutes(30) }),
+      ]);
+
+      await press(element, 'j');
+      expect((element as any).focusedIndex).to.equal(0);
+      await press(element, 'j');
+      expect((element as any).focusedIndex).to.equal(1);
+      expect(rows(element)[1].getAttribute('tabindex')).to.equal('0');
+
+      await press(element, 'k');
+      expect((element as any).focusedIndex).to.equal(0);
+
+      // k on the first row stays put rather than wrapping to the bottom.
+      await press(element, 'k');
+      expect((element as any).focusedIndex).to.equal(0);
+    });
+
+    it('approves the focused row with a', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      await press(element, 'j');
+      await press(element, 'a');
+
+      await waitUntil(() => !!decisionCall('approve'), 'no approve call');
+    });
+
+    it('confirms before d denies the focused row', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      await press(element, 'j');
+      await press(element, 'd');
+
+      await waitUntil(
+        () => !!document.querySelector('confirm-dialog'),
+        'no confirm dialog'
+      );
+      expect(decisionCall('decline'), 'denied without confirming').to.be
+        .undefined;
+      (
+        document
+          .querySelector('confirm-dialog')!
+          .shadowRoot?.querySelector(
+            '[data-testid="confirm-dialog-confirm"]'
+          ) as HTMLElement
+      ).click();
+      await waitUntil(() => !!decisionCall('decline'), 'no decline call');
+    });
+
+    it('selects the focused row with x and says so to a screen reader', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      await press(element, 'j');
+      expect(rows(element)[0].getAttribute('aria-selected')).to.equal('false');
+
+      await press(element, 'x');
+      expect((element as any).selectedIds).to.deep.equal(['ar-1']);
+      expect(rows(element)[0].getAttribute('aria-selected')).to.equal('true');
+
+      await press(element, 'x');
+      expect((element as any).selectedIds).to.deep.equal([]);
+    });
+
+    it('opens the focused row with Enter', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+      const go = sinon.stub(Router, 'go');
+      try {
+        await press(element, 'j');
+        await press(element, 'Enter');
+        expect(go.calledWith('/console/approval/ar-1')).to.be.true;
+      } finally {
+        go.restore();
+      }
+    });
+
+    it('leaves keys alone while a filter is being typed in', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      const search = element.shadowRoot?.querySelector(
+        'sl-input'
+      ) as HTMLElement;
+      search.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'a',
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await element.updateComplete;
+
+      expect(decisionCall('approve'), 'typing decided a request').to.be
+        .undefined;
+    });
+
+    it('offers the key legend on the waiting group', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      const legend = element.shadowRoot?.querySelector('.key-legend');
+      expect(legend, 'expected a key legend').to.exist;
+      expect(legend?.textContent).to.contain('A approve');
+      expect(legend?.textContent).to.contain('D deny');
+    });
+  });
+
+  describe('new since last visit', () => {
+    it('dots a waiting request the first time it is seen and not after', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+      expect(element.shadowRoot?.querySelector('.new-dot'), 'no new dot').to
+        .exist;
+      fetchStub.restore();
+
+      const second = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+      expect(second.shadowRoot?.querySelector('.new-dot'), 'dot came back').to
+        .not.exist;
+    });
   });
 
   describe('agent questions', () => {
