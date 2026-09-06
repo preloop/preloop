@@ -16,8 +16,18 @@ import {
   updateAccessRule,
   deleteAccessRule,
   getUserProfile,
+  listPolicyVersions,
+  normalizePolicyDiff,
+  normalizePolicyRollback,
 } from '../../api';
-import type { AccessRule, ModelIORule } from '../../api';
+import type {
+  AccessRule,
+  ModelIORule,
+  PolicyDiffResult,
+  PolicyRollbackResult,
+  PolicyVersion,
+} from '../../api';
+import { showToast } from '../../components/confirm-dialog';
 import { hasPermission } from '../../permissions';
 import type { Tool, ApprovalWorkflow } from '../../components/tool-card';
 import '../../components/policy-generate-dialog';
@@ -67,62 +77,23 @@ interface ToolAccessRule {
   accessRule: AccessRule | null;
 }
 
-// Types for diff result
-interface DiffChange {
-  type: 'added' | 'removed' | 'modified';
-  category: 'mcp_servers' | 'approval_workflows' | 'tools' | 'model_io';
-  name: string;
-  details?: string;
-}
-
-interface PolicyDiffResult {
-  summary: string;
-  has_changes: boolean;
-  changes: {
-    added: DiffChange[];
-    removed: DiffChange[];
-    modified: DiffChange[];
-  };
-}
-
-// Types for policy versions
-interface PolicyVersion {
-  id: string;
-  version_number: number;
-  tag: string | null;
-  description: string | null;
-  created_at: string;
-  created_by_username: string | null;
-  is_active: boolean;
-  snapshot_summary: {
-    mcp_servers_count: number;
-    tools_count: number;
-    policies_count: number;
-  };
-}
+// Diff and version shapes live in the API layer, which normalises what the
+// endpoints actually return (see normalizePolicyVersions/normalizePolicyDiff).
 
 interface CreateVersionRequest {
   description?: string;
   tag?: string;
 }
 
-interface RollbackResponse {
-  success: boolean;
-  message: string;
-  preview_only: boolean;
-  changes?: PolicyDiffResult;
-  rolled_back_to_version?: number;
-}
-
+/** Field names as POST /api/v1/policies/versions/prune reads them. */
 interface PruneOptions {
-  keep_days?: number;
+  older_than_days?: number;
   keep_tagged?: boolean;
-  min_versions_to_keep?: number;
+  keep_count?: number;
 }
 
 interface PruneResponse {
   deleted_count: number;
-  remaining_count: number;
 }
 
 interface PolicyValidationError {
@@ -291,7 +262,7 @@ export class PoliciesView extends LitElement {
   @state() private _showTagDialog = false;
   @state() private _showRollbackDialog = false;
   @state() private _rollbackConfirmVisible = true;
-  @state() private _rollbackPreview: RollbackResponse | null = null;
+  @state() private _rollbackPreview: PolicyRollbackResult | null = null;
   @state() private _savingVersion = false;
   @state() private _pruningVersions = false;
   @state() private _rollingBack = false;
@@ -1348,7 +1319,9 @@ export class PoliciesView extends LitElement {
         throw new Error(error.detail?.message || 'Failed to preview policy');
       }
 
-      this._diffResult = await response.json();
+      // The endpoint answers with a flat change list; the dialog renders
+      // added, removed and modified sections.
+      this._diffResult = normalizePolicyDiff(await response.json());
       this._showDiffDialog = true;
     } catch (err: any) {
       this._error = err.message || 'Failed to preview policy file';
@@ -1567,13 +1540,10 @@ export class PoliciesView extends LitElement {
   private async loadVersions() {
     this._loadingVersions = true;
     try {
-      const response = await fetchWithAuth(
-        '/api/v1/policies/versions?limit=50'
-      );
-      if (!response.ok) {
-        throw new Error('Failed to fetch versions');
-      }
-      this._versions = await response.json();
+      // listPolicyVersions unwraps the {versions, total} payload. Iterating
+      // the wrapper is what threw "e is not iterable" inside repeat() and
+      // stopped every dialog on this page from rendering.
+      this._versions = await listPolicyVersions(50);
     } catch (err: any) {
       this._error = err.message || 'Failed to load versions';
     } finally {
@@ -1637,11 +1607,15 @@ export class PoliciesView extends LitElement {
         );
       }
 
-      const result: RollbackResponse = await response.json();
+      // The endpoint answers {success, diff, error}; the dialog reads a
+      // grouped diff under `changes`.
+      const result = normalizePolicyRollback(await response.json());
 
       if (previewOnly) {
         this._rollbackPreview = result;
         this._showRollbackDialog = true;
+      } else if (!result.success) {
+        throw new Error(result.error || 'Failed to rollback to version');
       } else {
         this._showRollbackDialog = false;
         this._rollbackPreview = null;
@@ -1720,10 +1694,12 @@ export class PoliciesView extends LitElement {
   private async pruneVersions() {
     this._pruningVersions = true;
     try {
+      // The endpoint reads older_than_days and keep_count. The old names were
+      // dropped silently, so pruning always ran with the server defaults.
       const body: PruneOptions = {
-        keep_days: this._pruneForm.keepDays,
+        older_than_days: this._pruneForm.keepDays,
         keep_tagged: this._pruneForm.keepTagged,
-        min_versions_to_keep: this._pruneForm.minVersionsToKeep,
+        keep_count: this._pruneForm.minVersionsToKeep,
       };
 
       const response = await fetchWithAuth('/api/v1/policies/versions/prune', {
@@ -1742,17 +1718,13 @@ export class PoliciesView extends LitElement {
       const result: PruneResponse = await response.json();
       this._showPruneDialog = false;
 
-      // Show success message
-      const alertEl = document.createElement('sl-alert');
-      alertEl.variant = 'success';
-      alertEl.closable = true;
-      alertEl.duration = 5000;
-      alertEl.innerHTML = `
-        <sl-icon slot="icon" name="check-circle"></sl-icon>
-        Pruned ${result.deleted_count} old versions. ${result.remaining_count} versions remaining.
-      `;
-      document.body.appendChild(alertEl);
-      alertEl.toast();
+      const deleted = Number(result?.deleted_count ?? 0);
+      showToast(
+        deleted === 1
+          ? 'Pruned 1 old version.'
+          : `Pruned ${deleted} old versions.`,
+        'success'
+      );
 
       await this.loadVersions();
     } catch (err: any) {
@@ -2531,6 +2503,9 @@ defaults:
   }
 
   private renderVersionsSection() {
+    // Defence in depth: the API layer already normalises the payload, and a
+    // list this template can iterate is worth more than a correct type.
+    const versions = Array.isArray(this._versions) ? this._versions : [];
     return html`
       <div class="versions-section">
         <div class="versions-header">
@@ -2547,7 +2522,7 @@ defaults:
             <sl-button
               size="small"
               @click=${() => (this._showPruneDialog = true)}
-              ?disabled=${this._versions.length === 0}
+              ?disabled=${versions.length === 0}
             >
               <sl-icon slot="prefix" name="trash"></sl-icon>
               Prune Old Versions
@@ -2570,7 +2545,7 @@ defaults:
                   <sl-spinner></sl-spinner>
                 </div>
               `
-            : this._versions.length === 0
+            : versions.length === 0
               ? html`
                   <div class="empty-versions">
                     <sl-icon
@@ -2587,7 +2562,7 @@ defaults:
               : html`
                   <div class="version-list">
                     ${repeat(
-                      this._versions,
+                      versions,
                       (v) => v.id,
                       (version) => this.renderVersionItem(version)
                     )}
@@ -2679,18 +2654,21 @@ defaults:
                     <div class="version-stat">
                       <sl-icon name="hdd-network"></sl-icon>
                       <span>
-                        ${version.snapshot_summary.mcp_servers_count} MCP
+                        ${version.snapshot_summary?.mcp_servers_count ?? 0} MCP
                         servers
                       </span>
                     </div>
                     <div class="version-stat">
                       <sl-icon name="tools"></sl-icon>
-                      <span>${version.snapshot_summary.tools_count} tools</span>
+                      <span>
+                        ${version.snapshot_summary?.tools_count ?? 0} tools
+                      </span>
                     </div>
                     <div class="version-stat">
                       <sl-icon name="shield-check"></sl-icon>
                       <span>
-                        ${version.snapshot_summary.policies_count} policies
+                        ${version.snapshot_summary?.policies_count ?? 0}
+                        policies
                       </span>
                     </div>
                   </div>
@@ -2895,6 +2873,10 @@ defaults:
   }
 
   private renderRollbackConfirmDialog() {
+    const preview = this._rollbackPreview?.changes ?? null;
+    const added = preview?.changes?.added ?? [];
+    const modified = preview?.changes?.modified ?? [];
+    const removed = preview?.changes?.removed ?? [];
     return html`
       <sl-dialog
         label=${
@@ -2937,19 +2919,18 @@ defaults:
                     ? html`
                         <p style="margin-top: 0;">
                           ${
-                            this._rollbackPreview.changes?.has_changes
+                            preview?.has_changes
                               ? 'The following changes will be made:'
                               : 'No changes would be made by this rollback.'
                           }
                         </p>
 
                         ${
-                          this._rollbackPreview.changes?.has_changes
+                          preview?.has_changes
                             ? html`
                                 <div class="diff-container">
                                   ${
-                                    this._rollbackPreview.changes.changes.added
-                                      .length > 0
+                                    added.length > 0
                                       ? html`
                                           <div class="diff-section">
                                             <div class="diff-section-title">
@@ -2957,13 +2938,9 @@ defaults:
                                                 name="plus-circle-fill"
                                                 style="color: var(--sl-color-success-600);"
                                               ></sl-icon>
-                                              Added
-                                              (${
-                                                this._rollbackPreview.changes
-                                                  .changes.added.length
-                                              })
+                                              Added (${added.length})
                                             </div>
-                                            ${this._rollbackPreview.changes.changes.added.map(
+                                            ${added.map(
                                               (change) => html`
                                                 <div class="diff-item added">
                                                   <strong
@@ -2978,8 +2955,7 @@ defaults:
                                       : ''
                                   }
                                   ${
-                                    this._rollbackPreview.changes.changes
-                                      .modified.length > 0
+                                    modified.length > 0
                                       ? html`
                                           <div class="diff-section">
                                             <div class="diff-section-title">
@@ -2987,13 +2963,9 @@ defaults:
                                                 name="pencil-fill"
                                                 style="color: var(--sl-color-warning-600);"
                                               ></sl-icon>
-                                              Modified
-                                              (${
-                                                this._rollbackPreview.changes
-                                                  .changes.modified.length
-                                              })
+                                              Modified (${modified.length})
                                             </div>
-                                            ${this._rollbackPreview.changes.changes.modified.map(
+                                            ${modified.map(
                                               (change) => html`
                                                 <div class="diff-item modified">
                                                   <strong
@@ -3008,8 +2980,7 @@ defaults:
                                       : ''
                                   }
                                   ${
-                                    this._rollbackPreview.changes.changes
-                                      .removed.length > 0
+                                    removed.length > 0
                                       ? html`
                                           <div class="diff-section">
                                             <div class="diff-section-title">
@@ -3017,13 +2988,9 @@ defaults:
                                                 name="dash-circle-fill"
                                                 style="color: var(--sl-color-danger-600);"
                                               ></sl-icon>
-                                              Removed
-                                              (${
-                                                this._rollbackPreview.changes
-                                                  .changes.removed.length
-                                              })
+                                              Removed (${removed.length})
                                             </div>
-                                            ${this._rollbackPreview.changes.changes.removed.map(
+                                            ${removed.map(
                                               (change) => html`
                                                 <div class="diff-item removed">
                                                   <strong
@@ -3070,8 +3037,7 @@ defaults:
                                 false
                               )}
                             ?loading=${this._rollingBack}
-                            ?disabled=${!this._rollbackPreview?.changes
-                              ?.has_changes}
+                            ?disabled=${!preview?.has_changes}
                           >
                             Confirm Rollback
                           </sl-button>
@@ -3087,6 +3053,11 @@ defaults:
   }
 
   private renderDiffDialog() {
+    // Read the three buckets once, tolerating a payload that is missing any
+    // of them: a throw here would abort the render of every later dialog.
+    const added = this._diffResult?.changes?.added ?? [];
+    const modified = this._diffResult?.changes?.modified ?? [];
+    const removed = this._diffResult?.changes?.removed ?? [];
     return html`
       <sl-dialog
         label="Preview Policy Changes"
@@ -3110,7 +3081,7 @@ defaults:
                     ? html`
                         <div class="diff-container">
                           ${
-                            this._diffResult.changes.added.length > 0
+                            added.length > 0
                               ? html`
                                   <div class="diff-section">
                                     <div class="diff-section-title">
@@ -3118,10 +3089,9 @@ defaults:
                                         name="plus-circle-fill"
                                         style="color: var(--sl-color-success-600);"
                                       ></sl-icon>
-                                      Added
-                                      (${this._diffResult.changes.added.length})
+                                      Added (${added.length})
                                     </div>
-                                    ${this._diffResult.changes.added.map(
+                                    ${added.map(
                                       (change) => html`
                                         <div class="diff-item added">
                                           <strong>${change.category}:</strong>
@@ -3141,7 +3111,7 @@ defaults:
                               : ''
                           }
                           ${
-                            this._diffResult.changes.modified.length > 0
+                            modified.length > 0
                               ? html`
                                   <div class="diff-section">
                                     <div class="diff-section-title">
@@ -3149,10 +3119,9 @@ defaults:
                                         name="pencil-fill"
                                         style="color: var(--sl-color-warning-600);"
                                       ></sl-icon>
-                                      Modified
-                                      (${this._diffResult.changes.modified.length})
+                                      Modified (${modified.length})
                                     </div>
-                                    ${this._diffResult.changes.modified.map(
+                                    ${modified.map(
                                       (change) => html`
                                         <div class="diff-item modified">
                                           <strong>${change.category}:</strong>
@@ -3172,7 +3141,7 @@ defaults:
                               : ''
                           }
                           ${
-                            this._diffResult.changes.removed.length > 0
+                            removed.length > 0
                               ? html`
                                   <div class="diff-section">
                                     <div class="diff-section-title">
@@ -3180,10 +3149,9 @@ defaults:
                                         name="dash-circle-fill"
                                         style="color: var(--sl-color-danger-600);"
                                       ></sl-icon>
-                                      Removed
-                                      (${this._diffResult.changes.removed.length})
+                                      Removed (${removed.length})
                                     </div>
-                                    ${this._diffResult.changes.removed.map(
+                                    ${removed.map(
                                       (change) => html`
                                         <div class="diff-item removed">
                                           <strong>${change.category}:</strong>
