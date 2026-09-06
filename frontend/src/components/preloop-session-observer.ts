@@ -159,6 +159,16 @@ export class PreloopSessionObserver extends LitElement {
   @property({ type: Boolean })
   hideSidebar = false;
 
+  /**
+   * Hides the sidebar's own search field.
+   *
+   * A host that already offers a search box (the Sessions page bar) would
+   * otherwise show two of them on one screen, one filtering the request and
+   * one filtering what came back.
+   */
+  @property({ type: Boolean })
+  hideListSearch = false;
+
   @property({ type: String })
   layout: 'full' | 'embedded' = 'embedded';
 
@@ -2156,19 +2166,23 @@ export class PreloopSessionObserver extends LitElement {
                 `
               : html`
                   <div class="sidebar">
-                    <sl-input
-                      placeholder="Search sessions"
-                      clearable
-                      .value=${this.searchQuery}
-                      @sl-input=${(event: Event) => {
-                        this.searchQuery = (
-                          event.target as HTMLInputElement
-                        ).value;
-                      }}
-                      style="margin-bottom: var(--sl-spacing-small);"
-                    >
-                      <sl-icon name="search" slot="prefix"></sl-icon>
-                    </sl-input>
+                    ${
+                      this.hideListSearch
+                        ? nothing
+                        : html`<sl-input
+                            placeholder="Search sessions"
+                            clearable
+                            .value=${this.searchQuery}
+                            @sl-input=${(event: Event) => {
+                              this.searchQuery = (
+                                event.target as HTMLInputElement
+                              ).value;
+                            }}
+                            style="margin-bottom: var(--sl-spacing-small);"
+                          >
+                            <sl-icon name="search" slot="prefix"></sl-icon>
+                          </sl-input>`
+                    }
                     <session-list-panel
                       .sessions=${this.filteredSessions}
                       .activeSessionId=${this.activeSessionId}

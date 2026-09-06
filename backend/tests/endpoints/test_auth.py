@@ -39,7 +39,29 @@ def db_session_mock():
 
 
 def test_register_user_success(db_session_mock):
-    with patch("preloop.api.auth.router.complete_new_account_setup_background"):
+    # The registration response carries the new user's identity (id,
+    # account_id), so the mocked CRUD layer must hand back rows with ids: a
+    # model built against a MagicMock session is never flushed and would
+    # otherwise keep id=None.
+    account_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    with (
+        patch("preloop.api.auth.router.complete_new_account_setup_background"),
+        patch("preloop.api.auth.router.crud_account") as mock_account,
+        patch("preloop.api.auth.router.crud_user") as mock_user_crud,
+    ):
+        mock_account.create.return_value = MagicMock(id=account_id)
+        mock_user_crud.get_by_username.return_value = None
+        mock_user_crud.get_by_email.return_value = None
+        mock_user_crud.create.return_value = MagicMock(
+            id=user_id,
+            account_id=account_id,
+            username="testuser",
+            email="test@example.com",
+            full_name="Test User",
+            email_verified=False,
+        )
+
         response = client.post(
             "/auth/register",
             json={
@@ -51,10 +73,13 @@ def test_register_user_success(db_session_mock):
         )
         assert response.status_code == 201
         data = response.json()
+        assert data["id"] == str(user_id)
+        assert data["account_id"] == str(account_id)
         assert data["username"] == "testuser"
         assert data["email"] == "test@example.com"
         assert data["full_name"] == "Test User"
         assert not data["email_verified"]
+        assert data["team_ids"] == []
 
 
 def test_register_user_username_exists(db_session_mock):

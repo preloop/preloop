@@ -357,8 +357,9 @@ export class BudgetPolicyEditor extends LitElement {
       this.agents = agentsResponse.items || [];
       this.availableUsers = (usersRes as UserListResponse).users || [];
       this.teams = teamsResponse.teams || [];
-      // /auth/users/me has no `id` (AuthUserResponse). Using userProfile.id
-      // anyway posted `[null]` and the API 422'd on UUID validation.
+      // /auth/users/me now returns `id`, but a server older than that field
+      // sends none: the email fallback below keeps this from posting `[null]`,
+      // which the API 422'd on UUID validation.
       const selfId = this.currentUserNotifyId(userProfile);
       if (
         selfId &&
@@ -456,9 +457,9 @@ export class BudgetPolicyEditor extends LitElement {
   }
 
   /**
-   * `/auth/users/me` does not include `id`. Prefer a real string, then the
-   * account user list matched by email (case-insensitive), otherwise leave
-   * recipients empty rather than posting `[null]`.
+   * Prefer the `id` from `/auth/users/me`, then the account user list matched
+   * by email (case-insensitive) for servers that predate that field,
+   * otherwise leave recipients empty rather than posting `[null]`.
    */
   private currentUserNotifyId(
     userProfile: { id?: unknown; email?: string } | null

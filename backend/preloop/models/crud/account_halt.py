@@ -21,6 +21,67 @@ class CRUDAccountHalt(CRUDBase[models.AccountHalt]):
     the same as inactive.
     """
 
+    def lock_account(self, db: Session, *, account_id: Union[uuid.UUID, str]) -> None:
+        """Serialize halt transitions, approval expiry and runtime admission."""
+        account = (
+            db.query(models.Account.id)
+            .filter(models.Account.id == account_id)
+            .with_for_update()
+            .first()
+        )
+        if account is None:
+            raise ValueError("Account not found")
+
+    def transition_scopes(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        scopes: List[str],
+        active: bool,
+        user_id: Union[uuid.UUID, str],
+        reason: Optional[str] = None,
+    ) -> List[models.AccountHalt]:
+        """Atomically commit state, stop requests, deadline recovery and audit."""
+        from .audit_log import crud_audit_log
+
+        try:
+            self.lock_account(db, account_id=account_id)
+            previous = self.active_scopes(db, account_id=account_id)
+            rows = self.set_scopes(
+                db,
+                account_id=account_id,
+                scopes=scopes,
+                active=active,
+                user_id=user_id,
+                reason=reason,
+                commit=False,
+            )
+            for scope in scopes:
+                crud_audit_log.log_action(
+                    db,
+                    account_id=account_id,
+                    user_id=user_id,
+                    action="kill_switch_activated"
+                    if active
+                    else "kill_switch_deactivated",
+                    resource_type="account",
+                    resource_id=str(account_id),
+                    status="success",
+                    details={
+                        "scope": scope,
+                        "scopes": scopes,
+                        "reason": reason,
+                        "changed": (scope in previous) != active,
+                    },
+                    commit=False,
+                )
+            db.commit()
+            return rows
+        except Exception:
+            db.rollback()
+            raise
+
     def get_for_scope(
         self,
         db: Session,
@@ -35,6 +96,7 @@ class CRUDAccountHalt(CRUDBase[models.AccountHalt]):
                 models.AccountHalt.account_id == account_id,
                 models.AccountHalt.scope == scope,
             )
+            .populate_existing()
             .first()
         )
 
@@ -49,6 +111,7 @@ class CRUDAccountHalt(CRUDBase[models.AccountHalt]):
             db.query(models.AccountHalt)
             .filter(models.AccountHalt.account_id == account_id)
             .order_by(models.AccountHalt.scope)
+            .populate_existing()
             .all()
         )
 
@@ -104,6 +167,7 @@ class CRUDAccountHalt(CRUDBase[models.AccountHalt]):
         if unknown:
             raise ValueError(f"Unknown halt scopes: {', '.join(sorted(unknown))}")
 
+        self.lock_account(db, account_id=account_id)
         timestamp = now or datetime.now(timezone.utc)
         rows: Dict[str, models.AccountHalt] = {
             row.scope: row for row in self.list_for_account(db, account_id=account_id)
@@ -126,10 +190,30 @@ class CRUDAccountHalt(CRUDBase[models.AccountHalt]):
                 row.reason = reason
                 row.deactivated_by_user_id = None
                 row.deactivated_at = None
+                row.deactivation_reason = None
+                if scope == "flows":
+                    from preloop.models.crud import crud_flow_execution
+
+                    crud_flow_execution.request_account_stop(
+                        db,
+                        account_id=account_id,
+                        now=timestamp,
+                        reason=reason,
+                    )
             elif not active and row.is_active:
                 row.is_active = False
                 row.deactivated_by_user_id = user_id
                 row.deactivated_at = timestamp
+                row.deactivation_reason = reason
+                if scope == "tools" and row.activated_at is not None:
+                    from .approval_request import crud_approval_request
+
+                    crud_approval_request.restore_halted_deadlines(
+                        db,
+                        account_id=account_id,
+                        activated_at=row.activated_at,
+                        deactivated_at=timestamp,
+                    )
 
         if commit:
             db.commit()

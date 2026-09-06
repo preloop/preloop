@@ -1,11 +1,9 @@
 import { html, fixture, expect } from '@open-wc/testing';
 import sinon from 'sinon';
 import '../../components/view-header.ts';
-import '../../components/single-issue-detail-view.ts';
 import '../../components/run-preset-dialog.ts';
 import './tracker-issue-view';
 import type { TrackerIssueView } from './tracker-issue-view';
-import type { Issue, IssueListItem } from '../../types';
 import {
   resetRunPresetDialogForTests,
   type RunPresetDialog,
@@ -82,45 +80,91 @@ describe('TrackerIssueView', () => {
     await tick(50);
 
     const header = el.shadowRoot?.querySelector('view-header');
-    expect(header?.getAttribute('headerText')).to.equal('ALP-9');
-    expect(header?.getAttribute('description')).to.equal('Broken search');
-    expect(el.shadowRoot?.textContent).to.contain('open');
+    expect(header?.getAttribute('headerText')).to.equal('Broken search');
+    expect(header?.getAttribute('description')).to.equal(null);
+    const meta = el.shadowRoot?.querySelector('.meta-row');
+    expect(meta?.textContent).to.contain('ALP-9');
+    expect(meta?.textContent).to.contain('Open');
+    expect(meta?.textContent).to.contain('Alpha');
+    expect(meta?.textContent).to.contain('Updated');
     const link = el.shadowRoot?.querySelector(
       'a[href="https://github.com/example/repo/issues/9"]'
     );
     expect(link).to.exist;
     expect(link?.textContent).to.contain('Open in GitHub');
     expect(el.shadowRoot?.textContent).to.contain('Run implementer');
+    expect(el.shadowRoot?.textContent).to.contain('Run triage');
 
-    const mapped = (
-      el as unknown as { _toIssue: (item: IssueListItem) => Issue }
-    )._toIssue({
-      id: issueId,
-      external_id: '9',
-      key: 'ALP-9',
-      title: 'Broken search',
-      description: 'Search returns 500',
-      status: 'open',
-      priority: 'High',
-      assignee: 'Jane Doe',
-      labels: ['bug', 'search'],
-      organization: 'Org',
-      project: 'Alpha',
-      project_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-      url: 'https://github.com/example/repo/issues/9',
-      created_at: '2026-01-01T00:00:00Z',
-      updated_at: '2026-01-04T00:00:00Z',
-    });
-    expect(mapped.priority).to.equal('High');
-    expect(mapped.assignee).to.equal('Jane Doe');
-    expect(mapped.labels).to.deep.equal(['bug', 'search']);
+    expect(meta?.textContent).to.contain('Priority High');
+    expect(meta?.textContent).to.contain('Assignee Jane Doe');
+    expect(meta?.textContent).to.contain('bug');
+    expect(meta?.textContent).to.contain('search');
+  });
 
-    const detail = el.shadowRoot?.querySelector('single-issue-detail-view');
-    const detailText = detail?.shadowRoot?.textContent || '';
-    expect(detailText).to.contain('Priority High');
-    expect(detailText).to.contain('Assignee Jane Doe');
-    expect(detailText).to.contain('bug');
-    expect(detailText).to.contain('search');
+  it('shows one h1 and renders the body as Markdown', async () => {
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (data: unknown) =>
+          new Response(JSON.stringify(data), { status: 200 });
+        if (url.includes(`/api/v1/issues/${issueId}`)) {
+          return json({
+            id: issueId,
+            key: 'ALP-9',
+            title: 'Broken search',
+            status: 'open',
+            description:
+              '## Steps\n\n- open search\n- type `preloop`\n\nSee [logs](https://example.com/logs).',
+            project: 'Alpha',
+            project_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+            organization: 'Org',
+            url: 'https://github.com/example/repo/issues/9',
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-04T00:00:00Z',
+          });
+        }
+        if (url.includes(`/api/v1/trackers/${trackerId}`)) {
+          return json({
+            id: trackerId,
+            name: 'Example tracker',
+            tracker_type: 'github',
+          });
+        }
+        return json({});
+      });
+
+    const el = (await fixture(
+      html`<tracker-issue-view></tracker-issue-view>`
+    )) as TrackerIssueView;
+    (
+      el as unknown as {
+        location: { params: { trackerId: string; issueId: string } };
+      }
+    ).location = { params: { trackerId, issueId } };
+    (el as unknown as { _trackerId: string })._trackerId = trackerId;
+    (el as unknown as { _issueId: string })._issueId = issueId;
+    await (el as unknown as { _load: () => Promise<void> })._load();
+    await el.updateComplete;
+    await tick(50);
+
+    const headings = [
+      ...(el.shadowRoot?.querySelectorAll('h1') || []),
+      ...(el.shadowRoot
+        ?.querySelector('view-header')
+        ?.shadowRoot?.querySelectorAll('h1') || []),
+    ];
+    expect(headings.length).to.equal(1);
+    expect(headings[0].textContent?.trim()).to.equal('Broken search');
+
+    const body = el.shadowRoot?.querySelector('.markdown-body');
+    expect(body).to.exist;
+    expect(body?.querySelectorAll('li').length).to.equal(2);
+    expect(body?.querySelector('code')?.textContent).to.equal('preloop');
+    expect(body?.querySelector('a[href="https://example.com/logs"]')).to.exist;
+    expect(body?.textContent).to.not.contain('## Steps');
+    // The body is the page content, not a boxed scroller inside it.
+    expect(getComputedStyle(body as Element).overflowY).to.equal('visible');
   });
 
   it('hides Run implementer on a Jira tracker', async () => {
@@ -170,6 +214,7 @@ describe('TrackerIssueView', () => {
     await tick(50);
 
     expect(el.shadowRoot?.textContent).to.not.contain('Run implementer');
+    expect(el.shadowRoot?.textContent).to.contain('Run triage');
   });
 
   it('falls back to Open in tracker when the tracker fetch fails', async () => {

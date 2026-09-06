@@ -14,10 +14,9 @@ is active, the platform refuses the traffic class it covers:
   as events), manually triggered runs are refused, and already-created
   PENDING executions are not claimed by workers until the scope is lifted.
 
-Running containers are not terminated or suspended. Their subsequent
-model-gateway and MCP requests are blocked, but already-authorized work,
-local commands and requests bypassing Preloop may continue. This is a
-traffic gate, not a complete emergency stop for running agents.
+Managed running executions receive durable stop requests. Monitors observe these
+on their five-second poll and verify runtime termination separately. In-flight
+external effects and independent processes bypassing Preloop cannot be revoked.
 
 Reaction time: halt state is cached in-process for a few seconds so the
 gateway/tool hot paths pay no extra DB round-trip per request in the common
@@ -31,6 +30,7 @@ restore the gateway first, verify behavior, then tools, then flows.
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 import time
 from threading import Lock
 from typing import TYPE_CHECKING, FrozenSet, Optional, Set
@@ -68,7 +68,9 @@ KILL_SWITCH_ERROR_CODE = "preloop_account_halted"
 #: so rejected traffic is attributable in the cost/audit surfaces.
 KILL_SWITCH_ERROR_CLASS = "kill_switch"
 
-_CACHE: dict[str, tuple[FrozenSet[str], float]] = {}
+KILL_SWITCH_CACHE_MAX_ENTRIES = 4096
+_CACHE: OrderedDict[str, tuple[FrozenSet[str], float]] = OrderedDict()
+_GENERATION = 0
 _LOCK = Lock()
 
 GATEWAY_DENIAL_MESSAGE = (
@@ -95,7 +97,9 @@ def invalidate_kill_switch_cache(account_id: Optional[str | UUID] = None) -> Non
     Args:
         account_id: One account, or ``None`` to clear every account (tests).
     """
+    global _GENERATION
     with _LOCK:
+        _GENERATION += 1
         if account_id is None:
             _CACHE.clear()
         else:
@@ -113,19 +117,30 @@ def halted_scopes(db: Session, account_id: str | UUID) -> Set[str]:
     unavailable halt state cannot silently permit traffic.
     """
     key = str(account_id)
-    now = time.monotonic()
-    with _LOCK:
-        entry = _CACHE.get(key)
-        if entry is not None:
-            scopes, expires_at = entry
-            if now < expires_at:
-                return set(scopes)
-            _CACHE.pop(key, None)
+    for _attempt in range(3):
+        now = time.monotonic()
+        with _LOCK:
+            generation = _GENERATION
+            entry = _CACHE.get(key)
+            if entry is not None:
+                scopes, expires_at = entry
+                if now < expires_at:
+                    _CACHE.move_to_end(key)
+                    return set(scopes)
+                _CACHE.pop(key, None)
 
-    scopes = frozenset(crud_account_halt.active_scopes(db, account_id=account_id))
-    with _LOCK:
-        _CACHE[key] = (scopes, now + KILL_SWITCH_CACHE_TTL_SECONDS)
-    return set(scopes)
+        scopes = frozenset(crud_account_halt.active_scopes(db, account_id=account_id))
+        with _LOCK:
+            # An invalidation while the query ran must neither repopulate the
+            # cache nor return its stale result to this caller.
+            if generation != _GENERATION:
+                continue
+            _CACHE[key] = (scopes, now + KILL_SWITCH_CACHE_TTL_SECONDS)
+            _CACHE.move_to_end(key)
+            while len(_CACHE) > KILL_SWITCH_CACHE_MAX_ENTRIES:
+                _CACHE.popitem(last=False)
+            return set(scopes)
+    raise RuntimeError("Halt state changed repeatedly during lookup; retry request")
 
 
 async def halted_scopes_async(db: "AsyncSession", account_id: str | UUID) -> Set[str]:

@@ -20,7 +20,6 @@ from preloop.models import models
 from preloop.models.crud import (
     crud_account,
     crud_account_halt,
-    crud_audit_log,
     crud_user_role,
     crud_role,
     crud_team,
@@ -179,7 +178,7 @@ def activate_kill_switch(
     """
     _ensure_toggle_authorized(db, current_user)
     scopes: List[str] = list(dict.fromkeys(payload.scopes))
-    crud_account_halt.set_scopes(
+    crud_account_halt.transition_scopes(
         db,
         account_id=current_user.account_id,
         scopes=scopes,
@@ -189,21 +188,6 @@ def activate_kill_switch(
     )
     invalidate_kill_switch_cache(current_user.account_id)
 
-    for scope in scopes:
-        crud_audit_log.log_action(
-            db,
-            account_id=current_user.account_id,
-            user_id=current_user.id,
-            action="kill_switch_activated",
-            resource_type="account",
-            resource_id=str(current_user.account_id),
-            status="success",
-            details={
-                "scope": scope,
-                "reason": payload.reason,
-                "scopes": scopes,
-            },
-        )
     logger.warning(
         "KILL SWITCH ACTIVATED: account=%s scopes=%s by=%s reason=%r",
         current_user.account_id,
@@ -230,26 +214,16 @@ def deactivate_kill_switch(
     """
     _ensure_toggle_authorized(db, current_user)
     scopes: List[str] = list(dict.fromkeys(payload.scopes))
-    crud_account_halt.set_scopes(
+    crud_account_halt.transition_scopes(
         db,
         account_id=current_user.account_id,
         scopes=scopes,
         active=False,
         user_id=current_user.id,
+        reason=payload.reason,
     )
     invalidate_kill_switch_cache(current_user.account_id)
 
-    for scope in scopes:
-        crud_audit_log.log_action(
-            db,
-            account_id=current_user.account_id,
-            user_id=current_user.id,
-            action="kill_switch_deactivated",
-            resource_type="account",
-            resource_id=str(current_user.account_id),
-            status="success",
-            details={"scope": scope, "scopes": scopes},
-        )
     logger.warning(
         "KILL SWITCH DEACTIVATED: account=%s scopes=%s by=%s",
         current_user.account_id,

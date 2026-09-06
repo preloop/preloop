@@ -221,7 +221,9 @@ paths:
       - Auth
       summary: Read Users Me
       description: "Get the current user.\n\nArgs:\n    current_user: The current\
-        \ user.\n\nReturns:\n    The current user."
+        \ user.\n\nReturns:\n    The current user, including the identity fields (id,\
+        \ account_id,\n    team_ids) clients need to answer \"is this waiting for\
+        \ me?\"."
       operationId: read_users_me_api_v1_auth_users_me_get
       responses:
         '200':
@@ -4332,7 +4334,6 @@ paths:
     get:
       tags:
       - Kill Switch
-      - Kill Switch
       summary: Get Kill Switch Status
       description: 'Report the account''s current kill-switch state.
 
@@ -4355,7 +4356,6 @@ paths:
   /api/v1/account/kill-switch/activate:
     post:
       tags:
-      - Kill Switch
       - Kill Switch
       summary: Activate Kill Switch
       description: 'Activate the kill switch for one or more traffic scopes.
@@ -4393,7 +4393,6 @@ paths:
   /api/v1/account/kill-switch/deactivate:
     post:
       tags:
-      - Kill Switch
       - Kill Switch
       summary: Deactivate Kill Switch
       description: 'Re-enable one or more traffic scopes (staged recovery).
@@ -7652,8 +7651,7 @@ paths:
       tags:
       - Flows
       summary: Run Preset
-      description: 'Run a catalog preset on an issue, creating the account flow on
-        first use.
+      description: 'Run a catalog preset on an issue or a capped triage batch.
 
 
         ``confirm_create=false`` resolves only: 409 ``flow_missing`` when the
@@ -7662,7 +7660,9 @@ paths:
 
         one exists. ``confirm_create=true`` creates if needed (requires
 
-        ``create_flows``) and starts the run.'
+        ``create_flows``) and starts the run. ``targets`` is a 1-25 issue
+
+        list for ``issue-triage-assistant`` only.'
       operationId: run_preset_api_v1_flows_run_preset_post
       requestBody:
         content:
@@ -7690,7 +7690,12 @@ paths:
       tags:
       - Flows
       summary: Read Flow Executions
-      description: Retrieve lightweight flow execution summaries for the account.
+      description: 'Retrieve lightweight flow execution summaries for the account.
+
+
+        `X-Total-Count` carries how many executions the filters matched, so a
+
+        console page of 25 can say "25 of 1,412 executions" honestly.'
       operationId: read_flow_executions_api_v1_flows_executions_get
       security:
       - bearerAuth: []
@@ -7728,6 +7733,23 @@ paths:
               type: string
           - type: 'null'
           title: Status
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Search
+      - name: started_after
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started After
       responses:
         '200':
           description: Successful Response
@@ -12441,6 +12463,18 @@ components:
       description: User creation model.
     AuthUserResponse:
       properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+          description: The caller's user id. Clients compare it against an approval
+            workflow's approver_user_ids to tell whether a pending approval is waiting
+            for this person.
+        account_id:
+          type: string
+          format: uuid
+          title: Account Id
+          description: The account this user belongs to.
         username:
           type: string
           title: Username
@@ -12477,11 +12511,24 @@ components:
           - type: string
           - type: 'null'
           title: Avatar Source
+        team_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Team Ids
+          description: Ids of the teams the caller belongs to inside account_id. Clients
+            intersect these with an approval workflow's approver_team_ids to tell
+            whether a pending approval is waiting for this person. Empty when the
+            user is in no team.
       type: object
       required:
+      - id
+      - account_id
       - username
       - email
       - email_verified
+      - team_ids
       title: AuthUserResponse
       description: Response model for user data.
     AuthUserUpdate:
@@ -14030,6 +14077,28 @@ components:
           title: Result
           description: Structured result artifact reported by the agent (parsed /workspace/result.json,
             eval/observe runs)
+        stop_requested_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Stop Requested At
+        stop_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stop Reason
+        stop_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stop Source
+        stop_confirmed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Stop Confirmed At
         agent_session_reference:
           anyOf:
           - type: string
@@ -15915,6 +15984,13 @@ components:
       description: Request body for activating the kill switch.
     KillSwitchDeactivateRequest:
       properties:
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Reason
+          description: Reason for recovery, recorded for audit
         scopes:
           items:
             type: string
@@ -18891,13 +18967,62 @@ components:
       - EXCLUDE
       title: RuleType
       description: Enum for rule types.
+    RunPresetItemResult:
+      properties:
+        issue_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Issue Id
+        project_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Project Id
+        number:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Number
+        execution_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Execution Id
+        execution_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Execution Status
+        execution_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Execution Url
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+      type: object
+      title: RunPresetItemResult
+      description: Target outcome for a preset run, including dispatch failure receipts.
     RunPresetRequest:
       properties:
         preset_slug:
           type: string
           title: Preset Slug
         target:
-          $ref: '#/components/schemas/RunPresetTarget'
+          anyOf:
+          - $ref: '#/components/schemas/RunPresetTarget'
+          - type: 'null'
+        targets:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/RunPresetTarget'
+            type: array
+          - type: 'null'
+          title: Targets
         confirm_create:
           type: boolean
           title: Confirm Create
@@ -18905,7 +19030,6 @@ components:
       type: object
       required:
       - preset_slug
-      - target
       title: RunPresetRequest
       description: Body for POST /flows/run-preset.
     RunPresetResponse:
@@ -18929,6 +19053,13 @@ components:
           - type: string
           - type: 'null'
           title: Execution Url
+        results:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/RunPresetItemResult'
+            type: array
+          - type: 'null'
+          title: Results
       type: object
       required:
       - flow_id

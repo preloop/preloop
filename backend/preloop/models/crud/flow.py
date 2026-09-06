@@ -198,8 +198,16 @@ class CRUDFlow(CRUDBase[models.Flow]):
         """
         from sqlalchemy import func, or_
 
-        # Event type matching: event_type must be in trigger_event_types array
-        event_type_match = self.model.trigger_event_types.any(event_type)
+        from preloop.sync.event_normalizer import matching_event_types
+
+        # Event type matching: canonical name or a documented alias
+        # (legacy dotted clones such as issue.opened).
+        event_type_match = or_(
+            *[
+                self.model.trigger_event_types.any(name)
+                for name in matching_event_types(event_type)
+            ]
+        )
 
         # Project matching: NULL or empty array both mean "any project"
         wildcard_project = or_(

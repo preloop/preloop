@@ -24,9 +24,6 @@ down_revision = "20260906_flow_feedback"
 branch_labels: Optional[str] = None
 depends_on: Optional[str] = None
 
-_ALEMBIC_IDENTIFIERS = (revision, down_revision, branch_labels, depends_on)
-assert _ALEMBIC_IDENTIFIERS, "Alembic revision metadata must be defined"
-
 
 def upgrade() -> None:
     """Create the account_halt table."""

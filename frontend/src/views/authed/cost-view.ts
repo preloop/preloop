@@ -33,6 +33,7 @@ import type {
 } from '../../types';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import '../../components/view-header.ts';
+import '../../components/time-range-select.ts';
 import '../../components/budget-policy-editor.ts';
 import '../../components/budget-health-card.ts';
 import '../../components/tool-cost-flags-panel.ts';
@@ -117,6 +118,20 @@ const DATE_RANGE_PRESETS: DateRangePreset[] = [
   'last-90',
 ];
 
+// The page carries one range control, the shared `time-range-select`, so Cost
+// speaks the same range vocabulary as the Overview instead of a bare labelled
+// select. The calendar presets stay: "This month" and "Today" are what the
+// Month-to-date and Projected cards are computed from.
+const DATE_RANGE_OPTIONS: { value: DateRangePreset; label: string }[] = [
+  { value: 'today', label: 'Today' },
+  { value: 'this-week', label: 'This week' },
+  { value: 'this-month', label: 'This month' },
+  { value: 'last-month', label: 'Last month' },
+  { value: 'last-7', label: '7d' },
+  { value: 'last-30', label: '30d' },
+  { value: 'last-90', label: '90d' },
+];
+
 @customElement('cost-view')
 export class CostView extends AuthedElement {
   // Async reprice follow-up: check the summary every 5s for up to about a
@@ -127,6 +142,9 @@ export class CostView extends AuthedElement {
   @state() private summary: CostAnalyticsSummaryResponse | null = null;
   @state() private previousRangeSummary: CostAnalyticsSummaryResponse | null =
     null;
+  // When the numbers on screen were fetched. The page dropped its Refresh
+  // button, so it says how fresh it is instead of offering a manual poll.
+  @state() private loadedAt: string | null = null;
   @state() private budgetPolicies: BudgetPolicy[] = [];
   @state() private aiModels: AIModel[] = [];
   @state() private pricingOverrides: ModelPriceOverride[] = [];
@@ -232,8 +250,39 @@ export class CostView extends AuthedElement {
       .toolbar {
         display: flex;
         gap: var(--sl-spacing-medium);
-        align-items: end;
+        align-items: center;
         flex-wrap: wrap;
+      }
+
+      /* Wide enough for "Last month"; the shared control is 96px by default,
+         which is sized for 24h/7d/30d chips. */
+      .toolbar time-range-select {
+        --time-range-select-width: 140px;
+      }
+
+      /* The window the numbers cover, restated beside the control that chose
+         it, plus how fresh they are now that there is no Refresh button. */
+      .range-window {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* It opens a dialog, so it is a button. As an anchor it pointed at a
+         fragment that cannot resolve inside a shadow root, and told assistive
+         tech it was a link. */
+      .catalog-action {
+        appearance: none;
+        background: none;
+        border: none;
+        padding: 0;
+        font: inherit;
+        color: var(--sl-color-primary-600);
+        cursor: pointer;
+      }
+
+      .catalog-action:hover {
+        text-decoration: underline;
       }
 
       .metric-grid {
@@ -701,7 +750,9 @@ export class CostView extends AuthedElement {
   // Clears previous-period comparison before reload so a stale delta from
   // another range is never shown (see C).
   private handleRangeChange = (event: Event) => {
-    const value = (event.target as HTMLSelectElement).value as DateRangePreset;
+    const detail = (event as CustomEvent<{ value?: string }>).detail;
+    const value = (detail?.value ??
+      (event.target as HTMLSelectElement).value) as DateRangePreset;
     if (!DATE_RANGE_PRESETS.includes(value) || value === this.selectedRange) {
       return;
     }
@@ -729,6 +780,7 @@ export class CostView extends AuthedElement {
         getFeatures().catch(() => ({ features: {} })),
       ]);
       this.summary = summary;
+      this.loadedAt = new Date().toISOString();
       this.featureFlags = features.features || {};
       await this.loadBudgetPolicies();
       this.aiModels = aiModels;
@@ -979,6 +1031,80 @@ export class CostView extends AuthedElement {
     return Number(value || 0).toLocaleString();
   }
 
+  /**
+   * Counts big enough to lose their shape are compact, as on the Overview
+   * ("836.5M"), with the exact figure kept in a title attribute for anyone
+   * who needs to read every digit.
+   */
+  private formatCompactNumber(value?: number | null): string {
+    const amount = Number(value || 0);
+    if (amount < 1000) return String(Math.round(amount));
+    return new Intl.NumberFormat(undefined, {
+      notation: 'compact',
+      maximumFractionDigits: 1,
+    }).format(amount);
+  }
+
+  /**
+   * The short form of the selected range, for stat labels ("$ est. · 30d").
+   */
+  private rangeChipLabel(): string {
+    const option = DATE_RANGE_OPTIONS.find(
+      (item) => item.value === this.selectedRange
+    );
+    return (option?.label || '30d').toLowerCase();
+  }
+
+  /**
+   * Which days the numbers cover, restated beside the range control. The
+   * server's own window is preferred over the client's presets: the four
+   * sibling pages disagree about "30 days", and this one prints what it was
+   * actually given.
+   */
+  private rangeWindowLabel(): string {
+    const params = this.getDateParams();
+    const start = new Date(this.summary?.period_start || params.startDate);
+    const end = new Date(this.summary?.period_end || params.endDate);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '';
+    const day = (date: Date) =>
+      date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const window = `${day(start)} to ${day(end)}`;
+    // Cost has no websocket subscription and no poll, so the numbers are as
+    // old as the last load. A relative "updated just now" painted once would
+    // still say "just now" an hour later; a clock time cannot go stale.
+    const loaded = this.loadedAt ? new Date(this.loadedAt) : null;
+    if (!loaded || Number.isNaN(loaded.getTime())) return window;
+    const read = loaded.toLocaleTimeString(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+    return `${window} · read ${read}`;
+  }
+
+  /** The full timestamp behind "read 14:02", for the label's tooltip. */
+  private rangeWindowTitle(): string {
+    const loaded = this.loadedAt ? new Date(this.loadedAt) : null;
+    if (!loaded || Number.isNaN(loaded.getTime())) return '';
+    return `Loaded ${loaded.toLocaleString()}`;
+  }
+
+  /**
+   * A delta in the Overview's form: an arrow, a percentage, and the window it
+   * is measured against. A dollar difference alone ("+$14.30") says nothing
+   * about whether spend doubled or moved a percent.
+   */
+  private percentDelta(current: number, previous: number): string {
+    if (!previous || previous <= 0) {
+      return `No comparison for ${this.previousRangeLabel()}`;
+    }
+    const change = ((current - previous) / previous) * 100;
+    if (Math.abs(change) < 0.5) {
+      return `No change vs ${this.previousRangeLabel()}`;
+    }
+    const arrow = change > 0 ? '▲' : '▼';
+    return `${arrow} ${Math.abs(Math.round(change))}% vs ${this.previousRangeLabel()}`;
+  }
+
   private getProjectedPeriodCost(): number | null {
     if (!this.summary) return null;
     const now = new Date();
@@ -1010,10 +1136,10 @@ export class CostView extends AuthedElement {
 
   private projectedPeriodLabel(): string {
     return this.selectedRange === 'this-week'
-      ? 'Projected Week'
+      ? 'Projected week'
       : this.selectedRange === 'today'
-        ? 'Projected Today'
-        : 'Projected Month';
+        ? 'Projected today'
+        : 'Projected month';
   }
 
   private projectedPeriodComparisonDetail(projectedCost: number): string {
@@ -1021,22 +1147,19 @@ export class CostView extends AuthedElement {
     if (previousCost === null || previousCost === undefined) {
       return `Compared to ${this.previousRangeLabel()}`;
     }
-    return `${this.formatSignedCurrency(projectedCost - previousCost)} vs ${this.previousRangeLabel()}`;
+    return this.percentDelta(projectedCost, previousCost);
   }
 
-  private formatSignedCurrency(value: number): string {
-    const prefix = value > 0 ? '+' : '';
-    return `${prefix}${this.formatCurrency(value)}`;
-  }
-
+  // Named as on the Overview ("vs prior 30d"), not "previous 30 days": the
+  // same comparison should read the same on both pages.
   private previousRangeLabel(): string {
     if (this.selectedRange === 'today') return 'same time yesterday';
-    if (this.selectedRange === 'this-week') return 'previous week';
-    if (this.selectedRange === 'this-month') return 'previous month';
+    if (this.selectedRange === 'this-week') return 'prior week';
+    if (this.selectedRange === 'this-month') return 'prior month';
     if (this.selectedRange === 'last-month') return 'month before';
-    if (this.selectedRange === 'last-7') return 'previous 7 days';
-    if (this.selectedRange === 'last-90') return 'previous 90 days';
-    return 'previous 30 days';
+    if (this.selectedRange === 'last-7') return 'prior 7d';
+    if (this.selectedRange === 'last-90') return 'prior 90d';
+    return 'prior 30d';
   }
 
   private spendComparisonDetail(): string {
@@ -1044,9 +1167,7 @@ export class CostView extends AuthedElement {
     if (previousCost === null || previousCost === undefined) {
       return `Compared to ${this.previousRangeLabel()}`;
     }
-    const currentCost = this.summary?.estimated_cost || 0;
-    const delta = currentCost - previousCost;
-    return `${this.formatSignedCurrency(delta)} vs ${this.previousRangeLabel()}`;
+    return this.percentDelta(this.summary?.estimated_cost || 0, previousCost);
   }
 
   private renderSessionSubjects(row: GatewayUsageBySession) {
@@ -1181,8 +1302,8 @@ export class CostView extends AuthedElement {
           <div class="metric-label">
             ${
               this.selectedRange === 'this-month'
-                ? 'Month-to-date Spend'
-                : 'Estimated Spend'
+                ? 'Month to date'
+                : `$ est. · ${this.rangeChipLabel()}`
             }
           </div>
           <div class="metric-value">
@@ -1191,22 +1312,29 @@ export class CostView extends AuthedElement {
           <div class="metric-detail">${this.spendComparisonDetail()}</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Gateway Requests</div>
-          <div class="metric-value">
-            ${this.formatNumber(summary?.total_requests)}
+          <div class="metric-label">Requests · ${this.rangeChipLabel()}</div>
+          <div
+            class="metric-value"
+            title=${this.formatNumber(summary?.total_requests)}
+          >
+            ${this.formatCompactNumber(summary?.total_requests)}
           </div>
           <div class="metric-detail">
-            ${this.formatNumber(summary?.successful_requests)} succeeded
+            ${this.formatCompactNumber(summary?.successful_requests)} succeeded
           </div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Tokens</div>
-          <div class="metric-value">
-            ${this.formatNumber(summary?.token_usage.total_tokens)}
+          <div class="metric-label">Tokens · ${this.rangeChipLabel()}</div>
+          <div
+            class="metric-value"
+            title=${this.formatNumber(summary?.token_usage.total_tokens)}
+          >
+            ${this.formatCompactNumber(summary?.token_usage.total_tokens)}
           </div>
           <div class="metric-detail">
-            ${this.formatNumber(summary?.token_usage.prompt_tokens)} prompt,
-            ${this.formatNumber(summary?.token_usage.completion_tokens)}
+            ${this.formatCompactNumber(summary?.token_usage.prompt_tokens)}
+            prompt ·
+            ${this.formatCompactNumber(summary?.token_usage.completion_tokens)}
             completion
           </div>
         </div>
@@ -1282,6 +1410,7 @@ export class CostView extends AuthedElement {
             ? html`<sl-button
                 size="small"
                 variant="warning"
+                outline
                 .loading=${this.repricing}
                 @click=${() => void this.handleReprice()}
                 >Reprice now</sl-button
@@ -1312,11 +1441,33 @@ export class CostView extends AuthedElement {
     const ageDays = Math.floor(
       (Date.now() - fetched.getTime()) / (24 * 60 * 60 * 1000)
     );
+    // The date is spelled out rather than left in US numeric form, the age is
+    // stated in days, and a stale catalog ends in something to click. There is
+    // no endpoint that re-downloads the catalog on demand, so the action is
+    // the one that actually fixes a wrong price: an override for this account.
     return html`
       <div class="metric-detail">
-        Prices as of ${fetched.toLocaleDateString()}
-        (${catalog.model_count ?? '?'}
-        models${ageDays > 45 ? ', update recommended' : ''})
+        Price catalog from
+        ${fetched.toLocaleDateString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        })}
+        (${catalog.model_count ?? '?'} models), ${ageDays}
+        ${ageDays === 1 ? 'day' : 'days'} old.
+        ${
+          ageDays > 45
+            ? html`<button
+                type="button"
+                class="catalog-action"
+                @click=${() => {
+                  this.priceDialogOpen = true;
+                }}
+              >
+                Override a price
+              </button>`
+            : nothing
+        }
       </div>
     `;
   }
@@ -2408,7 +2559,7 @@ export class CostView extends AuthedElement {
   private renderPriceOverrideDialog() {
     return html`
       <sl-dialog
-        label="Add Price Override"
+        label="Add price override"
         ?open=${this.priceDialogOpen}
         @sl-after-hide=${(event: Event) => {
           if (event.target === event.currentTarget) {
@@ -2633,7 +2784,7 @@ export class CostView extends AuthedElement {
         this.billingEnabled
           ? html`
               <sl-dialog
-                label="Configure Budget Limits"
+                label="Configure budget limits"
                 ?open=${this.budgetDialogOpen}
                 @sl-after-hide=${(event: Event) => {
                   if (event.target === event.currentTarget) {
@@ -2677,25 +2828,20 @@ export class CostView extends AuthedElement {
     return html`
       <div class="page">
         <view-header
-          headerText="Cost Analytics"
+          headerText="Cost"
           description="Understand gateway spend by agent, tool, session and user."
         ></view-header>
 
         <div class="toolbar">
-          <sl-select
-            label="Date range"
+          <time-range-select
+            ariaLabel="Cost date range"
             .value=${this.selectedRange}
-            @sl-change=${this.handleRangeChange}
+            .options=${DATE_RANGE_OPTIONS}
+            @range-change=${this.handleRangeChange}
+          ></time-range-select>
+          <span class="range-window" title=${this.rangeWindowTitle()}
+            >${this.rangeWindowLabel()}</span
           >
-            <sl-option value="today">Today</sl-option>
-            <sl-option value="this-week">This week</sl-option>
-            <sl-option value="this-month">This month</sl-option>
-            <sl-option value="last-month">Last month</sl-option>
-            <sl-option value="last-7">Last 7 days</sl-option>
-            <sl-option value="last-30">Last 30 days</sl-option>
-            <sl-option value="last-90">Last 90 days</sl-option>
-          </sl-select>
-          <sl-button @click=${() => void this.load()}>Refresh</sl-button>
         </div>
 
         ${

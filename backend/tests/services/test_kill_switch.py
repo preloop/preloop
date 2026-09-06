@@ -126,7 +126,7 @@ class TestApprovalFreeze:
             return_value=expired_pending_request
         )
         with patch(
-            "preloop.services.kill_switch.tools_halted_async",
+            "preloop.services.approval_service.ApprovalService._approvals_frozen",
             new=AsyncMock(return_value=True),
         ):
             result = await approval_service._reject_if_not_actionable(
@@ -144,7 +144,7 @@ class TestApprovalFreeze:
             return_value=expired_pending_request
         )
         with patch(
-            "preloop.services.kill_switch.tools_halted_async",
+            "preloop.services.approval_service.ApprovalService._approvals_frozen",
             new=AsyncMock(return_value=False),
         ):
             result = await approval_service._reject_if_not_actionable(
@@ -154,19 +154,17 @@ class TestApprovalFreeze:
         update_arg = approval_service.update_approval_request.call_args.args[1]
         assert update_arg.status == "expired"
 
-    async def test_freeze_lookup_fails_open(self, approval_service):
-        """A halt-state query problem must never wedge approvals pending."""
-        with patch(
-            "preloop.services.kill_switch.tools_halted_async",
-            new=AsyncMock(side_effect=RuntimeError("db unavailable")),
-        ):
-            frozen = await approval_service._approvals_frozen("test_account")
-        assert frozen is False
+    async def test_freeze_lookup_preserves_pending_on_error(self, approval_service):
+        """Lookup failure cannot expire a pending human decision."""
+        approval_service.db.run_sync = AsyncMock(
+            side_effect=RuntimeError("db unavailable")
+        )
+        assert await approval_service._approvals_frozen("test_account") is True
 
-    async def test_wait_loop_extends_deadline_instead_of_expiring(
+    async def test_wait_loop_preserves_deadline_and_releases_session_before_sleep(
         self, approval_service, expired_pending_request
     ):
-        """The polling loop keeps waiting (deadline extended) during a halt."""
+        """No deadline mutation or held connection while awaiting a halted approval."""
         original_deadline = expired_pending_request.expires_at
         expired_pending_request.escalation_triggered_at = None
 
@@ -180,11 +178,11 @@ class TestApprovalFreeze:
             ),
             patch.object(
                 ApprovalService,
-                "get_approval_request",
+                "get_approval_request_for_update",
                 return_value=expired_pending_request,
             ),
             patch(
-                "preloop.services.kill_switch.tools_halted_async",
+                "preloop.services.approval_service.ApprovalService._approvals_frozen",
                 new=AsyncMock(return_value=True),
             ),
             patch(
@@ -195,7 +193,7 @@ class TestApprovalFreeze:
             with pytest.raises(_StopPollingError):
                 await approval_service.wait_for_approval(expired_pending_request.id)
 
-        assert expired_pending_request.expires_at > original_deadline
+        assert expired_pending_request.expires_at == original_deadline
 
 
 def _fake_poll_session():

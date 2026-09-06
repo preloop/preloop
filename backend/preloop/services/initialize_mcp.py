@@ -1186,6 +1186,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                         await mcp.call_registered_tool_without_policy(
                                             internal_name,
                                             tool_args,
+                                            account_id=str(approval_request.account_id),
                                         )
                                     )
                                 except Exception as name_err:
@@ -1197,6 +1198,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                         tool_result = await mcp.call_registered_tool_without_policy(
                                             tool_name,
                                             tool_args,
+                                            account_id=str(approval_request.account_id),
                                         )
                                     else:
                                         raise

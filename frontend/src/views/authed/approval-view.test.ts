@@ -2,6 +2,7 @@ import { aTimeout, html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import { setViewport } from '@web/test-runner-commands';
 
+import { invalidateApiCaches } from '../../api';
 import './approval-view';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import type { ApprovalView } from './approval-view';
@@ -11,6 +12,7 @@ describe('ApprovalView', () => {
   let fetchStub: sinon.SinonStub;
   let wsSubscribeStub: sinon.SinonStub;
   let wsStateStub: sinon.SinonStub;
+  let governanceWrites: any[] = [];
 
   function json(data: unknown, status = 200) {
     return new Response(JSON.stringify(data), {
@@ -63,6 +65,8 @@ describe('ApprovalView', () => {
       publicData?: Record<string, unknown> | null;
       decideHistory?: Array<Record<string, unknown>>;
       pendingQueue?: Record<string, unknown>[];
+      permissions?: string[] | null;
+      governance?: Record<string, unknown>;
     } = {}
   ) {
     return sinon
@@ -127,6 +131,35 @@ describe('ApprovalView', () => {
           );
         }
 
+        if (url === '/api/v1/auth/users/me') {
+          return json({
+            id: 'user-1',
+            username: 'tester',
+            email: 'tester@example.com',
+            permissions: opts.permissions ?? null,
+          });
+        }
+
+        if (/\/api\/v1\/agents\/[^/]+\/governance$/.test(url)) {
+          if (method === 'PUT') {
+            governanceWrites.push(JSON.parse(String(init!.body)));
+            return json({
+              subject_type: 'managed_agents',
+              subject_id: 'agent-1',
+              config: governanceWrites[governanceWrites.length - 1],
+            });
+          }
+          return json({
+            subject_type: 'managed_agents',
+            subject_id: 'agent-1',
+            config: opts.governance ?? {
+              allowed_models: [],
+              model_budgets: {},
+              tool_rules: {},
+            },
+          });
+        }
+
         if (/\/approval\/req-1\/data/.test(url) && method === 'GET') {
           if (opts.publicData === null) {
             return json({ detail: 'invalid token' }, 404);
@@ -183,6 +216,8 @@ describe('ApprovalView', () => {
   }
 
   beforeEach(() => {
+    invalidateApiCaches();
+    governanceWrites = [];
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
     wsSubscribeStub = sinon
@@ -194,6 +229,7 @@ describe('ApprovalView', () => {
   });
 
   afterEach(() => {
+    invalidateApiCaches();
     fetchStub?.restore();
     wsSubscribeStub.restore();
     wsStateStub.restore();
@@ -529,6 +565,304 @@ describe('ApprovalView', () => {
     expect(element.shadowRoot?.textContent).to.contain('Looks safe');
     // No decision bar once resolved.
     expect(element.shadowRoot?.querySelector('.decision-bar')).to.not.exist;
+  });
+
+  describe('the fact strip', () => {
+    // Full length ids, so "shows eight characters" is actually testable.
+    const REQUEST_UUID = '3f2a9c14-6b7d-4e58-9a01-77b1c0d2e3f4';
+    const SESSION_UUID = 'a1b2c3d4-e5f6-4788-9a0b-1c2d3e4f5a6b';
+
+    async function stripOf(overrides: Record<string, unknown> = {}) {
+      fetchStub?.restore();
+      fetchStub = createFetchStub({
+        request: pendingRequest({
+          id: REQUEST_UUID,
+          managed_agent_id: 'agent-1',
+          managed_agent_name: 'Claude Code',
+          runtime_session_id: SESSION_UUID,
+          ...overrides,
+        }),
+      });
+      const element = (await fixture(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      )) as ApprovalView;
+      await waitUntil(() => !(element as any).loading, 'still loading');
+      await element.updateComplete;
+      return element;
+    }
+
+    it('links the agent and the session, and shortens the ids', async () => {
+      const element = await stripOf();
+
+      const strip = element.shadowRoot!.querySelector('.fact-strip')!;
+      const links = Array.from(strip.querySelectorAll('a')).map((a) =>
+        a.getAttribute('href')
+      );
+      expect(links).to.include('/console/agents/agent-1');
+      // The link keeps the whole session id; only the label is shortened.
+      expect(links).to.include(
+        `/console/runtime-sessions?sessionId=${SESSION_UUID}`
+      );
+      const sessionLink = Array.from(strip.querySelectorAll('a')).find((a) =>
+        a.getAttribute('href')!.includes('runtime-sessions')
+      )!;
+      expect(sessionLink.textContent!.trim()).to.equal(
+        SESSION_UUID.slice(0, 8)
+      );
+
+      const text = strip.textContent!.replace(/\s+/g, ' ');
+      expect(text).to.contain('Claude Code');
+      expect(text).to.contain('shell_command');
+      // Eight characters of the request id, never the full UUID.
+      expect(strip.querySelector('.request-id')!.textContent!.trim()).to.equal(
+        REQUEST_UUID.slice(0, 8)
+      );
+      expect(text).to.not.contain(REQUEST_UUID);
+      expect(strip.querySelector('.copy-id')).to.exist;
+    });
+
+    it('shows the deadline while pending and drops it once resolved', async () => {
+      const pending = await stripOf();
+      expect(
+        pending.shadowRoot!.querySelector('.fact-strip')!.textContent
+      ).to.contain('Expires');
+
+      const resolved = await stripOf({
+        status: 'approved',
+        resolved_at: new Date().toISOString(),
+      });
+      expect(
+        resolved.shadowRoot!.querySelector('.fact-strip')!.textContent
+      ).to.not.contain('Expires');
+    });
+
+    it('puts the command before the reasoning', async () => {
+      const element = await stripOf();
+
+      const headings = Array.from(
+        element.shadowRoot!.querySelectorAll('.content-section h2')
+      ).map((h) => h.textContent!.trim());
+      expect(headings).to.include('Command');
+      expect(headings.indexOf('Command')).to.be.lessThan(
+        headings.indexOf('Why the agent wants this')
+      );
+    });
+  });
+
+  describe('the resolved header', () => {
+    it('says who decided and how long the agent waited', async () => {
+      const requested = new Date('2026-06-01T10:00:00Z').toISOString();
+      fetchStub = createFetchStub({
+        request: pendingRequest({
+          status: 'approved',
+          requested_at: requested,
+          resolved_at: new Date('2026-06-01T10:00:12Z').toISOString(),
+        }),
+        history: [
+          {
+            id: 'ev-1',
+            event_type: 'approval_requested',
+            detail: 'Approval requested',
+            actor_email: null,
+            timestamp: requested,
+          },
+          {
+            id: 'ev-2',
+            event_type: 'vote_received',
+            detail: 'Approval vote received',
+            actor_email: 'jane@example.com',
+            timestamp: new Date('2026-06-01T10:00:12Z').toISOString(),
+          },
+        ],
+      });
+      const element = (await fixture(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      )) as ApprovalView;
+      await waitUntil(() => !(element as any).loading, 'still loading');
+      await waitUntil(
+        () => (element as any).history?.length === 2,
+        'history did not load'
+      );
+      await element.updateComplete;
+
+      const header = element
+        .shadowRoot!.querySelector('.resolved-info h3')!
+        .textContent!.replace(/\s+/g, ' ')
+        .trim();
+      expect(header).to.equal(
+        'Approved by jane@example.com · 12s after request'
+      );
+      // Icons, never emoji.
+      expect(element.shadowRoot!.querySelector('.resolved-info h3 sl-icon')).to
+        .exist;
+      expect(/[\u{1F300}-\u{1FAFF}✅❌⏱]/u.test(header)).to.be.false;
+    });
+
+    it('names the bypass when no person decided', async () => {
+      fetchStub = createFetchStub({
+        request: pendingRequest({
+          status: 'approved',
+          resolved_at: new Date(Date.now() + 1000).toISOString(),
+          auto_approved_reason: 'bypass',
+        }),
+        history: [],
+      });
+      const element = (await fixture(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      )) as ApprovalView;
+      await waitUntil(() => !(element as any).loading, 'still loading');
+      await element.updateComplete;
+
+      expect(
+        element.shadowRoot!.querySelector('.resolved-info h3')!.textContent
+      ).to.contain('Approved by a time-boxed bypass');
+    });
+  });
+
+  describe('always allow this tool for this agent', () => {
+    async function pendingWithAgent(
+      permissions: string[] | null,
+      governance?: Record<string, unknown>
+    ) {
+      fetchStub = createFetchStub({
+        request: pendingRequest({
+          managed_agent_id: 'agent-1',
+          managed_agent_name: 'Claude Code',
+        }),
+        permissions,
+        governance,
+      });
+      const element = (await fixture(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      )) as ApprovalView;
+      await waitUntil(() => !(element as any).loading, 'still loading');
+      await waitUntil(
+        () => (element as any).permissionsLoaded,
+        'permissions did not load'
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    it('is hidden from a member who cannot write agent rules', async () => {
+      const element = await pendingWithAgent(['view_approvals']);
+      expect(element.shadowRoot!.querySelector('.always-allow')).to.not.exist;
+    });
+
+    it('is shown when the server reports RBAC is inactive', async () => {
+      // OSS and DISABLE_RBAC send `permissions: null`, which means
+      // unrestricted, not "this user may do nothing".
+      const element = await pendingWithAgent(null);
+      expect(element.shadowRoot!.querySelector('.always-allow')).to.exist;
+    });
+
+    it('is hidden when the request names no agent', async () => {
+      fetchStub = createFetchStub({
+        request: pendingRequest(),
+        permissions: ['manage_agents'],
+      });
+      const element = (await fixture(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      )) as ApprovalView;
+      await waitUntil(() => !(element as any).loading, 'still loading');
+      await element.updateComplete;
+      expect(element.shadowRoot!.querySelector('.always-allow')).to.not.exist;
+    });
+
+    it('writes an allow rule for the agent after the approve lands', async () => {
+      const element = await pendingWithAgent(['manage_agents']);
+      const checkbox = element.shadowRoot!.querySelector(
+        '.always-allow'
+      ) as any;
+      expect(checkbox, 'expected the always allow checkbox').to.exist;
+      checkbox.checked = true;
+      checkbox.dispatchEvent(
+        new CustomEvent('sl-change', { bubbles: true, composed: true })
+      );
+      await element.updateComplete;
+
+      (
+        element.shadowRoot!.querySelector('.decision-bar .approve') as any
+      ).click();
+
+      await waitUntil(() => governanceWrites.length === 1, 'no rule written');
+      const rules = governanceWrites[0].tool_rules.shell_command;
+      expect(rules).to.have.length(1);
+      expect(rules[0].action).to.equal('allow');
+      expect(rules[0].condition_expression).to.be.null;
+      expect(rules[0].description).to.contain('req-1');
+      // The rule is written only after the decision succeeded.
+      expect(decisionCall('approve'), 'no approve call').to.exist;
+    });
+
+    it('writes the allow in front of the rule that asked for approval', async () => {
+      // The evaluator stops at the first matching rule, and the catch-all
+      // require_approval below matches everything, so an appended allow
+      // would never run.
+      const element = await pendingWithAgent(['manage_agents'], {
+        allowed_models: [],
+        model_budgets: {},
+        tool_rules: {
+          shell_command: [
+            {
+              action: 'require_approval',
+              condition_expression: null,
+              condition_type: 'simple',
+              priority: 0,
+              description: 'Ask before any shell command',
+              is_enabled: true,
+              approval_workflow_id: null,
+            },
+          ],
+        },
+      });
+      const checkbox = element.shadowRoot!.querySelector(
+        '.always-allow'
+      ) as any;
+      checkbox.checked = true;
+      checkbox.dispatchEvent(
+        new CustomEvent('sl-change', { bubbles: true, composed: true })
+      );
+      await element.updateComplete;
+      (
+        element.shadowRoot!.querySelector('.decision-bar .approve') as any
+      ).click();
+
+      await waitUntil(() => governanceWrites.length === 1, 'no rule written');
+      const rules = governanceWrites[0].tool_rules.shell_command;
+      expect(rules).to.have.length(2);
+      expect(rules[0].action).to.equal('allow');
+      expect(rules[0].priority).to.equal(0);
+      expect(rules[1].action).to.equal('require_approval');
+      expect(rules[1].priority).to.equal(1);
+    });
+
+    it('puts the previous rules back when the toast Undo is used', async () => {
+      const element = await pendingWithAgent(['manage_agents']);
+      const checkbox = element.shadowRoot!.querySelector(
+        '.always-allow'
+      ) as any;
+      checkbox.checked = true;
+      checkbox.dispatchEvent(
+        new CustomEvent('sl-change', { bubbles: true, composed: true })
+      );
+      await element.updateComplete;
+      (
+        element.shadowRoot!.querySelector('.decision-bar .approve') as any
+      ).click();
+      await waitUntil(() => governanceWrites.length === 1, 'no rule written');
+
+      await waitUntil(
+        () => !!document.querySelector('sl-alert [data-toast-action]'),
+        'no undo action on the toast'
+      );
+      (
+        document.querySelector('sl-alert [data-toast-action]') as HTMLElement
+      ).click();
+
+      await waitUntil(() => governanceWrites.length === 2, 'undo did not save');
+      expect(governanceWrites[1].tool_rules).to.deep.equal({});
+    });
   });
 
   it('renders an explicit expired state, not an error', async () => {

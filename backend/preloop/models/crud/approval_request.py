@@ -1,10 +1,12 @@
 """CRUD operations for ApprovalRequest model."""
 
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Optional, Union
 from uuid import UUID
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.future import select
+
+from preloop.models import models
 
 from ..models.approval_request import ApprovalRequest
 from .base import CRUDBase
@@ -23,26 +25,77 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         commit: bool = True,
     ) -> int:
         """Mark pending approval requests past their expiry as expired."""
+        from .account_halt import crud_account_halt
+
         now = now or datetime.utcnow()
-        query = db.query(self.model).filter(
+        query = db.query(self.model.account_id).filter(
             self.model.status == "pending",
-            self.model.expires_at.isnot(None),
             self.model.expires_at <= now,
         )
-
         if account_id:
             query = query.filter(self.model.account_id == account_id)
-
         if execution_id:
             query = query.filter(self.model.execution_id == execution_id)
-
-        expired = query.update(
-            {"status": "expired", "resolved_at": now},
-            synchronize_session="fetch",
-        )
+        accounts = sorted({row[0] for row in query.all()}, key=str)
+        expired = 0
+        for owner in accounts:
+            crud_account_halt.lock_account(db, account_id=owner)
+            halted = crud_account_halt.get_for_scope(
+                db, account_id=owner, scope="tools"
+            )
+            pending = db.query(self.model).filter(
+                self.model.account_id == owner,
+                self.model.status == "pending",
+                self.model.expires_at <= now,
+            )
+            if execution_id:
+                pending = pending.filter(self.model.execution_id == execution_id)
+            if halted is not None and halted.is_active:
+                # A halt cannot revive approvals whose deadline already passed.
+                pending = pending.filter(
+                    self.model.expires_at < halted.activated_at.replace(tzinfo=None)
+                )
+            expired += pending.update(
+                {"status": "expired", "resolved_at": now},
+                synchronize_session="fetch",
+            )
         if commit:
             db.commit()
         return int(expired)
+
+    def restore_halted_deadlines(
+        self,
+        db: Session,
+        *,
+        account_id: Union[UUID, str],
+        activated_at: datetime,
+        deactivated_at: datetime,
+    ) -> int:
+        """Restore remaining timeout once when tools resume, even without polls.
+
+        Caller holds the account lock. Pending requests created during the halt
+        retain their full original timeout; already-expired requests stay expired.
+        """
+        from sqlalchemy import func
+
+        start = activated_at.astimezone(timezone.utc).replace(tzinfo=None)
+        end = deactivated_at.astimezone(timezone.utc).replace(tzinfo=None)
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.status == "pending",
+                self.model.expires_at >= start,
+                self.model.requested_at <= end,
+            )
+            .update(
+                {
+                    self.model.expires_at: self.model.expires_at
+                    + (end - func.greatest(self.model.requested_at, start))
+                },
+                synchronize_session=False,
+            )
+        )
 
     def get_by_token(
         self,
@@ -184,10 +237,24 @@ async def get_approval_request_for_update_async(
     Returns:
         The approval request object if found, otherwise None.
     """
+    # Always lock account before approval, matching halt/deadline transitions.
+    account_id = await db.scalar(
+        select(models.ApprovalRequest.account_id).where(
+            models.ApprovalRequest.id == request_id
+        )
+    )
+    if account_id is None:
+        return None
+    from .account_halt import crud_account_halt
+
+    await db.run_sync(
+        lambda session: crud_account_halt.lock_account(session, account_id=account_id)
+    )
     result = await db.execute(
         select(ApprovalRequest)
         .where(ApprovalRequest.id == request_id)
         .options(selectinload(ApprovalRequest.approval_workflow))
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()

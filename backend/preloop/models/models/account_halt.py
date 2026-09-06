@@ -78,6 +78,10 @@ class AccountHalt(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    deactivation_reason: Mapped[Optional[str]] = mapped_column(
+        String(500), nullable=True
+    )
+
     account = relationship("Account")
     activated_by_user = relationship("User", foreign_keys=[activated_by_user_id])
     deactivated_by_user = relationship("User", foreign_keys=[deactivated_by_user_id])

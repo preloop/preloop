@@ -35,6 +35,10 @@ class KillSwitchActivateRequest(BaseModel):
 class KillSwitchDeactivateRequest(BaseModel):
     """Request body for a staged or full re-enable."""
 
+    reason: Optional[str] = Field(
+        None, max_length=500, description="Reason for recovery, recorded for audit"
+    )
+
     scopes: List[HaltScope] = Field(
         default_factory=lambda: list(HALT_SCOPES),
         description=(

@@ -244,7 +244,7 @@ class TestFlowHalt:
         ):
             result = await runner.claim_and_run_execution(str(execution.id))
 
-        assert result["status"] == "halted"
+        assert result["status"] == "skipped"
         db_session.refresh(execution)
         assert execution.status == "PENDING"
         # The claim was released, so a peer worker (or this one, after the
@@ -314,6 +314,8 @@ async def test_async_approval_replay_blocks_halted_account(
             mcp.__class__.__bases__[0], "call_tool", new=AsyncMock()
         ) as dispatch,
     ):
-        result = await mcp.call_registered_tool_without_policy("get_issue", {})
+        result = await mcp.call_registered_tool_without_policy(
+            "get_issue", {}, account_id=str(test_user.account_id)
+        )
     assert "kill switch" in result.content[0].text
     dispatch.assert_not_awaited()

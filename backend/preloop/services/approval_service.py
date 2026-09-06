@@ -612,6 +612,13 @@ class ApprovalService:
         """
         # Calculate expiration time
         timeout = timeout_seconds or 300  # Default: 5 minutes
+        from preloop.models.crud import crud_account_halt
+
+        await self.db.run_sync(
+            lambda session: crud_account_halt.lock_account(
+                session, account_id=account_id
+            )
+        )
         expires_at = datetime.utcnow() + timedelta(seconds=timeout)
 
         # Create approval request
@@ -778,25 +785,31 @@ class ApprovalService:
         """Render the decision channel as an event-detail suffix."""
         return f" via {channel}" if channel else ""
 
-    async def _approvals_frozen(self, account_id) -> bool:
-        """Whether the account kill switch currently freezes approvals (#157).
-
-        While the tools scope of the kill switch is active, pending
-        approvals must not auto-expire: an incident is exactly when a
-        pending decision must not silently lapse. Lookups fail open (not
-        frozen) so a halt-state query problem can never wedge approvals
-        pending forever.
-        """
-        from preloop.services.kill_switch import tools_halted_async
+    async def _approvals_frozen(
+        self, account_id: uuid.UUID | str, expires_at: Optional[datetime] = None
+    ) -> bool:
+        """Preserve pending decisions on lookup failure; never revive stale ones."""
+        from preloop.models.crud import crud_account_halt
 
         try:
-            return await tools_halted_async(self.db, account_id)
-        except Exception as e:
-            logger.warning(
-                f"Kill-switch freeze lookup failed for account {account_id}: {e}; "
-                f"treating approvals as not frozen"
+            halt = await self.db.run_sync(
+                lambda db: crud_account_halt.get_for_scope(
+                    db, account_id=account_id, scope="tools"
+                )
             )
-            return False
+            return bool(
+                halt is not None
+                and halt.is_active
+                and (
+                    expires_at is None
+                    or expires_at >= halt.activated_at.replace(tzinfo=None)
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Unable to verify approval freeze; preserving pending decision"
+            )
+            return True
 
     async def _reject_if_not_actionable(
         self, approval_request: ApprovalRequest
@@ -828,7 +841,9 @@ class ApprovalService:
             approval_request.expires_at
             and datetime.utcnow() > approval_request.expires_at
         ):
-            if await self._approvals_frozen(approval_request.account_id):
+            if await self._approvals_frozen(
+                approval_request.account_id, approval_request.expires_at
+            ):
                 logger.info(
                     "Approval request %s is past expiry but frozen by the "
                     "account kill switch; keeping it pending",
@@ -3152,7 +3167,9 @@ class ApprovalService:
         while True:
             async with get_async_db_session() as poll_db:
                 poll_service = ApprovalService(poll_db, self.base_url)
-                approval_request = await poll_service.get_approval_request(request_id)
+                approval_request = await poll_service.get_approval_request_for_update(
+                    request_id
+                )
                 if not approval_request:
                     raise ValueError(f"Approval request {request_id} not found")
 
@@ -3160,41 +3177,17 @@ class ApprovalService:
                 if approval_request.status in ["approved", "declined", "cancelled"]:
                     return approval_request
 
+                if approval_request.status == "expired":
+                    raise TimeoutError(f"Approval request {request_id} already expired")
+
                 # Check if expired
                 if (
                     approval_request.expires_at
                     and datetime.utcnow() > approval_request.expires_at
+                    and not await poll_service._approvals_frozen(
+                        approval_request.account_id, approval_request.expires_at
+                    )
                 ):
-                    # ── Kill-switch freeze (#157) ─────────────────────────
-                    # Pending approvals are frozen rather than auto-denied
-                    # while the account halts tools: the operator's attention
-                    # is on the incident, and a timeout during it must not
-                    # silently decide (deny) pending tool calls. Extend the
-                    # deadline and keep waiting; normal expiry resumes once
-                    # the halt is lifted.
-                    if await poll_service._approvals_frozen(
-                        approval_request.account_id
-                    ):
-                        workflow_timeout = 300
-                        if (
-                            approval_request.approval_workflow
-                            and approval_request.approval_workflow.timeout_seconds
-                        ):
-                            workflow_timeout = (
-                                approval_request.approval_workflow.timeout_seconds
-                            )
-                        approval_request.expires_at = datetime.utcnow() + timedelta(
-                            seconds=workflow_timeout
-                        )
-                        await poll_db.commit()
-                        logger.info(
-                            f"Approval request {request_id} frozen by the "
-                            f"account kill switch; deadline extended by "
-                            f"{workflow_timeout}s"
-                        )
-                        await asyncio.sleep(poll_interval)
-                        continue
-
                     # Get the approval workflow to check for escalation configuration
                     approval_workflow = approval_request.approval_workflow
 

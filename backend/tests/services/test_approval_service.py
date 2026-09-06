@@ -26,7 +26,7 @@ def fresh_poll_sessions():
 
     @asynccontextmanager
     async def _fake_session():
-        yield AsyncMock()
+        yield AsyncMock(run_sync=AsyncMock(return_value=None))
 
     with patch(
         "preloop.models.db.session.get_async_db_session",
@@ -38,7 +38,7 @@ def fresh_poll_sessions():
 @pytest.fixture
 def mock_db():
     """Create mock async database session."""
-    return AsyncMock()
+    return AsyncMock(run_sync=AsyncMock(return_value=None))
 
 
 @pytest.fixture
@@ -1872,7 +1872,7 @@ class TestWaitForApproval:
             fresh_poll_sessions(),
             patch.object(
                 ApprovalService,
-                "get_approval_request",
+                "get_approval_request_for_update",
                 return_value=sample_approval_request,
             ),
         ):
@@ -1892,7 +1892,7 @@ class TestWaitForApproval:
             fresh_poll_sessions(),
             patch.object(
                 ApprovalService,
-                "get_approval_request",
+                "get_approval_request_for_update",
                 return_value=sample_approval_request,
             ),
         ):
@@ -1912,7 +1912,7 @@ class TestWaitForApproval:
             fresh_poll_sessions(),
             patch.object(
                 ApprovalService,
-                "get_approval_request",
+                "get_approval_request_for_update",
                 return_value=sample_approval_request,
             ),
         ):
@@ -1928,7 +1928,9 @@ class TestWaitForApproval:
 
         with (
             fresh_poll_sessions(),
-            patch.object(ApprovalService, "get_approval_request", return_value=None),
+            patch.object(
+                ApprovalService, "get_approval_request_for_update", return_value=None
+            ),
         ):
             with pytest.raises(ValueError) as exc_info:
                 await approval_service.wait_for_approval(request_id)
@@ -1949,7 +1951,7 @@ class TestWaitForApproval:
             fresh_poll_sessions(),
             patch.object(
                 ApprovalService,
-                "get_approval_request",
+                "get_approval_request_for_update",
                 return_value=sample_approval_request,
             ),
         ):
@@ -1988,7 +1990,7 @@ class TestWaitForApproval:
             fresh_poll_sessions(),
             patch.object(
                 ApprovalService,
-                "get_approval_request",
+                "get_approval_request_for_update",
                 side_effect=mock_get_approval_request,
             ),
         ):
@@ -2010,7 +2012,7 @@ class TestWaitForApproval:
             fresh_poll_sessions(),
             patch.object(
                 ApprovalService,
-                "get_approval_request",
+                "get_approval_request_for_update",
                 return_value=sample_approval_request,
             ),
         ):
@@ -2278,7 +2280,7 @@ class TestEscalationBehavior:
             fresh_poll_sessions(),
             patch.object(
                 ApprovalService,
-                "get_approval_request",
+                "get_approval_request_for_update",
                 side_effect=mock_get_request,
             ),
         ):
@@ -2318,7 +2320,7 @@ class TestEscalationBehavior:
             fresh_poll_sessions(),
             patch.object(
                 ApprovalService,
-                "get_approval_request",
+                "get_approval_request_for_update",
                 new_callable=AsyncMock,
                 return_value=sample_approval_request,
             ),
@@ -2362,7 +2364,7 @@ class TestEscalationBehavior:
             fresh_poll_sessions(),
             patch.object(
                 ApprovalService,
-                "get_approval_request",
+                "get_approval_request_for_update",
                 new_callable=AsyncMock,
                 return_value=sample_approval_request,
             ),
@@ -2406,7 +2408,7 @@ class TestEscalationBehavior:
             fresh_poll_sessions(),
             patch.object(
                 ApprovalService,
-                "get_approval_request",
+                "get_approval_request_for_update",
                 new_callable=AsyncMock,
                 return_value=sample_approval_request,
             ),

@@ -21,6 +21,8 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '../../../components/add-ai-model-modal';
 import '../../../components/list-toolbar';
+import '../../../components/resource-actions';
+import type { ResourceAction } from '../../../components/resource-actions';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
 import { formatRelativeTime } from '../../../utils/date';
 import {
@@ -103,6 +105,20 @@ export class AIModelsView extends LitElement {
   @state()
   private modelOverview = new Map<string, AIModelOverviewItem>();
 
+  /**
+   * Fleet spend in the window before this one. Loaded after first paint so a
+   * slower second call never holds up the numbers the page is for, and null
+   * while it is missing so the delta line simply does not render.
+   */
+  @state()
+  private priorFleetSpend: number | null = null;
+
+  /**
+   * The prior window the loaded number belongs to, as a date key. The window
+   * moves once a day, so a realtime refresh has nothing new to ask for.
+   */
+  private priorFleetSpendWindow: string | null = null;
+
   @state()
   private search = '';
 
@@ -179,11 +195,6 @@ export class AIModelsView extends LitElement {
       }
       .styled-table tr:last-child td {
         border-bottom: none;
-      }
-      .actions {
-        display: flex;
-        gap: var(--sl-spacing-x-small);
-        justify-content: flex-end;
       }
       .empty-state a {
         color: var(--sl-color-primary-600);
@@ -268,6 +279,29 @@ export class AIModelsView extends LitElement {
         font-size: var(--sl-font-size-small);
         margin-top: var(--sl-spacing-2x-small);
         overflow-wrap: anywhere;
+      }
+      /* The second line of the name cell: what the gateway answers to, in
+         mono so it reads as an identifier and not as prose. */
+      .model-identifier {
+        color: var(--console-meta-color);
+        font-family: var(--sl-font-mono);
+        font-size: var(--sl-font-size-small);
+        overflow-wrap: anywhere;
+      }
+      /* The kebab column is measured from the button it holds: one medium
+         sl-button is 48px at the default tokens, so 72px leaves room for the
+         padding without clipping (the same rule the agents table uses). */
+      .styled-table th.actions-cell,
+      .styled-table td.actions-cell {
+        width: 72px;
+        text-align: right;
+        padding-left: var(--sl-spacing-x-small);
+        padding-right: var(--sl-spacing-x-small);
+        overflow: visible;
+      }
+      .row-actions {
+        display: flex;
+        justify-content: flex-end;
       }
       .badge-row {
         display: flex;
@@ -403,6 +437,12 @@ export class AIModelsView extends LitElement {
       this.modelOverview = new Map(
         overview.models.map((item) => [item.ai_model_id, item])
       );
+      // Not on realtime refreshes: five subscriptions feed this method, and
+      // the prior 30 day window changes at most once a day. A third request
+      // per socket message is how the pool emptied on 2026-09-03.
+      if (!options.preserveLoadingState) {
+        void this.loadPriorFleetSpend();
+      }
     } catch (error) {
       this.error =
         error instanceof Error ? error.message : 'Failed to fetch AI models';
@@ -413,20 +453,46 @@ export class AIModelsView extends LitElement {
     }
   }
 
-  private getOverviewParams() {
+  /**
+   * The fleet window, or the one before it when `periodsBack` is 1. The prior
+   * window is what the spend delta compares against.
+   */
+  private getOverviewParams(periodsBack = 0) {
+    const days = AIModelsView.FLEET_WINDOW_DAYS;
     const endDate = new Date();
+    endDate.setDate(endDate.getDate() - days * periodsBack);
     const startDate = new Date(endDate);
-    startDate.setDate(
-      startDate.getDate() - (AIModelsView.FLEET_WINDOW_DAYS - 1)
-    );
+    startDate.setDate(startDate.getDate() - (days - 1));
     return {
       startDate: startDate.toISOString(),
       endDate: endDate.toISOString(),
     };
   }
 
-  private get overviewWindowLabel(): string {
-    return `Last ${AIModelsView.FLEET_WINDOW_DAYS} days`;
+  private async loadPriorFleetSpend(): Promise<void> {
+    const params = this.getOverviewParams(1);
+    const window = params.startDate.slice(0, 10);
+    if (this.priorFleetSpendWindow === window) {
+      return;
+    }
+    try {
+      const prior = await getAIModelsOverview(params);
+      this.priorFleetSpendWindow = window;
+      this.priorFleetSpend = prior.models.reduce(
+        (total, item) => total + item.estimated_cost,
+        0
+      );
+    } catch {
+      // A missing comparison is not an error worth a banner: the delta line
+      // just does not render, and the next load may still get it.
+      this.priorFleetSpendWindow = null;
+      this.priorFleetSpend = null;
+    }
+  }
+
+  /** "30d", the suffix the Overview and Cost put after a windowed label. */
+  private get windowSuffix(): string {
+    return `${AIModelsView.FLEET_WINDOW_DAYS}d`;
   }
 
   private get fleetRequestCount(): number {
@@ -456,18 +522,67 @@ export class AIModelsView extends LitElement {
     ).length;
   }
 
+  /**
+   * A model needs a person when its calls fail or when the calls it did serve
+   * carry no price, which is the pair the stat card now names out loud
+   * instead of hiding a second fact under "models with traffic".
+   */
   private get modelsNeedingAttentionCount(): number {
     return [...this.modelOverview.values()].filter(
-      (item) => item.failed_requests > 0
+      (item) => item.failed_requests > 0 || item.unpriced_request_count > 0
     ).length;
   }
 
+  /**
+   * Money the way the rest of the console prints it: two decimals, except
+   * amounts under a cent, which keep four rather than collapsing into a
+   * `$0.00` that reads as "free" (DESIGN.md Numbers, the rule Cost and API
+   * usage already follow).
+   */
   private formatCurrency(value: number | null | undefined): string {
-    return `$${(value || 0).toFixed(2)}`;
+    const amount = Number(value || 0);
+    if (amount > 0 && amount < 0.01) {
+      return `$${amount.toFixed(4)}`;
+    }
+    return `$${amount.toFixed(2)}`;
   }
 
   private formatNumber(value: number | null | undefined): string {
     return Intl.NumberFormat().format(value || 0);
+  }
+
+  /**
+   * Counts under 1000 render whole, at or above they render compact, so this
+   * page says 18.3K where the Overview says 18.3K instead of 18,306.
+   */
+  private formatCompactNumber(value: number | null | undefined): string {
+    const amount = Number(value || 0);
+    if (amount < 1000) {
+      return String(Math.round(amount));
+    }
+    return new Intl.NumberFormat(undefined, {
+      notation: 'compact',
+      maximumFractionDigits: 1,
+    }).format(amount);
+  }
+
+  /**
+   * Percent change against the window before this one, in the arrow form the
+   * Overview uses. Null when there is no prior period worth comparing to:
+   * "up 100% from nothing" is noise, not news.
+   */
+  private get fleetSpendDelta(): string | null {
+    const prior = this.priorFleetSpend;
+    if (prior === null || prior <= 0) {
+      return null;
+    }
+    const change = ((this.fleetSpend - prior) / prior) * 100;
+    const rounded = Math.round(change);
+    if (rounded === 0) {
+      return `No change vs prior ${AIModelsView.FLEET_WINDOW_DAYS}d`;
+    }
+    const arrow = rounded > 0 ? '▲' : '▼';
+    return `${arrow} ${Math.abs(rounded)}% vs prior ${AIModelsView.FLEET_WINDOW_DAYS}d`;
   }
 
   private getModelOverview(modelId: string) {
@@ -591,41 +706,52 @@ export class AIModelsView extends LitElement {
     this.statusFilter = value || '';
   }
 
+  /**
+   * Four cards, each with one fact and a label that says which window it is
+   * about. "Configured models / Last 30 days" claimed a configuration count
+   * was a 30-day metric, and "Models with traffic 6 / 5 need attention" put
+   * two different facts in one card.
+   */
   private renderFleetOverview() {
+    const delta = this.fleetSpendDelta;
     return html`
       <div class="summary-grid">
         <sl-card class="summary-card">
           <div class="metric-label">Configured models</div>
           <div class="metric-value">
-            ${this.formatNumber(this.models.length)}
-          </div>
-          <div class="metric-subtext">${this.overviewWindowLabel}</div>
-        </sl-card>
-        <sl-card class="summary-card">
-          <div class="metric-label">Models with traffic</div>
-          <div class="metric-value">
-            ${this.formatNumber(this.activeModelsCount)}
+            ${this.formatCompactNumber(this.models.length)}
           </div>
           <div class="metric-subtext">
-            ${this.formatNumber(this.modelsNeedingAttentionCount)} need
-            attention
+            ${this.formatCompactNumber(this.activeModelsCount)} with traffic in
+            ${this.windowSuffix}
           </div>
         </sl-card>
         <sl-card class="summary-card">
-          <div class="metric-label">Fleet requests</div>
+          <div class="metric-label">Need attention</div>
           <div class="metric-value">
-            ${this.formatNumber(this.fleetRequestCount)}
+            ${this.formatCompactNumber(this.modelsNeedingAttentionCount)}
+          </div>
+          <div class="metric-subtext">unpriced or failing</div>
+        </sl-card>
+        <sl-card class="summary-card">
+          <div class="metric-label">Requests · ${this.windowSuffix}</div>
+          <div
+            class="metric-value"
+            title=${this.formatNumber(this.fleetRequestCount)}
+          >
+            ${this.formatCompactNumber(this.fleetRequestCount)}
           </div>
           <div class="metric-subtext">
-            ${this.formatNumber(this.activeFleetSessions)} active sessions
+            ${this.formatCompactNumber(this.activeFleetSessions)} active
+            sessions
           </div>
         </sl-card>
         <sl-card class="summary-card">
-          <div class="metric-label">Fleet spend</div>
+          <div class="metric-label">$ est. · ${this.windowSuffix}</div>
           <div class="metric-value">
             ${this.formatCurrency(this.fleetSpend)}
           </div>
-          <div class="metric-subtext">${this.overviewWindowLabel}</div>
+          <div class="metric-subtext">${delta ?? `estimated, not billed`}</div>
         </sl-card>
       </div>
     `;
@@ -654,7 +780,7 @@ export class AIModelsView extends LitElement {
 
     return html`
       <view-header
-        headerText="AI Models"
+        headerText="Models"
         description="The AI models your agents reach through the gateway. Each model gets a gateway alias; every call through it is metered and attributed to an agent and session."
         width="narrow"
       >
@@ -663,7 +789,7 @@ export class AIModelsView extends LitElement {
             ? html`
                 <div slot="main-column">
                   <sl-button variant="primary" @click=${this.openAddModelModal}>
-                    <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add Model
+                    <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add model
                   </sl-button>
                 </div>
               `
@@ -761,7 +887,7 @@ export class AIModelsView extends LitElement {
                   @click=${this.openAddModelModal}
                 >
                   <sl-icon slot="prefix" name="plus-lg"></sl-icon>
-                  Add Model
+                  Add model
                 </sl-button>
               </div>
             </sl-card>
@@ -784,39 +910,70 @@ export class AIModelsView extends LitElement {
       : this.renderListView(models);
   }
 
+  /**
+   * The Default column states a fact, it does not carry a rare action:
+   * fourteen "Set as default" buttons in a column were fourteen invitations
+   * to a thing an operator does once. Setting the default lives in the kebab.
+   */
   private renderDefaultControl(model: AIModel) {
     return when(
       model.is_default,
-      () => html`<sl-badge variant="success" pill>Default</sl-badge>`,
-      () => html`
-        <sl-button size="small" @click=${() => this.handleSetDefault(model)}>
-          Set as default
-        </sl-button>
-      `
+      () =>
+        html`<sl-badge class="chip" variant="success" pill>Default</sl-badge>`,
+      () =>
+        html`<span class="cell-secondary" aria-label="Not default"
+          >&ndash;</span
+        >`
     );
+  }
+
+  private modelActions(model: AIModel): ResourceAction[] {
+    const actions: ResourceAction[] = [
+      {
+        id: 'view',
+        label: 'View',
+        icon: 'eye',
+        href: `/console/ai-models/${model.id}`,
+      },
+      {
+        id: 'edit',
+        label: 'Edit',
+        icon: 'pencil',
+        onClick: () => this.openEditModal(model),
+      },
+    ];
+    if (!model.is_default) {
+      actions.push({
+        id: 'set-default',
+        label: 'Set default',
+        icon: 'star',
+        onClick: () => void this.handleSetDefault(model),
+      });
+    }
+    // Danger outline, last, after a gap (DESIGN.md "Destructive actions"): a
+    // column of solid red circles read as a column of alarms.
+    actions.push({
+      id: 'delete',
+      label: 'Delete',
+      icon: 'trash',
+      variant: 'danger',
+      outline: true,
+      separated: true,
+      onClick: () => this.openDeleteConfirm(model),
+    });
+    return actions;
   }
 
   private renderModelActions(model: AIModel) {
     return html`
-      <div class="actions">
-        <sl-button size="small" href=${`/console/ai-models/${model.id}`}>
-          View
-        </sl-button>
-        <sl-button
-          size="small"
-          circle
-          @click=${() => this.openEditModal(model)}
-        >
-          <sl-icon name="pencil"></sl-icon>
-        </sl-button>
-        <sl-button
-          variant="danger"
-          size="small"
-          circle
-          @click=${() => this.openDeleteConfirm(model)}
-        >
-          <sl-icon name="trash"></sl-icon>
-        </sl-button>
+      <div
+        class="row-actions"
+        @click=${(event: Event) => event.stopPropagation()}
+      >
+        <resource-actions
+          .actions=${this.modelActions(model)}
+          menu-only
+        ></resource-actions>
       </div>
     `;
   }
@@ -832,7 +989,7 @@ export class AIModelsView extends LitElement {
               <th>Fleet health</th>
               <th>Usage</th>
               <th>Default</th>
-              <th>Actions</th>
+              <th class="actions-cell">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -847,102 +1004,109 @@ export class AIModelsView extends LitElement {
     `;
   }
 
+  /**
+   * The name cell is two lines: the title, then the identifier the gateway
+   * answers to. The row used to print four lines here (title, identifier,
+   * "Gateway alias: ...", "Managed agent: ...") where the alias contains the
+   * identifier and the title usually contains both, which cost 160px a row.
+   * The managed agent moved next to the provider, which is the other fact
+   * about where the calls go.
+   */
+  private renderNameCell(model: AIModel) {
+    const alias = this.getGatewayAlias(model);
+    return html`
+      <div class="cell-stack">
+        <a class="model-link" href=${`/console/ai-models/${model.id}`}>
+          ${model.name}
+        </a>
+        <div class="model-identifier" title=${alias || model.model_identifier}>
+          ${alias || model.model_identifier}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderProviderCell(model: AIModel) {
+    const managedAgent = this.getManagedAgentDisplayName(model);
+    const secondary = [this.getPricingSourceLabel(model.id), managedAgent]
+      .filter(Boolean)
+      .join(' · ');
+    return html`
+      <div class="cell-stack">
+        <div class="cell-primary">${model.provider_name}</div>
+        <div class="cell-secondary">${secondary}</div>
+      </div>
+    `;
+  }
+
+  private renderHealthCell(model: AIModel) {
+    const overview = this.getModelOverview(model.id);
+    return html`
+      <div class="cell-stack">
+        <div class="badge-row">
+          <sl-badge
+            class="status-chip"
+            variant=${this.getHealthVariant(model.id)}
+            pill
+          >
+            ${this.getHealthLabel(model.id)}
+          </sl-badge>
+          ${
+            overview?.active_session_count
+              ? html`
+                  <sl-badge class="chip" variant="neutral" pill>
+                    ${this.formatCompactNumber(overview.active_session_count)}
+                    active sessions
+                  </sl-badge>
+                `
+              : null
+          }
+        </div>
+        <div class="cell-secondary">
+          ${this.formatCompactNumber(overview?.successful_requests)} successful
+          · ${this.formatCompactNumber(overview?.failed_requests)} failed
+        </div>
+      </div>
+    `;
+  }
+
+  private renderUsageCell(model: AIModel) {
+    const overview = this.getModelOverview(model.id);
+    return html`
+      <div class="cell-stack">
+        <div
+          class="cell-primary"
+          title=${this.formatNumber(overview?.total_requests)}
+        >
+          ${this.formatCompactNumber(overview?.total_requests)} requests
+        </div>
+        <div
+          class="cell-secondary"
+          title=${this.formatNumber(overview?.token_usage.total_tokens)}
+        >
+          ${this.formatCompactNumber(overview?.token_usage.total_tokens)} tokens
+          · ${this.formatCurrency(overview?.estimated_cost)} est.
+        </div>
+        ${
+          this.getLastRequestLabel(model.id)
+            ? html`<div class="cell-secondary">
+                ${this.getLastRequestLabel(model.id)}
+              </div>`
+            : null
+        }
+      </div>
+    `;
+  }
+
   private renderModelRow(model: AIModel) {
     return html`
       <tr class="model-row" data-model-id=${model.id}>
-        <td>
-          <a class="model-link" href=${`/console/ai-models/${model.id}`}>
-            ${model.name}
-          </a>
-          <div class="model-meta">${model.model_identifier}</div>
-          ${
-            this.getGatewayAlias(model)
-              ? html`
-                  <div class="model-meta">
-                    Gateway alias:
-                    <code>${this.getGatewayAlias(model)}</code>
-                  </div>
-                `
-              : null
-          }
-          ${
-            this.getManagedAgentDisplayName(model)
-              ? html`
-                  <div class="model-meta">
-                    Managed agent: ${this.getManagedAgentDisplayName(model)}
-                  </div>
-                `
-              : null
-          }
-        </td>
-        <td>
-          <div class="cell-stack">
-            <div class="cell-primary">${model.provider_name}</div>
-            <div class="cell-secondary">${this.getModelKindLabel(model)}</div>
-            <div class="cell-secondary">
-              ${this.getPricingSourceLabel(model.id)}
-            </div>
-          </div>
-        </td>
-        <td>
-          <div class="cell-stack">
-            <div class="badge-row">
-              <sl-badge variant=${this.getHealthVariant(model.id)} pill>
-                ${this.getHealthLabel(model.id)}
-              </sl-badge>
-              ${
-                this.getModelOverview(model.id)?.active_session_count
-                  ? html`
-                      <sl-badge variant="primary" pill>
-                        ${this.formatNumber(
-                          this.getModelOverview(model.id)?.active_session_count
-                        )}
-                        active sessions
-                      </sl-badge>
-                    `
-                  : null
-              }
-            </div>
-            <div class="cell-secondary">
-              ${this.formatNumber(
-                this.getModelOverview(model.id)?.successful_requests
-              )}
-              successful ·
-              ${this.formatNumber(
-                this.getModelOverview(model.id)?.failed_requests
-              )}
-              failed
-            </div>
-          </div>
-        </td>
-        <td>
-          <div class="cell-stack">
-            <div class="cell-primary">
-              ${this.formatNumber(
-                this.getModelOverview(model.id)?.total_requests
-              )}
-              requests
-            </div>
-            <div class="cell-secondary">
-              ${this.formatNumber(
-                this.getModelOverview(model.id)?.token_usage.total_tokens
-              )}
-              tokens ·
-              ${this.formatCurrency(
-                this.getModelOverview(model.id)?.estimated_cost
-              )}
-            </div>
-            ${
-              this.getLastRequestLabel(model.id)
-                ? html`<div class="cell-secondary">
-                    ${this.getLastRequestLabel(model.id)}
-                  </div>`
-                : null
-            }
-          </div>
-        </td>
+        <td>${this.renderNameCell(model)}</td>
+        <td>${this.renderProviderCell(model)}</td>
+        <td>${this.renderHealthCell(model)}</td>
+        <td>${this.renderUsageCell(model)}</td>
         <td>${this.renderDefaultControl(model)}</td>
-        <td>${this.renderModelActions(model)}</td>
+        <td class="actions-cell">${this.renderModelActions(model)}</td>
       </tr>
     `;
   }
@@ -969,27 +1133,41 @@ export class AIModelsView extends LitElement {
             </a>
             ${this.renderDefaultControl(model)}
           </div>
+          <div class="model-identifier">
+            ${this.getGatewayAlias(model) || model.model_identifier}
+          </div>
           <div class="cell-primary">${model.provider_name}</div>
-          <div class="cell-secondary">${this.getModelKindLabel(model)}</div>
           <div class="cell-secondary">
+            ${this.getModelKindLabel(model)} ·
             ${this.getPricingSourceLabel(model.id)}
           </div>
           <div class="badge-row">
-            <sl-badge variant=${this.getHealthVariant(model.id)} pill>
+            <sl-badge
+              class="status-chip"
+              variant=${this.getHealthVariant(model.id)}
+              pill
+            >
               ${this.getHealthLabel(model.id)}
             </sl-badge>
             ${
               isGatewayEnabled(model)
-                ? html`<sl-badge variant="neutral" pill>Enabled</sl-badge>`
-                : html`<sl-badge variant="neutral" pill>Disabled</sl-badge>`
+                ? html`<sl-badge class="chip" variant="neutral" pill
+                    >Enabled</sl-badge
+                  >`
+                : html`<sl-badge class="chip" variant="neutral" pill
+                    >Disabled</sl-badge
+                  >`
             }
           </div>
           <div class="cell-secondary">
-            ${this.formatNumber(this.getModelOverview(model.id)?.total_requests)}
+            ${this.formatCompactNumber(
+              this.getModelOverview(model.id)?.total_requests
+            )}
             requests ·
             ${this.formatCurrency(
               this.getModelOverview(model.id)?.estimated_cost
             )}
+            est.
           </div>
           <div class="model-card-actions">
             ${this.renderModelActions(model)}
@@ -1002,7 +1180,7 @@ export class AIModelsView extends LitElement {
   renderDeleteConfirm() {
     return html`
       <sl-dialog
-        label="Delete Model"
+        label="Delete model"
         .open=${this.isDeleteConfirmOpen}
         @sl-hide=${() => (this.isDeleteConfirmOpen = false)}
       >

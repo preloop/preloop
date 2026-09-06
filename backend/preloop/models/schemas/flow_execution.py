@@ -148,6 +148,10 @@ class FlowExecutionBase(BaseModel):
             "(parsed /workspace/result.json, eval/observe runs)"
         ),
     )
+    stop_requested_at: Optional[datetime] = None
+    stop_reason: Optional[str] = None
+    stop_source: Optional[str] = None
+    stop_confirmed_at: Optional[datetime] = None
     agent_session_reference: Optional[str] = Field(
         None,
         description="Reference to agent session (e.g., session ID, K8s job ID, container ID, process ID)",

@@ -49,6 +49,8 @@ Onboarding, the MCP firewall, human approvals, and cutting session cost. Recorde
 
 Guides: [docs.preloop.ai](https://docs.preloop.ai). Start here: [onboard local agents (60s)](https://docs.preloop.ai/quickstart-cli/).
 
+The [account kill switch](docs/guide/account-kill-switch.md) blocks gateway and tool traffic, freezes pending approval deadlines, and requests termination of active managed flow executions, with audited staged recovery.
+
 ## What you get
 
 Jobs teams otherwise buy from several vendors, in one Apache 2.0 stack:
@@ -70,7 +72,7 @@ AI Agent → Preloop → [Policy]  → Allow / Deny / Require Approval → Execu
 
 [Automated issue implementation](docs/guide/flows/durable-implementation-feedback.md) can resume its PR branch and native agent conversation after review or CI feedback, with durable turn budgets and current-head gates.
 
-Connect GitHub, GitLab, or Jira as flow triggers and issue tools. Automations ship as presets, including the [Pull Request Reviewer](./backend/presets/002-pull-request-reviewer.yaml) and [Observe / Eval](./backend/presets/003-observe-eval.yaml). Or write your own.
+Connect GitHub, GitLab, or Jira as flow triggers and issue tools. Automations ship as presets, including the [Issue Triage Assistant](./docs/guide/flows/issue-triage.md), [Pull Request Reviewer](./backend/presets/002-pull-request-reviewer.yaml) and [Observe / Eval](./backend/presets/003-observe-eval.yaml). Or write your own.
 
 ### Policy-as-code
 

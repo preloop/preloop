@@ -54,7 +54,7 @@ async def resume_existing_execution(
     """Resume monitoring for a recovered execution that already has an agent."""
     from datetime import datetime, timezone
 
-    from preloop.agents import create_agent_executor
+    from preloop.agents import create_executor_for_execution
 
     if orchestrator.execution_log is None:
         raise ValueError("execution_log must be set before resume_existing_execution")
@@ -69,9 +69,12 @@ async def resume_existing_execution(
     # Matrix-aware: _get_flow_details() above resolved any per-cell agent_type
     # override into orchestrator.agent_type; a resumed matrix cell must be
     # monitored with its own harness, never the flow default.
-    agent_executor = create_agent_executor(
+    agent_executor = create_executor_for_execution(
         orchestrator.agent_type or flow.agent_type,
-        {"agent_config": flow.agent_config or {}},
+        flow.agent_config or {},
+        flow=flow,
+        execution=orchestrator.execution_log,
+        db=orchestrator.db,
     )
     try:
         agent_result = await orchestrator._monitor_agent_execution(
@@ -212,35 +215,22 @@ async def claim_and_run_execution(
         if ack is not None:
             await ack()
 
-        # ── Account kill switch (#157) ───────────────────────────────────
-        # Refuse to orchestrate (start OR resume-monitor) any execution while
-        # the account halts new flow executions. The claim is released below
-        # and the row keeps its current status: PENDING rows stay PENDING
-        # (the recovery loop re-dispatches them once the halt is lifted) and
-        # running agents are starved at the gateway/tool layer instead of
-        # being SIGKILLed, so their containers stay inspectable.
-        try:
-            # FlowExecution rows do not carry account_id; the flow does.
-            flow_row = crud_flow.get(db, id=execution.flow_id)
-            flow_account_id = getattr(flow_row, "account_id", None)
-            if flow_account_id is None or flows_halted(db, flow_account_id):
-                logger.info(
-                    "Execution %s left untouched: account kill switch halts "
-                    "flow executions",
-                    execution_id_str,
+        # A halt prevents launch, not recovery of the monitor that must stop
+        # an existing runtime. Fresh admission is serialized again at dispatch.
+        flow_row = crud_flow.get(db, id=execution.flow_id)
+        if flow_row is None:
+            return {"status": "missing_flow", "execution_id": execution_id_str}
+        if not session_reference:
+            if crud_flow_execution.cancel_unstarted_stop(db, execution_id=execution_id):
+                return {"status": "stopped", "execution_id": execution_id_str}
+            try:
+                if flows_halted(db, flow_row.account_id):
+                    return {"status": "halted", "execution_id": execution_id_str}
+            except Exception:
+                logger.exception(
+                    "Halt state unavailable for execution %s", execution_id_str
                 )
-                return {
-                    "status": "halted",
-                    "execution_id": execution_id_str,
-                }
-        except Exception as exc:  # noqa: BLE001 - halt lookup must not 500 workers
-            logger.error(
-                "Kill-switch check failed for execution %s: %s",
-                execution_id_str,
-                exc,
-                exc_info=True,
-            )
-            return {"status": "halted", "execution_id": execution_id_str}
+                return {"status": "halt_lookup_error", "execution_id": execution_id_str}
 
         nats_client = await get_nats_client()
         flow_id = execution.flow_id

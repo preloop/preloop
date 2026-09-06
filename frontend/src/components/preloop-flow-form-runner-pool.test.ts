@@ -113,7 +113,7 @@ describe('PreloopFlowForm runner pool behaviour', () => {
     const control = poolSelect(element);
     expect(control).to.exist;
     expect(control?.shadowRoot?.textContent).to.contain(
-      'Account default: Auto (private runners first, then Preloop hosted)'
+      'Account default: Auto (private first, then hosted)'
     );
     expect(control?.shadowRoot?.textContent).to.contain('Preloop hosted only');
     expect(control?.shadowRoot?.textContent).to.contain('office-mac');

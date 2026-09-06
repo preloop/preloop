@@ -17,6 +17,8 @@ import '../../components/view-header.ts';
 
 import {
   AuthedElement,
+  approveRequest,
+  declineRequest,
   dismissAttentionItem,
   getFeatures,
   getUserProfile,
@@ -27,7 +29,7 @@ import {
   type BudgetPolicy,
   type UserPermissions,
 } from '../../api';
-import { confirmDialog } from '../../components/confirm-dialog';
+import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import type {
@@ -52,7 +54,12 @@ import {
 } from '../../utils/attention';
 import { REMOVE_AGENT_CONSEQUENCE } from '../../utils/agent-display';
 import { loadAttentionInputs } from '../../utils/attention-data';
-import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
+import { publishAttentionSummary } from '../../utils/attention-summary';
+import {
+  formatFutureRelativeTime,
+  formatLocalDateTime,
+  formatRelativeTime,
+} from '../../utils/date';
 import { renderFailureCategoryChip } from '../../utils/failure-category';
 import {
   executionSubjectCss,
@@ -274,6 +281,11 @@ export class AttentionView extends AuthedElement {
         color: var(--console-meta-color);
         font-size: var(--console-text-meta);
         font-variant-numeric: tabular-nums;
+      }
+
+      .expiry-chip {
+        margin-left: var(--sl-spacing-x-small);
+        vertical-align: middle;
       }
 
       .row-actions {
@@ -645,6 +657,9 @@ export class AttentionView extends AuthedElement {
 
     this.lastUpdatedAt = new Date().toISOString();
     this.loading = false;
+    // The header's bell has no budget for these nine requests; it states the
+    // counts this page just derived.
+    publishAttentionSummary(this.items);
   }
 
   private get derived() {
@@ -787,6 +802,35 @@ export class AttentionView extends AuthedElement {
   }
 
   private renderAction(item: AttentionItem) {
+    // A waiting approval is a decision, not a link. Questions still open the
+    // detail page: they need an answer typed, not a yes or a no.
+    if (item.approval && !item.approval.isQuestion) {
+      return html`
+        <sl-button
+          class="row-approve"
+          size="small"
+          variant="success"
+          ?loading=${this.busyItemId === item.id}
+          ?disabled=${this.busyItemId === item.id}
+          @click=${() => this.approveFromRow(item)}
+        >
+          Approve
+        </sl-button>
+        <sl-button
+          class="row-deny"
+          size="small"
+          variant="danger"
+          outline
+          ?disabled=${this.busyItemId === item.id}
+          @click=${() => this.denyFromRow(item)}
+        >
+          Deny
+        </sl-button>
+        <sl-button class="row-action" size="small" href=${item.href}>
+          Details
+        </sl-button>
+      `;
+    }
     if (item.action?.event === 'configure-limits') {
       return html`
         <sl-button
@@ -856,6 +900,52 @@ export class AttentionView extends AuthedElement {
       await this.fetchAll();
     } catch {
       this.dismissError = 'Could not remove that agent. Try again.';
+    } finally {
+      this.busyItemId = null;
+    }
+  }
+
+  /**
+   * Decide an approval from the inbox. Same call the list and the detail page
+   * make: the row is where the request was noticed, so it is where it can be
+   * answered. Approving is not destructive, so it does not confirm.
+   */
+  private async approveFromRow(item: AttentionItem): Promise<void> {
+    const approval = item.approval;
+    if (!approval) return;
+    this.busyItemId = item.id;
+    try {
+      await approveRequest(approval.id);
+      showToast(`Approved ${approval.toolName}.`, 'success');
+      await this.fetchAll();
+    } catch (error: any) {
+      showToast(error?.message || 'Failed to approve the request', 'danger');
+    } finally {
+      this.busyItemId = null;
+    }
+  }
+
+  /** Denying stops the agent, so it confirms first (DESIGN.md destructive). */
+  private async denyFromRow(item: AttentionItem): Promise<void> {
+    const approval = item.approval;
+    if (!approval) return;
+    const confirmed = await confirmDialog({
+      title: 'Deny this request?',
+      message: `${approval.toolName} will not run.`,
+      detail: approval.requester
+        ? `${approval.requester} is told no and continues without it.`
+        : 'The agent is told no and continues without it.',
+      confirmLabel: 'Deny',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    this.busyItemId = item.id;
+    try {
+      await declineRequest(approval.id);
+      showToast(`Denied ${approval.toolName}.`, 'neutral');
+      await this.fetchAll();
+    } catch (error: any) {
+      showToast(error?.message || 'Failed to deny the request', 'danger');
     } finally {
       this.busyItemId = null;
     }
@@ -1309,6 +1399,34 @@ export class AttentionView extends AuthedElement {
     );
   }
 
+  /**
+   * How long is left to decide. Rows are already sorted by this, so the chip
+   * explains the order rather than adding a number nobody asked for.
+   */
+  private renderExpiry(item: AttentionItem) {
+    const expiresAt = item.approval?.expiresAt;
+    if (!expiresAt) return nothing;
+    const remainingMs = new Date(expiresAt).getTime() - Date.now();
+    const soon = remainingMs <= 60 * 60 * 1000;
+    // A deadline already past reads "expired", not "expires expired": the
+    // backend has simply not reaped the row yet.
+    const label =
+      remainingMs <= 0
+        ? 'expired'
+        : `expires ${formatFutureRelativeTime(expiresAt)}`;
+    return html`
+      <sl-badge
+        class="chip expiry-chip"
+        pill
+        variant=${soon ? 'warning' : 'neutral'}
+        title=${formatLocalDateTime(expiresAt)}
+      >
+        <sl-icon name="hourglass"></sl-icon>
+        ${label}
+      </sl-badge>
+    `;
+  }
+
   private renderRow(item: AttentionItem, sectionSize: number) {
     const expandable = this.hasEvidence(item);
     const expanded = expandable && this.isExpanded(item, sectionSize);
@@ -1338,7 +1456,7 @@ export class AttentionView extends AuthedElement {
             <span
               class="row-detail"
               title=${item.at ? formatLocalDateTime(item.at) : nothing}
-              >${item.detail}</span
+              >${item.detail}${this.renderExpiry(item)}</span
             >
           </div>
           <div class="row-actions">

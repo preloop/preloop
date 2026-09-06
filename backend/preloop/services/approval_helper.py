@@ -10,6 +10,8 @@ import os
 from contextvars import ContextVar
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from fastmcp import Context
 from preloop.models import models
 
@@ -219,18 +221,32 @@ async def require_approval(
     # left behind by a previous call in the same task context.
     _last_approval_meta_var.set(None)
 
-    async def approved_result(comment: str = "") -> Tuple[bool, str]:
-        """Recheck uncached halt state after every approval/allow path."""
+    async def approved_result(
+        comment: str = "",
+        *,
+        fresh: bool = False,
+        session: Optional[AsyncSession] = None,
+    ) -> Tuple[bool, str]:
+        """Recheck dispatch; only post-human decisions require uncached state."""
         from preloop.models.crud import crud_account_halt
         from preloop.models.db.session import get_async_db_session
+        from preloop.services.kill_switch import halted_scopes_async
 
-        try:
-            async with get_async_db_session() as halt_db:
-                scopes = await halt_db.run_sync(
-                    lambda session: crud_account_halt.active_scopes(
-                        session, account_id=account_id
+        async def read_scopes(halt_db: AsyncSession) -> set[str]:
+            if fresh:
+                return await halt_db.run_sync(
+                    lambda sync_db: crud_account_halt.active_scopes(
+                        sync_db, account_id=account_id
                     )
                 )
+            return await halted_scopes_async(halt_db, account_id)
+
+        try:
+            if session is not None:
+                scopes = await read_scopes(session)
+            else:
+                async with get_async_db_session() as halt_db:
+                    scopes = await read_scopes(halt_db)
             if halt_scope in scopes:
                 return False, "Access denied: the account kill switch is active"
         except Exception:
@@ -253,8 +269,10 @@ async def require_approval(
                 # answer; during replay the original decision's comment is
                 # carried in _approved_comment_var (set by
                 # get_approval_status) so the answer is not lost.
-                return await approved_result(_approved_comment_var.get(None) or "")
-            return await approved_result()
+                return await approved_result(
+                    _approved_comment_var.get(None) or "", fresh=True
+                )
+            return await approved_result(fresh=True)
 
         from preloop.models.db.session import get_async_db_session
         from preloop.models.crud.tool_configuration import (
@@ -345,7 +363,7 @@ async def require_approval(
                     logger.info(
                         f"Tool {tool_name} ({tool_source}) does not require approval (no workflow configured)"
                     )
-                    return await approved_result()
+                    return await approved_result(session=db)
 
                 # Check if there are access rules that might override approval requirement
                 from sqlalchemy import select
@@ -418,7 +436,7 @@ async def require_approval(
                         logger.info(
                             f"Tool {tool_name} ({tool_source}) allowed by access rule (no approval needed)"
                         )
-                        return await approved_result()
+                        return await approved_result(session=db)
                     elif rule.action == "deny":
                         logger.info(
                             f"Tool {tool_name} ({tool_source}) denied by access rule"
@@ -450,7 +468,7 @@ async def require_approval(
                         f"Tool {tool_name} ({tool_source}): {len(access_rules)} "
                         f"access rules exist but none matched — default allow"
                     )
-                    return await approved_result()
+                    return await approved_result(session=db)
 
                 if not access_rules and rule_context is None:
                     # No rules exist at all: the tool config itself pins an
@@ -1086,8 +1104,8 @@ async def require_approval(
                     f"✅ Tool {tool_name} APPROVED - proceeding with execution"
                 )
                 if return_comment_on_approve:
-                    return await approved_result(final_comment or "")
-                return await approved_result()
+                    return await approved_result(final_comment or "", fresh=True)
+                return await approved_result(fresh=True)
 
             except Exception as e:
                 logger.error(

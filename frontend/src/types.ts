@@ -1700,6 +1700,10 @@ export interface ApprovalRequest {
   resolved_at: string | null;
   expires_at: string | null;
   approver_comment: string | null;
+  /** Set when an onboarded agent asked; links the request to its agent page. */
+  managed_agent_id?: string | null;
+  /** The runtime session the call came from, when the agent had one. */
+  runtime_session_id?: string | null;
   managed_agent_name?: string | null;
   webhook_posted_at?: string | null;
   webhook_error?: string | null;

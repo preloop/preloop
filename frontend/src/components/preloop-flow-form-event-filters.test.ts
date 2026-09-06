@@ -10,7 +10,7 @@ import './preloop-flow-form.ts';
 import type { PreloopFlowForm } from './preloop-flow-form';
 
 /**
- * Tests for the restored Event Filters (Optional) section in the
+ * Tests for the restored Event filters (optional) section in the
  * Create/Edit Flow form component (preloop-flow-form.ts).
  *
  * The source-substring block below is a coarse guard that every filter control
@@ -38,32 +38,32 @@ describe('PreloopFlowForm event filters section', () => {
     expect(source).to.include('renderEventFilters()');
   });
 
-  it('renders Add Filters button when collapsed', () => {
-    expect(source).to.include('Add Filters');
+  it('renders Add filters button when collapsed', () => {
+    expect(source).to.include('Add filters');
   });
 
-  it('renders Hide Filters button when expanded', () => {
-    expect(source).to.include('Hide Filters');
+  it('renders Hide filters button when expanded', () => {
+    expect(source).to.include('Hide filters');
   });
 
-  it('renders Event Filters (Optional) heading', () => {
-    expect(source).to.include('Event Filters (Optional)');
+  it('renders Event filters (optional) heading', () => {
+    expect(source).to.include('Event filters (optional)');
   });
 
-  it('renders author/Created By filter input', () => {
-    expect(source).to.include('Created By (username)');
+  it('renders the Created by filter input', () => {
+    expect(source).to.include('Created by (username)');
     expect(source).to.include('trigger_config.author');
   });
 
   it('renders assignee filter input', () => {
-    expect(source).to.include('Assigned To (username)');
+    expect(source).to.include('Assigned to (username)');
     expect(source).to.include('trigger_config.assignee');
   });
 
   it('renders reviewer filter gated on MR/PR events', () => {
     expect(source).to.include('trigger_config.reviewer');
     expect(source).to.include('Reviewer (username)');
-    expect(source).to.include('Requested Reviewer (username)');
+    expect(source).to.include('Requested reviewer (username)');
   });
 
   it('renders labels filter as comma-separated input', () => {
@@ -77,7 +77,7 @@ describe('PreloopFlowForm event filters section', () => {
 
   it('renders priority select for Jira trackers', () => {
     expect(source).to.include('trigger_config.priority');
-    expect(source).to.include('Any Priority');
+    expect(source).to.include('Any priority');
   });
 
   it('renders issue type filter for Jira trackers', () => {
@@ -93,13 +93,13 @@ describe('PreloopFlowForm event filters section', () => {
   it('renders GitLab-specific detailed_merge_status and state filters', () => {
     expect(source).to.include('trigger_config.detailed_merge_status');
     expect(source).to.include('Only when approved');
-    expect(source).to.include('Merge Status');
+    expect(source).to.include('Merge status');
   });
 
   it('renders GitHub-specific state and mergeable_state filters', () => {
-    expect(source).to.include('Pull Request State');
+    expect(source).to.include('Pull request state');
     expect(source).to.include('trigger_config.mergeable_state');
-    expect(source).to.include('Mergeable State');
+    expect(source).to.include('Mergeable state');
   });
 
   it('renders filter semantics help alert', () => {
@@ -219,7 +219,7 @@ describe('PreloopFlowForm event filters behaviour', () => {
       trackerFlow({ author: 'octocat', labels: ['bug'] })
     );
 
-    expect(filterInput(element, 'Created By (username)').value).to.equal(
+    expect(filterInput(element, 'Created by (username)').value).to.equal(
       'octocat'
     );
     expect(filterInput(element, 'Labels (comma-separated)').value).to.equal(
@@ -238,7 +238,7 @@ describe('PreloopFlowForm event filters behaviour', () => {
     (element as any).filtersExpanded = true;
     await element.updateComplete;
 
-    const author = filterInput(element, 'Created By (username)');
+    const author = filterInput(element, 'Created by (username)');
     author.value = 'alice';
     author.dispatchEvent(new CustomEvent('sl-input'));
 

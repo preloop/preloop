@@ -82,6 +82,15 @@ class AuthUserResponse(BaseModel):
 
     model_config = {"title": "AuthUserResponse"}
 
+    id: UUID = Field(
+        ...,
+        description=(
+            "The caller's user id. Clients compare it against an approval "
+            "workflow's approver_user_ids to tell whether a pending approval "
+            "is waiting for this person."
+        ),
+    )
+    account_id: UUID = Field(..., description="The account this user belongs to.")
     username: str
     email: EmailStr
     full_name: Optional[str] = None
@@ -90,6 +99,15 @@ class AuthUserResponse(BaseModel):
     permissions: Optional[List[str]] = None
     avatar_url: Optional[str] = None
     avatar_source: Optional[str] = None
+    team_ids: List[UUID] = Field(
+        ...,
+        description=(
+            "Ids of the teams the caller belongs to inside account_id. "
+            "Clients intersect these with an approval workflow's "
+            "approver_team_ids to tell whether a pending approval is waiting "
+            "for this person. Empty when the user is in no team."
+        ),
+    )
 
 
 class LoginRequest(BaseModel):

@@ -971,7 +971,6 @@ def create_app() -> FastAPI:
         app.include_router(
             kill_switch.router,
             prefix="/api/v1",
-            tags=["Kill Switch"],
             dependencies=[Depends(get_current_active_user)],
         )
         app.include_router(

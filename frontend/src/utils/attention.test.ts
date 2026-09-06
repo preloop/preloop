@@ -16,6 +16,10 @@ function minutesAgo(minutes: number): string {
   return new Date(NOW.getTime() - minutes * 60000).toISOString();
 }
 
+function minutesFromNow(minutes: number): string {
+  return new Date(NOW.getTime() + minutes * 60000).toISOString();
+}
+
 function daysAgo(days: number): string {
   return new Date(NOW.getTime() - days * 86400000).toISOString();
 }
@@ -114,6 +118,59 @@ describe('deriveAttentionItems', () => {
       const titles = items.map((item) => item.title);
       expect(titles).to.include('github.merge');
       expect(titles).to.include('Question: Which branch?');
+    });
+
+    it('carries what a row needs to decide in place, deadline included', () => {
+      const [item] = derive({
+        approvals: [
+          {
+            id: 'approval-5',
+            tool_name: 'shell.run',
+            summary: 'Deploy to production',
+            requested_at: minutesAgo(5),
+            expires_at: minutesFromNow(20),
+            managed_agent_name: 'Hermes',
+          },
+        ],
+      });
+
+      expect(item.approval).to.deep.equal({
+        id: 'approval-5',
+        toolName: 'shell.run',
+        requester: 'Hermes',
+        expiresAt: minutesFromNow(20),
+        isQuestion: false,
+      });
+    });
+
+    it('puts the soonest deadline first, undated approvals after them', () => {
+      const items = derive({
+        approvals: [
+          {
+            id: 'no-deadline',
+            tool_name: 'a',
+            requested_at: minutesAgo(1),
+          },
+          {
+            id: 'later',
+            tool_name: 'b',
+            requested_at: minutesAgo(30),
+            expires_at: minutesFromNow(45),
+          },
+          {
+            id: 'soonest',
+            tool_name: 'c',
+            requested_at: minutesAgo(90),
+            expires_at: minutesFromNow(4),
+          },
+        ],
+      });
+
+      expect(items.map((item) => item.id)).to.deep.equal([
+        'approval:soonest',
+        'approval:later',
+        'approval:no-deadline',
+      ]);
     });
 
     it('ignores requests that are no longer pending', () => {

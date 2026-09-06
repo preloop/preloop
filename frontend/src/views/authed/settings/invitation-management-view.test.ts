@@ -98,7 +98,10 @@ describe('InvitationManagementView', () => {
     await waitUntil(() => !(element as any).isLoading, 'still loading');
     await element.updateComplete;
 
-    expect(element.shadowRoot?.textContent).to.contain('Invitation Management');
+    // The page is called what the sidebar calls it.
+    expect(element.shadowRoot?.querySelector('h1')?.textContent).to.equal(
+      'Invitations'
+    );
     expect(element.shadowRoot?.textContent).to.contain('No invitations found');
   });
 
@@ -115,7 +118,11 @@ describe('InvitationManagementView', () => {
     await element.updateComplete;
 
     expect(element.shadowRoot?.textContent).to.contain('invitee@example.com');
-    expect(element.shadowRoot?.textContent).to.contain('pending');
+    // Status is a tint chip with a human label, not a raw enum value.
+    const chip = element.shadowRoot?.querySelector(
+      '.invitation-meta sl-badge.status-chip'
+    );
+    expect(chip?.textContent?.trim()).to.equal('Pending');
   });
 
   it('shows an error when invitation loading fails', async () => {

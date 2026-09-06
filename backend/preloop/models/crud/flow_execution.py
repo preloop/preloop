@@ -2,8 +2,11 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import or_, ColumnElement
 from sqlalchemy.orm import Session, joinedload, load_only, with_expression
 from sqlalchemy.future import select
+
+from preloop.models import models
 
 from preloop.models.models.flow_execution import (
     TRIGGER_SUBJECT_KEY,
@@ -102,13 +105,22 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         super().__init__(model=FlowExecution)
 
     def get(
-        self, db: Session, id: Any, *, account_id: Optional[str] = None
+        self,
+        db: Session,
+        id: Any,
+        *,
+        account_id: Optional[str] = None,
+        refresh: bool = False,
     ) -> Optional[FlowExecution]:
         """Get flow execution by ID.
 
         Overrides base get to properly filter by account_id through Flow relationship.
+        Set refresh for monitors that must replace cached attributes with updates
+        committed by another session, such as a runner WebSocket handler.
         """
         query = db.query(FlowExecution).filter(FlowExecution.id == id)
+        if refresh:
+            query = query.populate_existing()
         if account_id:
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.first()
@@ -352,6 +364,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         account_id: Optional[str] = None,
         flow_id: Optional[Any] = None,
         statuses: Optional[List[str]] = None,
+        search: Optional[str] = None,
+        started_after: Optional[datetime] = None,
         eager_load: bool = False,
         lightweight: bool = False,
         **filters,
@@ -363,6 +377,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         Args:
             eager_load: If True, eagerly load the flow relationship to avoid N+1 queries.
             lightweight: If True, defer heavy text/JSON columns used only by detail views.
+            search: Case-insensitive match on the flow name or the trigger subject.
+            started_after: Only runs that started at or after this instant.
         """
         query = db.query(FlowExecution)
 
@@ -412,9 +428,66 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 flow_loader = flow_loader.load_only(Flow.id, Flow.name)
             query = query.options(flow_loader)
 
-        # Filter by account_id through the Flow relationship
+        query = self._apply_list_filters(
+            query,
+            account_id=account_id,
+            flow_id=flow_id,
+            statuses=statuses,
+            search=search,
+            started_after=started_after,
+            filters=filters,
+        )
+
+        # Order by start_time descending (most recent first)
+        query = query.order_by(FlowExecution.start_time.desc())
+
+        return query.offset(skip).limit(limit).all()
+
+    def count(
+        self,
+        db: Session,
+        *,
+        account_id: Optional[str] = None,
+        flow_id: Optional[Any] = None,
+        statuses: Optional[List[str]] = None,
+        search: Optional[str] = None,
+        started_after: Optional[datetime] = None,
+        **filters,
+    ) -> int:
+        """How many executions match the filters, ignoring the page window.
+
+        The console prints "25 of N executions" over a page of 25, and N has
+        to be the number the filters actually matched, not the page size.
+        """
+        query = self._apply_list_filters(
+            db.query(FlowExecution),
+            account_id=account_id,
+            flow_id=flow_id,
+            statuses=statuses,
+            search=search,
+            started_after=started_after,
+            filters=filters,
+        )
+        return query.count()
+
+    def _apply_list_filters(
+        self,
+        query,
+        *,
+        account_id: Optional[str],
+        flow_id: Optional[Any],
+        statuses: Optional[List[str]],
+        search: Optional[str] = None,
+        started_after: Optional[datetime] = None,
+        filters: Optional[Dict[str, Any]] = None,
+    ):
+        """The list filters, shared by the page query and its count."""
+        # Filter by account_id through the Flow relationship. Search reads the
+        # flow name, so it needs the same join even without an account.
+        if account_id or search:
+            query = query.join(Flow)
         if account_id:
-            query = query.join(Flow).filter(Flow.account_id == account_id)
+            query = query.filter(Flow.account_id == account_id)
 
         if flow_id:
             query = query.filter(FlowExecution.flow_id == flow_id)
@@ -422,15 +495,27 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if statuses:
             query = query.filter(FlowExecution.status.in_(statuses))
 
+        if started_after is not None:
+            query = query.filter(FlowExecution.start_time >= started_after)
+
+        if search:
+            # Both halves of what the row shows: the flow it belongs to and
+            # the subject that tells one run of that flow from the next.
+            pattern = f"%{search.strip()}%"
+            subject = FlowExecution.trigger_event_details[TRIGGER_SUBJECT_KEY]
+            query = query.filter(
+                or_(
+                    Flow.name.ilike(pattern),
+                    subject["text"].astext.ilike(pattern),
+                )
+            )
+
         # Apply any additional filters
-        for key, value in filters.items():
+        for key, value in (filters or {}).items():
             if hasattr(FlowExecution, key):
                 query = query.filter(getattr(FlowExecution, key) == value)
 
-        # Order by start_time descending (most recent first)
-        query = query.order_by(FlowExecution.start_time.desc())
-
-        return query.offset(skip).limit(limit).all()
+        return query
 
     def get_by_statuses(
         self, db: Session, statuses: List[str], account_id: Optional[str] = None
@@ -638,6 +723,203 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         "RUNNING",
     )
 
+    def request_account_stop(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        now: datetime,
+        reason: Optional[str],
+    ) -> int:
+        """Persist stop intent for every admitted runtime under the account lock."""
+        return (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.flow_id.in_(
+                    db.query(models.Flow.id).filter(
+                        models.Flow.account_id == account_id
+                    )
+                ),
+                models.FlowExecution.status.in_(self.ACTIVE_ORCHESTRATOR_STATUSES),
+                or_(
+                    models.FlowExecution.status != "PENDING",
+                    models.FlowExecution.agent_session_reference.isnot(None),
+                    models.FlowExecution.orchestrator_worker_id.isnot(None),
+                ),
+                models.FlowExecution.stop_requested_at.is_(None),
+            )
+            .update(
+                {
+                    models.FlowExecution.stop_requested_at: now,
+                    models.FlowExecution.stop_reason: reason,
+                    models.FlowExecution.stop_source: "account_halt",
+                },
+                synchronize_session=False,
+            )
+        )
+
+    def admit_runtime_start(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        commit: bool = True,
+    ) -> bool:
+        """Serialize launch admission against halt activation and queued leasing.
+
+        A launch admitted first is included in activation's stop snapshot. A
+        launch arriving after activation never dispatches. No lock spans I/O.
+        """
+        from .account_halt import crud_account_halt
+
+        account_id = (
+            db.query(models.Flow.account_id)
+            .join(
+                models.FlowExecution,
+                models.FlowExecution.flow_id == models.Flow.id,
+            )
+            .filter(models.FlowExecution.id == execution_id)
+            .scalar()
+        )
+        if account_id is None:
+            raise ValueError("Execution flow not found")
+        crud_account_halt.lock_account(db, account_id=account_id)
+        execution = self.get(db, id=execution_id, refresh=True)
+        allowed = (
+            execution is not None
+            and execution.stop_requested_at is None
+            and (
+                "flows"
+                not in crud_account_halt.active_scopes(db, account_id=account_id)
+            )
+        )
+        if allowed:
+            execution.status = "STARTING"
+            db.flush()
+        if commit:
+            db.commit()
+        return allowed
+
+    def cancel_unstarted_stop(self, db: Session, *, execution_id: Any) -> bool:
+        """Complete a durable stop when no runtime was ever dispatched."""
+        from datetime import timezone
+
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.agent_session_reference.is_(None),
+                models.FlowExecution.stop_requested_at.isnot(None),
+            )
+            .update(
+                {
+                    models.FlowExecution.status: "STOPPED",
+                    models.FlowExecution.stop_confirmed_at: datetime.now(timezone.utc),
+                },
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        return bool(count)
+
+    def get_stop_request(self, db: Session, *, execution_id: Any) -> Optional[dict]:
+        """Read intent fresh on each monitor poll, independent of halt caching."""
+        row = (
+            db.query(
+                models.FlowExecution.stop_requested_at,
+                models.FlowExecution.stop_reason,
+                models.FlowExecution.stop_confirmed_at,
+            )
+            .filter(models.FlowExecution.id == execution_id)
+            .first()
+        )
+        if row is None or row.stop_requested_at is None:
+            return None
+        return {
+            "requested_at": row.stop_requested_at,
+            "reason": row.stop_reason,
+            "confirmed_at": row.stop_confirmed_at,
+        }
+
+    def confirm_stop(
+        self, db: Session, *, execution_id: Any, commit: bool = True
+    ) -> None:
+        """Record confirmed terminal runtime evidence, never an optimistic request."""
+        from datetime import timezone
+
+        db.query(models.FlowExecution).filter(
+            models.FlowExecution.id == execution_id,
+            models.FlowExecution.stop_requested_at.isnot(None),
+            models.FlowExecution.stop_confirmed_at.is_(None),
+        ).update(
+            {models.FlowExecution.stop_confirmed_at: datetime.now(timezone.utc)},
+            synchronize_session=False,
+        )
+        if commit:
+            db.commit()
+
+    def request_runner_stop(self, db: Session, *, execution_id: Any) -> None:
+        """Signal only this execution's runner, or confirm cancellation before lease."""
+        from .account_halt import crud_account_halt
+
+        account_id = (
+            db.query(models.Flow.account_id)
+            .join(
+                models.FlowExecution,
+                models.FlowExecution.flow_id == models.Flow.id,
+            )
+            .filter(models.FlowExecution.id == execution_id)
+            .scalar()
+        )
+        if account_id is None:
+            raise ValueError("Execution flow not found")
+        crud_account_halt.lock_account(db, account_id=account_id)
+        execution = self.get(db, id=execution_id, refresh=True)
+        runner = (
+            db.query(models.FlowRunner)
+            .filter(
+                models.FlowRunner.current_execution_id == execution_id,
+            )
+            .with_for_update()
+            .first()
+        )
+        if runner is not None:
+            runner.halt_requested = True
+        elif str(execution.agent_session_reference or "").startswith("runner:queued:"):
+            execution.status = "STOPPED"
+            self.confirm_stop(db, execution_id=execution_id, commit=False)
+        db.commit()
+
+    @staticmethod
+    def _recovery_eligible() -> ColumnElement[bool]:
+        """Keep monitoring pending stops during halt; exclude unstarted halt churn."""
+        from sqlalchemy import exists
+
+        halted = exists().where(
+            models.AccountHalt.account_id == models.Flow.account_id,
+            models.AccountHalt.scope == "flows",
+            models.AccountHalt.is_active,
+            models.Flow.id == models.FlowExecution.flow_id,
+        )
+        return or_(
+            models.FlowExecution.agent_session_reference.isnot(None),
+            models.FlowExecution.stop_requested_at.isnot(None),
+            ~halted,
+        )
+
+    @classmethod
+    def _active_or_unconfirmed_stop(cls) -> ColumnElement[bool]:
+        from sqlalchemy import and_
+
+        return or_(
+            models.FlowExecution.status.in_(cls.ACTIVE_ORCHESTRATOR_STATUSES),
+            and_(
+                models.FlowExecution.stop_requested_at.isnot(None),
+                models.FlowExecution.stop_confirmed_at.is_(None),
+                models.FlowExecution.agent_session_reference.isnot(None),
+            ),
+        )
+
     def claim_execution(
         self,
         db: Session,
@@ -674,7 +956,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             db.query(FlowExecution)
             .filter(
                 FlowExecution.id == execution_id,
-                FlowExecution.status.in_(self.ACTIVE_ORCHESTRATOR_STATUSES),
+                self._active_or_unconfirmed_stop(),
+                self._recovery_eligible(),
                 or_(
                     FlowExecution.orchestrator_worker_id.is_(None),
                     FlowExecution.orchestrator_worker_id == worker_id,
@@ -774,7 +1057,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             db.query(FlowExecution)
             .options(joinedload(FlowExecution.flow))
             .filter(
-                FlowExecution.status.in_(self.ACTIVE_ORCHESTRATOR_STATUSES),
+                self._active_or_unconfirmed_stop(),
+                self._recovery_eligible(),
                 or_(
                     FlowExecution.orchestrator_worker_id.is_(None),
                     FlowExecution.orchestrator_heartbeat_at.is_(None),

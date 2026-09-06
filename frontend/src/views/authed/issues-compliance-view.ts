@@ -38,6 +38,13 @@ import type {
 
 import consoleStyles from '../../styles/console-styles.css?inline';
 
+/** Tracker spelling in, console sentence case out. */
+function complianceStatusLabel(status: string | null | undefined): string {
+  const raw = (status || '').trim();
+  if (!raw) return 'Unknown';
+  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+}
+
 @customElement('issues-compliance-view')
 export class IssuesComplianceView extends LitElement {
   private readonly INFO_ALERT_DISMISSED_KEY =
@@ -171,6 +178,12 @@ export class IssuesComplianceView extends LitElement {
 
       .placeholder-content {
         text-align: center;
+      }
+
+      /* Unscored is a state, not a missing value, so it reads as words. */
+      .not-scored {
+        color: var(--console-meta-color, var(--sl-color-neutral-500));
+        font-size: var(--console-text-meta, 0.8125rem);
       }
 
       .search-bar {
@@ -420,29 +433,46 @@ export class IssuesComplianceView extends LitElement {
         continue;
       }
 
-      this._loadingCompliance = { ...this._loadingCompliance, [issueId]: true };
-
-      try {
-        const result = await getIssueCompliance(
-          issueId,
-          this._selectedCompliancePrompt
-        );
-        this._complianceResults = {
-          ...this._complianceResults,
-          [issueId]: result,
-        };
-      } catch (error) {
-        console.error(
-          `Failed to fetch compliance result for issue ${issueId}:`,
-          error
-        );
-      } finally {
-        this._loadingCompliance = {
-          ...this._loadingCompliance,
-          [issueId]: false,
-        };
-      }
+      await this._loadComplianceResult(issueId);
     }
+  }
+
+  /**
+   * Score one issue.
+   *
+   * A row with no score is not broken, it is unscored, so the page says so
+   * and offers the one action that changes it rather than a disabled
+   * "Improve" whose tooltip is the only explanation.
+   */
+  private async _loadComplianceResult(issueId: string): Promise<void> {
+    this._loadingCompliance = { ...this._loadingCompliance, [issueId]: true };
+    try {
+      const result = await getIssueCompliance(
+        issueId,
+        this._selectedCompliancePrompt
+      );
+      this._complianceResults = {
+        ...this._complianceResults,
+        [issueId]: result,
+      };
+    } catch (error) {
+      console.error(
+        `Failed to fetch compliance result for issue ${issueId}:`,
+        error
+      );
+    } finally {
+      this._loadingCompliance = {
+        ...this._loadingCompliance,
+        [issueId]: false,
+      };
+    }
+  }
+
+  /** Whether a score leaves room for the Improve flow to do anything. */
+  private _canImprove(result: IssueComplianceResult | undefined): boolean {
+    return Boolean(
+      result && result.compliance_factor !== 0 && result.compliance_factor !== 1
+    );
   }
 
   private _toggleRow(issueId: string) {
@@ -481,13 +511,6 @@ export class IssuesComplianceView extends LitElement {
     // Refetch the issues list. `fetchComplianceResults` will be called automatically.
     this._currentPage = 1;
     this.fetchIssues();
-  }
-
-  private _handleMenuAction(e: CustomEvent, issue: Issue) {
-    const action = e.detail.item.value;
-    if (action === 'improve-compliance') {
-      this._openImproveComplianceModal(issue);
-    }
   }
 
   private _openFilterModal() {
@@ -606,7 +629,7 @@ export class IssuesComplianceView extends LitElement {
         </sl-input>
         <sl-dropdown>
           <sl-button slot="trigger" caret>
-            ${selectedPrompt ? selectedPrompt.name : 'Select Type'}
+            ${selectedPrompt ? selectedPrompt.name : 'Select a check'}
           </sl-button>
           <sl-menu @sl-select=${this._handleComplianceTypeSelect}>
             ${this._compliancePrompts.map(
@@ -689,8 +712,12 @@ export class IssuesComplianceView extends LitElement {
                     <td>${issue.title}</td>
                     <td>${project?.name || 'N/A'}</td>
                     <td>
-                      <sl-badge variant=${getStatusVariant(issue.status)}>
-                        ${issue.status}
+                      <sl-badge
+                        class="chip"
+                        pill
+                        variant=${getStatusVariant(issue.status)}
+                      >
+                        ${complianceStatusLabel(issue.status)}
                       </sl-badge>
                     </td>
                     <td>
@@ -713,55 +740,35 @@ export class IssuesComplianceView extends LitElement {
                                   </sl-badge>
                                 </sl-tooltip>
                               `
-                            : html`<span>-</span>`;
+                            : html`<span class="not-scored">Not scored</span>`;
                         }
                       )}
                     </td>
                     <td>
-                      <sl-button-group>
-                        <sl-button
-                          size="small"
-                          @click=${(e: Event) => {
-                            e.stopPropagation();
-                            this._openImproveComplianceModal(issue);
-                          }}
-                          ?disabled=${
-                            !complianceResult ||
-                            complianceResult.compliance_factor === 0 ||
-                            complianceResult.compliance_factor === 1
-                          }
-                        >
-                          Improve
-                        </sl-button>
-                        <sl-dropdown
-                          @click=${(e: Event) => e.stopPropagation()}
-                          ?disabled=${
-                            !complianceResult ||
-                            complianceResult.compliance_factor === 0 ||
-                            complianceResult.compliance_factor === 1
-                          }
-                        >
-                          <sl-button
-                            slot="trigger"
-                            size="small"
-                            title="Actions"
-                          >
-                            <sl-icon name="three-dots-vertical"></sl-icon>
-                          </sl-button>
-                          <sl-menu
-                            @sl-select=${(e: CustomEvent) =>
-                              this._handleMenuAction(e, issue)}
-                          >
-                            <sl-menu-item value="improve-compliance">
-                              <sl-icon
-                                name="graph-up-arrow"
-                                slot="prefix"
-                              ></sl-icon>
-                              Improve Compliance
-                            </sl-menu-item>
-                          </sl-menu>
-                        </sl-dropdown>
-                      </sl-button-group>
+                      ${
+                        this._canImprove(complianceResult)
+                          ? html`<sl-button
+                              size="small"
+                              variant="primary"
+                              outline
+                              @click=${(e: Event) => {
+                                e.stopPropagation();
+                                this._openImproveComplianceModal(issue);
+                              }}
+                            >
+                              Improve
+                            </sl-button>`
+                          : html`<sl-button
+                              size="small"
+                              ?loading=${this._loadingCompliance[issue.id]}
+                              @click=${(e: Event) => {
+                                e.stopPropagation();
+                                void this._loadComplianceResult(issue.id);
+                              }}
+                            >
+                              Score
+                            </sl-button>`
+                      }
                     </td>
                   </tr>
                   ${
@@ -896,7 +903,7 @@ export class IssuesComplianceView extends LitElement {
         </div>
         <div class="side-column">
           <sl-card class="detail-view-card">
-            <div slot="header">Issue Details</div>
+            <div slot="header">Issue details</div>
             ${when(
               this._expandedRowKey,
               () => {
@@ -949,7 +956,7 @@ export class IssuesComplianceView extends LitElement {
     return html`
       <div class="review-section">
         <div class="review-header">
-          <h3>${complianceResult.name} Review</h3>
+          <h3>${complianceResult.name} review</h3>
         </div>
 
         ${when(
@@ -963,7 +970,7 @@ export class IssuesComplianceView extends LitElement {
           `,
           () => html`
             <div class="score-container">
-              <b class="compliance-title">Compliance Score</b>
+              <b class="compliance-title">Compliance score</b>
               <sl-badge
                 variant=${getComplianceVariant(
                   complianceResult.compliance_factor
@@ -978,7 +985,7 @@ export class IssuesComplianceView extends LitElement {
               <div class="issue-description">${complianceResult.reason}</div>
             </div>
             <div>
-              <b class="compliance-title">Suggestion for Improvement</b>
+              <b class="compliance-title">Suggested improvement</b>
               <div class="issue-description">
                 ${complianceResult.suggestion}
               </div>
@@ -986,12 +993,10 @@ export class IssuesComplianceView extends LitElement {
             <div class="improve-button-container">
               <sl-button
                 size="small"
+                variant="primary"
+                outline
                 @click=${() => this._openImproveComplianceModal(issue)}
-                ?disabled=${
-                  !complianceResult ||
-                  complianceResult.compliance_factor === 0 ||
-                  complianceResult.compliance_factor === 1
-                }
+                ?disabled=${!this._canImprove(complianceResult ?? undefined)}
               >
                 Improve
               </sl-button>

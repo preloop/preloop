@@ -16,8 +16,29 @@ describe('AIModelDetailView', () => {
   let overrideWrites: { url: string; method: string; body: any }[];
   let repriceCalls: any[];
   let repriceResponse: any;
+  let modelPayload: any;
 
   beforeEach(() => {
+    modelPayload = {
+      id: 'model-1',
+      name: 'Claude Sonnet Primary',
+      provider_name: 'Anthropic',
+      model_identifier: 'claude-sonnet-4',
+      has_api_key: true,
+      meta_data: {
+        gateway: {
+          enabled: true,
+          url: 'https://gateway.example/openai/v1',
+          model_alias: 'preloop/anthropic/claude-sonnet-4',
+        },
+        managed_agent_id: 'agent-1',
+        managed_agent_display_name: 'Mini Claw',
+        managed_agent_runtime_principal_id: 'mini-claw-123',
+      },
+      is_default: true,
+      created_at: '2026-03-01T10:00:00Z',
+      updated_at: '2026-03-09T18:30:00Z',
+    };
     featureFlags = {};
     overrideWrites = [];
     repriceCalls = [];
@@ -114,32 +135,10 @@ describe('AIModelDetailView', () => {
           !url.includes('/runtime-sessions') &&
           !url.includes('/interactions')
         ) {
-          return new Response(
-            JSON.stringify({
-              id: 'model-1',
-              name: 'Claude Sonnet Primary',
-              provider_name: 'Anthropic',
-              model_identifier: 'claude-sonnet-4',
-              has_api_key: true,
-              meta_data: {
-                gateway: {
-                  enabled: true,
-                  url: 'https://gateway.example/openai/v1',
-                  model_alias: 'preloop/anthropic/claude-sonnet-4',
-                },
-                managed_agent_id: 'agent-1',
-                managed_agent_display_name: 'Mini Claw',
-                managed_agent_runtime_principal_id: 'mini-claw-123',
-              },
-              is_default: true,
-              created_at: '2026-03-01T10:00:00Z',
-              updated_at: '2026-03-09T18:30:00Z',
-            }),
-            {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
-            }
-          );
+          return new Response(JSON.stringify(modelPayload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
         }
 
         if (url.startsWith('/api/v1/ai-models/model-1/summary')) {
@@ -420,7 +419,9 @@ describe('AIModelDetailView', () => {
 
     const content = element.shadowRoot?.textContent || '';
     expect(content).to.contain('Claude Sonnet Primary');
-    expect(content).to.contain('Model Observability');
+    // The card is named for what it holds, not for a product feature.
+    expect(content).to.contain('Details');
+    expect(content).to.not.contain('Model Observability');
     expect(content).to.contain('Anthropic');
     expect(content).to.contain('claude-sonnet-4');
     expect(content).to.contain('preloop/anthropic/claude-sonnet-4');
@@ -613,8 +614,65 @@ describe('AIModelDetailView', () => {
     const dialog = element.shadowRoot?.querySelector('sl-dialog');
     expect(dialog).to.exist;
     expect(dialog?.getAttribute('label') || (dialog as any).label).to.contain(
-      'Delete Model'
+      'Delete model'
     );
+  });
+
+  it('sets the header Delete apart as an outline action', async () => {
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+    await waitUntil(
+      () => !(element as any).loading,
+      'AI model detail view did not finish loading',
+      { timeout: 5000 }
+    );
+    await element.updateComplete;
+
+    const actions = element.shadowRoot?.querySelector('resource-actions');
+    const deleteAction = (
+      actions as unknown as {
+        actions: {
+          id: string;
+          variant?: string;
+          outline?: boolean;
+          separated?: boolean;
+        }[];
+      }
+    ).actions.find((action) => action.id === 'delete');
+    expect(deleteAction?.variant).to.equal('danger');
+    expect(deleteAction?.outline).to.equal(true);
+    expect(deleteAction?.separated).to.equal(true);
+  });
+
+  it('shows Never for a model that was never updated and a hairline usage strip', async () => {
+    modelPayload = {
+      ...modelPayload,
+      updated_at: null,
+    };
+
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+    await waitUntil(
+      () => !(element as any).loading,
+      'AI model detail view did not finish loading',
+      { timeout: 5000 }
+    );
+    await element.updateComplete;
+
+    const content = (element.shadowRoot?.textContent || '').replace(
+      /\s+/g,
+      ' '
+    );
+    expect(content).to.contain('Updated: Never');
+
+    // The summary is a hairline row inside the card, not boxes inside a box.
+    expect(element.shadowRoot?.querySelector('.summary-strip')).to.exist;
+    expect(element.shadowRoot?.querySelector('.stat-card')).to.equal(null);
+    // The period is stated once, in the card header.
+    expect(content).to.contain('Usage summary');
+    expect(content).to.contain('30 days ·');
   });
   const mountModel = async (): Promise<AIModelDetailView> => {
     const element = (await fixture(

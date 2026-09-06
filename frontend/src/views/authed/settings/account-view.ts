@@ -126,7 +126,7 @@ export class AccountView extends LitElement {
     try {
       this._haltStatus = await getKillSwitchStatus();
     } catch {
-      this._haltStatus = this._haltStatus;
+      // Keep the last known state when a status refresh fails.
     }
   }
 
@@ -156,7 +156,10 @@ export class AccountView extends LitElement {
     this._haltBusy = true;
     this._haltError = null;
     try {
-      this._haltStatus = await deactivateKillSwitch({ scopes });
+      this._haltStatus = await deactivateKillSwitch({
+        scopes,
+        reason: this._haltReason.trim() || null,
+      });
       this.dispatchEvent(
         new CustomEvent('kill-switch-changed', {
           bubbles: true,
@@ -454,18 +457,36 @@ export class AccountView extends LitElement {
         color: var(--sl-color-danger-600);
       }
 
+      /* One hairline row, not five boxes inside a card: DESIGN.md depth
+         limit two. The rule between the numbers separates them; a border and
+         a fill around each one adds a third layer for no information. */
       .usage-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
         gap: 0.75rem;
         margin-top: 1rem;
+        padding-bottom: 0.875rem;
+        border-bottom: 1px solid var(--console-hairline);
+        /* Clips the rule of whichever metric starts a row: see below. */
+        overflow: hidden;
       }
 
+      /* The separator is drawn in the gap to the metric's left rather than on
+         its own border, because a border follows DOM order and this grid
+         wraps: once it does, the first metric of the second row would carry a
+         rule with nothing beside it. Sitting in the gap, that rule falls
+         outside the grid's box and is clipped away. */
       .usage-metric {
-        padding: 0.875rem;
-        border-radius: 12px;
-        border: 1px solid var(--sl-color-neutral-200);
-        background: var(--sl-color-neutral-0);
+        position: relative;
+      }
+
+      .usage-metric::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: -0.375rem;
+        border-left: 1px solid var(--console-hairline);
       }
 
       .usage-label {
@@ -680,6 +701,13 @@ export class AccountView extends LitElement {
                         The following traffic is rejected until the halt is
                         lifted:
                       </div>
+                      <sl-input
+                        label="Recovery reason"
+                        maxlength="500"
+                        value=${this._haltReason}
+                        @sl-input=${(e: any) => (this._haltReason = e.target.value)}
+                        ?disabled=${this._haltBusy}
+                      ></sl-input>
                       <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
                         ${this._haltStatus.scopes.map(
                           (entry) => html`
@@ -703,6 +731,13 @@ export class AccountView extends LitElement {
                             `
                           : ''
                       }
+                      <sl-input
+                        label="Recovery reason"
+                        maxlength="500"
+                        value=${this._haltReason}
+                        @sl-input=${(e: any) => (this._haltReason = e.target.value)}
+                        ?disabled=${this._haltBusy}
+                      ></sl-input>
                       <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
                         ${this._haltStatus.scopes.map(
                           (entry) => html`
@@ -752,8 +787,9 @@ export class AccountView extends LitElement {
                       <div>
                         The kill switch blocks new model requests, MCP tool
                         calls, and flow starts for this account within five
-                        seconds. Running containers and local commands are not
-                        stopped. Activation is audited.
+                        seconds. Managed flow executions receive stop requests;
+                        termination is confirmed separately. Activation is
+                        audited.
                       </div>
                       <sl-textarea
                         label="Reason (recorded for audit)"

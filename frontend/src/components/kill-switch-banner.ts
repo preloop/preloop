@@ -178,7 +178,10 @@ export class KillSwitchBanner extends LitElement {
         ? this.status!.scopes.map((entry) => entry.scope)
         : [target];
     try {
-      this.status = await deactivateKillSwitch({ scopes });
+      this.status = await deactivateKillSwitch({
+        scopes,
+        reason: 'Staged recovery from console banner',
+      });
       this.dispatchEvent(
         new CustomEvent('kill-switch-changed', {
           bubbles: true,
@@ -198,7 +201,9 @@ export class KillSwitchBanner extends LitElement {
   /** "12:41:05 UTC" style stamp for when the halt was activated. */
   private formatActivationTime(iso: string | null): string {
     if (!iso) return '';
-    const date = new Date(iso.endsWith('Z') ? iso : `${iso}Z`);
+    const date = new Date(
+      /(?:Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : `${iso}Z`
+    );
     if (Number.isNaN(date.getTime())) return '';
     return date.toLocaleString(undefined, {
       month: 'short',

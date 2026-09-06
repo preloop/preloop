@@ -1576,18 +1576,16 @@ async def {internal_name}({params_str}) -> str:
         self,
         name: str,
         arguments: dict | None = None,
+        *,
+        account_id: str,
     ):
         """Execute an already-registered tool without re-running policy checks.
 
         Async approval polling calls this only after the original tool call has
         been approved and claimed for idempotent re-execution.
         """
-        user_context = self._get_current_user_context()
-        denial = (
-            await self._halt_dispatch_denial(user_context.account_id)
-            if user_context
-            else "Access denied: no account context for tool dispatch"
-        )
+        # The durable approval owns this dispatch, even without HTTP context.
+        denial = await self._halt_dispatch_denial(account_id)
         if denial:
             from fastmcp.tools.tool import ToolResult
             from mcp.types import TextContent

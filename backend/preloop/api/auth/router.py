@@ -69,6 +69,7 @@ from preloop.utils.tokens import (
 from preloop.models.crud import (
     crud_account,
     crud_audit_log,
+    crud_team,
     crud_user,
     crud_api_key,
     crud_api_usage,
@@ -205,6 +206,49 @@ def _resolve_user_permissions(user: UserModel, db: Session) -> Optional[List[str
         # RBAC is optional on this path; never 500 /users/me for permission lookup.
         logger.exception("Failed to resolve user permissions; returning None")
         return None
+
+
+def _resolve_team_ids(user: UserModel, db: Session) -> List[UUID]:
+    """Return the ids of the teams the user belongs to, inside their account.
+
+    Approval workflows name their approvers as ``approver_user_ids`` and
+    ``approver_team_ids``. Without team membership a client (web, iOS,
+    Android) cannot tell whether a pending approval is waiting for the person
+    holding the session, so it is returned with the profile.
+
+    Memberships pointing at a team in another account are excluded: the
+    caller's account scopes everything else it can see.
+    """
+    try:
+        teams = crud_team.get_user_teams(
+            db,
+            user_id=user.id,
+            account_id=user.account_id,
+            limit=None,
+        )
+    except Exception:
+        # Same rule as permissions above: never 500 /users/me over an
+        # optional field.
+        logger.exception("Failed to resolve team memberships; returning empty list")
+        return []
+    return [team.id for team in teams]
+
+
+def _build_auth_user_response(user: UserModel, db: Session) -> AuthUserResponse:
+    """Build the profile payload returned by the ``/users/me`` endpoints."""
+    return AuthUserResponse(
+        id=user.id,
+        account_id=user.account_id,
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        email_verified=user.email_verified,
+        is_superuser=bool(user.is_superuser),
+        permissions=_resolve_user_permissions(user, db),
+        avatar_url=user.avatar_url,
+        avatar_source=user.avatar_source,
+        team_ids=_resolve_team_ids(user, db),
+    )
 
 
 def _api_key_activity_status(
@@ -418,7 +462,7 @@ async def register(
     background_tasks: BackgroundTasks,
     request: Request,
     db: Session = Depends(get_db_session),
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """Register a new user.
 
     Args:
@@ -579,11 +623,16 @@ async def register(
         logger.info("[REGISTER] Account setup tasks scheduled")
 
         logger.info("[REGISTER] Registration complete, returning response")
+        # A brand new user is in no team yet, so team_ids is empty here; the
+        # identity fields still ship so the response matches AuthUserResponse.
         return {
+            "id": new_user.id,
+            "account_id": new_account.id,
             "username": new_user.username,
             "email": new_user.email,
             "full_name": new_user.full_name,
             "email_verified": new_user.email_verified,
+            "team_ids": [],
         }
     except IntegrityError:
         session.rollback()
@@ -941,18 +990,10 @@ def read_users_me(
         current_user: The current user.
 
     Returns:
-        The current user.
+        The current user, including the identity fields (id, account_id,
+        team_ids) clients need to answer "is this waiting for me?".
     """
-    return AuthUserResponse(
-        username=current_user.username,
-        email=current_user.email,
-        full_name=current_user.full_name,
-        email_verified=current_user.email_verified,
-        is_superuser=bool(current_user.is_superuser),
-        permissions=_resolve_user_permissions(current_user, db),
-        avatar_url=current_user.avatar_url,
-        avatar_source=current_user.avatar_source,
-    )
+    return _build_auth_user_response(current_user, db)
 
 
 @router.put("/users/me", response_model=AuthUserResponse)
@@ -961,10 +1002,10 @@ def update_user_me(
     db: Session = Depends(get_db_session),
     user_update: AuthUserUpdate,
     current_user: UserModel = Depends(get_current_active_user),
-) -> Any:
+) -> AuthUserResponse:
     """Update own user."""
     user = crud_user.update(db, db_obj=current_user, obj_in=user_update)
-    return user
+    return _build_auth_user_response(user, db)
 
 
 @router.put("/users/me/password", status_code=status.HTTP_204_NO_CONTENT)

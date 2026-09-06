@@ -41,6 +41,16 @@ from preloop.models.crud import (
 )
 
 
+@pytest.fixture(autouse=True)
+def no_account_stop_request():
+    # Stop-intent behavior has real-DB coverage in test_kill_switch_durability.
+    with patch(
+        "preloop.services.flow_orchestrator.crud_flow_execution.get_stop_request",
+        return_value=None,
+    ):
+        yield
+
+
 @pytest.fixture
 def test_account(db_session: Session) -> Account:
     """Create a test account (organization)."""

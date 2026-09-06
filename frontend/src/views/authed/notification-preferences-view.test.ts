@@ -53,9 +53,33 @@ describe('NotificationPreferencesView', () => {
     await tick();
     await el.updateComplete;
     expect((el as any).isLoading).to.be.false;
-    expect(el.shadowRoot?.textContent).to.contain('Notification Preferences');
+    // The page word is said once, in the title; the sections are named for
+    // what they hold.
+    expect(el.shadowRoot?.querySelector('h1')?.textContent).to.equal(
+      'Notifications'
+    );
+    const sections = Array.from(
+      el.shadowRoot?.querySelectorAll('.section-title') || []
+    ).map((node) => (node.textContent || '').trim());
+    expect(sections).to.include('Channels');
+    expect(sections).to.include('Devices');
+    expect(sections).to.not.include('Notification Channels');
     expect(el.shadowRoot?.querySelectorAll('sl-switch').length).to.equal(2);
     expect(el.shadowRoot?.querySelector('.device-item')).to.exist;
+
+    // Unregister is outline, and the store links are default buttons rather
+    // than two primary paints at the foot of a settings page.
+    const unregister = el.shadowRoot?.querySelector(
+      '.device-item sl-button[variant="danger"]'
+    );
+    expect(unregister?.hasAttribute('outline')).to.equal(true);
+    const store = Array.from(
+      el.shadowRoot?.querySelectorAll('.app-store-links sl-button') || []
+    );
+    expect(store).to.have.lengthOf(2);
+    store.forEach((button) => {
+      expect(button.getAttribute('variant')).to.equal('default');
+    });
   });
 
   it('shows the empty state when no devices are registered', async () => {

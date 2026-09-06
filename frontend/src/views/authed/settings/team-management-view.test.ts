@@ -106,7 +106,15 @@ describe('TeamManagementView', () => {
     );
     await element.updateComplete;
 
-    expect(element.shadowRoot?.textContent).to.contain('Team Management');
+    // The page is called what the sidebar calls it.
+    expect(element.shadowRoot?.querySelector('h1')?.textContent).to.equal(
+      'Teams'
+    );
+    // Delete is outline and last, after the gap.
+    const del = element.shadowRoot?.querySelector(
+      '.team-actions sl-button[variant="danger"]'
+    );
+    expect(del?.hasAttribute('outline')).to.equal(true);
     expect(element.shadowRoot?.textContent).to.contain('Platform');
     expect(element.shadowRoot?.textContent).to.contain(
       'Platform engineering team'

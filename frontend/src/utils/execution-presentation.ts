@@ -81,6 +81,23 @@ export function formatEstimatedCost(value: number | null | undefined): string {
   })}`;
 }
 
+/**
+ * A token count at console scale.
+ *
+ * `1,353,363` is a number to compare, not to read digit by digit, so at or
+ * above 1000 it renders compact ("1.4M"). The exact figure belongs in a
+ * title, not in the strip.
+ */
+export function formatTokenCount(value: number | null | undefined): string {
+  const amount = Number(value ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) return '0';
+  if (amount < 1000) return String(Math.round(amount));
+  return new Intl.NumberFormat(undefined, {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(amount);
+}
+
 /** Every alias a run used, primary first, from either projected shape. */
 export function executionModels(
   execution: ExecutionModelSource
@@ -119,12 +136,31 @@ export function executionModelTitle(execution: ExecutionModelSource): string {
 }
 
 /**
+ * The alias as a column prints it: without the provider prefix the cell (or
+ * the next column) already states. `deepseek/deepseek-v4-pro` beside a
+ * provider that says `deepseek` reads as the same word twice (DESIGN.md D30).
+ */
+export function executionModelAliasLabel(model: ExecutionModelUsage): string {
+  const alias = (model.model_alias || '').trim();
+  const provider = (model.provider_name || '').trim().toLowerCase();
+  if (!provider || !alias.includes('/')) return alias;
+  const [prefix, ...rest] = alias.split('/');
+  const remainder = rest.join('/');
+  return prefix.toLowerCase() === provider && remainder ? remainder : alias;
+}
+
+/**
  * The model cell: the alias that did most of the work, its provider in meta
  * ink, and "+N" when the run switched models. The full list is in the title,
  * because a table row is not the place to enumerate four aliases.
+ *
+ * `aliasOnly` is for tables with no provider column (the executions list):
+ * the alias drops a provider prefix it would otherwise print twice, and the
+ * provider itself stays in the title.
  */
 export function renderExecutionModel(
-  execution: ExecutionModelSource
+  execution: ExecutionModelSource,
+  options: { aliasOnly?: boolean } = {}
 ): TemplateResult {
   const models = executionModels(execution);
   if (models.length === 0) {
@@ -135,11 +171,14 @@ export function renderExecutionModel(
     >`;
   }
   const [primary, ...rest] = models;
+  const alias = options.aliasOnly
+    ? executionModelAliasLabel(primary)
+    : primary.model_alias;
   return html`<span
     class="execution-model"
     title=${executionModelTitle(execution)}
-    ><span class="execution-model-alias">${primary.model_alias}</span>${
-      primary.provider_name
+    ><span class="execution-model-alias">${alias}</span>${
+      primary.provider_name && !options.aliasOnly
         ? html`<span class="execution-model-provider"
             >${primary.provider_name}</span
           >`
@@ -175,6 +214,24 @@ export function executionRunner(
     };
   }
   return { kind: 'hosted', id: null, name: 'Preloop hosted', pool: null };
+}
+
+/**
+ * Whether a row has to say where it ran.
+ *
+ * Repeating "Hosted" on all 25 rows states the account default 25 times. The
+ * chip earns its place only on a run that went somewhere the default would
+ * not have sent it: with a pinned private pool that is a hosted run, and with
+ * auto or hosted-only (where hosted is the fallback) it is a private one.
+ */
+export function shouldShowRunnerKind(
+  runner: ExecutionRunner | null | undefined,
+  accountDefaultPool?: string | null
+): boolean {
+  const kind = executionRunner(runner).kind;
+  const pool = (accountDefaultPool || '').trim().toLowerCase();
+  const defaultsToPrivate = pool !== '' && pool !== 'auto' && pool !== 'server';
+  return defaultsToPrivate ? kind === 'hosted' : kind === 'private';
 }
 
 /** Small Hosted / Private chip used on the list and the run page. */

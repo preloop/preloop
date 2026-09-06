@@ -54,31 +54,8 @@ const PARTIAL_HALT: KillSwitchStatus = {
   ],
 };
 
-function stubFetch(statusByCall: KillSwitchStatus[]): () => void {
-  const original = window.fetch;
-  let statusIndex = 0;
-  window.fetch = (async (input: RequestInfo | URL) => {
-    const url = typeof input === 'string' ? input : input.toString();
-    if (url.includes('/account/kill-switch/status')) {
-      const status = statusByCall[statusIndex] ?? INACTIVE;
-      statusIndex += 1;
-      return new Response(JSON.stringify(status), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-    return new Response(JSON.stringify({}), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }) as typeof window.fetch;
-  return () => {
-    window.fetch = original;
-  };
-}
-
 function deactivateRequests(): string[] {
-  // Captured by stubFetch below via a closure on window.fetch calls.
+  // Captured by the fetch fixture below via a closure on window.fetch calls.
   return (
     (window as unknown as { __deactivateBodies?: string[] })
       .__deactivateBodies ?? []
@@ -149,6 +126,29 @@ describe('kill-switch-banner', () => {
     expect(text).to.contain('Flow executions blocked');
   });
 
+  for (const iso of [
+    '2026-09-06T12:30:00',
+    '2026-09-06T12:30:00Z',
+    '2026-09-06T14:30:00+02:00',
+  ]) {
+    it(`renders a valid activation timestamp for ${iso}`, async () => {
+      await mount([
+        {
+          ...FULL_HALT,
+          scopes: FULL_HALT.scopes.map((scope) => ({
+            ...scope,
+            activated_at: iso,
+          })),
+        },
+      ]);
+      const expected = new Date('2026-09-06T12:30:00Z').toLocaleString(
+        undefined,
+        { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
+      );
+      expect(el.shadowRoot!.textContent).to.include(expected);
+    });
+  }
+
   it('attributes the halt: who and why', async () => {
     await mount([FULL_HALT]);
     const text = el.shadowRoot!.textContent ?? '';
@@ -181,7 +181,10 @@ describe('kill-switch-banner', () => {
 
     const bodies = deactivateRequests();
     expect(bodies).to.have.length(1);
-    expect(JSON.parse(bodies[0])).to.deep.equal({ scopes: ['flows'] });
+    expect(JSON.parse(bodies[0])).to.deep.equal({
+      scopes: ['flows'],
+      reason: 'Staged recovery from console banner',
+    });
   });
 
   it('offers resume-all only when more than one scope is halted', async () => {
@@ -200,6 +203,7 @@ describe('kill-switch-banner', () => {
     expect(bodies).to.have.length(1);
     expect(JSON.parse(bodies[0])).to.deep.equal({
       scopes: ['gateway', 'tools', 'flows'],
+      reason: 'Staged recovery from console banner',
     });
   });
 

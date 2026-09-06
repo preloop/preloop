@@ -2,10 +2,7 @@ import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
-import '@shoelace-style/shoelace/dist/components/card/card.js';
-import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
-import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '../../components/view-header.ts';
 import {
   getAccountOrganization,
@@ -14,7 +11,7 @@ import {
   type RunnerRecord,
 } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
-import { formatLocalDateTime } from '../../utils/date';
+import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
 import { AUTO_RUNNER_POOL } from '../../utils/runner-pool';
 import '../../components/preloop-runner-pool-select';
 import consoleStyles from '../../styles/console-styles.css?inline';
@@ -80,74 +77,39 @@ export class RunnersView extends LitElement {
       a {
         color: var(--sl-color-primary-600);
       }
-      .empty-wrap {
+      /*
+       * An empty page states one fact and hands over one command. The old
+       * treatment (a 580px card, a 72px badge icon and a full width primary
+       * button) spent a screen saying "nothing here yet".
+       */
+      .empty-state {
+        /* The shared recipe stacks its empty states in a column; this one is
+           a sentence, a command and a link that read as one line. Declared in
+           full, including the 72px box, so it does not depend on which half
+           of console-styles.css the cascade leaves standing. */
+        box-sizing: border-box;
         display: flex;
-        justify-content: center;
-        width: 100%;
-        margin-top: var(--sl-spacing-large);
-      }
-      .empty-card {
-        width: 100%;
-        max-width: 580px;
-      }
-      .empty-card::part(base) {
-        border: 1px solid
-          color-mix(in srgb, var(--sl-color-primary-600) 35%, transparent);
-        box-shadow: var(--sl-shadow-large);
-        border-radius: var(--sl-border-radius-large);
-        overflow: hidden;
-      }
-      .empty-body {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-        padding: var(--sl-spacing-large);
-      }
-      .empty-icon {
-        width: 72px;
-        height: 72px;
-        border-radius: 50%;
-        background: var(--sl-color-primary-100);
-        color: var(--sl-color-primary-600);
-        display: flex;
+        flex-flow: row wrap;
         align-items: center;
         justify-content: center;
-        margin-bottom: var(--sl-spacing-medium);
-      }
-      .empty-icon sl-icon {
-        font-size: 2.5rem;
-      }
-      .empty-title {
-        margin: 0 0 var(--sl-spacing-2x-small);
-        font-size: 1.25rem;
-        font-weight: 700;
-        color: var(--sl-color-neutral-900);
-      }
-      .empty-copy {
-        margin: 0 0 var(--sl-spacing-large);
-        max-width: 440px;
-        font-size: 0.95rem;
-        line-height: 1.55;
+        gap: var(--sl-spacing-x-small) var(--sl-spacing-small);
+        margin: 0;
+        min-height: 72px;
+        padding: var(--sl-spacing-medium);
+        color: var(--sl-color-neutral-600);
+        font-size: 13px;
       }
       .empty-command {
-        width: 100%;
-        display: flex;
+        display: inline-flex;
         align-items: center;
-        justify-content: space-between;
-        background: var(--sl-color-neutral-100);
-        border: 1px solid var(--sl-color-neutral-300);
-        border-radius: var(--sl-border-radius-medium);
-        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+        gap: var(--sl-spacing-2x-small);
         font-family: var(--sl-font-mono);
-        font-size: 0.9rem;
-        margin-bottom: var(--sl-spacing-large);
       }
       .empty-command code {
-        color: var(--sl-color-primary-700);
-      }
-      .empty-docs {
-        width: 100%;
+        background: var(--sl-color-neutral-100);
+        border-radius: var(--sl-border-radius-small);
+        color: var(--sl-color-neutral-800);
+        padding: 1px 6px;
       }
       .default-pool {
         margin: 0 0 var(--sl-spacing-large);
@@ -265,6 +227,13 @@ export class RunnersView extends LitElement {
     `;
   }
 
+  /** "online" is a wire value; "Online" is what a person reads. */
+  private statusLabel(status: string): string {
+    const raw = (status || '').trim();
+    if (!raw) return 'Unknown';
+    return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+  }
+
   private statusVariant(status: string): string {
     switch ((status || '').toLowerCase()) {
       case 'online':
@@ -280,7 +249,7 @@ export class RunnersView extends LitElement {
     return html`
       <view-header
         headerText="Runners"
-        description="Self-hosted CLI runners for this account. Start one with preloop runner fg."
+        description="Self-hosted CLI runners for this account."
       ></view-header>
       ${this.loading ? nothing : this.renderDefaultPoolControl()}
       ${
@@ -290,39 +259,22 @@ export class RunnersView extends LitElement {
             ? html`<p class="muted">${this.error}</p>`
             : this.runners.length === 0
               ? html`
-                  <div class="empty-wrap">
-                    <sl-card class="empty-card">
-                      <div class="empty-body">
-                        <div class="empty-icon">
-                          <sl-icon name="cpu"></sl-icon>
-                        </div>
-                        <h3 class="empty-title">No runners registered</h3>
-                        <p class="muted empty-copy">
-                          Self-hosted CLI runners execute flow jobs and
-                          automation tasks in your local environment with full
-                          network and credential access.
-                        </p>
-
-                        <div class="empty-command">
-                          <code>preloop runner fg --labels local</code>
-                          <sl-copy-button
-                            value="preloop runner fg --labels local"
-                          ></sl-copy-button>
-                        </div>
-
-                        <sl-button
-                          class="empty-docs"
-                          variant="primary"
-                          href="https://docs.preloop.ai/guide/runners"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          <sl-icon slot="prefix" name="book"></sl-icon>
-                          View Runner Documentation →
-                        </sl-button>
-                      </div>
-                    </sl-card>
-                  </div>
+                  <p class="empty-state">
+                    <span>No runners registered. Start one:</span>
+                    <span class="empty-command">
+                      <code>preloop runner fg --labels local</code>
+                      <sl-copy-button
+                        value="preloop runner fg --labels local"
+                      ></sl-copy-button>
+                    </span>
+                    <a
+                      class="empty-docs"
+                      href="https://docs.preloop.ai/guide/runners"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      >Runner docs</a
+                    >
+                  </p>
                 `
               : html`
                   <table>
@@ -346,7 +298,9 @@ export class RunnersView extends LitElement {
                               <div class="labels">
                                 ${(row.labels || []).map(
                                   (label) =>
-                                    html`<sl-badge pill>${label}</sl-badge>`
+                                    html`<sl-badge class="chip" pill
+                                      >${label}</sl-badge
+                                    >`
                                 )}
                               </div>
                             </td>
@@ -361,16 +315,24 @@ export class RunnersView extends LitElement {
                             </td>
                             <td>
                               <sl-badge
+                                class="chip"
                                 pill
                                 variant=${this.statusVariant(row.status)}
                               >
-                                ${row.status}
+                                ${this.statusLabel(row.status)}
                               </sl-badge>
                             </td>
                             <td class="muted">
                               ${
                                 row.last_heartbeat
-                                  ? formatLocalDateTime(row.last_heartbeat)
+                                  ? html`<span
+                                      title=${formatLocalDateTime(
+                                        row.last_heartbeat
+                                      )}
+                                      >${formatRelativeTime(
+                                        row.last_heartbeat
+                                      )}</span
+                                    >`
                                   : '-'
                               }
                             </td>
@@ -381,7 +343,7 @@ export class RunnersView extends LitElement {
                                       href="/console/flows/executions/${row.current_execution_id}"
                                       >${row.current_execution_id.slice(0, 8)}…</a
                                     >`
-                                  : html`<span class="muted">idle</span>`
+                                  : html`<span class="muted">Idle</span>`
                               }
                             </td>
                           </tr>

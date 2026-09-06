@@ -12,6 +12,7 @@ import random
 import re
 import shlex
 import tarfile
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 import aiodocker
@@ -23,9 +24,9 @@ from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_RUNNER_ERROR,
 )
 
-from .base import AgentExecutionResult, AgentExecutor, AgentStatus
+from .base import AgentExecutionResult, AgentExecutor, AgentStatus, ContainerTermination
 from .errors import AgentStartError
-from .failure_analysis import analyze_agent_failure
+from .failure_analysis import AgentFailureAnalysis, analyze_agent_failure
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.agents.verification import build_verification_gate_shell
 from preloop.services.tracker_git_token import APP_AUTH_TYPES
@@ -54,6 +55,29 @@ from preloop.utils.workspace_snapshot import (
 from preloop.services.verification import resolve_verification_policy
 
 logger = logging.getLogger(__name__)
+
+
+def _termination_timestamp(value: Any) -> Optional[str]:
+    """Normalize runtime timestamps for JSON persistence."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value if isinstance(value, str) else None
+
+
+def _oom_failure_analysis(termination: ContainerTermination) -> AgentFailureAnalysis:
+    """Explain a confirmed memory kill without retrying historical provider errors."""
+    return AgentFailureAnalysis(
+        message=(
+            "Agent container was OOMKilled (out of memory; "
+            f"exit code {termination.exit_code}). "
+            "Reduce the workload's memory use or increase the runner's memory "
+            "allocation before retrying."
+        ),
+        transient=False,
+        error_class="container_oom_killed",
+        evidence=f"{termination.runtime} runtime reported OOMKilled",
+    )
+
 
 # Git ref names interpolated into generated shell (origin/<branch>..HEAD).
 # Charset is unquoted-shell-safe so we never splice shlex.quote into the
@@ -1607,7 +1631,19 @@ class ContainerAgentExecutor(AgentExecutor):
             info = await container.show()
 
             # Get exit code
-            exit_code = info["State"].get("ExitCode")
+            state = info["State"]
+            exit_code = state.get("ExitCode")
+            termination = ContainerTermination(
+                runtime="docker",
+                container_name=(info.get("Name") or "").lstrip("/") or None,
+                container_id=info.get("Id") or session_reference,
+                exit_code=exit_code,
+                reason="OOMKilled" if state.get("OOMKilled") is True else None,
+                message=scrub_secrets(str(state.get("Error") or ""))[:400] or None,
+                started_at=_termination_timestamp(state.get("StartedAt")),
+                finished_at=_termination_timestamp(state.get("FinishedAt")),
+                oom_killed=state.get("OOMKilled") is True,
+            )
 
             # Get logs
             logs = await self.get_logs(session_reference, tail=1000)
@@ -1634,7 +1670,11 @@ class ContainerAgentExecutor(AgentExecutor):
                     )
 
             failure_analysis = None
-            if status == AgentStatus.FAILED:
+            if termination.oom_killed:
+                status = AgentStatus.FAILED
+                failure_analysis = _oom_failure_analysis(termination)
+                error_message = failure_analysis.message
+            elif status == AgentStatus.FAILED:
                 # Analyse the full logs once and keep the whole verdict:
                 # only the message survives into FlowExecution.error_message,
                 # so the transient/terminal classification must travel on the
@@ -1653,6 +1693,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 error_message=error_message,
                 exit_code=exit_code,
                 failure_analysis=failure_analysis,
+                termination=termination,
             )
 
         except DockerError as e:
@@ -1716,24 +1757,57 @@ class ContainerAgentExecutor(AgentExecutor):
                         "Logs contain benign messages (e.g., 'no commits'), not marking as failed."
                     )
 
-            # Try to get exit code from pod
+            # Select the newest attempt and the named agent container. Sidecar
+            # termination and an older attempt must not supply the agent's cause.
             exit_code = None
+            termination = None
             try:
                 label_selector = f"job-name={job_name}"
                 pods = await self._k8s_core_api.list_namespaced_pod(
                     namespace=self.agent_namespace, label_selector=label_selector
                 )
                 if pods.items:
-                    pod = pods.items[0]
-                    if pod.status.container_statuses:
-                        container_status = pod.status.container_statuses[0]
-                        if container_status.state.terminated:
-                            exit_code = container_status.state.terminated.exit_code
+                    pod = max(
+                        pods.items,
+                        key=lambda item: _termination_timestamp(
+                            item.metadata.creation_timestamp
+                        )
+                        or "",
+                    )
+                    for container_status in pod.status.container_statuses or []:
+                        if container_status.name != "agent":
+                            continue
+                        terminated = container_status.state.terminated
+                        if terminated is not None:
+                            exit_code = terminated.exit_code
+                            termination = ContainerTermination(
+                                runtime="kubernetes",
+                                container_name=container_status.name,
+                                container_id=container_status.container_id,
+                                pod_name=pod.metadata.name,
+                                exit_code=exit_code,
+                                reason=terminated.reason,
+                                message=scrub_secrets(terminated.message or "")[:400]
+                                or None,
+                                signal=terminated.signal,
+                                started_at=_termination_timestamp(
+                                    terminated.started_at
+                                ),
+                                finished_at=_termination_timestamp(
+                                    terminated.finished_at
+                                ),
+                                oom_killed=terminated.reason == "OOMKilled",
+                            )
+                        break
             except Exception as e:
                 self.logger.warning(f"Could not get exit code for Job {job_name}: {e}")
 
             failure_analysis = None
-            if status == AgentStatus.FAILED:
+            if termination is not None and termination.oom_killed:
+                status = AgentStatus.FAILED
+                failure_analysis = _oom_failure_analysis(termination)
+                error_message = failure_analysis.message
+            elif status == AgentStatus.FAILED:
                 # Same as the Docker path: keep the full-log verdict on the
                 # result, not just the message.
                 failure_analysis = analyze_agent_failure(logs_text)
@@ -1750,6 +1824,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 error_message=error_message,
                 exit_code=exit_code,
                 failure_analysis=failure_analysis,
+                termination=termination,
             )
 
         except ApiException as e:
@@ -2397,6 +2472,37 @@ class ContainerAgentExecutor(AgentExecutor):
             Extracted error message or empty string
         """
         return analyze_agent_failure(logs_text).message
+
+    async def is_stopped(self, session_reference: str) -> bool:
+        """Verify actual runtime termination after a stop request.
+
+        Status classifiers can return FAILED on lookup errors. They are not
+        termination evidence. Kubernetes foreground deletion is confirmed only
+        once both the Job and its Pods are authoritatively absent.
+        """
+        if self.use_kubernetes:
+            await self._init_kubernetes_clients()
+            try:
+                await self._k8s_batch_api.read_namespaced_job_status(
+                    name=session_reference,
+                    namespace=self.agent_namespace,
+                )
+                return False
+            except ApiException as exc:
+                if exc.status != 404:
+                    raise
+            pods = await self._k8s_core_api.list_namespaced_pod(
+                namespace=self.agent_namespace,
+                label_selector=f"job-name={session_reference}",
+            )
+            return len(pods.items) == 0
+        docker = await self._get_docker_client()
+        container = await docker.containers.get(session_reference)
+        state = (await container.show())["State"]
+        return state.get("Running") is False and state.get("Status") in {
+            "exited",
+            "dead",
+        }
 
     async def stop(self, session_reference: str) -> None:
         """

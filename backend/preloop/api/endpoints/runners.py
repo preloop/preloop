@@ -376,6 +376,10 @@ async def runner_ws(
                 execution = crud_flow_execution.get(db, id=execution_id)
                 if execution:
                     execution.status = status
+                    if status in {"SUCCEEDED", "FAILED", "STOPPED"}:
+                        crud_flow_execution.confirm_stop(
+                            db, execution_id=execution_id, commit=False
+                        )
                     execution.end_time = datetime.now(timezone.utc)
                     if raw.get("error"):
                         execution.error_message = str(raw["error"])

@@ -146,6 +146,22 @@ export interface AttentionItem {
    */
   quickDismiss?: { label: string; reason: 'expected' | 'snoozed' | 'fixed' };
   evidence?: AttentionEvidence;
+  /**
+   * Set on approval rows so the page can decide there instead of sending the
+   * operator to the detail page, and so a deadline can be shown and sorted on.
+   */
+  approval?: AttentionApprovalRef;
+}
+
+/** What an attention row needs to approve or deny an approval in place. */
+export interface AttentionApprovalRef {
+  id: string;
+  toolName: string;
+  requester: string;
+  /** ISO deadline, or null when the request never expires. */
+  expiresAt: string | null;
+  /** Questions need an answer, not an Approve button. */
+  isQuestion: boolean;
 }
 
 /** The shape of a stored dismissal the rules need; the API type is assignable. */
@@ -337,6 +353,13 @@ function approvalItems(
         // Somebody is waiting for an answer: an approval can be decided, not
         // silenced.
         dismissable: false,
+        approval: {
+          id: approval.id,
+          toolName: approval.tool_name || subject,
+          requester,
+          expiresAt: approval.expires_at || null,
+          isQuestion: approval.is_question === true,
+        },
       };
     });
 }
@@ -1049,6 +1072,19 @@ export function sortAttentionItems(items: AttentionItem[]): AttentionItem[] {
   return [...items].sort((left, right) => {
     if (left.severity !== right.severity) {
       return SEVERITY_RANK[left.severity] - SEVERITY_RANK[right.severity];
+    }
+    // A deadline outranks an arrival time: the request that expires first is
+    // the one that stops being decidable first.
+    const leftExpiry = left.approval?.expiresAt
+      ? timestampOf(left.approval.expiresAt)
+      : null;
+    const rightExpiry = right.approval?.expiresAt
+      ? timestampOf(right.approval.expiresAt)
+      : null;
+    if (leftExpiry !== null || rightExpiry !== null) {
+      if (leftExpiry === null) return 1;
+      if (rightExpiry === null) return -1;
+      if (leftExpiry !== rightExpiry) return leftExpiry - rightExpiry;
     }
     const leftAt = left.at ? timestampOf(left.at) : null;
     const rightAt = right.at ? timestampOf(right.at) : null;

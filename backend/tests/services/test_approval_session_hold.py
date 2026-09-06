@@ -416,7 +416,7 @@ class TestWaitForApprovalSessionRelease:
             # approval_service binds the CRUD function at module import time,
             # so patch that binding rather than the crud module.
             patch(
-                "preloop.services.approval_service.get_approval_request_async",
+                "preloop.services.approval_service.get_approval_request_for_update_async",
                 new=AsyncMock(side_effect=_get_request),
             ),
             patch(
