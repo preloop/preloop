@@ -31,6 +31,14 @@ var publicationSHA = regexp.MustCompile(`^[a-f0-9]{40}$`)
 var publicationImageRE = regexp.MustCompile(`^[A-Za-z0-9][^\s]*@sha256:[a-f0-9]{64}$`)
 var publicationVolumeRE = regexp.MustCompile(`^preloop-pub-[a-f0-9]{32}-(export|frozen)$`)
 
+type publicationHelperProbeCache struct {
+	mu    sync.Mutex
+	image string
+	ready bool
+}
+
+var publicationHelperProbe publicationHelperProbeCache
+
 // The Docker daemon belongs to the trusted runner. Helpers never inherit its
 // client environment inside their container. Their stdout is bounded and stderr
 // discarded; credential-bearing stdin is never included in errors or logs.
@@ -65,6 +73,24 @@ func (b *publicationBoundedOutput) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+func publicationHelperReady(helper string) bool {
+	publicationHelperProbe.mu.Lock()
+	if publicationHelperProbe.image == helper && publicationHelperProbe.ready {
+		publicationHelperProbe.mu.Unlock()
+		return true
+	}
+	publicationHelperProbe.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	_, err := publicationDocker(ctx, nil, "image", "inspect", "--format", "{{.Id}}", helper)
+	cancel()
+	ready := err == nil
+	publicationHelperProbe.mu.Lock()
+	publicationHelperProbe.image = helper
+	publicationHelperProbe.ready = ready
+	publicationHelperProbe.mu.Unlock()
+	return ready
+}
+
 // Existing servers safely ignore this heartbeat extension. Readiness is local
 // operator configuration plus a bounded probe of an immutable helper image.
 func publicationHeartbeat() map[string]any {
@@ -72,10 +98,7 @@ func publicationHeartbeat() map[string]any {
 	capabilities := map[string]any{"version": 1, "helper_ready": false}
 	if publicationImageRE.MatchString(helper) {
 		capabilities["helper_image"] = helper
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		_, err := publicationDocker(ctx, nil, "image", "inspect", "--format", "{{.Id}}", helper)
-		cancel()
-		capabilities["helper_ready"] = err == nil
+		capabilities["helper_ready"] = publicationHelperReady(helper)
 	}
 	return map[string]any{"type": "heartbeat", "publication_capabilities": capabilities}
 }

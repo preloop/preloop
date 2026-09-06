@@ -11,6 +11,7 @@ from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
+import logging
 import re
 from typing import Any, TYPE_CHECKING
 from uuid import UUID
@@ -35,6 +36,8 @@ from preloop.services.trusted_publisher import (
 )
 from preloop.services.verification import select_required_checks
 from preloop.utils.pr_metadata import PublicationRecord
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from preloop.services.isolated_publication import IsolatedPublicationPolicy
@@ -351,6 +354,12 @@ class PrivatePublicationController:
         async with self._lock:
             try:
                 await self.revoke()
+            except PublicationError:
+                logger.warning(
+                    "Background writer revocation failed for execution %s; "
+                    "token will expire at its deadline",
+                    self.execution_id,
+                )
             finally:
                 if self.execution_id is not None and self.nonce is not None:
                     sessions = get_db_session()

@@ -635,6 +635,28 @@ async def test_watchdog_serializes_with_messages_and_uses_independent_session(
 
 
 @pytest.mark.asyncio
+async def test_expire_writer_abandons_when_revoke_fails(case, monkeypatch, caplog):
+    from preloop.models.db import session as sessions
+
+    independent = MagicMock(spec=Session)
+
+    def get_session():
+        yield independent
+
+    monkeypatch.setattr(sessions, "get_db_session", get_session)
+    abandon = MagicMock()
+    monkeypatch.setattr(crud_flow_runner, "abandon_publication", abandon)
+    case.controller.execution_id = case.execution.id
+    case.controller.nonce = case.policy.nonce
+    case.revoke.side_effect = PublicationError("writer already gone")
+    with caplog.at_level("WARNING"):
+        await case.controller._expire_writer(0)
+    case.revoke.assert_awaited_once()
+    assert abandon.call_args.args[0] is independent
+    assert "Background writer revocation failed" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_connection_replacement_during_unregister_preserves_new_owner(
     case, monkeypatch
 ):

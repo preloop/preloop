@@ -771,6 +771,7 @@ func TestPublicationHeartbeatReportsOnlyLocallyReadyImmutableHelper(t *testing.T
 		{name: "ready", image: "helper@sha256:" + strings.Repeat("a", 64), ready: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			publicationHelperProbe = publicationHelperProbeCache{}
 			t.Setenv(publicationHelperEnv, tc.image)
 			fake.helperMissing = tc.missing
 			before := len(fake.calls)
@@ -783,6 +784,15 @@ func TestPublicationHeartbeatReportsOnlyLocallyReadyImmutableHelper(t *testing.T
 				t.Fatal("probed unconfigured helper")
 			}
 		})
+	}
+	t.Setenv(publicationHelperEnv, "helper@sha256:"+strings.Repeat("a", 64))
+	fake.helperMissing = false
+	publicationHelperProbe = publicationHelperProbeCache{}
+	publicationHeartbeat()
+	before := len(fake.calls)
+	publicationHeartbeat()
+	if len(fake.calls) != before {
+		t.Fatal("re-probed a helper image that was already ready")
 	}
 }
 
