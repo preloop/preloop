@@ -2147,7 +2147,11 @@ class FlowExecutionOrchestrator:
 
         # Correlated resume: hand the runner the prior execution's workspace
         # so unpushed commits (and scratch state) survive into this run.
-        restore_archive = self._resolve_workspace_restore_archive()
+        restore_archive = (
+            None
+            if settings.flow_artifact_direct_upload
+            else self._resolve_workspace_restore_archive()
+        )
         if restore_archive is not None:
             execution_context["workspace_restore_archive"] = restore_archive
 
@@ -2748,6 +2752,17 @@ class FlowExecutionOrchestrator:
                 execution=self.execution_log,
                 db=self.db,
                 execution_context=execution_context,
+            )
+
+            from preloop.agents.remote_runner import RemoteRunnerExecutor
+            from preloop.services.checkpoint_runtime import checkpoint_context
+
+            # Private state stays on its owning host. Resolve the actual executor
+            # before minting any hosted artifact capabilities.
+            execution_context["checkpoint_env"] = (
+                {}
+                if isinstance(agent_executor, RemoteRunnerExecutor)
+                else checkpoint_context(self.db, execution_context)
             )
 
             # Start the agent

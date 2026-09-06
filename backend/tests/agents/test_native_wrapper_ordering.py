@@ -103,3 +103,44 @@ def test_opencode_version_override_must_be_exact() -> None:
     }
     with pytest.raises(ValueError, match="exact release"):
         OpenCodeAgent({})._build_opencode_script(context)
+
+
+@pytest.mark.parametrize(
+    "harness,version", [("codex", "0.153.4"), ("opencode", "1.18.29")]
+)
+def test_approved_image_skips_install_and_checks_pinned_harness(
+    harness: str,
+    version: str,
+) -> None:
+    from preloop.services.flow_environment import EnvironmentProfile
+
+    agent = CodexAgent({}) if harness == "codex" else OpenCodeAgent({})
+    agent.environment_profile = EnvironmentProfile(
+        image="example.com/project@sha256:" + "a" * 64,
+        harness=harness,
+    )
+    context = {
+        "prompt": "repair",
+        "execution_id": "exec",
+        "flow_name": "test",
+        "model_identifier": "fixture",
+        "trigger_event_data": {
+            "_session_thread_id": "thread",
+            "_resume": {
+                "thread_id": "thread",
+                "cli_session": {
+                    "agent_type": harness,
+                    "session_id": "0f0e1d2c-3b4a-4568-8778-aabbccddeeff"
+                    if harness == "codex"
+                    else "ses_ab12cd34",
+                },
+            },
+        },
+    }
+    script = getattr(agent, f"_build_{harness}_script")(context)
+    assert "npm install -g" not in script
+    assert "environment_harness_version_mismatch" in script
+    assert version in script
+    assert script.index("environment_harness_version_mismatch") < script.index(
+        "python3 /tmp/preloop-native-session.py restore"
+    )

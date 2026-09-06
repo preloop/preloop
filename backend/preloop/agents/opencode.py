@@ -294,7 +294,8 @@ class OpenCodeAgent(ContainerAgentExecutor):
             },
             "HostConfig": {
                 "AutoRemove": False,  # Keep container for log retrieval
-                "NetworkMode": os.getenv("AGENT_NETWORK_MODE", "bridge"),
+                "NetworkMode": execution_context.get("environment_network")
+                or os.getenv("AGENT_NETWORK_MODE", "bridge"),
                 # Resource limits
                 "Memory": int(os.getenv("AGENT_MEMORY_LIMIT", "2g").replace("g", ""))
                 * 1024
@@ -442,6 +443,15 @@ fi
         model_provider = execution_context.get("model_provider", "anthropic").lower()
 
         # Prepare initialization commands (git clone, custom commands)
+        cli_install_command = (
+            (
+                "command -v opencode >/dev/null || exit 78; "
+                f'test "$(opencode --version)" = "{cli_version}" || '
+                "{ echo PRELOOP_SETUP_FAILED environment_harness_version_mismatch; exit 78; }"
+            )
+            if self.environment_profile
+            else f"npm install -g opencode-ai@{cli_version}"
+        )
         init_commands = self._prepare_init_commands(execution_context)
         git_config = execution_context.get("git_clone_config") or {}
         enter_workspace = (
@@ -566,7 +576,7 @@ echo ""
 git config --global --add safe.directory '*'
 
 # Install OpenCode CLI
-npm install -g opencode-ai@{cli_version}
+{cli_install_command}
 echo "PRELOOP_HARNESS_VERSION opencode $(opencode --version)"
 echo "Agent working directory: $(pwd)"
 printf '%s\n' {shlex.quote("Agent image reference: " + self.image)}

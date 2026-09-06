@@ -231,9 +231,8 @@ class CodexAgent(ContainerAgentExecutor):
             },
             "HostConfig": {
                 "AutoRemove": False,  # Keep container for log retrieval
-                "NetworkMode": os.getenv(
-                    "AGENT_NETWORK_MODE", "bridge"
-                ),  # Use bridge by default
+                "NetworkMode": execution_context.get("environment_network")
+                or os.getenv("AGENT_NETWORK_MODE", "bridge"),  # Use bridge by default
                 # Resource limits
                 "Memory": int(os.getenv("AGENT_MEMORY_LIMIT", "2g").replace("g", ""))
                 * 1024
@@ -469,6 +468,16 @@ fi
                 timeout_seconds=completion_nudge_timeout_seconds(),
             )
 
+        cli_install_command = (
+            (
+                "command -v codex >/dev/null || exit 78; "
+                f'test "$(codex --version)" = "codex-cli {cli_version}" || '
+                "{ echo PRELOOP_SETUP_FAILED environment_harness_version_mismatch; exit 78; }"
+            )
+            if self.environment_profile
+            else f"npm install -g @openai/codex@{cli_version}"
+        )
+
         # Get execution details for logging
         execution_id = execution_context.get("execution_id", "unknown")
         flow_name = execution_context.get("flow_name", "unknown")
@@ -526,7 +535,7 @@ CODEX_HOME="${{CODEX_HOME:-$HOME/.codex}}"
 git config --global --add safe.directory '*'
 
 # Configure Codex CLI in the universal image
-npm install -g @openai/codex@{cli_version}
+{cli_install_command}
 echo "PRELOOP_HARNESS_VERSION codex $(codex --version)"
 echo "Agent working directory: $(pwd)"
 printf '%s\n' {shlex.quote("Agent image reference: " + self.image)}
