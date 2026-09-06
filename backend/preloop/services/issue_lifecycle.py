@@ -303,7 +303,12 @@ class IssueLifecycleService:
         dispatch: Callable[[models.FlowExecution], Awaitable[None]],
     ) -> models.FlowExecution | None:
         """Revalidate closure, create one independent run and dispatch durably."""
-        async with crud_issue_lifecycle.locked(self.db, self.account_id, self.issue.id):
+        if str(flow.id) != str(self.policy.get("audit_flow_id")):
+            return None
+        async with (
+            crud_issue_lifecycle.locked(self.db, self.account_id, self.issue.id),
+            publication_budget(),
+        ):
             current = await self.provider.issue(self.number)
             links = await self.provider.merged_links(self.number)
             if current.state != "closed" or not links:

@@ -487,6 +487,35 @@ async def test_manual_completed_close_is_not_merge_authority(rig: tuple) -> None
 
 
 @pytest.mark.asyncio
+async def test_schedule_audit_requires_configured_audit_flow(rig: tuple) -> None:
+    service, transport, _, flow = rig
+    contract = await contract_for(service)
+    await service.refine(contract)
+    transport.merge()
+    other = CRUDBase(models.Flow).create(
+        service.db,
+        obj_in={
+            "name": "Draft audit",
+            "account_id": service.account_id,
+            "agent_type": "codex",
+            "agent_config": {"lifecycle_kind": "merge_audit"},
+            "prompt_template": "Audit",
+            "is_enabled": True,
+            "allowed_mcp_servers": [],
+            "allowed_mcp_tools": [],
+            "git_clone_config": flow.git_clone_config,
+        },
+    )
+    dispatch = AsyncMock()
+    assert await service.schedule_audit(other, dispatch) is None
+    dispatch.assert_not_awaited()
+    assert service._get("merge_audit", SHA) is None
+    execution = await service.schedule_audit(flow, dispatch)
+    assert execution is not None
+    dispatch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_provider_success_local_failure_recovers_existing_followup(
     rig: tuple,
 ) -> None:
@@ -960,6 +989,41 @@ async def test_explicit_ready_reconciles_only_unlaunched_current_revision(
     assert "pickup_reconciliation_required" in blocked["blockers"]
     assert service._get("pickup", "once").execution_id == first.id
     assert await service.schedule_pickup(flow, {}, dispatch) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exhaustion", ["time", "requests"])
+async def test_schedule_audit_discovery_uses_publication_budget(
+    rig: tuple, monkeypatch: pytest.MonkeyPatch, exhaustion: str
+) -> None:
+    import asyncio
+    from preloop.services import issue_lifecycle_provider
+
+    service, transport, _, flow = rig
+    contract = await contract_for(service)
+    await service.refine(contract)
+    transport.merge()
+    original = transport._request
+
+    async def stalled(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(1)
+        return await original(*args, **kwargs)
+
+    with monkeypatch.context() as patcher:
+        if exhaustion == "time":
+            patcher.setattr(
+                issue_lifecycle_provider, "PUBLICATION_TIMEOUT_SECONDS", 0.02
+            )
+            patcher.setattr(transport, "_request", stalled)
+            error = "publication_deadline_exceeded"
+        else:
+            patcher.setattr(issue_lifecycle_provider, "PUBLICATION_MAX_REQUESTS", 1)
+            error = "publication_request_budget_exhausted"
+        with pytest.raises(ValueError, match=error):
+            await service.schedule_audit(flow, AsyncMock())
+    assert service._get("merge_audit", SHA) is None
+    execution = await service.schedule_audit(flow, AsyncMock())
+    assert execution is not None
 
 
 @pytest.mark.asyncio
