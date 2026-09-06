@@ -49,7 +49,12 @@ const DIFF_PAYLOAD = {
   summary: '2 changes',
   changes: [
     { path: '$.tools[name=shell]', operation: 'add' },
-    { path: '$.model_io[id=deny-pii]', operation: 'modify' },
+    {
+      path: '$.model_io[id=deny-pii]',
+      operation: 'modify',
+      old_value: { id: 'deny-pii', action: 'warn' },
+      new_value: { id: 'deny-pii', action: 'block' },
+    },
   ],
 };
 
@@ -219,6 +224,7 @@ describe('Policies page against real API shapes', () => {
     expect(text).to.contain('Tool: shell');
     expect(text).to.contain('Modified (1)');
     expect(text).to.contain('Model I/O rule: deny-pii');
+    expect(text).to.contain('action: was warn, now block');
   });
 
   it('P4 reads the rollback preview from the diff field', async () => {
@@ -240,6 +246,8 @@ describe('Policies page against real API shapes', () => {
     const text = dialog.textContent.replace(/\s+/g, ' ');
     expect(text).to.contain('The following changes will be made:');
     expect(text).to.contain('Tool: shell');
+    // The version diff dialog renders details, not just the row label.
+    expect(text).to.contain('action: was warn, now block');
     const confirm = Array.from(dialog.querySelectorAll('sl-button')).find(
       (button: any) => button.textContent?.includes('Roll back')
     ) as any;
