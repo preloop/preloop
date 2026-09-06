@@ -169,6 +169,79 @@ its environment and delegates arguments to Bash can opt into
 or mirrored codex-universal images). Images that cannot execute this bootstrap
 fail explicitly; an idle shell cannot be reported as successful work.
 
+## Host execution profiles (opt-in, private only)
+
+Docker remains the default, including a flow's custom `image` /
+`docker_image`. A host execution profile is a separate, explicit
+capability: the runner host runs a **fixed local command** instead of
+`docker run`. This is not Agent Control, and it is not the
+[`preloop cursor`](../cursor-cli.md) operator launcher.
+
+Create `~/.preloop/runner-host-profiles.json` (or point
+`PRELOOP_RUNNER_HOST_PROFILES` at an absolute path):
+
+```json
+{
+  "profiles": [
+    {
+      "name": "cursor-ask",
+      "executable": "cursor-agent",
+      "argv": ["--print", "--output-format", "stream-json", "--mode=ask"],
+      "workspace_root": "/home/example/src",
+      "timeout_seconds": 1800,
+      "force_writes": false,
+      "model_map": {"team-fast": "sonnet-4.6"}
+    }
+  ]
+}
+```
+
+The runner advertises profile names, capabilities and supported requested model
+identifiers (at most 64 profiles and 64 models per profile). Executables, argv,
+local aliases and credentials stay on the host. Restart `preloop runner fg`
+after editing the file. On the flow, choose `cursor`, select a private runner
+pool and set `agent_config.host_exec_profile`. Hosted compute and Windows host
+profiles are unavailable.
+
+An optional local `model_map` maps requested identifiers to Cursor aliases,
+for example `"model_map": {"team-fast": "sonnet-4.6"}`. Every nonempty requested
+model must match this map. The scheduler selects a runner advertising that
+identifier, and the runner passes the mapped alias to Cursor. The legacy
+`pass_model` field does not bypass this mapping.
+The selected API model's credentials are never delivered to the host. Leave
+the requested model empty to use the profile default. An actual model is
+recorded only when Cursor reports it, never inferred from the request.
+
+The lease supplies the prompt as one argument after `--`, plus the profile,
+requested model and deadline. It cannot inject an executable, extra argv,
+environment, API key or session id. Only `cursor-agent` and `agent` executables
+are accepted. Local argv cannot override runner-managed workspace, model,
+resume or credential controls. The profile should retain `stream-json` output
+so the runner can validate structured completion. `force_writes` defaults to false; enable it only for
+a profile whose operator intends to permit writes.
+
+Each job creates a fresh directory under
+`{workspace_root}/.preloop-host-exec/{execution_id}`. Existing directories and
+symlinks are rejected. This controls working-directory placement, not OS
+filesystem access: Cursor runs as the runner user with that user's local login,
+environment and filesystem permissions. Use a dedicated OS user or VM when
+stronger host isolation is needed. Halt, cancellation and deadline expiry clean
+up the process group. The tighter profile/flow timeout applies.
+
+Cursor's local configuration, MCP servers and hooks apply. Flow
+`allowed_mcp_tools` and server settings are not injected or enforced as a
+sandbox on this path. The enforced controls are profile selection, explicit
+model mapping, working-directory creation, deadline, cancellation and terminal
+result validation. This slice does not add Agent Control, flow governance,
+native session continuation or usage ingestion. Runs use the operator's Cursor
+plan; no unlimited usage or inferred billing is promised.
+
+Success requires exit zero and a successful Cursor stream-json result; exit
+zero alone fails. Remote repository clone/setup, custom commands, workspace
+seeds, native CLI session resume and isolated PR publication are rejected.
+The workspace starts empty. Use the Docker harness for repository
+implementation flows that need the managed checkout/test/publication pipeline.
+
 ## Trusted runner options
 
 Private runners are machines you operate. Hosted executors ignore the

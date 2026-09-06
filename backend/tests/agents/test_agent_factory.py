@@ -2,7 +2,7 @@
 
 import pytest
 
-from preloop.agents.factory import create_agent_executor
+from preloop.agents.factory import create_agent_executor, SUPPORTED_AGENT_TYPES
 from preloop.agents.openhands import OpenHandsAgent
 from preloop.agents.aider import AiderAgent
 from preloop.agents.codex import CodexAgent
@@ -83,6 +83,11 @@ class TestAgentFactory:
         assert isinstance(agent, OpenCodeAgent)
         assert agent.agent_type == "opencode"
         assert agent.config == config
+
+    def test_cursor_is_not_a_hosted_agent_type(self):
+        assert "cursor" not in SUPPORTED_AGENT_TYPES
+        with pytest.raises(ValueError, match="Unsupported agent type"):
+            create_agent_executor("cursor", {})
 
     def test_unsupported_agent_type(self):
         """Test that unsupported agent type raises ValueError."""

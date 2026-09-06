@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
@@ -31,6 +31,12 @@ import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
 import '../../../components/governance-rule-set-editor.ts';
 import '../../../components/budget-policy-editor.ts';
 import '../../../components/resource-actions.ts';
+import '../../../components/list-selection.ts';
+import {
+  ListSelectionController,
+  confirmBulkAction,
+  type BulkAction,
+} from '../../../components/list-selection';
 import { confirmDialog } from '../../../components/confirm-dialog';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { parseUTCDate } from '../../../utils/date';
@@ -135,6 +141,15 @@ export class ApiKeysView extends LitElement {
   > = {};
 
   private unsubscribeRealtime?: () => void;
+
+  /**
+   * Multi-select for the key table. Only keys that can still sign a request
+   * are selectable: a revoked key has nothing left to revoke.
+   */
+  readonly selection = new ListSelectionController<ApiKey>(this, {
+    idOf: (key) => key.id,
+    selectable: (key) => !this.isRetired(key),
+  });
 
   async connectedCallback() {
     super.connectedCallback();
@@ -275,6 +290,17 @@ export class ApiKeysView extends LitElement {
     return this.apiKeys.filter((key) => this.isRetired(key)).length;
   }
 
+  /**
+   * Prunes the selection to the keys this pass paints, before the bulk bar is
+   * built. Doing it here rather than inside `render` keeps the bar's count and
+   * the table's checkboxes from ever disagreeing by one pass.
+   */
+  protected willUpdate(): void {
+    this.selection.setItems(
+      this.isLoading || this.error ? [] : this.visibleKeys()
+    );
+  }
+
   async handleCreateApiKey() {
     if (!this.newKeyName) {
       return;
@@ -336,6 +362,48 @@ export class ApiKeysView extends LitElement {
     } catch (error) {
       console.error('Failed to delete API key:', error);
     }
+  }
+
+  /** The only bulk action a key has: revoke. */
+  private get bulkActions(): BulkAction[] {
+    return [
+      {
+        id: 'revoke',
+        label: 'Revoke',
+        icon: 'trash',
+        variant: 'danger',
+      },
+    ];
+  }
+
+  /**
+   * Revokes every selected key, one DELETE each with the shared bound.
+   *
+   * There is no batch endpoint and a transaction would be the wrong shape
+   * here: each key is independent, and a single failure must not silently
+   * un-revoke the keys that already went.
+   */
+  private async handleBulkRevoke(): Promise<void> {
+    const keys = this.selection.selectedItems;
+    if (keys.length === 0) return;
+    const confirmed = await confirmBulkAction({
+      title: keys.length === 1 ? 'Revoke API key' : 'Revoke API keys',
+      message: `Revoke ${keys.length} ${keys.length === 1 ? 'key' : 'keys'}?`,
+      names: keys.map((key) => key.name),
+      detail:
+        'Anything still authenticating with these keys stops working immediately. This cannot be undone.',
+      confirmLabel: keys.length === 1 ? 'Revoke key' : 'Revoke keys',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+
+    await this.selection.run(
+      'revoke',
+      keys.map((key) => ({ id: key.id, name: key.name })),
+      (key) => deleteApiKey(key.id),
+      { verb: 'revoke', verbPast: 'revoked', noun: 'key' }
+    );
+    await this.fetchApiKeys();
   }
 
   private async openGovernanceDialog(key: ApiKey): Promise<void> {
@@ -571,6 +639,35 @@ export class ApiKeysView extends LitElement {
     this.newKeyExpiryLabel = item.textContent?.trim() ?? 'Never';
   }
 
+  /** The header checkbox: selects or clears every key on the page. */
+  private renderSelectAll() {
+    return html`<list-select-checkbox
+      label="Select all keys"
+      ?checked=${this.selection.allSelected}
+      ?indeterminate=${this.selection.someSelected}
+      ?disabled=${this.selection.busy}
+      @selection-toggle=${this.selection.handleToggleEvent}
+    ></list-select-checkbox>`;
+  }
+
+  private renderBulkBar() {
+    // Nothing at all at zero selected, wrapper included: an empty slot with a
+    // margin would push every collection down by 8px it never had before.
+    if (this.selection.count === 0) return nothing;
+    return html`<div class="bulk-bar-slot">
+      <list-bulk-bar
+        label="API key bulk actions"
+        .count=${this.selection.count}
+        .actions=${this.bulkActions}
+        .running=${this.selection.running}
+        .progressDone=${this.selection.progressDone}
+        .progressTotal=${this.selection.progressTotal}
+        @bulk-action=${() => void this.handleBulkRevoke()}
+        @selection-clear=${() => this.selection.clear()}
+      ></list-bulk-bar>
+    </div>`;
+  }
+
   render() {
     const renderContent = () => {
       if (this.isLoading) {
@@ -612,10 +709,17 @@ export class ApiKeysView extends LitElement {
       const shownLabel = `Showing ${this.apiKeys.length} keys, including ${hiddenCount} revoked or expired`;
 
       return html`
+        ${this.renderBulkBar()}
         <sl-card class="table-card">
-          <table class="styled-table">
+          <table
+            class="styled-table"
+            role="grid"
+            aria-multiselectable="true"
+            aria-label="API keys"
+          >
             <thead>
               <tr>
+                <th class="select-cell">${this.renderSelectAll()}</th>
                 <th>Name</th>
                 <th>Status</th>
                 <th>Created</th>
@@ -629,7 +733,7 @@ export class ApiKeysView extends LitElement {
               ${
                 visibleKeys.length === 0
                   ? html`<tr>
-                      <td colspan="7" class="empty-row">No active keys.</td>
+                      <td colspan="8" class="empty-row">No active keys.</td>
                     </tr>`
                   : ''
               }
@@ -637,7 +741,27 @@ export class ApiKeysView extends LitElement {
                 visibleKeys,
                 (key) => key.id,
                 (key) => html`
-                  <tr>
+                  <tr
+                    data-selection-id=${key.id}
+                    aria-selected=${
+                      this.selection.isSelected(key.id) ? 'true' : 'false'
+                    }
+                  >
+                    <td class="select-cell">
+                      ${
+                        this.isRetired(key)
+                          ? nothing
+                          : html`<list-select-checkbox
+                              item-id=${key.id}
+                              label=${`Select ${key.name}`}
+                              ?checked=${this.selection.isSelected(key.id)}
+                              ?disabled=${this.selection.busy}
+                              @selection-toggle=${
+                                this.selection.handleToggleEvent
+                              }
+                            ></list-select-checkbox>`
+                      }
+                    </td>
                     <td>
                       <div
                         style="display: flex; align-items: center; gap: var(--sl-spacing-2x-small); flex-wrap: wrap;"

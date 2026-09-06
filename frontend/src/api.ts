@@ -3228,6 +3228,13 @@ export interface RunnerRecord {
   current_execution_id?: string | null;
   registered_by_email?: string | null;
   registered_by_user_id?: string | null;
+  capabilities?: {
+    host_exec_profiles?: Array<{
+      name?: string;
+      capabilities?: string[];
+      models?: string[];
+    }>;
+  } | null;
 }
 
 export async function sendCommandToExecution(

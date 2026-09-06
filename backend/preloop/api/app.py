@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Any
 from urllib.parse import quote
 from uuid import UUID
-from fastapi import Depends, FastAPI, Request, HTTPException
+from fastapi import Depends, FastAPI, Request, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
@@ -23,6 +23,7 @@ from pyinstrument import Profiler
 from pyinstrument.renderers import SpeedscopeRenderer
 from sqlalchemy.exc import TimeoutError as SQLAlchemyPoolTimeout
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.websockets import WebSocketState
 
 from preloop import __version__
 from fastapi.encoders import jsonable_encoder
@@ -660,8 +661,8 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(SQLAlchemyPoolTimeout)
     async def pool_timeout_exception_handler(
-        request: Request, exc: SQLAlchemyPoolTimeout
-    ) -> JSONResponse:
+        request: Request | WebSocket, exc: SQLAlchemyPoolTimeout
+    ) -> JSONResponse | None:
         """Turn a connection-pool timeout into a fast, honest 503.
 
         A saturated pool is a capacity problem, not a server bug. Reporting it
@@ -670,10 +671,16 @@ def create_app() -> FastAPI:
         """
         logger.warning(
             "Database pool exhausted serving %s %s: %s",
-            request.method,
+            request.scope.get("method", "WEBSOCKET"),
             request.url.path,
             exc,
         )
+        if isinstance(request, WebSocket):
+            if request.application_state != WebSocketState.DISCONNECTED:
+                await request.close(
+                    code=1013, reason="Database overloaded; retry shortly"
+                )
+            return None
         return JSONResponse(
             status_code=503,
             content={
@@ -684,13 +691,20 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def global_exception_handler(
-        request: Request, exc: Exception
-    ) -> JSONResponse:
-        """Log all exceptions with full traceback."""
+        request: Request | WebSocket, exc: Exception
+    ) -> JSONResponse | None:
+        """Log the original exception without eagerly formatting ORM input."""
         logger.error(
-            f"Unhandled exception in {request.method} {request.url.path}: {exc}",
-            exc_info=True,
+            "Unhandled %s in %s %s",
+            type(exc).__name__,
+            request.scope.get("method", "WEBSOCKET"),
+            request.url.path,
+            exc_info=(type(exc), exc, exc.__traceback__),
         )
+        if isinstance(request, WebSocket):
+            if request.application_state != WebSocketState.DISCONNECTED:
+                await request.close(code=1011, reason="Internal server error")
+            return None
         # Re-raise HTTPException as-is
         if isinstance(exc, HTTPException):
             return JSONResponse(

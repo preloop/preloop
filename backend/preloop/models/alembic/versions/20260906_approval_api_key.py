@@ -5,7 +5,7 @@ session and flow run are only sometimes known, but every approval arrives on
 an authenticated call, so the key is the one fact that is always available.
 
 Revision ID: 20260906_approval_api_key
-Revises: 20260906_halt_launch_intent
+Revises: 20260906_halt_runner_merge
 """
 
 from alembic import op
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
 
 revision = "20260906_approval_api_key"
-down_revision = "20260906_halt_launch_intent"
+down_revision = "20260906_halt_runner_merge"
 branch_labels = None
 depends_on = None
 

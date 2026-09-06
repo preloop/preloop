@@ -37,8 +37,14 @@ def create_executor_for_execution(
 ) -> AgentExecutor:
     """Return a remote runner executor when a private pool is resolved."""
     from preloop.agents.remote_runner import RemoteRunnerExecutor
+    from preloop.services.host_exec import (
+        HOST_EXEC_AGENT_TYPE,
+        host_exec_profile_name,
+    )
     from preloop.services.runner_service import resolve_runner_pool
 
+    profile = host_exec_profile_name(config, execution_context)
+    kind = (agent_type or "").strip().lower()
     pool = None
     if flow is not None:
         pool = resolve_runner_pool(flow, execution_context, db=db)
@@ -71,6 +77,11 @@ def create_executor_for_execution(
             account_id=account_id,
             flow=flow,
             execution=execution,
+        )
+    if profile or kind == HOST_EXEC_AGENT_TYPE:
+        raise ValueError(
+            "host execution profiles cannot run on hosted compute; "
+            "pin the flow to a private runner that advertises the profile"
         )
     return create_agent_executor(agent_type, config)
 
