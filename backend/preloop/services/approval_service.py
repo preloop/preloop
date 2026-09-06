@@ -21,6 +21,7 @@ from preloop.models.schemas.approval_request import (
     ApprovalRequestUpdate,
 )
 from preloop.models.crud.approval_request import (
+    crud_approval_request,
     get_approval_request_async,
     get_approval_request_for_update_async,
 )
@@ -3175,7 +3176,11 @@ class ApprovalService:
 
                 # Check if resolved
                 if approval_request.status in ["approved", "declined", "cancelled"]:
-                    return approval_request
+                    # Rollback expires attached instances even when commits do
+                    # not. Detach the loaded result before poll cleanup runs.
+                    return crud_approval_request.detach_loaded_result(
+                        poll_db, approval_request
+                    )
 
                 if approval_request.status == "expired":
                     raise TimeoutError(f"Approval request {request_id} already expired")

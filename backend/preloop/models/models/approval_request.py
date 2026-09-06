@@ -5,7 +5,15 @@ import uuid
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
-from sqlalchemy import String, DateTime, Text, ForeignKey, Enum as SQLEnum, Index
+from sqlalchemy import (
+    String,
+    DateTime,
+    Text,
+    ForeignKey,
+    Enum as SQLEnum,
+    Index,
+    inspect,
+)
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -308,8 +316,13 @@ class ApprovalRequest(Base):
     )
 
     def __repr__(self) -> str:
-        """String representation."""
+        """Describe loaded state without lazy reads during exception formatting."""
+        state = inspect(self)
+        identity = state.dict.get("id")
+        if identity is None and state.identity:
+            identity = state.identity[0]
         return (
-            f"<ApprovalRequest(id={self.id}, tool_name={self.tool_name}, "
-            f"status={self.status}, requested_at={self.requested_at})>"
+            f"<ApprovalRequest(id={identity}, "
+            f"tool_name={state.dict.get('tool_name', '<unloaded>')}, "
+            f"status={state.dict.get('status', '<unloaded>')})>"
         )
