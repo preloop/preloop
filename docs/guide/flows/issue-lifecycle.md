@@ -82,7 +82,10 @@ a distinct authorization for the revised scope. It dispatches one fresh executio
 directly because the readiness label may already be present. It never removes
 and re-adds labels to manufacture another webhook. Repeating the same request or
 receiving duplicate issue events reuses the same authorization/execution, including
-a retry after dispatch failure. Old execution prompts and contracts remain intact.
+a retry after dispatch failure. A missing worker acknowledgment returns durable
+`dispatch_pending` plus the execution ID; retrying the same reconciliation request
+retries delivery without authorizing a second execution. Old execution prompts and
+contracts remain intact.
 Same-scope execution retries use the existing execution retry API. The
 `/audit/reconcile` endpoint separately recovers audits.
 

@@ -169,6 +169,7 @@ class IssueLifecycleService:
                         "SUCCEEDED",
                         "FAILED",
                         "CANCELLED",
+                        "STOPPED",
                         "TIMED_OUT",
                         "ABORTED",
                     }:
@@ -243,6 +244,8 @@ class IssueLifecycleService:
         dispatch: Callable[[models.FlowExecution], Awaitable[None]],
     ) -> models.FlowExecution | None:
         """Atomically bind the authorized pickup to one execution."""
+        from preloop.services.flow_trigger_service import FlowDispatchError
+
         async with crud_issue_lifecycle.locked(self.db, self.account_id, self.issue.id):
             row = self._get("pickup", "once")
             current = await self.provider.issue(self.number)
@@ -252,7 +255,12 @@ class IssueLifecycleService:
                 return None
             if str(flow.id) != str(self.policy.get("implementation_flow_id")):
                 return None
-            if row.state not in {"label_pending", "ready", "dispatched"}:
+            if row.state not in {
+                "label_pending",
+                "ready",
+                "dispatch_pending",
+                "dispatched",
+            }:
                 return None
             if current.state != "open" or row.data["label"] not in current.labels:
                 return None
@@ -267,9 +275,26 @@ class IssueLifecycleService:
             execution = crud_issue_lifecycle.create_execution(
                 self.db, row=row, flow_id=flow.id, event=event
             )
-            self._put("pickup", "once", "dispatched", row.data)
+            state = (
+                "dispatch_pending" if execution.status == "PENDING" else "dispatched"
+            )
+            self._put("pickup", "once", state, row.data)
         if execution.status == "PENDING":
-            await dispatch(execution)
+            try:
+                await dispatch(execution)
+            except FlowDispatchError:
+                # The committed execution is recoverable; do not claim delivery
+                # or replace it when the broker did not acknowledge publication.
+                return execution
+            async with crud_issue_lifecycle.locked(
+                self.db, self.account_id, self.issue.id
+            ):
+                current = self._get("pickup", "once")
+                if (
+                    current.execution_id == execution.id
+                    and current.state == "dispatch_pending"
+                ):
+                    self._put("pickup", "once", "dispatched", current.data)
         return execution
 
     async def schedule_audit(

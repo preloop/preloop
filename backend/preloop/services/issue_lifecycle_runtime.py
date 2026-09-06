@@ -15,7 +15,7 @@ from preloop.services.issue_lifecycle import IssueLifecycleService
 from preloop.services.issue_lifecycle_provider import GitHubLifecycleProvider
 from preloop.services.issue_lifecycle_worker import (
     lifecycle_worker_hook,
-    on_application_loop,
+    dispatch_lifecycle_execution,
 )
 
 logger = logging.getLogger(__name__)
@@ -133,14 +133,15 @@ async def lifecycle_flow_entry(
     async def dispatch(execution: models.FlowExecution) -> None:
         # Resolve expired ORM attributes before crossing to the application loop.
         _ = flow.id, execution.id
-        await on_application_loop(
+        await dispatch_lifecycle_execution(
+            execution.id,
             partial(
                 trigger_service._start_flow_execution,
                 flow,
                 execution.trigger_event_details,
                 nats_client,
                 precreated_execution=execution,
-            )
+            ),
         )
 
     if kind == "merge_audit":

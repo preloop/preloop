@@ -326,8 +326,9 @@ async def test_readiness_blocks_material_gaps(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first_dispatch_ok", [True, False])
 async def test_ready_and_duplicate_webhook_create_one_authorized_pickup(
-    rig: tuple, monkeypatch: pytest.MonkeyPatch
+    rig: tuple, monkeypatch: pytest.MonkeyPatch, first_dispatch_ok: bool
 ) -> None:
     service, transport, flow, _ = rig
     contract = await contract_for(service)
@@ -370,7 +371,7 @@ async def test_ready_and_duplicate_webhook_create_one_authorized_pickup(
         "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
         lambda: True,
     )
-    dispatch = AsyncMock(return_value=True)
+    dispatch = AsyncMock(side_effect=[first_dispatch_ok, True])
     monkeypatch.setattr(
         "preloop.services.flow_execution_dispatcher.dispatch_execute", dispatch
     )
@@ -381,8 +382,12 @@ async def test_ready_and_duplicate_webhook_create_one_authorized_pickup(
     }
     trigger = FlowTriggerService(service.db)
     first = await trigger._start_flow_execution(flow, event, None)
+    assert service._get("pickup", "once").state == (
+        "dispatched" if first_dispatch_ok else "dispatch_pending"
+    )
     second = await trigger._start_flow_execution(flow, event, None)
     assert first.id == second.id
+    assert service._get("pickup", "once").state == "dispatched"
     assert len({str(call.args[0]) for call in dispatch.await_args_list}) == 1
     assert (
         first.trigger_event_details["lifecycle_pickup"]["issue_revision"]
@@ -1091,9 +1096,11 @@ async def test_explicit_replacement_preserves_terminal_history_and_reuses_author
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first_dispatch_ok", [True, False])
 async def test_reconcile_http_dispatches_once_with_label_already_present(
     rig: tuple,
     monkeypatch: pytest.MonkeyPatch,
+    first_dispatch_ok: bool,
 ) -> None:
     import httpx
     from fastapi import FastAPI
@@ -1126,7 +1133,7 @@ async def test_reconcile_http_dispatches_once_with_label_already_present(
         "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
         lambda: True,
     )
-    dispatch = AsyncMock(return_value=True)
+    dispatch = AsyncMock(side_effect=[first_dispatch_ok, True])
     monkeypatch.setattr(
         "preloop.services.flow_execution_dispatcher.dispatch_execute", dispatch
     )
@@ -1148,8 +1155,18 @@ async def test_reconcile_http_dispatches_once_with_label_already_present(
         path = f"/issues/{service.issue.id}/lifecycle/pickup/reconcile"
         initial = await client.post(path, json=body)
         assert initial.status_code == 200, initial.text
+        assert initial.json()["state"] == (
+            "dispatched" if first_dispatch_ok else "dispatch_pending"
+        )
+        pending = service._get("pickup", "once")
+        assert pending.state == initial.json()["state"]
+        assert (
+            crud_issue_lifecycle.pickup_execution(service.db, row=pending).status
+            == "PENDING"
+        )
         replay = await client.post(path, json=body)
         assert replay.status_code == 200, replay.text
+        assert replay.json()["state"] == "dispatched"
         assert initial.json()["execution_id"] == replay.json()["execution_id"]
         assert initial.json()["execution_id"] != str(first.id)
         assert initial.json()["authorization_id"] == replay.json()["authorization_id"]
@@ -1224,3 +1241,48 @@ async def test_merge_fixture_checks_out_exact_revision_before_independent_audit(
     await service.finish_audit(execution)
     assert len(transport.comments) == 1 and len(transport.issues) == 2
     assert merged_sha in transport.comments[0]["body"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        "SUCCEEDED",
+        "FAILED",
+        "STOPPED",
+        "CANCELLED",
+        "TIMED_OUT",
+        "ABORTED",
+        "PENDING",
+        "RUNNING",
+        "PAUSED",
+        "UNKNOWN",
+    ],
+)
+async def test_pickup_replacement_requires_real_terminal_status(
+    rig: tuple, status: str
+) -> None:
+    service, transport, flow, _ = rig
+    original = await contract_for(service)
+    await service.refine(original)
+    await service.ready(original.issue_revision)
+    previous = await service.schedule_pickup(flow, {}, AsyncMock())
+    transport.issues[1]["body"] += " Approved replacement scope."
+    current = await contract_for(service)
+    await service.refine(current)
+    crud_flow_execution.update(
+        service.db, db_obj=previous, obj_in=FlowExecutionUpdate(status=status)
+    )
+    service.db.commit()
+    if status in {"PENDING", "RUNNING", "PAUSED", "UNKNOWN"}:
+        with pytest.raises(ValueError, match="pickup_execution_not_terminal"):
+            await service.reconcile_pickup(
+                current.issue_revision, previous.id, "Reviewed new scope"
+            )
+        assert service._get("pickup", "once").execution_id == previous.id
+    else:
+        result = await service.reconcile_pickup(
+            current.issue_revision, previous.id, "Reviewed new scope"
+        )
+        assert result["state"] == "ready"
+        assert result["replaces_execution_id"] == str(previous.id)

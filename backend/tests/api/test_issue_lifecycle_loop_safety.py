@@ -190,3 +190,44 @@ async def test_lifecycle_hook_database_wait_stays_off_application_loop(
                 await task
         else:
             assert await task == (False, None)
+
+
+@pytest.mark.asyncio
+async def test_strict_lifecycle_local_dispatch_survives_worker_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worker-disabled pickup keeps detached work on the persistent app loop."""
+    from preloop.services.issue_lifecycle_worker import (
+        dispatch_lifecycle_execution,
+        lifecycle_worker_hook,
+    )
+
+    origin = asyncio.get_running_loop()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    tasks: list[asyncio.Task[None]] = []
+    monkeypatch.setattr(
+        "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
+        lambda: False,
+    )
+
+    async def background() -> None:
+        await release.wait()
+        finished.set()
+
+    async def local_dispatch() -> None:
+        assert asyncio.get_running_loop() is origin
+        tasks.append(asyncio.create_task(background()))
+
+    @lifecycle_worker_hook
+    async def operation() -> None:
+        await dispatch_lifecycle_execution(uuid4(), local_dispatch)
+
+    try:
+        await operation()
+        assert len(tasks) == 1 and not tasks[0].done()
+        release.set()
+        await asyncio.wait_for(finished.wait(), 2)
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)

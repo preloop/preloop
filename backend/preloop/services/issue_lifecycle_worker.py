@@ -2,7 +2,8 @@
 
 from collections.abc import Awaitable, Callable
 from functools import partial, wraps
-from typing import ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar
+from uuid import UUID
 
 import anyio
 from anyio import from_thread
@@ -43,3 +44,27 @@ async def on_application_loop(operation: Callable[[], Awaitable[T]]) -> T:
     application loop, not the worker's temporary provider-I/O loop.
     """
     return from_thread.run(operation)
+
+
+async def dispatch_lifecycle_execution(
+    execution_id: UUID, local_dispatch: Callable[[], Awaitable[Any]]
+) -> None:
+    """Require a worker publish acknowledgment or schedule on the persistent loop."""
+    from preloop.services.flow_execution_dispatcher import (
+        dispatch_execute,
+        flow_execution_worker_enabled,
+    )
+    from preloop.services.flow_trigger_service import FlowDispatchError
+
+    async def dispatch() -> None:
+        if flow_execution_worker_enabled():
+            if not await dispatch_execute(execution_id):
+                raise FlowDispatchError(
+                    str(execution_id),
+                    "PENDING",
+                    RuntimeError("worker_dispatch_not_acknowledged"),
+                )
+        else:
+            await local_dispatch()
+
+    await on_application_loop(dispatch)

@@ -16,6 +16,7 @@ from preloop.schemas.issue_lifecycle import ReadinessContract
 from preloop.services.issue_lifecycle_runtime import build_lifecycle_service
 from preloop.services.issue_lifecycle_worker import (
     run_lifecycle_endpoint,
+    dispatch_lifecycle_execution,
     on_application_loop,
 )
 from preloop.utils.permissions import require_permission
@@ -162,20 +163,26 @@ def reconcile_pickup(
             result = await service.reconcile_pickup(
                 request.issue_revision, request.previous_execution_id, request.reason
             )
-            if result["state"] not in {"ready", "dispatched", "label_pending"}:
+            if result["state"] not in {
+                "ready",
+                "dispatched",
+                "dispatch_pending",
+                "label_pending",
+            }:
                 return result
             trigger = FlowTriggerService(db)
 
             async def dispatch(execution: models.FlowExecution) -> None:
                 _ = flow.id, execution.id
-                await on_application_loop(
+                await dispatch_lifecycle_execution(
+                    execution.id,
                     partial(
                         trigger._start_flow_execution,
                         flow,
                         execution.trigger_event_details,
                         None,
                         precreated_execution=execution,
-                    )
+                    ),
                 )
 
             # The ready label can already be present. Do not remove/re-add it
@@ -189,9 +196,16 @@ def reconcile_pickup(
                 },
                 dispatch,
             )
+            pickup = crud_issue_lifecycle.get(
+                db,
+                account_id=current_user.account_id,
+                issue_id=issue_id,
+                kind="pickup",
+                revision="once",
+            )
             return {
                 **result,
-                "state": "dispatched" if execution else "needs_reconciliation",
+                "state": pickup.state if pickup else "needs_reconciliation",
                 "execution_id": str(execution.id) if execution else None,
             }
         except ValueError as exc:
