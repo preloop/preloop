@@ -10,7 +10,7 @@ import './preloop-flow-form.ts';
 import type { PreloopFlowForm } from './preloop-flow-form';
 
 /**
- * Tests for the restored Event Filters (Optional) section in the
+ * Tests for the restored Event filters (optional) section in the
  * Create/Edit Flow form component (preloop-flow-form.ts).
  *
  * The source-substring block below is a coarse guard that every filter control
@@ -38,16 +38,16 @@ describe('PreloopFlowForm event filters section', () => {
     expect(source).to.include('renderEventFilters()');
   });
 
-  it('renders Add Filters button when collapsed', () => {
-    expect(source).to.include('Add Filters');
+  it('renders Add filters button when collapsed', () => {
+    expect(source).to.include('Add filters');
   });
 
-  it('renders Hide Filters button when expanded', () => {
-    expect(source).to.include('Hide Filters');
+  it('renders Hide filters button when expanded', () => {
+    expect(source).to.include('Hide filters');
   });
 
-  it('renders Event Filters (Optional) heading', () => {
-    expect(source).to.include('Event Filters (Optional)');
+  it('renders Event filters (optional) heading', () => {
+    expect(source).to.include('Event filters (optional)');
   });
 
   it('renders the Created by filter input', () => {
@@ -63,7 +63,7 @@ describe('PreloopFlowForm event filters section', () => {
   it('renders reviewer filter gated on MR/PR events', () => {
     expect(source).to.include('trigger_config.reviewer');
     expect(source).to.include('Reviewer (username)');
-    expect(source).to.include('Requested Reviewer (username)');
+    expect(source).to.include('Requested reviewer (username)');
   });
 
   it('renders labels filter as comma-separated input', () => {
@@ -77,7 +77,7 @@ describe('PreloopFlowForm event filters section', () => {
 
   it('renders priority select for Jira trackers', () => {
     expect(source).to.include('trigger_config.priority');
-    expect(source).to.include('Any Priority');
+    expect(source).to.include('Any priority');
   });
 
   it('renders issue type filter for Jira trackers', () => {
