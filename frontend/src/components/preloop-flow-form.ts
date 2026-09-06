@@ -954,10 +954,10 @@ export class PreloopFlowForm extends LitElement {
         </div>
         <p class="notifications-help">
           Repair review findings and failing CI on pull or merge requests
-          published by this flow. Each repair starts a new execution and resumes
-          the saved native conversation when a compatible checkpoint is
-          available. Otherwise it reports an explicit cold handoff using current
-          issue and PR context. Merge remains manual.
+          published by this flow. Each repair starts a new execution and
+          continues the previous agent conversation when its saved checkpoint is
+          compatible. Otherwise it starts fresh from the issue and PR context
+          and reports that choice. Merge remains manual.
         </p>
         <sl-checkbox
           data-feedback="enabled"
@@ -975,8 +975,8 @@ export class PreloopFlowForm extends LitElement {
                   Limits apply across the PR's repair turns. The cost limit is
                   cumulative estimated USD; each execution also keeps its own
                   budget. Pending CI waits for results without keeping the agent
-                  running. Existing PRs need an eligible recorded publication
-                  before follow-up can begin.
+                  running. Enabling applies to future runs. Existing PRs require
+                  explicit adoption from the execution that published them.
                 </p>
                 <div class="form-grid">
                   ${[
