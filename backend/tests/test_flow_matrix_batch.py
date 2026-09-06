@@ -73,12 +73,17 @@ def _patch_dispatch():
 
 class TestTriggerFlowMatrixService:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("feedback_enabled", [False, True])
     async def test_matrix_creates_one_execution_per_cell(
         self,
         db_session: Session,
         test_flow: Flow,
         test_ai_model: AIModel,
+        feedback_enabled: bool,
     ):
+        test_flow.agent_config = {"feedback": {"enabled": feedback_enabled}}
+        db_session.commit()
+        planted = str(uuid4())
         service = FlowTriggerService(db_session)
         matrix = [
             {},  # flow defaults (baseline cell)
@@ -92,7 +97,11 @@ class TestTriggerFlowMatrixService:
                 flow_id=test_flow.id,
                 matrix=matrix,
                 test_mode=True,
-                trigger_event_data={"payload": {"message": "hello"}},
+                trigger_event_data={
+                    "payload": {"message": "hello"},
+                    "_thread_id": planted,
+                    "_session_thread_id": planted,
+                },
             )
 
         assert result["flow_id"] == str(test_flow.id)
@@ -135,6 +144,14 @@ class TestTriggerFlowMatrixService:
         for row in rows:
             assert row.trigger_event_details["payload"] == {"message": "hello"}
             assert row.trigger_event_details["test_mode"] is True
+            assert "_thread_id" not in row.trigger_event_details
+            marker = row.trigger_event_details.get("_session_thread_id")
+            assert bool(marker) is feedback_enabled
+            assert marker != planted
+        if feedback_enabled:
+            assert len(
+                {row.trigger_event_details["_session_thread_id"] for row in rows}
+            ) == len(rows)
 
     @pytest.mark.asyncio
     async def test_matrix_rejects_empty_and_oversized(

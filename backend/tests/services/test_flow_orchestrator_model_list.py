@@ -110,3 +110,36 @@ class TestAuthorizedGatewayModelList:
             and "Could not resolve authorized gateway models" in record.getMessage()
             for record in caplog.records
         )
+
+
+async def test_explicit_cold_resolution_clears_stale_cli_and_legacy_archives(
+    orchestrator,
+):
+    orchestrator.trigger_event_data = {
+        "_resume": {
+            "thread_id": str(uuid4()),
+            "execution_id": str(uuid4()),
+            "cli_session": {"agent_type": "codex", "session_id": str(uuid4())},
+        }
+    }
+    with (
+        patch(
+            "preloop.services.flow_feedback.resolve_native_checkpoint",
+            return_value={"cold_handoff_authorized": True},
+        ),
+        patch(
+            "preloop.services.model_routing.validate_native_resume_identity"
+        ) as validate,
+        patch.object(orchestrator, "_resolve_workspace_restore_archive") as workspace,
+        patch.object(orchestrator, "_resolve_cli_session_restore_archive") as native,
+    ):
+        context, _, _ = await _prepare(
+            orchestrator, list_models=lambda *args, **kwargs: []
+        )
+    assert context["checkpoint_resume_authorized"] is True
+    assert context["published_branch_handoff_authorized"] is True
+    assert "cli_session" not in context["trigger_event_data"]["_resume"]
+    assert "native_session_reference" not in context
+    validate.assert_not_called()
+    workspace.assert_not_called()
+    native.assert_not_called()

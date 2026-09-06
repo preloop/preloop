@@ -31,6 +31,7 @@ from ..exceptions import (
     TrackerAuthenticationError,
     TrackerConnectionError,
     TrackerResponseError,
+    TrackerPermissionError,
 )
 from .base import BaseTracker
 from .utils import (
@@ -255,7 +256,27 @@ class GitHubTracker(BaseTracker):
                 if response.status_code == HTTP_STATUS_UNAUTHORIZED:
                     raise TrackerAuthenticationError("GitHub authentication failed")
                 elif response.status_code >= 400:
-                    raise TrackerResponseError(
+                    denied = False
+                    if (
+                        response.status_code == 403
+                        and response.headers.get("x-ratelimit-remaining") != "0"
+                        and not response.headers.get("retry-after")
+                    ):
+                        try:
+                            message = (
+                                response.json().get("message", "").rstrip(".").lower()
+                            )
+                            denied = message in {
+                                "resource not accessible by integration",
+                                "resource not accessible by personal access token",
+                                "must have admin rights to repository",
+                            }
+                        except (ValueError, AttributeError):
+                            pass
+                    error_type = (
+                        TrackerPermissionError if denied else TrackerResponseError
+                    )
+                    raise error_type(
                         f"GitHub API error: {response.status_code} - {response.text}"
                     )
                 return response.json(), dict(response.headers)
@@ -481,6 +502,7 @@ class GitHubTracker(BaseTracker):
             TrackerAuthenticationError,
             TrackerConnectionError,
             TrackerResponseError,
+            TrackerPermissionError,
         ) as e:
             return TrackerConnection(connected=False, message=str(e))
 

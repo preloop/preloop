@@ -7,11 +7,15 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from types import SimpleNamespace
+from copy import deepcopy
 from urllib.parse import quote
 
 from preloop.models import models
-from preloop.models.crud import crud_tracker
+from preloop.models.crud import crud_tracker, crud_flow_feedback
+from preloop.models.crud.oauth_app_installation import crud_oauth_app_installation
 from preloop.sync.trackers import create_tracker_client
+from preloop.sync.exceptions import TrackerPermissionError
 from sqlalchemy.orm import Session
 
 
@@ -135,10 +139,32 @@ def classify_checks(
     return pending, not pending and not failures and not blocked, blocked, failures
 
 
+def feedback_tracker_options(db: Session, tracker: Any) -> dict[str, Any]:
+    """Materialize authoritative tracker authentication before network I/O."""
+    options = deepcopy({"url": tracker.url, **(tracker.connection_details or {})})
+    auth_type = getattr(tracker, "auth_type", None) or "api_token"
+    if tracker.tracker_type == "github":
+        options["auth_type"] = auth_type
+        options.pop("github_installation_id", None)
+        if auth_type in {"github_app", "oauth_app"}:
+            installation = crud_oauth_app_installation.get_by_id_provider_and_account(
+                db,
+                id=tracker.oauth_installation_id,
+                provider="github",
+                account_id=tracker.account_id,
+            )
+            if installation is None or not installation.external_id:
+                raise ValueError("feedback tracker installation unavailable")
+            options["github_installation_id"] = installation.external_id
+    return options
+
+
 class FeedbackProvider:
     """Read-only APIs, scoped by the trusted tracker and bound repository ID."""
 
-    def __init__(self, client: Any, thread: models.FlowThread) -> None:
+    def __init__(
+        self, client: Any, thread: models.FlowThread | SimpleNamespace
+    ) -> None:
         self.client = client
         self.thread = thread
 
@@ -149,15 +175,23 @@ class FeedbackProvider:
         tracker = crud_tracker.get(db, id=thread.tracker_id)
         if tracker is None or tracker.account_id != thread.account_id:
             raise ValueError("feedback tracker account mismatch")
-        client = await create_tracker_client(
+        tracker_args = (
             tracker.tracker_type,
             str(tracker.id),
             tracker.resolved_api_key,
-            {"url": tracker.url, **(tracker.connection_details or {})},
+            feedback_tracker_options(db, tracker),
         )
+        snapshot = SimpleNamespace(
+            provider=thread.provider,
+            repository_id=thread.repository_id,
+            pr_number=thread.pr_number,
+            policy=deepcopy(thread.policy),
+        )
+        crud_flow_feedback.release_read(db)
+        client = await create_tracker_client(*tracker_args)
         if client is None:
             raise ValueError("feedback provider unavailable")
-        return cls(client, thread)
+        return cls(client, snapshot)
 
     async def read(self) -> FeedbackState:
         if self.thread.provider == "github":
@@ -242,10 +276,16 @@ class FeedbackProvider:
         count = int(self.thread.policy.get("required_approvals", 1))
         # Repository policy is authoritative; absent explicit config is not proof
         # that required checks are empty. Branch protection errors fail closed.
+        requirements_unknown = False
         if "required_checks" not in self.thread.policy:
-            protection = await request(
-                "GET", f"{repo}/branches/{quote(pr['base']['ref'], safe='')}/protection"
-            )
+            try:
+                protection = await request(
+                    "GET",
+                    f"{repo}/branches/{quote(pr['base']['ref'], safe='')}/protection",
+                )
+            except TrackerPermissionError:
+                protection = {}
+                requirements_unknown = True
             required = (protection.get("required_status_checks") or {}).get(
                 "contexts", []
             )
@@ -254,9 +294,13 @@ class FeedbackProvider:
                     "required_approving_review_count", count
                 )
             )
-        rules = await request(
-            "GET", f"{repo}/rules/branches/{quote(pr['base']['ref'], safe='')}"
-        )
+        try:
+            rules = await request(
+                "GET", f"{repo}/rules/branches/{quote(pr['base']['ref'], safe='')}"
+            )
+        except TrackerPermissionError:
+            rules = []
+            requirements_unknown = True
         unsupported_gate = False
         for rule in rules:
             parameters = rule.get("parameters") or {}
@@ -306,7 +350,13 @@ class FeedbackProvider:
             sha,
         )
         state.feedback += [receipt("ci", item, head_sha=sha) for item in failed]
+        if requirements_unknown:
+            state.checks_passed = False
+            state.reviews_passed = False
+            if state.blocked_reason is None:
+                state.blocked_reason = "repository_requirements_unavailable"
         current = await request("GET", base)
+        state.closed = current.get("state") == "closed"
         if current["head"]["sha"] != sha:
             return FeedbackState(
                 current["head"]["sha"],
