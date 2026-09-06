@@ -74,6 +74,9 @@ const KNOWN_KEYS: TimeRangeKey[] = [
   'all',
 ];
 
+/** Empty or missing keys resolve to this window. Unknown keys do not. */
+const DEFAULT_TIME_RANGE_KEY: TimeRangeKey = 'last-30';
+
 /** The short label a stat carries beside its name ("$ est. · 30d"). */
 const SHORT_LABELS: Record<TimeRangeKey, string> = {
   today: 'today',
@@ -102,12 +105,29 @@ export function normalizeTimeRangeKey(
   return KEY_ALIASES[key] ?? null;
 }
 
+/**
+ * Empty and missing keys keep the historical last-30 default. A key this
+ * module does not know is rejected so a typo cannot silently ask for 30 days.
+ */
+function coerceTimeRangeKey(
+  key: TimeRangeKey | string | null | undefined
+): TimeRangeKey {
+  if (key == null) return DEFAULT_TIME_RANGE_KEY;
+  const raw = String(key).trim();
+  if (!raw) return DEFAULT_TIME_RANGE_KEY;
+  const normalized = normalizeTimeRangeKey(raw);
+  if (!normalized) {
+    throw new RangeError(`Unrecognized time range key: ${raw}`);
+  }
+  return normalized;
+}
+
 /** The window a key covers, ending at `now`. */
 export function resolveTimeRange(
   key: TimeRangeKey | string,
   now: Date = new Date()
 ): TimeRangeWindow {
-  const normalized = normalizeTimeRangeKey(String(key)) ?? 'last-30';
+  const normalized = coerceTimeRangeKey(key);
   if (normalized === 'all') {
     return { startDate: null, endDate: null };
   }
@@ -153,7 +173,7 @@ export function resolvePreviousTimeRange(
   key: TimeRangeKey | string,
   now: Date = new Date()
 ): TimeRangeWindow {
-  const normalized = normalizeTimeRangeKey(String(key)) ?? 'last-30';
+  const normalized = coerceTimeRangeKey(key);
   if (normalized === 'all') {
     return { startDate: null, endDate: null };
   }

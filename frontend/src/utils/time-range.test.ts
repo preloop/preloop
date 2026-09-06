@@ -23,6 +23,26 @@ describe('time-range', () => {
     expect(normalizeTimeRangeKey('')).to.equal(null);
   });
 
+  it('defaults a missing or empty key to last-30', () => {
+    const canonical = resolveTimeRange('last-30', now);
+    const previous = resolvePreviousTimeRange('last-30', now);
+    expect(resolveTimeRange('', now)).to.deep.equal(canonical);
+    expect(resolveTimeRange('   ', now)).to.deep.equal(canonical);
+    expect(resolvePreviousTimeRange('', now)).to.deep.equal(previous);
+    expect(resolvePreviousTimeRange('   ', now)).to.deep.equal(previous);
+  });
+
+  it('rejects a key this module does not know', () => {
+    expect(() => resolveTimeRange('nonsense', now)).to.throw(
+      RangeError,
+      /Unrecognized time range key: nonsense/
+    );
+    expect(() => resolvePreviousTimeRange('nonsense', now)).to.throw(
+      RangeError,
+      /Unrecognized time range key: nonsense/
+    );
+  });
+
   it('resolves the same window for every spelling of 30 days', () => {
     const canonical = resolveTimeRange('last-30', now);
     expect(resolveTimeRange('month', now)).to.deep.equal(canonical);
