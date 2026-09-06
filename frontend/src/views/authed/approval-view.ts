@@ -37,6 +37,8 @@ import {
 import '../../components/question-answer-panel';
 import '../../components/approval-rule-context-block';
 import '../../components/attribution-line';
+import '../../components/args-diff';
+import { fileEditsFromArgs } from '../../components/args-diff';
 import type { QuestionAnswerDetail } from '../../components/question-answer-panel';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
@@ -1117,7 +1119,13 @@ export class ApprovalView extends AuthedElement {
 
         <div class="content-section">
           <h2>${this.argsHeading(request)}</h2>
-          <div class="code-block">${toolArgs}</div>
+          <!-- A file edit is decided by reading what changes, not by
+               reading two escaped strings; args-diff falls back to the raw
+               arguments for every other kind of call. -->
+          <args-diff
+            .args=${withoutApprovalMetadata(request.tool_args)}
+            .raw=${toolArgs}
+          ></args-diff>
         </div>
 
         ${
@@ -1363,12 +1371,16 @@ export class ApprovalView extends AuthedElement {
     });
   }
 
-  /** Bash and friends carry a command; anything else carries arguments. */
+  /**
+   * Bash and friends carry a command, a file edit carries changes, anything
+   * else carries arguments. The heading names what is under it.
+   */
   private argsHeading(request: ApprovalRequest): string {
     const args = withoutApprovalMetadata(request.tool_args);
-    return typeof args.command === 'string' || typeof args.cmd === 'string'
-      ? 'Command'
-      : 'Arguments';
+    if (typeof args.command === 'string' || typeof args.cmd === 'string') {
+      return 'Command';
+    }
+    return fileEditsFromArgs(args).length > 0 ? 'Changes' : 'Arguments';
   }
 
   private async copyRequestId(id: string) {

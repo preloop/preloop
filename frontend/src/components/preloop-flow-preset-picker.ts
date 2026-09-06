@@ -21,6 +21,8 @@ export const PRESET_GROUP_LABELS = {
 export interface FlowPresetRecord {
   id?: string;
   name?: string;
+  /** Catalog preset this one was cloned from, for account copies. */
+  source_preset_id?: string | null;
   description?: string;
   icon?: string;
   account_id?: string | null;
@@ -64,11 +66,43 @@ function isSecuritySlug(slug: string): boolean {
 }
 
 /**
+ * Catalog name each account copy was saved from, keyed by the copy's id.
+ *
+ * A cloned preset keeps the catalog name, so "Pull Request Reviewer" appeared
+ * twice with nothing to tell the two apart. The copy says where it came from
+ * and the catalog original steps aside.
+ */
+export function presetOrigins(
+  presets: FlowPresetRecord[]
+): Map<string, string> {
+  const catalogNames = new Map<string, string>();
+  for (const preset of presets) {
+    if (!preset.account_id && preset.id) {
+      catalogNames.set(preset.id, preset.name || 'a catalog preset');
+    }
+  }
+  const origins = new Map<string, string>();
+  for (const preset of presets) {
+    if (!preset.account_id || !preset.id || !preset.source_preset_id) continue;
+    const name = catalogNames.get(preset.source_preset_id);
+    if (name) origins.set(preset.id, name);
+  }
+  return origins;
+}
+
+/**
  * Group catalog presets client-side until YAML carries `category`.
  *
- * Account presets first. Catalog order is kept inside each group.
+ * Account presets first. Catalog order is kept inside each group. A catalog
+ * preset the account has already copied is left out: the copy is the one the
+ * operator will pick, and two identical names is a choice nobody can make.
  */
 export function presetGroups(presets: FlowPresetRecord[]): PresetGroup[] {
+  const copied = new Set(
+    presets
+      .filter((preset) => preset.account_id && preset.source_preset_id)
+      .map((preset) => preset.source_preset_id as string)
+  );
   const yours: FlowPresetRecord[] = [];
   const tracker: FlowPresetRecord[] = [];
   const scheduled: FlowPresetRecord[] = [];
@@ -77,6 +111,9 @@ export function presetGroups(presets: FlowPresetRecord[]): PresetGroup[] {
   for (const preset of presets) {
     if (preset.account_id) {
       yours.push(preset);
+      continue;
+    }
+    if (preset.id && copied.has(preset.id)) {
       continue;
     }
     const slug = presetSlug(preset);
@@ -197,7 +234,10 @@ export class PreloopFlowPresetPicker extends LitElement {
 
       .row {
         display: grid;
-        grid-template-columns: auto minmax(0, 1fr) auto auto;
+        /* The icon column is reserved rather than sized to its content, so
+           rows line up before the icons have loaded and when one is
+           missing. */
+        grid-template-columns: 1rem minmax(0, 1fr) auto auto;
         grid-template-rows: auto auto;
         column-gap: var(--sl-spacing-small);
         row-gap: 2px;
@@ -232,6 +272,14 @@ export class PreloopFlowPresetPicker extends LitElement {
         grid-row: 1 / span 2;
         color: var(--console-meta-color);
         font-size: 1rem;
+        width: 1rem;
+      }
+
+      .row-origin {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+        font-weight: 400;
+        margin-left: var(--sl-spacing-2x-small);
       }
 
       .row.selected .row-icon {
@@ -438,6 +486,7 @@ export class PreloopFlowPresetPicker extends LitElement {
     icon: string;
     name: string;
     description: string;
+    origin?: string;
     preset?: FlowPresetRecord;
   }) {
     const selected = this.selectedId === options.optionId;
@@ -452,7 +501,16 @@ export class PreloopFlowPresetPicker extends LitElement {
         @click=${() => this.emitSelect(options.optionId)}
       >
         <sl-icon class="row-icon" name=${options.icon}></sl-icon>
-        <div class="row-name">${options.name}</div>
+        <div class="row-name">
+          ${options.name}
+          ${
+            options.origin
+              ? html`<span class="row-origin"
+                  >saved from ${options.origin}</span
+                >`
+              : nothing
+          }
+        </div>
         ${options.preset ? this.renderChips(options.preset) : html`<div></div>`}
         ${
           selected
@@ -496,6 +554,7 @@ export class PreloopFlowPresetPicker extends LitElement {
 
   private renderList() {
     const groups = this.filteredGroups();
+    const origins = presetOrigins(this.presets);
     const activeId = this.visibleOptionIds().includes(this.activeId)
       ? this.activeId
       : BLANK_PRESET_ID;
@@ -543,6 +602,7 @@ export class PreloopFlowPresetPicker extends LitElement {
                 icon: preset.icon || 'gear',
                 name: preset.name || 'Untitled preset',
                 description: firstSentence(preset.description),
+                origin: origins.get(preset.id || ''),
                 preset,
               })
             )}

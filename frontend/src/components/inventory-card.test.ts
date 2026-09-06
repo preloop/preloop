@@ -622,6 +622,30 @@ describe('inventory-card', () => {
     );
   });
 
+  it('labels every number the phone line prints, and leads the separators', async () => {
+    const el = await card();
+    const labels = Array.from(
+      el.shadowRoot!.querySelectorAll('tbody tr td.num')
+    ).map((cell) => cell.getAttribute('data-label'));
+    // Spend and last seen used to arrive as two bare numbers with no word
+    // saying what they were.
+    expect(labels).to.deep.equal(['Requests', 'Tokens', 'Spend', 'Seen']);
+
+    // Read from the stylesheet, not the DOM: the separator is a ::before on
+    // a media query, and a pseudo element has no node to query. The cost is
+    // that an equivalent rewrite of the rule breaks this assertion even
+    // though the behaviour holds.
+    const css = Array.from(el.shadowRoot!.adoptedStyleSheets)
+      .flatMap((sheet) =>
+        Array.from(sheet.cssRules).map((rule) => rule.cssText)
+      )
+      .join('\n');
+    // The dot leads the value it belongs to. Trailing it left a dot alone at
+    // the end of a wrapped line, and left one behind when Tokens was hidden.
+    expect(css).to.contain("content: '· ' attr(data-label) ' '");
+    expect(css).to.not.contain("content: ' ·'");
+  });
+
   it('says what is missing, with the way to fix it', async () => {
     const el = await card({
       agentRows: [],

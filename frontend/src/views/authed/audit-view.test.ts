@@ -348,6 +348,93 @@ describe('AuditView', () => {
     document.body.removeChild(element);
   });
 
+  it('shortens the ids in an expanded event and links the ones with a page', async () => {
+    const sessionId = '11111111-2222-4333-8444-555555555555';
+    const executionId = '99999999-8888-4777-8666-555555555555';
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/v1/users') {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+        return new Response(
+          JSON.stringify({
+            groups: [
+              {
+                correlation_id: null,
+                outcome: 'executed',
+                primary_event: {
+                  id: 'audit-id-1',
+                  account_id: 'account-1',
+                  user_id: null,
+                  action: 'tool_call',
+                  resource_type: 'tool',
+                  resource_id: 'search',
+                  status: 'executed',
+                  ip_address: null,
+                  user_agent: null,
+                  timestamp: '2026-03-10T10:00:00Z',
+                  details: {
+                    tool_name: 'search',
+                    runtime_session_id: sessionId,
+                    flow_execution_id: executionId,
+                  },
+                },
+                sub_events: [],
+              },
+            ],
+            total: 1,
+            skip: 0,
+            limit: 50,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify({ detail: url }), { status: 500 });
+    });
+
+    const element = document.createElement('audit-view') as AuditView;
+    document.body.appendChild(element);
+    await waitUntil(
+      () => !(element as any)._loading,
+      'Audit view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const row = element.shadowRoot?.querySelector(
+      '.primary-row'
+    ) as HTMLElement;
+    row.click();
+    await element.updateComplete;
+
+    const ids = Array.from(
+      element.shadowRoot?.querySelectorAll('.id-value') || []
+    );
+    const texts = ids.map((node) => (node.textContent || '').trim());
+    // Eight characters is enough to tell two ids apart in one event; the
+    // whole thing is in the title and one click from the clipboard.
+    expect(texts).to.deep.equal(['11111111', '99999999']);
+    expect(
+      ids.map((node) =>
+        node.querySelector('sl-icon-button')?.getAttribute('label')
+      )
+    ).to.deep.equal(['Copy runtime session id', 'Copy flow execution id']);
+
+    const links = ids.map((node) => node.querySelector('a'));
+    expect(links[0]?.getAttribute('href')).to.equal(
+      `/console/runtime-sessions?sessionId=${sessionId}`
+    );
+    expect(links[0]?.getAttribute('title')).to.equal(sessionId);
+    expect(links[1]?.getAttribute('href')).to.equal(
+      `/console/flows/executions/${executionId}`
+    );
+
+    document.body.removeChild(element);
+  });
+
   describe('filter bar and rows (B-D1)', () => {
     async function mountLoaded() {
       const element = document.createElement('audit-view') as AuditView;

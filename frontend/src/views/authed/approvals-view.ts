@@ -1,7 +1,12 @@
-import { html, css, unsafeCSS } from 'lit';
+import { html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Router } from '@vaadin/router';
-import { AuthedElement, approveRequest, declineRequest } from '../../api';
+import {
+  AuthedElement,
+  approveRequest,
+  declineRequest,
+  decideApprovalsBatch,
+} from '../../api';
 import type { ApprovalRequest } from '../../types';
 import '../../components/question-answer-panel';
 import type { QuestionAnswerDetail } from '../../components/question-answer-panel';
@@ -20,6 +25,14 @@ import {
   partitionApprovalRequests,
 } from '../../utils/approvals';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
+import {
+  ListSelectionController,
+  confirmBulkAction,
+  type BulkAction,
+  type BulkItem,
+  type BulkResult,
+} from '../../components/list-selection';
+import '../../components/list-selection';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '../../components/approval-rule-context-block';
 import '../../components/attribution-line';
@@ -128,9 +141,20 @@ export class ApprovalsView extends AuthedElement {
   @state()
   private focusedIndex = -1;
 
-  /** Rows picked with X. Bulk actions land in a later slice (E6). */
-  @state()
-  private selectedIds: string[] = [];
+  /**
+   * The shared console selection: the same checkbox, keys and bulk bar every
+   * other collection uses (`components/list-selection.ts`). Only rows that
+   * can still be decided are handed to it, so the bar can never offer to
+   * approve something that has already expired.
+   */
+  private selection = new ListSelectionController<ApprovalRequest>(this, {
+    idOf: (request) => request.id,
+  });
+
+  /** Selected ids, in the order they were picked. Read by the tests. */
+  get selectedIds(): string[] {
+    return [...this.selection.selectedIds];
+  }
 
   /** Waiting rows the operator had not seen when the page loaded. */
   @state()
@@ -241,6 +265,13 @@ export class ApprovalsView extends AuthedElement {
         align-items: center;
         justify-content: space-between;
         gap: var(--sl-spacing-medium);
+      }
+
+      /* The select box sits in the same 40px column every console list uses,
+         so rows with and without one still line up. */
+      .row-select {
+        flex: 0 0 auto;
+        width: 24px;
       }
 
       .approval-item.question {
@@ -441,6 +472,18 @@ export class ApprovalsView extends AuthedElement {
     return [...this.waitingRequests, ...this.historyRequests];
   }
 
+  /**
+   * The rows a bulk decision can touch: waiting, not a question.
+   *
+   * A question is answered, not approved in bulk, and anything already
+   * resolved or timed out has nothing left to decide. Handing only these to
+   * the controller means a row that expires while the page is open drops out
+   * of the selection by itself.
+   */
+  private get selectableRequests(): ApprovalRequest[] {
+    return this.waitingRequests.filter((request) => !this.isQuestion(request));
+  }
+
   /** Ids of requests this browser has already shown, oldest dropped first. */
   private readSeenIds(): string[] {
     try {
@@ -482,6 +525,11 @@ export class ApprovalsView extends AuthedElement {
    * Keys are handled on the host so a focused row, the list, or the page
    * itself all reach the same handler. Typing in a filter, and keys that
    * already belong to a button or link, are left alone.
+   *
+   * X, shift+X and Escape are not here: selection keys belong to the shared
+   * `ListSelectionController`, which every other console collection installs,
+   * and which finds the row from the event path (J and K have already put the
+   * focus there).
    */
   private handleKeyDown(event: KeyboardEvent) {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -527,11 +575,6 @@ export class ApprovalsView extends AuthedElement {
       Router.go(`/console/approval/${focused.id}`);
       return;
     }
-    if (key === 'x' || key === 'X') {
-      event.preventDefault();
-      this.toggleSelection(focused.id);
-      return;
-    }
     if (key === 'a' || key === 'A') {
       if (!this.canDecide(focused)) return;
       event.preventDefault();
@@ -562,10 +605,17 @@ export class ApprovalsView extends AuthedElement {
     this.pendingFocus = true;
   }
 
-  private toggleSelection(id: string) {
-    this.selectedIds = this.selectedIds.includes(id)
-      ? this.selectedIds.filter((selected) => selected !== id)
-      : [...this.selectedIds, id];
+  /**
+   * Hands the selection the rows the page is about to paint.
+   *
+   * In `willUpdate` and not in `applyFilters` so that every path that can take
+   * a row off the page (a filter change, a decision, the expiry tick, a
+   * websocket update) prunes before the bulk bar is built. The bar renders
+   * above the rows, so a count pruned later in the pass would paint over a
+   * page that no longer has those rows.
+   */
+  protected willUpdate() {
+    this.selection.setItems(this.selectableRequests);
   }
 
   protected updated() {
@@ -957,6 +1007,122 @@ export class ApprovalsView extends AuthedElement {
     }
   }
 
+  /**
+   * The bulk bar's two actions.
+   *
+   * The bar disables its own buttons while a run is in flight, so there is
+   * nothing per action to say here.
+   */
+  private get bulkActions(): BulkAction[] {
+    return [
+      { id: 'approve', label: 'Approve', icon: 'check-lg', variant: 'success' },
+      { id: 'deny', label: 'Deny', icon: 'x-lg', variant: 'danger' },
+    ];
+  }
+
+  /** Bulk items carry the tool name, which is what a confirm or toast says. */
+  private bulkItems(): Array<BulkItem & { request: ApprovalRequest }> {
+    return this.selection.selectedItems.map((request) => ({
+      id: request.id,
+      name: request.summary?.trim() || request.tool_name,
+      request,
+    }));
+  }
+
+  private handleBulkAction(event: CustomEvent<{ id: string }>) {
+    void this.decideSelection(event.detail.id === 'approve');
+  }
+
+  /**
+   * Decide every picked row with one call.
+   *
+   * Both directions confirm. The row buttons do not (approving one request
+   * you are looking at is not a leap), but a bulk decision is taken from a
+   * count, and the dialog listing the tools is the only place that count is
+   * checkable. The server decides each id on its own and reports per id, so a
+   * request that expired while the dialog was open costs that row alone and
+   * stays selected for a retry.
+   */
+  private async decideSelection(approved: boolean) {
+    const items = this.bulkItems();
+    if (items.length === 0) return;
+
+    const noun = items.length === 1 ? 'request' : 'requests';
+    this.confirming = true;
+    const confirmed = await confirmBulkAction({
+      title: approved
+        ? `Approve ${items.length} ${noun}?`
+        : `Deny ${items.length} ${noun}?`,
+      message: approved
+        ? 'These tool calls run as soon as you confirm.'
+        : 'These tool calls will not run.',
+      names: items.map((item) => item.name),
+      confirmLabel: approved ? 'Approve' : 'Deny',
+      variant: approved ? 'primary' : 'danger',
+    });
+    this.confirming = false;
+    if (!confirmed) return;
+
+    await this.selection.runBatch(
+      approved ? 'approve' : 'deny',
+      items,
+      async (picked) => this.sendBatchDecision(picked, approved),
+      {
+        verb: approved ? 'approve' : 'deny',
+        verbPast: approved ? 'approved' : 'denied',
+        noun: 'request',
+      }
+    );
+  }
+
+  /** One POST for the whole selection, mapped back to per row outcomes. */
+  private async sendBatchDecision<T extends BulkItem>(
+    items: readonly T[],
+    approved: boolean
+  ): Promise<BulkResult<T>> {
+    const response = await decideApprovalsBatch(
+      items.map((item) => item.id),
+      approved
+    );
+    const byId = new Map(
+      (response?.results ?? []).map((result) => [result.id, result])
+    );
+    const succeeded: T[] = [];
+    const failed: Array<{ item: T; message: string }> = [];
+    const resolvedAt = new Date().toISOString();
+    const expectedStatus = approved ? 'approved' : 'declined';
+    for (const item of items) {
+      const result = byId.get(item.id);
+      const decided =
+        result?.ok === true &&
+        (result.status == null || result.status === expectedStatus);
+      if (decided) {
+        succeeded.push(item);
+        this.applyResolution(item.id, {
+          status: expectedStatus,
+          resolved_at: resolvedAt,
+        });
+        continue;
+      }
+      if (result?.status === 'expired') {
+        this.applyResolution(item.id, {
+          status: 'expired',
+          resolved_at: resolvedAt,
+        });
+      }
+      failed.push({
+        item,
+        message: result?.error || 'No result returned',
+      });
+    }
+    // Whatever the server said about the failures, the page may be out of
+    // date about them; a reload is cheaper than guessing.
+    if (failed.length > 0) {
+      void this.loadApprovalRequests();
+    }
+    return { succeeded, failed };
+  }
+
   /** An answered question is submitted as an approve carrying the answer. */
   private async handleQuestionAnswer(
     request: ApprovalRequest,
@@ -1024,20 +1190,26 @@ export class ApprovalsView extends AuthedElement {
             Configure approvals
           </sl-button>
           <sl-menu>
+            <!-- The tools view honours ?tab=, so each item lands on the
+                 tab it names instead of on whichever one was open last.
+                 The destination lives on the item so it can be read. -->
             <sl-menu-item
-              @click=${() => (window.location.href = '/console/tools')}
+              data-href="/console/tools?tab=mcp"
+              @click=${this.openConfigLink}
             >
               <sl-icon slot="prefix" name="tools"></sl-icon>
               MCP tool access rules
             </sl-menu-item>
             <sl-menu-item
-              @click=${() => (window.location.href = '/console/tools')}
+              data-href="/console/tools?tab=native"
+              @click=${this.openConfigLink}
             >
               <sl-icon slot="prefix" name="shield-lock"></sl-icon>
               Native tool approvals (account default)
             </sl-menu-item>
             <sl-menu-item
-              @click=${() => (window.location.href = '/console/agents')}
+              data-href="/console/agents"
+              @click=${this.openConfigLink}
             >
               <sl-icon slot="prefix" name="robot"></sl-icon>
               Per-agent overrides
@@ -1213,6 +1385,7 @@ export class ApprovalsView extends AuthedElement {
               : ''
           }
         </div>
+        ${waiting ? this.renderBulkBar() : ''}
         <div
           class="approval-list"
           role="grid"
@@ -1227,13 +1400,44 @@ export class ApprovalsView extends AuthedElement {
     `;
   }
 
+  /**
+   * Follow the destination the configure menu item carries.
+   *
+   * Through the router, not `window.location`: these are console pages, and a
+   * full page reload would throw away the websocket and reload the shell to
+   * reach a sibling view.
+   */
+  private openConfigLink(event: Event) {
+    const href = (event.currentTarget as HTMLElement | null)?.dataset.href;
+    if (href) Router.go(href);
+  }
+
+  /**
+   * The shared bulk bar, on one hairline between the group heading and its
+   * rows. It renders nothing until something is selected, so a page with no
+   * selection looks exactly as it did before.
+   */
+  private renderBulkBar() {
+    return html`
+      <list-bulk-bar
+        label="Approval bulk actions"
+        .count=${this.selection.count}
+        .actions=${this.bulkActions}
+        .running=${this.selection.running}
+        @bulk-action=${this.handleBulkAction}
+        @selection-clear=${() => this.selection.clear()}
+      ></list-bulk-bar>
+    `;
+  }
+
   private renderRequest(
     request: ApprovalRequest,
     waiting: boolean,
     index: number
   ) {
     const focused = this.focusedIndex === index;
-    const selected = this.selectedIds.includes(request.id);
+    const selectable = waiting && !this.isQuestion(request);
+    const selected = this.selection.isSelected(request.id);
     const isNew = waiting && this.newIds.includes(request.id);
     return html`
       <div
@@ -1243,6 +1447,7 @@ export class ApprovalsView extends AuthedElement {
         role="row"
         data-index=${index}
         data-request-id=${request.id}
+        data-selection-id=${selectable ? request.id : nothing}
         aria-selected=${selected ? 'true' : 'false'}
         tabindex=${focused || (this.focusedIndex < 0 && index === 0) ? 0 : -1}
         @focus=${() => {
@@ -1250,6 +1455,18 @@ export class ApprovalsView extends AuthedElement {
         }}
       >
         <div class="approval-row" role="gridcell">
+          ${
+            selectable
+              ? html`<list-select-checkbox
+                  class="row-select"
+                  item-id=${request.id}
+                  label=${`Select ${request.summary?.trim() || request.tool_name}`}
+                  ?checked=${selected}
+                  ?disabled=${this.selection.busy}
+                  @selection-toggle=${this.selection.handleToggleEvent}
+                ></list-select-checkbox>`
+              : ''
+          }
           <div class="approval-info">
             <div class="approval-tool">
               ${

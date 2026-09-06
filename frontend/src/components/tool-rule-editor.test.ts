@@ -24,6 +24,26 @@ describe('ToolRuleEditor', () => {
     expect(dialog?.hasAttribute('open') || (dialog as any).open).to.be.true;
   });
 
+  it('titles the dialog in sentence case, naming the tool it is for', async () => {
+    // Three entry points said "Add rule", "Add Rule" and
+    // "Add Access Rule - pay" for the same act.
+    const el = (await fixture(
+      html`<tool-rule-editor
+        .open=${true}
+        .workflows=${[]}
+        .features=${{}}
+        .toolName=${'pay'}
+      ></tool-rule-editor>`
+    )) as ToolRuleEditor;
+    await el.updateComplete;
+
+    expect(
+      el.shadowRoot?.querySelector('sl-dialog')?.getAttribute('label')
+    ).to.equal('Add rule for pay');
+    const save = el.shadowRoot?.querySelector('sl-button[variant="primary"]');
+    expect(save?.textContent?.trim()).to.equal('Add rule');
+  });
+
   it('renders action cards for deny, require_approval, and allow', async () => {
     const el = (await fixture(
       html`<tool-rule-editor
@@ -90,7 +110,7 @@ describe('ToolRuleEditor', () => {
     expect(closeFired).to.be.true;
   });
 
-  it('dispatches save-rule event when Add Rule is clicked', async () => {
+  it('dispatches save-rule event when Add rule is clicked', async () => {
     const el = (await fixture(
       html`<tool-rule-editor
         .open=${true}

@@ -415,3 +415,84 @@ class ApprovalDecision(BaseModel):
         the agent regardless of how they replied.
         """
         return self.answer_text or self.selected_option or self.comment
+
+
+#: Most requests one batch decision may carry. The console lists one page of
+#: 100 requests, so a batch can never need more than that; a larger body is a
+#: mistake or an abuse, and both are better refused than looped over.
+MAX_BATCH_DECISION_IDS = 100
+
+
+class ApprovalBatchDecision(BaseModel):
+    """One decision applied to several pending requests."""
+
+    ids: list[UUID] = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_BATCH_DECISION_IDS,
+        description="Approval request ids to decide, in the order they were picked",
+    )
+    approved: bool = Field(
+        ..., description="Whether every listed request is approved or declined"
+    )
+    comment: Optional[str] = Field(
+        None, description="Comment recorded on every request in the batch"
+    )
+
+    @property
+    def unique_ids(self) -> list[UUID]:
+        """The ids with duplicates removed, keeping the caller's order."""
+        seen: set[UUID] = set()
+        ordered: list[UUID] = []
+        for request_id in self.ids:
+            if request_id in seen:
+                continue
+            seen.add(request_id)
+            ordered.append(request_id)
+        return ordered
+
+
+class ApprovalBatchItemResult(BaseModel):
+    """What happened to one request in a batch decision."""
+
+    id: UUID = Field(..., description="The approval request this result is for")
+    ok: bool = Field(..., description="True when the decision was recorded")
+    status: Optional[str] = Field(
+        None, description="Status of the request after the decision, when known"
+    )
+    error: Optional[str] = Field(
+        None,
+        description=(
+            "Why this request was not decided: not found, not yours, or "
+            "already resolved. Null when ok is true."
+        ),
+    )
+
+    @field_serializer("id")
+    def serialize_id(self, value: UUID) -> str:
+        """Ids travel as strings, like every other approval id."""
+        return str(value)
+
+
+class ApprovalBatchResponse(BaseModel):
+    """Per-request results for a batch decision.
+
+    A batch never fails as a whole. One request that is already resolved (or
+    belongs to somebody else) must not cost the operator the other nineteen
+    decisions they just made, so every id gets its own result and the caller
+    reports the failures by name.
+    """
+
+    results: list[ApprovalBatchItemResult] = Field(
+        ..., description="One result per requested id, in request order"
+    )
+
+    @computed_field
+    def succeeded(self) -> int:
+        """How many requests took the decision."""
+        return sum(1 for result in self.results if result.ok)
+
+    @computed_field
+    def failed(self) -> int:
+        """How many requests did not."""
+        return sum(1 for result in self.results if not result.ok)

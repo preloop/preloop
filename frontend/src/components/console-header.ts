@@ -59,6 +59,7 @@ interface ApprovalRequest {
 interface UserNotification {
   id: string;
   type:
+    | 'approval'
     | 'team_added'
     | 'team_removed'
     | 'policy_added'
@@ -69,8 +70,18 @@ interface UserNotification {
   message: string;
   created_at: string;
   read: boolean;
+  /** Console route this notification is about, when it is about something. */
+  href?: string;
   metadata?: Record<string, unknown>;
 }
+
+/** Bell headline for each way an approval can stop waiting. */
+const APPROVAL_RESOLUTION_TITLES: Record<string, string> = {
+  approval_approved: 'Approval approved',
+  approval_declined: 'Approval declined',
+  approval_expired: 'Approval expired',
+  approval_cancelled: 'Approval cancelled',
+};
 
 @customElement('console-header')
 export class ConsoleHeader extends LitElement {
@@ -108,6 +119,10 @@ export class ConsoleHeader extends LitElement {
   // Track notification IDs to prevent duplicates
   private shownExecutionNotifications: Set<string> = new Set();
   private shownApprovalNotifications: Set<string> = new Set();
+
+  // Approvals decided from this bell. The resolution broadcast comes back to
+  // this tab too, and telling the operator about their own click is noise.
+  private decidedHere: Set<string> = new Set();
 
   static styles = css`
     :host {
@@ -409,6 +424,7 @@ export class ConsoleHeader extends LitElement {
   private async handleApprove(approvalId: string, event: Event) {
     event.stopPropagation();
     this._processingApproval = approvalId;
+    this.decidedHere.add(approvalId);
     try {
       await api.approveRequest(approvalId);
       this._pendingApprovals = this._pendingApprovals.filter(
@@ -416,6 +432,8 @@ export class ConsoleHeader extends LitElement {
       );
     } catch (error) {
       console.error('Failed to approve request:', error);
+      // The decision never landed, so a later resolution is news again.
+      this.decidedHere.delete(approvalId);
     } finally {
       this._processingApproval = null;
     }
@@ -424,6 +442,7 @@ export class ConsoleHeader extends LitElement {
   private async handleDecline(approvalId: string, event: Event) {
     event.stopPropagation();
     this._processingApproval = approvalId;
+    this.decidedHere.add(approvalId);
     try {
       await api.declineRequest(approvalId);
       this._pendingApprovals = this._pendingApprovals.filter(
@@ -431,9 +450,54 @@ export class ConsoleHeader extends LitElement {
       );
     } catch (error) {
       console.error('Failed to decline request:', error);
+      // The decision never landed, so a later resolution is news again.
+      this.decidedHere.delete(approvalId);
     } finally {
       this._processingApproval = null;
     }
+  }
+
+  /**
+   * Turn an approval resolution into a bell notification.
+   *
+   * Only for requests this bell was carrying: an approval nobody here was
+   * waiting on is somebody else's news. Decisions made in this tab are
+   * skipped too, because the operator who clicked Approve does not need to
+   * be told that it was approved.
+   */
+  private recordApprovalResolution(message: {
+    type: string;
+    approval_request_id?: string;
+    tool_name?: string;
+    summary?: string;
+  }) {
+    const approvalId = message.approval_request_id;
+    if (!approvalId) return;
+    if (this.decidedHere.has(approvalId)) {
+      this.decidedHere.delete(approvalId);
+      return;
+    }
+    const pending = this._pendingApprovals.find(
+      (approval) => approval.id === approvalId
+    );
+    if (!pending) return;
+
+    const title = APPROVAL_RESOLUTION_TITLES[message.type];
+    if (!title) return;
+
+    const notification: UserNotification = {
+      id: `approval-${approvalId}-${message.type}`,
+      type: 'approval',
+      title,
+      message: message.summary || message.tool_name || pending.tool_name,
+      created_at: new Date().toISOString(),
+      read: false,
+      href: `/console/approval/${approvalId}`,
+    };
+    this._userNotifications = [
+      notification,
+      ...this._userNotifications.filter((n) => n.id !== notification.id),
+    ];
   }
 
   private markNotificationAsRead(notificationId: string) {
@@ -444,13 +508,37 @@ export class ConsoleHeader extends LitElement {
     // api.markNotificationRead(notificationId);
   }
 
+  /**
+   * Open what the notification is about, then mark it read. A bell item that
+   * names an approval and goes nowhere when clicked is a dead end.
+   */
+  private handleNotificationClick(notification: UserNotification) {
+    this.markNotificationAsRead(notification.id);
+    if (notification.href) {
+      Router.go(notification.href);
+    }
+  }
+
+  /**
+   * Pending approvals that can still be decided.
+   *
+   * The list is filtered when it loads, but a tab left open carries requests
+   * past their expiry, and a bell that counts a dead request sends the
+   * operator to a page where every button is disabled.
+   */
+  private get liveApprovals(): ApprovalRequest[] {
+    return this._pendingApprovals.filter((approval) =>
+      this.isUnexpiredPendingApproval(approval)
+    );
+  }
+
   private get totalNotificationCount(): number {
     const unreadNotifications = this._userNotifications.filter(
       (n) => !n.read
     ).length;
     return (
       this._runningExecutions.length +
-      this._pendingApprovals.length +
+      this.liveApprovals.length +
       unreadNotifications
     );
   }
@@ -576,6 +664,10 @@ export class ConsoleHeader extends LitElement {
             message.tool_name || 'Tool',
             message.type
           );
+          // Leave a trail in the bell before the row disappears: an approval
+          // that resolved elsewhere is the one bell item an operator most
+          // wants to reopen, and until now it vanished without a word.
+          this.recordApprovalResolution(message);
           // Remove from pending approvals
           this._pendingApprovals = this._pendingApprovals.filter(
             (approval) => approval.id !== message.approval_request_id
@@ -910,7 +1002,8 @@ export class ConsoleHeader extends LitElement {
   }
 
   private renderApprovalsSection() {
-    if (this._pendingApprovals.length === 0) return '';
+    const approvals = this.liveApprovals;
+    if (approvals.length === 0) return '';
 
     return html`
       <div class="notification-section">
@@ -918,9 +1011,7 @@ export class ConsoleHeader extends LitElement {
           <div class="section-title">
             <sl-icon name="shield-check"></sl-icon>
             Pending approvals
-            <span class="section-count"
-              >(${this._pendingApprovals.length})</span
-            >
+            <span class="section-count">(${approvals.length})</span>
           </div>
           <a
             class="section-link"
@@ -929,7 +1020,7 @@ export class ConsoleHeader extends LitElement {
           >
         </div>
         <div class="approval-list">
-          ${this._pendingApprovals.slice(0, 5).map(
+          ${approvals.slice(0, 5).map(
             (approval) => html`
               <div
                 class="approval-item"
@@ -998,9 +1089,24 @@ export class ConsoleHeader extends LitElement {
         <div class="notification-list">
           ${this._userNotifications.slice(0, 5).map(
             (notification) => html`
+              <!--
+                A row without an href still does something when it is
+                clicked: it marks itself read. That is a button, not
+                presentation, and it stays focusable so the keyboard can
+                reach it too.
+              -->
               <div
                 class="notification-item ${notification.read ? '' : 'unread'}"
-                @click=${() => this.markNotificationAsRead(notification.id)}
+                role=${notification.href ? 'link' : 'button'}
+                tabindex="0"
+                data-href=${notification.href ?? ''}
+                @click=${() => this.handleNotificationClick(notification)}
+                @keydown=${(event: KeyboardEvent) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    this.handleNotificationClick(notification);
+                  }
+                }}
               >
                 <div class="notification-title">
                   <sl-icon
@@ -1022,6 +1128,7 @@ export class ConsoleHeader extends LitElement {
 
   private getNotificationIcon(type: UserNotification['type']): string {
     const iconMap: Record<UserNotification['type'], string> = {
+      approval: 'shield-check',
       team_added: 'people',
       team_removed: 'people',
       policy_added: 'file-earmark-text',
@@ -1057,7 +1164,7 @@ export class ConsoleHeader extends LitElement {
   render() {
     const hasContent =
       this._runningExecutions.length > 0 ||
-      this._pendingApprovals.length > 0 ||
+      this.liveApprovals.length > 0 ||
       this._userNotifications.length > 0;
 
     return html`

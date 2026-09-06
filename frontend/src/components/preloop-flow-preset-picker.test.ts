@@ -129,6 +129,45 @@ describe('presetGroups', () => {
   });
 });
 
+describe('an account copy of a catalog preset', () => {
+  const COPY: FlowPresetRecord = {
+    id: 'preset-copy',
+    name: 'Pull Request Reviewer',
+    account_id: 'acct-1',
+    source_preset_id: 'preset-002',
+    description: 'Review a pull request when it opens.',
+    trigger_event_types: ['pull_request_opened'],
+  };
+
+  it('shows the copy once and leaves the catalog twin out', () => {
+    const groups = presetGroups([...CATALOG, COPY]);
+
+    expect(groups[0].presets.map((preset) => preset.id)).to.deep.equal([
+      'preset-copy',
+    ]);
+    // The catalog original is gone from Tracker automation: two rows with
+    // the same name is a choice nobody can make.
+    expect(groups[1].presets.map((preset) => preset.name)).to.deep.equal([
+      'Issue Triage Assistant',
+      'Automated Issue Implementation',
+    ]);
+  });
+
+  it('says which catalog preset the copy came from', async () => {
+    const element = (await fixture(html`
+      <preloop-flow-preset-picker
+        .presets=${[...CATALOG, COPY]}
+      ></preloop-flow-preset-picker>
+    `)) as PreloopFlowPresetPicker;
+    await element.updateComplete;
+
+    const origins = Array.from(
+      element.shadowRoot!.querySelectorAll('.row-origin')
+    ).map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim());
+    expect(origins).to.deep.equal(['saved from Pull Request Reviewer']);
+  });
+});
+
 describe('presetChips', () => {
   it('lists chips for 001, 002, 011 and a tool-less preset', () => {
     expect(presetChips(CATALOG[0]).map((chip) => chip.label)).to.deep.equal([

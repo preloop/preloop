@@ -29,7 +29,9 @@ export class GovernanceRuleSetEditor extends LitElement {
   @property({ type: Object }) features: { [key: string]: boolean | string[] } =
     {};
   @property({ type: String }) emptyMessage = 'No scoped rules configured yet.';
-  @property({ type: String }) addButtonLabel = 'Add Rule';
+  // One label for the same act everywhere: the policies page, this editor
+  // and the tool rule dialog all say "Add rule", in sentence case.
+  @property({ type: String }) addButtonLabel = 'Add rule';
 
   @state() private _showRuleEditor = false;
   @state() private _editingRule: AccessRule | null = null;

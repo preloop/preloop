@@ -861,6 +861,26 @@ export class ConsoleShell extends LitElement {
                           '/console/settings/runners',
                           html`<sl-menu-item>Runners</sl-menu-item>`
                         )}
+                        <!-- The four personal pages had routes and a place in
+                             the avatar menu, but no way in from the sidebar,
+                             so Appearance in particular was unreachable for
+                             anyone who did not know the URL. -->
+                        ${this._renderNavLink(
+                          '/console/settings/profile',
+                          html`<sl-menu-item>Profile</sl-menu-item>`
+                        )}
+                        ${this._renderNavLink(
+                          '/console/settings/security',
+                          html`<sl-menu-item>Security</sl-menu-item>`
+                        )}
+                        ${this._renderNavLink(
+                          '/console/settings/appearance',
+                          html`<sl-menu-item>Appearance</sl-menu-item>`
+                        )}
+                        ${this._renderNavLink(
+                          '/console/settings/notification-preferences',
+                          html`<sl-menu-item>Notifications</sl-menu-item>`
+                        )}
                       </sl-menu>
                     </sl-details>
                   </sl-menu>

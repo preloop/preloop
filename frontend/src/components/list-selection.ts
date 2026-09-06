@@ -783,12 +783,7 @@ export class ListSelectionController<T> implements ReactiveController {
           this.host.requestUpdate();
         },
       });
-      reportBulkResult(result, report);
-      // Items that changed keep their selection only when they failed, so a
-      // retry is one click and a finished run leaves a quiet page.
-      this.selection = ListSelection.of(
-        result.failed.map((failure) => failure.item.id)
-      );
+      this.settle(result, report);
       return result;
     } finally {
       this.running = null;
@@ -796,6 +791,62 @@ export class ListSelectionController<T> implements ReactiveController {
       this.progressTotal = 0;
       this.host.requestUpdate();
     }
+  }
+
+  /**
+   * Runs one call that carries the whole selection, and reports the same way.
+   *
+   * Some collections have a real batch endpoint (approvals decide the picked
+   * ids in one POST). Those cannot report "3 of 7" because there is one
+   * request, but everything after it is identical: one toast, and only the
+   * failures stay selected. `action` returns the per item outcome the server
+   * sent back.
+   */
+  async runBatch<I extends BulkItem>(
+    actionId: string,
+    items: readonly I[],
+    action: (items: readonly I[]) => Promise<BulkResult<I>>,
+    report: BulkReport
+  ): Promise<BulkResult<I>> {
+    if (this.running !== null) {
+      return { succeeded: [], failed: [] };
+    }
+    this.running = actionId;
+    // No per item progress: one request settles all of them at once.
+    this.progressDone = 0;
+    this.progressTotal = 0;
+    this.host.requestUpdate();
+    try {
+      const result = await action(items);
+      this.settle(result, report);
+      return result;
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Request failed';
+      const failed = items.map((item) => ({ item, message }));
+      const result: BulkResult<I> = { succeeded: [], failed };
+      this.settle(result, report);
+      return result;
+    } finally {
+      this.running = null;
+      this.host.requestUpdate();
+    }
+  }
+
+  /**
+   * The end of every run: one toast, and only the failures stay selected so a
+   * retry is one click and a finished run leaves a quiet page.
+   */
+  private settle<I extends BulkItem>(
+    result: BulkResult<I>,
+    report: BulkReport
+  ): void {
+    reportBulkResult(result, report);
+    this.selection = ListSelection.of(
+      result.failed.map((failure) => failure.item.id)
+    );
   }
 
   private handleKeyDown = (event: KeyboardEvent): void => {

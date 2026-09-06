@@ -3,9 +3,10 @@
 import logging
 import os
 import uuid
-from typing import Optional, Union
+from typing import AsyncGenerator, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
@@ -20,6 +21,9 @@ from preloop.models.db.session import get_async_db_session, get_db_session
 from preloop.models.models import ApprovalRequest
 from preloop.models.models.user import User
 from preloop.models.schemas.approval_request import (
+    ApprovalBatchDecision,
+    ApprovalBatchItemResult,
+    ApprovalBatchResponse,
     ApprovalRequestResponse,
     ApprovalDecision,
     ApprovalEventResponse,
@@ -36,6 +40,38 @@ logger = logging.getLogger(__name__)
 #: Channel label recorded on the timeline for decisions made through the
 #: authenticated API (web console and mobile app sessions).
 AUTHENTICATED_DECISION_CHANNEL = "console"
+
+
+async def _async_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Yield an async session for handlers that must not block the event loop.
+
+    ``get_db_session`` on an ``async def`` route is a latent liveness risk:
+    the first sync query waits on the loop. Bulk decide uses this instead.
+    """
+    async with get_async_db_session() as session:
+        yield session
+
+
+@require_permission("decide_approvals")
+def _require_decide_approvals(
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> None:
+    """Enforce ``decide_approvals`` for a handler that holds an async session.
+
+    The RBAC check behind ``@require_permission`` runs synchronous CRUD
+    (``crud_user_role.get_by_user``, ``db.query``) against whatever arrives as
+    ``db``, so a handler that declares an ``AsyncSession`` under that name
+    fails the check itself with a 500 on every request once RBAC is on.
+
+    Declaring the check as a plain ``def`` dependency gives it the sync
+    ``Session`` it needs and keeps the blocking pool checkout on FastAPI's
+    threadpool rather than on the event loop, which is the liveness risk the
+    ratchet in ``tests/api/test_event_loop_pool_wait.py`` exists to bound. The
+    handler keeps its own async session for the decisions.
+    """
+    _ = (request, current_user, db)  # Consumed by @require_permission.
 
 
 def _record_viewed_event(
@@ -427,3 +463,138 @@ async def decide_request(
         return ApprovalRequestResponse.model_validate(
             await attributed_async(async_db, updated)
         )
+
+
+@router.post(
+    "/decide-batch",
+    response_model=ApprovalBatchResponse,
+    # decide_approvals is enforced by a sync dependency instead of the
+    # handler decorator: the RBAC check needs a sync Session and must not run
+    # on the event loop. See _require_decide_approvals.
+    dependencies=[Depends(_require_decide_approvals)],
+)
+async def decide_requests_batch(
+    decision: ApprovalBatchDecision,
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    # Async session: a sync Session here would grow the event-loop pool-wait
+    # surface (see test_async_sync_session_route_count_does_not_grow).
+    db: AsyncSession = Depends(_async_db_session),
+) -> ApprovalBatchResponse:
+    """Approve or decline several requests with one decision.
+
+    An operator clearing an inbox picks the rows first and decides once. Doing
+    that as N round trips means N approvals racing for the same expiry window
+    and N chances for the page to lose track of which ones landed, so the
+    console sends the whole selection here.
+
+    The batch never fails as a whole: each request is decided on its own and
+    reported on its own, so an id that expired while the operator was reading
+    costs that row and nothing else.
+
+    Args:
+        decision: The ids to decide, the decision, and an optional comment
+        request: HTTP request
+        current_user: Current authenticated user
+        db: Async session used for the decisions
+
+    Returns:
+        One result per requested id, in the order they were sent
+    """
+    base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
+
+    results: list[ApprovalBatchItemResult] = []
+    approval_service = ApprovalService(db, base_url)
+    expected_status = "approved" if decision.approved else "declined"
+
+    # Sequential on purpose. Each decision writes the request, appends
+    # timeline events and broadcasts, and several of those running at once
+    # against one session is how a batch turns into a deadlock.
+    for request_id in decision.unique_ids:
+        approval_request = await approval_service.get_approval_request(request_id)
+        if not approval_request:
+            results.append(
+                ApprovalBatchItemResult(
+                    id=request_id, ok=False, error="Approval request not found"
+                )
+            )
+            continue
+        if approval_request.account_id != current_user.account_id:
+            # Same message as "not found" on purpose: a caller must not be
+            # able to probe another account's request ids.
+            results.append(
+                ApprovalBatchItemResult(
+                    id=request_id, ok=False, error="Approval request not found"
+                )
+            )
+            continue
+        if approval_request.status != "pending":
+            results.append(
+                ApprovalBatchItemResult(
+                    id=request_id,
+                    ok=False,
+                    status=approval_request.status,
+                    error=f"Request already {approval_request.status}",
+                )
+            )
+            continue
+        # A past-deadline row is not pre-checked here. Expiry belongs to
+        # ApprovalService._reject_if_not_actionable, which holds the row lock,
+        # persists the expired transition, and honours the kill-switch freeze
+        # (#157) that keeps a frozen past-deadline request decidable. The
+        # post-check below reports whatever status the decision actually left.
+        try:
+            if decision.approved:
+                updated = await approval_service.approve_request(
+                    request_id,
+                    decision.comment,
+                    user_id=current_user.id,
+                    channel=AUTHENTICATED_DECISION_CHANNEL,
+                )
+            else:
+                updated = await approval_service.decline_request(
+                    request_id,
+                    decision.comment,
+                    user_id=current_user.id,
+                    channel=AUTHENTICATED_DECISION_CHANNEL,
+                )
+        except Exception as error:  # noqa: BLE001 - one bad id, not the batch
+            await db.rollback()
+            logger.warning(
+                "Batch decision failed for approval %s: %s",
+                request_id,
+                error,
+                exc_info=True,
+            )
+            results.append(
+                ApprovalBatchItemResult(
+                    id=request_id, ok=False, error="Failed to process decision"
+                )
+            )
+            continue
+
+        if not updated:
+            results.append(
+                ApprovalBatchItemResult(
+                    id=request_id, ok=False, error="Failed to process decision"
+                )
+            )
+            continue
+
+        updated_status = getattr(updated, "status", None)
+        if updated_status != expected_status:
+            results.append(
+                ApprovalBatchItemResult(
+                    id=request_id,
+                    ok=False,
+                    status=updated_status,
+                    error=f"Request {updated_status}",
+                )
+            )
+            continue
+
+        results.append(
+            ApprovalBatchItemResult(id=request_id, ok=True, status=updated_status)
+        )
+
+    return ApprovalBatchResponse(results=results)

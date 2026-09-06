@@ -1254,12 +1254,12 @@ describe('ToolsView – tabs and toolbar', () => {
 
     const addRule = [
       ...(ruleSet.shadowRoot?.querySelectorAll('sl-button') || []),
-    ].find((button) => button.textContent?.includes('Add Rule')) as
+    ].find((button) => button.textContent?.includes('Add rule')) as
       (HTMLElement & { click: () => void }) | undefined;
     expect(addRule).to.exist;
     await waitUntil(
       () => Boolean(addRule!.shadowRoot?.querySelector('button')),
-      'Add Rule button did not upgrade'
+      'Add rule button did not upgrade'
     );
     addRule!.click();
     await waitUntil(

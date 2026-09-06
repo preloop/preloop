@@ -4187,6 +4187,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/approval-requests/decide-batch:
+    post:
+      tags:
+      - Approval Requests
+      - approval_requests
+      summary: Decide Requests Batch
+      description: "Approve or decline several requests with one decision.\n\nAn operator\
+        \ clearing an inbox picks the rows first and decides once. Doing\nthat as\
+        \ N round trips means N approvals racing for the same expiry window\nand N\
+        \ chances for the page to lose track of which ones landed, so the\nconsole\
+        \ sends the whole selection here.\n\nThe batch never fails as a whole: each\
+        \ request is decided on its own and\nreported on its own, so an id that expired\
+        \ while the operator was reading\ncosts that row and nothing else.\n\nArgs:\n\
+        \    decision: The ids to decide, the decision, and an optional comment\n\
+        \    request: HTTP request\n    current_user: Current authenticated user\n\
+        \    db: Async session used for the decisions\n\nReturns:\n    One result\
+        \ per requested id, in the order they were sent"
+      operationId: decide_requests_batch_api_v1_approval_requests_decide_batch_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalBatchDecision'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalBatchResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/approval-bypasses/status:
     get:
       tags:
@@ -11435,6 +11474,96 @@ components:
       - name
       title: ApprovalApiKeySummary
       description: The API key the requesting caller authenticated with.
+    ApprovalBatchDecision:
+      properties:
+        ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          maxItems: 100
+          minItems: 1
+          title: Ids
+          description: Approval request ids to decide, in the order they were picked
+        approved:
+          type: boolean
+          title: Approved
+          description: Whether every listed request is approved or declined
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+          description: Comment recorded on every request in the batch
+      type: object
+      required:
+      - ids
+      - approved
+      title: ApprovalBatchDecision
+      description: One decision applied to several pending requests.
+    ApprovalBatchItemResult:
+      properties:
+        id:
+          type: string
+          title: Id
+          description: The approval request this result is for
+        ok:
+          type: boolean
+          title: Ok
+          description: True when the decision was recorded
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+          description: Status of the request after the decision, when known
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+          description: 'Why this request was not decided: not found, not yours, or
+            already resolved. Null when ok is true.'
+      type: object
+      required:
+      - id
+      - ok
+      title: ApprovalBatchItemResult
+      description: What happened to one request in a batch decision.
+    ApprovalBatchResponse:
+      properties:
+        results:
+          items:
+            $ref: '#/components/schemas/ApprovalBatchItemResult'
+          type: array
+          title: Results
+          description: One result per requested id, in request order
+        succeeded:
+          type: integer
+          title: Succeeded
+          description: How many requests took the decision.
+          readOnly: true
+        failed:
+          type: integer
+          title: Failed
+          description: How many requests did not.
+          readOnly: true
+      type: object
+      required:
+      - results
+      - succeeded
+      - failed
+      title: ApprovalBatchResponse
+      description: 'Per-request results for a batch decision.
+
+
+        A batch never fails as a whole. One request that is already resolved (or
+
+        belongs to somebody else) must not cost the operator the other nineteen
+
+        decisions they just made, so every id gets its own result and the caller
+
+        reports the failures by name.'
     ApprovalBypassCreate:
       properties:
         mode:

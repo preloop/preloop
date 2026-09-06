@@ -60,6 +60,19 @@ describe('ApprovalRuleContextBlock', () => {
     expect(expression?.textContent?.trim()).to.equal('args.amount >= 5000');
   });
 
+  it('prints the expression of an unnamed rule once, not twice', async () => {
+    // An unnamed rule is recorded with its expression as the name, so the
+    // heading and the mono block underneath were the same string.
+    const element = await mount({
+      ...boundaryRule,
+      rule_name: 'args.amount >= 5000',
+    });
+
+    const text = element.shadowRoot?.textContent || '';
+    expect(text.match(/args\.amount >= 5000/g)?.length).to.equal(1);
+    expect(has(element, '.rule-expression'), 'expression repeated').to.be.false;
+  });
+
   it('names the arguments the rule inspects and its priority', async () => {
     const element = await mount(boundaryRule);
 
