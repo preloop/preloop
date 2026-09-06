@@ -2109,7 +2109,7 @@ class FlowExecutionOrchestrator:
         }
 
         from preloop.services.flow_feedback import resolve_native_checkpoint
-        from preloop.services.model_routing import native_handoff_required
+        from preloop.services.model_routing import validate_native_resume_identity
 
         resume = (self.trigger_event_data or {}).get("_resume") or {}
         native = (
@@ -2126,35 +2126,10 @@ class FlowExecutionOrchestrator:
         if resume.get("thread_id"):
             execution_context["checkpoint_resume_authorized"] = True
             execution_context["thread_id"] = resume["thread_id"]
-        if native and resume.get("execution_id"):
-            prior = crud_flow_execution.get(self.db, id=str(resume["execution_id"]))
-            prior_details = (
-                prior.trigger_event_details
-                if prior is not None and prior.flow_id == self.flow.id
-                else None
+        if native or resume.get("cli_session"):
+            validate_native_resume_identity(
+                self.db, self.flow, self.trigger_event_data, resume
             )
-            prior_sel = resolve_execution_agent_selection(
-                prior_details,
-                flow_agent_type=self.flow.agent_type,
-                flow_ai_model_id=self.flow.ai_model_id,
-            )
-            current_sel = resolve_execution_agent_selection(
-                self.trigger_event_data,
-                flow_agent_type=self.flow.agent_type,
-                flow_ai_model_id=self.flow.ai_model_id,
-            )
-            if native_handoff_required(current_sel, prior_sel):
-                logger.info(
-                    "Skipping native session restore for execution %s: "
-                    "model/harness changed (%s -> %s); requiring new session",
-                    self.execution_log.id,
-                    prior_sel,
-                    current_sel,
-                )
-                native = None
-                routing = (self.trigger_event_data or {}).get(ROUTING_RECORD_KEY)
-                if isinstance(routing, dict):
-                    routing["handoff"] = "new_session"
         if native:
             resume["cli_session"] = native
             if isinstance(native.get("artifact_reference"), dict):

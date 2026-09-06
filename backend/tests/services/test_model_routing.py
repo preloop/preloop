@@ -1,6 +1,6 @@
 """Ordered per-flow model/harness routing from current issue labels."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -166,7 +166,7 @@ class TestParseAndMatch:
                 }
             }
         )
-        assert labels == ["bug", "backend", "github-only"]
+        assert labels == ["bug", "backend"]
 
     def test_strip_untrusted_overrides(self):
         event = {
@@ -269,7 +269,7 @@ def _patch_dispatch():
 
 class TestPrepareAndTrigger:
     @pytest.mark.asyncio
-    async def test_absent_policy_leaves_snapshot_unchanged(
+    async def test_absent_policy_records_default(
         self, db_session: Session, test_user: User
     ):
         default = _usable_model(db_session, test_user.account_id, name="Default")
@@ -283,7 +283,9 @@ class TestPrepareAndTrigger:
                 trigger_event_data={"payload": {"labels": ["bug"]}},
             )
         row = db_session.query(FlowExecution).filter_by(id=result["id"]).one()
-        assert ROUTING_RECORD_KEY not in row.trigger_event_details
+        assert row.trigger_event_details[ROUTING_RECORD_KEY]["ai_model_id"] == str(
+            default.id
+        )
         assert MATRIX_OVERRIDES_KEY not in row.trigger_event_details
 
     @pytest.mark.asyncio
@@ -1044,3 +1046,254 @@ class TestOrchestratorSelection:
         assert MATRIX_OVERRIDES_KEY not in details
         assert record["source"] == "default"
         assert record["ai_model_id"] == str(default.id)
+
+
+class TestRoutingReviewRegressions:
+    @pytest.mark.parametrize("labels", [[], ["remaining"]])
+    def test_current_labels_do_not_include_removed_delta(
+        self, labels: list[str]
+    ) -> None:
+        assert (
+            extract_trusted_labels(
+                {
+                    "payload": {
+                        "labels": labels,
+                        "action": "unlabeled",
+                        "label": {"name": "removed"},
+                        "issue": {"labels": [{"name": "stale"}]},
+                    }
+                }
+            )
+            == labels
+        )
+
+    def test_delta_without_current_snapshot_cannot_select_rule(self) -> None:
+        assert (
+            extract_trusted_labels(
+                {
+                    "payload": {
+                        "action": "labeled",
+                        "label": {"name": "delta"},
+                    }
+                }
+            )
+            == []
+        )
+
+    @pytest.mark.parametrize("kind", ["retry", "continuation"])
+    def test_legacy_source_without_identity_fails_closed(
+        self, db_session: Session, test_user: User, kind: str
+    ) -> None:
+        model = _usable_model(db_session, test_user.account_id)
+        flow = _flow(db_session, test_user, ai_model_id=model.id)
+        prior = FlowExecution(flow_id=flow.id, trigger_event_details={})
+        with pytest.raises(ModelRoutingError, match="identity"):
+            prepare_execution_routing(
+                db_session, flow, {}, source_execution=prior, pin_kind=kind
+            )
+
+    def test_absent_policy_records_identity_before_defaults_change(
+        self, db_session: Session, test_user: User
+    ) -> None:
+        model = _usable_model(db_session, test_user.account_id)
+        flow = _flow(db_session, test_user, ai_model_id=model.id)
+        original = prepare_execution_routing(db_session, flow, {})
+        prior = FlowExecution(flow_id=flow.id, trigger_event_details=original)
+        flow.ai_model_id = _usable_model(db_session, test_user.account_id).id
+        pinned = prepare_execution_routing(db_session, flow, {}, source_execution=prior)
+        assert pinned[ROUTING_RECORD_KEY]["ai_model_id"] == str(model.id)
+
+    def test_malformed_source_id_does_not_query_database(self) -> None:
+        from preloop.services.model_routing import load_source_execution_for_flow
+
+        with patch("preloop.services.model_routing.crud_flow_execution.get") as get:
+            assert (
+                load_source_execution_for_flow(MagicMock(), MagicMock(), "not-a-uuid")
+                is None
+            )
+        get.assert_not_called()
+
+    def test_partial_matrix_source_cannot_adopt_live_defaults(
+        self, db_session: Session, test_user: User
+    ) -> None:
+        model = _usable_model(db_session, test_user.account_id)
+        flow = _flow(db_session, test_user, ai_model_id=model.id)
+        prior = FlowExecution(
+            flow_id=flow.id, trigger_event_details={MATRIX_OVERRIDES_KEY: {"index": 0}}
+        )
+        with pytest.raises(ModelRoutingError, match="identity"):
+            prepare_execution_routing(db_session, flow, {}, source_execution=prior)
+
+    def test_default_matrix_cell_freezes_effective_identity(
+        self, db_session: Session, test_user: User
+    ) -> None:
+        model = _usable_model(db_session, test_user.account_id)
+        flow = _flow(db_session, test_user, ai_model_id=model.id)
+        details = prepare_execution_routing(
+            db_session, flow, {}, authorized_matrix={"index": 0}
+        )
+        assert details[MATRIX_OVERRIDES_KEY]["agent_type"] == "codex"
+        assert details[MATRIX_OVERRIDES_KEY]["ai_model_id"] == str(model.id)
+
+    def test_recorded_null_model_does_not_use_current_default(self) -> None:
+        assert resolve_execution_agent_selection(
+            {
+                ROUTING_RECORD_KEY: {
+                    "schema_version": 1,
+                    "agent_type": "codex",
+                    "ai_model_id": None,
+                }
+            },
+            flow_agent_type="opencode",
+            flow_ai_model_id=str(FAST_MODEL),
+        ) == ("codex", None)
+
+    @pytest.mark.asyncio
+    async def test_native_mismatch_fails_before_agent_launch(
+        self, db_session: Session, test_user: User
+    ) -> None:
+        default = _usable_model(db_session, test_user.account_id)
+        fast = _usable_model(db_session, test_user.account_id)
+        flow = _flow(db_session, test_user, ai_model_id=default.id)
+        prior = FlowExecution(
+            flow_id=flow.id,
+            status="COMPLETED",
+            trigger_event_details={
+                ROUTING_RECORD_KEY: {
+                    "schema_version": 1,
+                    "agent_type": "codex",
+                    "ai_model_id": str(fast.id),
+                },
+            },
+        )
+        db_session.add(prior)
+        db_session.flush()
+        details = {
+            ROUTING_RECORD_KEY: {
+                "schema_version": 1,
+                "agent_type": "codex",
+                "ai_model_id": str(default.id),
+            },
+            "_resume": {"thread_id": str(uuid4()), "execution_id": str(prior.id)},
+        }
+        orch = FlowExecutionOrchestrator(
+            db_session,
+            flow_id=flow.id,
+            trigger_event_data=details,
+            nats_client=AsyncMock(),
+        )
+        orch._get_flow_details()
+        orch.execution_log = MagicMock(id=uuid4())
+        with (
+            patch.object(orch, "_resolve_prompt", AsyncMock(return_value="repair")),
+            patch.object(
+                orch, "_create_temporary_api_token", return_value=("test", uuid4())
+            ),
+            patch(
+                "preloop.services.flow_feedback.resolve_native_checkpoint",
+                return_value={"session_id": "prior"},
+            ),
+        ):
+            with pytest.raises(ModelRoutingError, match="identity"):
+                await orch._prepare_execution_context()
+
+
+class TestRoutingEndpointTrust:
+    @pytest.mark.parametrize("source", ["malformed", "other_flow", "other_account"])
+    def test_trigger_cannot_import_routing_from_caller_resume(
+        self, client: TestClient, db_session: Session, test_user: User, source: str
+    ) -> None:
+        model = _usable_model(db_session, test_user.account_id)
+        flow = _flow(db_session, test_user, ai_model_id=model.id)
+        other = crud_account.create(
+            db_session, obj_in={"organization_name": f"Other {uuid4().hex[:8]}"}
+        )
+        foreign = _usable_model(db_session, other.id)
+        owner = test_user if source == "other_flow" else MagicMock(account_id=other.id)
+        other_flow = _flow(
+            db_session,
+            owner,
+            ai_model_id=foreign.id if source != "other_flow" else model.id,
+        )
+        prior = FlowExecution(
+            flow_id=other_flow.id, status="FAILED", trigger_event_details={}
+        )
+        db_session.add(prior)
+        db_session.flush()
+        prior_id = "not-a-uuid" if source == "malformed" else str(prior.id)
+        forged = {
+            "schema_version": 1,
+            "agent_type": "codex",
+            "ai_model_id": str(foreign.id),
+        }
+        nats_patch, dispatch_patch = _patch_dispatch()
+        with nats_patch, dispatch_patch:
+            response = client.post(
+                f"/api/v1/flows/{flow.id}/trigger",
+                json={
+                    "_resume": {"execution_id": prior_id},
+                    ROUTING_RECORD_KEY: forged,
+                    "payload": {
+                        ROUTING_RECORD_KEY: forged,
+                        MATRIX_OVERRIDES_KEY: forged,
+                    },
+                },
+            )
+        assert response.status_code == 200, response.text
+        row = db_session.query(FlowExecution).filter_by(id=response.json()["id"]).one()
+        assert row.trigger_event_details[ROUTING_RECORD_KEY]["ai_model_id"] == str(
+            model.id
+        )
+        assert ROUTING_RECORD_KEY not in row.trigger_event_details["payload"]
+        assert MATRIX_OVERRIDES_KEY not in row.trigger_event_details["payload"]
+
+    def test_retry_endpoint_rejects_malformed_uuid(self, client: TestClient) -> None:
+        assert (
+            client.post("/api/v1/flows/executions/not-a-uuid/retry").status_code == 422
+        )
+
+    def test_retry_endpoint_rejects_foreign_execution(
+        self, client: TestClient, db_session: Session, test_user: User
+    ) -> None:
+        other = crud_account.create(
+            db_session, obj_in={"organization_name": f"Other {uuid4().hex[:8]}"}
+        )
+        flow = _flow(db_session, MagicMock(account_id=other.id))
+        prior = FlowExecution(
+            flow_id=flow.id, status="FAILED", trigger_event_details={}
+        )
+        db_session.add(prior)
+        db_session.flush()
+        assert (
+            client.post(f"/api/v1/flows/executions/{prior.id}/retry").status_code == 404
+        )
+
+    def test_retry_endpoint_reports_missing_legacy_identity(
+        self, client: TestClient, db_session: Session, test_user: User
+    ) -> None:
+        model = _usable_model(db_session, test_user.account_id)
+        flow = _flow(db_session, test_user, ai_model_id=model.id)
+        prior = FlowExecution(
+            flow_id=flow.id, status="FAILED", trigger_event_details={}
+        )
+        db_session.add(prior)
+        db_session.flush()
+        response = client.post(f"/api/v1/flows/executions/{prior.id}/retry")
+        assert response.status_code == 422
+        assert "identity" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_controller_continuation_cannot_use_other_flow(
+        self, db_session: Session, test_user: User
+    ) -> None:
+        flow = _flow(db_session, test_user)
+        other_flow = _flow(db_session, test_user)
+        prior = FlowExecution(
+            flow_id=other_flow.id, status="FAILED", trigger_event_details={}
+        )
+        db_session.add(prior)
+        db_session.flush()
+        with pytest.raises(ModelRoutingError, match="not found"):
+            await FlowTriggerService(db_session).trigger_flow(
+                flow_id=flow.id, source_execution_id=prior.id
+            )

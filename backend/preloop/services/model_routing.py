@@ -9,18 +9,18 @@ controller-extracted label names, never webhook-supplied model ids.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
+from uuid import UUID
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from preloop.models import models
 from preloop.models.crud import crud_ai_model, crud_flow_execution
-from preloop.models.models.ai_model import AIModel
-from preloop.models.models.flow import Flow
 from preloop.models.models.flow_execution import (
     MATRIX_OVERRIDES_KEY,
     ROUTING_RECORD_KEY,
-    FlowExecution,
 )
 from preloop.models.schemas.flow import ModelRoutingConfig, ModelRoutingRule
 
@@ -46,7 +46,7 @@ class ModelRoutingError(ValueError):
     """Invalid routing policy or unusable selected model. Fail closed."""
 
 
-def model_has_credential_source(model: AIModel) -> bool:
+def model_has_credential_source(model: models.AIModel) -> bool:
     """True when an AI model row has some way to authenticate at run time."""
     if model.credentials_secret_id or model.api_key:
         return True
@@ -55,7 +55,7 @@ def model_has_credential_source(model: AIModel) -> bool:
     return bool(isinstance(gateway, dict) and gateway.get("enabled"))
 
 
-def model_usable_for_agent(model: AIModel, agent_type: str) -> bool:
+def model_usable_for_agent(model: models.AIModel, agent_type: str) -> bool:
     """True when the agent harness can actually reach this model.
 
     The codex harness talks to OpenAI directly, or to any other provider only
@@ -134,36 +134,27 @@ def _label_name(item: Any) -> Optional[str]:
 
 
 def extract_trusted_labels(event_data: Optional[Dict[str, Any]]) -> List[str]:
-    """Collect current label names from controller-normalized event data.
+    """Read one authoritative current-label array, including an empty array.
 
-    Uses the stored trigger snapshot (``payload.labels`` after
-    ``extract_filter_fields``, plus GitHub/GitLab issue shapes). Does not
-    read ``ai_model_id``, ``_matrix``, or assessment claims.
+    Normalized ``payload.labels`` wins over provider snapshots. The singular
+    ``label`` is an event delta, not current state, and is never merged in.
     """
-    names: List[str] = []
-    seen: set[str] = set()
-
-    def _add(value: Any) -> None:
-        values = value if isinstance(value, list) else [value]
-        for item in values:
-            name = _label_name(item)
-            if name and name not in seen:
-                seen.add(name)
-                names.append(name)
-
-    details = event_data or {}
-    payload = details.get("payload")
+    payload = (event_data or {}).get("payload")
     if not isinstance(payload, dict):
-        payload = {}
-    _add(payload.get("labels"))
-    issue = payload.get("issue")
-    if isinstance(issue, dict):
-        _add(issue.get("labels"))
-    obj_attrs = payload.get("object_attributes")
-    if isinstance(obj_attrs, dict):
-        _add(obj_attrs.get("labels"))
-    _add(payload.get("label"))
-    return names
+        return []
+    for source in (
+        payload,
+        payload.get("issue"),
+        payload.get("pull_request"),
+        payload.get("object_attributes"),
+    ):
+        if isinstance(source, dict) and isinstance(source.get("labels"), list):
+            return list(
+                dict.fromkeys(
+                    name for item in source["labels"] if (name := _label_name(item))
+                )
+            )
+    return []
 
 
 def strip_untrusted_overrides(event_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -181,7 +172,7 @@ def strip_untrusted_overrides(event_data: Dict[str, Any]) -> Dict[str, Any]:
     return event_data
 
 
-def _account_can_use_model(model: Optional[AIModel], account_id: Any) -> bool:
+def _account_can_use_model(model: Optional[models.AIModel], account_id: Any) -> bool:
     if model is None:
         return False
     if model.account_id is None:
@@ -191,13 +182,20 @@ def _account_can_use_model(model: Optional[AIModel], account_id: Any) -> bool:
     return str(model.account_id) == str(account_id)
 
 
+def _model_uuid(value: Any) -> str:
+    try:
+        return str(UUID(str(value)))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ModelRoutingError("ai_model_id must be a valid UUID") from exc
+
+
 def load_usable_model(
     db: Session,
     *,
     ai_model_id: Any,
     agent_type: str,
     account_id: Any,
-) -> AIModel:
+) -> models.AIModel:
     """Load an account-visible model that the harness can actually use.
 
     Raises:
@@ -211,7 +209,7 @@ def load_usable_model(
             f"agent_type '{agent_type}' is not supported; "
             f"supported types: {sorted(SUPPORTED_AGENT_TYPES)}"
         )
-    model = crud_ai_model.get(db, id=str(ai_model_id))
+    model = crud_ai_model.get(db, id=_model_uuid(ai_model_id))
     if not _account_can_use_model(model, account_id):
         raise ModelRoutingError(f"ai_model_id '{ai_model_id}' not found")
     assert model is not None
@@ -246,7 +244,7 @@ def validate_stored_model_routing(
 def _record(
     *,
     ai_model_id: Any,
-    agent_type: str,
+    agent_type: Optional[str],
     source: str,
     reason: str,
     label_snapshot: Iterable[str],
@@ -272,13 +270,13 @@ def _is_routing_record(value: Any) -> bool:
     return (
         isinstance(value, dict)
         and value.get("schema_version") == 1
-        and (value.get("agent_type") or value.get("ai_model_id"))
+        and bool(value.get("agent_type") or value.get("ai_model_id"))
     )
 
 
 def load_source_execution_for_flow(
-    db: Session, flow: Flow, execution_id: Any
-) -> Optional[FlowExecution]:
+    db: Session, flow: models.Flow, execution_id: Any
+) -> Optional[models.FlowExecution]:
     """Load a persisted execution that belongs to this flow and account.
 
     Caller-supplied ids that do not exist, belong to another flow, or
@@ -293,7 +291,9 @@ def load_source_execution_for_flow(
     Returns:
         The matching execution, or None when lineage checks fail.
     """
-    if execution_id is None:
+    try:
+        execution_id = UUID(str(execution_id))
+    except (ValueError, TypeError, AttributeError):
         return None
     prior = crud_flow_execution.get(
         db, id=str(execution_id), account_id=getattr(flow, "account_id", None)
@@ -303,19 +303,21 @@ def load_source_execution_for_flow(
     return prior
 
 
-def _persisted_details(execution: FlowExecution) -> Dict[str, Any]:
+def _persisted_details(execution: models.FlowExecution) -> Dict[str, Any]:
     details = execution.trigger_event_details
     return details if isinstance(details, dict) else {}
 
 
-def _persisted_routing_record(execution: FlowExecution) -> Optional[Dict[str, Any]]:
+def _persisted_routing_record(
+    execution: models.FlowExecution,
+) -> Optional[Dict[str, Any]]:
     record = _persisted_details(execution).get(ROUTING_RECORD_KEY)
     if not _is_routing_record(record):
         return None
     return dict(record)
 
 
-def _persisted_matrix(execution: FlowExecution) -> Optional[Dict[str, Any]]:
+def _persisted_matrix(execution: models.FlowExecution) -> Optional[Dict[str, Any]]:
     matrix = _persisted_details(execution).get(MATRIX_OVERRIDES_KEY)
     if not isinstance(matrix, dict):
         return None
@@ -325,7 +327,7 @@ def _persisted_matrix(execution: FlowExecution) -> Optional[Dict[str, Any]]:
 
 
 def validate_authorized_matrix(
-    db: Session, flow: Flow, cell: Dict[str, Any]
+    db: Session, flow: models.Flow, cell: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Re-check account/harness for a controller-validated eval matrix cell.
 
@@ -348,6 +350,9 @@ def validate_authorized_matrix(
 
     if not isinstance(cell, dict):
         raise ModelRoutingError("authorized matrix cell must be an object")
+    cell["agent_type"] = cell.get("agent_type") or flow.agent_type
+    model_id = cell.get("ai_model_id") or flow.ai_model_id
+    cell["ai_model_id"] = str(model_id) if model_id else None
     agent_type = cell.get("agent_type")
     if agent_type:
         harness = str(agent_type).strip().lower()
@@ -358,7 +363,7 @@ def validate_authorized_matrix(
             )
     ai_model_id = cell.get("ai_model_id")
     if ai_model_id:
-        model = crud_ai_model.get(db, id=str(ai_model_id))
+        model = crud_ai_model.get(db, id=_model_uuid(ai_model_id))
         if not _account_can_use_model(model, getattr(flow, "account_id", None)):
             raise ModelRoutingError(f"ai_model_id '{ai_model_id}' not found")
     return cell
@@ -366,22 +371,18 @@ def validate_authorized_matrix(
 
 def resolve_routing_record(
     db: Session,
-    flow: Flow,
+    flow: models.Flow,
     event_data: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    """Build the controller routing record for this execution, or None.
+) -> Dict[str, Any]:
+    """Build the controller routing record for this execution.
 
-    Absent policy keeps historical trigger snapshots unchanged (no reserved
-    key). When a policy exists, the first matching rule wins; otherwise the
-    flow default is recorded. Never silently substitutes another model.
+    The flow default is recorded even without a policy so later retries can
+    prove their identity. Routing never silently substitutes another model.
     """
     labels = extract_trusted_labels(event_data)
     config = parse_model_routing(getattr(flow, "agent_config", None))
-    if config is None or not config.rules:
-        return None
-
     account_id = getattr(flow, "account_id", None)
-    matched = first_matching_rule(config.rules, labels)
+    matched = first_matching_rule(config.rules, labels) if config else None
     if matched is not None:
         load_usable_model(
             db,
@@ -400,14 +401,14 @@ def resolve_routing_record(
 
     default_type = (flow.agent_type or "").strip().lower() or None
     default_model_id = flow.ai_model_id
-    if default_model_id is not None:
+    if config and default_model_id is not None:
         load_usable_model(
             db,
             ai_model_id=default_model_id,
             agent_type=default_type or "codex",
             account_id=account_id,
         )
-    elif default_type:
+    elif config and default_type:
         from preloop.agents.factory import SUPPORTED_AGENT_TYPES
 
         if default_type not in SUPPORTED_AGENT_TYPES:
@@ -425,16 +426,17 @@ def resolve_routing_record(
 
 
 def revalidate_routing_record(
-    db: Session, flow: Flow, record: Dict[str, Any]
+    db: Session, flow: models.Flow, record: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Fail closed if a pinned record's model is no longer usable."""
-    agent_type = record.get("agent_type") or flow.agent_type
+    require_persisted_identity(record)
+    agent_type = record["agent_type"]
     ai_model_id = record.get("ai_model_id")
     if ai_model_id:
         load_usable_model(
             db,
             ai_model_id=ai_model_id,
-            agent_type=agent_type or flow.agent_type or "codex",
+            agent_type=agent_type,
             account_id=getattr(flow, "account_id", None),
         )
     return record
@@ -442,10 +444,10 @@ def revalidate_routing_record(
 
 def prepare_execution_routing(
     db: Session,
-    flow: Flow,
+    flow: models.Flow,
     event_data: Optional[Dict[str, Any]],
     *,
-    source_execution: Optional[FlowExecution] = None,
+    source_execution: Optional[models.FlowExecution] = None,
     authorized_matrix: Optional[Dict[str, Any]] = None,
     pin_kind: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -466,14 +468,13 @@ def prepare_execution_routing(
         pin_kind: ``retry`` or ``continuation`` when pinning; ignored otherwise.
 
     Returns:
-        A sanitized dict. Untrusted keys are removed. ``_model_routing`` is
-        set when a policy exists, a prior record is pinned, or neither
-        controller override applies.
+        A sanitized snapshot with a frozen model/harness selection, from an
+        authorized matrix, a persisted source, a matching rule, or defaults.
 
     Raises:
         ModelRoutingError: Unusable pinned model or unauthorized matrix cell.
     """
-    details: Dict[str, Any] = dict(event_data or {})
+    details: Dict[str, Any] = deepcopy(event_data or {})
     strip_untrusted_overrides(details)
 
     if authorized_matrix is not None:
@@ -487,6 +488,7 @@ def prepare_execution_routing(
             raise ModelRoutingError("source execution does not belong to this flow")
         persisted_matrix = _persisted_matrix(source_execution)
         if persisted_matrix is not None:
+            require_persisted_identity(persisted_matrix)
             details[MATRIX_OVERRIDES_KEY] = validate_authorized_matrix(
                 db, flow, persisted_matrix
             )
@@ -497,6 +499,10 @@ def prepare_execution_routing(
             if pin_kind == "continuation":
                 pinned["handoff"] = "native_continue"
             details[ROUTING_RECORD_KEY] = revalidate_routing_record(db, flow, pinned)
+        if persisted_matrix is None and persisted_record is None:
+            raise ModelRoutingError(
+                "Prior execution model/harness identity is unavailable; start an explicit new execution."
+            )
         return details
 
     record = resolve_routing_record(db, flow, details)
@@ -517,3 +523,45 @@ def native_handoff_required(
     current_model = str(current_model) if current_model else None
     prior_model = str(prior_model) if prior_model else None
     return (current_type, current_model) != (prior_type, prior_model)
+
+
+def require_persisted_identity(record: Dict[str, Any]) -> tuple[str, str]:
+    """Require a complete proven selection without consulting live defaults."""
+    if (
+        not isinstance(record, dict)
+        or not record.get("agent_type")
+        or not record.get("ai_model_id")
+    ):
+        raise ModelRoutingError(
+            "Prior execution model/harness identity is incomplete; start an explicit new execution."
+        )
+    return str(record["agent_type"]), _model_uuid(record["ai_model_id"])
+
+
+def validate_native_resume_identity(
+    db: Session, flow: models.Flow, details: Dict[str, Any], resume: Dict[str, Any]
+) -> None:
+    """Reject unproven or changed identities before any native session restore."""
+    prior = load_source_execution_for_flow(db, flow, resume.get("execution_id"))
+    if prior is None:
+        raise ModelRoutingError(
+            "Native resume source identity is unavailable for this flow"
+        )
+    prior_details = _persisted_details(prior)
+    prior_selection = require_persisted_identity(
+        prior_details.get(MATRIX_OVERRIDES_KEY)
+        or prior_details.get(ROUTING_RECORD_KEY)
+        or {}
+    )
+    current_selection = require_persisted_identity(
+        details.get(MATRIX_OVERRIDES_KEY) or details.get(ROUTING_RECORD_KEY) or {}
+    )
+    if native_handoff_required(current_selection, prior_selection):
+        raise ModelRoutingError(
+            "Native resume model/harness identity changed; start an explicit new execution."
+        )
+    revalidate_routing_record(
+        db,
+        flow,
+        {"agent_type": current_selection[0], "ai_model_id": current_selection[1]},
+    )

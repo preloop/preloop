@@ -39,12 +39,14 @@ Use whatever labels the project already has. Preloop does not ship a default lab
 
 ## What is recorded
 
-Each execution stores the chosen rule or default, the label snapshot, model id, and harness under reserved `_model_routing` on `trigger_event_details`. Retries keep that selection even if you later edit the flow's rules. Native continuation of the same conversation also keeps it; a different model or harness needs a new session rather than restoring the prior CLI session.
+Each execution stores the chosen rule or default, the label snapshot, model id, and harness under reserved `_model_routing` on `trigger_event_details`. Retries keep that selection even if you later edit the flow's rules. Native continuation of the same conversation also keeps it; a different model or harness requires an explicit new execution. A mismatch blocks the repair turn before agent launch. New executions record their default identity even without routing rules. Legacy runs without a complete recorded model and harness cannot be retried or resumed automatically because their original identity cannot be proven; start a new execution explicitly. Durable feedback threads show `model_identity_unavailable` when their pinned selection cannot be used.
 
-Webhook bodies, tracker payloads, and authenticated trigger JSON are not authorized overrides (`_matrix`, `_model_routing`, `ai_model_id`, `_resume`, assessment). The reserved `matrix` eval grid is unchanged and is not the production router. Retry and continuation pin the recorded selection from the persisted source execution after account and lineage checks; they never copy privileged fields from the request body.
+Webhook bodies, tracker payloads, and authenticated trigger JSON are not authorized overrides (`_matrix`, `_model_routing`, `ai_model_id`, `_resume`, assessment). The reserved `matrix` eval grid remains separate from production routing. New matrix cells persist their effective defaults, so a later edit cannot change a retry. Historical partial cells without a complete identity require an explicit new execution. Retry and continuation pin the recorded selection from the persisted source execution after account and lineage checks; they never copy privileged fields from the request body.
 
 Invalid or foreign models are rejected on save (HTTP 422) and at dispatch. There is no silent fallback to a more expensive model. Account budgets still apply.
 
 ## Not in this slice
 
 Routing does not read structured assessment fields from triage output or from the event payload. Same-execution stage handoffs (for example "plan on one model, implement on another") need explicit new sessions later. Public benchmark ranking is not used as scheduling authority.
+
+Current normalized label arrays take precedence, including an empty array. Provider issue or PR arrays are used only when no normalized array exists. Singular label-event deltas never count as current labels.

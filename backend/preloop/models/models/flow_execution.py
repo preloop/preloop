@@ -78,6 +78,12 @@ def resolve_execution_agent_selection(
     """
     details = trigger_event_details or {}
     overrides = details.get(MATRIX_OVERRIDES_KEY) or {}
+    if (
+        isinstance(overrides, dict)
+        and "agent_type" in overrides
+        and "ai_model_id" in overrides
+    ):
+        return overrides["agent_type"], overrides["ai_model_id"]
     if isinstance(overrides, dict) and (
         overrides.get("agent_type") or overrides.get("ai_model_id")
     ):
@@ -91,8 +97,8 @@ def resolve_execution_agent_selection(
         routing.get("agent_type") or routing.get("ai_model_id")
     ):
         return (
-            routing.get("agent_type") or flow_agent_type,
-            routing.get("ai_model_id") or flow_ai_model_id,
+            routing.get("agent_type"),
+            routing.get("ai_model_id"),
         )
     return (flow_agent_type, flow_ai_model_id)
 

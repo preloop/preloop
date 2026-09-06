@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native continuation from the persisted source execution; webhook
   bodies, tracker payloads, and authenticated trigger JSON (including
   planted `_resume` / `_matrix` / `_model_routing`) are ignored. Guide:
-  `docs/guide/flows/model-routing.md`.
+  `docs/guide/flows/model-routing.md`. Legacy executions without a complete
+  recorded model/harness require an explicit new run. Durable feedback blocks
+  with `model_identity_unavailable` instead of silently adopting new defaults.
 
 - **Publication verification gate**: implementation flows can set
   `git_clone_config.verification` (`mode: gate` plus a trusted test
