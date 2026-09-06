@@ -474,12 +474,13 @@ export class ApprovalsView extends AuthedElement {
 
   /**
    * Keys are handled on the host so a focused row, the list, or the page
-   * itself all reach the same handler. Typing in a filter is left alone.
+   * itself all reach the same handler. Typing in a filter, and keys that
+   * already belong to a button or link, are left alone.
    */
   private handleKeyDown(event: KeyboardEvent) {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     const path = event.composedPath();
-    const typing = path.some((node) => {
+    const interactive = path.some((node) => {
       const tag = (node as HTMLElement)?.tagName?.toLowerCase();
       return (
         tag === 'input' ||
@@ -487,10 +488,15 @@ export class ApprovalsView extends AuthedElement {
         tag === 'sl-input' ||
         tag === 'sl-textarea' ||
         tag === 'sl-select' ||
+        tag === 'button' ||
+        tag === 'a' ||
+        tag === 'sl-button' ||
+        tag === 'sl-menu-item' ||
+        tag === 'sl-icon-button' ||
         (node as HTMLElement)?.isContentEditable === true
       );
     });
-    if (typing) return;
+    if (interactive) return;
 
     const requests = this.navigableRequests;
     if (requests.length === 0) return;

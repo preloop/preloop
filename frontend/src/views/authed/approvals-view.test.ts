@@ -472,6 +472,30 @@ describe('ApprovalsView', () => {
       }
     });
 
+    it('does not open the row when Enter is pressed on Approve', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+      await press(element, 'j');
+      const go = sinon.stub(Router, 'go');
+      try {
+        const approve = rows(element)[0].querySelector(
+          'sl-button'
+        ) as HTMLElement;
+        approve.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Enter',
+            bubbles: true,
+            composed: true,
+          })
+        );
+        await element.updateComplete;
+        expect(go.called).to.equal(false);
+      } finally {
+        go.restore();
+      }
+    });
+
     it('leaves keys alone while a filter is being typed in', async () => {
       const element = await renderList([
         baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
