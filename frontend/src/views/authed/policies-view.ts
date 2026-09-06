@@ -27,7 +27,7 @@ import type {
   PolicyRollbackResult,
   PolicyVersion,
 } from '../../api';
-import { showToast } from '../../components/confirm-dialog';
+import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import { hasPermission } from '../../permissions';
 import type { Tool, ApprovalWorkflow } from '../../components/tool-card';
 import '../../components/policy-generate-dialog';
@@ -1283,13 +1283,21 @@ export class PoliciesView extends LitElement {
   }
 
   private async removeModelIORule(rule: ModelIORule) {
-    if (
-      !confirm(`Delete model I/O rule "${rule.id}"? This cannot be undone.`)
-    ) {
+    const confirmed = await confirmDialog({
+      title: 'Delete rule',
+      message: `Delete model I/O rule "${rule.id}"?`,
+      detail:
+        'Traffic this rule matched is allowed again as soon as it is gone. ' +
+        'This cannot be undone.',
+      confirmLabel: 'Delete rule',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
     try {
       await deleteModelIORule(rule.id);
+      showToast(`Deleted ${rule.id}.`, 'success');
       await this.loadData();
     } catch (err: any) {
       this._reportError(err, 'Failed to delete model I/O rule');
@@ -1314,15 +1322,21 @@ export class PoliciesView extends LitElement {
     if (!rule.accessRuleId) {
       return;
     }
-    if (
-      !confirm(
-        `Delete tool rule for "${rule.toolName}"? This cannot be undone.`
-      )
-    ) {
+    const confirmed = await confirmDialog({
+      title: 'Delete rule',
+      message: `Delete the tool rule for "${rule.toolName}"?`,
+      detail:
+        'Calls to this tool follow the remaining rules as soon as it is ' +
+        'gone. This cannot be undone.',
+      confirmLabel: 'Delete rule',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
     try {
       await deleteAccessRule(rule.accessRuleId);
+      showToast(`Deleted the tool rule for ${rule.toolName}.`, 'success');
       await this.loadData();
     } catch (err: any) {
       this._reportError(err, 'Failed to delete tool rule');
@@ -1703,11 +1717,18 @@ export class PoliciesView extends LitElement {
   }
 
   private async deleteVersion(version: PolicyVersion) {
-    if (
-      !confirm(
-        `Are you sure you want to delete version ${version.version_number}${version.tag ? ` (${version.tag})` : ''}? This cannot be undone.`
-      )
-    ) {
+    const label = `version ${version.version_number}${
+      version.tag ? ` (${version.tag})` : ''
+    }`;
+    const confirmed = await confirmDialog({
+      title: 'Delete version',
+      message: `Delete ${label}?`,
+      detail:
+        'The snapshot is removed for good. The active policy is not changed.',
+      confirmLabel: 'Delete version',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -1725,6 +1746,7 @@ export class PoliciesView extends LitElement {
         );
       }
 
+      showToast(`Deleted ${label}.`, 'success');
       await this.loadVersions();
     } catch (err: any) {
       this._reportError(err, 'Failed to delete version');
@@ -2551,7 +2573,7 @@ defaults:
     return html`
       <div class="versions-section">
         <div class="versions-header">
-          <h3>Version History</h3>
+          <h3>Version history</h3>
           <div class="versions-actions">
             <sl-button
               size="small"
@@ -2559,7 +2581,7 @@ defaults:
               @click=${() => (this._showSaveVersionDialog = true)}
             >
               <sl-icon slot="prefix" name="save"></sl-icon>
-              Save Version
+              Save version
             </sl-button>
             <sl-button
               size="small"
@@ -2567,7 +2589,7 @@ defaults:
               ?disabled=${versions.length === 0}
             >
               <sl-icon slot="prefix" name="trash"></sl-icon>
-              Prune Old Versions
+              Prune old versions
             </sl-button>
             <sl-button
               size="small"
@@ -2659,21 +2681,21 @@ defaults:
             class="version-actions"
             @click=${(e: Event) => e.stopPropagation()}
           >
-            <sl-tooltip content="View Diff">
+            <sl-tooltip content="View diff">
               <sl-icon-button
                 name="file-diff"
                 @click=${() => this.openRollbackPreview(version, false)}
                 ?disabled=${version.is_active}
               ></sl-icon-button>
             </sl-tooltip>
-            <sl-tooltip content="Rollback to this version">
+            <sl-tooltip content="Roll back to this version">
               <sl-icon-button
                 name="arrow-counterclockwise"
                 @click=${() => this.openRollbackPreview(version, true)}
                 ?disabled=${version.is_active}
               ></sl-icon-button>
             </sl-tooltip>
-            <sl-tooltip content="Edit Tag">
+            <sl-tooltip content="Edit tag">
               <sl-icon-button
                 name="tag"
                 @click=${() => this.openTagDialog(version)}
@@ -2725,7 +2747,7 @@ defaults:
   private renderSaveVersionDialog() {
     return html`
       <sl-dialog
-        label="Save Version"
+        label="Save version"
         ?open=${this._showSaveVersionDialog}
         @sl-request-close=${() => (this._showSaveVersionDialog = false)}
       >
@@ -2773,7 +2795,7 @@ defaults:
             @click=${() => this.createVersion()}
             ?loading=${this._savingVersion}
           >
-            Save Version
+            Save version
           </sl-button>
         </div>
       </sl-dialog>
@@ -2783,7 +2805,7 @@ defaults:
   private renderPruneVersionsDialog() {
     return html`
       <sl-dialog
-        label="Prune Old Versions"
+        label="Prune old versions"
         ?open=${this._showPruneDialog}
         @sl-request-close=${() => (this._showPruneDialog = false)}
       >
@@ -2847,10 +2869,11 @@ defaults:
           </sl-button>
           <sl-button
             variant="danger"
+            outline
             @click=${() => this.pruneVersions()}
             ?loading=${this._pruningVersions}
           >
-            Prune Versions
+            Prune versions
           </sl-button>
         </div>
       </sl-dialog>
@@ -2860,7 +2883,7 @@ defaults:
   private renderTagVersionDialog() {
     return html`
       <sl-dialog
-        label="Edit Version Tag"
+        label="Edit version tag"
         ?open=${this._showTagDialog}
         @sl-request-close=${() => {
           this._showTagDialog = false;
@@ -2904,7 +2927,7 @@ defaults:
                       )}
                     ?loading=${this._taggingVersion}
                   >
-                    Save Tag
+                    Save tag
                   </sl-button>
                 </div>
               `
@@ -2922,7 +2945,7 @@ defaults:
     return html`
       <sl-dialog
         label=${
-          this._rollbackConfirmVisible ? 'Rollback to Version' : 'Version Diff'
+          this._rollbackConfirmVisible ? 'Roll back to version' : 'Version diff'
         }
         ?open=${this._showRollbackDialog}
         @sl-request-close=${() => {
@@ -3073,6 +3096,7 @@ defaults:
                       ? html`
                           <sl-button
                             variant="danger"
+                            outline
                             @click=${() =>
                               this.rollbackToVersion(
                                 this._versionToRollback!.id,
@@ -3081,7 +3105,7 @@ defaults:
                             ?loading=${this._rollingBack}
                             ?disabled=${!preview?.has_changes}
                           >
-                            Confirm Rollback
+                            Roll back
                           </sl-button>
                         `
                       : ''
@@ -3102,7 +3126,7 @@ defaults:
     const removed = this._diffResult?.changes?.removed ?? [];
     return html`
       <sl-dialog
-        label="Preview Policy Changes"
+        label="Preview policy changes"
         ?open=${this._showDiffDialog}
         @sl-request-close=${this._cancelDiffPreview}
         style="--width: 700px;"
@@ -3225,7 +3249,7 @@ defaults:
             ?loading=${this._isUploading}
             ?disabled=${!this._diffResult?.has_changes}
           >
-            Apply Changes
+            Apply changes
           </sl-button>
         </div>
       </sl-dialog>

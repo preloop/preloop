@@ -12,6 +12,7 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
+import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import '../../components/view-header.ts';
 import './policies-view';
 import type { PoliciesView } from './policies-view';
@@ -95,6 +96,9 @@ function stubFetch(calls: Call[]) {
       if (url.includes('/api/v1/policies/versions/prune')) {
         return json({ deleted_count: 3 });
       }
+      if (url.includes('/api/v1/policies/versions/') && method === 'DELETE') {
+        return new Response(null, { status: 204 });
+      }
       if (url.includes('/rollback')) {
         return json({ success: true, error: null, diff: DIFF_PAYLOAD });
       }
@@ -161,6 +165,7 @@ describe('Policies page against real API shapes', () => {
     (window.fetch as any).restore?.();
     localStorage.clear();
     document.body.querySelectorAll('sl-alert').forEach((el) => el.remove());
+    resetConfirmDialogForTests();
   });
 
   it('P1 opens the rule dialog after the versions payload arrives', async () => {
@@ -207,7 +212,7 @@ describe('Policies page against real API shapes', () => {
     );
     await m.element.updateComplete;
 
-    const dialog = dialogByLabel(m.element, 'Preview Policy Changes');
+    const dialog = dialogByLabel(m.element, 'Preview policy changes');
     expect(dialog.open, 'diff dialog did not open').to.be.true;
     const text = dialog.textContent.replace(/\s+/g, ' ');
     expect(text).to.contain('Added (1)');
@@ -231,12 +236,12 @@ describe('Policies page against real API shapes', () => {
     );
     await m.element.updateComplete;
 
-    const dialog = dialogByLabel(m.element, 'Rollback to Version');
+    const dialog = dialogByLabel(m.element, 'Roll back to version');
     const text = dialog.textContent.replace(/\s+/g, ' ');
     expect(text).to.contain('The following changes will be made:');
     expect(text).to.contain('Tool: shell');
     const confirm = Array.from(dialog.querySelectorAll('sl-button')).find(
-      (button: any) => button.textContent?.includes('Confirm Rollback')
+      (button: any) => button.textContent?.includes('Roll back')
     ) as any;
     expect(confirm.disabled, 'confirm stayed disabled').to.not.be.true;
   });
@@ -260,6 +265,36 @@ describe('Policies page against real API shapes', () => {
       keep_count: 5,
     });
     expect(toastTexts().join(' ')).to.contain('Pruned 3 old versions.');
+  });
+
+  it('P8 deletes a version through the shared confirm dialog', async () => {
+    const m = await mount();
+    stub = m.stub;
+
+    const remove = m.element.shadowRoot!.querySelector(
+      'sl-icon-button[name="trash"]'
+    ) as HTMLElement;
+    remove.click();
+
+    await waitUntil(
+      () => Boolean(document.querySelector('confirm-dialog')),
+      'no confirm dialog'
+    );
+    const deleted = () => m.calls.some((call) => call.method === 'DELETE');
+    expect(deleted(), 'deleted without confirming').to.be.false;
+
+    (
+      document
+        .querySelector('confirm-dialog')!
+        .shadowRoot!.querySelector(
+          '[data-testid="confirm-dialog-confirm"]'
+        ) as HTMLElement
+    ).click();
+    await waitUntil(deleted, 'no delete call');
+    await waitUntil(
+      () => toastTexts().join(' ').includes('Deleted version 3'),
+      'no success toast'
+    );
   });
 
   it('P6 reports a failure to load versions with a toast', async () => {
