@@ -419,7 +419,15 @@ export class TrackerDetailView extends LitElement {
     this._projects = allProjects
       .filter((project) => orgIds.has(project.organization_id))
       .sort((left, right) => (left.name || '').localeCompare(right.name || ''));
-    if (!this._selectedProjectId) {
+    // The probe costs one request per project, and it only decides which
+    // project the Issues tab opens on. A URL that names one, a project read
+    // earlier this session, or a tab that does not list issues all answer
+    // the question for free, so none of them pays for it.
+    if (
+      this._activeTab === 'issues' &&
+      !this._selectedProjectId &&
+      !this._projectMatching(this._rememberedProjectId())
+    ) {
       await this._loadOpenIssueCounts();
     }
     this._ensureSelectedProject();
@@ -517,13 +525,12 @@ export class TrackerDetailView extends LitElement {
       return;
     }
     const requested = this._selectedProjectId || this._rememberedProjectId();
-    const match = this._projects.find(
-      (project) =>
-        project.id === requested ||
-        this._shortProjectId(project.id) === requested
-    );
+    const match = this._projectMatching(requested);
     if (match) {
       this._selectedProjectId = match.id;
+      // A link followed once is what this tracker is being read on, so the
+      // next visit without the query lands on it too.
+      this._rememberProject(match.id);
       return;
     }
     const busiest = [...this._projects].sort(
@@ -533,6 +540,16 @@ export class TrackerDetailView extends LitElement {
     )[0];
     this._selectedProjectId = busiest ? busiest.id : this._projects[0].id;
     this._rememberProject(this._selectedProjectId);
+  }
+
+  /** The loaded project an id names, by full id or by its short form. */
+  private _projectMatching(requested: string): Project | undefined {
+    if (!requested) return undefined;
+    return this._projects.find(
+      (project) =>
+        project.id === requested ||
+        this._shortProjectId(project.id) === requested
+    );
   }
 
   /** The project this tracker was last read on, per tab session. */

@@ -199,6 +199,53 @@ describe('TrackerDetailView', () => {
     ).to.equal(projectA.id);
   });
 
+  it('remembers the project a link named', async () => {
+    fetchStub = stubFetch({ issues: [] });
+    await mountView();
+    expect(
+      sessionStorage.getItem(`preloop.tracker.project.${trackerId}`)
+    ).to.equal(projectA.id);
+  });
+
+  it('skips the open issue probe when it cannot change the answer', async () => {
+    const probeCalls = () =>
+      fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .filter(
+          (url) => url.includes('/api/v1/issues?') && url.includes('limit=1')
+        );
+
+    // Session memory already names the project.
+    sessionStorage.setItem(`preloop.tracker.project.${trackerId}`, projectB.id);
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=issues`
+    );
+    fetchStub = stubFetch({
+      issues: [],
+      openCounts: { [projectA.id]: 0, [projectB.id]: 7 },
+    });
+    await mountView();
+    expect(probeCalls(), 'remembered project needs no probe').to.deep.equal([]);
+    fetchStub.restore();
+
+    // A tab that does not list issues does not need the default either.
+    sessionStorage.clear();
+    window.history.replaceState(
+      {},
+      '',
+      `/console/trackers/${trackerId}?tab=pull-requests`
+    );
+    fetchStub = stubFetch({
+      issues: [],
+      openCounts: { [projectA.id]: 0, [projectB.id]: 7 },
+    });
+    await mountView();
+    expect(probeCalls(), 'pull requests tab needs no probe').to.deep.equal([]);
+  });
+
   it('renders Issues tab rows from listIssues', async () => {
     fetchStub = stubFetch({
       issues: [
