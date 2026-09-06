@@ -50,7 +50,7 @@ def worker_owned_session(owner: Any = None, fallback: Any = None) -> tuple[Any, 
             join = raw
     if join is not None:
         return (
-            Session(bind=join, join_transaction_mode="create_savepoint"),
+            Session(bind=join, join_transaction_mode="rollback_only"),
             True,
         )
     if session is not None:
@@ -62,14 +62,23 @@ def worker_owned_session(owner: Any = None, fallback: Any = None) -> tuple[Any, 
 
 @contextmanager
 def lifecycle_worker_db(owner: Any = None, fallback: Any = None) -> Iterator[Any]:
-    """Open a worker-thread Session that joins the caller's transaction."""
+    """Open a worker-thread Session.
+
+    Engine-bound callers get a durable factory Session. Connection-bound
+    callers (pytest savepoints) join that connection so fixture rows stay
+    visible without stealing the caller's savepoint.
+    """
     db, owned = worker_owned_session(owner, fallback)
+    joined = owned and isinstance(db.get_bind(), Connection)
     try:
         yield db
         if owned:
-            db.commit()
+            if joined:
+                db.flush()
+            else:
+                db.commit()
     except Exception:
-        if owned:
+        if owned and not joined:
             db.rollback()
         raise
     finally:
@@ -87,6 +96,55 @@ def run_lifecycle_endpoint(operation: Callable[[], Awaitable[T]]) -> T:
     return anyio.run(operation)
 
 
+def _should_commit_lifecycle_caller(caller: Session, *args: Any, **kwargs: Any) -> bool:
+    """Commit only after the event is a confirmed lifecycle operation."""
+    flow = None
+    event: dict[str, Any] | None = None
+    execution_event: dict[str, Any] | None = None
+    for value in (*args, *kwargs.values()):
+        config = getattr(value, "agent_config", None)
+        if isinstance(config, dict) and getattr(value, "account_id", None) is not None:
+            flow = value
+        if isinstance(value, dict) and (
+            "type" in value or "project_id" in value or "payload" in value
+        ):
+            event = value
+        details = getattr(value, "trigger_event_details", None)
+        if isinstance(details, dict):
+            execution_event = details
+    if execution_event is not None:
+        envelope = (execution_event.get("payload") or {}).get(
+            "lifecycle"
+        ) or execution_event.get("lifecycle_refinement")
+        return bool(envelope)
+    if flow is None:
+        return False
+    kind = (flow.agent_config or {}).get("lifecycle_kind")
+    if kind in {"merge_audit", "refinement", "deployment_audit"}:
+        return True
+    if not event or event.get("type") not in {
+        "issue_labeled",
+        "issue_updated",
+        "issue_created",
+    }:
+        return False
+    project_id = event.get("project_id")
+    account_id = flow.account_id
+    if not project_id or not account_id:
+        return False
+    from preloop.models.crud import crud_issue_lifecycle
+
+    project = crud_issue_lifecycle.get_project(
+        caller, project_id=UUID(str(project_id)), account_id=account_id
+    )
+    if project is None:
+        return False
+    policy = (project.settings or {}).get("issue_lifecycle") or {}
+    return policy.get("ready_enabled") is True and str(
+        policy.get("implementation_flow_id")
+    ) == str(flow.id)
+
+
 def lifecycle_worker_hook(
     operation: Callable[P, Awaitable[T]],
 ) -> Callable[P, Awaitable[T]]:
@@ -100,7 +158,7 @@ def lifecycle_worker_hook(
             raw = caller.get_bind()
             if isinstance(raw, Connection):
                 join = raw
-            else:
+            elif _should_commit_lifecycle_caller(caller, *args, **kwargs):
                 caller.commit()
         token = _lifecycle_bind.set(join)
         try:
