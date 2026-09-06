@@ -1,16 +1,20 @@
 export const SERVER_RUNNER_POOL = 'server';
 export const AUTO_RUNNER_POOL = 'auto';
 
-export const ACCOUNT_AUTO_RESOLVED =
-  'Auto (private runners first, then Preloop hosted)';
+/*
+ * Option labels are what a closed select has to fit on one line, so they name
+ * the choice and stop. The sentence that explains the choice ("Next run: a
+ * private runner ... falls back to Preloop hosted") already sits under the
+ * control, and a 56 character option only ever showed up truncated.
+ */
+export const ACCOUNT_AUTO_RESOLVED = 'Auto (private first, then hosted)';
 export const ACCOUNT_HOSTED_RESOLVED = 'Preloop hosted only';
-export const FLOW_AUTO_OVERRIDE_LABEL =
-  'Auto: private runners first, then Preloop hosted';
+export const FLOW_AUTO_OVERRIDE_LABEL = 'Auto: private first, then hosted';
 export const ACCOUNT_AUTO_OPTION_LABEL =
-  'Auto (default): private runners first, then Preloop hosted';
+  'Auto (default): private first, then hosted';
 export const HOSTED_ONLY_LABEL = 'Preloop hosted only';
 export const HOSTED_ONLY_EXHAUSTED_LABEL =
-  'Preloop hosted only (no hosted minutes left)';
+  'Preloop hosted only (no minutes left)';
 
 export interface RunnerPoolOption {
   value: string;

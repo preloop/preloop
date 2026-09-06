@@ -115,12 +115,12 @@ describe('RunnersView', () => {
     );
     expect(control).to.exist;
     expect(control?.shadowRoot?.textContent).to.contain(
-      'Auto (default): private runners first, then Preloop hosted'
+      'Auto (default): private first, then hosted'
     );
     expect(control?.shadowRoot?.textContent).to.contain('Preloop hosted only');
   });
 
-  it('shows empty state when no runners', async () => {
+  it('empty state is one line with one command and a docs link', async () => {
     fetchStub = createFetchStub([]);
     const element = (await fixture(
       html`<runners-view></runners-view>`
@@ -130,14 +130,26 @@ describe('RunnersView', () => {
     );
     await element.updateComplete;
     expect(element.shadowRoot?.textContent).to.contain('No runners registered');
-    expect(element.shadowRoot?.textContent).to.contain(
+
+    const empty = element.shadowRoot?.querySelector(
+      '.empty-state'
+    ) as HTMLElement;
+    expect(empty).to.exist;
+    // One line, not a hero card: two text lines of slack at most.
+    expect(empty.getBoundingClientRect().height).to.be.lessThan(80);
+
+    const commands = empty.querySelectorAll('.empty-command');
+    expect(commands.length).to.equal(1);
+    expect(commands[0].textContent).to.contain(
       'preloop runner fg --labels local'
     );
-    const docs = element.shadowRoot?.querySelector('sl-button.empty-docs');
+    expect(empty.querySelectorAll('sl-copy-button').length).to.equal(1);
+
+    const docs = empty.querySelector('a.empty-docs');
     expect(docs).to.exist;
     expect(docs?.getAttribute('rel')).to.equal('noopener noreferrer');
     expect(docs?.getAttribute('target')).to.equal('_blank');
-    expect(element.shadowRoot?.querySelector('.empty-command')).to.exist;
+    expect(element.shadowRoot?.querySelector('sl-card')).to.not.exist;
   });
 
   it('updates status from a runners websocket event without a refetch', async () => {
@@ -162,7 +174,7 @@ describe('RunnersView', () => {
       () => !(element as unknown as { loading: boolean }).loading
     );
     await element.updateComplete;
-    expect(element.shadowRoot?.textContent).to.contain('offline');
+    expect(element.shadowRoot?.textContent).to.contain('Offline');
 
     onRunnerMessage?.({
       type: 'runner_updated',
@@ -174,7 +186,7 @@ describe('RunnersView', () => {
       },
     });
     await element.updateComplete;
-    expect(element.shadowRoot?.textContent).to.contain('online');
+    expect(element.shadowRoot?.textContent).to.contain('Online');
     expect(
       fetchStub.getCalls().filter((call) => {
         const url = String(call.args[0]);

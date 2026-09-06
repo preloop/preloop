@@ -74,7 +74,6 @@ describe('IssuesView', () => {
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
-    localStorage.setItem('preloop-issues-info-alert-dismissed', 'true');
   });
 
   afterEach(() => {
@@ -184,7 +183,7 @@ describe('IssuesView', () => {
     expect(el.shadowRoot?.textContent).to.contain('No AI model');
   });
 
-  it('shows failed state with retry after timeout', async () => {
+  it('shows failed state with a Review action after timeout', async () => {
     fetchStub = stubFetch({
       projects: [{ id: 'p1-xxxx', name: 'Project 1', key: 'P1' }],
       duplicates: [makePair(1)],
@@ -205,7 +204,8 @@ describe('IssuesView', () => {
       '#verdict-i1a-i1b sl-button'
     ) as HTMLElement;
     expect(retry).to.exist;
-    expect(retry.textContent).to.contain('Retry');
+    expect(retry.textContent).to.contain('Review');
+    expect(retry.textContent).to.not.contain('Retry');
     retry.click();
     await tick(100);
     const checkCalls = fetchStub
@@ -214,6 +214,66 @@ describe('IssuesView', () => {
         String(call.args[0]).includes('/issue-duplicates/check')
       );
     expect(checkCalls.length).to.be.greaterThan(1);
+  });
+
+  it('leads with Resolve as an outline action and a chip status', async () => {
+    fetchStub = stubFetch({
+      projects: [{ id: 'p1-xxxx', name: 'Project 1', key: 'P1' }],
+      duplicates: [makePair(1)],
+    });
+    const el = (await fixture(html`<issues-view></issues-view>`)) as IssuesView;
+    await tick(300);
+    await el.updateComplete;
+    const action = el.shadowRoot?.querySelector(
+      '.actions-container sl-button'
+    ) as HTMLElement;
+    expect(action).to.exist;
+    expect(action.textContent).to.contain('Resolve');
+    expect(action.hasAttribute('outline')).to.be.true;
+    const chip = el.shadowRoot?.querySelector('tbody sl-badge.chip');
+    expect(chip).to.exist;
+    expect(chip?.textContent?.trim()).to.equal('Opened');
+  });
+
+  it('has no info banner and no per-project chart', async () => {
+    fetchStub = stubFetch({
+      projects: [{ id: 'p1-xxxx', name: 'Project 1', key: 'P1' }],
+      duplicates: [makePair(1)],
+    });
+    const el = (await fixture(html`<issues-view></issues-view>`)) as IssuesView;
+    await tick(300);
+    await el.updateComplete;
+    expect(el.shadowRoot?.querySelector('duplicate-stats-chart')).to.not.exist;
+    expect(el.shadowRoot?.textContent).to.not.contain(
+      'Identify similar and potential duplicate issues'
+    );
+  });
+
+  it('refetches with the similarity threshold chosen in the bar', async () => {
+    fetchStub = stubFetch({
+      projects: [{ id: 'p1-xxxx', name: 'Project 1', key: 'P1' }],
+      duplicates: [makePair(1)],
+    });
+    const el = (await fixture(html`<issues-view></issues-view>`)) as IssuesView;
+    await tick(300);
+    await el.updateComplete;
+    const select = el.shadowRoot?.querySelector(
+      'sl-select.threshold-filter'
+    ) as HTMLElement & { value: string };
+    expect(select).to.exist;
+    select.value = '0.8';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await tick(200);
+    const call = fetchStub
+      .getCalls()
+      .map((entry) => String(entry.args[0]))
+      .filter(
+        (url) =>
+          url.includes('/api/v1/issue-duplicates?') ||
+          url.includes('/api/v1/issue-duplicates&')
+      )
+      .pop();
+    expect(call).to.contain('similarity_threshold=0.8');
   });
 
   it('opens the filter modal when the Filter button is clicked', async () => {
