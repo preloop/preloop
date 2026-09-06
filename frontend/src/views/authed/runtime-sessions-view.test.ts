@@ -755,23 +755,37 @@ describe('RuntimeSessionsView', () => {
             headers: { 'Content-Type': 'application/json' },
           });
         }
-        return new Response('{}', { status: 404 });
+        return new Response('{}', { status: 200 });
       });
 
-      const first = (element as any).loadSessions();
-      const second = (element as any).loadSessions();
-      await waitUntil(
-        () => pending.length >= 2,
-        'Both session list fetches did not start'
-      );
-      pending[1](listPayload('fresh-session', 'Fresh'));
-      pending[0](listPayload('stale-session', 'Stale'));
-      await Promise.all([first, second]);
-      await element.updateComplete;
+      try {
+        // Identical GETs share one in-flight request, so the two loads need
+        // different queries or there is only one fetch to resolve.
+        (element as any).searchQuery = 'stale';
+        const first = (element as any).loadSessions();
+        await waitUntil(
+          () => pending.length >= 1,
+          'First session list fetch did not start'
+        );
+        (element as any).searchQuery = 'fresh';
+        const second = (element as any).loadSessions();
+        await waitUntil(
+          () => pending.length >= 2,
+          'Second session list fetch did not start'
+        );
+        pending[1](listPayload('fresh-session', 'Fresh'));
+        pending[0](listPayload('stale-session', 'Stale'));
+        await Promise.all([first, second]);
+        await element.updateComplete;
 
-      expect((element as any).sessions.items[0].id).to.equal('fresh-session');
-      expect((element as any).selectedSessionId).to.equal('fresh-session');
-      expect((element as any).loading).to.equal(false);
+        expect((element as any).sessions.items[0].id).to.equal('fresh-session');
+        expect((element as any).selectedSessionId).to.equal('fresh-session');
+        expect((element as any).loading).to.equal(false);
+      } finally {
+        for (const resolve of pending) {
+          resolve(listPayload('fresh-session', 'Fresh'));
+        }
+      }
     });
 
     it('keeps the hint about what the query matches', async () => {
