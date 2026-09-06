@@ -25,6 +25,12 @@ import {
  * shortened to eight characters of its id when only the id is known, and
  * omitted when neither is known. It never invents a label. "AI agent" is not
  * a thing you can click.
+ *
+ * Clicks are left alone. Vaadin Router listens for clicks on `document` in
+ * the bubble phase, so stopping propagation at the anchor would turn every
+ * link here into a full page reload. If a surface ever puts this line inside
+ * a clickable row, that row should ignore clicks whose `composedPath()`
+ * contains an anchor rather than this component muting its own links.
  */
 
 /** Everything the line can read, all of it optional. */
@@ -229,7 +235,6 @@ export class AttributionLine extends LitElement {
                       href=${item.href}
                       title=${item.title || item.text}
                       aria-label="${item.label}: ${item.text}"
-                      @click=${(event: Event) => event.stopPropagation()}
                       >${item.text}</a
                     >`
                   : html`<span class="value" title=${item.title || item.text}
