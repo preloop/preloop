@@ -104,8 +104,10 @@ def get_approval_request(
     _record_viewed_event(db, approval_request, current_user.id)
 
     # Name the agent, key, session and flow run instead of leaving the detail
-    # page with four bare ids (the "Agent: AI agent" report).
-    return attributed(db, approval_request)
+    # page with four bare ids (the "Agent: AI agent" report), then convert
+    # while the request session is still open so serialization cannot hit a
+    # detached instance.
+    return ApprovalRequestResponse.model_validate(attributed(db, approval_request))
 
 
 @router.get("/{request_id}/history", response_model=list[ApprovalEventResponse])
@@ -200,8 +202,12 @@ def list_approval_requests(
         skip=skip,
         limit=limit,
     )
-    # One batched pass for the page, not four lookups per row.
-    return attach_attribution(db, rows)
+    # One batched pass for the page, not four lookups per row, then convert
+    # every row while the request session is still open.
+    return [
+        ApprovalRequestResponse.model_validate(row)
+        for row in attach_attribution(db, rows)
+    ]
 
 
 @router.post("/{request_id}/approve", response_model=ApprovalRequestResponse)
