@@ -365,6 +365,35 @@ describe('TrackerDetailView', () => {
     expect(empty!.getBoundingClientRect().height).to.be.at.least(72);
   });
 
+  // A dropdown reading "Alpha" names nothing: each filter says what it
+  // filters, on screen and to assistive tech.
+  it('names the Issues pane filters on screen, not only to a screen reader', async () => {
+    fetchStub = stubFetch({ issues: [], total: 0 });
+    const el = await mountView();
+    await el.updateComplete;
+
+    const selects = Array.from(
+      el.shadowRoot?.querySelectorAll(
+        'sl-tab-panel[name="issues"] .collection-pane sl-select'
+      ) || []
+    );
+    expect(selects.length).to.equal(2);
+    expect(
+      selects.map((select) =>
+        select.querySelector('[slot="prefix"]')?.textContent?.trim()
+      )
+    ).to.deep.equal(['Project', 'Status']);
+    // The accessible name survives too.
+    expect(selects.map((select) => select.getAttribute('label'))).to.deep.equal(
+      ['Project', 'Status']
+    );
+
+    const prList = el.shadowRoot?.querySelector(
+      'sl-tab-panel[name="pull-requests"] .collection-pane sl-select [slot="prefix"]'
+    );
+    expect(prList?.textContent?.trim()).to.equal('Project');
+  });
+
   it('search with no matches uses its own empty line', async () => {
     fetchStub = stubFetch({
       issues: [

@@ -327,8 +327,14 @@ export class TrackerDetailView extends LitElement {
         min-width: 180px;
       }
 
-      /* The selects carry a label for assistive tech; the bar has no room to
-         print it, so the placeholder does the naming on screen. */
+      /* The bar has no room for a stacked label above every control, so each
+         select names itself inside its own combobox ("Project Alpha",
+         "Status Open") and the label is left for assistive tech. A dropdown
+         reading only "Alpha" names nothing. */
+      .collection-pane sl-select .select-name {
+        color: var(--console-meta-color, var(--sl-color-neutral-500));
+      }
+
       .collection-pane sl-select::part(form-control-label) {
         position: absolute;
         width: 1px;
@@ -1132,6 +1138,7 @@ export class TrackerDetailView extends LitElement {
             value=${this._selectedProjectId}
             @sl-change=${this._onProjectFilter}
           >
+            <span slot="prefix" class="select-name">Project</span>
             ${this._projects.map(
               (item) =>
                 html`<sl-option value=${item.id}>${item.name}</sl-option>`
@@ -1142,6 +1149,7 @@ export class TrackerDetailView extends LitElement {
             value=${this._issueStatus}
             @sl-change=${this._onStatusFilter}
           >
+            <span slot="prefix" class="select-name">Status</span>
             <sl-option value="open">Open</sl-option>
             <sl-option value="closed">Closed</sl-option>
             <sl-option value="all">All</sl-option>
@@ -1337,6 +1345,7 @@ export class TrackerDetailView extends LitElement {
             value=${this._selectedProjectId}
             @sl-change=${this._onProjectFilter}
           >
+            <span slot="prefix" class="select-name">Project</span>
             ${this._projects.map(
               (item) =>
                 html`<sl-option value=${item.id}>${item.name}</sl-option>`
