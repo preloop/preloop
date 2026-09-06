@@ -45,6 +45,9 @@ async def test_kubernetes_adapter_streams_input_and_deletes_job_before_return():
     )
     check = SimpleNamespace(command="pytest tests/unit", timeout_seconds=10)
     network = SimpleNamespace(
+        list_namespaced_network_policy=AsyncMock(
+            return_value=SimpleNamespace(items=[])
+        ),
         create_namespaced_network_policy=AsyncMock(),
         delete_namespaced_network_policy=AsyncMock(),
     )
@@ -173,6 +176,8 @@ def test_diagnostic_tail_is_bounded_and_scrubs_tokens_and_controls():
     assert len(logs[0]) <= 65536
     assert "\x1b" not in logs[0] and "\x00" not in logs[0]
     assert "test-secret" not in logs[0]
+    _append_tail(logs, "界" * 100000)
+    assert len(logs[0].encode("utf-8")) <= 65536
 
 
 @pytest.mark.asyncio
@@ -192,6 +197,9 @@ async def test_ambiguous_job_create_keeps_network_denial_until_removal_proven():
         execution_id=str(uuid4()), verification_image="generic@sha256:" + "a" * 64
     )
     network = SimpleNamespace(
+        list_namespaced_network_policy=AsyncMock(
+            return_value=SimpleNamespace(items=[])
+        ),
         create_namespaced_network_policy=AsyncMock(),
         delete_namespaced_network_policy=AsyncMock(),
     )
@@ -212,3 +220,36 @@ async def test_ambiguous_job_create_keeps_network_denial_until_removal_proven():
             )
     remove.assert_awaited_once()
     network.delete_namespaced_network_policy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "selector,blocked",
+    [({}, True), ({"app": "another"}, False), ({"job-name": "owned"}, True)],
+)
+async def test_additive_network_policies_cannot_override_verifier_denial(
+    selector, blocked
+):
+    from kubernetes_asyncio import client
+    from preloop.services.publication_hosted_verifier import (
+        _require_isolated_network_policy,
+    )
+
+    policy = client.V1NetworkPolicy(
+        spec=client.V1NetworkPolicySpec(
+            pod_selector=client.V1LabelSelector(match_labels=selector),
+            egress=[client.V1NetworkPolicyEgressRule()],
+        )
+    )
+    api = SimpleNamespace(
+        list_namespaced_network_policy=AsyncMock(
+            return_value=SimpleNamespace(items=[policy])
+        )
+    )
+    if blocked:
+        with pytest.raises(PublicationError, match="overlapping"):
+            await _require_isolated_network_policy(
+                api, "namespace", {"job-name": "owned"}
+            )
+    else:
+        await _require_isolated_network_policy(api, "namespace", {"job-name": "owned"})

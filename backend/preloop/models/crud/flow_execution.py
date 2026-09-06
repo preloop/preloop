@@ -261,6 +261,28 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.flush()
         return db_obj
 
+    def capture_publication_recovery(
+        self,
+        db: Session,
+        *,
+        db_obj: FlowExecution,
+        archive: bytes | None,
+        workspace: bytes | None,
+    ) -> FlowExecution:
+        """Commit recovery bytes before a publisher destroys the owned agent runtime."""
+        if archive is None and workspace is None:
+            raise ValueError("Publication recovery artifacts are missing")
+        try:
+            if archive is not None:
+                self.set_evidence_archive(db, db_obj=db_obj, archive=archive)
+            if workspace is not None:
+                self.set_workspace_snapshot(db, db_obj=db_obj, archive=workspace)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return db_obj
+
     def set_cli_session(
         self, db: Session, *, db_obj: FlowExecution, cli_session: Optional[dict]
     ) -> FlowExecution:

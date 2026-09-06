@@ -327,3 +327,68 @@ async def test_failed_runtime_cleanup_never_issues_publication_credentials() -> 
     publish.assert_not_awaited()
     assert result["status"] == "FAILED"
     assert "cleanup" in result["error_message"]
+
+
+@pytest.mark.parametrize("provider", ["github", "gitlab"])
+def test_template_provider_comes_from_tracker_not_checkout_markers(tmp_path, provider):
+    import shlex
+    from preloop.utils.pr_metadata import repository_template
+
+    for directory in (
+        ".github/PULL_REQUEST_TEMPLATE",
+        ".gitlab/merge_request_templates",
+    ):
+        path = tmp_path / directory
+        path.mkdir(parents=True)
+        (path / "custom.md").write_text(directory)
+    executor = ContainerAgentExecutor("codex", {}, image="example/harness:stable")
+    context = {
+        "git_clone_config": {
+            "enabled": False,
+            "create_pull_request": True,
+            "repositories": [{"tracker_id": "tracker", "clone_path": str(tmp_path)}],
+        },
+        "git_credentials_map": {
+            "tracker": {"tracker_type": provider, "token": "read-only"}
+        },
+    }
+    command = executor._prepare_init_commands(context)
+    arguments = shlex.split(command)
+    assert arguments[-1] == provider
+    assert any("provider = sys.argv[3]" in argument for argument in arguments)
+    name, template = repository_template(tmp_path, provider=arguments[-1])
+    assert name == (
+        ".gitlab/merge_request_templates/custom.md"
+        if provider == "gitlab"
+        else ".github/PULL_REQUEST_TEMPLATE/custom.md"
+    )
+    assert template
+
+
+@pytest.mark.asyncio
+async def test_recovery_is_committed_before_runtime_may_be_destroyed():
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = MagicMock()
+    orchestrator.execution_log = SimpleNamespace(id="execution")
+    orchestrator.execution_logger = MagicMock()
+    orchestrator._evidence_archive = b"evidence"
+    orchestrator._workspace_snapshot = b"workspace"
+    await orchestrator._persist_isolated_recovery()
+    assert orchestrator.execution_log.evidence_archive == b"evidence"
+    assert orchestrator.execution_log.workspace_snapshot == b"workspace"
+    orchestrator.db.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_recovery_commit_does_not_authorize_removal():
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = MagicMock()
+    orchestrator.db.commit.side_effect = RuntimeError("local database unavailable")
+    orchestrator.execution_log = SimpleNamespace(id="execution")
+    orchestrator.execution_logger = MagicMock()
+    orchestrator._evidence_archive = b"evidence"
+    orchestrator._workspace_snapshot = b"workspace"
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await orchestrator._persist_isolated_recovery()
+    orchestrator.db.rollback.assert_called_once()
+    orchestrator.execution_logger.log_milestone.assert_not_called()

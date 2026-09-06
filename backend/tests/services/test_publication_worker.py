@@ -225,3 +225,12 @@ async def test_publish_wire_fixture_binds_exact_bytes_and_revokes_on_success(can
         result = await publish_frozen(source, request)
     assert result["url"].endswith("/pull/1")
     revoke.assert_awaited_once()
+
+
+def test_changed_path_preserves_leading_whitespace_for_check_selection(candidate):
+    source, base, _, git = candidate
+    git("mv", "test with spaces.py", " leading.py")
+    git("commit", "-m", "Leading whitespace filename")
+    git("bundle", "create", str(source / "branch.bundle"), "HEAD")
+    manifest = inspect_bundle((source / "branch.bundle").read_bytes(), base)
+    assert manifest["changed_files"] == [" leading.py"]

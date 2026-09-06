@@ -142,15 +142,19 @@ or its database into the harness image. Missing dependencies fail the check and
 leave the captured work recoverable.
 
 The controller resolves the exact base commit before starting the agent. After
-capturing recovery artifacts it deletes the owned agent runtime and confirms
-its absence, including residual Kubernetes pods. It derives changed paths from
+committing recovery artifacts to durable storage it deletes the owned agent
+runtime and confirms its absence, including residual Kubernetes pods. A missing
+or failed recovery capture retains the original runtime and blocks publication. It derives changed paths from
 the frozen bundle, selects relevant checks from the trusted profile, and runs
 each check in a fresh credential-free checkout of the same head. Docker has no
 network, host mounts, or host namespaces. Kubernetes disables service-account
-automount and applies a deny-all NetworkPolicy; hosted clusters must enforce
-NetworkPolicy. The controller observes process exit codes and confirms every
+automount and applies a deny-all NetworkPolicy. Because policies are additive,
+existing permissive policies matching the verifier's labels block startup.
+Hosted clusters must enforce NetworkPolicy and prevent concurrent policy or
+admission changes from weakening the verifier namespace's isolation. The controller observes process exit codes and confirms every
 verifier runtime was removed before minting writer credentials. Check diagnostics
-retain a bounded output tail and Docker log rotation limits runtime log growth.
+retain a bounded scrubbed output tail, per-check elapsed time, and Docker log
+rotation limits runtime log growth.
 If Kubernetes deletion cannot be confirmed, the deny-all NetworkPolicy remains
 with the execution's verifier label for operator recovery; removing it first
 would restore network access to residual pods. Log markers and result files

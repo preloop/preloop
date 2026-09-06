@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import tarfile
+import time
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -66,7 +67,8 @@ def _append_tail(logs: list[str] | None, value: str) -> None:
             for char in value
             if char in "\n\t" or (ord(char) >= 32 and ord(char) != 127)
         )
-        logs[:] = [(scrub_secrets("".join(logs) + clean) or "")[-65536:]]
+        tail = scrub_secrets("".join(logs) + clean) or ""
+        logs[:] = [tail.encode("utf-8")[-65536:].decode("utf-8", errors="ignore")]
 
 
 def bundle_tar(bundle: bytes) -> bytes:
@@ -97,6 +99,7 @@ async def verify_hosted_publication(
     try:
         async with asyncio.timeout(policy.verification_policy.gate_budget_seconds):
             for check in checks:
+                started = time.monotonic()
                 logs: list[str] = []
                 outcome = {
                     "id": check.id,
@@ -114,14 +117,21 @@ async def verify_hosted_publication(
                     exit_code = await _check_docker(
                         executor, policy, bundle, manifest, check, logs
                     )
-                outcome.update(exit_code=exit_code, log_tail="".join(logs))
+                outcome.update(
+                    exit_code=exit_code,
+                    log_tail="".join(logs),
+                    duration_seconds=round(time.monotonic() - started, 3),
+                )
                 if exit_code != 0:
                     raise PublicationError(
                         f"Isolated verification check {check.id} failed with exit {exit_code}; ensure the configured generic toolchain image includes its dependencies"
                     )
     except (PublicationError, TimeoutError, DockerError, ApiException, OSError) as exc:
         if outcomes:
-            outcomes[-1]["log_tail"] = "".join(logs)
+            outcomes[-1].update(
+                log_tail="".join(logs),
+                duration_seconds=round(time.monotonic() - started, 3),
+            )
         if isinstance(exc, PublicationError):
             reason = str(exc)
         elif isinstance(exc, TimeoutError):
@@ -253,6 +263,11 @@ async def _check_kubernetes(
             ),
         ),
     )
+    await _require_isolated_network_policy(
+        network,
+        namespace,
+        {**labels, "job-name": name, "batch.kubernetes.io/job-name": name},
+    )
     network_created = False
     job_attempted = False
     try:
@@ -283,6 +298,13 @@ async def _check_kubernetes(
                 running = [pod for pod in pods.items if pod.status.phase == "Running"]
                 if len(running) == 1:
                     pod_name = running[0].metadata.name
+                    # Admission may add labels. Recheck the actual pod before
+                    # transferring source or running any repository command.
+                    await _require_isolated_network_policy(
+                        network,
+                        namespace,
+                        getattr(running[0].metadata, "labels", None) or labels,
+                    )
                     break
                 await asyncio.sleep(0.2)
             transfer = "import sys; data=sys.stdin.buffer.read(int(sys.argv[1])); len(data)==int(sys.argv[1]) or sys.exit(125); open('/tmp/branch.bundle','xb').write(data)"
@@ -319,6 +341,46 @@ async def _check_kubernetes(
         if network_created:
             await network.delete_namespaced_network_policy(
                 name=name, namespace=namespace
+            )
+
+
+async def _require_isolated_network_policy(
+    network: Any, namespace: str, labels: dict[str, str]
+) -> None:
+    """NetworkPolicy is additive: reject existing overlapping allow rules."""
+    policies = await network.list_namespaced_network_policy(namespace=namespace)
+    automatic_uid_labels = {"controller-uid", "batch.kubernetes.io/controller-uid"}
+    for policy in policies.items:
+        selector = policy.spec.pod_selector
+        if any(
+            labels.get(key) != value
+            for key, value in (selector.match_labels or {}).items()
+            if key not in automatic_uid_labels
+        ):
+            continue
+        matches = True
+        for expression in selector.match_expressions or []:
+            if expression.key in automatic_uid_labels:
+                # Controller UID is assigned during create. Treat possible
+                # matches conservatively before scheduling the workload.
+                continue
+            value = labels.get(expression.key)
+            choices = expression.values or []
+            if expression.operator == "In":
+                matches = matches and value in choices
+            elif expression.operator == "NotIn":
+                matches = matches and value not in choices
+            elif expression.operator == "Exists":
+                matches = matches and expression.key in labels
+            elif expression.operator == "DoesNotExist":
+                matches = matches and expression.key not in labels
+            else:
+                raise PublicationError(
+                    "Unknown namespace NetworkPolicy selector; isolation unconfirmed"
+                )
+        if matches and (policy.spec.ingress or policy.spec.egress):
+            raise PublicationError(
+                "Verifier namespace has an overlapping permissive NetworkPolicy; use an isolated namespace with enforced deny rules"
             )
 
 

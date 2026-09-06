@@ -101,6 +101,7 @@ def inspect_bundle(bundle: bytes, base_sha: str) -> dict[str, Any]:
             base_sha,
             head_sha,
             "--",
+            strip_output=False,
         )
         return {
             "version": 1,

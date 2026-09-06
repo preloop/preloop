@@ -185,7 +185,11 @@ class CleanGitRepository:
         self.run("init", "--bare", "--template=", str(directory))
 
     def run(
-        self, *args: str, lease: PublicationLease | None = None, check: bool = True
+        self,
+        *args: str,
+        lease: PublicationLease | None = None,
+        check: bool = True,
+        strip_output: bool = True,
     ) -> str:
         """Run only publisher-authored Git arguments with bounded time/output."""
         environment = dict(self.environment)
@@ -252,7 +256,8 @@ class CleanGitRepository:
             )
         if not check and result.returncode:
             return ""
-        return result.stdout.decode("utf-8", errors="replace").strip()
+        decoded = result.stdout.decode("utf-8", errors="replace")
+        return decoded.strip() if strip_output else decoded
 
     def import_bundle(self, bundle: bytes, head_sha: str) -> None:
         """Verify a self-contained bundle and exact commit before any lease exists."""

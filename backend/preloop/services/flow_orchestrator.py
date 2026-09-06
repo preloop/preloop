@@ -4303,13 +4303,31 @@ class FlowExecutionOrchestrator:
         finally:
             # Always cleanup monitoring resources
             await self._cleanup_monitoring()
-            # Cleanup agent executor resources (close Kubernetes/Docker clients)
+            # Closing clients is not proof that sandbox writers are gone.
+            # Evidence/checkpoints have already been captured above.
+            self._publication_runtime_stopped = False
             try:
-                await agent_executor.cleanup()
-                self._publication_runtime_stopped = True
+                policy = getattr(self, "_isolated_publication_policy", None)
+                if policy is not None and not getattr(policy, "private", False):
+                    from preloop.services.publication_runtime import (
+                        remove_owned_publication_runtime,
+                    )
+
+                    await self._persist_isolated_recovery()
+                    await remove_owned_publication_runtime(
+                        agent_executor, session_reference, str(self.execution_log.id)
+                    )
+                    self._publication_executor = agent_executor
+                    self._publication_runtime_stopped = True
             except Exception as cleanup_error:
                 self._publication_runtime_stopped = False
-                logger.warning(f"Error during agent cleanup: {cleanup_error}")
+                logger.warning(f"Error during agent removal: {cleanup_error}")
+            finally:
+                try:
+                    await agent_executor.cleanup()
+                except Exception as cleanup_error:
+                    self._publication_runtime_stopped = False
+                    logger.warning(f"Error during agent cleanup: {cleanup_error}")
 
     def _create_execution_log(self):
         """Create an initial record in FlowExecutions.
@@ -4685,6 +4703,29 @@ class FlowExecutionOrchestrator:
                 await asyncio.sleep(delay)
 
         return agent_result, session_reference
+
+    async def _persist_isolated_recovery(self) -> None:
+        """Keep the original runtime unless recoverable work is durably saved."""
+        from preloop.services.publication_worker import inspect_bundle
+        from preloop.services.trusted_publisher import read_publication_bundle
+
+        archive = getattr(self, "_evidence_archive", None)
+        workspace = getattr(self, "_workspace_snapshot", None)
+        if workspace is None:
+            # A valid self-contained Git bundle can preserve committed work
+            # when the full workspace exceeds its capture budget.
+            await asyncio.to_thread(
+                inspect_bundle,
+                read_publication_bundle(archive or b""),
+                self._isolated_publication_policy.base_sha,
+            )
+        crud_flow_execution.capture_publication_recovery(
+            self.db, db_obj=self.execution_log, archive=archive, workspace=workspace
+        )
+        self.execution_logger.log_milestone(
+            "publication_recovery_committed",
+            {"execution_id": str(self.execution_log.id)},
+        )
 
     async def _finish_isolated_publication(self, agent_result: Dict[str, Any]) -> None:
         """Run trusted publication after runtime cleanup; failure changes status."""
