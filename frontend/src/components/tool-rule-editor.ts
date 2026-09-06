@@ -91,7 +91,13 @@ export class ToolRuleEditor extends LitElement {
     {};
   @property({ type: Object }) toolSchema: any = null;
 
-  @state() private _action: 'allow' | 'deny' | 'require_approval' = 'deny';
+  /**
+   * A new rule defaults to the safe middle: ask a person. Defaulting to Deny
+   * made the common case ("let me review this") two clicks and the blunt case
+   * one, which is backwards for a governance tool.
+   */
+  @state() private _action: 'allow' | 'deny' | 'require_approval' =
+    'require_approval';
   @state() private _conditionExpression = '';
   @state() private _conditionType: 'simple' | 'cel' = 'cel';
   @state() private _description = '';
@@ -440,7 +446,7 @@ export class ToolRuleEditor extends LitElement {
         this._useCelEditor = false;
       }
     } else {
-      this._action = 'deny';
+      this._action = 'require_approval';
       this._conditionExpression = '';
       this._conditionType = this._hasAdvancedConditions ? 'cel' : 'simple';
       this._description = '';
@@ -1285,7 +1291,7 @@ export class ToolRuleEditor extends LitElement {
                   style="font-size: 1.5rem; color: var(--sl-color-primary-500);"
                 ></sl-icon>
               </div>
-              <div class="action-label">Require Approval</div>
+              <div class="action-label">Require approval</div>
               <div class="action-desc">Human or AI review</div>
             </div>
             <div
