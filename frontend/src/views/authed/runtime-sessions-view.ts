@@ -120,6 +120,7 @@ export class RuntimeSessionsView extends LitElement {
   private initialized = false;
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
+  private searchDebounce: number | null = null;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -507,6 +508,7 @@ export class RuntimeSessionsView extends LitElement {
       window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
     }
+    this.cancelSearchDebounce();
   }
 
   private connectRealtime(): void {
@@ -864,10 +866,28 @@ export class RuntimeSessionsView extends LitElement {
     this.selectedRange = 'custom';
   }
 
-  private handleSearchQueryChange(event: Event) {
-    this.searchQuery = (
-      event.target as HTMLInputElement & { value: string }
-    ).value;
+  /**
+   * The bar filters as you type, the way the Agents bar does
+   * (agents-view.ts handleSearchChange). One bar that filters live and one
+   * that waits for a button would be two behaviours for one control, and the
+   * toolbar swallows Enter, so a typed query used to sit there doing nothing
+   * until the operator found Apply. The query is a server parameter, so the
+   * keystrokes are debounced instead of sent one per character.
+   */
+  private handleSearchChange(event: CustomEvent<{ value: string }>) {
+    this.searchQuery = event.detail.value;
+    this.cancelSearchDebounce();
+    this.searchDebounce = window.setTimeout(() => {
+      this.searchDebounce = null;
+      void this.loadSessions();
+    }, 400);
+  }
+
+  private cancelSearchDebounce(): void {
+    if (this.searchDebounce !== null) {
+      window.clearTimeout(this.searchDebounce);
+      this.searchDebounce = null;
+    }
   }
 
   private handleSessionSourceTypeChange(event: Event) {
@@ -901,10 +921,12 @@ export class RuntimeSessionsView extends LitElement {
   }
 
   private async applyFilters() {
+    this.cancelSearchDebounce();
     await this.loadSessions();
   }
 
   private async clearFilters() {
+    this.cancelSearchDebounce();
     this.selectedRange = 'last-30';
     this.applyPresetDates('last-30');
     this.searchQuery = '';
@@ -1596,9 +1618,7 @@ export class RuntimeSessionsView extends LitElement {
               searchPlaceholder="Search sessions"
               .search=${this.searchQuery}
               .views=${[]}
-              @search-change=${(event: CustomEvent) => {
-                this.searchQuery = event.detail.value;
-              }}
+              @search-change=${this.handleSearchChange}
             >
               <sl-select
                 label="Date range"

@@ -651,6 +651,45 @@ describe('RuntimeSessionsView', () => {
       expect(text).to.not.contain('Session Observer');
     });
 
+    it('refetches on a debounced search, like the Agents bar', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const listCalls = () =>
+        fetchStub
+          .getCalls()
+          .map((call) => String(call.args[0]))
+          .filter((url) => url.startsWith('/api/v1/runtime-sessions?'));
+      const before = listCalls().length;
+
+      const toolbar = element.shadowRoot!.querySelector('list-toolbar')!;
+      toolbar.dispatchEvent(
+        new CustomEvent('search-change', {
+          detail: { value: 'workspace-42' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+
+      // Nothing goes out on the keystroke itself: the query is a server
+      // parameter, so it waits for the typing to stop.
+      expect(listCalls().length).to.equal(before);
+
+      await waitUntil(
+        () => listCalls().length > before,
+        'Search did not refetch after the debounce',
+        { timeout: 3000 }
+      );
+      expect(listCalls().pop()).to.contain('query=workspace-42');
+    });
+
     it('shows one search input on the page', async () => {
       const element = (await fixture(
         html`<runtime-sessions-view></runtime-sessions-view>`
