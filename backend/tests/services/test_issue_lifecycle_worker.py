@@ -1,9 +1,11 @@
 """Worker sessions commit durably for engine-bound callers and join pytest connections."""
 
+import threading
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
+import anyio
 import pytest
 from sqlalchemy import select
 from sqlalchemy.engine import Connection, Engine
@@ -17,6 +19,7 @@ from preloop.models.crud import (
     crud_tracker,
 )
 from preloop.models.crud.base import CRUDBase
+from preloop.services.flow_trigger_service import FlowTriggerService
 from preloop.services.issue_lifecycle_runtime import _lifecycle_flow_entry
 from preloop.services.issue_lifecycle_worker import (
     _should_commit_lifecycle_caller,
@@ -347,3 +350,118 @@ async def test_commit_gate_never_disagrees_with_flow_entry(
             False,
             None,
         )
+
+
+@pytest.mark.asyncio
+async def test_unrelated_trigger_skips_lifecycle_worker_offload(
+    db_engine: Engine, monkeypatch
+) -> None:
+    """A push that is not lifecycle work must not hop to a worker thread."""
+    monkeypatch.setattr(
+        "preloop.models.db.session.get_session_factory",
+        lambda: sessionmaker(bind=db_engine, autocommit=False, autoflush=False),
+    )
+    hops: list[bool] = []
+    real_run_sync = anyio.to_thread.run_sync
+
+    async def spy(func: Any, *args: Any, **kwargs: Any) -> Any:
+        hops.append(True)
+        return await real_run_sync(func, *args, **kwargs)
+
+    monkeypatch.setattr(anyio.to_thread, "run_sync", spy)
+    caller = Session(bind=db_engine)
+    tenant = _lifecycle_tenant(caller)
+    rows = _tenant_rows(tenant)
+
+    @lifecycle_worker_hook
+    async def peek(service: object, flow: object, event: dict, _nats: object) -> str:
+        return "caller"
+
+    try:
+        result = await peek(
+            SimpleNamespace(db=caller),
+            tenant.flow,
+            {"type": "push", "project_id": str(tenant.project.id)},
+            None,
+        )
+        assert result == "caller"
+        assert hops == []
+    finally:
+        caller.close()
+        _drop(db_engine, rows)
+
+
+@pytest.mark.asyncio
+async def test_engaged_lifecycle_trigger_still_offloads_worker(
+    db_engine: Engine, monkeypatch
+) -> None:
+    """Pickup still isolates ORM work once the entry decision is engaged."""
+    monkeypatch.setattr(
+        "preloop.models.db.session.get_session_factory",
+        lambda: sessionmaker(bind=db_engine, autocommit=False, autoflush=False),
+    )
+    hops: list[bool] = []
+    real_run_sync = anyio.to_thread.run_sync
+
+    async def spy(func: Any, *args: Any, **kwargs: Any) -> Any:
+        hops.append(True)
+        return await real_run_sync(func, *args, **kwargs)
+
+    monkeypatch.setattr(anyio.to_thread, "run_sync", spy)
+    caller = Session(bind=db_engine)
+    tenant = _lifecycle_tenant(caller)
+    rows = _tenant_rows(tenant)
+
+    @lifecycle_worker_hook
+    async def peek(service: object, flow: object, event: dict, _nats: object) -> str:
+        return "worker"
+
+    try:
+        result = await peek(
+            SimpleNamespace(db=caller),
+            tenant.flow,
+            {"type": "issue_labeled", "project_id": str(tenant.project.id)},
+            None,
+        )
+        assert result == "worker"
+        assert hops == [True]
+    finally:
+        caller.close()
+        _drop(db_engine, rows)
+
+
+def test_cross_thread_halt_does_not_use_caller_session(
+    db_engine: Engine, monkeypatch
+) -> None:
+    """Application-loop halt reads must not borrow the request Session."""
+    seen: list[Session] = []
+
+    def spy(db: Session, account_id: Any) -> bool:
+        seen.append(db)
+        return False
+
+    monkeypatch.setattr("preloop.services.flow_trigger_service.flows_halted", spy)
+    caller = Session(bind=db_engine)
+    factory = sessionmaker(bind=db_engine, autocommit=False, autoflush=False)
+    service = FlowTriggerService(caller, session_factory=factory)
+    account_id = uuid4()
+    done = threading.Event()
+    error: list[Exception] = []
+
+    def other_thread() -> None:
+        try:
+            service._flows_halted(account_id)
+        except Exception as exc:
+            error.append(exc)
+        finally:
+            done.set()
+
+    try:
+        threading.Thread(target=other_thread).start()
+        assert done.wait(2)
+        assert error == []
+        assert seen and seen[0] is not caller
+    finally:
+        for session in seen:
+            session.close()
+        caller.close()

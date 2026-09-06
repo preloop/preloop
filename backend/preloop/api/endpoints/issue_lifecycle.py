@@ -15,9 +15,8 @@ from preloop.models.db.session import get_db_session
 from preloop.schemas.issue_lifecycle import ReadinessContract
 from preloop.services.issue_lifecycle_runtime import build_lifecycle_service
 from preloop.services.issue_lifecycle_worker import (
-    run_lifecycle_endpoint,
     dispatch_lifecycle_execution,
-    on_application_loop,
+    run_lifecycle_endpoint,
 )
 from preloop.utils.permissions import require_permission
 
@@ -244,16 +243,23 @@ def reconcile_audit(
             trigger = FlowTriggerService(db)
 
             async def dispatch(execution: models.FlowExecution) -> None:
-                # Resolve expired ORM attributes in this worker before dispatch.
+                # Halt and ORM reads stay on this worker. NATS publish (or
+                # local dispatch) crosses to the application loop without the
+                # request Session.
                 _ = flow.id, execution.id
-                await on_application_loop(
+                from preloop.services.kill_switch import flows_halted
+
+                if isinstance(db, Session) and flows_halted(db, flow.account_id):
+                    return
+                await dispatch_lifecycle_execution(
+                    execution.id,
                     partial(
                         trigger._start_flow_execution,
                         flow,
                         execution.trigger_event_details,
                         None,
                         precreated_execution=execution,
-                    )
+                    ),
                 )
 
             execution = await service.schedule_audit(flow, dispatch)
@@ -332,16 +338,23 @@ def verify_deployment(
             trigger = FlowTriggerService(db)
 
             async def dispatch(execution: models.FlowExecution) -> None:
-                # Resolve expired ORM attributes in this worker before dispatch.
+                # Halt and ORM reads stay on this worker. NATS publish (or
+                # local dispatch) crosses to the application loop without the
+                # request Session.
                 _ = flow.id, execution.id
-                await on_application_loop(
+                from preloop.services.kill_switch import flows_halted
+
+                if isinstance(db, Session) and flows_halted(db, flow.account_id):
+                    return
+                await dispatch_lifecycle_execution(
+                    execution.id,
                     partial(
                         trigger._start_flow_execution,
                         flow,
                         execution.trigger_event_details,
                         None,
                         precreated_execution=execution,
-                    )
+                    ),
                 )
 
             execution = await service.schedule_deployment_audit(

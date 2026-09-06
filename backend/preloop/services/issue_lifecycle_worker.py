@@ -187,6 +187,10 @@ def lifecycle_worker_hook(
                 join = raw
             elif _should_commit_lifecycle_caller(caller, *args, **kwargs):
                 caller.commit()
+            else:
+                # Ordinary triggers are not lifecycle work. Stay on the caller
+                # thread instead of opening a worker loop and Session.
+                return await operation(*args, **kwargs)
         token = _lifecycle_bind.set(join)
         try:
             return await anyio.to_thread.run_sync(
