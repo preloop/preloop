@@ -426,6 +426,9 @@ def merge_result_preserving_pr_binding(
     for key in ("pr_url", "pr_source_branch"):
         if not merged.get(key) and existing.get(key):
             merged[key] = existing[key]
+    for key in ("native_resume", "continuation"):
+        if key in existing:
+            merged[key] = existing[key]
     return merged
 
 
@@ -454,6 +457,16 @@ def record_cli_session(db: Session, execution_id: Any, cli_session: Any) -> None
             cli_session={
                 "agent_type": cli_session.get("agent_type"),
                 "session_id": cli_session.get("session_id"),
+                **{
+                    key: cli_session[key]
+                    for key in (
+                        "thread_id",
+                        "harness_version",
+                        "expires_at",
+                        "artifact_reference",
+                    )
+                    if key in cli_session
+                },
             },
         )
         db.commit()
@@ -486,6 +499,16 @@ def resume_cli_session_of(execution: Any) -> Optional[Dict[str, Any]]:
     return {
         "agent_type": cli.get("agent_type"),
         "session_id": cli.get("session_id"),
+        **{
+            key: cli[key]
+            for key in (
+                "thread_id",
+                "harness_version",
+                "expires_at",
+                "artifact_reference",
+            )
+            if key in cli
+        },
     }
 
 
@@ -519,6 +542,10 @@ def record_opened_pr(
         flag_modified(execution, "result")
         db.commit()
         logger.info("Recorded opened PR on execution %s", execution_id)
+        if source_branch:
+            from preloop.services.flow_feedback import register_thread
+
+            register_thread(db, execution, stored_url, source_branch)
     except Exception:
         logger.warning(
             "Failed to record opened PR on execution %s",

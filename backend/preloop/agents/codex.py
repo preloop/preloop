@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import shlex
 from typing import Any, Dict
 
 from aiodocker.exceptions import DockerError
@@ -286,11 +287,18 @@ class CodexAgent(ContainerAgentExecutor):
             "capture": "",
             "pack": "",
         }
+        restore_guard = ""
+        if not execution_context.get("confirmation_nudge"):
+            restore_guard = (
+                'if [ "${PRELOOP_CLI_SESSION_RESTORED:-0}" -eq 1 ]; then\n'
+                '    _pl_codex_sid="${PRELOOP_CLI_SESSION_ID:-}"\n'
+                "fi\n"
+            )
         blocks["capture"] = f"""
 # Extract this run's session id from the newest rollout file so the
 # orchestrator can persist it for a later PR-comment resume.
 _pl_codex_sid=""
-if [ -d "$CODEX_HOME/sessions" ]; then
+{restore_guard}if [ -z "$_pl_codex_sid" ] && [ -d "$CODEX_HOME/sessions" ]; then
     _pl_rollout=$(find "$CODEX_HOME/sessions" -type f -name 'rollout-*.jsonl' 2>/dev/null | sort | tail -n 1)
     if [ -n "$_pl_rollout" ]; then
         _pl_codex_sid=$(printf '%s\\n' "$_pl_rollout" | grep -oE '[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}' | tail -n 1)
@@ -324,11 +332,18 @@ CODEX_RESUME_ARGS=""
 if [ "$PRELOOP_CLI_SESSION_RESTORED" -eq 1 ] && [ -n "$PRELOOP_CLI_SESSION_ID" ] \\
     && codex exec --help 2>&1 | grep -qw resume; then
     CODEX_RESUME_ARGS="resume $PRELOOP_CLI_SESSION_ID"
-elif [ "$PRELOOP_CLI_SESSION_RESTORED" -eq 1 ] \\
-    && codex exec --help 2>&1 | grep -qw resume; then
-    CODEX_RESUME_ARGS="resume --last"
+elif [ "$PRELOOP_CLI_SESSION_RESTORED" -eq 1 ]; then
+    echo "PRELOOP_NATIVE_RESUME resume_failed: explicit Codex resume unavailable"
+    exit 1
 fi
 """
+        from .session_runtime import native_session_blocks
+
+        native = native_session_blocks(
+            execution_context, "codex", '"$CODEX_HOME/sessions"', '"$_pl_codex_sid"'
+        )
+        if native:
+            blocks.update(native)
         return blocks
 
     def _build_codex_script(self, execution_context: Dict[str, Any]) -> str:
@@ -343,7 +358,23 @@ fi
         Returns:
             Shell script to execute
         """
+        # Pin the CLI independently of the universal toolchain image. A version
+        # upgrade is explicit; manifests reject incompatible restored state.
+        cli_version = str(
+            (execution_context.get("agent_config") or {}).get(
+                "codex_cli_version", "0.153.4"
+            )
+        )
+        import re
+
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", cli_version):
+            raise ValueError("codex_cli_version must be an exact release version")
         prompt = execution_context["prompt"]
+        native_resume_guard = (
+            '"0"'
+            if execution_context.get("confirmation_nudge")
+            else '"${PRELOOP_CLI_SESSION_RESTORED:-0}"'
+        )
         model = (
             execution_context.get("model_gateway_model_alias")
             if execution_context.get("model_gateway_enabled")
@@ -387,6 +418,17 @@ fi
 
         # Prepare initialization commands (git clone, custom commands)
         init_commands = self._prepare_init_commands(execution_context)
+        git_config = execution_context.get("git_clone_config") or {}
+        enter_workspace = (
+            "cd "
+            + shlex.quote(self._primary_workspace_path(execution_context, git_config))
+            if git_config.get("repositories")
+            or (
+                git_config.get("enabled")
+                and execution_context.get("trigger_project_id")
+            )
+            else ""
+        )
 
         # Prepare post-execution commands (push, PR/MR creation)
         post_exec_commands = self._prepare_git_post_execution_commands(
@@ -418,9 +460,9 @@ fi
                 exit_code_var="CODEX_EXIT_CODE",
                 resume_probe="codex exec --help 2>&1 | grep -qw resume",
                 resume_command=(
-                    "$PRELOOP_NUDGE_TIMEOUT codex exec resume --last "
+                    '$PRELOOP_NUDGE_TIMEOUT codex exec resume "$_pl_codex_sid" '
                     "--skip-git-repo-check "
-                    f'--model "{model}" --sandbox workspace-write --yolo '
+                    f'--model "{model}" --yolo '
                     f'"$(cat {NUDGE_PROMPT_PATH})" 2>&1 '
                     f'| tee -a "{AGENT_OUTPUT_LOG_PATH}"'
                 ),
@@ -474,18 +516,22 @@ echo ""
 
 # Run initialization commands (git clone, custom commands) if any
 {init_commands}
+{enter_workspace}
 
 # Restore a prior CLI session (correlated PR-comment resume), if the
 # workspace snapshot carried one.
-{session_blocks["decode"]}
 CODEX_HOME="${{CODEX_HOME:-$HOME/.codex}}"
-{session_blocks["restore"]}
 
 # Configure git to trust all directories (needed for cloned repos)
 git config --global --add safe.directory '*'
 
 # Configure Codex CLI in the universal image
-npm install -g @openai/codex
+npm install -g @openai/codex@{cli_version}
+echo "PRELOOP_HARNESS_VERSION codex $(codex --version)"
+echo "Agent working directory: $(pwd)"
+printf '%s\n' {shlex.quote("Agent image reference: " + self.image)}
+{session_blocks["decode"]}
+{session_blocks["restore"]}
 
 # Verify API key is set
 if [ -z "$OPENAI_API_KEY" ]; then
@@ -522,11 +568,16 @@ echo "PRELOOP_AGENT_EXEC_START"
 # PIPESTATUS[1] is codex's own exit code (echo | codex | tee).
 set +e
 : > "{AGENT_OUTPUT_LOG_PATH}"
-echo "{escaped_prompt}" | codex exec $CODEX_RESUME_ARGS --skip-git-repo-check --model "{model}" --sandbox workspace-write --yolo 2>&1 | tee -a "{AGENT_OUTPUT_LOG_PATH}"
+echo "{escaped_prompt}" | codex exec $CODEX_RESUME_ARGS --skip-git-repo-check --model "{model}" --yolo 2>&1 | tee -a "{AGENT_OUTPUT_LOG_PATH}"
 CODEX_PIPE_CODES=("${{PIPESTATUS[@]}}")
 CODEX_EXIT_CODE=${{CODEX_PIPE_CODES[1]:-0}}
 set -e
 {session_blocks["capture"]}
+if [ {native_resume_guard} -eq 1 ] && [ "$CODEX_EXIT_CODE" -ne 0 ]; then
+    echo 'PRELOOP_NATIVE_RESUME {{"mode":"resume_failed","reason":"native_cli_exit"}}'
+    {session_blocks["pack"]}
+    exit "$CODEX_EXIT_CODE"
+fi
 {completion_nudge_block}{session_blocks["pack"]}{post_exec_block}
 # Exit with codex's exit code
 exit $CODEX_EXIT_CODE

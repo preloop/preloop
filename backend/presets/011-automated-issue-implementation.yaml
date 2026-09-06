@@ -15,6 +15,14 @@ trigger_event_source: null
 trigger_event_types:
   - issue_labeled
   - comment_created
+  - pull_request_review
+  - pull_request_review_comment
+  - check_run
+  - check_suite
+  - workflow_run
+  - status
+  - pipeline
+  - job
 trigger_config:
   filter_conditions: {}
 prompt_template: |
@@ -169,6 +177,12 @@ agent_type: codex
 agent_config:
   sandbox_type: exec
   enable_auto_lint: true
+  feedback:
+    enabled: true
+    debounce_seconds: 30
+    max_turns: 5
+    max_age_hours: 168
+    ci_deadline_seconds: 3600
 allowed_mcp_servers: []
 # Read the issue and the pull request, report back, and ask the human only
 # when a critical decision is missing. Nothing here can push, merge, or

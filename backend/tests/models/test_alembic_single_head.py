@@ -108,4 +108,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert heartbeat.down_revision == "20260905_flow_cli_session"
     viewed_uniq = script.get_revision("20260906_ae_viewed_uniq")
     assert viewed_uniq.down_revision == "20260905_control_heartbeat"
-    assert script.get_heads() == ["20260906_ae_viewed_uniq"]
+    feedback = script.get_revision("20260906_flow_feedback")
+    assert feedback.down_revision == "20260906_ae_viewed_uniq"
+    assert script.get_heads() == ["20260906_flow_feedback"]

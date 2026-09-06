@@ -75,6 +75,9 @@ GITHUB_EVENT_MAP: Dict[str, str] = {
     "check_run": "check_run",
     "check_suite": "check_suite",
     "workflow_run": "workflow_run",
+    "pull_request_review": "pull_request_review",
+    "pull_request_review_comment": "pull_request_review_comment",
+    "status": "status",
 }
 
 # Mapping of Jira webhook events to normalized event types

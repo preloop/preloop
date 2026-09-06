@@ -15,6 +15,7 @@ from .tracker import Tracker, TrackerType
 from .client_version_log import ClientVersionLog
 from .ai_model import AIModel
 from .flow import Flow
+from .flow_feedback import FlowFeedback, FlowThread
 from .flow_execution import FlowExecution
 from .flow_runner import FlowRunner
 from .flow_execution_log import FlowExecutionLog
@@ -82,6 +83,8 @@ from .oauth_mcp_token import (
 from .budget import BudgetPolicy, BudgetSpendActivity, BudgetPeriod
 
 __all__ = [
+    "FlowFeedback",
+    "FlowThread",
     "Base",
     "Account",
     "AgentControlCommand",

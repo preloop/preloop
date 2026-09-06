@@ -41,6 +41,7 @@ from .audit_log import CRUDAuditLog
 from .base import CRUDBase
 from .comment import CRUDComment, crud_comment
 from .embedding import CRUDEmbeddingModel, CRUDIssueEmbedding
+from .flow_feedback import crud_flow_feedback
 from .flow import CRUDFlow  # Import CRUDFlow class
 from .flow_execution import CRUDFlowExecution
 from .flow_execution_log import CRUDFlowExecutionLog
@@ -195,6 +196,7 @@ crud_approval_workflow = CRUDApprovalWorkflow()  # Instantiate CRUDApprovalWorkf
 crud_tool_access_rule = CRUDToolAccessRule()  # Instantiate CRUDToolAccessRule
 
 __all__ = [
+    "crud_flow_feedback",
     "CRUDBase",
     "CRUDAccount",
     "CRUDAgentControlCommand",

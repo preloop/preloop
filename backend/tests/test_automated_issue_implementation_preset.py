@@ -66,12 +66,25 @@ class TestPresetIdentity:
         assert preset["is_preset"] is True
 
     def test_trigger_types_enable_pr_comment_resume(self, preset):
-        """``comment_created`` plus ``issue_labeled`` is what the trigger
-        service correlates to a PR this flow opened."""
+        """Issue labeling plus comment/review/CI types resume the PR this
+        flow opened. Durable feedback continuation also listens for review
+        and check events so a bound thread can ingest them without a cold
+        run."""
         from preloop.services.flow_pr_binding import flow_requires_pr_comment_resume
 
         types = preset["trigger_event_types"]
-        assert set(types) == {"issue_labeled", "comment_created"}
+        assert set(types) == {
+            "issue_labeled",
+            "comment_created",
+            "pull_request_review",
+            "pull_request_review_comment",
+            "check_run",
+            "check_suite",
+            "workflow_run",
+            "status",
+            "pipeline",
+            "job",
+        }
 
         class _Flow:
             trigger_event_types = types

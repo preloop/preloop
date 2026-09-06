@@ -670,6 +670,11 @@ class FlowTriggerService:
             )
             if test_mode:
                 trigger_details["test_mode"] = True
+            from preloop.services.flow_feedback import feedback_policy
+
+            if feedback_policy(flow):
+                trigger_details["_session_thread_id"] = str(uuid.uuid4())
+            event_data = trigger_details
             attach_trigger_subject(trigger_details)
             attach_workspace_file_paths(trigger_details)
             execution_data = FlowExecutionCreate(
@@ -964,6 +969,16 @@ class FlowTriggerService:
             )
             return
 
+        # Durable feedback is routed by an existing account/repository binding,
+        # independently from issue-intake labels and bot comment markers.
+        from preloop.services.flow_feedback import (
+            FEEDBACK_TYPES,
+            feedback_policy,
+            ingest_feedback,
+        )
+
+        ingest_feedback(self.db, event_data)
+
         # Check if this event was triggered by Preloop itself to prevent infinite loops
         if self._is_preloop_triggered_event(event_data):
             logger.info(
@@ -1008,6 +1023,10 @@ class FlowTriggerService:
             # Filter flows by trigger_config and enabled status
             flows_to_trigger = []
             for flow in matching_flows:
+                if feedback_policy(flow) and event_type in FEEDBACK_TYPES:
+                    # This flow's durable subscription owns follow-up routing.
+                    # Independent reviewer and ordinary event flows still run.
+                    continue
                 if not flow.is_enabled:
                     logger.warning(
                         f"Skipping disabled flow '{flow.name}' ({flow.id}). "
@@ -1405,6 +1424,10 @@ class FlowTriggerService:
             if triggered_by:
                 trigger_details["triggered_by"] = triggered_by
             trigger_details = _make_json_serializable(trigger_details)
+            from preloop.services.flow_feedback import feedback_policy
+
+            if feedback_policy(flow):
+                trigger_details["_session_thread_id"] = str(uuid.uuid4())
             attach_trigger_subject(trigger_details)
 
             cell: Dict[str, Any] = {"batch_id": str(batch_id), "index": index}
