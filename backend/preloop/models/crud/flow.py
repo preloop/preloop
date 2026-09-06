@@ -2,7 +2,7 @@ from typing import List, Optional, Union
 from uuid import UUID
 
 from sqlalchemy import cast, String
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
 from .base import CRUDBase
@@ -20,6 +20,8 @@ class CRUDFlow(CRUDBase[models.Flow]):
         db: Session,
         id: Union[str, UUID],
         account_id: Union[str, UUID, None] = None,
+        *,
+        refresh: bool = False,
     ) -> Optional[models.Flow]:
         """
         Retrieve a flow by its ID.
@@ -36,6 +38,8 @@ class CRUDFlow(CRUDBase[models.Flow]):
         id_str = str(id) if isinstance(id, UUID) else id
 
         query = db.query(self.model).filter(cast(self.model.id, String) == id_str)
+        if refresh:
+            query = query.populate_existing().options(joinedload(self.model.ai_model))
 
         if account_id:
             account_id_str = (

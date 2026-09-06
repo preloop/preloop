@@ -1080,7 +1080,7 @@ class FlowExecutionOrchestrator:
         except Exception as e:
             logger.error(f"Failed to publish update to NATS: {e}", exc_info=True)
 
-    def _get_flow_details(self):
+    def _get_flow_details(self, *, refresh: bool = False):
         """Retrieve the Flow definition and associated AIModel."""
         logger.info(f"Retrieving flow details for flow_id: {self.flow_id}")
 
@@ -1090,7 +1090,9 @@ class FlowExecutionOrchestrator:
         )
         # Use CRUD layer without account filtering since this is an internal service
         # and we don't have the account_id yet (it's a property of the flow itself)
-        self.flow = crud_flow.get(self.db, id=flow_id_str)
+        self.flow = crud_flow.get(
+            self.db, id=flow_id_str, **({"refresh": True} if refresh else {})
+        )
         if not self.flow:
             raise ValueError(f"Flow with id {self.flow_id} not found")
 
@@ -2039,14 +2041,17 @@ class FlowExecutionOrchestrator:
             logger.error(f"Error executing custom commands: {e}", exc_info=True)
             return False
 
-    async def _prepare_execution_context(self) -> Dict[str, Any]:
+    async def _prepare_execution_context(
+        self, *, resolved_prompt: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Prepare the full execution context for the agent."""
         effective_agent_type = self.agent_type or self.flow.agent_type
         logger.info(
             f"Preparing execution context for agent type: {effective_agent_type}"
         )
 
-        resolved_prompt = await self._resolve_prompt()
+        if resolved_prompt is None:
+            resolved_prompt = await self._resolve_prompt()
 
         # Validate trigger-payload workspace seeds before any agent starts: a
         # bad `workspace_files` declaration (path traversal, oversized inline
