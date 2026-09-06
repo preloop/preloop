@@ -52,6 +52,28 @@ async def _async_db_session() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+@require_permission("decide_approvals")
+def _require_decide_approvals(
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> None:
+    """Enforce ``decide_approvals`` for a handler that holds an async session.
+
+    The RBAC check behind ``@require_permission`` runs synchronous CRUD
+    (``crud_user_role.get_by_user``, ``db.query``) against whatever arrives as
+    ``db``, so a handler that declares an ``AsyncSession`` under that name
+    fails the check itself with a 500 on every request once RBAC is on.
+
+    Declaring the check as a plain ``def`` dependency gives it the sync
+    ``Session`` it needs and keeps the blocking pool checkout on FastAPI's
+    threadpool rather than on the event loop, which is the liveness risk the
+    ratchet in ``tests/api/test_event_loop_pool_wait.py`` exists to bound. The
+    handler keeps its own async session for the decisions.
+    """
+    _ = (request, current_user, db)  # Consumed by @require_permission.
+
+
 def _record_viewed_event(
     db: Session, approval_request: ApprovalRequest, actor_id: Union[uuid.UUID, None]
 ) -> None:
@@ -443,13 +465,18 @@ async def decide_request(
         )
 
 
-@router.post("/decide-batch", response_model=ApprovalBatchResponse)
-@require_permission("decide_approvals")
+@router.post(
+    "/decide-batch",
+    response_model=ApprovalBatchResponse,
+    # decide_approvals is enforced by a sync dependency instead of the
+    # handler decorator: the RBAC check needs a sync Session and must not run
+    # on the event loop. See _require_decide_approvals.
+    dependencies=[Depends(_require_decide_approvals)],
+)
 async def decide_requests_batch(
     decision: ApprovalBatchDecision,
     request: Request,
     current_user: User = Depends(get_current_active_user),
-    # Required by @require_permission (fail-closed checks kwargs["db"]).
     # Async session: a sync Session here would grow the event-loop pool-wait
     # surface (see test_async_sync_session_route_count_does_not_grow).
     db: AsyncSession = Depends(_async_db_session),
@@ -469,7 +496,7 @@ async def decide_requests_batch(
         decision: The ids to decide, the decision, and an optional comment
         request: HTTP request
         current_user: Current authenticated user
-        db: Async session used for the permission check and the decisions
+        db: Async session used for the decisions
 
     Returns:
         One result per requested id, in the order they were sent

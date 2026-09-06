@@ -4202,8 +4202,8 @@ paths:
         \ while the operator was reading\ncosts that row and nothing else.\n\nArgs:\n\
         \    decision: The ids to decide, the decision, and an optional comment\n\
         \    request: HTTP request\n    current_user: Current authenticated user\n\
-        \    db: Async session used for the permission check and the decisions\n\n\
-        Returns:\n    One result per requested id, in the order they were sent"
+        \    db: Async session used for the decisions\n\nReturns:\n    One result\
+        \ per requested id, in the order they were sent"
       operationId: decide_requests_batch_api_v1_approval_requests_decide_batch_post
       requestBody:
         content:

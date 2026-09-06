@@ -1,5 +1,9 @@
 """Tests for approval_requests API endpoints."""
 
+import asyncio
+import functools
+import importlib.util
+import inspect
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -7,14 +11,17 @@ from datetime import datetime, timedelta, UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
+from preloop.api.auth import get_current_active_user
 from preloop.api.endpoints import approval_requests
 from preloop.models import models
 from preloop.models.crud import crud_account_halt
+from preloop.models.db.session import get_db_session
 from preloop.models.schemas.approval_request import ApprovalRequestResponse
 
 
@@ -879,6 +886,141 @@ class TestDecideRequestsBatch:
                 ids=[uuid.uuid4() for _ in range(MAX_BATCH_DECISION_IDS + 1)],
                 approved=True,
             )
+
+
+class TestDecideRequestsBatchPermission:
+    """decide-batch must still enforce decide_approvals with RBAC switched on.
+
+    The handler holds an ``AsyncSession`` so its decisions stay off the event
+    loop, but the RBAC check is synchronous CRUD. Naming the async session
+    ``db`` handed it to that check and turned every RBAC-on request into a
+    500, so the check lives in its own synchronous dependency.
+    """
+
+    @staticmethod
+    def _rbac_plugin(seen):
+        """Build a plugin decorator shaped like ``plugins/rbac/permissions``.
+
+        The real plugin reads ``kwargs["db"]`` and immediately runs sync CRUD
+        against it, which is where an ``AsyncSession`` blows up.
+        """
+
+        def require_permission(permission_name: str):
+            def decorator(func):
+                def _enforce(kwargs) -> None:
+                    db = kwargs.get("db")
+                    seen["db"] = db
+                    seen["permission"] = permission_name
+                    if seen.get("deny"):
+                        raise HTTPException(
+                            status_code=403,
+                            detail=(
+                                f"Insufficient permissions. Required: {permission_name}"
+                            ),
+                        )
+                    db.query(models.UserRole).filter(
+                        models.UserRole.user_id == kwargs["current_user"].id
+                    )
+
+                if asyncio.iscoroutinefunction(func):
+
+                    @functools.wraps(func)
+                    async def async_wrapper(*args, **kwargs):
+                        _enforce(kwargs)
+                        return await func(*args, **kwargs)
+
+                    return async_wrapper
+
+                @functools.wraps(func)
+                def sync_wrapper(*args, **kwargs):
+                    _enforce(kwargs)
+                    return func(*args, **kwargs)
+
+                return sync_wrapper
+
+            return decorator
+
+        return require_permission
+
+    @classmethod
+    def _router_with_rbac(cls, monkeypatch, seen):
+        """Load a private copy of the endpoint module with RBAC enforcing.
+
+        ``require_permission`` binds the plugin when the module is imported,
+        and the installed build has no RBAC plugin, so the copy is executed
+        under a patched ``preloop.utils.permissions``. It is a separate module
+        object, so the shared import other tests use is left alone.
+        """
+        import preloop.utils.permissions as perms
+
+        monkeypatch.setattr(perms, "_plugin_require_permission", cls._rbac_plugin(seen))
+        monkeypatch.setattr(perms, "_rbac_checks_enabled", lambda: True)
+        spec = importlib.util.spec_from_file_location(
+            "approval_requests_rbac_probe", approval_requests.__file__
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def _client(module, user):
+        """Serve the copied router with the session dependencies stubbed."""
+        app = FastAPI()
+        app.include_router(module.router, prefix="/api/v1")
+        app.dependency_overrides[get_current_active_user] = lambda: user
+        # Unbound, so the RBAC query builds without touching a database.
+        app.dependency_overrides[get_db_session] = lambda: Session()
+        app.dependency_overrides[module._async_db_session] = lambda: AsyncMock()
+        # Surface an unhandled error as the 500 a caller would actually see.
+        return TestClient(app, raise_server_exceptions=False)
+
+    def test_rbac_enabled_batch_decide_does_not_500(self, mock_user, monkeypatch):
+        """The permission check gets a sync session, so the route answers 200."""
+        seen: dict = {}
+        module = self._router_with_rbac(monkeypatch, seen)
+        service = AsyncMock()
+        service.get_approval_request.return_value = None
+
+        with patch.object(module, "ApprovalService", return_value=service):
+            with self._client(module, mock_user) as client:
+                response = client.post(
+                    "/api/v1/approval-requests/decide-batch",
+                    json={"ids": [str(uuid.uuid4())], "approved": True},
+                )
+
+        assert response.status_code == 200
+        assert seen["permission"] == "decide_approvals"
+        assert isinstance(seen["db"], Session)
+        assert not isinstance(seen["db"], AsyncSession)
+        # The batch itself still ran: the id simply does not exist.
+        assert response.json()["results"][0]["error"] == "Approval request not found"
+
+    def test_rbac_denial_blocks_the_batch(self, mock_user, monkeypatch):
+        """A missing permission is a 403 and no decision is attempted."""
+        seen: dict = {"deny": True}
+        module = self._router_with_rbac(monkeypatch, seen)
+        service = AsyncMock()
+
+        with patch.object(module, "ApprovalService", return_value=service):
+            with self._client(module, mock_user) as client:
+                response = client.post(
+                    "/api/v1/approval-requests/decide-batch",
+                    json={"ids": [str(uuid.uuid4())], "approved": True},
+                )
+
+        assert response.status_code == 403
+        service.get_approval_request.assert_not_awaited()
+
+    def test_permission_check_runs_off_the_event_loop(self):
+        """FastAPI dispatches a ``def`` dependency on its threadpool.
+
+        That is what keeps the RBAC pool checkout from stalling the loop, the
+        reason the async session is not simply renamed to ``db``.
+        """
+        guard = approval_requests._require_decide_approvals
+
+        assert not asyncio.iscoroutinefunction(guard)
+        assert inspect.signature(guard).parameters["db"].annotation is Session
 
 
 class TestDecideRequestsBatchAgainstPostgres:
