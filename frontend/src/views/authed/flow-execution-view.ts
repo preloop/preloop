@@ -37,6 +37,7 @@ import {
   executionStatusLabel,
   executionStatusVariant,
   formatEstimatedCost,
+  formatTokenCount,
   renderExecutionModel,
   renderExecutionRunner,
   type ExecutionModelSource,
@@ -1659,6 +1660,36 @@ export class FlowExecutionView extends LitElement {
     }
   }
 
+  /**
+   * What makes two gateway rows the same model call.
+   *
+   * The correlation id (or the upstream request id, or the request
+   * fingerprint) identifies one call to a provider, so two rows carrying it
+   * at the same second are one call recorded twice. Without any of those the
+   * fallback is the second it happened plus everything the call measured:
+   * two distinct calls that agree on model, status, tokens, cost and
+   * duration inside the same second are not something a run does.
+   */
+  private getGatewayCallIdentity(event: FlowGatewayEvent): string {
+    const payload = event.payload || {};
+    const second = (event.timestamp || '').slice(0, 19);
+    const correlation =
+      (typeof payload.correlation_id === 'string' && payload.correlation_id) ||
+      (typeof payload.request_id === 'string' && payload.request_id) ||
+      payload.upstream_request_id ||
+      payload.request_fingerprint ||
+      '';
+    if (correlation) return `${correlation}:${second}`;
+    return [
+      second,
+      payload.model_alias ?? payload.requested_model ?? 'no-model',
+      payload.status_code ?? 'no-status',
+      payload.total_tokens ?? 'no-tokens',
+      payload.estimated_cost ?? 'no-cost',
+      payload.duration_ms ?? 'no-duration',
+    ].join(':');
+  }
+
   private getGatewayEventKey(event: FlowGatewayEvent): string {
     const apiUsageId = event.payload?.api_usage_id;
     if (typeof apiUsageId === 'string' && apiUsageId) {
@@ -1828,6 +1859,7 @@ export class FlowExecutionView extends LitElement {
     return html`
       <preloop-gateway-event
         .event=${{ ...event }}
+        hide-timestamp
         @gateway-event-expand=${(e: CustomEvent) => {
           if (e.detail.expanded) {
             this.handleGatewayEventExpand(event.id);
@@ -1997,11 +2029,18 @@ export class FlowExecutionView extends LitElement {
       }
     }
 
+    const seenGatewayCalls = new Set<string>();
     for (const event of this.gatewayEvents) {
       // The gateway-events endpoint returns every log row of the execution,
       // not only the model calls. The non-call rows are the same rows the
       // logs endpoint already gave us, so only model calls earn a card here.
       if (!isModelGatewayCall(event)) continue;
+      // A model call that reached us twice, once from the container stream
+      // and once from its audit row, is one call. Listing it twice made a
+      // run look like it called the model four times when it called twice.
+      const identity = this.getGatewayCallIdentity(event);
+      if (seenGatewayCalls.has(identity)) continue;
+      seenGatewayCalls.add(identity);
       items.push({
         kind: 'gateway',
         key: `gateway-${this.getGatewayEventKey(event)}`,
@@ -2552,10 +2591,17 @@ ${execution.resolved_input_prompt}</pre>
         </div>
         <div class="strip-item">
           <span class="strip-label">Tokens</span>
-          <span class="strip-value" data-testid="strip-tokens"
-            >${
-              this.totalTokens > 0 ? this.totalTokens.toLocaleString() : '—'
-            }</span
+          <!-- Compact at console scale: "1.4M" is the figure to compare,
+               and the exact count stays in the title. -->
+          <span
+            class="strip-value"
+            data-testid="strip-tokens"
+            title=${
+              this.totalTokens > 0
+                ? `${this.totalTokens.toLocaleString()} tokens`
+                : 'No token usage recorded for this run'
+            }
+            >${this.totalTokens > 0 ? formatTokenCount(this.totalTokens) : '—'}</span
           >
         </div>
         <div class="strip-item">

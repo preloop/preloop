@@ -81,6 +81,23 @@ export function formatEstimatedCost(value: number | null | undefined): string {
   })}`;
 }
 
+/**
+ * A token count at console scale.
+ *
+ * `1,353,363` is a number to compare, not to read digit by digit, so at or
+ * above 1000 it renders compact ("1.4M"). The exact figure belongs in a
+ * title, not in the strip.
+ */
+export function formatTokenCount(value: number | null | undefined): string {
+  const amount = Number(value ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) return '0';
+  if (amount < 1000) return String(Math.round(amount));
+  return new Intl.NumberFormat(undefined, {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(amount);
+}
+
 /** Every alias a run used, primary first, from either projected shape. */
 export function executionModels(
   execution: ExecutionModelSource

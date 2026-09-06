@@ -492,7 +492,9 @@ describe('FlowExecutionView', () => {
     expect(content).to.contain('OpenAI');
     expect(content).to.contain('Success');
     expect(content).to.contain('$0.10');
-    expect(content).to.contain('1,234');
+    // The summary is compact; the exact split stays in the detail below it.
+    expect(content).to.contain('1.2K tokens');
+    expect(content).to.contain('1,000');
     expect(content).to.contain('Capture Policy');
     expect(content).to.contain('Conversation Preview');
     expect(content).to.contain('Preview captured');
@@ -726,7 +728,13 @@ describe('FlowExecutionView', () => {
       // Nothing the cards carried was dropped: the timing, the cost, the
       // agent and the execution id all have a place in the row.
       expect(stripValue(element, 'strip-duration')).to.equal('2m 0s');
-      expect(stripValue(element, 'strip-tokens')).to.equal('1,234');
+      // Compact in the strip, exact in the title.
+      expect(stripValue(element, 'strip-tokens')).to.equal('1.2K');
+      expect(
+        element
+          .shadowRoot!.querySelector('[data-testid="strip-tokens"]')
+          ?.getAttribute('title')
+      ).to.equal('1,234 tokens');
       expect(stripValue(element, 'strip-cost')).to.equal('$0.10');
       expect(pageText(element)).to.contain('codex');
       expect(
@@ -1062,6 +1070,53 @@ describe('FlowExecutionView', () => {
           '.timeline-stream preloop-gateway-event'
         ).length
       ).to.equal(1);
+    });
+
+    it('collapses one model call recorded twice into one row', async () => {
+      // The container stream and the audit row describe the same call: same
+      // request id, same second, same tokens. The timeline lists it once.
+      const element = await load('exec-1');
+      const original = (element as any).gatewayEvents[0];
+      (element as any).gatewayEvents = [
+        original,
+        {
+          ...original,
+          id: 'evt-twin',
+          payload: { ...original.payload, api_usage_id: 'usage-2' },
+        },
+      ];
+      await element.updateComplete;
+
+      expect(
+        element.shadowRoot!.querySelectorAll(
+          '.timeline-stream preloop-gateway-event'
+        ).length
+      ).to.equal(1);
+    });
+
+    it('keeps two genuinely different model calls apart', async () => {
+      const element = await load('exec-1');
+      const original = (element as any).gatewayEvents[0];
+      (element as any).gatewayEvents = [
+        original,
+        {
+          ...original,
+          id: 'evt-second',
+          timestamp: '2026-03-09T10:01:05Z',
+          payload: {
+            ...original.payload,
+            api_usage_id: 'usage-2',
+            upstream_request_id: 'req_456',
+          },
+        },
+      ];
+      await element.updateComplete;
+
+      expect(
+        element.shadowRoot!.querySelectorAll(
+          '.timeline-stream preloop-gateway-event'
+        ).length
+      ).to.equal(2);
     });
 
     it('loads full gateway payloads when the transcript is opened', async () => {
