@@ -488,8 +488,19 @@ describe('console-header approval deadlines', () => {
 
   async function mount(): Promise<void> {
     el = await fixture<ConsoleHeader>(html`<console-header></console-header>`);
-    await clock.tickAsync(0);
-    await el.updateComplete;
+    // Fetch + json() are native promises. Flush them without advancing
+    // expiry timers (those are at least 1ms).
+    for (let i = 0; i < 25; i++) {
+      await Promise.resolve();
+      await clock.tickAsync(0);
+      await el.updateComplete;
+      if (approvalReads >= 1) {
+        await Promise.resolve();
+        await clock.tickAsync(0);
+        await el.updateComplete;
+        break;
+      }
+    }
   }
 
   function names(): string[] {
@@ -523,6 +534,7 @@ describe('console-header approval deadlines', () => {
       type: 'approval_created',
       approval_request_id: 'stale',
     });
+    await clock.tickAsync(0);
     await el.updateComplete;
     expect(names()).to.deep.equal(['alive']);
     expect(badge()).to.equal('1');

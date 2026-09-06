@@ -422,7 +422,8 @@ export class ConsoleHeader extends LitElement {
 
   /**
    * Drop expired rows and arm the next deadline after the current update.
-   * Mutating `_pendingApprovals` from willUpdate dirties the same cycle.
+   * Pruning here (rather than in `willUpdate`) avoids mutating
+   * `_pendingApprovals` mid-cycle, which would dirty the same update pass.
    */
   protected updated(changed: PropertyValues): void {
     if (!changed.has('_pendingApprovals')) return;
@@ -616,17 +617,6 @@ export class ConsoleHeader extends LitElement {
     if (notification.href) {
       Router.go(notification.href);
     }
-  }
-
-  /**
-   * Pending approvals that can still be decided.
-   *
-   * The list is filtered when it loads, but a tab left open carries requests
-   * past their expiry, and a bell that counts a dead request sends the
-   * operator to a page where every button is disabled.
-   */
-  private get liveApprovals(): ApprovalRequest[] {
-    return this.unexpiredPendingApprovals();
   }
 
   private get totalNotificationCount(): number {
