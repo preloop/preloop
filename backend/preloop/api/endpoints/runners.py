@@ -379,7 +379,9 @@ async def runner_ws(
                 if execution_id is None or execution_id != runner.current_execution_id:
                     await websocket.send_json({"type": "ack"})
                     continue
-                status, completion_error, result = validate_runner_completion(raw)
+                status, completion_error, result = validate_runner_completion(
+                    raw, leased_job=runner.pending_job or {}
+                )
                 runner.reported_status = status
                 runner.pending_job = None
                 runner.current_execution_id = None

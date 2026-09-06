@@ -177,7 +177,7 @@ async def hydrate_runner_job(db: Session, job: dict[str, Any]) -> dict[str, Any]
 
 
 def validate_runner_completion(
-    message: dict[str, Any],
+    message: dict[str, Any], *, leased_job: dict[str, Any]
 ) -> tuple[str, str | None, dict[str, Any] | None]:
     """Exit zero and an explicit structured verdict are both required for success."""
     from preloop.services.flow_orchestrator import _result_artifact_confirmation
@@ -193,7 +193,10 @@ def validate_runner_completion(
     if status not in {"SUCCEEDED", "FAILED", "STOPPED"}:
         return "FAILED", "Invalid runner completion status", result
     if status == "SUCCEEDED" and (
-        message.get("launch_version") != LAUNCH_VERSION
+        leased_job.get("launch_version") != LAUNCH_VERSION
+        or leased_job.get("agent_type") not in {"codex", "opencode"}
+        or message.get("completion_protocol") != "docker_v1"
+        or message.get("launch_version") != LAUNCH_VERSION
         or type(message.get("exit_code")) is not int
         or message["exit_code"] != 0
         or _result_artifact_confirmation(result) != "success"

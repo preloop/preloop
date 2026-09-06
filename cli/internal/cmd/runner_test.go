@@ -67,6 +67,13 @@ func TestRunnerImageFromJob(t *testing.T) {
 	}
 }
 
+func TestRunnerImageUsesAliasWhenPrimaryIsBlank(t *testing.T) {
+	job := map[string]any{"agent_config": map[string]any{"image": "  ", "docker_image": " example/custom:1 "}}
+	if image := runnerImageFromJob(job); image != "example/custom:1" {
+		t.Fatalf("image=%q", image)
+	}
+}
+
 func TestRunnerJobEnvMatchesHostedContract(t *testing.T) {
 	job := map[string]any{
 		"execution_id":      "exec-1",

@@ -162,7 +162,13 @@ async def test_redelivery_rebuilds_context_with_stored_prompt_and_trigger(monkey
     ],
 )
 def test_false_completion_rejected(message):
-    assert validate_runner_completion(message)[0] == "FAILED"
+    message["completion_protocol"] = "docker_v1"
+    assert (
+        validate_runner_completion(
+            message, leased_job={"launch_version": 1, "agent_type": "codex"}
+        )[0]
+        == "FAILED"
+    )
 
 
 @pytest.mark.parametrize(
@@ -170,7 +176,14 @@ def test_false_completion_rejected(message):
 )
 def test_completed_report_preserved(result):
     assert validate_runner_completion(
-        {"status": "SUCCEEDED", "launch_version": 1, "exit_code": 0, "result": result}
+        {
+            "status": "SUCCEEDED",
+            "launch_version": 1,
+            "completion_protocol": "docker_v1",
+            "exit_code": 0,
+            "result": result,
+        },
+        leased_job={"launch_version": 1, "agent_type": "codex"},
     ) == ("SUCCEEDED", None, result)
 
 
@@ -272,3 +285,24 @@ def test_flow_refresh_bypasses_cached_definition_and_model():
     query = db.query.return_value.filter.return_value
     query.populate_existing.assert_called_once_with()
     query.populate_existing.return_value.options.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "leased_job,protocol",
+    [
+        ({}, "docker_v1"),
+        ({"launch_version": 2, "agent_type": "codex"}, "docker_v1"),
+        ({"launch_version": 1, "agent_type": "unknown"}, "docker_v1"),
+        ({"launch_version": 1, "agent_type": "codex"}, "host_exec"),
+        ({"launch_version": 1, "agent_type": "codex"}, None),
+    ],
+)
+def test_completion_cannot_select_its_own_protocol(leased_job, protocol):
+    message = {
+        "status": "SUCCEEDED",
+        "launch_version": 1,
+        "exit_code": 0,
+        "completion_protocol": protocol,
+        "result": {"status": "success"},
+    }
+    assert validate_runner_completion(message, leased_job=leased_job)[0] == "FAILED"

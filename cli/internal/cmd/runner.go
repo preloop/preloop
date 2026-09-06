@@ -251,13 +251,14 @@ func writeJobOutcome(conn *websocket.Conn, outcome leasedJobOutcome) error {
 		}
 	}
 	return conn.WriteJSON(map[string]any{
-		"type":           "complete",
-		"launch_version": runnerLaunchVersion,
-		"exit_code":      outcome.exitCode,
-		"result":         outcome.result,
-		"execution_id":   outcome.executionID,
-		"status":         outcome.status,
-		"error":          outcome.errMsg,
+		"type":                "complete",
+		"launch_version":      runnerLaunchVersion,
+		"completion_protocol": "docker_v1",
+		"exit_code":           outcome.exitCode,
+		"result":              outcome.result,
+		"execution_id":        outcome.executionID,
+		"status":              outcome.status,
+		"error":               outcome.errMsg,
 	})
 }
 
@@ -734,11 +735,11 @@ func runnerImageFromJob(job map[string]any) string {
 	if cfg == nil {
 		return ""
 	}
-	if image, ok := cfg["image"].(string); ok {
-		return image
+	if image, ok := cfg["image"].(string); ok && strings.TrimSpace(image) != "" {
+		return strings.TrimSpace(image)
 	}
 	if image, ok := cfg["docker_image"].(string); ok {
-		return image
+		return strings.TrimSpace(image)
 	}
 	return ""
 }
