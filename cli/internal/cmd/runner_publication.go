@@ -447,10 +447,9 @@ func (p *runnerPublication) start(outcome leasedJobOutcome) {
 		}
 		// On success run has received the controller ack. Only now may ordinary
 		// completion finalize the execution. Failures never request another lease.
-		select {
-		case p.events <- publicationEvent{outcome: &outcome}:
-		default:
-		}
+		// Block until the session loop accepts this terminal outcome. A
+		// non-blocking send can drop it when the buffered events channel is full.
+		p.events <- publicationEvent{outcome: &outcome}
 	}()
 }
 
@@ -701,6 +700,64 @@ func cleanupPublicationRecovery(now time.Time) error {
 		}
 	}
 	return nil
+}
+
+func retainedPublicationVolumes() map[string]bool {
+	keep := map[string]bool{}
+	root, err := publicationRecoveryRoot()
+	if err != nil {
+		return keep
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return keep
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var record publicationRecovery
+		if json.Unmarshal(data, &record) != nil || !publicationVolumeRE.MatchString(record.Volume) {
+			continue
+		}
+		keep[record.Volume] = true
+	}
+	return keep
+}
+
+// reapOrphanedPublicationRuntimes removes publication containers and unretained
+// volumes left behind when the runner is SIGKILL'd. Named agent containers omit
+// --rm so ownership can be inspected; this startup pass is the bounded
+// replacement for that missing auto-remove. Recovery volumes listed in local
+// metadata are kept so 24-hour retain still works.
+func reapOrphanedPublicationRuntimes() {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	listed, err := publicationDocker(ctx, nil, "ps", "--all", "--quiet", "--no-trunc", "--filter", "label=preloop.publication_execution")
+	if err == nil {
+		for _, id := range splitNonEmptyLines(string(listed)) {
+			if publicationDigestRE.MatchString(id) {
+				_, _ = publicationDocker(ctx, nil, "rm", "--force", id)
+			}
+		}
+	}
+	_ = cleanupPublicationRecovery(time.Now())
+	keep := retainedPublicationVolumes()
+	volumes, err := publicationDocker(ctx, nil, "volume", "ls", "--quiet", "--filter", "label=preloop.publication_execution")
+	if err != nil {
+		return
+	}
+	for _, volume := range splitNonEmptyLines(string(volumes)) {
+		if keep[volume] || !publicationVolumeRE.MatchString(volume) {
+			continue
+		}
+		p := runnerPublication{}
+		_ = p.removeVolume(volume)
+	}
 }
 
 func publicationPublishInput(binding, lease map[string]any, digest string) ([]byte, error) {

@@ -69,7 +69,7 @@ def read_result_metadata(raw: bytes | None) -> tuple[str, str, list[str]]:
         data = json.loads(raw)
         if not isinstance(data, dict):
             raise ValueError("not an object")
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return (
             "",
             "",

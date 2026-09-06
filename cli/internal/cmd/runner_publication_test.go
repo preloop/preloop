@@ -903,6 +903,122 @@ func TestPublicationHaltRetainsStoppedOutcome(t *testing.T) {
 	}
 }
 
+func TestIsolatedPublicationHostExecError(t *testing.T) {
+	job := testPublicationJob()
+	if err := isolatedPublicationHostExecError(job); err != nil {
+		t.Fatal(err)
+	}
+	job["host_exec_profile"] = "native"
+	if err := isolatedPublicationHostExecError(job); err == nil || !strings.Contains(err.Error(), "native host execution cannot use isolated publication") {
+		t.Fatalf("err = %v", err)
+	}
+	delete(job, "publication")
+	if err := isolatedPublicationHostExecError(job); err != nil {
+		t.Fatal(err)
+	}
+	job["publication"] = nil
+	if err := isolatedPublicationHostExecError(job); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBeginLeasedJobRejectsHostExecIsolatedPublication(t *testing.T) {
+	job := testPublicationJob()
+	job["host_exec_profile"] = "native"
+	var last *leasedJobOutcome
+	var running *exec.Cmd
+	var execID string
+	var jobDone <-chan leasedJobOutcome
+	halted := atomic.Bool{}
+	err := beginLeasedJob(nil, job, false, io.Discard, &running, &execID, &jobDone, &halted, &last, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running != nil || execID != "" || jobDone != nil {
+		t.Fatal("host-exec routing started an isolated publication job")
+	}
+	if last == nil || last.status != "FAILED" || !strings.Contains(last.errMsg, "native host execution cannot use isolated publication") {
+		t.Fatalf("outcome = %#v", last)
+	}
+}
+
+func TestPublicationTerminalOutcomeIsNotDroppedWhenEventsBuffered(t *testing.T) {
+	p, _ := setupPublication(t)
+	p.cancel()
+	p.events <- publicationEvent{message: map[string]any{"type": "stale-one"}}
+	p.events <- publicationEvent{message: map[string]any{"type": "stale-two"}}
+	p.start(leasedJobOutcome{executionID: p.executionID, status: "FAILED", errMsg: "agent failed"})
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-p.events:
+			if event.outcome != nil {
+				if event.outcome.status != "FAILED" || event.outcome.publicationAcknowledged {
+					t.Fatalf("outcome = %#v", event.outcome)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("terminal publication outcome was dropped")
+		}
+	}
+}
+
+func TestReapOrphanedPublicationRuntimesRemovesContainersAndUnretainedVolumes(t *testing.T) {
+	root := t.TempDir()
+	priorRoot := publicationRecoveryRoot
+	publicationRecoveryRoot = func() (string, error) { return root, nil }
+	t.Cleanup(func() { publicationRecoveryRoot = priorRoot })
+
+	orphanID := strings.Repeat("a", 64)
+	kept := "preloop-pub-" + strings.Repeat("b", 32) + "-export"
+	orphanVol := "preloop-pub-" + strings.Repeat("c", 32) + "-frozen"
+	record, err := json.Marshal(publicationRecovery{
+		ExecutionID: "12345678-1234-1234-1234-123456789012",
+		Volume:      kept,
+		ExpiresAt:   time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, kept+".json"), record, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var removedIDs []string
+	var removedVolumes []string
+	prior := publicationDocker
+	publicationDocker = func(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+		switch {
+		case args[0] == "ps" && args[len(args)-1] == "label=preloop.publication_execution":
+			return []byte(orphanID), nil
+		case args[0] == "rm":
+			removedIDs = append(removedIDs, args[len(args)-1])
+			return nil, nil
+		case args[0] == "volume" && args[1] == "ls":
+			return []byte(kept + "\n" + orphanVol), nil
+		case args[0] == "volume" && args[1] == "inspect":
+			return json.Marshal(map[string]string{"preloop.publication_execution": "12345678-1234-1234-1234-123456789012"})
+		case args[0] == "ps" && strings.HasPrefix(args[len(args)-1], "volume="):
+			return nil, nil
+		case args[0] == "volume" && args[1] == "rm":
+			removedVolumes = append(removedVolumes, args[2])
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected docker args %v", args)
+		}
+	}
+	t.Cleanup(func() { publicationDocker = prior })
+
+	reapOrphanedPublicationRuntimes()
+	if len(removedIDs) != 1 || removedIDs[0] != orphanID {
+		t.Fatalf("containers removed = %v", removedIDs)
+	}
+	if len(removedVolumes) != 1 || removedVolumes[0] != orphanVol {
+		t.Fatalf("volumes removed = %v", removedVolumes)
+	}
+}
+
 func TestPublicationConsumesPythonControllerProtocolFixture(t *testing.T) {
 	raw, err := os.ReadFile("../../../backend/tests/fixtures/private_publication_protocol.json")
 	if err != nil {

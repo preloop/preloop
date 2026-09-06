@@ -31,9 +31,11 @@ from preloop.services.trusted_publisher import (
     read_publication_bundle,
 )
 from preloop.utils.pr_metadata import (
+    MAX_ARTIFACT_BYTES,
     PROVENANCE_START,
     PublicationRecord,
     discover_template,
+    read_result_metadata,
     select_metadata,
     upsert_provenance,
 )
@@ -130,6 +132,32 @@ def test_invalid_metadata_falls_back_visibly(raw: bytes | None) -> None:
     assert title == "Commit title"
     assert "## Summary" in body and "No test evidence supplied" in body
     assert warnings
+
+
+def test_deeply_nested_metadata_falls_back_on_recursion_error() -> None:
+    nested = "0"
+    for _ in range(4000):
+        nested = "[" + nested + "]"
+    raw = nested.encode()
+    assert len(raw) < MAX_ARTIFACT_BYTES
+    title, body, warnings = select_metadata(raw, commit_title="Commit title")
+    assert title == "Commit title"
+    assert warnings
+
+
+def test_json_loads_recursion_error_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    def explode(_raw: Any) -> Any:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr("preloop.utils.pr_metadata.json.loads", explode)
+    title, body, warnings = read_result_metadata(
+        b'{"pr_title":"Deep","pr_body":"Nested"}'
+    )
+    assert title == ""
+    assert body == ""
+    assert warnings == [
+        "PR metadata artifact invalid; using configured/commit fallback"
+    ]
 
 
 @pytest.mark.parametrize(

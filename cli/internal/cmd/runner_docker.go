@@ -61,6 +61,8 @@ func dockerRunArgs(image string, env map[string]string, opts runnerDockerOpts) [
 	args := []string{"run", "--rm"}
 	if opts.Publication != nil {
 		p := opts.Publication
+		// Named publication agents omit --rm so run() can inspect ownership and
+		// prove removal. SIGKILL leftovers are reaped at runner startup.
 		args = []string{"run", "--log-driver", "local", "--log-opt", "max-size=1m", "--log-opt", "max-file=2", "--name", p.agentName, "--label", "preloop.publication_execution=" + p.executionID, "--label", "preloop.publication_nonce=" + p.spec.Nonce, "--mount", "type=volume,src=" + p.exportVolume + ",dst=/preloop-publication-output", "--cap-drop=ALL", "--security-opt=no-new-privileges"}
 	}
 	if opts.Launch && !opts.PreserveEntrypoint {

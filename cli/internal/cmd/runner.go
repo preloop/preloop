@@ -162,6 +162,8 @@ func runRunnerFg(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Runner %s (%s) connecting...\n", state.Name, state.ID)
 
+	reapOrphanedPublicationRuntimes()
+
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
 	return runnerForegroundLoop(state, interrupt, cmd.OutOrStdout())
@@ -633,6 +635,11 @@ func beginLeasedJob(
 	if executionID == "" {
 		return fmt.Errorf("job missing execution_id")
 	}
+	if err := isolatedPublicationHostExecError(job); err != nil {
+		outcome := leasedJobOutcome{executionID: executionID, status: "FAILED", errMsg: err.Error()}
+		rememberOutcome(lastComplete, outcome)
+		return writeJobOutcome(conn, outcome)
+	}
 	if halted != nil {
 		halted.Store(false)
 	}
@@ -839,6 +846,17 @@ func waitDockerJob(cmd *exec.Cmd, executionID string, buf interface{ String() st
 		outcome.status = "FAILED"
 	}
 	return outcome
+}
+
+func isolatedPublicationHostExecError(job map[string]any) error {
+	if jobHostExecProfileName(job) == "" {
+		return nil
+	}
+	raw, exists := job["publication"]
+	if !exists || raw == nil {
+		return nil
+	}
+	return errors.New("native host execution cannot use isolated publication")
 }
 
 func splitNonEmptyLines(output string) []string {
