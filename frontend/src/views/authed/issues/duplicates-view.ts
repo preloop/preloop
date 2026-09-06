@@ -20,10 +20,9 @@ export class DuplicatesView extends LitElement {
       margin-bottom: var(--sl-spacing-large);
     }
 
-    .container {
-      max-width: var(--console-container-max-width);
-      padding: var(--sl-spacing-x-large);
-    }
+    /* No page geometry here: the shell owns the width and the side inset
+       (styles/console-styles.css, "The page box"), so .container carries no
+       rule of its own. */
   `;
 
   @state()

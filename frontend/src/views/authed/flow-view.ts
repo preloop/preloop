@@ -108,11 +108,10 @@ export class FlowView extends LitElement {
     unsafeCSS(consoleStyles),
     unsafeCSS(executionSubjectCss),
     css`
+      /* No page geometry here: the shell owns the width and the side inset
+         (styles/console-styles.css, "The page box"). */
       :host {
         display: block;
-        padding: var(--sl-spacing-large);
-        max-width: 80rem;
-        margin: 0 auto;
       }
       /* The subject column takes the slack: fixed layout plus a zero max
          width makes the cell shrink to its share and ellipsise inside it,

@@ -148,11 +148,10 @@ export class ApprovalView extends AuthedElement {
   static styles = [
     unsafeCSS(consoleStyles),
     css`
+      /* No page geometry here: the shell owns the width and the side inset
+         (styles/console-styles.css, "The page box"). */
       :host {
         display: block;
-        padding: 2rem;
-        max-width: 840px;
-        margin: 0 auto;
       }
 
       .header {
@@ -299,8 +298,8 @@ export class ApprovalView extends AuthedElement {
         flex-wrap: wrap;
         align-items: center;
         gap: var(--sl-spacing-medium);
-        margin: var(--sl-spacing-large) -2rem 0 -2rem;
-        padding: var(--sl-spacing-medium) 2rem;
+        margin: var(--sl-spacing-large) 0 0;
+        padding: var(--sl-spacing-medium) 0;
         background: var(--console-surface, var(--sl-color-neutral-0));
         border-top: 1px solid
           var(--console-hairline, var(--sl-color-neutral-200));
@@ -394,17 +393,6 @@ export class ApprovalView extends AuthedElement {
       }
 
       @media (max-width: 640px) {
-        :host {
-          padding: 1rem;
-        }
-
-        .decision-bar {
-          margin-left: -1rem;
-          margin-right: -1rem;
-          padding-left: 1rem;
-          padding-right: 1rem;
-        }
-
         .decision-buttons {
           flex: 1 1 100%;
         }

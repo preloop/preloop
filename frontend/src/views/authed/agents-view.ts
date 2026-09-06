@@ -486,15 +486,23 @@ export class AgentsView extends LitElement {
            stretch into two half-screen banners. */
         grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
         gap: var(--sl-spacing-large);
-        padding: 1rem 1rem 0 2rem;
+        /* Same side inset as the header band above it. */
+        padding: 1rem var(--console-page-padding-x) 0;
       }
       /* --- List view --- */
+      /* The canvas is full bleed, so this page pays its own side inset with
+         .console-page (styles/console-styles.css, "The page box"). Extra
+         block padding is all these wrappers add. */
       .list-bounds {
-        width: 100%;
-        max-width: 80rem;
-        margin: 0 auto;
-        padding: 0 1rem 2rem 2rem;
-        box-sizing: border-box;
+        padding-block: 0 2rem;
+      }
+      .content-bounds {
+        padding-block: 1rem 0;
+      }
+      @media (max-width: 768px) {
+        .cards {
+          padding-inline: var(--console-page-padding-x-compact);
+        }
       }
       /* The table sizes itself from the colgroup, not from its content: an
          agent named after a container hash used to push the kebab column past
@@ -970,13 +978,7 @@ export class AgentsView extends LitElement {
         margin: 0 auto;
         padding: 0 2rem;
       }
-      .content-bounds {
-        width: 100%;
-        max-width: 80rem;
-        margin: 0 auto;
-        padding: 1rem 1rem 0 2rem;
-        box-sizing: border-box;
-      }
+      /* .content-bounds is the page box, declared with .list-bounds above. */
       .page-canvas-wrapper .content-bounds {
         /* Any overrides for canvas wrapper */
       }
@@ -3575,7 +3577,7 @@ export class AgentsView extends LitElement {
 
     if (rows.length === 0) {
       return html`
-        <div class="list-bounds">
+        <div class="list-bounds console-page">
           <div class="empty-state">
             ${
               this.loading
@@ -3588,7 +3590,7 @@ export class AgentsView extends LitElement {
     }
 
     return html`
-      <div class="list-bounds">
+      <div class="list-bounds console-page">
         <sl-card class="table-card">
           <div class="table-scroll">
             <table
@@ -4646,7 +4648,7 @@ export class AgentsView extends LitElement {
           ></preloop-agent-deployer>
         </sl-dialog>
 
-        <div class="content-bounds">
+        <div class="content-bounds console-page">
           <view-header
             headerText="Agents"
             description="Agents connected to Preloop: their gateway credentials, MCP access, and live status. Onboard agents you already run with the CLI, or deploy new ones."
