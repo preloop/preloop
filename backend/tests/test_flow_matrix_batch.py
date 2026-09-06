@@ -122,7 +122,7 @@ class TestTriggerFlowMatrixService:
         }
         assert (
             by_index[0].trigger_event_details[MATRIX_OVERRIDES_KEY].get("agent_type")
-            is None
+            == test_flow.agent_type
         )
         assert (
             by_index[1].trigger_event_details[MATRIX_OVERRIDES_KEY]["agent_type"]
@@ -344,7 +344,7 @@ class TestBatchExecutionsEndpoint:
         assert len(executions) == 2
         # Sorted by matrix index; cells are self-describing.
         assert executions[0]["matrix"]["index"] == 0
-        assert executions[0]["matrix"]["agent_type"] is None
+        assert executions[0]["matrix"]["agent_type"] == test_flow.agent_type
         assert executions[1]["matrix"]["index"] == 1
         assert executions[1]["matrix"]["agent_type"] == "opencode"
         assert executions[1]["matrix"]["ai_model_id"] == str(test_ai_model.id)
