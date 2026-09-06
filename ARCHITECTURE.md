@@ -69,4 +69,4 @@ graph LR
 | [Realtime](docs/architecture/realtime.md) | Unified WebSocket, MessageRouter topics, and account-scoped pub/sub. |
 | [Security](docs/architecture/security.md) | Auth and tenancy, redaction, secret custody, security-screen scoring, and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
-| [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, eval artifacts, and evidence packs. |
+| [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, label-based model routing, eval artifacts, and evidence packs. |

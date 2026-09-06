@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-flow label-based model routing**: a flow can store optional ordered
+  rules in `agent_config.model_routing` that map current issue labels
+  (`any` / `all`) to an account-owned model and compatible harness. The
+  flow's selected model and harness remain the default. The chosen rule
+  or default is recorded on the execution and pinned for retries and
+  native continuation from the persisted source execution; webhook
+  bodies, tracker payloads, and authenticated trigger JSON (including
+  planted `_resume` / `_matrix` / `_model_routing`) are ignored. Guide:
+  `docs/guide/flows/model-routing.md`.
+
 - **Publication verification gate**: implementation flows can set
   `git_clone_config.verification` (`mode: gate` plus a trusted test
   profile). The runner re-runs required checks on the exact commit about

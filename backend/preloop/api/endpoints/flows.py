@@ -19,7 +19,6 @@ from preloop.models.crud.flow import CRUDFlow
 from preloop.models.crud.flow_execution import CRUDFlowExecution
 from preloop.models.db.session import get_db_session as get_db
 from preloop.api.auth import get_current_active_user
-from preloop.models.models.ai_model import AIModel
 from preloop.models.models.user import User
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
 from preloop.services.execution_metrics import project_execution_totals
@@ -33,6 +32,11 @@ from preloop.services.runner_service import (
     pool_from_session_reference,
     resolve_runner_pool,
     runner_id_from_session_reference,
+)
+from preloop.services.model_routing import (
+    ModelRoutingError,
+    model_usable_for_agent as _model_usable_for_agent,
+    validate_stored_model_routing,
 )
 
 
@@ -137,6 +141,11 @@ def create_flow(
         flow_in.prompt_customized = False
         flow_in.tools_customized = False
         flow_in.preset_update_available = False
+
+    try:
+        validate_stored_model_routing(db, flow_in.agent_config, current_user.account_id)
+    except ModelRoutingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     flow = crud_flow.create(db=db, flow_in=flow_in, account_id=current_user.account_id)
 
@@ -254,38 +263,6 @@ def read_presets(
     Returns global presets (account_id=None) plus any account-specific presets.
     """
     return crud_flow.get_presets_for_account(db, account_id=current_user.account_id)
-
-
-def _model_has_credential_source(model: AIModel) -> bool:
-    """True when an AI model row has some way to authenticate at run time."""
-    if model.credentials_secret_id or model.api_key:
-        return True
-    meta_data = model.meta_data if isinstance(model.meta_data, dict) else {}
-    gateway = meta_data.get("gateway")
-    return bool(isinstance(gateway, dict) and gateway.get("enabled"))
-
-
-def _model_usable_for_agent(model: AIModel, agent_type: str) -> bool:
-    """True when the agent harness can actually reach this model.
-
-    The codex harness talks to OpenAI directly, or to any other provider only
-    through an explicit endpoint (custom provider / gateway); a model row
-    without either fails inside the container. Other harnesses take the
-    endpoint from the model row as-is, so the credential check suffices.
-    """
-    if not _model_has_credential_source(model):
-        return False
-    if getattr(model, "model_kind", "llm") != "llm":
-        return False
-    if (agent_type or "").lower() == "codex":
-        provider = (model.provider_name or "").strip().lower()
-        if provider in ("openai", ""):
-            return True
-        meta_data = model.meta_data if isinstance(model.meta_data, dict) else {}
-        gateway = meta_data.get("gateway")
-        gateway_enabled = isinstance(gateway, dict) and gateway.get("enabled")
-        return bool(model.api_endpoint or gateway_enabled)
-    return True
 
 
 def _resolve_clone_model_binding(
@@ -1416,26 +1393,27 @@ async def trigger_flow_execution(
 
     trigger_service = FlowTriggerService(db)
 
-    if matrix is not None:
-        validated_matrix = _validate_matrix(
-            db, matrix, account_id=current_user.account_id
-        )
-        return await trigger_service.trigger_flow_matrix(
+    try:
+        if matrix is not None:
+            validated_matrix = _validate_matrix(
+                db, matrix, account_id=current_user.account_id
+            )
+            return await trigger_service.trigger_flow_matrix(
+                flow_id=flow_id,
+                matrix=validated_matrix,
+                test_mode=True,
+                trigger_event_data=trigger_event_data,
+                triggered_by=_display_name(current_user),
+            )
+
+        return await trigger_service.trigger_flow(
             flow_id=flow_id,
-            matrix=validated_matrix,
             test_mode=True,
             trigger_event_data=trigger_event_data,
             triggered_by=_display_name(current_user),
         )
-
-    result = await trigger_service.trigger_flow(
-        flow_id=flow_id,
-        test_mode=True,
-        trigger_event_data=trigger_event_data,
-        triggered_by=_display_name(current_user),
-    )
-
-    return result
+    except ModelRoutingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/flows/executions/{execution_id}/retry")
@@ -1486,15 +1464,16 @@ async def retry_flow_execution(
     from preloop.services.flow_trigger_service import FlowTriggerService
 
     trigger_service = FlowTriggerService(db)
-    result = await trigger_service.trigger_flow(
-        flow_id=original.flow_id,
-        test_mode=False,
-        trigger_event_data=original.trigger_event_details,
-        retry_of_execution_id=original.id,
-        triggered_by=_display_name(current_user),
-    )
-
-    return result
+    try:
+        return await trigger_service.trigger_flow(
+            flow_id=original.flow_id,
+            test_mode=False,
+            trigger_event_data=original.trigger_event_details,
+            retry_of_execution_id=original.id,
+            triggered_by=_display_name(current_user),
+        )
+    except ModelRoutingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/flows/{flow_id}", response_model=schemas.FlowResponse)
@@ -1632,6 +1611,14 @@ def update_flow(
                 flow_in.tools_customized = True
                 # Clear update notification since they're making their own changes
                 flow_in.preset_update_available = False
+
+    if flow_in.agent_config is not None:
+        try:
+            validate_stored_model_routing(
+                db, flow_in.agent_config, current_user.account_id
+            )
+        except ModelRoutingError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     old_enabled = flow.is_enabled
     flow = crud_flow.update(
@@ -1977,6 +1964,8 @@ async def trigger_flow_via_webhook(
             test_mode=False,
             trigger_event_data=event_data,
         )
+    except ModelRoutingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FlowDispatchError as e:
         # The execution row was committed before dispatch failed: report 202
         # with the execution id so callers can poll, and do NOT claim that no

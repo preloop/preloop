@@ -112,6 +112,40 @@ export class PreloopFlowForm extends LitElement {
         color: var(--sl-color-neutral-600);
         font-size: var(--sl-font-size-small);
       }
+
+      .routing-help {
+        margin: 0 0 var(--sl-spacing-medium) 0;
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+      }
+
+      .routing-rules {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-medium);
+        margin-bottom: var(--sl-spacing-medium);
+      }
+
+      .routing-rule {
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        padding: var(--sl-spacing-medium);
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-small);
+      }
+
+      .routing-rule-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sl-spacing-small);
+      }
+
+      .routing-rule-actions {
+        display: flex;
+        gap: var(--sl-spacing-2x-small);
+      }
     `,
   ];
 
@@ -156,6 +190,15 @@ export class PreloopFlowForm extends LitElement {
 
   @state()
   private formError: string | null = null;
+
+  @state()
+  private routingRules: Array<{
+    id: string;
+    anyLabels: string;
+    allLabels: string;
+    ai_model_id: string;
+    agent_type: string;
+  }> = [];
 
   @state()
   private customEventType = '';
@@ -359,6 +402,7 @@ export class PreloopFlowForm extends LitElement {
           this.flowExecutionPath = 'persistent';
           this.targetAgentId = cfg.target_agent_id || '';
         }
+        this.syncRoutingRulesFromConfig(cfg);
       }
 
       // Determine trigger type and load tracker scope data
@@ -662,17 +706,7 @@ export class PreloopFlowForm extends LitElement {
         description: this.flow.description || '',
         prompt_template: this.flow.prompt_template || '',
         agent_type: this.flow.agent_type || 'codex',
-        agent_config:
-          this.longRunningAgents.length > 0
-            ? {
-                ...(this.flow.agent_config || {}),
-                execution_path: this.flowExecutionPath,
-                target_agent_id:
-                  this.flowExecutionPath === 'persistent'
-                    ? this.targetAgentId
-                    : undefined,
-              }
-            : this.flow.agent_config || {},
+        agent_config: this.buildAgentConfig(),
         allowed_mcp_servers: this.flow.allowed_mcp_servers || ['preloop-mcp'],
         allowed_mcp_tools: this.flow.allowed_mcp_tools || [],
         ai_model_id: this.flow.ai_model_id || undefined,
@@ -722,6 +756,271 @@ export class PreloopFlowForm extends LitElement {
     } finally {
       this.isSaving = false;
     }
+  }
+
+  private parseAgentConfig(raw: unknown): Record<string, unknown> {
+    if (!raw) {
+      return {};
+    }
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+      } catch {
+        return {};
+      }
+    }
+    return typeof raw === 'object'
+      ? { ...(raw as Record<string, unknown>) }
+      : {};
+  }
+
+  private splitLabelList(value: string): string[] {
+    return value
+      .split(',')
+      .map((label) => label.trim())
+      .filter((label) => label.length > 0);
+  }
+
+  private syncRoutingRulesFromConfig(config: unknown) {
+    const cfg =
+      config && typeof config === 'object'
+        ? (config as Record<string, unknown>)
+        : {};
+    const routing = cfg.model_routing as
+      { rules?: Array<Record<string, unknown>> } | undefined;
+    const rules = Array.isArray(routing?.rules) ? routing.rules : [];
+    this.routingRules = rules.map((rule, index) => {
+      const labels =
+        rule.labels && typeof rule.labels === 'object'
+          ? (rule.labels as { any?: string[]; all?: string[] })
+          : {};
+      return {
+        id:
+          typeof rule.id === 'string' && rule.id
+            ? rule.id
+            : `rule-${index + 1}`,
+        anyLabels: Array.isArray(labels.any) ? labels.any.join(', ') : '',
+        allLabels: Array.isArray(labels.all) ? labels.all.join(', ') : '',
+        ai_model_id:
+          typeof rule.ai_model_id === 'string' ? rule.ai_model_id : '',
+        agent_type:
+          typeof rule.agent_type === 'string' && rule.agent_type
+            ? rule.agent_type
+            : this.flow.agent_type || 'codex',
+      };
+    });
+  }
+
+  private normalizedRoutingRules() {
+    return this.routingRules
+      .map((rule) => {
+        const anyLabels = this.splitLabelList(rule.anyLabels);
+        const allLabels = this.splitLabelList(rule.allLabels);
+        const labels: { any?: string[]; all?: string[] } = {};
+        if (anyLabels.length) {
+          labels.any = anyLabels;
+        }
+        if (allLabels.length) {
+          labels.all = allLabels;
+        }
+        return {
+          id: rule.id,
+          labels,
+          ai_model_id: rule.ai_model_id,
+          agent_type: rule.agent_type,
+        };
+      })
+      .filter(
+        (rule) =>
+          rule.ai_model_id &&
+          rule.agent_type &&
+          ((rule.labels.any && rule.labels.any.length > 0) ||
+            (rule.labels.all && rule.labels.all.length > 0))
+      );
+  }
+
+  private buildAgentConfig(): Record<string, unknown> {
+    const config = this.parseAgentConfig(this.flow.agent_config);
+    if (this.longRunningAgents.length > 0) {
+      config.execution_path = this.flowExecutionPath;
+      config.target_agent_id =
+        this.flowExecutionPath === 'persistent'
+          ? this.targetAgentId
+          : undefined;
+    }
+    const rules = this.normalizedRoutingRules();
+    if (rules.length > 0) {
+      config.model_routing = { version: 1, rules };
+    } else {
+      delete config.model_routing;
+    }
+    return config;
+  }
+
+  private addRoutingRule() {
+    this.routingRules = [
+      ...this.routingRules,
+      {
+        id: `rule-${Date.now().toString(36)}`,
+        anyLabels: '',
+        allLabels: '',
+        ai_model_id: this.flow.ai_model_id || '',
+        agent_type: this.flow.agent_type || 'codex',
+      },
+    ];
+  }
+
+  private removeRoutingRule(index: number) {
+    this.routingRules = this.routingRules.filter((_, i) => i !== index);
+  }
+
+  private moveRoutingRule(index: number, delta: number) {
+    const target = index + delta;
+    if (target < 0 || target >= this.routingRules.length) {
+      return;
+    }
+    const rules = [...this.routingRules];
+    const [moved] = rules.splice(index, 1);
+    rules.splice(target, 0, moved);
+    this.routingRules = rules;
+  }
+
+  private updateRoutingRule(
+    index: number,
+    field: 'id' | 'anyLabels' | 'allLabels' | 'ai_model_id' | 'agent_type',
+    value: string
+  ) {
+    this.routingRules = this.routingRules.map((rule, i) =>
+      i === index ? { ...rule, [field]: value } : rule
+    );
+  }
+
+  private renderModelRoutingEditor(
+    selectableModels: Array<{ id: string; name: string }>
+  ) {
+    return html`
+      <div data-routing-editor>
+        <h5
+          style="font-weight: 600; color: var(--sl-color-neutral-700); margin: var(--sl-spacing-medium) 0 var(--sl-spacing-x-small) 0;"
+        >
+          Model routing rules
+        </h5>
+        <p class="routing-help">
+          First matching rule selects the model and harness for that execution
+          from the issue's current labels. If none match, this flow's selected
+          model and harness above are used. Rules do not swap the model
+          mid-conversation.
+        </p>
+        <div class="routing-rules">
+          ${this.routingRules.map(
+            (rule, index) => html`
+              <div class="routing-rule" data-routing-rule=${rule.id}>
+                <div class="routing-rule-header">
+                  <sl-input
+                    label="Rule id"
+                    size="small"
+                    .value=${rule.id}
+                    @sl-input=${(e: Event) =>
+                      this.updateRoutingRule(
+                        index,
+                        'id',
+                        (e.target as HTMLInputElement).value
+                      )}
+                    help-text="Stable id recorded on the execution"
+                  ></sl-input>
+                  <div class="routing-rule-actions">
+                    <sl-button
+                      size="small"
+                      variant="text"
+                      ?disabled=${index === 0}
+                      @click=${() => this.moveRoutingRule(index, -1)}
+                    >
+                      Up
+                    </sl-button>
+                    <sl-button
+                      size="small"
+                      variant="text"
+                      ?disabled=${index === this.routingRules.length - 1}
+                      @click=${() => this.moveRoutingRule(index, 1)}
+                    >
+                      Down
+                    </sl-button>
+                    <sl-button
+                      size="small"
+                      variant="text"
+                      @click=${() => this.removeRoutingRule(index)}
+                    >
+                      Remove
+                    </sl-button>
+                  </div>
+                </div>
+                <sl-input
+                  label="Match any of these labels"
+                  placeholder="e.g. documentation, docs"
+                  .value=${rule.anyLabels}
+                  @sl-input=${(e: Event) =>
+                    this.updateRoutingRule(
+                      index,
+                      'anyLabels',
+                      (e.target as HTMLInputElement).value
+                    )}
+                  help-text="Comma-separated. Matches if at least one label is present."
+                ></sl-input>
+                <sl-input
+                  label="Match all of these labels"
+                  placeholder="e.g. bug, backend"
+                  .value=${rule.allLabels}
+                  @sl-input=${(e: Event) =>
+                    this.updateRoutingRule(
+                      index,
+                      'allLabels',
+                      (e.target as HTMLInputElement).value
+                    )}
+                  help-text="Comma-separated. Matches only if every label is present."
+                ></sl-input>
+                <sl-select
+                  label="Harness"
+                  .value=${rule.agent_type || 'codex'}
+                  @sl-change=${(e: Event) =>
+                    this.updateRoutingRule(
+                      index,
+                      'agent_type',
+                      (e.target as HTMLSelectElement).value
+                    )}
+                >
+                  <sl-option value="codex">Codex CLI</sl-option>
+                  <sl-option value="gemini">Gemini CLI</sl-option>
+                  <sl-option value="opencode">OpenCode</sl-option>
+                </sl-select>
+                <sl-select
+                  label="Model"
+                  placeholder="Select AI model"
+                  .value=${rule.ai_model_id || ''}
+                  @sl-change=${(e: Event) =>
+                    this.updateRoutingRule(
+                      index,
+                      'ai_model_id',
+                      (e.target as HTMLSelectElement).value
+                    )}
+                >
+                  ${selectableModels.map(
+                    (m) => html`<sl-option .value=${m.id}>${m.name}</sl-option>`
+                  )}
+                </sl-select>
+              </div>
+            `
+          )}
+        </div>
+        <sl-button
+          size="small"
+          data-add-routing-rule
+          @click=${() => this.addRoutingRule()}
+        >
+          Add rule
+        </sl-button>
+      </div>
+    `;
   }
 
   private normalizedFlowRunnerPool(): string | null {
@@ -909,6 +1208,7 @@ export class PreloopFlowForm extends LitElement {
       is_enabled: true,
     };
     this.triggerType = 'webhook';
+    this.routingRules = [];
     this.capturePresetSnapshot();
   }
 
@@ -940,6 +1240,7 @@ export class PreloopFlowForm extends LitElement {
       custom_commands: preset.custom_commands,
       is_enabled: true,
     };
+    this.syncRoutingRulesFromConfig(preset.agent_config);
     this.sourcePresetId = preset.id;
     await this._autoPopulatePresetFields();
     this.capturePresetSnapshot();
@@ -1783,6 +2084,7 @@ export class PreloopFlowForm extends LitElement {
             </sl-button>
           </div>
 
+          ${this.renderModelRoutingEditor(selectableModels)}
           ${this.renderRunnerPoolField()}
 
           <sl-textarea
