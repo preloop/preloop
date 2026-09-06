@@ -77,8 +77,11 @@ def resolve_profile(
         return None
     if not isinstance(name, str) or not settings.flow_environment_profiles_file:
         raise ValueError("environment_profile_not_approved")
-    registry = json.loads(Path(settings.flow_environment_profiles_file).read_text())
-    if name not in registry:
+    try:
+        registry = json.loads(Path(settings.flow_environment_profiles_file).read_text())
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        raise ValueError("environment_profile_not_approved") from None
+    if not isinstance(registry, dict) or name not in registry:
         raise ValueError("environment_profile_not_approved")
     profile = EnvironmentProfile.model_validate(registry[name])
     if profile.harness != agent_type:

@@ -491,7 +491,9 @@ class TestQueueOneFollowUp:
             def __init__(self, db):
                 self.db = db
 
-            async def _start_flow_execution(self, *, flow, event_data, nats_client):
+            async def _start_flow_execution(
+                self, *, flow, event_data, nats_client, source_execution=None
+            ):
                 started.append(event_data)
 
         monkeypatch.setattr(
@@ -537,7 +539,9 @@ class TestQueueOneFollowUp:
             def __init__(self, db):
                 self.db = db
 
-            async def _start_flow_execution(self, *, flow, event_data, nats_client):
+            async def _start_flow_execution(
+                self, *, flow, event_data, nats_client, source_execution=None
+            ):
                 started.append(event_data)
 
         monkeypatch.setattr(
