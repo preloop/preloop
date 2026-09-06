@@ -532,6 +532,9 @@ export class ApprovalsView extends AuthedElement {
   /** Only waiting, non-question rows can be decided from the keyboard. */
   private canDecide(request: ApprovalRequest): boolean {
     if (this.confirming) return false;
+    // The buttons go disabled while a decision is in flight; the keys have to
+    // do the same, or two quick presses POST the same decision twice.
+    if (this.decidingId) return false;
     if (this.isQuestion(request)) return false;
     return this.waitingRequests.some((waiting) => waiting.id === request.id);
   }

@@ -394,6 +394,30 @@ describe('ApprovalsView', () => {
       await waitUntil(() => !!decisionCall('approve'), 'no approve call');
     });
 
+    it('ignores a second a while the first decision is in flight', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
+      ]);
+
+      await press(element, 'j');
+      // The Approve button is disabled while the POST is out; the key has to
+      // behave the same, or an impatient double tap decides twice.
+      const first = press(element, 'a');
+      const second = press(element, 'a');
+      await Promise.all([first, second]);
+      await waitUntil(() => !!decisionCall('approve'), 'no approve call');
+
+      const approveCalls = fetchStub
+        .getCalls()
+        .filter(
+          (c) =>
+            String(c.args[0]).includes('/approve') &&
+            String((c.args[1] as RequestInit)?.method || '').toUpperCase() ===
+              'POST'
+        );
+      expect(approveCalls).to.have.length(1);
+    });
+
     it('confirms before d denies the focused row', async () => {
       const element = await renderList([
         baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),
