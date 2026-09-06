@@ -587,6 +587,26 @@ export class FlowsView extends LitElement {
         display: flex;
         gap: 8px;
       }
+      /* The footer's left half: outcome, subject, when, on one line that
+         truncates rather than pushing the buttons off the card. */
+      .card-last-run {
+        align-items: center;
+        color: inherit;
+        display: flex;
+        gap: var(--sl-spacing-x-small);
+        min-width: 0;
+        overflow: hidden;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+      .card-last-run .status-chip {
+        flex-shrink: 0;
+      }
+      .card-last-run .meta {
+        color: var(--console-meta-color);
+        flex-shrink: 0;
+        font-size: var(--console-text-meta);
+      }
 
       /* --- Page furniture --- */
       .active-executions {
@@ -1805,6 +1825,7 @@ export class FlowsView extends LitElement {
         </div>
 
         <div slot="footer" class="flow-footer">
+          ${this.renderCardLastRun(row)}
           <div class="flow-footer-actions">
             <sl-button
               size="small"
@@ -1814,22 +1835,67 @@ export class FlowsView extends LitElement {
               <sl-icon slot="prefix" name="pencil"></sl-icon>
               Edit
             </sl-button>
+            <!-- Outline, not filled: a grid of cards with a filled button
+                 each has as many primaries as it has flows, and the page's
+                 one primary is Create flow (DESIGN.md, "Buttons"). -->
+            <sl-button
+              size="small"
+              outline
+              ?disabled=${row.status === 'paused'}
+              ?loading=${this.triggeringFlowId === row.id}
+              @click=${(e: Event) => {
+                e.stopPropagation();
+                void this.triggerRun(row);
+              }}
+            >
+              <sl-icon slot="prefix" name="play-fill"></sl-icon>
+              Run now
+            </sl-button>
           </div>
-          <sl-button
-            size="small"
-            variant="primary"
-            ?disabled=${row.status === 'paused'}
-            ?loading=${this.triggeringFlowId === row.id}
-            @click=${(e: Event) => {
-              e.stopPropagation();
-              void this.triggerRun(row);
-            }}
-          >
-            <sl-icon slot="prefix" name="play-fill"></sl-icon>
-            Run now
-          </sl-button>
         </div>
       </sl-card>
+    `;
+  }
+
+  /**
+   * The card's footer answers "did it work last time": the outcome, what the
+   * run was about and when, on one line, the same three facts the table's
+   * Last run column prints. Without it a card is a name and two buttons.
+   */
+  private renderCardLastRun(row: FlowListRow) {
+    const run = row.lastRun;
+    if (!run) {
+      return html`<span class="card-last-run muted-cell"
+        >${
+          row.lastRunAt
+            ? html`Ran
+              ${formatRelativeTime(row.lastRunAt, undefined, {
+                maxRelativeDays: 30,
+              })}`
+            : 'No run yet'
+        }</span
+      >`;
+    }
+    return html`
+      <a
+        class="card-last-run"
+        href=${`/console/flows/executions/${run.id}`}
+        title=${formatLocalDateTime(run.start_time)}
+        @click=${(event: Event) => event.stopPropagation()}
+      >
+        <sl-badge
+          class="status-chip"
+          pill
+          variant=${this.getStatusVariant(run.status)}
+          >${this.statusLabel(run.status)}</sl-badge
+        >
+        ${renderExecutionSubject(run)}
+        <span class="meta"
+          >${formatRelativeTime(run.start_time, undefined, {
+            maxRelativeDays: 30,
+          })}</span
+        >
+      </a>
     `;
   }
 

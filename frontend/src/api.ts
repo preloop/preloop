@@ -2918,12 +2918,25 @@ export async function getFlowPresets(): Promise<any[]> {
   return response.json();
 }
 
-export async function getFlowExecutions(options?: {
+/** One page of executions plus how many rows the filters matched. */
+export interface FlowExecutionsPage {
+  rows: any[];
+  /**
+   * `X-Total-Count` from the server, or null when it did not send one (an
+   * older API). The console says "25 of 1,412 executions" only when it has
+   * the number, never a guess.
+   */
+  total: number | null;
+}
+
+export async function getFlowExecutionsPage(options?: {
   limit?: number;
   skip?: number;
   flowId?: string;
   status?: string | string[];
-}): Promise<any[]> {
+  search?: string;
+  startedAfter?: string;
+}): Promise<FlowExecutionsPage> {
   const params = new URLSearchParams();
   if (options?.limit !== undefined) {
     params.set('limit', options.limit.toString());
@@ -2942,13 +2955,37 @@ export async function getFlowExecutions(options?: {
       params.append('status', status);
     }
   }
+  if (options?.search) {
+    params.set('search', options.search);
+  }
+  if (options?.startedAfter) {
+    params.set('started_after', options.startedAfter);
+  }
   const queryString = params.toString();
   const url = `/api/v1/flows/executions${queryString ? `?${queryString}` : ''}`;
   const response = await fetchWithAuth(url);
   if (!response.ok) {
     throw new Error('Failed to fetch flow executions');
   }
-  return response.json();
+  const rows = await response.json();
+  const header = response.headers?.get?.('X-Total-Count');
+  const parsed = header === null || header === undefined ? NaN : Number(header);
+  return {
+    rows: Array.isArray(rows) ? [...rows] : [],
+    total: Number.isFinite(parsed) ? parsed : null,
+  };
+}
+
+export async function getFlowExecutions(options?: {
+  limit?: number;
+  skip?: number;
+  flowId?: string;
+  status?: string | string[];
+  search?: string;
+  startedAfter?: string;
+}): Promise<any[]> {
+  const page = await getFlowExecutionsPage(options);
+  return page.rows;
 }
 
 export async function getFlowExecution(executionId: string): Promise<any> {

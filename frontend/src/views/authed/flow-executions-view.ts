@@ -2,7 +2,9 @@ import { html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { router } from '../../router';
 import {
-  getFlowExecutions,
+  getAccountOrganization,
+  getFlowExecutionsPage,
+  getFlows,
   retryFlowExecution,
   sendCommandToExecution,
 } from '../../api';
@@ -12,8 +14,9 @@ import { confirmDialog } from '../../components/confirm-dialog';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
-import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import '@shoelace-style/shoelace/dist/components/option/option.js';
+import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import {
   parseUTCDate,
@@ -32,6 +35,7 @@ import {
   formatEstimatedCost,
   renderExecutionModel,
   renderExecutionRunnerKind,
+  shouldShowRunnerKind,
 } from '../../utils/execution-presentation';
 import type {
   ExecutionModelUsage,
@@ -42,6 +46,8 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
+import '../../components/list-toolbar.ts';
+import '../../components/time-range-select.ts';
 import type { ResourceAction } from '../../components/resource-actions';
 
 interface FlowExecution {
@@ -76,6 +82,29 @@ interface FlowExecution {
 
 /** How often the elapsed time of running rows is recomputed. */
 const DURATION_TICK_MS = 1000;
+
+/** How long the bar waits after the last keystroke before it asks again. */
+const SEARCH_DEBOUNCE_MS = 300;
+
+/** The ranges the pill offers, and how far back each one reaches. */
+const RANGE_OPTIONS: Array<{ value: string; label: string; days: number }> = [
+  { value: 'day', label: '24h', days: 1 },
+  { value: 'week', label: '7d', days: 7 },
+  { value: 'month', label: '30d', days: 30 },
+  { value: 'year', label: '1y', days: 365 },
+  { value: 'all', label: 'All', days: 0 },
+];
+
+/** Columns the page can sort the rows it holds by. */
+type ExecutionSortKey =
+  | 'flow'
+  | 'subject'
+  | 'status'
+  | 'started'
+  | 'duration'
+  | 'model'
+  | 'tools'
+  | 'cost';
 
 @customElement('flow-executions-view')
 export class FlowExecutionsView extends AuthedElement {
@@ -142,6 +171,45 @@ export class FlowExecutionsView extends AuthedElement {
         font-weight: var(--sl-font-weight-semibold);
         font-size: var(--console-text-meta);
         white-space: nowrap;
+      }
+      /* The uppercase sortable eyebrow the Flows list uses, so the two
+         tables carry one header recipe. The button is the whole cell, so the
+         hit area is the label, not the six pixels of the caret. */
+      th.sortable {
+        padding: 0;
+      }
+      .sort-button {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        width: 100%;
+        background: none;
+        border: none;
+        cursor: pointer;
+        font: inherit;
+        font-weight: var(--sl-font-weight-semibold);
+        font-size: var(--sl-font-size-x-small);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--sl-color-neutral-600);
+        padding: 8px;
+      }
+      th.numeric .sort-button {
+        justify-content: flex-end;
+      }
+      .sort-button:hover,
+      .sort-button:focus-visible {
+        color: var(--sl-color-neutral-900);
+      }
+      th.active .sort-button {
+        color: var(--sl-color-neutral-900);
+      }
+      .sort-caret {
+        font-size: 0.75em;
+        opacity: 0.55;
+      }
+      th.active .sort-caret {
+        opacity: 1;
       }
       tbody tr:last-child td {
         border-bottom: none;
@@ -236,19 +304,21 @@ export class FlowExecutionsView extends AuthedElement {
         display: flex;
         justify-content: flex-end;
       }
+      /* Under the bar, not inside it: whether updates are live is a state of
+         the page, not a filter. */
       .header-controls {
         display: flex;
-        justify-content: space-between;
+        justify-content: flex-start;
         align-items: center;
         gap: 12px;
         flex-wrap: wrap;
-        margin-bottom: 16px;
+        margin: 8px 0 16px;
       }
-      .filter-controls {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-        flex-wrap: wrap;
+      list-toolbar {
+        margin-bottom: 4px;
+      }
+      list-toolbar sl-select {
+        min-width: 180px;
       }
       .connection-status {
         display: flex;
@@ -326,6 +396,42 @@ export class FlowExecutionsView extends AuthedElement {
   @state()
   private flowNameFilter: string | null = null;
 
+  /** What the search box holds; the query it produced is debounced. */
+  @state()
+  private searchQuery = '';
+
+  /** The window the range pill names. */
+  @state()
+  private range = 'month';
+
+  /** `X-Total-Count`: how many executions the filters matched. */
+  @state()
+  private totalCount: number | null = null;
+
+  /** Options for the All flows select, name and id only. */
+  @state()
+  private flowOptions: Array<{ id: string; name: string }> = [];
+
+  /**
+   * The account's default runner pool, so a row only says where it ran when
+   * that is not where the default would have sent it.
+   */
+  @state()
+  private accountDefaultPool: string | null = null;
+
+  /**
+   * Which column the header sorts on, or null for the order the server sent
+   * (newest first). A page is a window on a larger set, so the list does not
+   * silently reorder it until someone asks it to.
+   */
+  @state()
+  private sortKey: ExecutionSortKey | null = null;
+
+  @state()
+  private sortDirection: 'asc' | 'desc' = 'desc';
+
+  private searchDebounceId?: number;
+
   @state()
   private currentPage = 1;
 
@@ -354,6 +460,7 @@ export class FlowExecutionsView extends AuthedElement {
     this.applyQueryParams();
     await this.loadExecutions();
     this.connectWebSocket();
+    void this.loadFilterSources();
   }
 
   /** `?status=FAILED&flow_id=<id>` preselects the filters on entry. */
@@ -375,7 +482,59 @@ export class FlowExecutionsView extends AuthedElement {
         this.statusFilter = normalized;
       }
     }
-    this.flowIdFilter = params.get('flow_id');
+    // `?flow=` is what the flow page links with, `?flow_id=` what Attention
+    // and the Overview inventory link with. Both mean the same filter.
+    this.flowIdFilter = params.get('flow_id') || params.get('flow');
+    const search = params.get('q');
+    if (search) this.searchQuery = search;
+    const range = params.get('range');
+    if (range && RANGE_OPTIONS.some((option) => option.value === range)) {
+      this.range = range;
+    } else if (this.flowIdFilter || status) {
+      // A deep link points at a run somebody wants to see. A 30d default
+      // could hide exactly that run, so a filtered entry opens on All.
+      this.range = 'all';
+    }
+  }
+
+  /**
+   * The two lists the bar needs: the flows to name in the select, and the
+   * account default pool the runner chip is measured against. Neither is
+   * worth failing the page over, so both fall back to "not known".
+   */
+  private async loadFilterSources(): Promise<void> {
+    try {
+      const flows = await getFlows();
+      this.flowOptions = (Array.isArray(flows) ? flows : [])
+        .filter((flow) => flow && flow.id)
+        .map((flow) => ({
+          id: String(flow.id),
+          name: String(flow.name || 'Unnamed flow'),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      if (this.flowIdFilter && !this.flowNameFilter) {
+        this.flowNameFilter =
+          this.flowOptions.find((flow) => flow.id === this.flowIdFilter)
+            ?.name || this.flowNameFilter;
+      }
+    } catch {
+      this.flowOptions = [];
+    }
+    try {
+      const account = await getAccountOrganization();
+      this.accountDefaultPool = account?.default_runner_pool ?? null;
+    } catch {
+      this.accountDefaultPool = null;
+    }
+  }
+
+  /** The instant the range pill means, or undefined for All. */
+  private get startedAfter(): string | undefined {
+    const option = RANGE_OPTIONS.find((entry) => entry.value === this.range);
+    if (!option || option.days <= 0) return undefined;
+    return new Date(
+      Date.now() - option.days * 24 * 60 * 60 * 1000
+    ).toISOString();
   }
 
   /**
@@ -386,12 +545,16 @@ export class FlowExecutionsView extends AuthedElement {
    */
   async loadExecutions() {
     try {
-      const rows = await getFlowExecutions({
+      const page = await getFlowExecutionsPage({
         limit: this.pageSize + 1,
         skip: (this.currentPage - 1) * this.pageSize,
         status: this.statusFilter === 'all' ? undefined : this.statusFilter,
         flowId: this.flowIdFilter || undefined,
+        search: this.searchQuery.trim() || undefined,
+        startedAfter: this.startedAfter,
       });
+      const rows = page.rows;
+      this.totalCount = page.total;
       this.loadError = null;
       this.hasNextPage = rows.length > this.pageSize;
       this.executions = rows.slice(0, this.pageSize);
@@ -412,12 +575,46 @@ export class FlowExecutionsView extends AuthedElement {
   }
 
   private clearFlowFilter(): void {
-    this.flowIdFilter = null;
-    this.flowNameFilter = null;
+    this.setFlowFilter(null);
+  }
+
+  /** The All flows select, and the deep links that preselect one flow. */
+  private setFlowFilter(flowId: string | null): void {
+    this.flowIdFilter = flowId;
+    this.flowNameFilter = flowId
+      ? this.flowOptions.find((flow) => flow.id === flowId)?.name || null
+      : null;
     this.currentPage = 1;
     const url = new URL(window.location.href);
-    url.searchParams.delete('flow_id');
+    url.searchParams.delete('flow');
+    if (flowId) {
+      url.searchParams.set('flow_id', flowId);
+    } else {
+      url.searchParams.delete('flow_id');
+    }
     window.history.replaceState({}, '', url.toString());
+    void this.loadExecutions();
+  }
+
+  /**
+   * Typing asks the server, because a page of 25 rows cannot answer "where
+   * is that run" for an account with thousands. One request per pause.
+   */
+  private handleSearchChange(value: string): void {
+    this.searchQuery = value;
+    if (this.searchDebounceId !== undefined) {
+      clearTimeout(this.searchDebounceId);
+    }
+    this.searchDebounceId = window.setTimeout(() => {
+      this.searchDebounceId = undefined;
+      this.currentPage = 1;
+      void this.loadExecutions();
+    }, SEARCH_DEBOUNCE_MS);
+  }
+
+  private setRange(range: string): void {
+    this.range = range;
+    this.currentPage = 1;
     void this.loadExecutions();
   }
 
@@ -425,8 +622,59 @@ export class FlowExecutionsView extends AuthedElement {
     return this.executions;
   }
 
+  /** The page's rows in the order the header says they are in. */
   get paginatedExecutions(): FlowExecution[] {
-    return this.filteredExecutions;
+    const rows = [...this.filteredExecutions];
+    const key = this.sortKey;
+    if (!key) return rows;
+    const direction = this.sortDirection === 'asc' ? 1 : -1;
+    return rows.sort((a, b) => direction * this.compareExecutions(a, b, key));
+  }
+
+  private compareExecutions(
+    a: FlowExecution,
+    b: FlowExecution,
+    key: ExecutionSortKey
+  ): number {
+    const text = (value: string | null | undefined) => (value || '').trim();
+    const startedAt = (row: FlowExecution) =>
+      parseUTCDate(row.start_time).getTime() || 0;
+    const durationOf = (row: FlowExecution) => {
+      const end = row.end_time
+        ? parseUTCDate(row.end_time).getTime()
+        : Date.now();
+      const start = startedAt(row);
+      return start ? end - start : 0;
+    };
+    switch (key) {
+      case 'flow':
+        return text(a.flow_name).localeCompare(text(b.flow_name));
+      case 'subject':
+        return text(a.trigger_subject).localeCompare(text(b.trigger_subject));
+      case 'status':
+        return text(a.status).localeCompare(text(b.status));
+      case 'duration':
+        return durationOf(a) - durationOf(b);
+      case 'model':
+        return text(a.model_alias).localeCompare(text(b.model_alias));
+      case 'tools':
+        return (a.tool_calls_count || 0) - (b.tool_calls_count || 0);
+      case 'cost':
+        return (a.estimated_cost || 0) - (b.estimated_cost || 0);
+      case 'started':
+      default:
+        return startedAt(a) - startedAt(b);
+    }
+  }
+
+  /** First click sorts descending, because recent and expensive lead. */
+  private toggleSort(key: ExecutionSortKey): void {
+    if (this.sortKey === key) {
+      this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
+      return;
+    }
+    this.sortKey = key;
+    this.sortDirection = 'desc';
   }
 
   setStatusFilter(status: string) {
@@ -720,84 +968,134 @@ export class FlowExecutionsView extends AuthedElement {
     `;
   }
 
-  render() {
-    const firstRowNumber = (this.currentPage - 1) * this.pageSize + 1;
+  /**
+   * Search, the flow, the status, the range, then the count: the bar the
+   * Flows list established, so the two collections read as one product.
+   */
+  private renderToolbar() {
     return html`
-      <view-header headerText="Flow Executions" width="wide"></view-header>
+      <list-toolbar
+        .search=${this.searchQuery}
+        searchPlaceholder="Search subject or flow"
+        .views=${['list']}
+        @search-change=${(event: CustomEvent) =>
+          this.handleSearchChange(event.detail.value)}
+      >
+        <sl-select
+          class="flow-filter"
+          clearable
+          placeholder="All flows"
+          value=${this.flowIdFilter || ''}
+          @sl-change=${(event: Event) => {
+            const select = event.target as HTMLElement & { value: string };
+            this.setFlowFilter(select.value || null);
+          }}
+        >
+          ${this.flowOptions.map(
+            (flow) => html`<sl-option value=${flow.id}>${flow.name}</sl-option>`
+          )}
+        </sl-select>
+
+        <sl-select
+          class="status-filter"
+          placeholder="Any status"
+          value=${this.statusFilter === 'all' ? '' : this.statusFilter}
+          @sl-change=${(event: Event) => {
+            const select = event.target as HTMLElement & { value: string };
+            this.setStatusFilter(select.value || 'all');
+          }}
+        >
+          <sl-option value="">Any status</sl-option>
+          <sl-option value="RUNNING">Running</sl-option>
+          <sl-option value="PENDING">Pending</sl-option>
+          <sl-option value="SUCCEEDED">Succeeded</sl-option>
+          <sl-option value="FAILED">Failed</sl-option>
+          <sl-option value="CANCELLED">Cancelled</sl-option>
+        </sl-select>
+
+        <time-range-select
+          ariaLabel="Executions time range"
+          .value=${this.range}
+          .options=${RANGE_OPTIONS.map(({ value, label }) => ({
+            value,
+            label,
+          }))}
+          @range-change=${(event: CustomEvent) =>
+            this.setRange(event.detail.value as string)}
+        ></time-range-select>
+
+        <sl-button size="small" @click=${this.loadExecutions}>
+          <sl-icon name="arrow-clockwise"></sl-icon>
+          Refresh
+        </sl-button>
+        <span slot="count">${this.resultsLabel}</span>
+      </list-toolbar>
+    `;
+  }
+
+  /**
+   * "25 of 1,412 executions" when the server sent the total, and just what
+   * is on screen when it did not: the count is never guessed.
+   */
+  private get resultsLabel(): string {
+    const shown = this.executions.length;
+    const noun = shown === 1 ? 'execution' : 'executions';
+    if (this.totalCount === null || this.totalCount <= shown) {
+      return `${shown.toLocaleString()} ${noun}`;
+    }
+    return `${shown.toLocaleString()} of ${this.totalCount.toLocaleString()} executions`;
+  }
+
+  private renderSortableHeader(
+    key: ExecutionSortKey,
+    label: string,
+    columnClass: string,
+    numeric = false
+  ) {
+    const active = this.sortKey === key;
+    const ariaSort = active
+      ? this.sortDirection === 'asc'
+        ? 'ascending'
+        : 'descending'
+      : 'none';
+    return html`
+      <th
+        class="${columnClass} sortable ${numeric ? 'numeric' : ''} ${
+          active ? 'active' : ''
+        }"
+        aria-sort=${ariaSort}
+        scope="col"
+      >
+        <button
+          type="button"
+          class="sort-button"
+          data-sort-key=${key}
+          title="Sorts the executions on this page"
+          @click=${() => this.toggleSort(key)}
+        >
+          <span>${label}</span>
+          <sl-icon
+            class="sort-caret"
+            name=${
+              active
+                ? this.sortDirection === 'asc'
+                  ? 'caret-up-fill'
+                  : 'caret-down-fill'
+                : 'chevron-expand'
+            }
+          ></sl-icon>
+        </button>
+      </th>
+    `;
+  }
+
+  render() {
+    return html`
+      <view-header headerText="Flow executions" width="wide"></view-header>
       <div class="column-layout wide">
         <div class="main-column">
-          <div class="header-controls">
-            <div class="filter-controls">
-              <sl-button-group>
-                <sl-button
-                  size="small"
-                  data-status="all"
-                  variant=${this.statusFilter === 'all' ? 'primary' : 'default'}
-                  @click=${() => this.setStatusFilter('all')}
-                >
-                  All
-                </sl-button>
-                <sl-button
-                  size="small"
-                  data-status="RUNNING"
-                  variant=${this.statusFilter === 'RUNNING' ? 'primary' : 'default'}
-                  @click=${() => this.setStatusFilter('RUNNING')}
-                >
-                  Running
-                </sl-button>
-                <sl-button
-                  size="small"
-                  data-status="PENDING"
-                  variant=${this.statusFilter === 'PENDING' ? 'neutral' : 'default'}
-                  @click=${() => this.setStatusFilter('PENDING')}
-                >
-                  Pending
-                </sl-button>
-                <sl-button
-                  size="small"
-                  data-status="SUCCEEDED"
-                  variant=${this.statusFilter === 'SUCCEEDED' ? 'success' : 'default'}
-                  @click=${() => this.setStatusFilter('SUCCEEDED')}
-                >
-                  Succeeded
-                </sl-button>
-                <sl-button
-                  size="small"
-                  data-status="FAILED"
-                  variant=${this.statusFilter === 'FAILED' ? 'danger' : 'default'}
-                  @click=${() => this.setStatusFilter('FAILED')}
-                >
-                  Failed
-                </sl-button>
-                <sl-button
-                  size="small"
-                  data-status="CANCELLED"
-                  variant=${this.statusFilter === 'CANCELLED' ? 'warning' : 'default'}
-                  @click=${() => this.setStatusFilter('CANCELLED')}
-                >
-                  Cancelled
-                </sl-button>
-              </sl-button-group>
-              <sl-button size="small" @click=${this.loadExecutions}>
-                <sl-icon name="arrow-clockwise"></sl-icon>
-                Refresh
-              </sl-button>
-              ${
-                this.flowIdFilter
-                  ? html`<sl-button
-                      size="small"
-                      pill
-                      class="flow-filter-chip"
-                      @click=${this.clearFlowFilter}
-                    >
-                      Flow: ${this.flowNameFilter || this.flowIdFilter}
-                      <sl-icon slot="suffix" name="x"></sl-icon>
-                    </sl-button>`
-                  : ''
-              }
-            </div>
-            ${this.renderConnectionStatus()}
-          </div>
+          ${this.renderToolbar()}
+          <div class="header-controls">${this.renderConnectionStatus()}</div>
 
           ${this.renderLoadError()}
           ${
@@ -813,24 +1111,48 @@ export class FlowExecutionsView extends AuthedElement {
                     </div>
                   `
               : html`
-                  <div class="result-count">
-                    Showing ${firstRowNumber} -
-                    ${firstRowNumber + this.paginatedExecutions.length - 1}
-                    executions
-                  </div>
-
                   <div class="table-wrapper">
                     <table>
                       <thead>
                         <tr>
-                          <th class="col-flow">Flow</th>
-                          <th class="col-subject">Subject</th>
-                          <th class="col-status">Status</th>
-                          <th class="col-started">Started</th>
-                          <th class="col-duration">Duration</th>
-                          <th class="col-model">Model</th>
-                          <th class="numeric col-tools">Tool calls</th>
-                          <th class="numeric col-cost">$ est.</th>
+                          ${this.renderSortableHeader('flow', 'Flow', 'col-flow')}
+                          ${this.renderSortableHeader(
+                            'subject',
+                            'Subject',
+                            'col-subject'
+                          )}
+                          ${this.renderSortableHeader(
+                            'status',
+                            'Status',
+                            'col-status'
+                          )}
+                          ${this.renderSortableHeader(
+                            'started',
+                            'Started',
+                            'col-started'
+                          )}
+                          ${this.renderSortableHeader(
+                            'duration',
+                            'Duration',
+                            'col-duration'
+                          )}
+                          ${this.renderSortableHeader(
+                            'model',
+                            'Model',
+                            'col-model'
+                          )}
+                          ${this.renderSortableHeader(
+                            'tools',
+                            'Tool calls',
+                            'col-tools',
+                            true
+                          )}
+                          ${this.renderSortableHeader(
+                            'cost',
+                            '$ est.',
+                            'col-cost',
+                            true
+                          )}
                           <th class="actions-cell"></th>
                         </tr>
                       </thead>
@@ -888,7 +1210,13 @@ export class FlowExecutionsView extends AuthedElement {
           <a class="row-link" href=${this.executionUrl(exec)}
             >${exec.flow_name || 'Unnamed flow'}</a
           >
-          ${renderExecutionRunnerKind(exec.runner)}
+          <!-- Where it ran, only when that is news: see
+               shouldShowRunnerKind. -->
+          ${
+            shouldShowRunnerKind(exec.runner, this.accountDefaultPool)
+              ? renderExecutionRunnerKind(exec.runner)
+              : nothing
+          }
         </td>
         <td class="subject-cell">${renderExecutionSubject(exec)}</td>
         <td>
@@ -920,7 +1248,11 @@ export class FlowExecutionsView extends AuthedElement {
         <td class="duration-cell">
           ${executionDurationText(exec, this.durationNow) || '—'}
         </td>
-        <td class="model-cell">${renderExecutionModel(exec)}</td>
+        <!-- No provider column here, so the alias prints once: the cell used
+             to read "deepseek/deepseek-v4-pro deepseek". -->
+        <td class="model-cell">
+          ${renderExecutionModel(exec, { aliasOnly: true })}
+        </td>
         <td class="numeric">
           ${(exec.tool_calls_count || 0).toLocaleString()}
         </td>
