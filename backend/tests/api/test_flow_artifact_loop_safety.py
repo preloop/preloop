@@ -51,3 +51,57 @@ async def test_artifact_authorization_pool_wait_does_not_block_ping(
         finally:
             result = await upload
         assert result.status_code == 503
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("oversized", [False, True])
+async def test_upload_consumes_stream_on_app_loop_before_worker_persistence(
+    monkeypatch: pytest.MonkeyPatch, oversized: bool
+) -> None:
+    """Read actual ASGI chunks; never persist an oversized or partial stream."""
+    from collections.abc import AsyncIterator
+    from preloop.models.schemas.flow_artifact import ArtifactReference
+
+    app = FastAPI()
+    app.include_router(flow_artifacts.router)
+    app.dependency_overrides[get_db_session] = lambda: object()
+    claims = {
+        "account_id": uuid4(),
+        "flow_id": uuid4(),
+        "thread_id": "test",
+        "kind": "workspace",
+    }
+    app.dependency_overrides[flow_artifacts.artifact_claims] = lambda: claims
+    monkeypatch.setattr(flow_artifacts, "authorize", lambda *args: None)
+    monkeypatch.setattr(
+        flow_artifacts.settings, "workspace_snapshot_max_bytes", 5 if oversized else 6
+    )
+    origin = threading.get_ident()
+    bodies: list[bytes] = []
+
+    def persist(db: Any, **kwargs: Any) -> ArtifactReference:
+        assert threading.get_ident() != origin
+        bodies.append(kwargs["archive"])
+        return ArtifactReference(
+            artifact_id=uuid4(),
+            execution_id=kwargs["execution_id"],
+            manifest_sha256="a" * 64,
+        )
+
+    monkeypatch.setattr(flow_artifacts, "put_artifact", persist)
+
+    async def chunks() -> AsyncIterator[bytes]:
+        assert threading.get_ident() == origin
+        yield b"abc"
+        await asyncio.sleep(0)
+        assert threading.get_ident() == origin
+        yield b"def"
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        result = await client.put(
+            f"/flows/executions/{uuid4()}/artifacts", content=chunks()
+        )
+    assert result.status_code == (413 if oversized else 200), result.text
+    assert bodies == ([] if oversized else [b"abcdef"])

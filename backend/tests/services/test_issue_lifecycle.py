@@ -895,3 +895,82 @@ async def test_lost_label_response_does_not_lose_authorized_pickup(rig: tuple) -
     )
     assert execution is not None
     assert (await service.ready(contract.issue_revision))["state"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_explicit_ready_reconciles_only_unlaunched_current_revision(
+    rig: tuple,
+) -> None:
+    service, transport, flow, _ = rig
+    old = await contract_for(service)
+    await service.refine(old)
+    await service.ready(old.issue_revision)
+    transport.issues[1]["body"] += " New scope."
+    current = await contract_for(service)
+    await service.refine(current)
+    stale = await service.ready(old.issue_revision)
+    assert stale["state"] == "blocked"
+    assert "issue_scope_changed" in stale["blockers"]
+    assert (await service.ready(current.issue_revision))["state"] == "ready"
+    prior = service._get("pickup", old.issue_revision)
+    assert prior.state == "superseded"
+    assert prior.data["contract"] == old.model_dump()
+    dispatch = AsyncMock()
+    first = await service.schedule_pickup(flow, {}, dispatch)
+    assert first is not None
+    assert (await service.ready(current.issue_revision))["state"] == "dispatched"
+    transport.issues[1]["body"] += " Yet another scope."
+    next_contract = await contract_for(service)
+    await service.refine(next_contract)
+    blocked = await service.ready(next_contract.issue_revision)
+    assert blocked["state"] == "needs_reconciliation"
+    assert "pickup_reconciliation_required" in blocked["blockers"]
+    assert service._get("pickup", "once").execution_id == first.id
+    assert await service.schedule_pickup(flow, {}, dispatch) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exhaustion", ["time", "requests"])
+async def test_audit_publication_budget_rolls_back_and_can_reconcile(
+    rig: tuple, monkeypatch: pytest.MonkeyPatch, exhaustion: str
+) -> None:
+    import asyncio
+    from preloop.services import issue_lifecycle_provider
+
+    service, transport, _, flow = rig
+    contract = await contract_for(service)
+    await service.refine(contract)
+    transport.merge()
+    execution = await service.schedule_audit(flow, AsyncMock())
+    crud_flow_execution.update(
+        service.db,
+        db_obj=execution,
+        obj_in=FlowExecutionUpdate(
+            status="SUCCEEDED", result=audit_result(contract, "gap")
+        ),
+    )
+    service.db.commit()
+    original = transport._request
+
+    async def stalled(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(1)
+        return await original(*args, **kwargs)
+
+    with monkeypatch.context() as patcher:
+        if exhaustion == "time":
+            patcher.setattr(
+                issue_lifecycle_provider, "PUBLICATION_TIMEOUT_SECONDS", 0.02
+            )
+            patcher.setattr(transport, "_request", stalled)
+            error = "publication_deadline_exceeded"
+        else:
+            patcher.setattr(issue_lifecycle_provider, "PUBLICATION_MAX_REQUESTS", 1)
+            error = "publication_request_budget_exhausted"
+        with pytest.raises(ValueError, match=error):
+            await service.finish_audit(execution)
+    assert service._get("merge_audit", SHA).state == "queued"
+    assert len(transport.issues) == 1
+    assert not transport.comments
+    result = await service.finish_audit(execution)
+    assert len(result["follow_ups"]) == 1
+    assert len(transport.issues) == 2

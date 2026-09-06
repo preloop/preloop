@@ -61,9 +61,15 @@ The scope fingerprint covers title and description, excluding automation's
 comments and labels. GitHub does not offer a conditional label-write API. The
 provider rereads scope immediately before labeling, then the controller checks
 again afterward and before dispatch. A racing scope edit is recorded as
-`needs_reconciliation`; it cannot silently start a new implementation. A major
-edit during an existing implementation similarly requires explicit reconciliation
-of that original pickup; resubmitting readiness does not launch another run.
+`needs_reconciliation`; it cannot silently start a new implementation. If no
+execution was created, refine the current revision and explicitly submit `/ready`
+again. The controller rechecks scope and blockers and archives the superseded
+authorization before replacing it. Stale revisions cannot authorize a pickup.
+
+Once an execution exists, `/ready` returns `pickup_reconciliation_required` and
+preserves that execution. Reconciliation of launched or completed implementation
+work is not provided by this draft; `/audit/reconcile` only recovers audits.
+Repeated labels or readiness requests cannot reset an existing execution.
 
 ## Audit the actual merge
 
@@ -130,3 +136,17 @@ pins checkout to the deployed revision and publishes a separate audit comment.
 Repeating the same target/revisions reuses that execution. The deployment record
 is an assertion by the authenticated CD/operator caller; it must come from the
 actual deployment system. The issue-close flow never probes production.
+
+
+### Bounded audit publication
+
+Audit effects remain serialized per issue because marker lookup followed by
+provider creation is not atomic. Marker scans stop as soon as a matching comment
+or follow-up is found. Complete scans accept up to 10,000 results, with one extra
+page used only to prove exhaustion. Larger responses fail closed before creation.
+Publication has an eight-second provider-work deadline and a shared 128-request
+budget, including lookups and mutations. Exhaustion rolls back the local operation
+and leaves its persisted result available through `/audit/reconcile`; a prior
+provider effect is recovered by marker on retry. The controller does not create a
+new ticket when it cannot finish the deduplication lookup. Large repositories may
+still require a later indexed or independently claimed publication path.

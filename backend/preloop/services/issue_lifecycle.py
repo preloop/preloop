@@ -11,7 +11,10 @@ from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import crud_issue_lifecycle
 from preloop.schemas.issue_lifecycle import AuditResult, ReadinessContract
-from preloop.services.issue_lifecycle_provider import LifecycleProvider
+from preloop.services.issue_lifecycle_provider import (
+    LifecycleProvider,
+    publication_budget,
+)
 
 
 class EnvironmentCapabilities(Protocol):
@@ -131,7 +134,17 @@ class IssueLifecycleService:
             if existing:
                 if existing.data["issue_revision"] != current.revision:
                     self._put("pickup", "once", "needs_reconciliation", existing.data)
-                if existing.state != "label_pending":
+                if existing.state == "needs_reconciliation":
+                    if existing.execution_id is not None:
+                        return {
+                            "state": existing.state,
+                            **existing.data,
+                            "blockers": ["pickup_reconciliation_required"],
+                        }
+                    # This explicit /ready request can replace an authorization
+                    # that never launched. It still validates the current proposal
+                    # and scope below; an existing execution is never replaced.
+                elif existing.state != "label_pending":
                     return {"state": existing.state, **existing.data}
             row = self._get("readiness", revision)
             if row is None:
@@ -151,6 +164,13 @@ class IssueLifecycleService:
                 "contract": contract.model_dump(),
                 "label": label,
             }
+            if existing and existing.state == "needs_reconciliation":
+                self._put(
+                    "pickup",
+                    existing.data["issue_revision"],
+                    "superseded",
+                    dict(existing.data),
+                )
             self._put("pickup", "once", "label_pending", data)
         # Persist intent before the provider effect. If its successful response
         # is lost, the real label webhook can still resolve this authorization.
@@ -361,7 +381,10 @@ class IssueLifecycleService:
             "lifecycle"
         ) or {}
         sha = envelope.get("merge_sha", "")
-        async with crud_issue_lifecycle.locked(self.db, self.account_id, self.issue.id):
+        async with (
+            crud_issue_lifecycle.locked(self.db, self.account_id, self.issue.id),
+            publication_budget(),
+        ):
             kind = envelope.get("audit_kind", "merge_audit")
             operation = envelope.get("operation_revision", sha)
             row = self._get(kind, operation)
