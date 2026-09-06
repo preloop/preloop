@@ -3089,6 +3089,21 @@ class FlowExecutionOrchestrator:
                 ):
                     self._note_agent_session(line)
 
+    async def _replay_persisted_runner_logs(self) -> None:
+        """Drain remaining runner pages before terminal PR/session/metrics binding.
+
+        Live monitoring normally consumed these rows already. Reuse its cursor
+        so terminal recovery cannot duplicate raw logs or derived metrics, and
+        yield between bounded pages when a completed run has a large backlog.
+        """
+        if self.execution_log is None:
+            return
+        ref = getattr(self.execution_log, "agent_session_reference", "") or ""
+        if not isinstance(ref, str) or not ref.startswith("runner:"):
+            return
+        while not await self._consume_runner_log_page(ref):
+            await asyncio.sleep(0)
+
     def _bind_opened_pr(self, output_summary: Optional[str]) -> None:
         """Persist the wrapper-opened PR on this execution's result.
 
@@ -4577,6 +4592,11 @@ class FlowExecutionOrchestrator:
             agent_result, session_reference = await self._run_agent_with_retries(
                 execution_context
             )
+
+            # Private runners persist lines on the WebSocket; the live stream
+            # skips them so they are not published twice. Fold them in before
+            # terminal PR/session/metrics binding.
+            await self._replay_persisted_runner_logs()
 
             # Update execution log with final results including detailed logs
             final_status = agent_result.get("status", "FAILED")
