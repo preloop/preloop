@@ -3,6 +3,7 @@
 import base64
 import json
 from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -306,3 +307,44 @@ def test_completion_cannot_select_its_own_protocol(leased_job, protocol):
         "result": {"status": "success"},
     }
     assert validate_runner_completion(message, leased_job=leased_job)[0] == "FAILED"
+
+
+_COMPLETION_CONTRACT = json.loads(
+    (
+        Path(__file__).resolve().parents[1]
+        / "fixtures"
+        / "runner_completion_vocabulary.json"
+    ).read_text()
+)
+
+
+@pytest.mark.parametrize(
+    "case", _COMPLETION_CONTRACT["cases"], ids=lambda case: case["name"]
+)
+@pytest.mark.parametrize("exit_code", [0, 2])
+@pytest.mark.parametrize("claimed_status", ["SUCCEEDED", "FAILED"])
+def test_shared_completion_cases_preserve_reports_without_promoting_failure(
+    case: dict, exit_code: int, claimed_status: str
+) -> None:
+    from preloop.agents.runner_launch import LAUNCH_VERSION
+    from preloop.services.flow_orchestrator import _result_artifact_confirmation
+
+    assert _COMPLETION_CONTRACT["version"] == LAUNCH_VERSION
+    assert _COMPLETION_CONTRACT["protocol"] == "docker_v1"
+    assert _result_artifact_confirmation(case["result"]) == case["confirmation"]
+    status, _, result = validate_runner_completion(
+        {
+            "status": claimed_status,
+            "exit_code": exit_code,
+            "completion_protocol": "docker_v1",
+            "launch_version": 1,
+            "result": case["result"],
+        },
+        leased_job={"launch_version": 1, "agent_type": "codex"},
+    )
+    assert (status == "SUCCEEDED") == (
+        claimed_status == "SUCCEEDED"
+        and exit_code == 0
+        and case["confirmation"] == "success"
+    )
+    assert result == case["result"]

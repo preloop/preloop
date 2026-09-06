@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -28,6 +31,8 @@ func TestRunnerCompletionRequiresReportAndExit(t *testing.T) {
 		{"no exit code", runnerResultPrefix + base64.StdEncoding.EncodeToString([]byte(`{"result":{"status":"success"}}`)), false},
 		{"success", resultLine(`{"status":"success","tests":["pytest"]}`, 0), true},
 		{"completed audit", resultLine(`{"verdict":"fail"}`, 0), true},
+		{"reported failure", resultLine(`{"status":"failure","reason":"tests"}`, 0), true},
+		{"audit error", resultLine(`{"verdict":"error"}`, 0), true},
 		{"duplicate", resultLine(`{"status":"success"}`, 0) + "\n" + resultLine(`{"status":"success"}`, 0), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -57,6 +62,23 @@ func TestRunnerDockerExitCannotBeOverriddenByReport(t *testing.T) {
 		if (outcome.status == "SUCCEEDED") != (code == "0") {
 			t.Fatalf("outcome: %+v", outcome)
 		}
+	}
+}
+
+func TestRunnerDockerFailureReportIsDelivered(t *testing.T) {
+	cmd := exec.Command("sh", "-c", `printf '%s\n' "$REPORT"; exit 0`)
+	cmd.Env = append(os.Environ(), "REPORT="+resultLine(`{"status":"failure","reason":"tests"}`, 0))
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	outcome := waitDockerJob(cmd, "example", &output, nil)
+	if outcome.status != "FAILED" {
+		t.Fatalf("status=%s", outcome.status)
+	}
+	if outcome.result["status"] != "failure" {
+		t.Fatalf("result=%v", outcome.result)
 	}
 }
 
@@ -133,5 +155,117 @@ func TestRunnerDockerLaunchIntegration(t *testing.T) {
 	}
 	if outcome.result["fake_harness"] != true {
 		t.Fatal("fake harness was not executed")
+	}
+}
+
+func TestCompletionVocabularyMatchesPythonContract(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "backend", "tests", "fixtures", "runner_completion_vocabulary.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract struct {
+		Protocol        string   `json:"protocol"`
+		Version         int      `json:"version"`
+		SuccessStatuses []string `json:"success_statuses"`
+		FailureStatuses []string `json:"failure_statuses"`
+		SuccessVerdicts []string `json:"success_verdicts"`
+		FailureVerdicts []string `json:"failure_verdicts"`
+		Cases           []struct {
+			Name         string         `json:"name"`
+			Result       map[string]any `json:"result"`
+			Confirmation string         `json:"confirmation"`
+		} `json:"cases"`
+	}
+	if err = json.Unmarshal(raw, &contract); err != nil {
+		t.Fatal(err)
+	}
+	if contract.Version != runnerLaunchVersion || contract.Protocol != "docker_v1" {
+		t.Fatal("fixture protocol drift")
+	}
+	// Every vocabulary addition/removal must update the common versioned fixture.
+	statuses, verdicts := map[string]string{}, map[string]string{}
+	for _, value := range contract.SuccessStatuses {
+		statuses[value] = "success"
+	}
+	for _, value := range contract.FailureStatuses {
+		statuses[value] = "failure"
+	}
+	for _, value := range contract.SuccessVerdicts {
+		verdicts[value] = "success"
+	}
+	for _, value := range contract.FailureVerdicts {
+		verdicts[value] = "failure"
+	}
+	if !reflect.DeepEqual(statuses, runnerResultStatuses) || !reflect.DeepEqual(verdicts, runnerResultVerdicts) {
+		t.Fatal("completion vocabulary drifted from shared fixture")
+	}
+	for _, tc := range contract.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			if got := runnerResultConfirmation(tc.Result); got != tc.Confirmation {
+				t.Fatalf("confirmation=%q want=%q", got, tc.Confirmation)
+			}
+			encoded, _ := json.Marshal(tc.Result)
+			for _, code := range []int{0, 2} {
+				report, logs, err := runnerStructuredResult([]string{"ordinary log", resultLine(string(encoded), code)})
+				if (err == nil) != (code == 0 && tc.Confirmation != "") {
+					t.Fatalf("exit=%d err=%v confirmation=%s", code, err, tc.Confirmation)
+				}
+				if len(tc.Result) > 0 && !reflect.DeepEqual(report, tc.Result) {
+					t.Fatalf("lost report on exit%d: %v", code, report)
+				}
+				if len(tc.Result) == 0 && report != nil {
+					t.Fatalf("retained empty result: %v", report)
+				}
+				if !reflect.DeepEqual(logs, []string{"ordinary log"}) {
+					t.Fatalf("envelope leaked: %v", logs)
+				}
+			}
+		})
+	}
+}
+
+func TestRunnerFailureReportsSurviveDockerOutcome(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		for _, report := range []string{`{"status":"failure","reason":"verification blocked","checks":["ui"]}`, `{"verdict":"error","details":{"source":"agent"}}`, `{"status":"success","checks":["unit"]}`, `{"status":"success","verdict":"error"}`, `{"status":"failed","verdict":"pass"}`} {
+			for _, code := range []int{0, 2} {
+				cmd := exec.Command("sh", "-c", `printf '%s\n' "$REPORT"; exit "$TEST_EXIT"`)
+				cmd.Env = append(os.Environ(), "REPORT="+resultLine(report, code), fmt.Sprintf("TEST_EXIT=%d", code))
+				var output interface {
+					Write([]byte) (int, error)
+					String() string
+				} = &bytes.Buffer{}
+				if streaming {
+					output = &runnerLogBuffer{}
+				}
+				cmd.Stdout = output
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				outcome := waitDockerJob(cmd, "execution", output, nil)
+				var want map[string]any
+				_ = json.Unmarshal([]byte(report), &want)
+				if !reflect.DeepEqual(outcome.result, want) {
+					t.Fatalf("stream=%v exit=%d report lost: %+v", streaming, code, outcome)
+				}
+				if (outcome.status == "SUCCEEDED") != (code == 0 && want["status"] == "success") {
+					t.Fatalf("failure promoted: %+v", outcome)
+				}
+			}
+		}
+	}
+}
+
+func TestRunnerMalformedAndAmbiguousReportsAreNotRetained(t *testing.T) {
+	for _, output := range []string{
+		runnerResultPrefix + "not-base64",
+		resultLine(`{"status":"failure"}`, 0) + "\n" + resultLine(`{"status":"success"}`, 0),
+		resultLine(`{}`, 0),
+		resultLine(`{"status":"failure","details":"`+strings.Repeat("x", runnerResultLimit)+`"}`, 0),
+		runnerResultPrefix + base64.StdEncoding.EncodeToString([]byte(`{"result":{"status":"failure"}}`)),
+	} {
+		result, _, err := runnerStructuredResult(splitNonEmptyLines(output))
+		if err == nil || result != nil {
+			t.Fatalf("invalid result retained: result=%v err=%v", result, err)
+		}
 	}
 }
