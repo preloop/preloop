@@ -628,7 +628,8 @@ async def test_private_recovered_monitor_restores_policy_and_finalizes_before_st
             return_value=object(),
         ) as restore,
         patch(
-            "preloop.agents.remote_runner.RemoteRunnerExecutor", return_value=executor
+            "preloop.agents.create_executor_for_execution",
+            return_value=executor,
         ) as create,
     ):
         await resume_existing_execution(

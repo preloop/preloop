@@ -648,6 +648,7 @@ async def test_expire_writer_abandons_when_revoke_fails(case, monkeypatch, caplo
     monkeypatch.setattr(crud_flow_runner, "abandon_publication", abandon)
     case.controller.execution_id = case.execution.id
     case.controller.nonce = case.policy.nonce
+    case.controller.writer = case.broker.return_value
     case.revoke.side_effect = PublicationError("writer already gone")
     with caplog.at_level("WARNING"):
         await case.controller._expire_writer(0)
