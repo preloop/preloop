@@ -120,13 +120,27 @@ export class ConsoleHeader extends LitElement {
   private unsubscribeNotifications?: () => void;
   private unsubscribeConnectionState?: () => void;
   private approvalExpiryTimer?: ReturnType<typeof setTimeout>;
+  private pendingApprovalsRefreshTimer?: ReturnType<typeof setTimeout>;
   private pruningApprovalExpiry = false;
   private loadingPendingApprovals = false;
+  private pendingApprovalsReload = false;
 
   private refreshPendingApprovals = (): void => {
     this.pruneAndScheduleApprovalExpiry();
-    void this.loadPendingApprovals();
+    this.schedulePendingApprovalsRefresh();
   };
+
+  /**
+   * Coalesce focus/visibility/reconnect into one follow-up fetch, and retry
+   * if that fetch was requested while a load was already in flight.
+   */
+  private schedulePendingApprovalsRefresh(): void {
+    if (this.pendingApprovalsRefreshTimer !== undefined) return;
+    this.pendingApprovalsRefreshTimer = setTimeout(() => {
+      this.pendingApprovalsRefreshTimer = undefined;
+      void this.loadPendingApprovals();
+    }, 0);
+  }
 
   private handleVisibilityChange = (): void => {
     if (document.visibilityState === 'visible') {
@@ -403,6 +417,8 @@ export class ConsoleHeader extends LitElement {
     );
     clearTimeout(this.approvalExpiryTimer);
     this.approvalExpiryTimer = undefined;
+    clearTimeout(this.pendingApprovalsRefreshTimer);
+    this.pendingApprovalsRefreshTimer = undefined;
   }
 
   /**
@@ -462,30 +478,42 @@ export class ConsoleHeader extends LitElement {
   }
 
   private async loadPendingApprovals() {
-    if (this.loadingPendingApprovals || !this.isConnected) return;
+    if (!this.isConnected) return;
+    if (this.loadingPendingApprovals) {
+      this.pendingApprovalsReload = true;
+      return;
+    }
     this.loadingPendingApprovals = true;
     try {
-      const approvals = await api.listApprovalRequests({ status: 'pending' });
-      if (!this.isConnected) return;
-      this._pendingApprovals = approvals
-        .map((approval: any) => ({
-          id: approval.id,
-          tool_name: approval.tool_name,
-          tool_args: approval.tool_args || {},
-          status: approval.status,
-          requested_at: approval.requested_at,
-          expires_at: approval.expires_at,
-          execution_id: approval.execution_id,
-          agent_reasoning: approval.agent_reasoning,
-          managed_agent_name: approval.managed_agent_name,
-        }))
-        .filter((approval: ApprovalRequest) =>
-          this.isUnexpiredPendingApproval(approval)
-        );
+      do {
+        this.pendingApprovalsReload = false;
+        const approvals = await api.listApprovalRequests({
+          status: 'pending',
+        });
+        if (!this.isConnected) return;
+        this._pendingApprovals = approvals
+          .map((approval: any) => ({
+            id: approval.id,
+            tool_name: approval.tool_name,
+            tool_args: approval.tool_args || {},
+            status: approval.status,
+            requested_at: approval.requested_at,
+            expires_at: approval.expires_at,
+            execution_id: approval.execution_id,
+            agent_reasoning: approval.agent_reasoning,
+            managed_agent_name: approval.managed_agent_name,
+          }))
+          .filter((approval: ApprovalRequest) =>
+            this.isUnexpiredPendingApproval(approval)
+          );
+      } while (this.pendingApprovalsReload && this.isConnected);
     } catch (error) {
       console.error('Failed to load pending approvals:', error);
     } finally {
       this.loadingPendingApprovals = false;
+      if (this.pendingApprovalsReload && this.isConnected) {
+        void this.loadPendingApprovals();
+      }
     }
   }
 

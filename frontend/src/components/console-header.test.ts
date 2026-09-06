@@ -591,6 +591,8 @@ describe('console-header approval deadlines', () => {
     window.dispatchEvent(new Event('focus'));
     await clock.tickAsync(0);
     await el.updateComplete;
+    await clock.tickAsync(0);
+    await el.updateComplete;
     expect(names()).to.deep.equal(['new-request']);
     expect(badge()).to.equal('1');
     expect(approvalReads).to.equal(2);
