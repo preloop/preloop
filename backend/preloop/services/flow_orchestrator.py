@@ -3826,7 +3826,15 @@ class FlowExecutionOrchestrator:
 
                     self.execution_logger.log_milestone(
                         "agent_execution_completed",
-                        {"status": status.value, "exit_code": result.exit_code},
+                        {
+                            "status": result.status.value,
+                            "exit_code": result.exit_code,
+                            "container_termination": (
+                                asdict(result.termination)
+                                if result.termination is not None
+                                else None
+                            ),
+                        },
                     )
 
                     # Structured result artifact (/workspace/result.json)
@@ -3928,6 +3936,11 @@ class FlowExecutionOrchestrator:
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
                         "result": result_artifact,
                         "exit_code": result.exit_code,
+                        "container_termination": (
+                            asdict(result.termination)
+                            if result.termination is not None
+                            else None
+                        ),
                         # First-pass failure classification made against the
                         # FULL container logs. error_message keeps only the
                         # generated sentence, which cannot encode the
@@ -4588,6 +4601,16 @@ class FlowExecutionOrchestrator:
                 getattr(self.execution_log, "result", None),
                 agent_result.get("result"),
             )
+
+            # Only the executor's runtime observation owns this key. Agent
+            # result.json claims cannot overwrite or fabricate termination.
+            if isinstance(merged_result, dict):
+                merged_result.pop("container_termination", None)
+            termination = agent_result.get("container_termination")
+            if isinstance(termination, dict):
+                if not isinstance(merged_result, dict):
+                    merged_result = {}
+                merged_result["container_termination"] = termination
 
             # Publication-gate evidence (issue #428): the runner-captured
             # verdict owns the ``verification`` key of the stored result, so
