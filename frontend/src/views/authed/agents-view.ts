@@ -3188,10 +3188,16 @@ export class AgentsView extends LitElement {
     });
   }
 
+  /**
+   * `srLabel` names a column whose visible header is an abbreviation: a screen
+   * reader would otherwise read "$ est." as "dollar est." with nothing else to
+   * go on, and the sort button has no other name.
+   */
   private renderSortableHeader(
     key: AgentListSortKey,
     label: string,
-    numeric = false
+    numeric = false,
+    srLabel?: string
   ) {
     const active = this.sortKey === key;
     const ariaSort = active
@@ -3209,6 +3215,8 @@ export class AgentsView extends LitElement {
           type="button"
           class="sort-button"
           data-sort-key=${key}
+          title=${srLabel ?? label}
+          aria-label=${srLabel ?? label}
           @click=${() => this.toggleSort(key)}
         >
           <span>${label}</span>
@@ -3400,7 +3408,12 @@ export class AgentsView extends LitElement {
                   ${this.renderSortableHeader('owner', 'Owner')}
                   ${this.renderSortableHeader('model', 'Model')}
                   ${this.renderSortableHeader('requests', 'Requests', true)}
-                  ${this.renderSortableHeader('spend', '$ est.', true)}
+                  ${this.renderSortableHeader(
+                    'spend',
+                    '$ est.',
+                    true,
+                    'Estimated spend'
+                  )}
                   ${this.renderSortableHeader('last_seen', 'Last seen')}
                   <th class="actions-cell">
                     <span class="visually-hidden">Actions</span>

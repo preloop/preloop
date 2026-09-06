@@ -1184,6 +1184,7 @@ export class ActivityFeed extends LitElement {
   @state() private belowFold = 0;
 
   private sizeObserver: ResizeObserver | null = null;
+  private measureFrame: number | null = null;
   private unsubscribes: (() => void)[] = [];
   private seen = new Set<string>();
   /** Resolved (never rejected) once the user lookup has had its turn. */
@@ -1576,6 +1577,10 @@ export class ActivityFeed extends LitElement {
   disconnectedCallback(): void {
     this.sizeObserver?.disconnect();
     this.sizeObserver = null;
+    if (this.measureFrame !== null) {
+      cancelAnimationFrame(this.measureFrame);
+      this.measureFrame = null;
+    }
     for (const unsubscribe of this.unsubscribes) {
       try {
         unsubscribe();
@@ -1763,10 +1768,26 @@ export class ActivityFeed extends LitElement {
     // The rail decides the card's height, and the height decides how many
     // rows are out of sight: re-measure whenever either moves.
     if (typeof ResizeObserver === 'function') {
-      this.sizeObserver = new ResizeObserver(() => this.measureBelowFold());
+      this.sizeObserver = new ResizeObserver(() => this.scheduleMeasure());
       this.sizeObserver.observe(this);
     }
-    this.measureBelowFold();
+    this.scheduleMeasure();
+  }
+
+  /**
+   * Measure after the frame, never inside the update cycle.
+   *
+   * `belowFold` is a @state, so measuring straight from `updated()` wrote it
+   * during an update and cost a second render pass on every feed event (Lit
+   * says so in dev: "scheduled an update after an update completed"). One
+   * pending frame at a time, cancelled on disconnect.
+   */
+  private scheduleMeasure(): void {
+    if (this.measureFrame !== null) return;
+    this.measureFrame = requestAnimationFrame(() => {
+      this.measureFrame = null;
+      this.measureBelowFold();
+    });
   }
 
   /**
@@ -1791,7 +1812,7 @@ export class ActivityFeed extends LitElement {
   }
 
   protected updated(changed: Map<string, unknown>): void {
-    this.measureBelowFold();
+    this.scheduleMeasure();
     // An opened row whose body is below the fold of a short rail has told the
     // operator nothing, so the row moves to the top of the list and its body
     // takes the height that is left. The list is scrolled by hand rather than

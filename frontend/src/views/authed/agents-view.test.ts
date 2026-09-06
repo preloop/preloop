@@ -259,6 +259,12 @@ describe('AgentsView', () => {
       'Actions',
     ]);
 
+    // "$ est." is short enough to read as "dollar est." out loud, so the
+    // sort button carries the full name.
+    const spendButton = headers[5].querySelector('.sort-button');
+    expect(spendButton?.getAttribute('aria-label')).to.equal('Estimated spend');
+    expect(spendButton?.getAttribute('title')).to.equal('Estimated spend');
+
     const lastSeen = headers[6];
     expect(lastSeen.getAttribute('aria-sort'), 'default sort').to.equal(
       'descending'

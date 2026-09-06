@@ -1026,6 +1026,29 @@ describe('activity-feed', () => {
       );
     });
 
+    it('measures after the frame, not inside the update cycle', async () => {
+      const el = await fixture<ActivityFeed>(
+        html`<activity-feed
+          style="--activity-feed-list-max-height: 90px;"
+        ></activity-feed>`
+      );
+      ingestSessions(el, 8);
+      await el.updateComplete;
+      await waitUntil(
+        () => Boolean(el.shadowRoot!.querySelector('.footer .more')),
+        'overflow count never rendered'
+      );
+      while (el.isUpdatePending) await el.updateComplete;
+
+      // One more row changes the count. The count is a @state, so writing it
+      // from updated() left the element dirty the moment the update finished,
+      // which is a second render pass per feed event plus Lit's "scheduled an
+      // update after an update completed" warning in dev.
+      ingestSessions(el, 9);
+      await el.updateComplete;
+      expect(el.isUpdatePending).to.equal(false);
+    });
+
     it('says nothing when the list fits', async () => {
       const el = await fixture<ActivityFeed>(
         html`<activity-feed></activity-feed>`

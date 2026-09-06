@@ -1484,6 +1484,7 @@ export class DashboardView extends AuthedElement {
       if (data.lastUpdatedAt) this.lastUpdatedAt = data.lastUpdatedAt;
       this.approvalStats = data.approvalStats || this.approvalStats;
       this.attentionInputs = data.attentionInputs || null;
+      if (this.attentionInputs) this.publishAttentionCounts();
       this.budgetPolicies = data.budgetPolicies || [];
       this.budgetAgents = data.budgetAgents || [];
 
@@ -2745,11 +2746,18 @@ export class DashboardView extends AuthedElement {
     }
     const items = deriveAttentionItems(this.attentionInputs).items;
     this.attentionMemo = { inputs: this.attentionInputs, items };
-    // The bell in the header cannot afford this derivation's requests, and
-    // "No notifications" over a strip saying "2 need attention" reads as a
-    // contradiction. Publish the counts the strip is about to show.
-    publishAttentionSummary(items);
     return items;
+  }
+
+  /**
+   * The bell in the header cannot afford this derivation's nine requests, and
+   * "No notifications" over a strip saying "2 need attention" reads as a
+   * contradiction, so the counts go out whenever the inputs change. Called
+   * where the inputs are assigned rather than from the getter: a getter that
+   * dispatches events during render is a trap for the next editor.
+   */
+  private publishAttentionCounts(): void {
+    publishAttentionSummary(this.attentionItems);
   }
 
   /**
@@ -2771,6 +2779,7 @@ export class DashboardView extends AuthedElement {
           ...shared,
         },
       });
+      this.publishAttentionCounts();
       this.scheduleCacheWrite();
     } catch (error) {
       console.error('Failed to load attention inputs', error);
