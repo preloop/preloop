@@ -12,6 +12,7 @@ import {
   cacheSplitOf,
   formatCacheHitRate,
   formatTokenCount,
+  sumTokenUsage,
   tokenFiguresTitle,
 } from './token-figures';
 import type { GatewayTokenUsage } from '../types';
@@ -82,6 +83,57 @@ describe('cacheSplitOf', () => {
         total_tokens: 1100,
       })
     ).to.equal(null);
+  });
+});
+
+describe('sumTokenUsage', () => {
+  it('adds the counts and recomputes the rate from the merged counts', () => {
+    // One aggregate reported a cache split, the other did not. Averaging the
+    // two rates would state a hit rate over traffic nobody measured; the
+    // merged rate is read over covered input only.
+    const total = sumTokenUsage([
+      {
+        prompt_tokens: 1000,
+        completion_tokens: 100,
+        total_tokens: 1100,
+        cache_read_tokens: 800,
+        cache_write_tokens: 50,
+        uncached_input_tokens: 200,
+        cache_hit_ratio: 0.8,
+      },
+      {
+        prompt_tokens: 3000,
+        completion_tokens: 900,
+        total_tokens: 3900,
+      },
+    ]);
+    expect(total?.input_tokens).to.equal(4000);
+    expect(total?.prompt_tokens).to.equal(4000);
+    expect(total?.output_tokens).to.equal(1000);
+    expect(total?.completion_tokens).to.equal(1000);
+    expect(total?.total_tokens).to.equal(5000);
+    expect(total?.cache_read_tokens).to.equal(800);
+    expect(total?.cache_write_tokens).to.equal(50);
+    expect(total?.uncached_input_tokens).to.equal(200);
+    // 800 of the 1000 input tokens anyone measured came from cache. The
+    // 3000 unmeasured ones are not misses.
+    expect(total?.cache_hit_ratio).to.equal(0.8);
+    expect(formatCacheHitRate(total?.cache_hit_ratio)).to.equal('80%');
+  });
+
+  it('leaves the rate unknown when nothing reported a cache split', () => {
+    const total = sumTokenUsage([
+      { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+    ]);
+    expect(total?.input_tokens).to.equal(30);
+    expect(total?.cache_hit_ratio).to.equal(null);
+    expect(cacheSplitOf(total)).to.equal(null);
+  });
+
+  it('is null when there is nothing at all to state', () => {
+    expect(sumTokenUsage([])).to.equal(null);
+    expect(sumTokenUsage([null, undefined])).to.equal(null);
   });
 });
 
