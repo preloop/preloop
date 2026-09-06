@@ -1,6 +1,7 @@
 """Email sending utility for Preloop."""
 
 import asyncio
+import html
 import logging
 import os
 import smtplib
@@ -498,7 +499,14 @@ async def send_approval_request_email(
 
     body_text = "\n".join(text_parts)
 
-    # HTML version
+    # HTML version. Every value below is caller-supplied text (an agent's
+    # display name, a tool name, the model's own words, the arguments it
+    # chose) landing in someone's email client, so it is escaped as text.
+    # quote=False: these are text nodes, not attribute values, and escaping
+    # quotes would only make the JSON block harder to read.
+    def esc(value: Any) -> str:
+        return html.escape(str(value), quote=False)
+
     header_title = "Approval Required" if ask_text else "Tool Approval Required"
     html_parts = [
         "<!DOCTYPE html>",
@@ -534,9 +542,9 @@ async def send_approval_request_email(
         html_parts.extend(
             [
                 '      <div class="summary">',
-                f"        <p><strong>{ask_text}</strong></p>",
+                f"        <p><strong>{esc(ask_text)}</strong></p>",
                 "      </div>",
-                f'      <p class="tool-name">Tool: {tool_name}</p>',
+                f'      <p class="tool-name">Tool: {esc(tool_name)}</p>',
             ]
         )
     else:
@@ -547,20 +555,20 @@ async def send_approval_request_email(
         )
         html_parts.extend(
             [
-                f"      <p>{lead}</p>",
-                f'      <p class="tool-name">Tool: {tool_name}</p>',
+                f"      <p>{esc(lead)}</p>",
+                f'      <p class="tool-name">Tool: {esc(tool_name)}</p>',
             ]
         )
 
     if asker:
-        html_parts.append(f"      <p>Agent: {asker}</p>")
+        html_parts.append(f"      <p>Agent: {esc(asker)}</p>")
 
     if agent_reasoning:
         html_parts.extend(
             [
                 '      <div class="reasoning">',
                 "        <strong>Agent's Reasoning:</strong>",
-                f"        <p>{agent_reasoning}</p>",
+                f"        <p>{esc(agent_reasoning)}</p>",
                 "      </div>",
             ]
         )
@@ -568,7 +576,7 @@ async def send_approval_request_email(
     html_parts.extend(
         [
             "      <p><strong>Arguments:</strong></p>",
-            f'      <pre class="arguments">{tool_args_formatted}</pre>',
+            f'      <pre class="arguments">{esc(tool_args_formatted)}</pre>',
             "      <p>Please review and decide:</p>",
             '      <div style="text-align: center; margin: 20px 0;">',
             f'        <a href="{approval_url}" class="button">Review Request</a>',

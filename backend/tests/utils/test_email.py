@@ -681,6 +681,30 @@ class TestSendApprovalRequestEmail:
 
     @pytest.mark.asyncio
     @patch("preloop.utils.email.send_email")
+    async def test_caller_supplied_text_is_escaped_in_the_html(self, mock_send_email):
+        """An agent name, a tool name and arguments are text, not markup.
+
+        All of it is operator or agent supplied and lands in an email client,
+        so none of it may open a tag there.
+        """
+        await send_approval_request_email(
+            user_email="approver@example.com",
+            tool_name="<b>shell</b>",
+            tool_args={"command": "<script>alert(1)</script>"},
+            approval_url="https://app.test.com/console/approval/1",
+            agent_reasoning="because <img src=x onerror=1>",
+            agent_name="<script>alert('agent')</script>",
+        )
+
+        _to, _subject, _body_text, body_html = mock_send_email.call_args[0]
+        assert "<script>" not in body_html
+        assert "<b>shell</b>" not in body_html
+        assert "&lt;script&gt;" in body_html
+        assert "&lt;b&gt;shell&lt;/b&gt;" in body_html
+        assert "&lt;img src=x onerror=1&gt;" in body_html
+
+    @pytest.mark.asyncio
+    @patch("preloop.utils.email.send_email")
     async def test_a_summary_still_owns_the_subject(self, mock_send_email):
         """The plain-language ask is the subject; the agent is in the body."""
         await send_approval_request_email(
