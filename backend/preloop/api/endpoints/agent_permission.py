@@ -151,6 +151,10 @@ async def agent_permission_check(
         if runtime_session
         else runtime_session_id,
         managed_agent_name=agent_name,
+        # The bearer token this check authenticated with. Recorded on the
+        # approval so an approver can see which credential is in play, not
+        # only which agent.
+        api_key_id=api_key.id,
         source=payload.source,
         tool_name=payload.tool_name,
         tool_input=tool_input,

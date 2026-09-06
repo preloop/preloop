@@ -700,6 +700,15 @@ class DynamicMCPServer:
                 # Create approval service
                 approval_service = ApprovalService(db, base_url)
 
+                # Who is asking, from the authenticated request context: the
+                # approval pages link to the agent, key, session and flow run
+                # rather than showing a generic label.
+                from preloop.services.approval_attribution import (
+                    attribution_from_user_context,
+                )
+
+                caller = attribution_from_user_context(user_context)
+
                 # Create approval request and send notification
                 approval_request = await approval_service.create_and_notify(
                     account_id=user_context.account_id,
@@ -708,7 +717,11 @@ class DynamicMCPServer:
                     tool_name=tool_name,
                     tool_args=tool_args,
                     agent_reasoning=None,  # Could be extracted from context if available
-                    execution_id=None,  # Could be extracted from context if available
+                    execution_id=caller.execution_id,
+                    managed_agent_id=caller.managed_agent_id,
+                    runtime_session_id=caller.runtime_session_id,
+                    managed_agent_name=caller.managed_agent_name,
+                    api_key_id=caller.api_key_id,
                     rule_context=rule_context,
                 )
                 approval_request_id = approval_request.id

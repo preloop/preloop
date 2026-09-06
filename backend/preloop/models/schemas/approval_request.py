@@ -97,6 +97,68 @@ def classify_approval_risk(
     return "danger"
 
 
+class ApprovalAgentSummary(BaseModel):
+    """The managed agent that raised the request."""
+
+    id: UUID
+    name: str
+    kind: Optional[str] = Field(
+        None, description="Agent kind, e.g. 'claude_code' or 'cursor'"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("id")
+    def serialize_id(self, value: UUID) -> str:
+        """Serialize UUID to string."""
+        return str(value)
+
+
+class ApprovalApiKeySummary(BaseModel):
+    """The API key the requesting caller authenticated with."""
+
+    id: UUID
+    name: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("id")
+    def serialize_id(self, value: UUID) -> str:
+        """Serialize UUID to string."""
+        return str(value)
+
+
+class ApprovalSessionSummary(BaseModel):
+    """The runtime session the gated call was made in."""
+
+    id: UUID
+    subject: Optional[str] = Field(
+        None, description="What the session is about (title or reference)"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("id")
+    def serialize_id(self, value: UUID) -> str:
+        """Serialize UUID to string."""
+        return str(value)
+
+
+class ApprovalFlowExecutionSummary(BaseModel):
+    """The flow run the gated call belonged to."""
+
+    id: str
+    flow_id: Optional[UUID] = None
+    flow_name: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("flow_id")
+    def serialize_flow_id(self, value: Optional[UUID]) -> Optional[str]:
+        """Serialize UUID to string."""
+        return str(value) if value else None
+
+
 class ApprovalRequestBase(BaseModel):
     """Base schema for approval requests."""
 
@@ -165,6 +227,10 @@ class ApprovalRequestResponse(ApprovalRequestBase):
     managed_agent_id: Optional[UUID] = None
     runtime_session_id: Optional[UUID] = None
     managed_agent_name: Optional[str] = None
+    # The credential the requesting caller authenticated with. Always known
+    # for API-authenticated callers, which is every creation path except a
+    # flow raising an approval on its own orchestrator session.
+    api_key_id: Optional[UUID] = None
     # AI decision tracking fields
     decided_by_ai: bool = False
     ai_model: Optional[str] = None
@@ -182,6 +248,14 @@ class ApprovalRequestResponse(ApprovalRequestBase):
     # rather than fabricate a reason. Shape is documented in
     # services/approval_rule_context.py.
     rule_context: Optional[Dict[str, Any]] = None
+    # Attribution, resolved from the ids above so surfaces can name and link
+    # what asked instead of printing a truncated UUID or a generic label.
+    # Populated by services/approval_attribution.attach_attribution; a part is
+    # omitted when its id is unset or the row it points at is gone.
+    agent: Optional[ApprovalAgentSummary] = None
+    api_key: Optional[ApprovalApiKeySummary] = None
+    session: Optional[ApprovalSessionSummary] = None
+    flow_execution: Optional[ApprovalFlowExecutionSummary] = None
 
     @computed_field
     def risk_level(self) -> str:

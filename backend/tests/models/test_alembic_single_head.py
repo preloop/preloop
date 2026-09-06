@@ -123,4 +123,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     launch_intent = script.get_revision("20260906_halt_launch_intent")
     assert launch_intent.down_revision == "20260906_halt_artifact_merge"
-    assert script.get_heads() == ["20260906_halt_launch_intent"]
+    approval_api_key = script.get_revision("20260906_approval_api_key")
+    assert approval_api_key.down_revision == "20260906_halt_launch_intent"
+    assert script.get_heads() == ["20260906_approval_api_key"]

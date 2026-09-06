@@ -123,6 +123,19 @@ class ApprovalRequest(Base):
         comment="Denormalized managed-agent display name for operator surfaces",
     )
 
+    # Which credential the call authenticated with. Every approval reaches the
+    # platform through an authenticated caller, so this is the one attribution
+    # fact that is always knowable; agent, session and flow run are not.
+    # ON DELETE SET NULL: revoking a key must not erase the approval history
+    # that key produced.
+    api_key_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("api_key.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="API key the requesting caller authenticated with (if known)",
+    )
+
     tool_name: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
