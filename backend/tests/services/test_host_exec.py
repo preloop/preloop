@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from preloop.models.schemas.flow_runner import HostExecProfileAdvertisement
 from preloop.services.host_exec import (
     HOST_EXEC_AGENT_TYPE,
     finalize_runner_completion,
@@ -39,6 +40,27 @@ def test_normalize_strips_executables() -> None:
     dumped = str(stored)
     assert "/bin/sh" not in dumped
     assert "argv" not in dumped
+
+
+def test_normalize_accepts_pydantic_register_advertisements() -> None:
+    stored = normalize_host_exec_advertisements(
+        [
+            HostExecProfileAdvertisement(
+                name="cursor-ask",
+                capabilities=["host_exec", "cursor_cli"],
+                models=["composer-2.5"],
+            )
+        ]
+    )
+    assert stored == {
+        "host_exec_profiles": [
+            {
+                "name": "cursor-ask",
+                "capabilities": ["host_exec", "cursor_cli"],
+                "models": ["composer-2.5"],
+            }
+        ]
+    }
 
 
 def test_runner_has_host_exec_profile() -> None:

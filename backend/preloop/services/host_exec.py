@@ -48,6 +48,18 @@ def _profile_from_mapping(value: Any) -> Optional[str]:
     return None
 
 
+def _as_host_exec_mapping(item: Any) -> Optional[Mapping[str, Any]]:
+    """Accept JSON objects or pydantic advertisements from register()."""
+    if isinstance(item, Mapping):
+        return item
+    dump = getattr(item, "model_dump", None)
+    if callable(dump):
+        dumped = dump()
+        if isinstance(dumped, Mapping):
+            return dumped
+    return None
+
+
 def _validated_profile_name(raw: str) -> Optional[str]:
     name = raw.strip()
     if HOST_EXEC_PROFILE_NAME_RE.fullmatch(name):
@@ -69,7 +81,8 @@ def normalize_host_exec_advertisements(raw: Any) -> Dict[str, Any]:
     if not isinstance(items, list):
         items = []
     for item in items[:64]:
-        if not isinstance(item, Mapping):
+        item = _as_host_exec_mapping(item)
+        if item is None:
             continue
         name = item.get("name")
         if not isinstance(name, str) or not HOST_EXEC_PROFILE_NAME_RE.fullmatch(

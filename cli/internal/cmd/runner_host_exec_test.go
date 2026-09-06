@@ -387,6 +387,7 @@ func TestNewHostExecJobCmdRejectsResumeFrom(t *testing.T) {
 }
 
 func TestNewHostExecJobCmdRejectsUnenforceableModel(t *testing.T) {
+	skipHostExecOnWindows(t, "unenforceable host-exec model_map")
 	root := t.TempDir()
 	writeHostExecProfiles(t, []hostExecProfile{{
 		Name:          "cursor-ask",

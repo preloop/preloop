@@ -36,6 +36,19 @@ func skipNoShebangOnWindows(t *testing.T, what string) {
 	)
 }
 
+func skipHostExecOnWindows(t *testing.T, what string) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return
+	}
+	t.Skipf(
+		"PRODUCT GAP, not a test artifact: host execution requires Unix "+
+			"process-group ownership, so profiles cannot be loaded on Windows. "+
+			"Untested on Windows: %s.",
+		what,
+	)
+}
+
 func skipManagedLauncherOnWindows(t *testing.T, what string) {
 	t.Helper()
 	if runtime.GOOS != "windows" {
