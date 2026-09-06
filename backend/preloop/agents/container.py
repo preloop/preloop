@@ -4137,6 +4137,12 @@ true
                     f"mkdir -p {EVIDENCE_DIR_PATH}\n"
                     f"git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD || exit 1\n"
                     f"git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt || exit 1\n"
+                    "if [ -d /preloop-publication-output ]; then\n"
+                    f"  cp {EVIDENCE_DIR_PATH}/branch.bundle /preloop-publication-output/branch.bundle || exit 1\n"
+                    "  if [ -f /workspace/result.json ] && [ $(wc -c < /workspace/result.json) -le 262144 ]; then\n"
+                    "    cp /workspace/result.json /preloop-publication-output/result.json || exit 1\n"
+                    "  fi\n"
+                    "fi\n"
                     "cd /workspace\n"
                 )
 

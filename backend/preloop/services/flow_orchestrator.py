@@ -4703,6 +4703,31 @@ class FlowExecutionOrchestrator:
                 raise PublicationError(
                     "Agent runtime cleanup was not confirmed; refusing to issue publication credentials"
                 )
+            from preloop.services.publication_hosted_verifier import (
+                verify_hosted_publication,
+            )
+            from preloop.services.trusted_publisher import read_publication_bundle
+
+            executor = getattr(self, "_publication_executor", None)
+            if executor is None:
+                raise PublicationError("Missing trusted verifier runtime adapter")
+            try:
+                verified = await verify_hosted_publication(
+                    executor,
+                    policy,
+                    read_publication_bundle(self._evidence_archive or b""),
+                )
+                self._publication_verification = verified.verification
+                self.execution_logger.log_milestone(
+                    "trusted_verification_succeeded",
+                    {
+                        "manifest": verified.manifest,
+                        "checks": list(verified.checks),
+                        "image": verified.image,
+                    },
+                )
+            finally:
+                await executor.cleanup()
             publication = await finish_isolated_publication(
                 self.db,
                 policy,
@@ -4725,9 +4750,14 @@ class FlowExecutionOrchestrator:
         except PublicationError as exc:
             agent_result["status"] = "FAILED"
             agent_result["error_message"] = str(exc)
-            self.execution_logger.log_milestone(
-                "trusted_publication_failed", {"reason": str(exc)}
+            failure = {"reason": str(exc)}
+            from preloop.services.publication_hosted_verifier import (
+                HostedVerificationError,
             )
+
+            if isinstance(exc, HostedVerificationError):
+                failure["verification"] = exc.evidence
+            self.execution_logger.log_milestone("trusted_publication_failed", failure)
         finally:
             async with httpx.AsyncClient() as client:
                 try:

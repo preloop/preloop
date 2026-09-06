@@ -22687,6 +22687,13 @@ components:
         profile:
           $ref: '#/components/schemas/VerificationProfile'
           description: Versioned trusted test profile driving required checks
+        image:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image
+          description: Digest-pinned generic toolchain image for credential-isolated
+            checks. Must contain dependencies required by the trusted profile.
         gate_budget_seconds:
           type: integer
           maximum: 14400.0

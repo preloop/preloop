@@ -105,6 +105,10 @@ class VerificationPolicy(BaseModel):
     profile: VerificationProfile = Field(
         description="Versioned trusted test profile driving required checks"
     )
+    image: Optional[str] = Field(
+        default=None,
+        description="Digest-pinned generic toolchain image for credential-isolated checks. Must contain dependencies required by the trusted profile.",
+    )
     # Overall wall-clock budget for the verifier inside the post-execution
     # block; per-check timeouts come from the profile commands.
     gate_budget_seconds: int = Field(

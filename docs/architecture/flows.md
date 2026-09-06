@@ -125,9 +125,36 @@ promote `PRELOOP_VERIFICATION` JSON directly to trusted publication authorizatio
 compatibility. Legacy mode executes publication in the agent container and
 shares tracker write credentials with that runtime; it is not a credential
 isolation boundary. Operators must explicitly migrate a flow to `isolated`.
-The integration is not yet ready to enable: the trusted #428 verification
-adapter and private runner publisher are still required. An isolated execution
-without controller-issued evidence fails closed before issuing write access.
+Hosted execution has a controller-owned verification adapter. Private runner
+publication additionally requires the authenticated runner-host protocol. An
+isolated execution without controller-issued evidence fails closed before
+issuing write access.
+
+Isolated flows require `verification.mode: gate`, a nonempty trusted profile,
+and `verification.image` set to a digest-pinned generic toolchain image. That
+image must provide Python 3, Git, a shell, and the dependencies needed by its
+configured checks. Verification does not reuse the agent's virtual environment,
+node_modules, writable caches, or workspace. A check may perform bounded setup
+using dependencies already available in the image, including local package
+caches and service binaries; it cannot download dependencies during verification.
+This is a generic toolchain contract, not a requirement to bake an application
+or its database into the harness image. Missing dependencies fail the check and
+leave the captured work recoverable.
+
+The controller resolves the exact base commit before starting the agent. After
+capturing recovery artifacts it deletes the owned agent runtime and confirms
+its absence, including residual Kubernetes pods. It derives changed paths from
+the frozen bundle, selects relevant checks from the trusted profile, and runs
+each check in a fresh credential-free checkout of the same head. Docker has no
+network, host mounts, or host namespaces. Kubernetes disables service-account
+automount and applies a deny-all NetworkPolicy; hosted clusters must enforce
+NetworkPolicy. The controller observes process exit codes and confirms every
+verifier runtime was removed before minting writer credentials. Check diagnostics
+retain a bounded output tail and Docker log rotation limits runtime log growth.
+If Kubernetes deletion cannot be confirmed, the deny-all NetworkPolicy remains
+with the execution's verifier label for operator recovery; removing it first
+would restore network access to residual pods. Log markers and result files
+never authorize publication.
 
 The isolated path binds a single repository and its base/target branches from
 account-owned flow/project records. It never accepts a webhook clone URL as
@@ -155,9 +182,9 @@ The controller handoff is `VerifiedPublication(execution_id, head_sha,
 bundle_sha256)`. It is an internal type, not an agent JSON schema. A trusted
 verifier adapter must construct it only after verifying the immutable artifact
 in an environment the agent cannot modify. Agent-written result files or log
-markers cannot establish this attestation. Production wiring of this adapter
-remains an explicit prerequisite, and must not be replaced with a parse of
-sandbox claims. Deploy the control plane separately from agent workloads;
+markers cannot establish this attestation. Hosted adapters construct it only
+after the complete trusted verification lifecycle. Deploy the control plane
+separately from agent workloads;
 never mount its process namespace, filesystem, Docker socket or signing keys
 into those workloads.
 

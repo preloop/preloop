@@ -170,6 +170,7 @@ def test_agent_receives_read_credential_without_db_fallback_or_post_push() -> No
 async def test_orchestrator_publication_failure_changes_terminal_status() -> None:
     orchestrator = object.__new__(FlowExecutionOrchestrator)
     orchestrator.db = MagicMock()
+    orchestrator._publication_executor = SimpleNamespace(cleanup=AsyncMock())
     orchestrator._evidence_archive = b"archive"
     orchestrator._publication_verification = None
     orchestrator._publication_runtime_stopped = True
@@ -183,6 +184,18 @@ async def test_orchestrator_publication_failure_changes_terminal_status() -> Non
     )
     result = {"status": "SUCCEEDED", "result": {"status": "success"}}
     with (
+        patch(
+            "preloop.services.publication_hosted_verifier.verify_hosted_publication",
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    verification=object(), manifest={}, checks=(), image="toolchain"
+                )
+            ),
+        ),
+        patch(
+            "preloop.services.trusted_publisher.read_publication_bundle",
+            return_value=b"bundle",
+        ),
         patch(
             "preloop.services.isolated_publication.finish_isolated_publication",
             new=AsyncMock(side_effect=PublicationError("verification not attested")),
@@ -208,6 +221,17 @@ async def test_prepare_policy_never_resolves_broad_pat(tracker: Any) -> None:
         "execution_id": "11111111-1111-4111-8111-111111111111",
         "git_clone_config": {
             "publication_mode": "isolated",
+            "verification": {
+                "mode": "gate",
+                "image": "toolchain@sha256:" + "a" * 64,
+                "profile": {
+                    "profile_id": "test",
+                    "version": "v1",
+                    "always": [
+                        {"id": "check", "command": "true", "reason": "required"}
+                    ],
+                },
+            },
             "repositories": [
                 {
                     "repository_url": "https://github.com/example/project.git",
@@ -227,6 +251,11 @@ async def test_prepare_policy_never_resolves_broad_pat(tracker: Any) -> None:
         httpx.Response(
             200,
             json={"full_name": "example/project", "default_branch": "main"},
+            request=httpx.Request("GET", "https://api.github.com"),
+        ),
+        httpx.Response(
+            200,
+            json={"object": {"sha": "b" * 40}},
             request=httpx.Request("GET", "https://api.github.com"),
         ),
         httpx.Response(404, request=httpx.Request("GET", "https://api.github.com")),

@@ -7,6 +7,8 @@ object stays in the orchestrator and is never serialized into a runner job.
 from __future__ import annotations
 
 import json
+import re
+import secrets
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +30,8 @@ from preloop.services.trusted_publisher import (
     publish_verified_bundle,
     read_publication_bundle,
 )
+from preloop.models.schemas.verification import ResolvedVerificationPolicy
+from preloop.services.verification import resolve_verification_policy
 from preloop.utils.pr_metadata import PublicationRecord
 
 
@@ -47,6 +51,11 @@ class IsolatedPublicationPolicy:
     configured_title: str
     configured_body: str
     issue_number: str
+    base_sha: str
+    verification_policy: ResolvedVerificationPolicy
+    verification_image: str
+    private: bool = False
+    nonce: str = ""
 
 
 def isolated_publication_enabled(config: Any) -> bool:
@@ -69,6 +78,18 @@ async def prepare_isolated_publication(
             "Isolated publication on private runners requires trusted bundle/evidence upload support; use a hosted isolated runtime until that capability is available"
         )
     config = dict(context["git_clone_config"])
+    verification_policy = resolve_verification_policy(config)
+    if verification_policy.mode != "gate" or verification_policy.profile is None:
+        raise PublicationError(
+            "Isolated publication requires a trusted verification profile"
+        )
+    verification_image = (config.get("verification") or {}).get("image", "")
+    if not isinstance(verification_image, str) or not re.fullmatch(
+        r"[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}", verification_image
+    ):
+        raise PublicationError(
+            "Isolated verification requires a digest-pinned generic toolchain image containing the configured check dependencies"
+        )
     repositories = config.get("repositories") or []
     if len(repositories) > 1:
         raise PublicationError(
@@ -176,6 +197,20 @@ async def prepare_isolated_publication(
                 "github",
             )
             response = await client.get(
+                f"https://api.github.com/repos/{project_path}/git/ref/heads/{base}",
+                headers=headers,
+                timeout=30,
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+            base_sha = response.json()["object"]["sha"]
+            if not isinstance(base_sha, str) or not re.fullmatch(
+                r"[a-f0-9]{40}", base_sha
+            ):
+                raise PublicationError(
+                    "Provider did not resolve an exact trusted base commit"
+                )
+            response = await client.get(
                 f"https://api.github.com/repos/{project_path}/git/ref/heads/{branch}",
                 headers=headers,
                 timeout=30,
@@ -230,6 +265,11 @@ async def prepare_isolated_publication(
         interpolate_git_config_text(config.get("pull_request_title"), trigger),
         interpolate_git_config_text(config.get("pull_request_description"), trigger),
         issue_number,
+        base_sha,
+        verification_policy,
+        verification_image,
+        False,
+        secrets.token_hex(32),
     )
 
 
