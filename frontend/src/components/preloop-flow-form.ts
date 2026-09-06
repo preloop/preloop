@@ -41,6 +41,10 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 
+/** Matches the API `timeout_seconds` constraint `ge=60, le=86400`. */
+export const FLOW_TIMEOUT_MIN_SECONDS = 60;
+export const FLOW_TIMEOUT_MAX_SECONDS = 86400;
+
 @customElement('preloop-flow-form')
 export class PreloopFlowForm extends LitElement {
   static styles = [
@@ -644,11 +648,10 @@ export class PreloopFlowForm extends LitElement {
     if (
       timeoutSeconds !== null &&
       (!Number.isInteger(timeoutSeconds) ||
-        timeoutSeconds < 60 ||
-        timeoutSeconds > 86400)
+        timeoutSeconds < FLOW_TIMEOUT_MIN_SECONDS ||
+        timeoutSeconds > FLOW_TIMEOUT_MAX_SECONDS)
     ) {
-      this.formError =
-        'Execution timeout must be a whole number between 60 and 86400 seconds, or blank for the deployment default.';
+      this.formError = `Execution timeout must be a whole number between ${FLOW_TIMEOUT_MIN_SECONDS} and ${FLOW_TIMEOUT_MAX_SECONDS} seconds, or blank for the deployment default.`;
       return;
     }
 
@@ -2010,11 +2013,11 @@ export class PreloopFlowForm extends LitElement {
               type="number"
               name="timeout_seconds"
               label="Execution timeout (seconds)"
-              min="60"
-              max="86400"
+              min=${FLOW_TIMEOUT_MIN_SECONDS}
+              max=${FLOW_TIMEOUT_MAX_SECONDS}
               step="1"
               placeholder="Deployment default"
-              help-text="Maximum duration of one execution: 60–86400 seconds (1 minute–24 hours). Leave blank to use the deployment default."
+              help-text=${`Maximum duration of one execution: ${FLOW_TIMEOUT_MIN_SECONDS}–${FLOW_TIMEOUT_MAX_SECONDS} seconds (1 minute–24 hours). Leave blank to use the deployment default.`}
               .value=${this.flow.timeout_seconds == null ? '' : String(this.flow.timeout_seconds)}
               @sl-input=${(e: Event) => this.handleInputChange('timeout_seconds', e)}
             ></sl-input>

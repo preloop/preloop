@@ -3,6 +3,10 @@ import sinon, { SinonSandbox } from 'sinon';
 import type SlInput from '@shoelace-style/shoelace/dist/components/input/input.js';
 import './preloop-flow-form.ts';
 import type { PreloopFlowForm } from './preloop-flow-form';
+import {
+  FLOW_TIMEOUT_MAX_SECONDS,
+  FLOW_TIMEOUT_MIN_SECONDS,
+} from './preloop-flow-form';
 
 const preset = {
   id: 'timeout-preset',
@@ -116,7 +120,11 @@ describe('PreloopFlowForm execution timeout', () => {
     expect((await submit(element)).timeout_seconds).to.equal(5400);
   });
 
-  for (const value of [60, 90, 86400]) {
+  for (const value of [
+    FLOW_TIMEOUT_MIN_SECONDS,
+    90,
+    FLOW_TIMEOUT_MAX_SECONDS,
+  ]) {
     it(`submits valid whole seconds without rounding: ${value}`, async () => {
       const element = await mount();
       await enter(element, String(value));
@@ -124,7 +132,13 @@ describe('PreloopFlowForm execution timeout', () => {
     });
   }
 
-  for (const value of [0, 59, 86401, 60.5, NaN]) {
+  for (const value of [
+    0,
+    FLOW_TIMEOUT_MIN_SECONDS - 1,
+    FLOW_TIMEOUT_MAX_SECONDS + 1,
+    60.5,
+    NaN,
+  ]) {
     it(`rejects invalid timeout ${value} before submission`, async () => {
       const element = await mount(value);
       const listener = sandbox.spy();
@@ -133,7 +147,7 @@ describe('PreloopFlowForm execution timeout', () => {
       await element.updateComplete;
       expect(listener.callCount).to.equal(0);
       expect(element.shadowRoot!.textContent).to.include(
-        'whole number between 60 and 86400 seconds'
+        `whole number between ${FLOW_TIMEOUT_MIN_SECONDS} and ${FLOW_TIMEOUT_MAX_SECONDS} seconds`
       );
     });
   }
