@@ -33,7 +33,7 @@ describe('collectLandingPublicAssetPaths', () => {
         heroImage: '/assets/screenshots/quickstart/dark/agent_bubble.png',
         placeholders: [
           '/assets/screenshots/quickstart/dark/cost_page.png',
-          '/assets/screenshots/quickstart/dark/agents-onboard-dialog.png',
+          '/assets/screenshots/quickstart/dark/agents-onboarding.webp',
         ],
       })
     );
@@ -42,7 +42,7 @@ describe('collectLandingPublicAssetPaths', () => {
       '/assets/screenshots/quickstart/dark/agent_bubble.png'
     );
     expect(paths).to.include(
-      '/assets/screenshots/quickstart/dark/agents-onboard-dialog.png'
+      '/assets/screenshots/quickstart/dark/agents-onboarding.webp'
     );
   });
 
