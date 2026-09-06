@@ -160,16 +160,19 @@ describe('attribution-line', () => {
     expect(hrefsOf(element)).to.have.length(4);
   });
 
-  it('keeps a link click off the row underneath it', async () => {
+  it('lets a link click reach the document so the router routes it', async () => {
     const element = await lineOf(FULL);
-    // Capture phase, so navigation is cancelled before the anchor sees it and
-    // the test runner is not taken to /console/agents/agent-1.
+    // Capture phase, so navigation is cancelled before the anchor acts on it
+    // and the test runner is not taken to /console/agents/agent-1. Vaadin
+    // Router's own listener is a bubble-phase listener on document, which is
+    // exactly what this asserts still fires.
     const cancel = (event: Event) => event.preventDefault();
     document.addEventListener('click', cancel, true);
-    let bubbled = 0;
-    element.addEventListener('click', () => {
-      bubbled += 1;
-    });
+    let reachedDocument = 0;
+    const count = () => {
+      reachedDocument += 1;
+    };
+    document.addEventListener('click', count);
 
     try {
       const link = element.shadowRoot!.querySelector('a')!;
@@ -182,8 +185,9 @@ describe('attribution-line', () => {
       );
     } finally {
       document.removeEventListener('click', cancel, true);
+      document.removeEventListener('click', count);
     }
 
-    expect(bubbled).to.equal(0);
+    expect(reachedDocument).to.equal(1);
   });
 });
