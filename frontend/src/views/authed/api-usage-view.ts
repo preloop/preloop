@@ -587,6 +587,10 @@ export class ApiUsageView extends LitElement {
       return;
     }
     this.selectedRange = value;
+    // An in-flight search still carries the old window. Bump so its answer
+    // cannot overwrite the results this range is about to load.
+    this.searchRequestId++;
+    this.searchLoading = false;
     void this.loadSummary();
   }
 

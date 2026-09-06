@@ -4,15 +4,66 @@ import sinon from 'sinon';
 import './api-usage-view';
 import type { ApiUsageView } from './api-usage-view';
 
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function searchResponseWithExcerpt(excerpt: string) {
+  return {
+    period_start: '2026-02-08T00:00:00Z',
+    period_end: '2026-03-09T23:59:59Z',
+    query: 'rollback',
+    total: 1,
+    limit: 10,
+    offset: 0,
+    items: [
+      {
+        api_usage_id: 'usage-range-probe',
+        timestamp: '2026-03-09T19:15:00Z',
+        status_code: 200,
+        outcome: 'success',
+        endpoint: '/openai/v1/responses',
+        method: 'POST',
+        provider_name: 'OpenAI',
+        model_alias: 'openai/gpt-5',
+        flow_id: 'flow-1',
+        flow_name: 'Triage Assistant',
+        flow_execution_id: 'execution-1',
+        runtime_session_id: 'runtime-session-1',
+        session_source_type: 'flow_execution',
+        session_source_id: 'execution-1',
+        session_reference: 'session-abc123',
+        runtime_principal_type: 'flow_execution',
+        runtime_principal_id: 'execution-1',
+        runtime_principal_name: 'Triage Assistant',
+        estimated_cost: 0.27,
+        token_usage: {
+          prompt_tokens: 250,
+          completion_tokens: 80,
+          total_tokens: 330,
+        },
+        excerpt,
+        meta_data: {
+          source: 'gateway_interaction',
+          endpoint_kind: 'responses',
+        },
+      },
+    ],
+  };
+}
+
 describe('ApiUsageView', () => {
   let fetchStub: sinon.SinonStub;
+  let defaultUsageFetch: (input: RequestInfo | URL) => Promise<Response>;
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
-    fetchStub = sinon.stub(window, 'fetch');
-    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+    defaultUsageFetch = async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
       if (url.startsWith('/api/v1/account/gateway-usage/summary')) {
@@ -274,7 +325,10 @@ describe('ApiUsageView', () => {
           headers: { 'Content-Type': 'application/json' },
         }
       );
-    });
+    };
+
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(defaultUsageFetch);
   });
 
   afterEach(() => {
@@ -576,5 +630,87 @@ describe('ApiUsageView', () => {
 
     // The numbers the search did not touch are still on screen.
     expect(element.shadowRoot?.textContent).to.contain('Requests · 30d');
+  });
+
+  // A search that left before the range changed must not land on top of the
+  // results the new window already painted.
+  it('does not let a stale in-flight search overwrite results after a range change', async () => {
+    const element = (await fixture(
+      html`<api-usage-view></api-usage-view>`
+    )) as ApiUsageView;
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'API usage view did not finish loading'
+    );
+    await element.updateComplete;
+
+    let resolveStaleSearch: ((response: Response) => void) | undefined;
+    let staleSearchStarted = false;
+
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/api/v1/account/gateway-usage/search')) {
+        if (!staleSearchStarted) {
+          staleSearchStarted = true;
+          return new Promise<Response>((resolve) => {
+            resolveStaleSearch = resolve;
+          });
+        }
+        return jsonResponse(
+          searchResponseWithExcerpt('new-range captured interaction')
+        );
+      }
+      return defaultUsageFetch(input);
+    });
+
+    const search = element.shadowRoot?.querySelector(
+      'sl-input.usage-search'
+    ) as HTMLInputElement;
+    search.value = 'rollback';
+    search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+
+    await waitUntil(
+      () => staleSearchStarted,
+      'the in-flight search never reached the server',
+      { timeout: 3000 }
+    );
+
+    const range = element.shadowRoot?.querySelector('time-range-select');
+    range?.dispatchEvent(
+      new CustomEvent('range-change', {
+        detail: { value: 'last-7' },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'the range reload never settled',
+      { timeout: 3000 }
+    );
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.textContent).to.contain(
+      'new-range captured interaction'
+    );
+    expect((element as any).searchLoading).to.equal(false);
+
+    resolveStaleSearch!(
+      jsonResponse(
+        searchResponseWithExcerpt('stale-range captured interaction')
+      )
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+    await element.updateComplete;
+
+    const content = element.shadowRoot?.textContent || '';
+    expect(content).to.contain('new-range captured interaction');
+    expect(content).to.not.contain('stale-range captured interaction');
+    expect((element as any).searchResults.items[0].excerpt).to.equal(
+      'new-range captured interaction'
+    );
   });
 });
