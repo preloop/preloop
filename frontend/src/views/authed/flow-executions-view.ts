@@ -87,11 +87,17 @@ const DURATION_TICK_MS = 1000;
 const SEARCH_DEBOUNCE_MS = 300;
 
 /** The ranges the pill offers, and how far back each one reaches. */
-const RANGE_OPTIONS: Array<{ value: string; label: string; days: number }> = [
-  { value: 'day', label: '24h', days: 1 },
-  { value: 'week', label: '7d', days: 7 },
-  { value: 'month', label: '30d', days: 30 },
-  { value: 'year', label: '1y', days: 365 },
+const RANGE_OPTIONS: Array<{
+  value: string;
+  label: string;
+  days: number;
+  /** How the empty state names the window, or undefined for all time. */
+  window?: string;
+}> = [
+  { value: 'day', label: '24h', days: 1, window: 'last 24 hours' },
+  { value: 'week', label: '7d', days: 7, window: 'last 7 days' },
+  { value: 'month', label: '30d', days: 30, window: 'last 30 days' },
+  { value: 'year', label: '1y', days: 365, window: 'last year' },
   { value: 'all', label: 'All', days: 0 },
 ];
 
@@ -1052,6 +1058,40 @@ export class FlowExecutionsView extends AuthedElement {
     return `${shown.toLocaleString()} of ${this.totalCount.toLocaleString()} executions`;
   }
 
+  /**
+   * The list opens on the last 30 days, so an account whose last run is
+   * older than that lands here. "No executions found." would read as "you
+   * have none" and hide the one control that would show them, so the empty
+   * state names the window and offers to drop it.
+   */
+  private renderEmptyState() {
+    const activeWindow = RANGE_OPTIONS.find(
+      (option) => option.value === this.range
+    )?.window;
+    if (!activeWindow) {
+      return html`
+        <div class="empty-state">
+          <sl-icon name="inbox"></sl-icon>
+          <p>No executions found.</p>
+        </div>
+      `;
+    }
+    return html`
+      <div class="empty-state">
+        <sl-icon name="inbox"></sl-icon>
+        <p>No executions in the ${activeWindow}.</p>
+        <sl-button
+          size="small"
+          variant="text"
+          class="widen-range"
+          @click=${() => this.setRange('all')}
+        >
+          Show all time
+        </sl-button>
+      </div>
+    `;
+  }
+
   private renderSortableHeader(
     key: ExecutionSortKey,
     label: string,
@@ -1110,12 +1150,7 @@ export class FlowExecutionsView extends AuthedElement {
                 ? // The error above already said what happened; "No
                   // executions found" underneath it would contradict it.
                   nothing
-                : html`
-                    <div class="empty-state">
-                      <sl-icon name="inbox"></sl-icon>
-                      <p>No executions found.</p>
-                    </div>
-                  `
+                : this.renderEmptyState()
               : html`
                   <div class="table-wrapper">
                     <table>

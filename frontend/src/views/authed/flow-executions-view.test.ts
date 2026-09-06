@@ -66,6 +66,43 @@ describe('FlowExecutionsView', () => {
     await el.updateComplete;
     const header = el.shadowRoot?.querySelector('view-header');
     expect(header?.getAttribute('headerText')).to.equal('Flow executions');
+    // The default window is 30 days, so the empty state names it.
+    expect(el.shadowRoot?.textContent).to.contain(
+      'No executions in the last 30 days'
+    );
+  });
+
+  it('offers all time from the empty state and drops the window', async () => {
+    const requested: string[] = [];
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
+      requested.push(String(input));
+      return new Response(JSON.stringify([]), { status: 200 });
+    });
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    expect(requested.some((url) => url.includes('started_after='))).to.be.true;
+    const widen = el.shadowRoot?.querySelector(
+      'sl-button.widen-range'
+    ) as HTMLElement;
+    expect(widen, 'empty state offers all time').to.exist;
+    expect((widen.textContent || '').trim()).to.equal('Show all time');
+
+    requested.length = 0;
+    widen.click();
+    await tick();
+    await el.updateComplete;
+
+    expect(requested.length).to.be.greaterThan(0);
+    expect(requested.every((url) => !url.includes('started_after='))).to.be
+      .true;
+    const range = el.shadowRoot?.querySelector(
+      'time-range-select'
+    ) as HTMLElement & { value: string };
+    expect(range.value).to.equal('all');
     expect(el.shadowRoot?.textContent).to.contain('No executions found');
   });
 
