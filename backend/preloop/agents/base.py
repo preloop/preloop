@@ -23,6 +23,23 @@ class AgentStatus(str, Enum):
     STOPPED = "STOPPED"
 
 
+@dataclass(frozen=True)
+class ContainerTermination:
+    """Runtime-reported container termination, independent of agent output."""
+
+    runtime: str
+    container_name: Optional[str] = None
+    container_id: Optional[str] = None
+    pod_name: Optional[str] = None
+    exit_code: Optional[int] = None
+    reason: Optional[str] = None
+    message: Optional[str] = None
+    signal: Optional[int] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    oom_killed: bool = False
+
+
 @dataclass
 class AgentExecutionResult:
     """Result of an agent execution."""
@@ -39,6 +56,7 @@ class AgentExecutionResult:
     # keeps only the generated sentence, which cannot encode the
     # transient/terminal verdict — this carries it to the retry decision.
     failure_analysis: Optional["AgentFailureAnalysis"] = None
+    termination: Optional[ContainerTermination] = None
 
 
 class AgentExecutor(ABC):
