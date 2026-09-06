@@ -818,15 +818,21 @@ export class PoliciesView extends LitElement {
    */
   protected performUpdate(): void | Promise<unknown> {
     try {
-      return super.performUpdate();
+      const result = super.performUpdate();
+      // The page drew: forget the last fault so a fresh one is reported
+      // again instead of being swallowed as a repeat.
+      this._renderErrorReported = null;
+      return result;
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Unexpected render error';
+      // The exception text is for whoever reads the console, not for the
+      // operator: the toast says what happened and what to do about it.
       console.error('Policies view failed to render:', error);
       if (this._renderErrorReported !== message) {
         this._renderErrorReported = message;
         showToast(
-          `The policies page could not finish drawing (${message}). Reload to try again.`,
+          'The policies page could not finish drawing. Reload to try again, and tell us if it keeps happening.',
           'danger'
         );
       }

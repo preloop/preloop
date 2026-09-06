@@ -313,6 +313,7 @@ describe('Policies page against real API shapes', () => {
   it('P7 surfaces a render failure instead of going silent', async () => {
     const m = await mount();
     stub = m.stub;
+    const logged = sinon.stub(console, 'error');
 
     (m.element as any).renderVersionsSection = () => {
       throw new Error('boom');
@@ -320,8 +321,12 @@ describe('Policies page against real API shapes', () => {
     m.element.requestUpdate();
     await m.element.updateComplete;
 
-    expect(toastTexts().join(' ')).to.contain('could not finish drawing');
-    expect(toastTexts().join(' ')).to.contain('boom');
+    const toast = toastTexts().join(' ');
+    expect(toast).to.contain('could not finish drawing');
+    // The exception text belongs in the console, not in the toast.
+    expect(toast).to.not.contain('boom');
+    expect(String(logged.firstCall?.args?.[1])).to.contain('boom');
+    logged.restore();
 
     // The view keeps accepting updates: the next render is not blocked.
     delete (m.element as any).renderVersionsSection;
@@ -330,5 +335,31 @@ describe('Policies page against real API shapes', () => {
     headerButton(m.element, 'Add rule').click();
     await m.element.updateComplete;
     expect(ruleDialog(m.element).open).to.be.true;
+  });
+
+  it('P9 reports the same fault again after the page recovers', async () => {
+    const m = await mount();
+    stub = m.stub;
+    const logged = sinon.stub(console, 'error');
+    const boom = () => {
+      throw new Error('boom');
+    };
+
+    (m.element as any).renderVersionsSection = boom;
+    m.element.requestUpdate();
+    await m.element.updateComplete;
+    expect(toastTexts()).to.have.lengthOf(1);
+
+    delete (m.element as any).renderVersionsSection;
+    m.element.requestUpdate();
+    await m.element.updateComplete;
+
+    (m.element as any).renderVersionsSection = boom;
+    m.element.requestUpdate();
+    await m.element.updateComplete;
+    logged.restore();
+
+    expect(toastTexts(), 'second failure went unreported').to.have.lengthOf(2);
+    delete (m.element as any).renderVersionsSection;
   });
 });
