@@ -15166,6 +15166,12 @@ components:
           - type: 'null'
           title: Pull Request Description
           description: Description for the Pull/Merge Request
+        verification:
+          anyOf:
+          - $ref: '#/components/schemas/VerificationPolicy'
+          - type: 'null'
+          description: 'Publication gate policy: required checks a commit must pass
+            before the flow pushes it or opens a pull request'
       type: object
       title: GitCloneConfig
       description: Configuration for git clone operations before agent execution.
@@ -15237,6 +15243,12 @@ components:
           - type: 'null'
           title: Pull Request Description
           description: Description for the Pull/Merge Request
+        verification:
+          anyOf:
+          - $ref: '#/components/schemas/VerificationPolicy'
+          - type: 'null'
+          description: 'Publication gate policy: required checks a commit must pass
+            before the flow pushes it or opens a pull request'
       type: object
       title: GitCloneConfig
       description: Configuration for git clone operations before agent execution.
@@ -18060,6 +18072,35 @@ components:
       type: object
       title: PrincipalIdentityLite
       description: Identity metadata accepted on rekey/token flows.
+    ProfileRule:
+      properties:
+        id:
+          type: string
+          title: Id
+          description: Stable rule identifier recorded in evidence
+        description:
+          type: string
+          title: Description
+          description: What kind of change this rule covers
+        path_globs:
+          items:
+            type: string
+          type: array
+          title: Path Globs
+          description: fnmatch patterns matched against changed paths (e.g. 'backend/preloop/models/alembic/versions/*')
+        commands:
+          items:
+            $ref: '#/components/schemas/VerificationCommand'
+          type: array
+          title: Commands
+          description: Checks required when this rule matches
+      type: object
+      required:
+      - id
+      - description
+      - path_globs
+      title: ProfileRule
+      description: Changed-file patterns that pull in a set of required checks.
     ProjectCreate:
       properties:
         name:
@@ -21899,6 +21940,118 @@ components:
       - msg
       - type
       title: ValidationError
+    VerificationCommand:
+      properties:
+        id:
+          type: string
+          title: Id
+          description: Stable identifier used in evidence records
+        command:
+          type: string
+          title: Command
+          description: Shell command executed in the repository working tree
+        reason:
+          type: string
+          title: Reason
+          description: Why this check exists; recorded with the evidence
+        scope:
+          type: string
+          title: Scope
+          description: Coarse impact area (docs, migration, frontend, backend, api,
+            shared, unknown) used for reporting and narrow-diff assertions
+          default: unknown
+        timeout_seconds:
+          type: integer
+          maximum: 3600.0
+          minimum: 1.0
+          title: Timeout Seconds
+          description: Wall-clock budget for one execution of this command
+          default: 900
+      type: object
+      required:
+      - id
+      - command
+      - reason
+      title: VerificationCommand
+      description: 'One required check: a shell command plus why it exists.'
+    VerificationPolicy:
+      properties:
+        mode:
+          type: string
+          enum:
+          - 'off'
+          - gate
+          title: Mode
+          default: gate
+        profile:
+          $ref: '#/components/schemas/VerificationProfile'
+          description: Versioned trusted test profile driving required checks
+        gate_budget_seconds:
+          type: integer
+          maximum: 14400.0
+          minimum: 30.0
+          title: Gate Budget Seconds
+          description: Wall-clock budget for the whole verification run; a check that
+            cannot start inside it is blocked, not failed
+          default: 3600
+      type: object
+      required:
+      - profile
+      title: VerificationPolicy
+      description: 'Publication gate policy inside ``git_clone_config`` (issue #428).
+
+
+        ``mode: "gate"`` requires the runner-controlled verifier to allow
+
+        publication (push / pull-request creation) before the agent''s commits
+
+        leave the workspace. There is no draft-publication exception: unverified
+
+        work stays unpushed.'
+    VerificationProfile:
+      properties:
+        version:
+          type: string
+          const: v1
+          title: Version
+          default: v1
+        profile_id:
+          type: string
+          title: Profile Id
+          description: Stable profile name, e.g. 'default'
+        description:
+          type: string
+          title: Description
+          default: ''
+        always:
+          items:
+            $ref: '#/components/schemas/VerificationCommand'
+          type: array
+          title: Always
+        rules:
+          items:
+            $ref: '#/components/schemas/ProfileRule'
+          type: array
+          title: Rules
+        unknown_default:
+          items:
+            $ref: '#/components/schemas/VerificationCommand'
+          type: array
+          title: Unknown Default
+      type: object
+      required:
+      - profile_id
+      title: VerificationProfile
+      description: 'Versioned, trusted set of required checks for a repository.
+
+
+        Ships with the flow configuration, not inside the repository under test.
+
+        Inexpensive ``always`` hooks are required on every change; rules match
+
+        the changed-file diff; ``unknown_default`` covers unknown impact so a
+
+        diff never resolves to an empty required list.'
     WebhookConfig:
       properties:
         webhook_secret:

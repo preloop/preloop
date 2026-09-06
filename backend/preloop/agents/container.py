@@ -27,6 +27,7 @@ from .base import AgentExecutionResult, AgentExecutor, AgentStatus
 from .errors import AgentStartError
 from .failure_analysis import analyze_agent_failure
 from preloop.services.mcp_config_service import MCPConfigService
+from preloop.agents.verification import build_verification_gate_shell
 from preloop.services.tracker_git_token import APP_AUTH_TYPES
 from preloop.utils.git_credentials import (
     GitCredential,
@@ -50,6 +51,7 @@ from preloop.utils.workspace_snapshot import (
     build_setup_commands_shell,
     build_workspace_snapshot_shell,
 )
+from preloop.services.verification import resolve_verification_policy
 
 logger = logging.getLogger(__name__)
 
@@ -3839,6 +3841,11 @@ true
         Returns:
             Shell command string for post-execution git operations
         """
+        # Invalid configured gates must fail before the legacy broad exception
+        # handler, which otherwise turns a policy failure into no post commands.
+        verification_policy = resolve_verification_policy(
+            execution_context.get("git_clone_config") or {}
+        )
         try:
             git_config = execution_context.get("git_clone_config", {})
 
@@ -3951,15 +3958,41 @@ true
                         f"2>/dev/null || true"
                     ),
                     f'  echo "Wrote git recovery artifacts under {EVIDENCE_DIR_PATH}"',
-                    push_auth,
-                    self._build_git_push_shell(
-                        safe_target,
-                        resume_rebase=bool(
-                            execution_context.get("_git_resume_rebase")
-                            or self._is_resume_execution(execution_context)
-                        ),
-                    ),
                 ]
+
+                # Publication gate (issue #428): before anything leaves the
+                # workspace, the runner-controlled verifier re-derives the
+                # required checks from the trusted profile, executes them,
+                # and binds the evidence to the exact commit and tree. A
+                # denial exits non-zero, which fails the execution instead
+                # of publishing unverified work.
+                if verification_policy.mode == "gate" and (
+                    verification_policy.profile is not None
+                ):
+                    repo_post_commands.append(
+                        build_verification_gate_shell(
+                            profile=verification_policy.profile.model_dump(),
+                            working_dir=full_path,
+                            base_branch=safe_source,
+                            evidence_dir=EVIDENCE_DIR_PATH,
+                            gate_budget_seconds=(
+                                verification_policy.gate_budget_seconds
+                            ),
+                        )
+                    )
+
+                repo_post_commands.extend(
+                    [
+                        push_auth,
+                        self._build_git_push_shell(
+                            safe_target,
+                            resume_rebase=bool(
+                                execution_context.get("_git_resume_rebase")
+                                or self._is_resume_execution(execution_context)
+                            ),
+                        ),
+                    ]
+                )
 
                 # Add PR/MR creation if enabled
                 if create_pr and token:
