@@ -6,6 +6,7 @@ import type {
   RuntimeSessionActivityItem,
   RuntimeSessionSummary,
 } from '../types';
+import { sumTokenUsage } from '../components/token-figures';
 
 export type SessionObserverScope =
   | 'account'
@@ -301,36 +302,14 @@ export function normalizeObservedSessions(
     existing.successfulRequests += session.successfulRequests;
     existing.failedRequests += session.failedRequests;
     existing.estimatedCost += session.estimatedCost;
-    const promptTokens =
-      existing.tokenUsage.prompt_tokens + session.tokenUsage.prompt_tokens;
-    const completionTokens =
-      existing.tokenUsage.completion_tokens +
-      session.tokenUsage.completion_tokens;
-    const cacheRead =
-      Number(existing.tokenUsage.cache_read_tokens || 0) +
-      Number(session.tokenUsage.cache_read_tokens || 0);
-    const uncachedInput =
-      Number(existing.tokenUsage.uncached_input_tokens || 0) +
-      Number(session.tokenUsage.uncached_input_tokens || 0);
-    existing.tokenUsage = {
-      prompt_tokens: promptTokens,
-      completion_tokens: completionTokens,
-      total_tokens:
-        existing.tokenUsage.total_tokens + session.tokenUsage.total_tokens,
-      input_tokens: promptTokens,
-      output_tokens: completionTokens,
-      cache_read_tokens: cacheRead,
-      cache_write_tokens:
-        Number(existing.tokenUsage.cache_write_tokens || 0) +
-        Number(session.tokenUsage.cache_write_tokens || 0),
-      uncached_input_tokens: uncachedInput,
-      // Rates do not add. The merged rate follows from the merged counts,
-      // and stays unknown while neither side reported a cache split.
-      cache_hit_ratio:
-        cacheRead + uncachedInput > 0
-          ? cacheRead / (cacheRead + uncachedInput)
-          : null,
-    };
+    // Counts add and rates do not, which is exactly what sumTokenUsage
+    // states. Repeating the arithmetic here gave the console a second
+    // definition of the hit rate that nothing kept in step with the first.
+    // Two real aggregates never sum to nothing, so the fallback is only for
+    // the type.
+    existing.tokenUsage =
+      sumTokenUsage([existing.tokenUsage, session.tokenUsage]) ??
+      existing.tokenUsage;
     if (
       session.lastActivityAt &&
       (!existing.lastActivityAt ||
