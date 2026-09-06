@@ -1595,8 +1595,10 @@ export class AuditView extends AuthedElement {
         white-space: nowrap;
       }
 
+      /* Meta colour, not hairline: a middot painted at hairline weight is
+         invisible and the meta reads "56.3K events LIVE". */
       .header-meta .separator {
-        color: var(--console-hairline);
+        color: var(--console-meta-color);
       }
 
       .live-indicator {

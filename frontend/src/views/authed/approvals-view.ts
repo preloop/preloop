@@ -168,8 +168,10 @@ export class ApprovalsView extends AuthedElement {
         font-weight: 600;
       }
 
+      /* A quiet dot, not a hairline: at hairline weight the middot vanishes
+         and the strip reads "3 requests 1 waiting". */
       .stat-strip .separator {
-        color: var(--console-hairline);
+        color: var(--console-meta-color);
       }
 
       .filters-row {
