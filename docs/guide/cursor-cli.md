@@ -16,6 +16,14 @@ or pairing flow. For Claude Code, see `preloop claude`. For editor-side
 conversation lifecycle (no token counts), see
 [Cursor usage hooks](cursor-usage-hooks.md).
 
+Scheduled flow executions are a separate path. A private runner can
+advertise a named **host execution profile** that runs the locally
+installed Cursor CLI under the operator's existing `agent login`; the
+flow selects only that profile name. See
+[Self-hosted runner quickstart](runners/quickstart-linux.md). `preloop
+cursor` remains an operator-initiated launcher and does not lease flow
+jobs.
+
 ## Install cursor-agent
 
 The Cursor Agent CLI is a separate install from the Cursor editor and

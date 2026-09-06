@@ -39,6 +39,11 @@ from preloop.services.model_routing import (
     model_usable_for_agent as _model_usable_for_agent,
     validate_stored_model_routing,
 )
+from preloop.services.host_exec import (
+    host_exec_flow_error,
+    host_exec_profile_name,
+    host_exec_unavailable_reason,
+)
 
 
 router = APIRouter()
@@ -46,6 +51,30 @@ router = APIRouter()
 
 crud_flow = CRUDFlow()
 crud_flow_execution = CRUDFlowExecution()
+
+
+def _reject_host_exec_flow(
+    *,
+    agent_type: Any,
+    agent_config: Any,
+    runner_pool: Any,
+    git_clone_config: Any,
+    custom_commands: Any = None,
+) -> None:
+    """Reject hosted Cursor / publication / invalid host-exec combinations."""
+    error = host_exec_flow_error(
+        agent_type=agent_type,
+        agent_config=agent_config,
+        runner_pool=runner_pool,
+    )
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    if host_exec_profile_name(agent_config):
+        blocked = host_exec_unavailable_reason(
+            git_clone_config=git_clone_config, custom_commands=custom_commands
+        )
+        if blocked:
+            raise HTTPException(status_code=400, detail=blocked)
 
 
 @router.post("/flows", response_model=schemas.FlowResponse)
@@ -107,6 +136,14 @@ def create_flow(
         flow_in.webhook_config = schemas.WebhookConfig(webhook_secret=webhook_secret)
         flow_in.trigger_event_source = "webhook"
         flow_in.trigger_event_types = ["webhook"]
+
+    _reject_host_exec_flow(
+        agent_type=flow_in.agent_type,
+        agent_config=flow_in.agent_config,
+        runner_pool=flow_in.runner_pool,
+        git_clone_config=flow_in.git_clone_config,
+        custom_commands=flow_in.custom_commands,
+    )
 
     # If creating from a preset, validate and compute source hashes for template tracking
     if flow_in.source_preset_id:
@@ -1665,6 +1702,32 @@ def update_flow(
             )
         except ModelRoutingError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    _reject_host_exec_flow(
+        agent_type=(
+            flow_in.agent_type if flow_in.agent_type is not None else flow.agent_type
+        ),
+        agent_config=(
+            flow_in.agent_config
+            if flow_in.agent_config is not None
+            else flow.agent_config
+        ),
+        runner_pool=(
+            flow_in.runner_pool
+            if "runner_pool" in flow_in.model_fields_set
+            else flow.runner_pool
+        ),
+        git_clone_config=(
+            flow_in.git_clone_config
+            if flow_in.git_clone_config is not None
+            else flow.git_clone_config
+        ),
+        custom_commands=(
+            flow_in.custom_commands
+            if flow_in.custom_commands is not None
+            else flow.custom_commands
+        ),
+    )
 
     old_enabled = flow.is_enabled
     flow = crud_flow.update(
