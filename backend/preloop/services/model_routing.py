@@ -190,6 +190,25 @@ def _model_uuid(value: Any) -> str:
         raise ModelRoutingError("ai_model_id must be a valid UUID") from exc
 
 
+def _require_hosted_routing_harness(agent_type: str) -> str:
+    """Reject native Cursor in rules/matrices; it is a flow-default runtime."""
+    from preloop.agents.factory import SUPPORTED_AGENT_TYPES
+
+    harness = (agent_type or "").strip().lower()
+    if harness == "cursor":
+        raise ModelRoutingError(
+            "Routing rules and eval matrices cannot select agent_type "
+            "'cursor'; native Cursor is the flow default with a named host "
+            "profile on a private runner"
+        )
+    if harness not in SUPPORTED_AGENT_TYPES:
+        raise ModelRoutingError(
+            f"agent_type '{agent_type}' is not supported; "
+            f"supported types: {sorted(SUPPORTED_AGENT_TYPES)}"
+        )
+    return harness
+
+
 def load_usable_model(
     db: Session,
     *,
@@ -202,14 +221,7 @@ def load_usable_model(
     Raises:
         ModelRoutingError: Foreign, missing, or incompatible model.
     """
-    from preloop.agents.factory import SUPPORTED_AGENT_TYPES
-
-    harness = (agent_type or "").strip().lower()
-    if harness not in SUPPORTED_AGENT_TYPES:
-        raise ModelRoutingError(
-            f"agent_type '{agent_type}' is not supported; "
-            f"supported types: {sorted(SUPPORTED_AGENT_TYPES)}"
-        )
+    harness = _require_hosted_routing_harness(agent_type)
     model = crud_ai_model.get(db, id=_model_uuid(ai_model_id))
     if not _account_can_use_model(model, account_id):
         raise ModelRoutingError(f"ai_model_id '{ai_model_id}' not found")
@@ -389,8 +401,6 @@ def validate_authorized_matrix(
     Raises:
         ModelRoutingError: Unsupported harness or non-account-visible model.
     """
-    from preloop.agents.factory import SUPPORTED_AGENT_TYPES
-
     if not isinstance(cell, dict):
         raise ModelRoutingError("authorized matrix cell must be an object")
     cell["agent_type"] = cell.get("agent_type") or flow.agent_type
@@ -398,13 +408,7 @@ def validate_authorized_matrix(
     cell["ai_model_id"] = str(model_id) if model_id else None
     agent_type = cell.get("agent_type")
     if agent_type:
-        harness = str(agent_type).strip().lower()
-        cell["agent_type"] = harness
-        if harness not in SUPPORTED_AGENT_TYPES:
-            raise ModelRoutingError(
-                f"agent_type '{agent_type}' is not supported; "
-                f"supported types: {sorted(SUPPORTED_AGENT_TYPES)}"
-            )
+        cell["agent_type"] = _require_hosted_routing_harness(agent_type)
     ai_model_id = cell.get("ai_model_id")
     if ai_model_id:
         model = crud_ai_model.get(db, id=_model_uuid(ai_model_id))
